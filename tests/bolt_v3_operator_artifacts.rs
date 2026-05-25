@@ -14,9 +14,11 @@ use bolt_v2::{
     },
     bolt_v3_market_families::updown::updown_market_slug,
     bolt_v3_operator_artifacts::{
-        EntryDecisionSourceBookSideInput, EntryDecisionSourceCollectionRequest,
-        EntryDecisionSourceInputRequest, EntryDecisionSourceMarketInputs, WrittenOperatorArtifact,
-        build_redacted_ssm_manifest, collect_entry_decision_source_inputs_from_configured_provider,
+        EntryDecisionProofSourceMaterializationRequest, EntryDecisionRealizedVolatilityProofInput,
+        EntryDecisionReferenceQuoteProofInput, EntryDecisionSourceBookSideInput,
+        EntryDecisionSourceCollectionRequest, EntryDecisionSourceInputRequest,
+        EntryDecisionSourceMarketInputs, WrittenOperatorArtifact, build_redacted_ssm_manifest,
+        collect_entry_decision_source_inputs_from_configured_provider,
     },
     bolt_v3_tiny_canary_evidence::{
         Phase8AbortPlanSourceProofs, Phase8FinancialEnvelopeEvidenceFile,
@@ -5298,6 +5300,187 @@ fn write_entry_decision_source_input_proofs_with_report_provenance(
         realized_volatility_source_path,
         decision_source_output: temp.path().join("entry-decision-source.json"),
         instrument_source_output: temp.path().join("instrument-source.json"),
+    }
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let report_path = temp.path().join("operator-approved-chainlink-report.bin");
+    std::fs::write(&report_path, b"operator-approved-price-report")
+        .expect("report source should write");
+    let report_sha256 = sha256_file(&report_path);
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+    let fee_rate_source_path = temp.path().join("entry-decision-fees.json");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &report_sha256,
+            source_report_valid_from_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            source_report_observations_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 1_000,
+            source_report_benchmark_price: 3100.0,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            reference_quote: EntryDecisionReferenceQuoteProofInput {
+                venue: "binance_reference".to_string(),
+                price: 3300.0,
+                observed_ts_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            },
+            realized_volatility: EntryDecisionRealizedVolatilityProofInput {
+                value: 1.5,
+                ready_ts_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            },
+            fee_bps_by_instrument_id: BTreeMap::from([
+                (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
+                (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
+            ]),
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+            fee_rate_source_output_path: &fee_rate_source_path,
+        },
+    )
+    .expect("source-proof files should write from bounded operator inputs");
+
+    assert_eq!(written.price_to_beat_source.path, price_source_path);
+    assert_eq!(
+        written.reference_quote_source.path,
+        reference_quote_source_path
+    );
+    assert_eq!(
+        written.realized_volatility_source.path,
+        realized_volatility_source_path
+    );
+    assert_eq!(written.fee_rate_source.path, fee_rate_source_path);
+
+    let price_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.price_to_beat_source.path).expect("price source should read"),
+    )
+    .expect("price source should parse");
+    assert_eq!(
+        price_json["source_report_full_sha256"],
+        serde_json::json!(report_sha256)
+    );
+    assert_eq!(
+        price_json["source_report_feed_id"],
+        serde_json::json!(TEST_PRICE_TO_BEAT_FEED_ID)
+    );
+    assert_eq!(
+        price_json["source_report_schema_version"],
+        serde_json::json!(TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION)
+    );
+
+    let instruments = entry_decision_source_input_instruments();
+    let decision_source_output = temp.path().join("entry-decision-source.json");
+    let instrument_source_output = temp.path().join("instrument-source.json");
+    let source_inputs =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &written.price_to_beat_source.path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &written.reference_quote_source.path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &written.realized_volatility_source.path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs: entry_decision_source_market_inputs(&instruments),
+                decision_source_output_path: &decision_source_output,
+                instrument_source_output_path: &instrument_source_output,
+            },
+        )
+        .expect("materialized proof sources should feed source-input collector");
+
+    assert_eq!(source_inputs.decision_source.path, decision_source_output);
+    assert_eq!(
+        source_inputs.instrument_source.path,
+        instrument_source_output
+    );
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_refuses_report_hash_mismatch_before_outputs() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let report_path = temp.path().join("wrong-chainlink-report.bin");
+    std::fs::write(&report_path, b"unexpected-price-report").expect("report source should write");
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+    let fee_rate_source_path = temp.path().join("entry-decision-fees.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: TEST_PRICE_TO_BEAT_REPORT_SHA256,
+            source_report_valid_from_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            source_report_observations_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 1_000,
+            source_report_benchmark_price: 3100.0,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            reference_quote: EntryDecisionReferenceQuoteProofInput {
+                venue: "binance_reference".to_string(),
+                price: 3300.0,
+                observed_ts_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            },
+            realized_volatility: EntryDecisionRealizedVolatilityProofInput {
+                value: 1.5,
+                ready_ts_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            },
+            fee_bps_by_instrument_id: BTreeMap::from([
+                (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
+                (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
+            ]),
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+            fee_rate_source_output_path: &fee_rate_source_path,
+        },
+    )
+    .expect_err("operator-approved report hash mismatch must fail before output");
+
+    assert!(
+        error
+            .to_string()
+            .contains("price_to_beat report hash does not match approved source"),
+        "expected report-hash mismatch, got: {error}"
+    );
+    for path in [
+        price_source_path,
+        reference_quote_source_path,
+        realized_volatility_source_path,
+        fee_rate_source_path,
+    ] {
+        assert!(
+            !path.exists(),
+            "failed materializer must not leave {path:?}"
+        );
     }
 }
 

@@ -66,6 +66,9 @@ const REFERENCE_QUOTE_SOURCE_SCHEMA_VERSION: u32 = 1;
 const REFERENCE_QUOTE_SOURCE_RECORD_KIND: &str = "bolt_v3.reference_quote_source.v1";
 const REALIZED_VOLATILITY_SOURCE_SCHEMA_VERSION: u32 = 1;
 const REALIZED_VOLATILITY_SOURCE_RECORD_KIND: &str = "bolt_v3.realized_volatility_source.v1";
+pub(crate) const ENTRY_DECISION_FEE_RATE_SOURCE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const ENTRY_DECISION_FEE_RATE_SOURCE_RECORD_KIND: &str =
+    "bolt_v3.entry_decision_fee_rate_source.v1";
 const ENTRY_DECISION_WARMUP_COUNT_FIELD: &str = "warmup_tick_count";
 const ENTRY_DECISION_UP_BOOK_LABEL: &str = "up";
 const ENTRY_DECISION_DOWN_BOOK_LABEL: &str = "down";
@@ -2207,6 +2210,46 @@ pub struct EntryDecisionSourceInputsWritten {
     pub instrument_source: WrittenOperatorArtifact,
 }
 
+#[derive(Debug, Clone)]
+pub struct EntryDecisionReferenceQuoteProofInput {
+    pub venue: String,
+    pub price: f64,
+    pub observed_ts_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct EntryDecisionRealizedVolatilityProofInput {
+    pub value: f64,
+    pub ready_ts_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EntryDecisionProofSourceMaterializationRequest<'a> {
+    pub price_report_path: &'a Path,
+    pub max_price_report_bytes: u64,
+    pub expected_price_report_sha256: &'a str,
+    pub source_report_valid_from_timestamp_ms: u64,
+    pub source_report_observations_timestamp_ms: u64,
+    pub source_report_benchmark_price: f64,
+    pub market_selection_timestamp_ms: u64,
+    pub decision_timestamp_ms: u64,
+    pub reference_quote: EntryDecisionReferenceQuoteProofInput,
+    pub realized_volatility: EntryDecisionRealizedVolatilityProofInput,
+    pub fee_bps_by_instrument_id: BTreeMap<String, f64>,
+    pub price_to_beat_source_output_path: &'a Path,
+    pub reference_quote_source_output_path: &'a Path,
+    pub realized_volatility_source_output_path: &'a Path,
+    pub fee_rate_source_output_path: &'a Path,
+}
+
+#[derive(Debug, Clone)]
+pub struct EntryDecisionProofSourcesWritten {
+    pub price_to_beat_source: WrittenOperatorArtifact,
+    pub reference_quote_source: WrittenOperatorArtifact,
+    pub realized_volatility_source: WrittenOperatorArtifact,
+    pub fee_rate_source: WrittenOperatorArtifact,
+}
+
 pub struct OperatorEvidenceJsonBuildInputs<'a> {
     pub max_operator_evidence_file_bytes: u64,
     pub approval_consumption_max_age_seconds: u64,
@@ -2229,7 +2272,7 @@ pub struct OperatorEvidenceJsonBuildInputs<'a> {
     pub post_run_hygiene_path: &'a Path,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct SourceBoundPriceToBeatSource {
     schema_version: u32,
@@ -2247,7 +2290,7 @@ struct SourceBoundPriceToBeatSource {
     decision_timestamp_ms: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ReferenceQuoteSource {
     schema_version: u32,
@@ -2257,7 +2300,7 @@ struct ReferenceQuoteSource {
     observed_ts_ms: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RealizedVolatilitySource {
     schema_version: u32,
@@ -2270,6 +2313,14 @@ struct EntryDecisionSourceProofs {
     price_source: SourceBoundPriceToBeatSource,
     reference_quote: ReferenceQuoteSource,
     realized_volatility: RealizedVolatilitySource,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EntryDecisionFeeRateSourceArtifact {
+    pub(crate) schema_version: u32,
+    pub(crate) record_kind: String,
+    pub(crate) fee_bps_by_instrument_id: BTreeMap<String, f64>,
 }
 
 struct PriceToBeatReportBinding {
@@ -2302,6 +2353,122 @@ pub(crate) fn validate_entry_decision_source_proof_files(
         read_validated_entry_decision_source_proofs(loaded, strategy_instance_id, request)?;
     Ok(EntryDecisionSourceProofValidation {
         market_selection_timestamp_ms: proofs.price_source.market_selection_timestamp_ms,
+    })
+}
+
+pub fn write_entry_decision_proof_source_files(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    request: EntryDecisionProofSourceMaterializationRequest<'_>,
+) -> Result<EntryDecisionProofSourcesWritten, BoltV3OperatorArtifactError> {
+    let report_bytes = read_file_bounded(request.price_report_path, request.max_price_report_bytes)
+        .map_err(
+            |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceRead {
+                path: request.price_report_path.to_path_buf(),
+                source,
+            },
+        )?;
+    let report_sha256 = hex::encode(Sha256::digest(&report_bytes));
+    if !is_lowercase_sha256(request.expected_price_report_sha256)
+        || report_sha256 != request.expected_price_report_sha256
+    {
+        return Err(entry_decision_source_invalid(
+            "price_to_beat report hash does not match approved source",
+        ));
+    }
+
+    let financial_envelope =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    let report_binding = price_to_beat_report_binding(loaded, strategy_instance_id)?;
+    let price_to_beat_source = SourceBoundPriceToBeatSource {
+        schema_version: SOURCE_BOUND_PRICE_TO_BEAT_SOURCE_SCHEMA_VERSION,
+        record_kind: SOURCE_BOUND_PRICE_TO_BEAT_SOURCE_RECORD_KIND.to_string(),
+        source: financial_envelope.price_to_beat_source().to_string(),
+        price_to_beat_value: request.source_report_benchmark_price,
+        source_report_schema_version: Some(report_binding.schema_version),
+        source_report_feed_id: Some(report_binding.feed_id),
+        source_report_decimal_scale: Some(report_binding.decimal_scale),
+        source_report_full_sha256: Some(report_sha256),
+        source_report_valid_from_timestamp_ms: Some(request.source_report_valid_from_timestamp_ms),
+        source_report_observations_timestamp_ms: Some(
+            request.source_report_observations_timestamp_ms,
+        ),
+        source_report_benchmark_price: Some(request.source_report_benchmark_price),
+        market_selection_timestamp_ms: request.market_selection_timestamp_ms,
+        decision_timestamp_ms: request.decision_timestamp_ms,
+    };
+    validate_price_to_beat_source(loaded, strategy_instance_id, &price_to_beat_source)?;
+
+    let reference_quote_source = ReferenceQuoteSource {
+        schema_version: REFERENCE_QUOTE_SOURCE_SCHEMA_VERSION,
+        record_kind: REFERENCE_QUOTE_SOURCE_RECORD_KIND.to_string(),
+        venue: request.reference_quote.venue,
+        price: request.reference_quote.price,
+        observed_ts_ms: request.reference_quote.observed_ts_ms,
+    };
+    validate_reference_quote_source(&reference_quote_source)?;
+
+    let realized_volatility_source = RealizedVolatilitySource {
+        schema_version: REALIZED_VOLATILITY_SOURCE_SCHEMA_VERSION,
+        record_kind: REALIZED_VOLATILITY_SOURCE_RECORD_KIND.to_string(),
+        value: request.realized_volatility.value,
+        ready_ts_ms: request.realized_volatility.ready_ts_ms,
+    };
+    validate_realized_volatility_source(&realized_volatility_source)?;
+
+    let fee_rate_source = EntryDecisionFeeRateSourceArtifact {
+        schema_version: ENTRY_DECISION_FEE_RATE_SOURCE_SCHEMA_VERSION,
+        record_kind: ENTRY_DECISION_FEE_RATE_SOURCE_RECORD_KIND.to_string(),
+        fee_bps_by_instrument_id: request.fee_bps_by_instrument_id,
+    };
+    validate_entry_decision_fee_rate_source_artifact(&fee_rate_source)?;
+
+    let price_to_beat_source_written = write_json_artifact_create_new(
+        request.price_to_beat_source_output_path,
+        &price_to_beat_source,
+    )?;
+    let mut written = vec![price_to_beat_source_written.clone()];
+
+    let reference_quote_source_written = match write_json_artifact_create_new(
+        request.reference_quote_source_output_path,
+        &reference_quote_source,
+    ) {
+        Ok(artifact) => artifact,
+        Err(error) => {
+            remove_written_static_artifacts(&written);
+            return Err(error);
+        }
+    };
+    written.push(reference_quote_source_written.clone());
+
+    let realized_volatility_source_written = match write_json_artifact_create_new(
+        request.realized_volatility_source_output_path,
+        &realized_volatility_source,
+    ) {
+        Ok(artifact) => artifact,
+        Err(error) => {
+            remove_written_static_artifacts(&written);
+            return Err(error);
+        }
+    };
+    written.push(realized_volatility_source_written.clone());
+
+    let fee_rate_source_written =
+        match write_json_artifact_create_new(request.fee_rate_source_output_path, &fee_rate_source)
+        {
+            Ok(artifact) => artifact,
+            Err(error) => {
+                remove_written_static_artifacts(&written);
+                return Err(error);
+            }
+        };
+
+    Ok(EntryDecisionProofSourcesWritten {
+        price_to_beat_source: price_to_beat_source_written,
+        reference_quote_source: reference_quote_source_written,
+        realized_volatility_source: realized_volatility_source_written,
+        fee_rate_source: fee_rate_source_written,
     })
 }
 
@@ -2694,6 +2861,38 @@ fn validate_realized_volatility_source(
         return Err(entry_decision_source_invalid(
             "realized volatility source value is invalid",
         ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_entry_decision_fee_rate_source_artifact(
+    source: &EntryDecisionFeeRateSourceArtifact,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if source.schema_version != ENTRY_DECISION_FEE_RATE_SOURCE_SCHEMA_VERSION {
+        return Err(entry_decision_source_invalid(
+            "entry decision fee source schema_version is invalid",
+        ));
+    }
+    if source.record_kind != ENTRY_DECISION_FEE_RATE_SOURCE_RECORD_KIND {
+        return Err(entry_decision_source_invalid(
+            "entry decision fee source record_kind is invalid",
+        ));
+    }
+    if source.fee_bps_by_instrument_id.is_empty() {
+        return Err(entry_decision_source_invalid(
+            "entry decision fee source requires instrument fee entries",
+        ));
+    }
+    for (instrument_id, fee_bps) in &source.fee_bps_by_instrument_id {
+        if instrument_id.trim().is_empty()
+            || instrument_id.trim() != instrument_id
+            || !fee_bps.is_finite()
+            || *fee_bps < ENTRY_DECISION_ZERO_THRESHOLD
+        {
+            return Err(entry_decision_source_invalid(
+                "entry decision fee source entry is invalid",
+            ));
+        }
     }
     Ok(())
 }

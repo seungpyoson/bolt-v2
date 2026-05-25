@@ -9,15 +9,16 @@ use nautilus_polymarket::{
     http::{clob::PolymarketClobPublicClient, gamma::PolymarketGammaHttpClient},
     providers::PolymarketInstrumentProvider,
 };
-use serde::Deserialize;
 
 use crate::{
     bolt_v3_market_families::{self, MarketSelectionTarget},
     bolt_v3_operator_artifacts::{
-        BoltV3OperatorArtifactError, EntryDecisionSourceBookSideInput,
-        EntryDecisionSourceInputRequest, EntryDecisionSourceInputsWritten,
-        EntryDecisionSourceMarketInputs, EntryDecisionSourceProofFileRequest, read_file_bounded,
-        selected_entry_decision_market, validate_entry_decision_source_proof_files,
+        BoltV3OperatorArtifactError, EntryDecisionFeeRateSourceArtifact,
+        EntryDecisionSourceBookSideInput, EntryDecisionSourceInputRequest,
+        EntryDecisionSourceInputsWritten, EntryDecisionSourceMarketInputs,
+        EntryDecisionSourceProofFileRequest, read_file_bounded, selected_entry_decision_market,
+        validate_entry_decision_fee_rate_source_artifact,
+        validate_entry_decision_source_proof_files,
         write_entry_decision_source_inputs_from_source_files,
     },
     bolt_v3_providers::EntryDecisionSourceProviderContext,
@@ -25,21 +26,10 @@ use crate::{
 
 use super::{PolymarketDataConfig, PolymarketExecutionConfig};
 
-const ENTRY_DECISION_FEE_RATE_SOURCE_SCHEMA_VERSION: u32 = 1;
-const ENTRY_DECISION_FEE_RATE_SOURCE_RECORD_KIND: &str =
-    "bolt_v3.entry_decision_fee_rate_source.v1";
 const ENTRY_DECISION_UP_BOOK_LABEL: &str = "up";
 const ENTRY_DECISION_DOWN_BOOK_LABEL: &str = "down";
 const ENTRY_DECISION_FEE_ZERO_THRESHOLD: f64 = 0.0;
 const ENTRY_DECISION_RETRY_INITIAL_ATTEMPT_COUNT: u64 = 1;
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EntryDecisionFeeRateSource {
-    schema_version: u32,
-    record_kind: String,
-    fee_bps_by_instrument_id: BTreeMap<String, f64>,
-}
 
 pub fn collect_entry_decision_source_inputs(
     context: EntryDecisionSourceProviderContext<'_>,
@@ -71,11 +61,11 @@ async fn collect_entry_decision_source_inputs_inner(
     )?;
     let source_config =
         polymarket_source_config_for_strategy(context.loaded, context.strategy_instance_id)?;
-    let fee_rate_source: EntryDecisionFeeRateSource = read_decision_source_json_file(
+    let fee_rate_source: EntryDecisionFeeRateSourceArtifact = read_decision_source_json_file(
         context.request.fee_rate_source_path,
         context.request.max_fee_rate_source_bytes,
     )?;
-    validate_entry_decision_fee_rate_source(&fee_rate_source)?;
+    validate_entry_decision_fee_rate_source_artifact(&fee_rate_source)?;
     let mut instruments = load_polymarket_instruments_for_entry_decision_source(
         context.loaded,
         context.strategy_instance_id,
@@ -182,38 +172,6 @@ fn read_decision_source_json_file<T: serde::de::DeserializeOwned>(
             source,
         }
     })
-}
-
-fn validate_entry_decision_fee_rate_source(
-    source: &EntryDecisionFeeRateSource,
-) -> Result<(), BoltV3OperatorArtifactError> {
-    if source.schema_version != ENTRY_DECISION_FEE_RATE_SOURCE_SCHEMA_VERSION {
-        return Err(entry_decision_source_invalid(
-            "entry decision fee source schema_version is invalid",
-        ));
-    }
-    if source.record_kind != ENTRY_DECISION_FEE_RATE_SOURCE_RECORD_KIND {
-        return Err(entry_decision_source_invalid(
-            "entry decision fee source record_kind is invalid",
-        ));
-    }
-    if source.fee_bps_by_instrument_id.is_empty() {
-        return Err(entry_decision_source_invalid(
-            "entry decision fee source requires instrument fee entries",
-        ));
-    }
-    for (instrument_id, fee_bps) in &source.fee_bps_by_instrument_id {
-        if instrument_id.trim().is_empty()
-            || instrument_id.trim() != instrument_id
-            || !fee_bps.is_finite()
-            || *fee_bps < ENTRY_DECISION_FEE_ZERO_THRESHOLD
-        {
-            return Err(entry_decision_source_invalid(
-                "entry decision fee source entry is invalid",
-            ));
-        }
-    }
-    Ok(())
 }
 
 struct PolymarketSourceConfig {

@@ -7450,22 +7450,6 @@ reason = "This is the fixed byte32 Chainlink feed-id hex length after the 0x pre
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
-kind = "number"
-literal = "1"
-context = '''const ENTRY_DECISION_FEE_RATE_SOURCE_SCHEMA_VERSION: u32 = 1;'''
-classification = "entry_decision_source_input_schema_version"
-reason = "This is the provider-owned fee-rate proof schema version; fee values remain source-file owned."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
-kind = "string"
-literal = '''"bolt_v3.entry_decision_fee_rate_source.v1"'''
-context = '''"bolt_v3.entry_decision_fee_rate_source.v1";'''
-classification = "entry_decision_source_input_record_kind"
-reason = "This is the record-kind discriminator for the provider-owned fee-rate proof, not a runtime operator value."
-
-[[allowed]]
-path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
 kind = "string"
 literal = '''"up"'''
 context = '''const ENTRY_DECISION_UP_BOOK_LABEL: &str = "up";'''
@@ -7498,6 +7482,22 @@ reason = "This encodes NT RetryConfig attempt-count semantics: one initial attem
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "1"
+context = '''pub(crate) const ENTRY_DECISION_FEE_RATE_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "entry_decision_source_input_schema_version"
+reason = "This is the materialized entry-decision fee-rate proof schema version; fee values remain source-file owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.entry_decision_fee_rate_source.v1"'''
+context = '''"bolt_v3.entry_decision_fee_rate_source.v1";'''
+classification = "entry_decision_source_input_record_kind"
+reason = "This is the record-kind discriminator for the materialized fee-rate proof, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"source-bound price_to_beat decision timestamp precedes market selection"'''
 context = '''"source-bound price_to_beat decision timestamp precedes market selection",'''
@@ -7523,10 +7523,50 @@ reason = "This is the redacted CLI output object field for the written decision 
 [[allowed]]
 path = "src/main.rs"
 kind = "string"
+literal = '''"price_to_beat_source"'''
+context = '''const ENTRY_DECISION_PRICE_SOURCE_OUTPUT_FIELD: &str = "price_to_beat_source";'''
+classification = "entry_decision_source_input_cli_output_schema"
+reason = "This is the CLI output object field for the written source-bound price proof artifact."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"reference_quote_source"'''
+context = '''const ENTRY_DECISION_REFERENCE_QUOTE_SOURCE_OUTPUT_FIELD: &str = "reference_quote_source";'''
+classification = "entry_decision_source_input_cli_output_schema"
+reason = "This is the CLI output object field for the written reference-quote proof artifact."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"realized_volatility_source"'''
+context = '''const ENTRY_DECISION_REALIZED_VOLATILITY_SOURCE_OUTPUT_FIELD: &str = "realized_volatility_source";'''
+classification = "entry_decision_source_input_cli_output_schema"
+reason = "This is the CLI output object field for the written realized-volatility proof artifact."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"fee_rate_source"'''
+context = '''const ENTRY_DECISION_FEE_RATE_SOURCE_OUTPUT_FIELD: &str = "fee_rate_source";'''
+classification = "entry_decision_source_input_cli_output_schema"
+reason = "This is the CLI output object field for the written fee-rate proof artifact."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
 literal = '''"instrument_source"'''
 context = '''const ENTRY_DECISION_INSTRUMENT_SOURCE_OUTPUT_FIELD: &str = "instrument_source";'''
 classification = "entry_decision_source_input_cli_output_schema"
 reason = "This is the redacted CLI output object field for the written instrument source artifact."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"fee-bps-by-instrument-id instrument id is empty"'''
+context = '''return Err("fee-bps-by-instrument-id instrument id is empty".to_string());'''
+classification = "entry_decision_source_input_cli_diagnostic"
+reason = "This is a CLI validation diagnostic for malformed fee proof input, not a runtime operator value."
 
 [[allowed]]
 path = "src/main.rs"

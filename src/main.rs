@@ -1,20 +1,22 @@
 use clap::Parser;
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
     bolt_v3_operator_artifacts::{
-        EntryDecisionSourceCollectionRequest, FinalOperatorPacketVerificationScope,
-        OperatorEvidenceJsonBuildInputs, PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
+        EntryDecisionProofSourceMaterializationRequest, EntryDecisionRealizedVolatilityProofInput,
+        EntryDecisionReferenceQuoteProofInput, EntryDecisionSourceCollectionRequest,
+        FinalOperatorPacketVerificationScope, OperatorEvidenceJsonBuildInputs,
+        PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
         assemble_operator_packet_from_static_manifest,
         collect_entry_decision_source_inputs_from_configured_provider,
         compute_operator_approval_envelope_sha256,
         update_live_canary_operator_evidence_toml_from_json_file,
         verify_final_operator_packet_with_scope, write_abort_plan_artifact_from_source_bundle_file,
         write_abort_plan_artifact_from_source_collectors,
-        write_entry_decision_evidence_from_source_file,
+        write_entry_decision_evidence_from_source_file, write_entry_decision_proof_source_files,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_operator_evidence_json_from_artifact_paths,
         write_pre_run_state_artifact_from_source_bundle_file,
@@ -29,6 +31,10 @@ use bolt_v2::{
 
 const ENTRY_DECISION_SOURCE_OUTPUT_FIELD: &str = "decision_source";
 const ENTRY_DECISION_INSTRUMENT_SOURCE_OUTPUT_FIELD: &str = "instrument_source";
+const ENTRY_DECISION_PRICE_SOURCE_OUTPUT_FIELD: &str = "price_to_beat_source";
+const ENTRY_DECISION_REFERENCE_QUOTE_SOURCE_OUTPUT_FIELD: &str = "reference_quote_source";
+const ENTRY_DECISION_REALIZED_VOLATILITY_SOURCE_OUTPUT_FIELD: &str = "realized_volatility_source";
+const ENTRY_DECISION_FEE_RATE_SOURCE_OUTPUT_FIELD: &str = "fee_rate_source";
 const OPERATOR_EVIDENCE_JSON_SHA256_OUTPUT_FIELD: &str = "operator_evidence_json_sha256";
 
 #[derive(Parser)]
@@ -275,6 +281,48 @@ enum OperatorArtifactsCommand {
         decision_source_output: PathBuf,
         #[arg(long)]
         instrument_source_output: PathBuf,
+    },
+    CollectEntryDecisionProofSources {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        price_report: PathBuf,
+        #[arg(long)]
+        max_price_report_bytes: u64,
+        #[arg(long)]
+        expected_price_report_sha256: String,
+        #[arg(long)]
+        source_report_valid_from_timestamp_ms: u64,
+        #[arg(long)]
+        source_report_observations_timestamp_ms: u64,
+        #[arg(long)]
+        source_report_benchmark_price: f64,
+        #[arg(long)]
+        market_selection_timestamp_ms: u64,
+        #[arg(long)]
+        decision_timestamp_ms: u64,
+        #[arg(long)]
+        reference_quote_venue: String,
+        #[arg(long)]
+        reference_quote_price: f64,
+        #[arg(long)]
+        reference_quote_observed_ts_ms: u64,
+        #[arg(long)]
+        realized_volatility_value: f64,
+        #[arg(long)]
+        realized_volatility_ready_ts_ms: u64,
+        #[arg(long)]
+        fee_bps_by_instrument_id: Vec<String>,
+        #[arg(long)]
+        price_to_beat_source_output: PathBuf,
+        #[arg(long)]
+        reference_quote_source_output: PathBuf,
+        #[arg(long)]
+        realized_volatility_source_output: PathBuf,
+        #[arg(long)]
+        fee_rate_source_output: PathBuf,
     },
     GenerateStrategyInputFromDecisionEvidence {
         #[arg(short, long)]
@@ -688,6 +736,70 @@ fn run_operator_artifacts_command(
             );
             Ok(())
         }
+        OperatorArtifactsCommand::CollectEntryDecisionProofSources {
+            config,
+            strategy_instance_id,
+            price_report,
+            max_price_report_bytes,
+            expected_price_report_sha256,
+            source_report_valid_from_timestamp_ms,
+            source_report_observations_timestamp_ms,
+            source_report_benchmark_price,
+            market_selection_timestamp_ms,
+            decision_timestamp_ms,
+            reference_quote_venue,
+            reference_quote_price,
+            reference_quote_observed_ts_ms,
+            realized_volatility_value,
+            realized_volatility_ready_ts_ms,
+            fee_bps_by_instrument_id,
+            price_to_beat_source_output,
+            reference_quote_source_output,
+            realized_volatility_source_output,
+            fee_rate_source_output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let fee_bps_by_instrument_id =
+                parse_fee_bps_by_instrument_id(&fee_bps_by_instrument_id)?;
+            let written = write_entry_decision_proof_source_files(
+                &loaded,
+                &strategy_instance_id,
+                EntryDecisionProofSourceMaterializationRequest {
+                    price_report_path: &price_report,
+                    max_price_report_bytes,
+                    expected_price_report_sha256: &expected_price_report_sha256,
+                    source_report_valid_from_timestamp_ms,
+                    source_report_observations_timestamp_ms,
+                    source_report_benchmark_price,
+                    market_selection_timestamp_ms,
+                    decision_timestamp_ms,
+                    reference_quote: EntryDecisionReferenceQuoteProofInput {
+                        venue: reference_quote_venue,
+                        price: reference_quote_price,
+                        observed_ts_ms: reference_quote_observed_ts_ms,
+                    },
+                    realized_volatility: EntryDecisionRealizedVolatilityProofInput {
+                        value: realized_volatility_value,
+                        ready_ts_ms: realized_volatility_ready_ts_ms,
+                    },
+                    fee_bps_by_instrument_id,
+                    price_to_beat_source_output_path: &price_to_beat_source_output,
+                    reference_quote_source_output_path: &reference_quote_source_output,
+                    realized_volatility_source_output_path: &realized_volatility_source_output,
+                    fee_rate_source_output_path: &fee_rate_source_output,
+                },
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    ENTRY_DECISION_PRICE_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.price_to_beat_source),
+                    ENTRY_DECISION_REFERENCE_QUOTE_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.reference_quote_source),
+                    ENTRY_DECISION_REALIZED_VOLATILITY_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.realized_volatility_source),
+                    ENTRY_DECISION_FEE_RATE_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.fee_rate_source),
+                }))?
+            );
+            Ok(())
+        }
         OperatorArtifactsCommand::GenerateMarketSelectionFromDecisionEvidence {
             config,
             strategy_instance_id,
@@ -744,6 +856,28 @@ fn written_operator_artifact_json(written: &WrittenOperatorArtifact) -> serde_js
         "path": &written.path,
         "sha256": &written.sha256,
     })
+}
+
+fn parse_fee_bps_by_instrument_id(values: &[String]) -> Result<BTreeMap<String, f64>, String> {
+    let mut fees = BTreeMap::new();
+    for value in values {
+        let Some((instrument_id, fee_bps)) = value.split_once('=') else {
+            return Err(
+                "fee-bps-by-instrument-id entries must use instrument_id=fee_bps".to_string(),
+            );
+        };
+        let instrument_id = instrument_id.trim();
+        if instrument_id.is_empty() {
+            return Err("fee-bps-by-instrument-id instrument id is empty".to_string());
+        }
+        let fee_bps = fee_bps
+            .parse::<f64>()
+            .map_err(|_| "fee-bps-by-instrument-id fee bps is invalid".to_string())?;
+        if fees.insert(instrument_id.to_string(), fee_bps).is_some() {
+            return Err("fee-bps-by-instrument-id contains duplicate instrument id".to_string());
+        }
+    }
+    Ok(fees)
 }
 
 fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error::Error>> {

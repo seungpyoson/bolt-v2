@@ -721,6 +721,145 @@ fn bolt_v3_cli_exposes_collect_entry_decision_source_inputs() {
 }
 
 #[test]
+fn bolt_v3_cli_exposes_collect_entry_decision_proof_sources() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-entry-decision-proof-sources",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 entry-decision proof-source help should run");
+
+    assert!(
+        output.status.success(),
+        "expected entry-decision proof-source help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--strategy-instance-id"));
+    assert!(stdout.contains("--price-report"));
+    assert!(stdout.contains("--expected-price-report-sha256"));
+    assert!(stdout.contains("--source-report-benchmark-price"));
+    assert!(stdout.contains("--market-selection-timestamp-ms"));
+    assert!(stdout.contains("--decision-timestamp-ms"));
+    assert!(stdout.contains("--reference-quote-venue"));
+    assert!(stdout.contains("--reference-quote-price"));
+    assert!(stdout.contains("--realized-volatility-value"));
+    assert!(stdout.contains("--fee-bps-by-instrument-id"));
+    assert!(stdout.contains("--price-to-beat-source-output"));
+    assert!(stdout.contains("--fee-rate-source-output"));
+}
+
+#[test]
+fn bolt_v3_cli_collects_entry_decision_proof_sources_without_printing_inputs() {
+    let temp = tempdir().expect("tempdir should create");
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!(
+            "{root}\n{}",
+            r#"
+[live_canary]
+approval_id = "test-operator-approval"
+no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+max_no_submit_readiness_report_bytes = 1000000
+readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 30
+reference_quote_wait_timeout_seconds = 5
+reference_quote_probe_actor_id = "test-reference-probe"
+reference_quote_probe_log_events = false
+reference_quote_probe_log_commands = false
+max_live_order_count = 1
+max_notional_per_order = "10.00"
+"#
+        )
+    });
+    let report_path = temp.path().join("chainlink-report.bin");
+    fs::write(&report_path, b"operator-approved-report-payload")
+        .expect("report payload should write");
+    let report_sha256 = sha256_file_for_cli_test(&report_path);
+    let price_output = temp.path().join("source-bound-price.json");
+    let quote_output = temp.path().join("reference-quote.json");
+    let vol_output = temp.path().join("realized-volatility.json");
+    let fee_output = temp.path().join("entry-decision-fees.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-entry-decision-proof-sources",
+            "--config",
+            config_path.to_str().expect("fixture path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+            "--price-report",
+            report_path.to_str().expect("report path should be utf-8"),
+            "--max-price-report-bytes",
+            "100000",
+            "--expected-price-report-sha256",
+            &report_sha256,
+            "--source-report-valid-from-timestamp-ms",
+            "600000",
+            "--source-report-observations-timestamp-ms",
+            "601000",
+            "--source-report-benchmark-price",
+            "3100.0",
+            "--market-selection-timestamp-ms",
+            "600000",
+            "--decision-timestamp-ms",
+            "601200",
+            "--reference-quote-venue",
+            "binance_reference",
+            "--reference-quote-price",
+            "3300.0",
+            "--reference-quote-observed-ts-ms",
+            "601200",
+            "--realized-volatility-value",
+            "1.5",
+            "--realized-volatility-ready-ts-ms",
+            "601200",
+            "--fee-bps-by-instrument-id",
+            "condition-current-up.POLYMARKET=0.0",
+            "--fee-bps-by-instrument-id",
+            "condition-current-down.POLYMARKET=0.0",
+            "--price-to-beat-source-output",
+            price_output.to_str().expect("price output should be utf-8"),
+            "--reference-quote-source-output",
+            quote_output.to_str().expect("quote output should be utf-8"),
+            "--realized-volatility-source-output",
+            vol_output.to_str().expect("vol output should be utf-8"),
+            "--fee-rate-source-output",
+            fee_output.to_str().expect("fee output should be utf-8"),
+        ])
+        .output()
+        .expect("entry-decision proof-source command should run");
+
+    assert!(
+        output.status.success(),
+        "expected entry-decision proof-source command to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("operator-approved-report-payload"),
+        "stdout must not print raw source report bytes: {stdout}"
+    );
+    let summary: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout summary should parse");
+    for (field, path) in [
+        ("price_to_beat_source", &price_output),
+        ("reference_quote_source", &quote_output),
+        ("realized_volatility_source", &vol_output),
+        ("fee_rate_source", &fee_output),
+    ] {
+        assert!(path.exists(), "{field} output should exist");
+        assert_eq!(
+            summary[field]["sha256"],
+            serde_json::json!(sha256_file_for_cli_test(path))
+        );
+    }
+}
+
+#[test]
 fn bolt_v3_static_operator_artifacts_command_fails_closed_on_abort_blocker() {
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(

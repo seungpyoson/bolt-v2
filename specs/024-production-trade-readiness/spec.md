@@ -18,6 +18,8 @@ This task list was rebuilt from current hard evidence, not from the stale active
 - `docs/bolt-v3/2026-05-23-pr388-t124-t128-root-problem-memos.md`.
 - Current readiness source inspection of `src/bolt_v3_operator_artifacts.rs` and `tests/bolt_v3_operator_artifacts.rs`.
 - Fetched branch `origin/t038-operator-config-snapshot` at `53c43608e74d7d8293c8830f57ed180d94bb7c5a`.
+- External T036H gate-architecture review recorded in `specs/024-production-trade-readiness/external-gate-architecture-review.md`.
+- Concrete T036H end-to-end gate contract recorded in `specs/024-production-trade-readiness/gate-dataflow-contract.md`.
 
 The command-level evidence is recorded in `specs/024-production-trade-readiness/evidence.md`.
 
@@ -63,6 +65,15 @@ As operator, I need T128/T130/T131/T122 and T116/T046 to run only after real art
 - **FR-006**: Runtime values must remain config-owned through TOML or operator evidence files.
 - **FR-007**: Do not claim production trade readiness from unit tests, fixture artifacts, static manifests, or historical no-submit reports.
 - **FR-008**: Run final exact-head CI and external review before approved live/no-submit/canary operations.
+- **FR-009**: Resolution/reference readiness gates must be market, venue, account, and provider agnostic: Chainlink, Pyth, Binance/index, venue-native, and no-resolution markets are selected by config and selected-market metadata, not by hardcoded archetype assumptions.
+- **FR-010**: Strategy archetypes may declare required gate roles/classes only; provider-specific feed ids, schema versions, decimal scales, freshness windows, endpoints, and credentials belong to TOML-owned gate provider/subscription config and provider validators.
+- **FR-011**: Dynamic market rotation must fail closed unless the selected market requirement, configured target subscription, provider capability, and evidence all match for the same selected market identity and gate role.
+- **FR-012**: Entry readiness must produce the validated gate/evidence session consumed by runtime strategy logic; strategy logic must not bypass readiness through a second unchecked provider path.
+- **FR-013**: The gate TOML schema must use root `[gate_providers.<id>]` blocks and per-target `[target.gate_subscriptions.<role>]` blocks; provider-specific fields are valid only under the matching gate provider block.
+- **FR-014**: Example strategy TOML and test fixtures must be migrated with the gate schema so shipped configs do not retain provider-specific runtime fields under archetype parameters.
+- **FR-015**: Decision evidence, tiny-canary evidence, CLI artifact commands, strategy registration, runtime strategy logic, and source replay must consume readiness-created gate sessions or normalized evidence identities; a provider-specific source string alone must not satisfy readiness.
+- **FR-016**: T036H implementation must follow the boundary contract in `specs/024-production-trade-readiness/gate-dataflow-contract.md`; any deviation requires a recorded disposition before code changes.
+- **FR-017**: Live-canary and final-packet readiness must bind the readiness gate session path and sha256 for every strategy instance with required gate roles; absence, hash mismatch, selected-market mismatch, stale evidence, or role mismatch must fail closed.
 
 ## Success Criteria
 
@@ -72,3 +83,7 @@ As operator, I need T128/T130/T131/T122 and T116/T046 to run only after real art
 - **SC-004**: T130 exact-head local verification, GitHub CI, and external review pass.
 - **SC-005**: T131/T122 final-packet EC2/EIP no-submit passes.
 - **SC-006**: T116/T046 tiny-capital canary passes after no-submit.
+- **SC-007**: T036H RED/GREEN coverage proves Chainlink is not globally required and proves mismatched or stale resolution/reference evidence cannot satisfy a rotated selected market.
+- **SC-008**: T036H RED/GREEN coverage proves the runtime strategy receives only a readiness-created gate session or normalized evidence object and cannot open a second unchecked provider path.
+- **SC-009**: T036H RED/GREEN coverage proves old `price_to_beat_source` string comparisons cannot satisfy decision evidence, tiny-canary evidence, or CLI final-packet readiness without the matching readiness session/evidence identity.
+- **SC-010**: T036H RED/GREEN coverage proves live-canary and final-packet verification reject required-role strategy instances unless the operator packet binds the matching gate session path and sha256.

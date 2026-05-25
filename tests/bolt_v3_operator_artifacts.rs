@@ -2742,6 +2742,59 @@ fn static_operator_artifacts_report_market_selection_blocker_until_runtime_proof
 }
 
 #[test]
+fn base_static_operator_artifacts_write_only_unblocked_static_inputs() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+
+    let outcome = bolt_v2::bolt_v3_operator_artifacts::write_base_static_operator_artifacts(
+        &loaded,
+        strategy_instance_id,
+        temp.path(),
+    )
+    .expect("base static artifacts should write without blocker semantics");
+
+    let generated_paths = outcome
+        .command_summary
+        .generated_artifacts
+        .iter()
+        .map(|artifact| std::path::PathBuf::from(&artifact.path))
+        .collect::<Vec<_>>();
+    for artifact_name in [
+        "ssm-manifest.json",
+        "financial-envelope.json",
+        "approval-nonce.json",
+    ] {
+        let artifact_path = temp.path().join(artifact_name);
+        assert!(
+            artifact_path.exists(),
+            "base static command should write {artifact_name}"
+        );
+        assert!(
+            generated_paths.contains(&artifact_path),
+            "summary should list {artifact_name}"
+        );
+    }
+    for artifact_name in [
+        "static-artifacts-manifest.json",
+        "strategy-input.json",
+        "pre-run-state.json",
+        "abort-plan.json",
+    ] {
+        assert!(
+            !temp.path().join(artifact_name).exists(),
+            "base static command must not write blocked artifact {artifact_name}"
+        );
+    }
+}
+
+#[test]
 fn static_operator_artifacts_validate_financial_envelope_before_first_write() {
     let loaded = load_fixture_with_live_canary();
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -5325,6 +5378,7 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
             601,
             3100.0,
             TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+            true,
         ),
     )
     .expect("report source should write");
@@ -5521,6 +5575,7 @@ fn entry_decision_proof_source_materializer_rejects_quote_and_volatility_outside
             601,
             3100.0,
             TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+            true,
         ),
     )
     .expect("report source should write");
@@ -10081,6 +10136,7 @@ fn chainlink_v3_report_source_json(
     observations_timestamp_seconds: u32,
     benchmark_price: f64,
     decimal_scale: u64,
+    include_hex_prefix: bool,
 ) -> Vec<u8> {
     let full_report = chainlink_v3_full_report_payload(
         feed_id,
@@ -10089,11 +10145,16 @@ fn chainlink_v3_report_source_json(
         benchmark_price,
         decimal_scale,
     );
+    let full_report_hex = if include_hex_prefix {
+        format!("0x{}", hex::encode(full_report))
+    } else {
+        hex::encode(full_report)
+    };
     serde_json::to_vec_pretty(&serde_json::json!({
         "feedID": feed_id,
         "validFromTimestamp": valid_from_timestamp_seconds,
         "observationsTimestamp": observations_timestamp_seconds,
-        "fullReport": hex::encode(full_report),
+        "fullReport": full_report_hex,
     }))
     .expect("Chainlink report source JSON should serialize")
 }

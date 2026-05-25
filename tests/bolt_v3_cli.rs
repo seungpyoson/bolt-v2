@@ -83,6 +83,25 @@ fn bolt_v3_cli_exposes_static_operator_artifacts_command() {
 }
 
 #[test]
+fn bolt_v3_cli_exposes_base_static_operator_artifacts_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args(["operator-artifacts", "generate-base-static", "--help"])
+        .output()
+        .expect("bolt-v3 base static operator artifacts help should run");
+
+    assert!(
+        output.status.success(),
+        "expected operator-artifacts generate-base-static help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--output-dir"));
+    assert!(stdout.contains("--strategy-instance-id"));
+}
+
+#[test]
 fn bolt_v3_cli_exposes_final_operator_packet_verifier_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args(["operator-artifacts", "verify-final", "--help"])
@@ -1043,6 +1062,101 @@ max_notional_per_order = "10.00"
         !output_dir.join("abort-plan.json").exists(),
         "fail-closed command must not write successful abort plan"
     );
+}
+
+#[test]
+fn bolt_v3_base_static_operator_artifacts_command_succeeds_without_blocker_manifest() {
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!(
+            "{root}\n{}",
+            r#"
+[live_canary]
+approval_id = "test-operator-approval"
+no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+max_no_submit_readiness_report_bytes = 1000000
+readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 30
+reference_quote_wait_timeout_seconds = 5
+reference_quote_probe_actor_id = "test-reference-probe"
+reference_quote_probe_log_events = false
+reference_quote_probe_log_commands = false
+max_live_order_count = 1
+max_notional_per_order = "10.00"
+"#
+        )
+    });
+    let output_dir = tempdir().expect("tempdir should create").keep();
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-base-static",
+            "--config",
+            config_path.to_str().expect("fixture path should be utf-8"),
+            "--output-dir",
+            output_dir.to_str().expect("output path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+        ])
+        .output()
+        .expect("bolt-v3 base static operator artifacts command should run");
+
+    assert!(
+        output.status.success(),
+        "expected base static command to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout_json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout summary should be JSON");
+    assert_eq!(
+        stdout_json
+            .as_object()
+            .expect("stdout should be an object")
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["generated_artifacts"]
+    );
+    for artifact_name in [
+        "ssm-manifest.json",
+        "financial-envelope.json",
+        "approval-nonce.json",
+    ] {
+        assert!(
+            output_dir.join(artifact_name).exists(),
+            "base static command should write {artifact_name}"
+        );
+        assert!(
+            stdout.contains(artifact_name),
+            "stdout should report generated artifact {artifact_name}: {stdout}"
+        );
+    }
+    for artifact_name in [
+        "static-artifacts-manifest.json",
+        "strategy-input.json",
+        "pre-run-state.json",
+        "abort-plan.json",
+    ] {
+        assert!(
+            !output_dir.join(artifact_name).exists(),
+            "base static command must not write blocked artifact {artifact_name}"
+        );
+    }
+    for forbidden in [
+        "/bolt/polymarket_main/private_key",
+        "/bolt/polymarket_main/api_key",
+        "/bolt/polymarket_main/api_secret",
+        "/bolt/polymarket_main/passphrase",
+        "/bolt/binance_reference/api_key",
+        "/bolt/binance_reference/api_secret",
+        "nonce_bytes",
+        "nonce_material",
+    ] {
+        assert!(
+            !stdout.contains(forbidden),
+            "stdout must not expose raw secret path or nonce material {forbidden}"
+        );
+    }
 }
 
 #[test]

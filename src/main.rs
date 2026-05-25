@@ -15,7 +15,7 @@ use bolt_v2::{
         compute_operator_approval_envelope_sha256,
         update_live_canary_operator_evidence_toml_from_json_file,
         verify_final_operator_packet_with_scope, write_abort_plan_artifact_from_source_bundle_file,
-        write_abort_plan_artifact_from_source_collectors,
+        write_abort_plan_artifact_from_source_collectors, write_base_static_operator_artifacts,
         write_entry_decision_evidence_from_source_file, write_entry_decision_proof_source_files,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_operator_evidence_json_from_artifact_paths,
@@ -85,6 +85,14 @@ enum SecretsCommand {
 #[derive(clap::Subcommand)]
 enum OperatorArtifactsCommand {
     GenerateStatic {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        output_dir: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+    },
+    GenerateBaseStatic {
         #[arg(short, long)]
         config: PathBuf,
         #[arg(long)]
@@ -425,6 +433,20 @@ fn run_operator_artifacts_command(
             if !outcome.blockers.is_empty() {
                 return Err(std::io::Error::other(outcome.blockers.join("; ")).into());
             }
+            Ok(())
+        }
+        OperatorArtifactsCommand::GenerateBaseStatic {
+            config,
+            output_dir,
+            strategy_instance_id,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let outcome =
+                write_base_static_operator_artifacts(&loaded, &strategy_instance_id, &output_dir)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&outcome.command_summary)?
+            );
             Ok(())
         }
         OperatorArtifactsCommand::AssembleFinal {

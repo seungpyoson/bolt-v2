@@ -338,6 +338,11 @@ pub struct BoltV3StaticArtifactsCommandSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BoltV3BaseStaticArtifactsCommandSummary {
+    pub generated_artifacts: Vec<BoltV3StaticArtifactSummaryRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3StaticArtifactSummaryRef {
     pub path: String,
     pub sha256: String,
@@ -439,6 +444,11 @@ pub struct BoltV3FinalOperatorPacketVerificationArtifactSummary {
 pub struct BoltV3StaticArtifactsWriteOutcome {
     pub command_summary: BoltV3StaticArtifactsCommandSummary,
     pub blockers: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3BaseStaticArtifactsWriteOutcome {
+    pub command_summary: BoltV3BaseStaticArtifactsCommandSummary,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -2890,8 +2900,12 @@ fn decode_price_to_beat_report(
     {
         return Err(price_to_beat_report_provenance_invalid());
     }
+    let full_report_hex = source
+        .full_report
+        .strip_prefix(CHAINLINK_FEED_ID_PREFIX)
+        .unwrap_or(source.full_report.as_str());
     let full_report =
-        hex::decode(&source.full_report).map_err(|_| price_to_beat_report_provenance_invalid())?;
+        hex::decode(full_report_hex).map_err(|_| price_to_beat_report_provenance_invalid())?;
     let report_blob = decode_chainlink_full_report_blob(&full_report)?;
     let decoded = decode_chainlink_v3_report_blob(&report_blob, binding)?;
     if decoded.feed_id != source.feed_id
@@ -6498,54 +6512,9 @@ pub fn write_static_operator_artifacts(
     strategy_instance_id: &str,
     output_dir: &Path,
 ) -> Result<BoltV3StaticArtifactsWriteOutcome, BoltV3OperatorArtifactError> {
-    let mut generated_artifacts = Vec::new();
-    let mut written_artifacts = Vec::new();
     let mut blockers = Vec::new();
-
-    let ssm_manifest = build_redacted_ssm_manifest(loaded)?;
-    let financial_envelope = build_phase8_financial_envelope(loaded, strategy_instance_id)
-        .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
-    let approval_nonce = build_approval_nonce_artifact()?;
-
-    let ssm_manifest_written =
-        write_json_artifact_create_new(&output_dir.join(SSM_MANIFEST_FILE_NAME), &ssm_manifest)?;
-    written_artifacts.push(ssm_manifest_written.clone());
-    generated_artifacts.push(static_artifact_ref(
-        SSM_MANIFEST_ARTIFACT_NAME,
-        ssm_manifest_written,
-    ));
-
-    let financial_envelope_written = match write_json_artifact_create_new(
-        &output_dir.join(FINANCIAL_ENVELOPE_FILE_NAME),
-        &financial_envelope,
-    ) {
-        Ok(written) => written,
-        Err(error) => {
-            remove_written_static_artifacts(&written_artifacts);
-            return Err(error);
-        }
-    };
-    written_artifacts.push(financial_envelope_written.clone());
-    generated_artifacts.push(static_artifact_ref(
-        FINANCIAL_ENVELOPE_ARTIFACT_NAME,
-        financial_envelope_written,
-    ));
-
-    let approval_nonce_written = match write_json_artifact_create_new(
-        &output_dir.join(APPROVAL_NONCE_FILE_NAME),
-        &approval_nonce,
-    ) {
-        Ok(written) => written,
-        Err(error) => {
-            remove_written_static_artifacts(&written_artifacts);
-            return Err(error);
-        }
-    };
-    written_artifacts.push(approval_nonce_written.clone());
-    generated_artifacts.push(static_artifact_ref(
-        APPROVAL_NONCE_ARTIFACT_NAME,
-        approval_nonce_written,
-    ));
+    let (mut generated_artifacts, mut written_artifacts) =
+        write_base_static_operator_artifact_refs(loaded, strategy_instance_id, output_dir)?;
 
     blockers.push(MARKET_SELECTION_SOURCE_BLOCKER);
 
@@ -6987,6 +6956,80 @@ fn static_artifact_ref_from_operator_evidence(
         path: configured_path.to_string(),
         sha256: configured_sha256.to_string(),
     })
+}
+
+pub fn write_base_static_operator_artifacts(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    output_dir: &Path,
+) -> Result<BoltV3BaseStaticArtifactsWriteOutcome, BoltV3OperatorArtifactError> {
+    let (generated_artifacts, _written_artifacts) =
+        write_base_static_operator_artifact_refs(loaded, strategy_instance_id, output_dir)?;
+    Ok(BoltV3BaseStaticArtifactsWriteOutcome {
+        command_summary: BoltV3BaseStaticArtifactsCommandSummary {
+            generated_artifacts: generated_artifacts
+                .iter()
+                .map(static_artifact_summary_ref)
+                .collect(),
+        },
+    })
+}
+
+fn write_base_static_operator_artifact_refs(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    output_dir: &Path,
+) -> Result<(Vec<BoltV3StaticArtifactRef>, Vec<WrittenOperatorArtifact>), BoltV3OperatorArtifactError>
+{
+    let mut generated_artifacts = Vec::new();
+    let mut written_artifacts = Vec::new();
+
+    let ssm_manifest = build_redacted_ssm_manifest(loaded)?;
+    let financial_envelope = build_phase8_financial_envelope(loaded, strategy_instance_id)
+        .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    let approval_nonce = build_approval_nonce_artifact()?;
+
+    let ssm_manifest_written =
+        write_json_artifact_create_new(&output_dir.join(SSM_MANIFEST_FILE_NAME), &ssm_manifest)?;
+    written_artifacts.push(ssm_manifest_written.clone());
+    generated_artifacts.push(static_artifact_ref(
+        SSM_MANIFEST_ARTIFACT_NAME,
+        ssm_manifest_written,
+    ));
+
+    let financial_envelope_written = match write_json_artifact_create_new(
+        &output_dir.join(FINANCIAL_ENVELOPE_FILE_NAME),
+        &financial_envelope,
+    ) {
+        Ok(written) => written,
+        Err(error) => {
+            remove_written_static_artifacts(&written_artifacts);
+            return Err(error);
+        }
+    };
+    written_artifacts.push(financial_envelope_written.clone());
+    generated_artifacts.push(static_artifact_ref(
+        FINANCIAL_ENVELOPE_ARTIFACT_NAME,
+        financial_envelope_written,
+    ));
+
+    let approval_nonce_written = match write_json_artifact_create_new(
+        &output_dir.join(APPROVAL_NONCE_FILE_NAME),
+        &approval_nonce,
+    ) {
+        Ok(written) => written,
+        Err(error) => {
+            remove_written_static_artifacts(&written_artifacts);
+            return Err(error);
+        }
+    };
+    written_artifacts.push(approval_nonce_written.clone());
+    generated_artifacts.push(static_artifact_ref(
+        APPROVAL_NONCE_ARTIFACT_NAME,
+        approval_nonce_written,
+    ));
+
+    Ok((generated_artifacts, written_artifacts))
 }
 
 fn remove_written_static_artifacts(written_artifacts: &[WrittenOperatorArtifact]) {

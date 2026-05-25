@@ -7449,6 +7449,30 @@ classification = "entry_decision_source_input_feed_id_shape"
 reason = "This is the fixed byte32 Chainlink feed-id hex length after the 0x prefix; the configured feed id remains TOML-owned."
 
 [[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"0x"'''
+context = '''const CHAINLINK_FEED_ID_PREFIX: &str = "0x";'''
+classification = "binary_oracle_price_to_beat_feed_id_shape"
+reason = "This is Chainlink feed-id hex syntax validation for the TOML-owned price-to-beat feed binding, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = "64"
+context = '''const CHAINLINK_FEED_ID_HEX_LENGTH: usize = 64;'''
+classification = "binary_oracle_price_to_beat_feed_id_shape"
+reason = "This is the fixed byte32 Chainlink feed-id hex length after the 0x prefix; the configured feed id remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = "16"
+context = '''const CHAINLINK_SYNTHETIC_FEED_ID_SEGMENT_HEX_LENGTH: usize = 16;'''
+classification = "binary_oracle_price_to_beat_placeholder_shape"
+reason = "This identifies repeated-segment synthetic feed-id placeholders so production readiness cannot pass with patterned test data."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
 kind = "string"
 literal = '''"up"'''

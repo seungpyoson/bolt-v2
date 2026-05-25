@@ -393,6 +393,82 @@ fn bolt_v3_strategy_oms_type_accepts_nt_variants() {
 }
 
 #[test]
+fn binary_oracle_strategy_rejects_placeholder_price_to_beat_feed_id() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace(
+        "price_to_beat_feed_id = \"0x01a3f5c7e9b2d4f6081a3c5e7f90b2d406284a6c8e0f123456789abcdeffedcb\"",
+        "price_to_beat_feed_id = \"0x1111111111111111111111111111111111111111111111111111111111111111\"",
+    );
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&strategy_toml).expect("strategy fixture should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.runtime.price_to_beat_feed_id")
+                && message.contains("placeholder")
+        }),
+        "placeholder Chainlink feed id must fail live readiness validation: {messages:#?}"
+    );
+}
+
+#[test]
+fn binary_oracle_strategy_rejects_repeated_segment_price_to_beat_feed_id() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace(
+        "price_to_beat_feed_id = \"0x01a3f5c7e9b2d4f6081a3c5e7f90b2d406284a6c8e0f123456789abcdeffedcb\"",
+        "price_to_beat_feed_id = \"0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"",
+    );
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&strategy_toml).expect("strategy fixture should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.runtime.price_to_beat_feed_id")
+                && message.contains("placeholder")
+        }),
+        "repeated-segment Chainlink feed id must fail live readiness validation: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_strategy_execution_client_id_rejects_data_only_client_with_client_vocabulary() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
@@ -3514,6 +3590,41 @@ fn shipped_binary_oracle_example_uses_supported_strategy_schema_version() {
     .expect("example strategy should parse");
 
     assert_eq!(strategy.schema_version, SUPPORTED_STRATEGY_SCHEMA_VERSION);
+}
+
+#[test]
+fn shipped_binary_oracle_example_keeps_price_to_beat_placeholder_fail_closed() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let strategy: BoltV3StrategyConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path(
+            "config/strategies/binary_oracle.example.toml",
+        ))
+        .expect("example strategy should be readable"),
+    )
+    .expect("example strategy should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("config/strategies/binary_oracle.example.toml"),
+        relative_path: "strategies/binary_oracle.example.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.runtime.price_to_beat_feed_id")
+                && message.contains("placeholder")
+        }),
+        "shipped operator example must stay fail-closed until a real feed id is provided: {messages:#?}"
+    );
 }
 
 fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {

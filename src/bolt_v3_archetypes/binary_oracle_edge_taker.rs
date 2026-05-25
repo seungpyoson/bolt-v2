@@ -62,6 +62,9 @@ use crate::{
 };
 
 pub const KEY: &str = STRATEGY_KIND;
+const CHAINLINK_FEED_ID_PREFIX: &str = "0x";
+const CHAINLINK_FEED_ID_HEX_LENGTH: usize = 64;
+const CHAINLINK_SYNTHETIC_FEED_ID_SEGMENT_HEX_LENGTH: usize = 16;
 
 pub fn validation_binding() -> ArchetypeValidationBinding {
     ArchetypeValidationBinding {
@@ -897,8 +900,77 @@ fn validate_parameter_bounds(
             "{context}: parameters.order_notional_target ({order_target}) must be <= root risk.default_max_notional_per_order ({default_max})"
         ));
     }
+    errors.extend(validate_price_to_beat_report_config(
+        context,
+        &parameters.runtime,
+    ));
 
     errors
+}
+
+fn validate_price_to_beat_report_config(
+    context: &str,
+    runtime: &RuntimeParametersBlock,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if !is_lowercase_chainlink_feed_id(&runtime.price_to_beat_feed_id) {
+        errors.push(format!(
+            "{context}: parameters.runtime.price_to_beat_feed_id must be a lowercase Chainlink bytes32 feed id with `0x` prefix"
+        ));
+    } else if is_placeholder_chainlink_feed_id(&runtime.price_to_beat_feed_id) {
+        errors.push(format!(
+            "{context}: parameters.runtime.price_to_beat_feed_id must not be a placeholder feed id"
+        ));
+    }
+    if runtime.price_to_beat_report_schema_version == 0 {
+        errors.push(format!(
+            "{context}: parameters.runtime.price_to_beat_report_schema_version must be a positive integer"
+        ));
+    }
+    if runtime.price_to_beat_report_decimal_scale == 0 {
+        errors.push(format!(
+            "{context}: parameters.runtime.price_to_beat_report_decimal_scale must be a positive integer"
+        ));
+    }
+    errors
+}
+
+fn is_lowercase_chainlink_feed_id(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix(CHAINLINK_FEED_ID_PREFIX) else {
+        return false;
+    };
+    hex.len() == CHAINLINK_FEED_ID_HEX_LENGTH
+        && hex
+            .chars()
+            .all(|char| matches!(char, '0'..='9' | 'a'..='f'))
+}
+
+fn is_placeholder_chainlink_feed_id(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix(CHAINLINK_FEED_ID_PREFIX) else {
+        return false;
+    };
+    let mut chars = hex.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    chars.all(|char| char == first)
+        || is_repeated_hex_segment(hex, CHAINLINK_SYNTHETIC_FEED_ID_SEGMENT_HEX_LENGTH)
+}
+
+fn is_repeated_hex_segment(hex: &str, segment_len: usize) -> bool {
+    let minimum_repeated_len = segment_len.saturating_add(segment_len);
+    if segment_len == 0
+        || hex.len() < minimum_repeated_len
+        || !hex.len().is_multiple_of(segment_len)
+    {
+        return false;
+    }
+    let Some(first_segment) = hex.get(..segment_len) else {
+        return false;
+    };
+    hex.as_bytes()
+        .chunks(segment_len)
+        .all(|segment| segment == first_segment.as_bytes())
 }
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {

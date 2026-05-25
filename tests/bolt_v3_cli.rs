@@ -795,7 +795,7 @@ max_notional_per_order = "10.00"
     });
     let report_path = temp.path().join("chainlink-report.bin");
     let report_source = chainlink_v3_report_source_json(
-        "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "0x01a3f5c7e9b2d4f6081a3c5e7f90b2d406284a6c8e0f123456789abcdeffedcb",
         600,
         601,
         3100.0,

@@ -607,6 +607,33 @@ This was an approved AWS/SSM operational side effect limited to public egress id
 
 T036G is open. The final packet cannot be assembled honestly until the approved configured account can prove zero open positions, or `config/live.local.toml` is switched to an operator-approved account that proves flat through the same materializer. No submit/cancel/transfer/no-submit action was run by this check.
 
+## Current-Head Non-Blocked Artifact Refresh And Early T039 Sweep
+
+At head `2a89f1e7c3a2ca0b6e52b39b1a70a03dcf3b6080`, before any final-packet assembly, the non-blocked T036 source/base artifacts were refreshed into `/private/tmp/bolt-v2-t036-current-ZgN0lc`:
+
+- `operator-artifacts generate-base-static --config config/live.local.toml --output-dir /private/tmp/bolt-v2-t036-current-ZgN0lc/base-static --strategy-instance-id bitcoin_updown_main` passed and wrote:
+  - `base-static/ssm-manifest.json`: `cd4aaf74afab10e168898ecb7718b638a11296906f89825b1b4f35df44861f1c`
+  - `base-static/financial-envelope.json`: `0fe8aef150af7156ece1db2c2b8b0c738a51352dd4837ba4eb7d13e0469cd253`
+  - `base-static/approval-nonce.json`: `29dfff73adbdf3d3f9a5447d4667d49e4d660346407c4dea63b3fbcbec4b415d`
+- `operator-artifacts collect-pre-run-host-clock-source --config config/live.local.toml --strategy-instance-id bitcoin_updown_main --output /private/tmp/bolt-v2-t036-current-ZgN0lc/host-clock-source.json` passed and wrote `host-clock-source.json`: `cb72b2a2874f284fa044ab4008c89ebc61cb66ae29178467ff41e57ca6fdceb6`.
+- `operator-artifacts collect-pre-run-egress-identity-source --config config/live.local.toml --strategy-instance-id bitcoin_updown_main --output /private/tmp/bolt-v2-t036-current-ZgN0lc/egress-identity-source.json` passed and wrote `egress-identity-source.json`: `5c31068483ec5cfd0cd39c451001c8a7f16ce52a4669905823f39e3b118df572`.
+- `operator-artifacts collect-pre-run-clob-v2-adapter-signing-source --cargo-toml Cargo.toml --cargo-lock Cargo.lock --clob-signing-source /Users/spson/.cargo/git/checkouts/nautilus_trader-3c6af4345b4d438b/7c2aafb/crates/adapters/polymarket/src/signing/eip712.rs --max-source-bytes 200000 --output /private/tmp/bolt-v2-t036-current-ZgN0lc/clob-v2-adapter-signing-source.json` passed and wrote `clob-v2-adapter-signing-source.json`: `fe4feef3cd747d7c186ae6986a12cc9764cbf15bd0924496aac64e6b6458e548`.
+- `operator-artifacts collect-pre-run-clob-v2-fee-behavior-source --nt-execution-parse-source /Users/spson/.cargo/git/checkouts/nautilus_trader-3c6af4345b4d438b/7c2aafb/crates/adapters/polymarket/src/execution/parse.rs --nt-http-parse-source /Users/spson/.cargo/git/checkouts/nautilus_trader-3c6af4345b4d438b/7c2aafb/crates/adapters/polymarket/src/http/parse.rs --max-source-bytes 200000 --output /private/tmp/bolt-v2-t036-current-ZgN0lc/clob-v2-fee-behavior-source.json` passed and wrote `clob-v2-fee-behavior-source.json`: `d290cb10b60a13b9dcead481689658c78fd2996f13c166498d23678c00fc1da5`.
+
+These artifacts are current-head prerequisite evidence only. They do not close T036 because T036G venue-account flatness remains blocked, the current ignored root config does not yet provide the operator-approved entry-decision proof-source inputs needed by `collect-entry-decision-proof-sources`, funding/collateral source materializers still require the real fee-rate source artifact, and T037/T038 are not complete.
+
+Early T039 focused readiness sweep at the same head:
+
+`cargo test --test bolt_v3_operator_artifacts --test bolt_v3_tiny_canary_preconditions --test bolt_v3_tiny_canary_operator --test bolt_v3_live_canary_gate --test bolt_v3_cli -- --nocapture`
+
+- `tests/bolt_v3_cli.rs`: 37 passed, 0 failed.
+- `tests/bolt_v3_live_canary_gate.rs`: 68 passed, 0 failed.
+- `tests/bolt_v3_operator_artifacts.rs`: 174 passed, 0 failed.
+- `tests/bolt_v3_tiny_canary_operator.rs`: 31 passed, 0 failed, 1 ignored.
+- `tests/bolt_v3_tiny_canary_preconditions.rs`: 63 passed, 0 failed.
+
+This sweep is current-head regression evidence only. Formal T039 remains open until T038 final-packet verification exists, per the task dependency graph in `tasks.md`.
+
 ## T041 Exact-Head CI Compile Repair
 
 - PR #480 CI on head `41cf8be09b01afa56887df072f49d7af95f9a2ef` failed in `nextest archive` while running `cargo test --no-run --message-format json-render-diagnostics --locked`.

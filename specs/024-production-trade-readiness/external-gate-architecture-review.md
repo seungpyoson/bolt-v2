@@ -150,3 +150,21 @@ Revision applied after Round 5:
 - `gate-dataflow-contract.md` now defines flat tagged canonical provider provenance JSON for Chainlink Data Streams, Pyth, Binance index, venue-native, and test-double provenance before hashing to `provider_provenance_sha256`.
 - `gate-dataflow-contract.md` now makes `normalized_value_scale` a JSON number in the session hash example.
 - `tasks.md` T036H4 now explicitly requires RED coverage for rejecting `|` in selected-market key components.
+
+## Contract Review Round 6
+
+The Round 5 follow-up patch was committed as `2f95b2c4a894e13012c5fc3a0ee2bfadbae0b591` and sent for exact-delta review against `3378c0965740658b9f655045827eb64b8449019e..2f95b2c4a894e13012c5fc3a0ee2bfadbae0b591`.
+
+- Claude Code job `f5ae5d77-6378-4053-b21e-76f5ed6ad295`: APPROVE.
+- Gemini job `e746dea2-4574-4ddc-8ee7-4d834fd1a79d`: APPROVE.
+- DeepSeek job `job_17a25ce8-6022-424c-9751-6373c3f3a1a1`: APPROVE.
+- GLM job `job_603fdd23-4914-455c-9dd1-d2fd249ce37e`: APPROVE.
+- Grok branch-diff job `job_2be6f5b9-ffc3-425a-9540-3cef54483d90`: APPROVE.
+
+Non-blocking Round 6 dispositions:
+
+- Numeric provider provenance examples use concrete JSON numbers intentionally to prove schema and scale fields are JSON numbers, not strings.
+- `normalized_value_decimal` remains a string intentionally because the session canonicalization rule says runtime decimal numbers are rendered as strings.
+- `provider_provenance_sha256` inherits the existing lowercase hex SHA-256 and UTF-8 canonical JSON convention from the session hash canonicalization section.
+- `|` rejection is already normative in the selected-market fail-closed contract and is also required by T036H4 RED coverage.
+- Provider-kind closure is intentional; adding a new external provider kind requires a contract update before implementation can depend on it.

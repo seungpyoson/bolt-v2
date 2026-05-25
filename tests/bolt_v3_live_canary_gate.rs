@@ -72,6 +72,9 @@ async fn live_canary_gate_rejects_empty_approval_id() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -104,6 +107,9 @@ async fn live_canary_gate_rejects_empty_readiness_report_path() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -136,6 +142,9 @@ async fn live_canary_gate_rejects_parent_dir_readiness_report_path() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -175,6 +184,9 @@ async fn live_canary_gate_rejects_missing_operator_evidence_before_reading_repor
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: None,
         },
     );
@@ -209,6 +221,9 @@ async fn live_canary_gate_rejects_parent_dir_operator_evidence_path() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -250,6 +265,9 @@ async fn live_canary_gate_rejects_parent_dir_strategy_cancel_path() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -291,6 +309,9 @@ async fn live_canary_gate_rejects_malformed_operator_evidence_hash_shape() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -331,6 +352,9 @@ async fn live_canary_gate_rejects_uppercase_operator_evidence_hash_shape() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -373,6 +397,9 @@ async fn live_canary_gate_rejects_operator_evidence_file_hash_mismatch() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -416,6 +443,9 @@ async fn live_canary_gate_rejects_approval_envelope_hash_mismatch() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -483,6 +513,9 @@ async fn live_canary_gate_rejects_approval_envelope_circular_fields() {
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
                 reference_quote_probe_log_commands: true,
+                egress_identity_observed_path: None,
+                egress_identity_observed_max_bytes: None,
+                approved_egress_identity_sha256: None,
                 operator_evidence: Some(operator_evidence),
             },
         );
@@ -533,6 +566,9 @@ async fn live_canary_gate_rejects_approval_envelope_toml_drift_after_hash_match(
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -572,6 +608,9 @@ async fn live_canary_gate_accepts_non_circular_approval_envelope_schema() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -610,6 +649,9 @@ async fn live_canary_gate_rejects_approval_consumption_hash_mismatch() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -661,6 +703,9 @@ async fn live_canary_gate_rejects_approval_consumption_strategy_cancel_path_hash
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -704,6 +749,9 @@ async fn live_canary_gate_rejects_approval_consumption_missing_head_sha() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -748,6 +796,9 @@ async fn live_canary_gate_rejects_approval_consumption_head_sha_mismatch() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -792,6 +843,9 @@ async fn live_canary_gate_rejects_stale_self_consistent_head_sha() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -836,6 +890,9 @@ async fn live_canary_gate_rejects_malformed_operator_evidence_head_sha() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -899,6 +956,9 @@ async fn live_canary_gate_rejects_approval_consumption_root_toml_sha256_mismatch
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -948,6 +1008,9 @@ async fn live_canary_gate_rejects_stale_approval_consumption_beyond_configured_m
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1171,6 +1234,9 @@ async fn live_canary_gate_rejects_symlinked_readiness_report_path() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1209,6 +1275,9 @@ async fn live_canary_gate_rejects_zero_order_count() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1244,6 +1313,9 @@ async fn live_canary_gate_rejects_zero_report_byte_cap() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1279,6 +1351,9 @@ async fn live_canary_gate_rejects_zero_readiness_report_max_age() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1315,6 +1390,9 @@ async fn live_canary_gate_rejects_zero_reference_quote_max_age() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1351,6 +1429,9 @@ async fn live_canary_gate_rejects_zero_reference_quote_wait_timeout() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1387,6 +1468,9 @@ async fn live_canary_gate_rejects_blank_reference_quote_probe_actor_id() {
             reference_quote_probe_actor_id: " ".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1428,6 +1512,9 @@ async fn live_canary_gate_rejects_malformed_reference_quote_probe_actor_id() {
                 reference_quote_probe_actor_id: actor_id.to_string(),
                 reference_quote_probe_log_events: true,
                 reference_quote_probe_log_commands: true,
+                egress_identity_observed_path: None,
+                egress_identity_observed_max_bytes: None,
+                approved_egress_identity_sha256: None,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -1511,6 +1598,9 @@ async fn live_canary_gate_rejects_invalid_canary_notional_values() {
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
                 reference_quote_probe_log_commands: true,
+                egress_identity_observed_path: None,
+                egress_identity_observed_max_bytes: None,
+                approved_egress_identity_sha256: None,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -1551,6 +1641,9 @@ async fn live_canary_gate_rejects_invalid_root_notional_values() {
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
                 reference_quote_probe_log_commands: true,
+                egress_identity_observed_path: None,
+                egress_identity_observed_max_bytes: None,
+                approved_egress_identity_sha256: None,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -1592,6 +1685,9 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1636,6 +1732,9 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1671,6 +1770,9 @@ async fn live_canary_gate_rejects_report_expired_at_late_gate_timestamp() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence_for_window(
                 now as i64 - 10,
                 now as i64 + 3600,
@@ -1717,6 +1819,9 @@ async fn live_canary_gate_rejects_operator_window_expired_at_gate_timestamp() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence_for_window(
                 now as i64 - 120,
                 now as i64 - 60,
@@ -1850,6 +1955,9 @@ async fn live_canary_gate_rejects_operator_evidence_window_without_positive_dura
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1895,6 +2003,9 @@ async fn live_canary_gate_rejects_operator_evidence_window_before_current_time()
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1941,6 +2052,9 @@ async fn live_canary_gate_rejects_operator_evidence_window_after_current_time() 
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1989,6 +2103,9 @@ async fn live_canary_gate_rejects_stale_no_submit_linkage_fields() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2040,6 +2157,9 @@ async fn live_canary_gate_rejects_no_submit_report_missing_generated_at() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2083,6 +2203,9 @@ async fn live_canary_gate_rejects_expired_no_submit_report() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2125,6 +2248,9 @@ async fn live_canary_gate_uses_toml_owned_readiness_report_max_age_seconds() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2186,6 +2312,9 @@ async fn live_canary_gate_rejects_missing_wrong_or_non_string_schema_version() {
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
                 reference_quote_probe_log_commands: true,
+                egress_identity_observed_path: None,
+                egress_identity_observed_max_bytes: None,
+                approved_egress_identity_sha256: None,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -2226,6 +2355,9 @@ async fn live_canary_gate_rejects_notional_above_root_risk_cap() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2264,6 +2396,9 @@ async fn live_canary_gate_rejects_empty_stage_report() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2304,6 +2439,9 @@ async fn live_canary_gate_rejects_report_missing_stages_key() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2346,6 +2484,9 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2388,6 +2529,9 @@ async fn live_canary_gate_reports_each_unsatisfied_required_stage_once() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2431,6 +2575,9 @@ async fn live_canary_gate_rejects_missing_no_submit_report() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2467,6 +2614,9 @@ async fn live_canary_gate_rejects_malformed_no_submit_report_json() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2508,6 +2658,9 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2538,6 +2691,9 @@ async fn live_canary_gate_rejects_no_submit_report_above_configured_byte_cap() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2577,6 +2733,9 @@ async fn live_canary_gate_distinguishes_non_object_report_from_missing_stages() 
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2625,6 +2784,9 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2667,6 +2829,9 @@ async fn live_canary_gate_rejects_name_only_stage_field() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2723,6 +2888,9 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2786,6 +2954,9 @@ async fn check_operator_evidence_rejection(
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: Some(operator_evidence),
         },
     );

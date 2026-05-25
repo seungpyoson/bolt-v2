@@ -100,6 +100,9 @@ reference_quote_probe_log_events = true
 reference_quote_probe_log_commands = true
 max_live_order_count = 1
 max_notional_per_order = "1.00"
+egress_identity_observed_path = "/var/lib/bolt/operator-evidence/egress-identity-observed.txt"
+egress_identity_observed_max_bytes = 1024
+approved_egress_identity_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
 
 [live_canary.operator_evidence]
 head_sha = "0123456789abcdef0123456789abcdef01234567"
@@ -115,8 +118,6 @@ financial_envelope_path = "/var/lib/bolt/operator-evidence/financial-envelope.js
 financial_envelope_sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 pre_run_state_path = "/var/lib/bolt/operator-evidence/pre-run-state.json"
 pre_run_state_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-egress_identity_observed_path = "/var/lib/bolt/operator-evidence/egress-identity-observed.txt"
-approved_egress_identity_sha256 = "1111111111111111111111111111111111111111111111111111111111111111"
 abort_plan_path = "/var/lib/bolt/operator-evidence/abort-plan.json"
 abort_plan_sha256 = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 canary_evidence_path = "/var/lib/bolt/operator-evidence/canary-evidence.json"

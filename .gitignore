@@ -1,6 +1,7 @@
 /target
 config/live.toml
 config/live.local.toml
+config/strategies/*.local.toml
 /*_[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]_*.log
 var/logs/
 /tmp_tests/*.log

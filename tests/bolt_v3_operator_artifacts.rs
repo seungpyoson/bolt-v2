@@ -8994,6 +8994,9 @@ fn load_fixture_with_live_canary() -> bolt_v2::bolt_v3_config::LoadedBoltV3Confi
         reference_quote_probe_log_commands: false,
         max_live_order_count: 1,
         max_notional_per_order: loaded.root.risk.default_max_notional_per_order.clone(),
+        egress_identity_observed_path: None,
+        egress_identity_observed_max_bytes: None,
+        approved_egress_identity_sha256: None,
         operator_evidence: None,
     });
     loaded
@@ -9883,8 +9886,6 @@ fn test_operator_evidence_packet_bindings(
         financial_envelope_sha256: String::new(),
         pre_run_state_path: dir.join("pre-run-state.json").to_string_lossy().to_string(),
         pre_run_state_sha256: String::new(),
-        egress_identity_observed_path: None,
-        approved_egress_identity_sha256: None,
         abort_plan_path: dir.join("abort-plan.json").to_string_lossy().to_string(),
         abort_plan_sha256: String::new(),
         canary_evidence_path: dir

@@ -5115,15 +5115,12 @@ pub fn write_pre_run_egress_identity_source_artifact_from_configured_probe(
             },
         );
     }
-    let operator_evidence = loaded
+    let live_canary = loaded
         .root
         .live_canary
         .as_ref()
-        .ok_or(BoltV3OperatorArtifactError::MissingLiveCanary)?
-        .operator_evidence
-        .as_ref()
-        .ok_or(BoltV3OperatorArtifactError::MissingOperatorEvidence)?;
-    let observed_path = operator_evidence
+        .ok_or(BoltV3OperatorArtifactError::MissingLiveCanary)?;
+    let observed_path = live_canary
         .egress_identity_observed_path
         .as_deref()
         .filter(|value| !value.trim().is_empty())
@@ -5132,7 +5129,7 @@ pub fn write_pre_run_egress_identity_source_artifact_from_configured_probe(
                 field: stringify!(egress_identity_observed_path),
             },
         )?;
-    let approved_egress_identity_sha256 = operator_evidence
+    let approved_egress_identity_sha256 = live_canary
         .approved_egress_identity_sha256
         .as_deref()
         .filter(|value| is_lowercase_sha256(value))
@@ -5141,17 +5138,22 @@ pub fn write_pre_run_egress_identity_source_artifact_from_configured_probe(
                 field: stringify!(approved_egress_identity_sha256),
             },
         )?;
+    let max_egress_identity_observed_bytes = live_canary
+        .egress_identity_observed_max_bytes
+        .filter(|value| std::num::NonZeroU64::new(*value).is_some())
+        .ok_or(
+            BoltV3OperatorArtifactError::PreRunEgressIdentitySourceInvalid {
+                field: stringify!(egress_identity_observed_max_bytes),
+            },
+        )?;
     let resolved_observed_path = resolve_loaded_config_path(loaded, observed_path);
-    let observed_identity_bytes = read_file_bounded(
-        &resolved_observed_path,
-        operator_evidence.max_operator_evidence_file_bytes,
-    )
-    .map_err(
-        |source| BoltV3OperatorArtifactError::PreRunEgressIdentitySourceRead {
-            path: resolved_observed_path,
-            source,
-        },
-    )?;
+    let observed_identity_bytes =
+        read_file_bounded(&resolved_observed_path, max_egress_identity_observed_bytes).map_err(
+            |source| BoltV3OperatorArtifactError::PreRunEgressIdentitySourceRead {
+                path: resolved_observed_path,
+                source,
+            },
+        )?;
     let observed_identity = std::str::from_utf8(&observed_identity_bytes)
         .map_err(
             |_| BoltV3OperatorArtifactError::PreRunEgressIdentitySourceInvalid {
@@ -7358,8 +7360,6 @@ pub fn write_operator_evidence_json_from_artifact_paths(
             inputs.pre_run_state_path,
             max_bytes,
         )?,
-        egress_identity_observed_path: None,
-        approved_egress_identity_sha256: None,
         abort_plan_path: operator_evidence_path_string(inputs.abort_plan_path),
         abort_plan_sha256: operator_evidence_artifact_sha256(
             loaded,
@@ -9617,14 +9617,6 @@ fn validate_live_canary_operator_evidence_toml_patch(
     ] {
         validate_operator_evidence_sha256(field, value)?;
     }
-    if let Some(approved_egress_identity_sha256) =
-        evidence.approved_egress_identity_sha256.as_deref()
-    {
-        validate_operator_evidence_sha256(
-            stringify!(approved_egress_identity_sha256),
-            approved_egress_identity_sha256,
-        )?;
-    }
     for (field, value) in [
         (
             "approval_envelope_path",
@@ -9675,12 +9667,6 @@ fn validate_live_canary_operator_evidence_toml_patch(
     }
     if let Some(strategy_cancel_path) = evidence.strategy_cancel_path.as_deref() {
         validate_operator_evidence_toml_path("strategy_cancel_path", strategy_cancel_path)?;
-    }
-    if let Some(egress_identity_observed_path) = evidence.egress_identity_observed_path.as_deref() {
-        validate_operator_evidence_toml_path(
-            stringify!(egress_identity_observed_path),
-            egress_identity_observed_path,
-        )?;
     }
     Ok(())
 }

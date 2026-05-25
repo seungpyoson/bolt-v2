@@ -893,19 +893,15 @@ fn bolt_v3_cli_collects_egress_identity_source_from_configured_probe() {
     fs::write(&observed_identity_path, observed_identity)
         .expect("observed egress identity probe source should write");
 
-    let mut operator_evidence = valid_live_canary_operator_evidence();
-    operator_evidence.egress_identity_observed_path = Some(
-        observed_identity_path
-            .to_str()
-            .expect("probe path should be utf-8")
-            .to_string(),
-    );
-    operator_evidence.approved_egress_identity_sha256 =
-        Some(approved_egress_identity_sha256.clone());
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
             "{root}\n{}",
-            live_canary_with_operator_evidence_toml(&operator_evidence)
+            live_canary_with_egress_identity_toml(
+                observed_identity_path
+                    .to_str()
+                    .expect("probe path should be utf-8"),
+                &approved_egress_identity_sha256,
+            )
         )
     });
     let output_path = temp.path().join("egress-identity-source.json");
@@ -951,6 +947,57 @@ fn bolt_v3_cli_collects_egress_identity_source_from_configured_probe() {
     assert_eq!(
         json["approved_egress_identity_sha256"],
         approved_egress_identity_sha256
+    );
+}
+
+#[test]
+fn bolt_v3_cli_collects_egress_identity_source_before_operator_evidence_patch() {
+    let temp = tempdir().expect("tempdir should create");
+    let observed_identity = "198.51.100.23\n";
+    let normalized_identity = observed_identity.trim();
+    let approved_egress_identity_sha256 =
+        hex::encode(Sha256::digest(normalized_identity.as_bytes()));
+    let observed_identity_path = temp.path().join("observed-egress-identity.txt");
+    fs::write(&observed_identity_path, observed_identity)
+        .expect("observed egress identity probe source should write");
+
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!(
+            "{root}\n{}",
+            live_canary_with_egress_identity_toml(
+                observed_identity_path
+                    .to_str()
+                    .expect("probe path should be utf-8"),
+                &approved_egress_identity_sha256,
+            )
+        )
+    });
+    let output_path = temp.path().join("egress-identity-source.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-pre-run-egress-identity-source",
+            "--config",
+            config_path.to_str().expect("fixture path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+            "--output",
+            output_path.to_str().expect("output path should be utf-8"),
+        ])
+        .output()
+        .expect("bolt-v3 egress identity source collection should run");
+
+    assert!(
+        output.status.success(),
+        "expected egress identity source collection before operator evidence patch to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf-8");
+    assert!(!stdout.contains(normalized_identity), "{stdout}");
+    assert!(
+        output_path.exists(),
+        "egress source artifact should be written"
     );
 }
 
@@ -2394,6 +2441,33 @@ max_notional_per_order = "10.00"
 "#
 }
 
+fn live_canary_with_egress_identity_toml(
+    observed_identity_path: &str,
+    approved_egress_identity_sha256: &str,
+) -> String {
+    format!(
+        r#"
+[live_canary]
+approval_id = "operator-approved-canary-001"
+no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+max_no_submit_readiness_report_bytes = 1000000
+readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 30
+reference_quote_wait_timeout_seconds = 5
+reference_quote_probe_actor_id = "test-reference-probe"
+reference_quote_probe_log_events = false
+reference_quote_probe_log_commands = false
+max_live_order_count = 1
+max_notional_per_order = "10.00"
+egress_identity_observed_path = "{}"
+egress_identity_observed_max_bytes = 1024
+approved_egress_identity_sha256 = "{}"
+"#,
+        toml_string(observed_identity_path),
+        toml_string(approved_egress_identity_sha256),
+    )
+}
+
 fn live_canary_with_operator_evidence_toml(evidence: &LiveCanaryOperatorEvidenceBlock) -> String {
     format!(
         r#"
@@ -2424,7 +2498,6 @@ financial_envelope_path = "{financial_envelope_path}"
 financial_envelope_sha256 = "{financial_envelope_sha256}"
 pre_run_state_path = "{pre_run_state_path}"
 pre_run_state_sha256 = "{pre_run_state_sha256}"
-{egress_identity_observed_path_toml}{approved_egress_identity_sha256_toml}
 abort_plan_path = "{abort_plan_path}"
 abort_plan_sha256 = "{abort_plan_sha256}"
 canary_evidence_path = "{canary_evidence_path}"
@@ -2453,14 +2526,6 @@ post_run_hygiene_path = "{post_run_hygiene_path}"
         financial_envelope_sha256 = toml_string(&evidence.financial_envelope_sha256),
         pre_run_state_path = toml_string(&evidence.pre_run_state_path),
         pre_run_state_sha256 = toml_string(&evidence.pre_run_state_sha256),
-        egress_identity_observed_path_toml = optional_live_canary_operator_evidence_field_toml(
-            "egress_identity_observed_path",
-            evidence.egress_identity_observed_path.as_deref(),
-        ),
-        approved_egress_identity_sha256_toml = optional_live_canary_operator_evidence_field_toml(
-            "approved_egress_identity_sha256",
-            evidence.approved_egress_identity_sha256.as_deref(),
-        ),
         abort_plan_path = toml_string(&evidence.abort_plan_path),
         abort_plan_sha256 = toml_string(&evidence.abort_plan_sha256),
         canary_evidence_path = toml_string(&evidence.canary_evidence_path),
@@ -2481,12 +2546,6 @@ post_run_hygiene_path = "{post_run_hygiene_path}"
         restart_reconciliation_path = toml_string(&evidence.restart_reconciliation_path),
         post_run_hygiene_path = toml_string(&evidence.post_run_hygiene_path),
     )
-}
-
-fn optional_live_canary_operator_evidence_field_toml(field: &str, value: Option<&str>) -> String {
-    value
-        .map(|value| format!(r#"{field} = "{}""#, toml_string(value)) + "\n")
-        .unwrap_or_default()
 }
 
 fn toml_string(value: &str) -> String {

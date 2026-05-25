@@ -221,6 +221,30 @@ fn bolt_v3_operator_evidence_allows_unassigned_order_ids() {
 }
 
 #[test]
+fn bolt_v3_operator_evidence_rejects_pre_run_egress_probe_inputs() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+
+    let example = std::fs::read_to_string(support::repo_path("config/root.example.toml"))
+        .expect("root example should be readable");
+    let with_operator_evidence_probe_inputs = example.replace(
+        "[live_canary.operator_evidence]\n",
+        concat!(
+            "[live_canary.operator_evidence]\n",
+            "egress_identity_observed_path = \"/var/lib/bolt/operator-evidence/egress-identity-observed.txt\"\n",
+            "approved_egress_identity_sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"\n",
+        ),
+    );
+
+    let error = toml::from_str::<BoltV3RootConfig>(&with_operator_evidence_probe_inputs)
+        .expect_err("pre-run egress probe inputs must not be accepted in operator evidence");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("unknown field"),
+        "operator-evidence egress probe input rejection should come from deny_unknown_fields, got: {rendered}"
+    );
+}
+
+#[test]
 fn bolt_v3_reference_data_instrument_id_uses_nt_typed_identifier() {
     // `ReferenceDataBlock.instrument_id` is typed as
     // `nautilus_model::identifiers::InstrumentId`. The strategy block is

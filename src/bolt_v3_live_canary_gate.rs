@@ -838,22 +838,6 @@ async fn validate_operator_evidence(
             return Err(BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape { field });
         }
     }
-    if let Some(approved_egress_identity_sha256) =
-        evidence.approved_egress_identity_sha256.as_deref()
-    {
-        if approved_egress_identity_sha256.trim().is_empty() {
-            return Err(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
-                field: stringify!(approved_egress_identity_sha256),
-            });
-        }
-        if !is_sha256_hex(approved_egress_identity_sha256) {
-            return Err(
-                BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape {
-                    field: stringify!(approved_egress_identity_sha256),
-                },
-            );
-        }
-    }
     if evidence.max_operator_evidence_file_bytes == 0 {
         return Err(
             BoltV3LiveCanaryGateError::InvalidOperatorEvidenceSizeLimit {
@@ -1530,17 +1514,6 @@ fn validate_operator_evidence_paths(
     if let Some(strategy_cancel_path) = evidence.strategy_cancel_path.as_deref() {
         validate_configured_path_shape("strategy_cancel_path", strategy_cancel_path)?;
     }
-    if let Some(egress_identity_observed_path) = evidence.egress_identity_observed_path.as_deref() {
-        if egress_identity_observed_path.trim().is_empty() {
-            return Err(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
-                field: stringify!(egress_identity_observed_path),
-            });
-        }
-        validate_configured_path_shape(
-            stringify!(egress_identity_observed_path),
-            egress_identity_observed_path,
-        )?;
-    }
     Ok(())
 }
 
@@ -1920,6 +1893,9 @@ mod tests {
             reference_quote_probe_log_commands: true,
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: None,
         };
 
@@ -1944,6 +1920,9 @@ mod tests {
             reference_quote_probe_log_commands: true,
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
             operator_evidence: None,
         };
 
@@ -2146,6 +2125,9 @@ mod tests {
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
                 reference_quote_probe_log_commands: true,
+                egress_identity_observed_path: None,
+                egress_identity_observed_max_bytes: None,
+                approved_egress_identity_sha256: None,
                 operator_evidence: Some(operator_evidence),
             },
         );

@@ -190,6 +190,9 @@ pub struct LiveCanaryBlock {
     pub reference_quote_probe_log_commands: bool,
     pub max_live_order_count: u32,
     pub max_notional_per_order: String,
+    pub egress_identity_observed_path: Option<String>,
+    pub egress_identity_observed_max_bytes: Option<u64>,
+    pub approved_egress_identity_sha256: Option<String>,
     pub operator_evidence: Option<LiveCanaryOperatorEvidenceBlock>,
 }
 
@@ -209,10 +212,6 @@ pub struct LiveCanaryOperatorEvidenceBlock {
     pub financial_envelope_sha256: String,
     pub pre_run_state_path: String,
     pub pre_run_state_sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub egress_identity_observed_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub approved_egress_identity_sha256: Option<String>,
     pub abort_plan_path: String,
     pub abort_plan_sha256: String,
     pub canary_evidence_path: String,

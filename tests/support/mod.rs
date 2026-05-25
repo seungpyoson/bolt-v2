@@ -297,8 +297,6 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         financial_envelope_sha256,
         pre_run_state_path: pre_run_state_path.to_string_lossy().to_string(),
         pre_run_state_sha256,
-        egress_identity_observed_path: None,
-        approved_egress_identity_sha256: None,
         abort_plan_path: abort_plan_path.to_string_lossy().to_string(),
         abort_plan_sha256,
         canary_evidence_path,
@@ -380,6 +378,9 @@ pub fn loaded_bolt_v3_live_canary_with_satisfied_report(
         reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
         reference_quote_probe_log_events: true,
         reference_quote_probe_log_commands: true,
+        egress_identity_observed_path: None,
+        egress_identity_observed_max_bytes: None,
+        approved_egress_identity_sha256: None,
         operator_evidence: Some(valid_live_canary_operator_evidence()),
     });
     loaded

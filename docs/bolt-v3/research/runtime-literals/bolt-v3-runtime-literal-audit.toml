@@ -7425,6 +7425,30 @@ classification = "entry_decision_source_input_validation_threshold"
 reason = "This is the fail-closed zero threshold for positive source-owned prices, volatility, and book quantities."
 
 [[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "0"
+context = '''const ENTRY_DECISION_ZERO_TIMESTAMP_MS: u64 = 0;'''
+classification = "entry_decision_source_input_validation_threshold"
+reason = "This is the fail-closed zero threshold for source-owned report timestamps and positive TOML-owned report metadata."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"0x"'''
+context = '''const CHAINLINK_FEED_ID_PREFIX: &str = "0x";'''
+classification = "entry_decision_source_input_feed_id_shape"
+reason = "This is Chainlink feed-id hex syntax validation for the TOML-owned price-to-beat feed binding, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "64"
+context = '''const CHAINLINK_FEED_ID_HEX_LENGTH: usize = 64;'''
+classification = "entry_decision_source_input_feed_id_shape"
+reason = "This is the fixed byte32 Chainlink feed-id hex length after the 0x prefix; the configured feed id remains TOML-owned."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
 kind = "number"
 literal = "1"

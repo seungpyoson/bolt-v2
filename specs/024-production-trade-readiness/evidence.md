@@ -428,3 +428,19 @@ This is a branch compile repair only. It does not close T036/T037/T038 and does 
   - `panic gate and service policy`
 
 This confirms T036 final-packet assembly is still blocked by real source-owned decision/pre-run evidence, not by static-manifest generation itself.
+
+## T036A Price-To-Beat Report Provenance Hardening
+
+- RED: `cargo test --test bolt_v3_operator_artifacts entry_decision_source_input_collector_refuses_price_to_beat_without_report_provenance -- --nocapture` failed because a weak `source-bound-price.json` carrying only source name, value, and timestamps was accepted and wrote `entry-decision-source.json`/`instrument-source.json`.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts entry_decision_source_input_collector_refuses_price_to_beat_without_report_provenance -- --nocapture`: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts entry_decision_source_input -- --nocapture`: 9 passed, 0 failed.
+- `cargo test --test bolt_v3_operator_artifacts entry_decision -- --nocapture`: 12 passed, 0 failed.
+- `cargo test --test bolt_v3_cli collect_entry_decision_source_inputs -- --nocapture`: 1 passed, 0 failed.
+- `cargo test --test bolt_v3_strategy_registration binary_oracle -- --nocapture`: 17 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+- `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+
+`source-bound-price.json` now must include Chainlink report provenance bound to the strategy TOML: `source_report_schema_version`, `source_report_feed_id`, `source_report_decimal_scale`, `source_report_full_sha256`, `source_report_valid_from_timestamp_ms`, `source_report_observations_timestamp_ms`, and `source_report_benchmark_price`. The collector rejects missing/mismatched report schema, feed id, decimal scale, report hash shape, timestamp ordering, or benchmark price before writing replayable decision/instrument source inputs. The live strategy builder raw config surface remains unchanged; these fields are consumed by operator-evidence validation, not by the NT strategy runtime.
+
+This is non-live source-proof validation only. No AWS, SSM, no-submit, venue connection, order submit/cancel, `config/live.local.toml` mutation, or live trading side effect was run. T036 remains open until the real operator-approved report source, public market source inputs, source-owned pre-run/abort proofs, final packet assembly, and T037 root TOML patch exist.

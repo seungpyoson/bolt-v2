@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 use crate::{
-    bolt_v3_archetypes::binary_oracle_edge_taker::raw_taker_config,
+    bolt_v3_archetypes::binary_oracle_edge_taker::{ParametersBlock, raw_taker_config},
     bolt_v3_config::{BoltV3RootConfig, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
     bolt_v3_decision_evidence::{
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
@@ -70,6 +70,9 @@ const ENTRY_DECISION_WARMUP_COUNT_FIELD: &str = "warmup_tick_count";
 const ENTRY_DECISION_UP_BOOK_LABEL: &str = "up";
 const ENTRY_DECISION_DOWN_BOOK_LABEL: &str = "down";
 const ENTRY_DECISION_ZERO_THRESHOLD: f64 = 0.0;
+const ENTRY_DECISION_ZERO_TIMESTAMP_MS: u64 = 0;
+const CHAINLINK_FEED_ID_PREFIX: &str = "0x";
+const CHAINLINK_FEED_ID_HEX_LENGTH: usize = 64;
 const SSM_MANIFEST_ARTIFACT_NAME: &str = "ssm-manifest";
 const FINANCIAL_ENVELOPE_ARTIFACT_NAME: &str = "financial-envelope";
 const STRATEGY_INPUT_ARTIFACT_NAME: &str = "strategy-input";
@@ -2188,6 +2191,13 @@ struct SourceBoundPriceToBeatSource {
     record_kind: String,
     source: String,
     price_to_beat_value: f64,
+    source_report_schema_version: Option<u64>,
+    source_report_feed_id: Option<String>,
+    source_report_decimal_scale: Option<u64>,
+    source_report_full_sha256: Option<String>,
+    source_report_valid_from_timestamp_ms: Option<u64>,
+    source_report_observations_timestamp_ms: Option<u64>,
+    source_report_benchmark_price: Option<f64>,
     market_selection_timestamp_ms: u64,
     decision_timestamp_ms: u64,
 }
@@ -2215,6 +2225,12 @@ struct EntryDecisionSourceProofs {
     price_source: SourceBoundPriceToBeatSource,
     reference_quote: ReferenceQuoteSource,
     realized_volatility: RealizedVolatilitySource,
+}
+
+struct PriceToBeatReportBinding {
+    feed_id: String,
+    schema_version: u64,
+    decimal_scale: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2477,7 +2493,117 @@ fn validate_price_to_beat_source(
             "source-bound price_to_beat source does not match the approved strategy source",
         ));
     }
+    validate_price_to_beat_report_provenance(
+        loaded,
+        strategy_instance_id,
+        source,
+        source.market_selection_timestamp_ms,
+        source.decision_timestamp_ms,
+    )?;
     Ok(())
+}
+
+fn validate_price_to_beat_report_provenance(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    source: &SourceBoundPriceToBeatSource,
+    market_selection_timestamp_ms: u64,
+    decision_timestamp_ms: u64,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let binding = price_to_beat_report_binding(loaded, strategy_instance_id)?;
+    let Some(report_schema_version) = source.source_report_schema_version else {
+        return Err(price_to_beat_report_provenance_invalid());
+    };
+    let Some(report_feed_id) = source
+        .source_report_feed_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Err(price_to_beat_report_provenance_invalid());
+    };
+    let Some(report_decimal_scale) = source.source_report_decimal_scale else {
+        return Err(price_to_beat_report_provenance_invalid());
+    };
+    let Some(report_sha256) = source
+        .source_report_full_sha256
+        .as_deref()
+        .filter(|value| is_lowercase_sha256(value))
+    else {
+        return Err(price_to_beat_report_provenance_invalid());
+    };
+    let Some(valid_from_timestamp_ms) = source.source_report_valid_from_timestamp_ms else {
+        return Err(price_to_beat_report_provenance_invalid());
+    };
+    let Some(observations_timestamp_ms) = source.source_report_observations_timestamp_ms else {
+        return Err(price_to_beat_report_provenance_invalid());
+    };
+    let Some(benchmark_price) = source.source_report_benchmark_price else {
+        return Err(price_to_beat_report_provenance_invalid());
+    };
+    if report_schema_version != binding.schema_version
+        || report_feed_id != binding.feed_id
+        || report_decimal_scale != binding.decimal_scale
+        || !benchmark_price.is_finite()
+        || (benchmark_price - source.price_to_beat_value).abs() > f64::EPSILON
+        || valid_from_timestamp_ms == ENTRY_DECISION_ZERO_TIMESTAMP_MS
+        || observations_timestamp_ms == ENTRY_DECISION_ZERO_TIMESTAMP_MS
+        || valid_from_timestamp_ms > observations_timestamp_ms
+        || observations_timestamp_ms < market_selection_timestamp_ms
+        || observations_timestamp_ms > decision_timestamp_ms
+        || report_sha256.is_empty()
+    {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    Ok(())
+}
+
+fn price_to_beat_report_binding(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+) -> Result<PriceToBeatReportBinding, BoltV3OperatorArtifactError> {
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .ok_or_else(
+            || BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+                message: format!("strategy instance `{strategy_instance_id}` is not loaded"),
+            },
+        )?;
+    let parameters: ParametersBlock =
+        strategy
+            .config
+            .parameters
+            .clone()
+            .try_into()
+            .map_err(
+                |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+                    message: format!(
+                        "source-bound price_to_beat report provenance config is invalid: {source}"
+                    ),
+                },
+            )?;
+    let feed_id = parameters.runtime.price_to_beat_feed_id.trim().to_string();
+    if !is_lowercase_chainlink_feed_id(&feed_id)
+        || parameters.runtime.price_to_beat_report_schema_version
+            == ENTRY_DECISION_ZERO_TIMESTAMP_MS
+        || parameters.runtime.price_to_beat_report_decimal_scale == ENTRY_DECISION_ZERO_TIMESTAMP_MS
+    {
+        return Err(price_to_beat_report_provenance_config_invalid());
+    }
+    Ok(PriceToBeatReportBinding {
+        feed_id,
+        schema_version: parameters.runtime.price_to_beat_report_schema_version,
+        decimal_scale: parameters.runtime.price_to_beat_report_decimal_scale,
+    })
+}
+
+fn price_to_beat_report_provenance_invalid() -> BoltV3OperatorArtifactError {
+    entry_decision_source_invalid("source-bound price_to_beat report provenance is invalid")
+}
+
+fn price_to_beat_report_provenance_config_invalid() -> BoltV3OperatorArtifactError {
+    entry_decision_source_invalid("source-bound price_to_beat report provenance config is invalid")
 }
 
 fn validate_reference_quote_source(
@@ -8160,6 +8286,16 @@ fn validate_operator_evidence_toml_path(
 fn is_lowercase_sha256(value: &str) -> bool {
     value.len() == 64
         && value
+            .chars()
+            .all(|char| matches!(char, '0'..='9' | 'a'..='f'))
+}
+
+fn is_lowercase_chainlink_feed_id(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix(CHAINLINK_FEED_ID_PREFIX) else {
+        return false;
+    };
+    hex.len() == CHAINLINK_FEED_ID_HEX_LENGTH
+        && hex
             .chars()
             .all(|char| matches!(char, '0'..='9' | 'a'..='f'))
 }

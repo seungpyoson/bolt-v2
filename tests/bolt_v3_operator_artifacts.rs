@@ -53,6 +53,12 @@ const TEST_DOWN_OUTCOME: &str = "Down";
 const TEST_BINARY_OPTION_SIZE_INCREMENT: &str = "0.01";
 const TEST_EXECUTION_CLIENT_ID: &str = "polymarket_main";
 const TEST_CONFIGURED_TARGET_ID: &str = "btc_updown_5m";
+const TEST_PRICE_TO_BEAT_FEED_ID: &str =
+    "0x1111111111111111111111111111111111111111111111111111111111111111";
+const TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION: u64 = 3;
+const TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE: u64 = 8;
+const TEST_PRICE_TO_BEAT_REPORT_SHA256: &str =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 #[test]
 fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
@@ -4855,6 +4861,13 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
             "record_kind": "bolt_v3.source_bound_price_to_beat.v1",
             "source": "chainlink_data_streams.report_at_boundary",
             "price_to_beat_value": 3100.0,
+            "source_report_schema_version": TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION,
+            "source_report_feed_id": TEST_PRICE_TO_BEAT_FEED_ID,
+            "source_report_decimal_scale": TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+            "source_report_full_sha256": TEST_PRICE_TO_BEAT_REPORT_SHA256,
+            "source_report_valid_from_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "source_report_observations_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_000,
+            "source_report_benchmark_price": 3100.0,
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
         }))
@@ -4971,18 +4984,70 @@ fn write_entry_decision_source_input_proofs(
     temp: &tempfile::TempDir,
     price_to_beat_value: f64,
 ) -> EntryDecisionSourceInputProofPaths {
+    write_entry_decision_source_input_proofs_with_report_provenance(temp, price_to_beat_value, true)
+}
+
+fn write_entry_decision_source_input_proofs_without_report_provenance(
+    temp: &tempfile::TempDir,
+    price_to_beat_value: f64,
+) -> EntryDecisionSourceInputProofPaths {
+    write_entry_decision_source_input_proofs_with_report_provenance(
+        temp,
+        price_to_beat_value,
+        false,
+    )
+}
+
+fn write_entry_decision_source_input_proofs_with_report_provenance(
+    temp: &tempfile::TempDir,
+    price_to_beat_value: f64,
+    include_report_provenance: bool,
+) -> EntryDecisionSourceInputProofPaths {
     let price_source_path = temp.path().join("source-bound-price.json");
+    let mut price_source = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.source_bound_price_to_beat.v1",
+        "source": "chainlink_data_streams.report_at_boundary",
+        "price_to_beat_value": price_to_beat_value,
+        "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+        "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+    });
+    if include_report_provenance {
+        let object = price_source
+            .as_object_mut()
+            .expect("price source proof should be a JSON object");
+        object.insert(
+            "source_report_schema_version".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION),
+        );
+        object.insert(
+            "source_report_feed_id".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_FEED_ID),
+        );
+        object.insert(
+            "source_report_decimal_scale".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE),
+        );
+        object.insert(
+            "source_report_full_sha256".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_REPORT_SHA256),
+        );
+        object.insert(
+            "source_report_valid_from_timestamp_ms".to_string(),
+            serde_json::json!(TEST_MARKET_SELECTION_NOW_MS),
+        );
+        object.insert(
+            "source_report_observations_timestamp_ms".to_string(),
+            serde_json::json!(TEST_MARKET_SELECTION_NOW_MS + 1_000),
+        );
+        object.insert(
+            "source_report_benchmark_price".to_string(),
+            serde_json::json!(price_to_beat_value),
+        );
+    }
     std::fs::write(
         &price_source_path,
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 1,
-            "record_kind": "bolt_v3.source_bound_price_to_beat.v1",
-            "source": "chainlink_data_streams.report_at_boundary",
-            "price_to_beat_value": price_to_beat_value,
-            "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
-            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
-        }))
-        .expect("price source should serialize"),
+        serde_json::to_vec_pretty(&price_source).expect("price source should serialize"),
     )
     .expect("price source should write");
     let reference_quote_source_path = temp.path().join("reference-quote.json");
@@ -5073,6 +5138,48 @@ fn entry_decision_source_market_inputs(
             (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
         ]),
     }
+}
+
+#[test]
+fn entry_decision_source_input_collector_refuses_price_to_beat_without_report_provenance() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs_without_report_provenance(&temp, 3100.0);
+    let instruments = entry_decision_source_input_instruments();
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs: entry_decision_source_market_inputs(&instruments),
+                decision_source_output_path: &paths.decision_source_output,
+                instrument_source_output_path: &paths.instrument_source_output,
+            },
+        )
+        .expect_err("collector must reject price_to_beat without source report provenance");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source-bound price_to_beat report provenance"),
+        "expected price_to_beat report provenance failure, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
 }
 
 #[test]

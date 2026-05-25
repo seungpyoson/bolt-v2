@@ -526,3 +526,19 @@ This is non-live source-proof validation only. No AWS, SSM, no-submit, venue con
 `operator-artifacts collect-entry-decision-proof-sources --config <root.toml> --strategy-instance-id <id> ...` now writes the four proof files required by the existing T036A source-input collector. It reads a bounded regular-file operator-approved Chainlink report source JSON, verifies its sha256 against the operator-supplied approved report hash, parses the Chainlink `fullReport` ABI payload, derives feed id, valid-from timestamp, observations timestamp, and benchmark price from the report payload, cross-checks those report fields against TOML-bound feed/schema/decimal-scale config, derives the approved price source from the financial-envelope config, bounds quote/volatility timestamps to the market-selection and decision window, validates fee proof inputs, and writes `source-bound-price.json`, `reference-quote.json`, `realized-volatility.json`, and `entry-decision-fees.json` with create-new semantics. The provider path now consumes the same shared fee-proof artifact type/validator as the materializer instead of maintaining a second fee-proof schema path.
 
 This is non-live local source-proof materialization only. No AWS, SSM, no-submit, venue connection, order submit/cancel, `config/live.local.toml` mutation, or live trading side effect was run. T036 remains open until the real operator-approved source payloads and pre-run source files are captured, all static artifacts are produced, the root TOML is patched, and `operator-artifacts verify-final --verification-stage pre-run` passes.
+
+## T036C Base Static Artifact Generator
+
+- Read-only subagent `019e5d1c-4db3-7641-aefe-3ee37af33d30` confirmed that T036 cannot honestly close before the T037 TOML patch because final assembly consumes `[live_canary.operator_evidence]`, and it identified one remaining code gap on the critical path: there was no successful non-live CLI path for only the base static artifacts `ssm-manifest.json`, `financial-envelope.json`, and `approval-nonce.json`.
+- RED: `cargo test --test bolt_v3_operator_artifacts base_static_operator_artifacts -- --nocapture` failed because `write_base_static_operator_artifacts` did not exist.
+- GREEN: `cargo test --test bolt_v3_operator_artifacts base_static_operator_artifacts -- --nocapture`: 1 passed, 0 failed.
+- RED/GREEN CLI: `cargo test --test bolt_v3_cli base_static_operator_artifacts -- --nocapture`: 2 passed, 0 failed after adding `operator-artifacts generate-base-static`.
+- Regression after sidecar Chainlink `fullReport` compatibility finding: `cargo test --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer -- --nocapture`: 4 passed, 0 failed.
+- Regression: `cargo test --test bolt_v3_cli entry_decision_proof_sources -- --nocapture`: 2 passed, 0 failed.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+- `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+
+`operator-artifacts generate-base-static --config <root.toml> --strategy-instance-id <id> --output-dir <dir>` now writes only the unblocked base static artifacts and prints redacted path/sha256 refs. It does not write `static-artifacts-manifest.json`, `strategy-input.json`, `pre-run-state.json`, or `abort-plan.json`, and it does not expose raw secret paths or nonce material in stdout. The existing fail-closed `generate-static` blocker-manifest path remains intact for audit diagnostics.
+
+This is non-live local static artifact generation only. No AWS, SSM, no-submit, venue connection, order submit/cancel, `config/live.local.toml` mutation, or live trading side effect was run. T036 still requires real source-input collection, pre-run/abort artifact generation, T037 root TOML patch, final manifest/packet assembly, and T038 pre-run verification.

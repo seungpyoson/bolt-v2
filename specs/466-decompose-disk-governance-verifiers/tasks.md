@@ -67,6 +67,8 @@ Run T036 through T039 before each PR-ready slice. Repeat T040 through T044 for e
 - [x] T043 [US3] Address all PR review comments and external findings before asking operator merge approval
 - [x] T044 [US3] After operator approval, merge with a normal merge commit unless the operator explicitly requests squash, then return to current `main` and continue unresolved #466 ledger items
 
+T041-T044 are checked for the completed bounded PR-slice sequence through PR #479. Prior slice gate records remain in `evidence.md` and the PR body/comments for #470 and #474.
+
 ## Final Phase: Whole-#466 Completion
 
 - [x] T045 Verify every ledger item final state is `resolved` or `operator-moved` in `specs/466-decompose-disk-governance-verifiers/evidence.md`

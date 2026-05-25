@@ -27,11 +27,11 @@
 | PR #461 | `gh pr view 461 --json number,title,state,mergedAt,headRefName,baseRefName,commits,files,url,body` | Merged 2026-05-24T01:10:27Z. Delivered command-understanding helper extraction for #454 and recorded residual follow-up scope. |
 | Issue #454 | `gh issue view 454 --json number,title,state,closedAt,body,comments,url` | Closed 2026-05-24T01:11:55Z. Completion comment says PR #461 delivered #454 and residual decomposition moved to #464. |
 | PR #470 | `gh pr view 470 --json number,title,state,mergedAt,headRefName,baseRefName,commits,files,url,body` | Merged 2026-05-24T12:02:25Z. Body states it resolved only item 7, kept #466 open, and left items 1-6 unresolved. |
-| PR #474 | `gh pr view 474 --json number,title,state,mergedAt,headRefName,baseRefName,commits,files,url,body` | Merged 2026-05-24T11:21:37Z. Body states it resolved only item 8 and explicitly lists items 1-7 as still open at that point. |
+| PR #474 | `gh pr view 474 --json number,title,state,mergedAt,headRefName,baseRefName,headRefOid,baseRefOid,mergeCommit,statusCheckRollup,body,comments,reviews,url` | Merged 2026-05-24T11:21:37Z. Body states it resolved only item 8 and explicitly lists items 1-7 as still open at that point. PR comments record final exact-head CI/review evidence for head `115543027931d0de8f195017549221585cbd6d1a`: Gemini, Claude, Grok, GLM, and DeepSeek approved; Kimi was operator-waived after two source-sent step-limit failures. |
 | PR #478 | `gh pr view 478 --json number,title,state,isDraft,headRefName,baseRefName,commits,files,url,body` | Open draft. Body and file list show #466 characterization mixed with #374 cleanup and T125/T126/T127 trade-readiness/source-proof changes. This branch is not used as source proof for this #466-only worktree. |
 | PR #479 | `gh pr view 479 --json number,title,state,isDraft,headRefName,baseRefName,headRefOid,baseRefOid,mergedAt,mergeCommit,statusCheckRollup,body` and PR comments/review threads | Merged 2026-05-25T04:39:20Z from head `bcb44db11df8840be99fd7ce69bedac475a0b693` into base `3a444a57cfdcdc31d58cbfe8d22857eb86f8bad9`; merge commit `9974aa6d5a06de83aa8f72957fdae176d1da0082`. PR body/comment evidence records exact-head CI green, external approvals/waiver disposition, and resolved review threads. |
 
-## Current Baseline
+## Initial Baseline At 3a444a57
 
 | Command | Result |
 |---|---|
@@ -119,7 +119,7 @@ Post-implementation review must target the current pushed PR head after exact-he
 
 | Reviewer | Route / source state | Result |
 |---|---|---|
-| PR #474 gate snapshot | Initial reapply head `fbfb82c0e9360c0c7c0bd1abaa4d1f8c81949c73` had exact-head CI green before the evidence-only gate marker commit. Current-head post-implementation external review evidence must be recorded in the PR body/comment after final CI because committing a row here changes the head. | OPEN GATE: do not treat this snapshot or the historical rows below as merge approval for PR #474. Current-head Claude, Gemini, Grok, GLM, DeepSeek, and Kimi reviews or explicit operator waivers are still required before merge readiness. |
+| PR #474 gate snapshot | Initial reapply head `fbfb82c0e9360c0c7c0bd1abaa4d1f8c81949c73` had exact-head CI green before later evidence-only gate marker commits. Final PR #474 head `115543027931d0de8f195017549221585cbd6d1a` then had exact-head CI green and PR comments record current-head approvals from Gemini job `757ab3bc-c100-46e7-a00e-e17489fd9235`, Claude job `c09f9c11-780f-467e-848c-570bfabc4a6e`, Grok job `job_7c219312-8d92-4598-879e-e131c880a22b`, GLM job `job_ef4f6e7a-7f9c-431d-ac7b-752f05ad709a`, and DeepSeek job `job_ad1a7eb8-26d4-482a-8a73-5ae7866c8a57`. Kimi produced no usable verdict after source-sent jobs `a23587d8-41e5-4893-9290-9a10e978f8e3` and `325bf615-45de-4078-af30-f0e6e31fd399` failed with `step_limit_exceeded`; operator explicitly waived Kimi for exact head `115543027931d0de8f195017549221585cbd6d1a`. | RESOLVED FOR PR #474: do not treat the initial `fbfb82c0` snapshot or the superseded PR #468 rows below as merge approval. Final gate evidence is in PR #474 comments `4528295648` and `4528321234`, and PR #474 merged only after that current-head CI/review/waiver gate. |
 | Gemini | Subscription review job `5d0e79f8-0f41-4521-8baa-0676fcad12e3`, session `32fa4ad1-9875-427e-9965-3326a2a1b679`; source sent for head `9b020b7a363f959afa01a4eb8fd0074eb6614540`. | REQUEST_CHANGES: stale committed CI/review evidence referenced superseded heads. |
 | Grok | Subscription-backed review job `job_d1775521-0105-4cc3-beef-deed2e93759e`; source sent for head `9b020b7a363f959afa01a4eb8fd0074eb6614540`. | REQUEST_CHANGES: stale committed CI/review evidence referenced superseded heads. |
 | Kimi | Subscription review job `f77fbb82-9f33-467c-af13-30cc38278ed5`, session `b2f90e0a-e5dc-441d-937a-37a6849c871e`; source sent for head `9b020b7a363f959afa01a4eb8fd0074eb6614540`. | Failed slot: `step_limit_exceeded`; no usable verdict. |
@@ -175,7 +175,7 @@ This verification ran after PR #479 was merged into `main` at `9974aa6d5a06de83a
 
 | Command | Result |
 |---|---|
-| `rg -n "\| [1-8] \|" specs/466-decompose-disk-governance-verifiers/evidence.md` | Pass: ledger rows 1 through 8 all end with final state `Resolved.` |
+| `rg -n "^\\| [1-8] \\|" specs/466-decompose-disk-governance-verifiers/evidence.md` | Pass: anchored ledger-row scan shows rows 1 through 8 all end with final state `Resolved.` |
 | `python3 scripts/test_command_understanding.py` | Pass: `OK: command understanding self-tests passed.` |
 | `python3 -m scripts.test_command_understanding` | Pass: `OK: command understanding self-tests passed.` |
 | `python3 scripts/test_verify_ci_workflow_hygiene.py` | Pass: `OK: CI workflow hygiene verifier self-tests passed.` |

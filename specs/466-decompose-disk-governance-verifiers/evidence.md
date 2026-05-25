@@ -4,8 +4,8 @@
 
 | Fact | Evidence |
 |---|---|
-| Branch/worktree | `goal/466-disk-governance-verifier-decomposition` at `REPO_ROOT_PATH/.worktrees/466-disk-governance-verifier-decomposition` |
-| Base | `origin/main` at `3a444a57cfdcdc31d58cbfe8d22857eb86f8bad9` after both PR #474 and PR #470 merges |
+| Branch/worktree | `goal/466-final-completion-audit` at `REPO_ROOT_PATH/.worktrees/466-final-completion-audit` |
+| Base | `main` / `origin/main` at `9974aa6d5a06de83aa8f72957fdae176d1da0082` after PR #479 merge |
 | Issue #466 | Closed 2026-05-24T11:21:38Z, but current body and prior owner comment still identify remaining verifier-decomposition scope. This ledger does not treat the closed state as proof of final completion; final issue disposition still requires completion evidence and explicit operator approval. |
 | PR #478 | Open draft consolidation PR on `goal/466-command-tokenization-characterization`; excluded from this work because it mixes #466 verifier/governance characterization with unrelated #374 and T125/T126/T127 trade-readiness/source-proof scope. |
 | PR #470 | Merged 2026-05-24T12:02:25Z; delivered only the item-7 test import setup cleanup slice. |
@@ -15,7 +15,7 @@
 | PR #465 | Merged 2026-05-24T03:33:55Z; delivered only shared cargo scanner helpers |
 | PR #461 | Merged 2026-05-24T01:10:27Z; delivered Python command AST helper extraction |
 | Issue #454 | Closed by PR #461; residual scope moved through #464/#466 |
-| PR #479 | Open draft PR for this #466-only docs/evidence slice; exact-head CI, post-implementation external review, operator approval, and final issue handling remain open gates. |
+| PR #479 | Merged 2026-05-25T04:39:20Z with normal merge commit `9974aa6d5a06de83aa8f72957fdae176d1da0082`; delivered only the #466 docs/evidence ledger finalization slice and did not itself close final #466 issue disposition. |
 
 ## Issue And PR Source References
 
@@ -29,7 +29,7 @@
 | PR #470 | `gh pr view 470 --json number,title,state,mergedAt,headRefName,baseRefName,commits,files,url,body` | Merged 2026-05-24T12:02:25Z. Body states it resolved only item 7, kept #466 open, and left items 1-6 unresolved. |
 | PR #474 | `gh pr view 474 --json number,title,state,mergedAt,headRefName,baseRefName,commits,files,url,body` | Merged 2026-05-24T11:21:37Z. Body states it resolved only item 8 and explicitly lists items 1-7 as still open at that point. |
 | PR #478 | `gh pr view 478 --json number,title,state,isDraft,headRefName,baseRefName,commits,files,url,body` | Open draft. Body and file list show #466 characterization mixed with #374 cleanup and T125/T126/T127 trade-readiness/source-proof changes. This branch is not used as source proof for this #466-only worktree. |
-| PR #479 | `gh pr create` / GitHub PR creation result | Open draft: "Finalize #466 verifier decomposition ledger". Files are limited to this evidence ledger and tasks checklist. |
+| PR #479 | `gh pr view 479 --json number,title,state,isDraft,headRefName,baseRefName,headRefOid,baseRefOid,mergedAt,mergeCommit,statusCheckRollup,body` and PR comments/review threads | Merged 2026-05-25T04:39:20Z from head `bcb44db11df8840be99fd7ce69bedac475a0b693` into base `3a444a57cfdcdc31d58cbfe8d22857eb86f8bad9`; merge commit `9974aa6d5a06de83aa8f72957fdae176d1da0082`. PR body/comment evidence records exact-head CI green, external approvals/waiver disposition, and resolved review threads. |
 
 ## Current Baseline
 
@@ -154,3 +154,40 @@ Post-implementation review must target the current pushed PR head after exact-he
 | `python3 scripts/test_rust_verification_cache_retention.py` | Pass: `OK: Rust verification cache retention self-tests passed.` |
 | `git diff --check` | Pass. |
 | `just ci-lint-workflow` | Pass: CI workflow hygiene, same-SHA evidence, path-filter, Rust verification owner, command understanding, Rust verification decoupling, Rust verification cache retention, and raw cargo workflow command checks passed. |
+
+## PR #479 Merge Evidence
+
+PR #479 completed the #466-only docs/evidence slice for ledger items 1-6. It did not include #374, T125, T126, T127, trade-readiness, or source-proof work.
+
+| Gate | Evidence |
+|---|---|
+| Exact head | `bcb44db11df8840be99fd7ce69bedac475a0b693` on `goal/466-disk-governance-verifier-decomposition`; base `3a444a57cfdcdc31d58cbfe8d22857eb86f8bad9`. |
+| Local verification | PR body records passes for `python3 scripts/test_command_understanding.py`, `python3 -m scripts.test_command_understanding`, `python3 scripts/test_verify_ci_workflow_hygiene.py`, `python3 scripts/test_rust_verification_cache_retention.py`, `python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py`, and `git diff --check`. |
+| GitHub CI | `gh pr view 479 --json statusCheckRollup` showed successful exact-head checks for actionlint, CodeQL Analyze actions/rust plus aggregate CodeQL, CI detector, fmt-check, deny, clippy, check-aarch64, source-fence, nextest archive, nextest shards 1-4, test, and gate. Expected skipped checks: build, same-sha-main-evidence, deploy. |
+| Review threads | `gh pr view 479 --comments --json comments,reviews,latestReviews` plus `list_pull_request_review_threads` showed the Gemini wording thread and Greptile T022 cache-retention traceability thread resolved before merge. |
+| External review | PR body records current-head approvals with no blocking findings from Claude Code job `914aaeba-532d-4713-80ae-ef77b6328eab`, Gemini CLI job `09daa4bc-5fba-4836-acb0-6a64511d2d26`, Grok CLI job `job_63ddfcf6-5750-45bb-8fbe-4e62322419d3`, GLM job `job_59b8a448-99d3-4664-b568-240837dc6de0`, and DeepSeek job `job_adff4ba7-24ee-45dc-b844-567681e92f29`; Kimi was explicitly operator-waived after source-sent step-limit failures `db467345-ec8e-4f5f-874f-0c0ff05e2228` and `b465418e-913a-42c2-9c84-6befb9c789bb`. |
+| Operator approval and merge | Operator said `merge`; PR #479 was merged 2026-05-25T04:39:20Z with normal merge commit `9974aa6d5a06de83aa8f72957fdae176d1da0082`. |
+| Post-merge cleanup | Local `main` was fast-forwarded to `9974aa6d5a06de83aa8f72957fdae176d1da0082`; merged worktree `.worktrees/466-disk-governance-verifier-decomposition` and local branch `goal/466-disk-governance-verifier-decomposition` were removed; remote branch was already deleted. |
+
+## Final Whole-#466 Local Verification
+
+This verification ran after PR #479 was merged into `main` at `9974aa6d5a06de83aa8f72957fdae176d1da0082`.
+
+| Command | Result |
+|---|---|
+| `rg -n "\| [1-8] \|" specs/466-decompose-disk-governance-verifiers/evidence.md` | Pass: ledger rows 1 through 8 all end with final state `Resolved.` |
+| `python3 scripts/test_command_understanding.py` | Pass: `OK: command understanding self-tests passed.` |
+| `python3 -m scripts.test_command_understanding` | Pass: `OK: command understanding self-tests passed.` |
+| `python3 scripts/test_verify_ci_workflow_hygiene.py` | Pass: `OK: CI workflow hygiene verifier self-tests passed.` |
+| `python3 scripts/test_rust_verification_cache_retention.py` | Pass: `OK: Rust verification cache retention self-tests passed.` |
+| `python3 -m py_compile scripts/command_understanding.py scripts/test_command_understanding.py scripts/rust_verification.py scripts/verify_ci_workflow_hygiene.py scripts/test_verify_ci_workflow_hygiene.py scripts/test_rust_verification_cache_retention.py` | Pass. |
+| `git diff --check` | Pass. |
+| `just ci-lint-workflow` | Pass: CI workflow hygiene, same-SHA main evidence, CI path-filter, Rust verification owner, command understanding, Rust verification decoupling, Rust verification cache retention, CI path-filter verifier, CI workflow hygiene verifier, and raw cargo workflow command checks passed. |
+
+## Remaining Final Gates
+
+Final #466 disposition is not complete from merge alone. Remaining required gates are:
+
+- T047: final whole-#466 external review across the merged #466 PR set.
+- T048: issue #466 completion-evidence update after final checks pass, explicitly accounting for its already-closed GitHub state.
+- T049: explicit operator approval for final #466 issue disposition; the earlier GitHub closure is not treated as completion approval.

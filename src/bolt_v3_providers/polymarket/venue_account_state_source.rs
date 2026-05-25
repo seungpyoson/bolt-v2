@@ -11,7 +11,9 @@ use sha2::{Digest, Sha256};
 use crate::{
     bolt_v3_operator_artifacts::{BoltV3OperatorArtifactError, json_artifact_sha256},
     bolt_v3_providers::{
-        VenueAccountStateSourceMaterialization, VenueAccountStateSourceMaterializationRequest,
+        ExternalSnapshotConfirmationPolicy, VenueAccountStateSourceMaterialization,
+        VenueAccountStateSourceMaterializationRequest, confirm_external_snapshot_before_hard_stop,
+        fetch_external_snapshot_with_retries,
     },
 };
 
@@ -84,19 +86,27 @@ pub async fn materialize_venue_account_state_source_from_configured_account_quer
             field: "execution.base_url_http",
         },
     )?;
-    let open_orders = clob_client
-        .get_orders(GetOrdersParams {
-            id: None,
-            market: None,
-            asset_id: None,
-            next_cursor: None,
-        })
-        .await
-        .map_err(
-            |_| BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
-                field: "open_orders_response",
-            },
-        )?;
+    let confirmation_policy = ExternalSnapshotConfirmationPolicy::from_retry_fields(
+        cfg.max_retries,
+        cfg.retry_delay_initial_ms,
+        cfg.retry_delay_max_ms,
+    );
+    let mut open_orders = fetch_external_snapshot_with_retries(confirmation_policy, || {
+        clob_client.get_orders(open_orders_params())
+    })
+    .await
+    .map_err(
+        |_| BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+            field: "open_orders_response",
+        },
+    )?;
+    open_orders = confirm_external_snapshot_before_hard_stop(
+        open_orders,
+        confirmation_policy,
+        || clob_client.get_orders(open_orders_params()),
+        |orders| !orders.is_empty(),
+    )
+    .await;
     let data_api_client = PolymarketDataApiHttpClient::new(
         Some(cfg.base_url_data_api.clone()),
         cfg.http_timeout_secs,
@@ -106,17 +116,25 @@ pub async fn materialize_venue_account_state_source_from_configured_account_quer
             field: "execution.base_url_data_api",
         },
     )?;
-    let positions = data_api_client
-        .get_positions(&account_address)
-        .await
-        .map_err(
-            |_| BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
-                field: "positions_response",
-            },
-        )?;
+    let mut positions = fetch_external_snapshot_with_retries(confirmation_policy, || {
+        data_api_client.get_positions(&account_address)
+    })
+    .await
+    .map_err(
+        |_| BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+            field: "positions_response",
+        },
+    )?;
+    positions = confirm_external_snapshot_before_hard_stop(
+        positions,
+        confirmation_policy,
+        || data_api_client.get_positions(&account_address),
+        |positions| has_active_positions(positions),
+    )
+    .await;
     let open_order_count = usize_to_u64("open_order_count", open_orders.len())?;
-    let reconciled_position_count = active_position_count(&positions);
-    let open_position_count = usize_to_u64("open_position_count", reconciled_position_count)?;
+    let open_position_count =
+        usize_to_u64("open_position_count", active_position_count(&positions))?;
     let position_summaries: Vec<DataApiPositionSummary> =
         positions.iter().map(DataApiPositionSummary::from).collect();
     let open_orders_sha256 = json_artifact_sha256(&open_orders)?;
@@ -148,6 +166,15 @@ pub async fn materialize_venue_account_state_source_from_configured_account_quer
     })
 }
 
+fn open_orders_params() -> GetOrdersParams {
+    GetOrdersParams {
+        id: None,
+        market: None,
+        asset_id: None,
+        next_cursor: None,
+    }
+}
+
 fn usize_to_u64(field: &'static str, value: usize) -> Result<u64, BoltV3OperatorArtifactError> {
     u64::try_from(value)
         .map_err(|_| BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid { field })
@@ -164,6 +191,10 @@ fn active_position_count(
         .iter()
         .filter(|position| position.size >= DUST_POSITION_THRESHOLD)
         .count()
+}
+
+fn has_active_positions(positions: &[nautilus_polymarket::http::models::DataApiPosition]) -> bool {
+    active_position_count(positions) > usize::MIN
 }
 
 #[derive(Serialize)]

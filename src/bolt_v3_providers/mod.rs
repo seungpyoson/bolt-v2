@@ -20,6 +20,9 @@ pub mod polymarket;
 
 use std::{any::Any, fmt, future::Future, pin::Pin, sync::Arc};
 
+const EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES: u64 = 0;
+const EXTERNAL_SNAPSHOT_RETRY_DECREMENT: u64 = 1;
+
 use crate::{
     bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3MarketClockFn},
     bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config},
@@ -145,6 +148,7 @@ pub struct ClobV2CollateralAccountingSourceMaterialization {
     pub p_usd_balance: String,
     pub p_usd_allowance: String,
     pub collateral_accounting_source_sha256: String,
+    pub(crate) confirmation_policy: ExternalSnapshotConfirmationPolicy,
 }
 
 pub struct VenueAccountStateSourceMaterializationRequest<'a> {
@@ -160,6 +164,81 @@ pub struct VenueAccountStateSourceMaterialization {
     pub open_order_count: u64,
     pub open_position_count: u64,
     pub account_state_snapshot_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExternalSnapshotConfirmationPolicy {
+    pub max_retries: u64,
+    pub retry_delay_initial_ms: u64,
+    pub retry_delay_max_ms: u64,
+}
+
+impl ExternalSnapshotConfirmationPolicy {
+    pub(crate) fn from_retry_fields(
+        max_retries: u64,
+        retry_delay_initial_ms: u64,
+        retry_delay_max_ms: u64,
+    ) -> Self {
+        Self {
+            max_retries,
+            retry_delay_initial_ms,
+            retry_delay_max_ms,
+        }
+    }
+
+    fn retry_delay_ms(self) -> u64 {
+        self.retry_delay_initial_ms.min(self.retry_delay_max_ms)
+    }
+}
+
+pub(crate) async fn fetch_external_snapshot_with_retries<T, E, Fetch, Fut>(
+    policy: ExternalSnapshotConfirmationPolicy,
+    mut fetch: Fetch,
+) -> Result<T, E>
+where
+    Fetch: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let mut result = fetch().await;
+    let mut remaining_retries = policy.max_retries;
+    while result.is_err() && remaining_retries != EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES {
+        sleep_external_snapshot_confirmation_delay(policy).await;
+        result = fetch().await;
+        remaining_retries -= EXTERNAL_SNAPSHOT_RETRY_DECREMENT;
+    }
+    result
+}
+
+pub(crate) async fn confirm_external_snapshot_before_hard_stop<T, E, Fetch, Fut, IsBlocking>(
+    mut snapshot: T,
+    policy: ExternalSnapshotConfirmationPolicy,
+    mut fetch: Fetch,
+    is_blocking: IsBlocking,
+) -> T
+where
+    Fetch: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    IsBlocking: Fn(&T) -> bool,
+{
+    let mut remaining_retries = policy.max_retries;
+    while is_blocking(&snapshot) && remaining_retries != EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES {
+        sleep_external_snapshot_confirmation_delay(policy).await;
+        match fetch().await {
+            Ok(confirmed_snapshot) => {
+                snapshot = confirmed_snapshot;
+            }
+            Err(_) => break,
+        }
+        remaining_retries -= EXTERNAL_SNAPSHOT_RETRY_DECREMENT;
+    }
+    snapshot
+}
+
+async fn sleep_external_snapshot_confirmation_delay(policy: ExternalSnapshotConfirmationPolicy) {
+    let retry_delay_ms = policy.retry_delay_ms();
+    if retry_delay_ms != 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(retry_delay_ms)).await;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,6 +352,15 @@ pub async fn materialize_clob_v2_collateral_accounting_source_from_configured_ba
     request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
 ) -> Result<ClobV2CollateralAccountingSourceMaterialization, BoltV3OperatorArtifactError> {
     polymarket::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
+        request,
+    )
+    .await
+}
+
+pub(crate) async fn materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once(
+    request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
+) -> Result<ClobV2CollateralAccountingSourceMaterialization, BoltV3OperatorArtifactError> {
+    polymarket::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once(
         request,
     )
     .await

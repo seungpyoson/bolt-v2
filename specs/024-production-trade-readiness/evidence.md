@@ -768,3 +768,37 @@ The verification used local fake SSM and fake CLOB HTTP servers only. No real AW
 `operator-artifacts collect-pre-run-funding-margin-source --config <root.toml> --strategy-instance-id <id> --fee-rate-source <fee-rate-source.json> --fee-rate-source-sha256 <sha256> --max-fee-rate-source-bytes <bytes> --output <funding-margin-source.json>` now loads the selected root TOML, resolves configured Polymarket credentials through the production SSM resolver, calls NT's authenticated `GET /balance-allowance`, reuses the same TOML-owned `max_notional_per_order` plus approved fee-rate source derivation as CLOB collateral accounting, sets available collateral from the spendable pUSD balance/allowance, requires coverage for `required_max_notional_plus_fees`, and writes the existing `bolt_v3.pre_run_funding_margin_source.v1` artifact.
 
 The verification used local fake SSM, fake CLOB, and fake Data API HTTP servers only. No real AWS/SSM, private venue account access, no-submit, order submit/cancel, root TOML mutation, or live trading side effect was run. T024E is now closed for source-owned materializer commands; T036 remains open for assembling the blocker-free static artifacts and final packet from the materialized source files.
+
+## T036G2/T036G3 Provider Snapshot Hard-Stop Confirmation
+
+- Current Speckit helper status: `.specify/scripts/bash/check-prerequisites.sh --json --require-tasks --include-tasks` still returns `specs/023-nt-order-intent-layer`. Per this readiness packet, PR #480 continues using explicit `specs/024-production-trade-readiness/` task/evidence files and does not change the source-fence-owned 023 pointer.
+- Inventory artifact: `specs/024-production-trade-readiness/provider-snapshot-hard-stop-inventory.md` classifies the market/venue/account-agnostic external-provider-snapshot hard-stop class and separates immediate readiness fixes from T038/T043/T044 final-packet/no-submit/tiny-canary gates.
+- Immediate fixed gates:
+  - Venue account open orders: `conflicting_open_orders_absent`.
+  - Venue account active positions: `preexisting_position_absent`.
+  - CLOB collateral balance/allowance: `collateral_accounting_verified`.
+  - CLOB funding margin balance/allowance: `funding_margin_covers_max_notional_plus_fees`.
+- Claude adversarial review: job `2b5835b2-84a9-4171-9b3e-138ab623a762` reviewed the assessment plus current diff and returned `APPROVE` with no blocking findings. Non-blocking findings were persistent-block coverage, confirmation-fetch-failure coverage, nested retry call count, retry-delay naming, and diff-only inventory scope.
+- Implementation response:
+  - Shared provider helper confirms blocking external snapshots with the configured retry policy before hard-stop.
+  - Confirmation stays fail-closed: persistent blocking state, parse failure, and confirmation fetch failure still block.
+  - CLOB collateral/funding confirmation now uses one non-nested balance/allowance fetch per configured confirmation retry; the initial fetch still uses configured retry behavior.
+- Focused fail-closed coverage: `cargo test --test bolt_v3_cli keeps_ -- --nocapture`: 4 passed, 0 failed.
+- Focused transient-clear coverage: `cargo test --test bolt_v3_cli confirms_transient -- --nocapture`: 4 passed, 0 failed.
+- Focused CLI regressions:
+  - `cargo test --test bolt_v3_cli venue_account_state_source -- --nocapture`: 7 passed, 0 failed.
+  - `cargo test --test bolt_v3_cli clob_v2_collateral_accounting -- --nocapture`: 5 passed, 0 failed.
+  - `cargo test --test bolt_v3_cli funding_margin_source -- --nocapture`: 4 passed, 0 failed.
+- Focused proof regressions:
+  - `cargo test --test bolt_v3_operator_artifacts pre_run_clob_v2 -- --nocapture`: 7 passed, 0 failed.
+  - `cargo test --test bolt_v3_operator_artifacts pre_run_funding_margin_source -- --nocapture`: 4 passed, 0 failed.
+- Hygiene:
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+  - `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+  - `python3 scripts/verify_bolt_v3_provider_leaks.py`: `OK: Bolt-v3 provider-leak verifier passed.`
+  - `python3 scripts/verify_bolt_v3_core_boundary.py`: `OK: Bolt-v3 core boundary audit passed.`
+  - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+This was local fake-server verification only. It did not read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036 remains open until final packet assembly, T037 root TOML patching, and T038 verification are completed.

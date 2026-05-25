@@ -1,5 +1,5 @@
 use nautilus_polymarket::{
-    common::credential::Secrets as PolymarketSecrets,
+    common::{credential::Secrets as PolymarketSecrets, enums::SignatureType},
     http::{
         clob::PolymarketClobHttpClient,
         query::{AssetType, GetBalanceAllowanceParams},
@@ -13,7 +13,8 @@ use crate::{
     bolt_v3_operator_artifacts::{BoltV3OperatorArtifactError, json_artifact_sha256},
     bolt_v3_providers::{
         ClobV2CollateralAccountingSourceMaterialization,
-        ClobV2CollateralAccountingSourceMaterializationRequest,
+        ClobV2CollateralAccountingSourceMaterializationRequest, ExternalSnapshotConfirmationPolicy,
+        fetch_external_snapshot_with_retries,
     },
 };
 
@@ -24,6 +25,25 @@ const CLOB_V2_COLLATERAL_PUSD_MICRO_SCALE: u32 = 1_000_000;
 
 pub async fn materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
     request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
+) -> Result<ClobV2CollateralAccountingSourceMaterialization, BoltV3OperatorArtifactError> {
+    materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_with_policy(
+        request, true,
+    )
+    .await
+}
+
+pub(crate) async fn materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once(
+    request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
+) -> Result<ClobV2CollateralAccountingSourceMaterialization, BoltV3OperatorArtifactError> {
+    materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_with_policy(
+        request, false,
+    )
+    .await
+}
+
+async fn materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_with_policy(
+    request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
+    retry_initial_fetch: bool,
 ) -> Result<ClobV2CollateralAccountingSourceMaterialization, BoltV3OperatorArtifactError> {
     let strategy = request
         .loaded
@@ -76,16 +96,24 @@ pub async fn materialize_clob_v2_collateral_accounting_source_from_configured_ba
     .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
         field: "execution.base_url_http",
     })?;
-    let balance_allowance = http_client
-        .get_balance_allowance(GetBalanceAllowanceParams {
-            asset_type: Some(AssetType::Collateral),
-            token_id: None,
-            signature_type: Some(signature_type),
+    let confirmation_policy = ExternalSnapshotConfirmationPolicy::from_retry_fields(
+        cfg.max_retries,
+        cfg.retry_delay_initial_ms,
+        cfg.retry_delay_max_ms,
+    );
+    let balance_allowance = if retry_initial_fetch {
+        fetch_external_snapshot_with_retries(confirmation_policy, || {
+            http_client.get_balance_allowance(balance_allowance_params(signature_type))
         })
         .await
-        .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
-            field: "balance_allowance_response",
-        })?;
+    } else {
+        http_client
+            .get_balance_allowance(balance_allowance_params(signature_type))
+            .await
+    }
+    .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+        field: "balance_allowance_response",
+    })?;
     let micro_scale = Decimal::from(CLOB_V2_COLLATERAL_PUSD_MICRO_SCALE);
     let p_usd_balance = balance_allowance.balance / micro_scale;
     let p_usd_allowance = balance_allowance.allowance.ok_or(
@@ -114,7 +142,16 @@ pub async fn materialize_clob_v2_collateral_accounting_source_from_configured_ba
         p_usd_balance,
         p_usd_allowance,
         collateral_accounting_source_sha256,
+        confirmation_policy,
     })
+}
+
+fn balance_allowance_params(signature_type: SignatureType) -> GetBalanceAllowanceParams {
+    GetBalanceAllowanceParams {
+        asset_type: Some(AssetType::Collateral),
+        token_id: None,
+        signature_type: Some(signature_type),
+    }
 }
 
 fn signature_type_label(value: super::PolymarketSignatureType) -> &'static str {

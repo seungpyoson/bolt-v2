@@ -2178,6 +2178,22 @@ reason = "This label renders the provider credentialed-block enum variant in val
 
 [[allowed]]
 path = "src/bolt_v3_providers/mod.rs"
+kind = "number"
+literal = "0"
+context = "const EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES: u64 = 0;"
+classification = "retry_loop_control_constant"
+reason = "This is the terminal retry-counter value for provider snapshot confirmation loops; the operator-owned retry budget remains TOML-owned through execution.max_retries."
+
+[[allowed]]
+path = "src/bolt_v3_providers/mod.rs"
+kind = "number"
+literal = "1"
+context = "const EXTERNAL_SNAPSHOT_RETRY_DECREMENT: u64 = 1;"
+classification = "retry_loop_control_constant"
+reason = "This consumes one configured provider snapshot retry attempt per confirmation iteration; the retry budget and delay values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_providers/mod.rs"
 kind = "string"
 literal = '''"clients.{client_key}.venue `{provider_key}` has no registered fee-provider binding"'''
 context = '''"clients.{client_key}.venue `{provider_key}` has no registered fee-provider binding",'''
@@ -4940,7 +4956,7 @@ reason = "This is a stable error/proof field label for venue account open-order 
 path = "src/bolt_v3_providers/polymarket/venue_account_state_source.rs"
 kind = "string"
 literal = '''"open_position_count"'''
-context = '''let open_position_count = usize_to_u64("open_position_count", reconciled_position_count)?;'''
+context = '''usize_to_u64("open_position_count", active_position_count(&positions))?;'''
 classification = "operator_artifact_field_name"
 reason = "This is a stable error/proof field label for venue account position count conversion, not an operator runtime value."
 

@@ -32,12 +32,14 @@ use crate::{
     bolt_v3_market_families::{self, MarketSelectionTarget},
     bolt_v3_providers::{
         ClobV2AdapterSigningSourceMaterializationRequest,
+        ClobV2CollateralAccountingSourceMaterialization,
         ClobV2CollateralAccountingSourceMaterializationRequest,
         ClobV2FeeBehaviorSourceMaterializationRequest, EntryDecisionSourceProviderContext,
         ProviderSecretResolveContext, VenueAccountStateSourceMaterializationRequest,
-        binding_for_provider_key,
+        binding_for_provider_key, confirm_external_snapshot_before_hard_stop,
         materialize_clob_v2_adapter_signing_source_from_nt_signing_source,
         materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance,
+        materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once,
         materialize_clob_v2_fee_behavior_source_from_nt_fee_sources,
         materialize_venue_account_state_source_from_configured_account_queries,
     },
@@ -4103,7 +4105,7 @@ pub async fn write_pre_run_clob_v2_collateral_accounting_source_artifact_from_co
         max_fee_rate_source_bytes,
     )?;
 
-    let materialized =
+    let mut materialized =
         materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
             ClobV2CollateralAccountingSourceMaterializationRequest {
                 schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
@@ -4115,6 +4117,30 @@ pub async fn write_pre_run_clob_v2_collateral_accounting_source_artifact_from_co
             },
         )
         .await?;
+    let confirmation_policy = materialized.confirmation_policy;
+    materialized = confirm_external_snapshot_before_hard_stop(
+        materialized,
+        confirmation_policy,
+        || {
+            materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once(
+                ClobV2CollateralAccountingSourceMaterializationRequest {
+                    schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
+                    balance_allowance_record_kind:
+                        PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BALANCE_ALLOWANCE_RECORD_KIND,
+                    loaded,
+                    strategy_instance_id,
+                    resolved,
+                },
+            )
+        },
+        |materialized| {
+            clob_v2_materialized_balance_allowance_below_required(
+                materialized,
+                collateral_requirement.required_max_notional_plus_fees,
+            )
+        },
+    )
+    .await;
     let p_usd_balance =
         parse_clob_v2_decimal(stringify!(p_usd_balance), &materialized.p_usd_balance)?;
     let p_usd_allowance =
@@ -4174,7 +4200,7 @@ pub async fn write_pre_run_funding_margin_source_artifact_from_configured_balanc
         fee_rate_source_sha256,
         max_fee_rate_source_bytes,
     )?;
-    let materialized =
+    let mut materialized =
         materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
             ClobV2CollateralAccountingSourceMaterializationRequest {
                 schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
@@ -4186,6 +4212,30 @@ pub async fn write_pre_run_funding_margin_source_artifact_from_configured_balanc
             },
         )
         .await?;
+    let confirmation_policy = materialized.confirmation_policy;
+    materialized = confirm_external_snapshot_before_hard_stop(
+        materialized,
+        confirmation_policy,
+        || {
+            materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once(
+                ClobV2CollateralAccountingSourceMaterializationRequest {
+                    schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
+                    balance_allowance_record_kind:
+                        PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BALANCE_ALLOWANCE_RECORD_KIND,
+                    loaded,
+                    strategy_instance_id,
+                    resolved,
+                },
+            )
+        },
+        |materialized| {
+            clob_v2_materialized_balance_allowance_below_required(
+                materialized,
+                collateral_requirement.required_max_notional_plus_fees,
+            )
+        },
+    )
+    .await;
     let p_usd_balance =
         parse_clob_v2_decimal(stringify!(p_usd_balance), &materialized.p_usd_balance)?;
     let p_usd_allowance =
@@ -4221,6 +4271,25 @@ struct ClobV2CollateralRequirement {
     fee_rate_source_sha256: String,
     max_fee_bps: Decimal,
     required_max_notional_plus_fees: Decimal,
+}
+
+fn clob_v2_materialized_balance_allowance_below_required(
+    materialized: &ClobV2CollateralAccountingSourceMaterialization,
+    required_max_notional_plus_fees: Decimal,
+) -> bool {
+    let Ok(p_usd_balance) =
+        parse_clob_v2_decimal(stringify!(p_usd_balance), &materialized.p_usd_balance)
+    else {
+        return true;
+    };
+    let Ok(p_usd_allowance) =
+        parse_clob_v2_decimal(stringify!(p_usd_allowance), &materialized.p_usd_allowance)
+    else {
+        return true;
+    };
+
+    p_usd_balance < required_max_notional_plus_fees
+        || p_usd_allowance < required_max_notional_plus_fees
 }
 
 fn derive_clob_v2_required_max_notional_plus_fees(

@@ -1391,13 +1391,126 @@ fn bolt_v3_cli_collects_venue_account_state_source_rejects_active_position() {
     );
 }
 
+#[test]
+fn bolt_v3_cli_collects_venue_account_state_source_confirms_transient_open_order_before_blocking() {
+    let temp = tempdir().expect("tempdir should create");
+    let output_path = temp.path().join("venue-account-state-source.json");
+    let output = run_venue_account_state_source_fixture_with_responses(
+        [
+            open_orders_body_with_one_live_order(),
+            empty_open_orders_body(),
+        ],
+        ["[]".into()],
+        &output_path,
+    );
+
+    assert!(
+        output.status.success(),
+        "expected transient open-order snapshot to be confirmed before blocking, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(
+        &fs::read(&output_path).expect("venue account state source should write"),
+    )
+    .expect("venue account state source should be JSON");
+    assert_eq!(json["open_order_count"], 0);
+    assert_eq!(json["open_position_count"], 0);
+}
+
+#[test]
+fn bolt_v3_cli_collects_venue_account_state_source_keeps_persistent_open_order_blocking() {
+    let temp = tempdir().expect("tempdir should create");
+    let output_path = temp.path().join("venue-account-state-source.json");
+    let output = run_venue_account_state_source_fixture_with_responses(
+        [
+            open_orders_body_with_one_live_order(),
+            open_orders_body_with_one_live_order(),
+            open_orders_body_with_one_live_order(),
+            open_orders_body_with_one_live_order(),
+        ],
+        ["[]".into()],
+        &output_path,
+    );
+
+    assert!(
+        !output.status.success(),
+        "expected persistent open order to remain blocking"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("conflicting_open_orders_absent"),
+        "expected open-order failure to identify conflicting_open_orders_absent, got: {stderr}"
+    );
+    assert!(
+        !output_path.exists(),
+        "blocking venue account source should not write an output artifact"
+    );
+}
+
+#[test]
+fn bolt_v3_cli_collects_venue_account_state_source_confirms_transient_active_position_before_blocking()
+ {
+    let temp = tempdir().expect("tempdir should create");
+    let output_path = temp.path().join("venue-account-state-source.json");
+    let active_positions = format!(
+        r#"[
+            {{
+                "asset": "stale-active-token",
+                "conditionId": "0xstale-active-condition",
+                "size": {},
+                "avgPrice": null
+            }}
+        ]"#,
+        DUST_POSITION_THRESHOLD
+    );
+    let output = run_venue_account_state_source_fixture_with_data_api_bodies(
+        [active_positions, "[]".into()],
+        &output_path,
+    );
+
+    assert!(
+        output.status.success(),
+        "expected transient active position snapshot to be confirmed before blocking, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(
+        &fs::read(&output_path).expect("venue account state source should write"),
+    )
+    .expect("venue account state source should be JSON");
+    assert_eq!(json["open_order_count"], 0);
+    assert_eq!(json["open_position_count"], 0);
+}
+
 fn run_venue_account_state_source_fixture(
     data_api_positions_body: impl Into<String>,
     output_path: &Path,
 ) -> Output {
-    let (clob_url, _clob_request_rx) = spawn_one_shot_clob_open_orders_server();
+    run_venue_account_state_source_fixture_with_data_api_bodies(
+        [data_api_positions_body.into()],
+        output_path,
+    )
+}
+
+fn run_venue_account_state_source_fixture_with_data_api_bodies(
+    data_api_positions_bodies: impl IntoIterator<Item = String>,
+    output_path: &Path,
+) -> Output {
+    run_venue_account_state_source_fixture_with_responses(
+        [empty_open_orders_body()],
+        data_api_positions_bodies,
+        output_path,
+    )
+}
+
+fn run_venue_account_state_source_fixture_with_responses(
+    clob_open_orders_bodies: impl IntoIterator<Item = String>,
+    data_api_positions_bodies: impl IntoIterator<Item = String>,
+    output_path: &Path,
+) -> Output {
+    let (clob_url, _clob_request_rx) =
+        spawn_clob_open_orders_server_with_bodies(clob_open_orders_bodies);
     let (data_api_url, _data_api_request_rx) =
-        spawn_one_shot_data_api_positions_server_with_body(data_api_positions_body);
+        spawn_data_api_positions_server_with_bodies(data_api_positions_bodies);
     let (ssm_url, _ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
         (
             "/bolt/polymarket_main/private_key",
@@ -1606,6 +1719,146 @@ fn bolt_v3_cli_collects_funding_margin_source_from_ssm_backed_balance_allowance(
 }
 
 #[test]
+fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_confirms_transient_low_balance_allowance_before_blocking()
+ {
+    let temp = tempdir().expect("tempdir should create");
+    let (clob_url, _clob_request_rx) = spawn_clob_balance_allowance_server_with_bodies([
+        balance_allowance_body("0", "0"),
+        balance_allowance_body("1000000000", "999999999000000"),
+    ]);
+    let output_path = temp
+        .path()
+        .join("clob-v2-collateral-accounting-source.json");
+
+    let output = run_clob_v2_collateral_accounting_source_fixture(&clob_url, &temp, &output_path);
+
+    assert!(
+        output.status.success(),
+        "expected transient low balance/allowance to be confirmed before blocking, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(
+        &fs::read(&output_path).expect("CLOB V2 collateral source should write"),
+    )
+    .expect("CLOB V2 collateral source should be JSON");
+    assert_eq!(json["collateral_accounting_verified"], true);
+    assert_eq!(json["p_usd_balance"], "1000");
+    assert_eq!(json["p_usd_allowance"], "999999999");
+}
+
+#[test]
+fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_keeps_persistent_low_balance_blocking()
+{
+    let temp = tempdir().expect("tempdir should create");
+    let (clob_url, _clob_request_rx) = spawn_clob_balance_allowance_server_with_bodies([
+        balance_allowance_body("0", "0"),
+        balance_allowance_body("0", "0"),
+        balance_allowance_body("0", "0"),
+        balance_allowance_body("0", "0"),
+    ]);
+    let output_path = temp
+        .path()
+        .join("clob-v2-collateral-accounting-source.json");
+
+    let output = run_clob_v2_collateral_accounting_source_fixture(&clob_url, &temp, &output_path);
+
+    assert!(
+        !output.status.success(),
+        "expected persistent low balance/allowance to remain blocking"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("collateral_accounting_verified"),
+        "expected collateral failure to identify collateral_accounting_verified, got: {stderr}"
+    );
+    assert!(
+        !output_path.exists(),
+        "blocking CLOB V2 collateral source should not write an output artifact"
+    );
+}
+
+#[test]
+fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_keeps_blocking_when_confirmation_fetch_fails()
+ {
+    let temp = tempdir().expect("tempdir should create");
+    let (clob_url, _clob_request_rx) = spawn_clob_balance_allowance_server_with_statuses([
+        (200, balance_allowance_body("0", "0")),
+        (500, r#"{"error":"temporary"}"#.to_string()),
+    ]);
+    let output_path = temp
+        .path()
+        .join("clob-v2-collateral-accounting-source.json");
+
+    let output = run_clob_v2_collateral_accounting_source_fixture(&clob_url, &temp, &output_path);
+
+    assert!(
+        !output.status.success(),
+        "expected confirmation fetch failure to keep low balance/allowance blocking"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("collateral_accounting_verified"),
+        "expected collateral failure to identify collateral_accounting_verified, got: {stderr}"
+    );
+    assert!(
+        !output_path.exists(),
+        "confirmation fetch failure should not write an output artifact"
+    );
+}
+
+#[test]
+fn bolt_v3_cli_collects_funding_margin_source_confirms_transient_low_balance_allowance_before_blocking()
+ {
+    let temp = tempdir().expect("tempdir should create");
+    let (clob_url, _clob_request_rx) = spawn_clob_balance_allowance_server_with_bodies([
+        balance_allowance_body("0", "0"),
+        balance_allowance_body("1000000000", "999999999000000"),
+    ]);
+    let output_path = temp.path().join("funding-margin-source.json");
+
+    let output = run_funding_margin_source_fixture(&clob_url, &temp, &output_path);
+
+    assert!(
+        output.status.success(),
+        "expected transient low balance/allowance to be confirmed before blocking, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&fs::read(&output_path).expect("funding source should write"))
+            .expect("funding source should be JSON");
+    assert_eq!(json["available_collateral"], "1000");
+    assert_eq!(json["required_max_notional_plus_fees"], "10.0035");
+}
+
+#[test]
+fn bolt_v3_cli_collects_funding_margin_source_keeps_persistent_low_balance_blocking() {
+    let temp = tempdir().expect("tempdir should create");
+    let (clob_url, _clob_request_rx) = spawn_clob_balance_allowance_server_with_bodies([
+        balance_allowance_body("0", "0"),
+        balance_allowance_body("0", "0"),
+        balance_allowance_body("0", "0"),
+        balance_allowance_body("0", "0"),
+    ]);
+    let output_path = temp.path().join("funding-margin-source.json");
+
+    let output = run_funding_margin_source_fixture(&clob_url, &temp, &output_path);
+
+    assert!(
+        !output.status.success(),
+        "expected persistent low balance/allowance to remain blocking"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("funding_margin_covers_max_notional_plus_fees"),
+        "expected funding failure to identify funding_margin_covers_max_notional_plus_fees, got: {stderr}"
+    );
+    assert!(
+        !output_path.exists(),
+        "blocking funding margin source should not write an output artifact"
+    );
+}
+
+#[test]
 fn bolt_v3_cli_exposes_funding_margin_source_from_configured_balance_allowance() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
@@ -1639,6 +1892,148 @@ fn bolt_v3_cli_exposes_funding_margin_source_from_configured_balance_allowance()
             "help exposes caller-supplied source field {forbidden}: {stdout}"
         );
     }
+}
+
+fn run_clob_v2_collateral_accounting_source_fixture(
+    clob_url: &str,
+    temp: &tempfile::TempDir,
+    output_path: &Path,
+) -> Output {
+    let (ssm_url, _ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
+        (
+            "/bolt/polymarket_main/private_key",
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+        ),
+        ("/bolt/polymarket_main/api_key", "poly-api-key"),
+        ("/bolt/polymarket_main/api_secret", "YWJj"),
+        ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/binance_reference/api_key", "binance-api-key"),
+        (
+            "/bolt/binance_reference/api_secret",
+            "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
+        ),
+    ]));
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!(
+            "{}\n{}",
+            root.replace(
+                "base_url_http = \"https://clob.polymarket.com\"",
+                &format!("base_url_http = \"{clob_url}\""),
+            ),
+            live_canary_toml_without_operator_evidence()
+        )
+    });
+    let fee_rate_source_path = write_cli_json_artifact(
+        temp.path(),
+        "fee-rate-source.json",
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.entry_decision_fee_rate_source.v1",
+            "fee_bps_by_instrument_id": {
+                "condition-token-up.POLYMARKET": 2.5,
+                "condition-token-down.POLYMARKET": 3.5
+            }
+        }),
+    );
+    let fee_rate_source_sha256 = sha256_file_for_cli_test(&fee_rate_source_path);
+
+    Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-pre-run-clob-v2-collateral-accounting-source",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+            "--fee-rate-source",
+            fee_rate_source_path
+                .to_str()
+                .expect("fee source path should be utf-8"),
+            "--fee-rate-source-sha256",
+            &fee_rate_source_sha256,
+            "--max-fee-rate-source-bytes",
+            "100000",
+            "--output",
+            output_path.to_str().expect("output path should be utf-8"),
+        ])
+        .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
+        .env("AWS_ACCESS_KEY_ID", "fake-access-key")
+        .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
+        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_MAX_ATTEMPTS", "1")
+        .output()
+        .expect("bolt-v3 CLOB V2 collateral source collection should run")
+}
+
+fn run_funding_margin_source_fixture(
+    clob_url: &str,
+    temp: &tempfile::TempDir,
+    output_path: &Path,
+) -> Output {
+    let (ssm_url, _ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
+        (
+            "/bolt/polymarket_main/private_key",
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+        ),
+        ("/bolt/polymarket_main/api_key", "poly-api-key"),
+        ("/bolt/polymarket_main/api_secret", "YWJj"),
+        ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/binance_reference/api_key", "binance-api-key"),
+        (
+            "/bolt/binance_reference/api_secret",
+            "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
+        ),
+    ]));
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!(
+            "{}\n{}",
+            root.replace(
+                "base_url_http = \"https://clob.polymarket.com\"",
+                &format!("base_url_http = \"{clob_url}\""),
+            ),
+            live_canary_toml_without_operator_evidence()
+        )
+    });
+    let fee_rate_source_path = write_cli_json_artifact(
+        temp.path(),
+        "fee-rate-source.json",
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.entry_decision_fee_rate_source.v1",
+            "fee_bps_by_instrument_id": {
+                "condition-token-up.POLYMARKET": 2.5,
+                "condition-token-down.POLYMARKET": 3.5
+            }
+        }),
+    );
+    let fee_rate_source_sha256 = sha256_file_for_cli_test(&fee_rate_source_path);
+
+    Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-pre-run-funding-margin-source",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+            "--fee-rate-source",
+            fee_rate_source_path
+                .to_str()
+                .expect("fee source path should be utf-8"),
+            "--fee-rate-source-sha256",
+            &fee_rate_source_sha256,
+            "--max-fee-rate-source-bytes",
+            "100000",
+            "--output",
+            output_path.to_str().expect("output path should be utf-8"),
+        ])
+        .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
+        .env("AWS_ACCESS_KEY_ID", "fake-access-key")
+        .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
+        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_MAX_ATTEMPTS", "1")
+        .output()
+        .expect("bolt-v3 funding margin source collection should run")
 }
 
 #[test]
@@ -1688,47 +2083,103 @@ fn spawn_one_shot_clob_balance_allowance_server(
     balance: &'static str,
     allowance: &'static str,
 ) -> (String, mpsc::Receiver<String>) {
+    spawn_clob_balance_allowance_server_with_bodies([balance_allowance_body(balance, allowance)])
+}
+
+fn spawn_clob_balance_allowance_server_with_bodies(
+    bodies: impl IntoIterator<Item = String>,
+) -> (String, mpsc::Receiver<String>) {
+    spawn_clob_balance_allowance_server_with_statuses(bodies.into_iter().map(|body| (200, body)))
+}
+
+fn spawn_clob_balance_allowance_server_with_statuses(
+    responses: impl IntoIterator<Item = (u16, String)>,
+) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test CLOB server should bind");
     let address = listener.local_addr().expect("test CLOB server address");
+    let responses: Vec<(u16, String)> = responses.into_iter().collect();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("test CLOB request should connect");
-        let request = read_test_http_request(&mut stream);
-        tx.send(request)
-            .expect("test CLOB request should report to caller");
-        let body = format!(r#"{{"balance":"{balance}","allowance":"{allowance}"}}"#);
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream
-            .write_all(response.as_bytes())
-            .expect("test CLOB response should write");
+        for (status, body) in responses {
+            let (mut stream, _) = listener.accept().expect("test CLOB request should connect");
+            let request = read_test_http_request(&mut stream);
+            tx.send(request)
+                .expect("test CLOB request should report to caller");
+            let reason = match status {
+                200 => "OK",
+                500 => "Internal Server Error",
+                _ => "Test Status",
+            };
+            let response = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("test CLOB response should write");
+        }
     });
     (format!("http://{address}"), rx)
 }
 
+fn balance_allowance_body(balance: &str, allowance: &str) -> String {
+    format!(r#"{{"balance":"{balance}","allowance":"{allowance}"}}"#)
+}
+
 fn spawn_one_shot_clob_open_orders_server() -> (String, mpsc::Receiver<String>) {
+    spawn_clob_open_orders_server_with_bodies([empty_open_orders_body()])
+}
+
+fn spawn_clob_open_orders_server_with_bodies(
+    bodies: impl IntoIterator<Item = String>,
+) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test CLOB server should bind");
     let address = listener.local_addr().expect("test CLOB server address");
+    let bodies: Vec<String> = bodies.into_iter().collect();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("test CLOB request should connect");
-        let request = read_test_http_request(&mut stream);
-        tx.send(request)
-            .expect("test CLOB request should report to caller");
-        let body = r#"{"data":[],"next_cursor":"LTE="}"#;
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream
-            .write_all(response.as_bytes())
-            .expect("test CLOB response should write");
+        for body in bodies {
+            let (mut stream, _) = listener.accept().expect("test CLOB request should connect");
+            let request = read_test_http_request(&mut stream);
+            tx.send(request)
+                .expect("test CLOB request should report to caller");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("test CLOB response should write");
+        }
     });
     (format!("http://{address}"), rx)
+}
+
+fn empty_open_orders_body() -> String {
+    r#"{"data":[],"next_cursor":"LTE="}"#.to_string()
+}
+
+fn open_orders_body_with_one_live_order() -> String {
+    r#"{"data":[{
+        "associate_trades":["0xabc001"],
+        "id":"0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef12",
+        "status":"LIVE",
+        "market":"0xdd22472e552920b8438158ea7238bfadfa4f736aa4cee91a6b86c39ead110917",
+        "original_size":"100.0000",
+        "outcome":"Yes",
+        "maker_address":"0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "owner":"00000000-0000-0000-0000-000000000001",
+        "price":"0.5000",
+        "side":"BUY",
+        "size_matched":"25.0000",
+        "asset_id":"71321045679252212594626385532706912750332728571942532289631379312455583992563",
+        "expiration":null,
+        "order_type":"GTC",
+        "created_at":1703875200
+    }],"next_cursor":"LTE="}"#
+        .to_string()
 }
 
 fn spawn_one_shot_data_api_positions_server() -> (String, mpsc::Receiver<String>) {
@@ -1738,25 +2189,33 @@ fn spawn_one_shot_data_api_positions_server() -> (String, mpsc::Receiver<String>
 fn spawn_one_shot_data_api_positions_server_with_body(
     body: impl Into<String>,
 ) -> (String, mpsc::Receiver<String>) {
+    spawn_data_api_positions_server_with_bodies([body.into()])
+}
+
+fn spawn_data_api_positions_server_with_bodies(
+    bodies: impl IntoIterator<Item = String>,
+) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test Data API server should bind");
     let address = listener.local_addr().expect("test Data API server address");
-    let body = body.into();
+    let bodies: Vec<String> = bodies.into_iter().collect();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let (mut stream, _) = listener
-            .accept()
-            .expect("test Data API request should connect");
-        let request = read_test_http_request(&mut stream);
-        tx.send(request)
-            .expect("test Data API request should report to caller");
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream
-            .write_all(response.as_bytes())
-            .expect("test Data API response should write");
+        for body in bodies {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test Data API request should connect");
+            let request = read_test_http_request(&mut stream);
+            tx.send(request)
+                .expect("test Data API request should report to caller");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("test Data API response should write");
+        }
     });
     (format!("http://{address}"), rx)
 }

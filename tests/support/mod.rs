@@ -337,7 +337,7 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
     }
 }
 
-fn valid_entry_readiness_gate_session_json() -> serde_json::Value {
+pub fn valid_entry_readiness_gate_session_json() -> serde_json::Value {
     let selected_market_key = "b".repeat(64);
     serde_json::json!({
         "schema_version": 1,

@@ -18,7 +18,9 @@ use nautilus_polymarket::common::consts::DUST_POSITION_THRESHOLD;
 use sha2::{Digest, Sha256};
 
 mod support;
-use support::{repo_path, valid_live_canary_operator_evidence};
+use support::{
+    repo_path, valid_entry_readiness_gate_session_json, valid_live_canary_operator_evidence,
+};
 use tempfile::tempdir;
 
 #[test]
@@ -325,6 +327,12 @@ fn bolt_v3_cli_generates_operator_evidence_json_without_printing_values() {
         "strategy-input.json",
         serde_json::json!({"record_kind": "test_strategy_input"}),
     );
+    let gate_session_path = write_cli_json_artifact(
+        &evidence_dir,
+        "entry-readiness-gate-session.json",
+        valid_entry_readiness_gate_session_json(),
+    );
+    let expected_gate_session_sha256 = sha256_file_for_cli_test(&gate_session_path);
     let financial_envelope_path = write_cli_json_artifact(
         &evidence_dir,
         "financial-envelope.json",
@@ -380,6 +388,12 @@ fn bolt_v3_cli_generates_operator_evidence_json_without_printing_values() {
             strategy_input_path
                 .to_str()
                 .expect("strategy input path should be utf-8"),
+            "--gate-session",
+            gate_session_path
+                .to_str()
+                .expect("gate session path should be utf-8"),
+            "--expected-gate-session-sha256",
+            &expected_gate_session_sha256,
             "--financial-envelope",
             financial_envelope_path
                 .to_str()
@@ -478,6 +492,14 @@ fn bolt_v3_cli_generates_operator_evidence_json_without_printing_values() {
         sha256_file_for_cli_test(&strategy_input_path)
     );
     assert_eq!(
+        operator_evidence.gate_session_path.as_deref(),
+        Some(gate_session_path.to_str().expect("gate session path"))
+    );
+    assert_eq!(
+        operator_evidence.expected_gate_session_sha256.as_deref(),
+        Some(expected_gate_session_sha256.as_str())
+    );
+    assert_eq!(
         operator_evidence.financial_envelope_sha256,
         sha256_file_for_cli_test(&financial_envelope_path)
     );
@@ -516,6 +538,10 @@ fn bolt_v3_cli_generates_operator_evidence_json_without_printing_values() {
     for forbidden in [
         operator_evidence.ssm_manifest_path.as_str(),
         operator_evidence.strategy_input_evidence_path.as_str(),
+        operator_evidence
+            .gate_session_path
+            .as_deref()
+            .expect("operator evidence should bind gate session path"),
         operator_evidence.financial_envelope_path.as_str(),
         operator_evidence.pre_run_state_path.as_str(),
         operator_evidence.abort_plan_path.as_str(),

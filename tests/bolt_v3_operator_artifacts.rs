@@ -42,7 +42,7 @@ use nautilus_model::{
 };
 
 mod support;
-use support::repo_path;
+use support::{repo_path, valid_entry_readiness_gate_session_json};
 
 // Test-only updown fixture values mirror tests/fixtures/bolt_v3/strategies/binary_oracle.toml.
 const TEST_MARKET_SELECTION_UNDERLYING_ASSET: &str = "BTC";
@@ -3758,6 +3758,20 @@ fn approval_packet_assembly_writes_non_circular_envelope_from_existing_refs() {
     assert_eq!(
         operator_packet["live_canary_operator_evidence"]["ssm_manifest_sha256"],
         operator_evidence.ssm_manifest_sha256
+    );
+    assert_eq!(
+        operator_packet["live_canary_operator_evidence"]["gate_session_path"],
+        operator_evidence
+            .gate_session_path
+            .as_deref()
+            .expect("operator evidence should bind gate session path")
+    );
+    assert_eq!(
+        operator_packet["live_canary_operator_evidence"]["expected_gate_session_sha256"],
+        operator_evidence
+            .expected_gate_session_sha256
+            .as_deref()
+            .expect("operator evidence should bind gate session sha256")
     );
     for forbidden in [
         "max_operator_evidence_file_bytes",
@@ -10302,6 +10316,14 @@ fn assert_manifest_entry(
 fn test_operator_evidence_packet_bindings(
     dir: &std::path::Path,
 ) -> LiveCanaryOperatorEvidenceBlock {
+    let gate_session_path = dir.join("entry-readiness-gate-session.json");
+    std::fs::write(
+        &gate_session_path,
+        serde_json::to_vec(&valid_entry_readiness_gate_session_json())
+            .expect("gate session fixture should encode"),
+    )
+    .expect("gate session fixture should write");
+    let expected_gate_session_sha256 = sha256_file(&gate_session_path);
     LiveCanaryOperatorEvidenceBlock {
         head_sha: "1234567890abcdef1234567890abcdef12345678".to_string(),
         max_operator_evidence_file_bytes: 100_000,
@@ -10318,8 +10340,8 @@ fn test_operator_evidence_packet_bindings(
             .to_string_lossy()
             .to_string(),
         strategy_input_evidence_sha256: String::new(),
-        gate_session_path: None,
-        expected_gate_session_sha256: None,
+        gate_session_path: Some(gate_session_path.to_string_lossy().to_string()),
+        expected_gate_session_sha256: Some(expected_gate_session_sha256),
         financial_envelope_path: dir
             .join("financial-envelope.json")
             .to_string_lossy()

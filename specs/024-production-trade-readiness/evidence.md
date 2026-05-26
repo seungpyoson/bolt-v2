@@ -888,3 +888,25 @@ This was local fake-fixture and local source verification only. It did not use G
   - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H17 remains open for the remaining CLI command contract, registration/live-node runtime path, final-packet path/hash materialization, and complete readiness-session consumer rewiring.
+
+## T036H17 Partial Final-Packet Gate-Session Binding
+
+- `operator-artifacts generate-operator-evidence-json` now accepts provider-neutral `--gate-session` and `--expected-gate-session-sha256`, verifies the bounded gate-session file hash before writing operator evidence JSON, and writes those fields into `[live_canary.operator_evidence]`.
+- Operator-evidence TOML patch validation now requires a materialized gate-session path/hash pair and verifies the configured file hash before patching.
+- `operator-evidence-packet.json` now carries `gate_session_path` and `expected_gate_session_sha256`, and final-packet verification compares those fields back to the root TOML operator-evidence block before accepting the packet.
+- RED proof before implementation:
+  - `cargo test --locked --test bolt_v3_cli bolt_v3_cli_generates_operator_evidence_json_without_printing_values -- --nocapture` failed because `generate-operator-evidence-json` rejected `--gate-session` as an unexpected argument.
+  - `cargo test --locked --test bolt_v3_operator_artifacts approval_packet_assembly_writes_non_circular_envelope_from_existing_refs -- --nocapture` failed because the assembled operator packet omitted `gate_session_path`.
+- Local verification:
+  - `cargo test --locked --test bolt_v3_cli --test bolt_v3_operator_artifacts -- --nocapture`: 224 passed, 0 failed.
+  - `cargo test --locked --test bolt_v3_cli --test bolt_v3_operator_artifacts --test bolt_v3_live_canary_gate --test bolt_v3_no_submit_readiness -- --nocapture`: 327 passed, 0 failed.
+  - `cargo clippy --locked --lib -- -D warnings`: passed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+  - `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+  - `python3 scripts/verify_bolt_v3_provider_leaks.py`: `OK: Bolt-v3 provider-leak verifier passed.`
+  - `python3 scripts/verify_bolt_v3_core_boundary.py`: `OK: Bolt-v3 core boundary audit passed.`
+  - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H17 remains open for the remaining generic CLI command cleanup, registration/live-node runtime path, and complete readiness-session consumer rewiring.

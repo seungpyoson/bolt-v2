@@ -122,6 +122,9 @@ const CHAINLINK_FEED_ID_HEX_LENGTH: usize = 64;
 const SSM_MANIFEST_ARTIFACT_NAME: &str = "ssm-manifest";
 const FINANCIAL_ENVELOPE_ARTIFACT_NAME: &str = "financial-envelope";
 const STRATEGY_INPUT_ARTIFACT_NAME: &str = "strategy-input";
+const GATE_SESSION_ARTIFACT_NAME: &str = "gate-session";
+const OPERATOR_EVIDENCE_GATE_SESSION_PATH_FIELD: &str = "gate_session_path";
+const OPERATOR_EVIDENCE_EXPECTED_GATE_SESSION_SHA256_FIELD: &str = "expected_gate_session_sha256";
 const PRE_RUN_STATE_ARTIFACT_NAME: &str = "pre-run-state";
 const ABORT_PLAN_ARTIFACT_NAME: &str = "abort-plan";
 const APPROVAL_NONCE_ARTIFACT_NAME: &str = "approval-nonce";
@@ -541,6 +544,8 @@ pub struct BoltV3OperatorEvidencePacketBlock {
     pub ssm_manifest_sha256: String,
     pub strategy_input_evidence_path: String,
     pub strategy_input_evidence_sha256: String,
+    pub gate_session_path: String,
+    pub expected_gate_session_sha256: String,
     pub financial_envelope_path: String,
     pub financial_envelope_sha256: String,
     pub pre_run_state_path: String,
@@ -3073,6 +3078,8 @@ pub struct OperatorEvidenceJsonBuildInputs<'a> {
     pub approval_envelope_path: &'a Path,
     pub ssm_manifest_path: &'a Path,
     pub strategy_input_evidence_path: &'a Path,
+    pub gate_session_path: &'a Path,
+    pub expected_gate_session_sha256: &'a str,
     pub financial_envelope_path: &'a Path,
     pub pre_run_state_path: &'a Path,
     pub abort_plan_path: &'a Path,
@@ -8323,8 +8330,8 @@ pub fn write_operator_evidence_json_from_artifact_paths(
             inputs.strategy_input_evidence_path,
             max_bytes,
         )?,
-        gate_session_path: None,
-        expected_gate_session_sha256: None,
+        gate_session_path: Some(operator_evidence_path_string(inputs.gate_session_path)),
+        expected_gate_session_sha256: Some(inputs.expected_gate_session_sha256.to_string()),
         financial_envelope_path: operator_evidence_path_string(inputs.financial_envelope_path),
         financial_envelope_sha256: operator_evidence_artifact_sha256(
             loaded,
@@ -8525,6 +8532,44 @@ fn validate_operator_evidence_static_artifacts_materialized_for_toml_patch(
             );
         }
     }
+    validate_operator_evidence_gate_session_file(config_path, evidence)?;
+    Ok(())
+}
+
+fn validate_operator_evidence_gate_session_file(
+    config_path: &Path,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let gate_session_path = required_operator_evidence_field(
+        OPERATOR_EVIDENCE_GATE_SESSION_PATH_FIELD,
+        evidence.gate_session_path.as_deref(),
+    )?;
+    let expected_gate_session_sha256 = required_operator_evidence_field(
+        OPERATOR_EVIDENCE_EXPECTED_GATE_SESSION_SHA256_FIELD,
+        evidence.expected_gate_session_sha256.as_deref(),
+    )?;
+    validate_operator_evidence_toml_path(
+        OPERATOR_EVIDENCE_GATE_SESSION_PATH_FIELD,
+        gate_session_path,
+    )?;
+    validate_operator_evidence_sha256(
+        OPERATOR_EVIDENCE_EXPECTED_GATE_SESSION_SHA256_FIELD,
+        expected_gate_session_sha256,
+    )?;
+    let resolved_path = resolve_config_path_from_config_path(config_path, gate_session_path);
+    let actual_sha256 = sha256_file_for_static_manifest(
+        GATE_SESSION_ARTIFACT_NAME,
+        &resolved_path,
+        evidence.max_operator_evidence_file_bytes,
+    )?;
+    if actual_sha256 != expected_gate_session_sha256 {
+        return Err(
+            BoltV3OperatorArtifactError::StaticManifestArtifactFileHashMismatch {
+                name: GATE_SESSION_ARTIFACT_NAME,
+                path: resolved_path,
+            },
+        );
+    }
     Ok(())
 }
 
@@ -8691,6 +8736,8 @@ struct BoltV3OperatorEvidencePacketBlockInput {
     ssm_manifest_sha256: String,
     strategy_input_evidence_path: String,
     strategy_input_evidence_sha256: String,
+    gate_session_path: String,
+    expected_gate_session_sha256: String,
     financial_envelope_path: String,
     financial_envelope_sha256: String,
     pre_run_state_path: String,
@@ -8742,6 +8789,7 @@ pub fn assemble_operator_packet_from_static_manifest(
         static_manifest,
         operator_evidence,
     )?;
+    validate_operator_evidence_gate_session_file(&loaded.root_path, operator_evidence)?;
 
     let approval_envelope = approval_envelope_from_operator_evidence(
         operator_evidence,
@@ -8754,7 +8802,7 @@ pub fn assemble_operator_packet_from_static_manifest(
         parsed_static_manifest.sha256.as_str(),
         operator_evidence,
         approval_envelope_sha256.clone(),
-    );
+    )?;
 
     validate_output_path_shape(
         "approval_envelope_path",
@@ -8847,6 +8895,7 @@ pub fn verify_final_operator_packet_with_scope(
         .as_ref()
         .ok_or(BoltV3OperatorArtifactError::MissingOperatorEvidence)?;
     validate_operator_evidence_build_head(operator_evidence)?;
+    validate_operator_evidence_gate_session_file(&loaded.root_path, operator_evidence)?;
 
     let operator_packet_path = resolve_loaded_config_path_from_path(loaded, operator_packet_path);
     let operator_packet_bytes = read_file_bounded(
@@ -9430,6 +9479,14 @@ fn validate_operator_packet_evidence_block(
     expected: &LiveCanaryOperatorEvidenceBlock,
     actual: &BoltV3OperatorEvidencePacketBlockInput,
 ) -> Result<(), BoltV3OperatorArtifactError> {
+    let expected_gate_session_path = required_operator_evidence_field(
+        OPERATOR_EVIDENCE_GATE_SESSION_PATH_FIELD,
+        expected.gate_session_path.as_deref(),
+    )?;
+    let expected_gate_session_sha256 = required_operator_evidence_field(
+        OPERATOR_EVIDENCE_EXPECTED_GATE_SESSION_SHA256_FIELD,
+        expected.expected_gate_session_sha256.as_deref(),
+    )?;
     for (field, actual, expected) in [
         (
             "head_sha",
@@ -9465,6 +9522,16 @@ fn validate_operator_packet_evidence_block(
             "strategy_input_evidence_sha256",
             actual.strategy_input_evidence_sha256.as_str(),
             expected.strategy_input_evidence_sha256.as_str(),
+        ),
+        (
+            OPERATOR_EVIDENCE_GATE_SESSION_PATH_FIELD,
+            actual.gate_session_path.as_str(),
+            expected_gate_session_path,
+        ),
+        (
+            OPERATOR_EVIDENCE_EXPECTED_GATE_SESSION_SHA256_FIELD,
+            actual.expected_gate_session_sha256.as_str(),
+            expected_gate_session_sha256,
         ),
         (
             "financial_envelope_path",
@@ -10226,8 +10293,16 @@ fn operator_evidence_packet(
     static_manifest_sha256: &str,
     evidence: &LiveCanaryOperatorEvidenceBlock,
     approval_envelope_sha256: String,
-) -> BoltV3OperatorEvidencePacket {
-    BoltV3OperatorEvidencePacket {
+) -> Result<BoltV3OperatorEvidencePacket, BoltV3OperatorArtifactError> {
+    let gate_session_path = required_operator_evidence_field(
+        OPERATOR_EVIDENCE_GATE_SESSION_PATH_FIELD,
+        evidence.gate_session_path.as_deref(),
+    )?;
+    let expected_gate_session_sha256 = required_operator_evidence_field(
+        OPERATOR_EVIDENCE_EXPECTED_GATE_SESSION_SHA256_FIELD,
+        evidence.expected_gate_session_sha256.as_deref(),
+    )?;
+    Ok(BoltV3OperatorEvidencePacket {
         schema_version: OPERATOR_EVIDENCE_PACKET_SCHEMA_VERSION,
         record_kind: OPERATOR_EVIDENCE_PACKET_RECORD_KIND,
         config_bundle_checksum: loaded.config_bundle_checksum.clone(),
@@ -10241,6 +10316,8 @@ fn operator_evidence_packet(
             ssm_manifest_sha256: evidence.ssm_manifest_sha256.clone(),
             strategy_input_evidence_path: evidence.strategy_input_evidence_path.clone(),
             strategy_input_evidence_sha256: evidence.strategy_input_evidence_sha256.clone(),
+            gate_session_path: gate_session_path.to_string(),
+            expected_gate_session_sha256: expected_gate_session_sha256.to_string(),
             financial_envelope_path: evidence.financial_envelope_path.clone(),
             financial_envelope_sha256: evidence.financial_envelope_sha256.clone(),
             pre_run_state_path: evidence.pre_run_state_path.clone(),
@@ -10258,7 +10335,7 @@ fn operator_evidence_packet(
             restart_reconciliation_path: evidence.restart_reconciliation_path.clone(),
             post_run_hygiene_path: evidence.post_run_hygiene_path.clone(),
         },
-    }
+    })
 }
 
 fn build_approval_nonce_artifact()
@@ -10572,6 +10649,14 @@ fn validate_live_canary_operator_evidence_toml_patch(
             field: "approval_not_after_unix_seconds",
         });
     }
+    let gate_session_path = required_operator_evidence_field(
+        OPERATOR_EVIDENCE_GATE_SESSION_PATH_FIELD,
+        evidence.gate_session_path.as_deref(),
+    )?;
+    let expected_gate_session_sha256 = required_operator_evidence_field(
+        OPERATOR_EVIDENCE_EXPECTED_GATE_SESSION_SHA256_FIELD,
+        evidence.expected_gate_session_sha256.as_deref(),
+    )?;
     for (field, value) in [
         (
             "approval_envelope_sha256",
@@ -10595,6 +10680,10 @@ fn validate_live_canary_operator_evidence_toml_patch(
             "approval_nonce_sha256",
             evidence.approval_nonce_sha256.as_str(),
         ),
+        (
+            OPERATOR_EVIDENCE_EXPECTED_GATE_SESSION_SHA256_FIELD,
+            expected_gate_session_sha256,
+        ),
     ] {
         validate_operator_evidence_sha256(field, value)?;
     }
@@ -10608,6 +10697,7 @@ fn validate_live_canary_operator_evidence_toml_patch(
             "strategy_input_evidence_path",
             evidence.strategy_input_evidence_path.as_str(),
         ),
+        (OPERATOR_EVIDENCE_GATE_SESSION_PATH_FIELD, gate_session_path),
         (
             "financial_envelope_path",
             evidence.financial_envelope_path.as_str(),
@@ -10650,6 +10740,15 @@ fn validate_live_canary_operator_evidence_toml_patch(
         validate_operator_evidence_toml_path("strategy_cancel_path", strategy_cancel_path)?;
     }
     Ok(())
+}
+
+fn required_operator_evidence_field<'a>(
+    field: &'static str,
+    value: Option<&'a str>,
+) -> Result<&'a str, BoltV3OperatorArtifactError> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(BoltV3OperatorArtifactError::OperatorEvidenceTomlInvalid { field })
 }
 
 fn validate_operator_evidence_toml_path(

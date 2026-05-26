@@ -149,6 +149,10 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         strategy_input_evidence: PathBuf,
         #[arg(long)]
+        gate_session: PathBuf,
+        #[arg(long)]
+        expected_gate_session_sha256: String,
+        #[arg(long)]
         financial_envelope: PathBuf,
         #[arg(long)]
         pre_run_state: PathBuf,
@@ -591,6 +595,8 @@ fn run_operator_artifacts_command(
             approval_envelope,
             ssm_manifest,
             strategy_input_evidence,
+            gate_session,
+            expected_gate_session_sha256,
             financial_envelope,
             pre_run_state,
             abort_plan,
@@ -615,6 +621,8 @@ fn run_operator_artifacts_command(
                     approval_envelope_path: &approval_envelope,
                     ssm_manifest_path: &ssm_manifest,
                     strategy_input_evidence_path: &strategy_input_evidence,
+                    gate_session_path: &gate_session,
+                    expected_gate_session_sha256: expected_gate_session_sha256.as_str(),
                     financial_envelope_path: &financial_envelope,
                     pre_run_state_path: &pre_run_state,
                     abort_plan_path: &abort_plan,

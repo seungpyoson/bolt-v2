@@ -8995,6 +8995,30 @@ reason = "This is the stable record-kind discriminator for normalized gate evide
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"gate-session"'''
+context = '''const GATE_SESSION_ARTIFACT_NAME: &str = "gate-session";'''
+classification = "operator_evidence_artifact_label"
+reason = "This is a redacted diagnostic artifact label for the readiness gate-session path/hash binding, not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"gate_session_path"'''
+context = '''const OPERATOR_EVIDENCE_GATE_SESSION_PATH_FIELD: &str = "gate_session_path";'''
+classification = "operator_evidence_schema_field"
+reason = "This names the operator-evidence gate-session path field; the path value remains evidence-owned and hash-bound."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"expected_gate_session_sha256"'''
+context = '''const OPERATOR_EVIDENCE_EXPECTED_GATE_SESSION_SHA256_FIELD: &str = "expected_gate_session_sha256";'''
+classification = "operator_evidence_schema_field"
+reason = "This names the operator-evidence gate-session checksum field; the checksum value is computed from the evidence artifact."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"evidence"'''
 context = '''const GATE_SATISFACTION_KIND_EVIDENCE: &str = "evidence";'''
 classification = "entry_readiness_gate_satisfaction_kind"

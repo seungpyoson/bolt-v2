@@ -71,6 +71,64 @@ pub struct ProviderSsmPathReference {
     pub ssm_path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateProviderEvidenceBinding {
+    pub provider_id: String,
+    pub provider_kind: String,
+    pub capabilities: Vec<String>,
+    pub max_age_ms: u64,
+    pub max_clock_skew_ms: u64,
+}
+
+pub fn gate_provider_evidence_binding(
+    loaded: &LoadedBoltV3Config,
+    provider_id: &str,
+) -> Result<GateProviderEvidenceBinding, BoltV3OperatorArtifactError> {
+    let provider = loaded
+        .root
+        .gate_providers
+        .as_ref()
+        .and_then(|providers| providers.get(provider_id))
+        .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "provider_id",
+        })?;
+    let provider_kind = provider.provider_kind.as_deref().ok_or(
+        BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "provider_kind",
+        },
+    )?;
+    let capabilities =
+        provider
+            .capabilities
+            .as_ref()
+            .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+                field: "capabilities",
+            })?;
+    let freshness = provider
+        .freshness
+        .as_ref()
+        .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid { field: "freshness" })?;
+    let max_age_ms =
+        freshness
+            .max_age_ms
+            .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+                field: "freshness.max_age_ms",
+            })?;
+    let max_clock_skew_ms =
+        freshness
+            .max_clock_skew_ms
+            .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+                field: "freshness.max_clock_skew_ms",
+            })?;
+    Ok(GateProviderEvidenceBinding {
+        provider_id: provider_id.to_string(),
+        provider_kind: provider_kind.to_string(),
+        capabilities: capabilities.clone(),
+        max_age_ms,
+        max_clock_skew_ms,
+    })
+}
+
 pub struct ProviderAdapterMapContext<'a> {
     pub root: &'a BoltV3RootConfig,
     pub client_key: &'a str,

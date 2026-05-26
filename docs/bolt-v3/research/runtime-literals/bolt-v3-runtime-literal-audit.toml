@@ -8927,3 +8927,259 @@ literal = '''"resolution_kind"'''
 context = '''.get("resolution_kind")'''
 classification = "target_gate_schema_field"
 reason = "This reads a target gate mapping schema field before deriving the approved source identity."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const ENTRY_READINESS_GATE_SESSION_SCHEMA_VERSION: u32 = 1;'''
+classification = "entry_readiness_gate_session_schema_version"
+reason = "This pins the provider-neutral entry-readiness gate-session artifact schema version; runtime values remain TOML-owned or evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.entry_readiness_gate_session.v1"'''
+context = '''const ENTRY_READINESS_GATE_SESSION_RECORD_KIND: &str = "bolt_v3.entry_readiness_gate_session.v1";'''
+classification = "entry_readiness_gate_session_record_kind"
+reason = "This is the stable record-kind discriminator for the entry-readiness gate-session artifact, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
+context = '''const GATE_EVIDENCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "gate_evidence_schema_version"
+reason = "This pins the normalized provider-neutral gate-evidence artifact schema version; runtime values remain source-owned evidence."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.gate_evidence.v1"'''
+context = '''const GATE_EVIDENCE_RECORD_KIND: &str = "bolt_v3.gate_evidence.v1";'''
+classification = "gate_evidence_record_kind"
+reason = "This is the stable record-kind discriminator for normalized gate evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"evidence"'''
+context = '''const GATE_SATISFACTION_KIND_EVIDENCE: &str = "evidence";'''
+classification = "entry_readiness_gate_satisfaction_kind"
+reason = "This schema label distinguishes evidence-backed gate satisfaction from explicit no-resolution satisfaction."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"resolution_value"'''
+context = '''const GATE_PROVIDER_CAPABILITY_RESOLUTION_VALUE: &str = "resolution_value";'''
+classification = "gate_provider_capability_schema_label"
+reason = "This schema vocabulary label identifies the semantic provider capability required by the resolution gate."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"artifact_refs"'''
+context = '''const GATE_FIELD_ARTIFACT_REFS: &str = "artifact_refs";'''
+classification = "entry_readiness_gate_hash_field"
+reason = "This names a canonical gate-session hash input field; the artifact references are evidence-owned path and checksum pairs."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"artifact_refs.path"'''
+context = '''const GATE_FIELD_ARTIFACT_REFS_PATH: &str = "artifact_refs.path";'''
+classification = "entry_readiness_gate_schema_field"
+reason = "This names a gate evidence validation field for diagnostics; artifact paths remain evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"artifact_sha256s"'''
+context = '''const GATE_FIELD_ARTIFACT_SHA256S: &str = "artifact_sha256s";'''
+classification = "entry_readiness_gate_hash_field"
+reason = "This names a canonical gate-session hash input field; the checksum values are computed from evidence artifacts."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"configured_target_id"'''
+context = '''const GATE_FIELD_CONFIGURED_TARGET_ID: &str = "configured_target_id";'''
+classification = "entry_readiness_gate_schema_field"
+reason = "This names an existing target schema field read from TOML and copied into gate-session evidence."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"created_at_ms"'''
+context = '''const GATE_FIELD_CREATED_AT_MS: &str = "created_at_ms";'''
+classification = "entry_readiness_gate_hash_field"
+reason = "This names a canonical gate-session hash input field; the timestamp value is provided by the caller."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"gate_subscriptions"'''
+context = '''const GATE_FIELD_GATE_SUBSCRIPTIONS: &str = "gate_subscriptions";'''
+classification = "target_gate_schema_field"
+reason = "This reads the provider-neutral target gate subscription schema table from strategy TOML."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"normalized_value_sha256"'''
+context = '''const GATE_FIELD_NORMALIZED_VALUE_SHA256: &str = "normalized_value_sha256";'''
+classification = "entry_readiness_gate_hash_field"
+reason = "This names a canonical gate-session hash input field; the normalized value checksum is computed from evidence."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"provider_id"'''
+context = '''const GATE_FIELD_PROVIDER_ID: &str = "provider_id";'''
+classification = "entry_readiness_gate_schema_field"
+reason = "This names the gate provider id schema field; provider id values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"provider_kind"'''
+context = '''const GATE_FIELD_PROVIDER_KIND: &str = "provider_kind";'''
+classification = "entry_readiness_gate_schema_field"
+reason = "This names the gate provider-kind schema field; provider-kind values remain registry-backed TOML vocabulary."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"provider_provenance_sha256"'''
+context = '''const GATE_FIELD_PROVIDER_PROVENANCE_SHA256: &str = "provider_provenance_sha256";'''
+classification = "entry_readiness_gate_hash_field"
+reason = "This names a canonical gate-session hash input field; the provenance checksum is computed from evidence."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"resolution_identity"'''
+context = '''const GATE_FIELD_RESOLUTION_IDENTITY: &str = "resolution_identity";'''
+classification = "target_gate_schema_field"
+reason = "This names the target gate resolution identity schema field; the identity value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"role"'''
+context = '''const GATE_FIELD_ROLE: &str = "role";'''
+classification = "entry_readiness_gate_schema_field"
+reason = "This names the provider-neutral gate role schema field; accepted role labels are declared by strategy archetypes."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"root_config_sha256"'''
+context = '''const GATE_FIELD_ROOT_CONFIG_SHA256: &str = "root_config_sha256";'''
+classification = "entry_readiness_gate_hash_field"
+reason = "This names a canonical gate-session hash input field; the checksum is computed from loaded config."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"satisfaction_kind"'''
+context = '''const GATE_FIELD_SATISFACTION_KIND: &str = "satisfaction_kind";'''
+classification = "entry_readiness_gate_hash_field"
+reason = "This names a canonical gate-session hash input field distinguishing evidence and no-resolution satisfaction."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"satisfied_roles"'''
+context = '''const GATE_FIELD_SATISFIED_ROLES: &str = "satisfied_roles";'''
+classification = "entry_readiness_gate_hash_field"
+reason = "This names a canonical gate-session hash input field; role satisfaction is derived from validated evidence."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"schema_version"'''
+context = '''const GATE_FIELD_SCHEMA_VERSION: &str = "schema_version";'''
+classification = "entry_readiness_gate_hash_field"
+reason = "This names the canonical gate-session hash input schema-version key."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"selected_at_ms"'''
+context = '''const GATE_FIELD_SELECTED_AT_MS: &str = "selected_at_ms";'''
+classification = "entry_readiness_gate_hash_field"
+reason = "This names a canonical gate-session hash input field; the selected-at timestamp comes from market-selection evidence."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"selected_market_key"'''
+context = '''const GATE_FIELD_SELECTED_MARKET_KEY: &str = "selected_market_key";'''
+classification = "entry_readiness_gate_schema_field"
+reason = "This names the selected-market key schema field; the key value is computed evidence."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_instance_id"'''
+context = '''const GATE_FIELD_STRATEGY_INSTANCE_ID: &str = "strategy_instance_id";'''
+classification = "entry_readiness_gate_schema_field"
+reason = "This names the strategy instance id schema field; the value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"value_kind"'''
+context = '''const GATE_FIELD_VALUE_KIND: &str = "value_kind";'''
+classification = "entry_readiness_gate_schema_field"
+reason = "This names the normalized gate value-kind schema field; actual values are evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"outcome"'''
+context = '''const GATE_VALUE_KIND_OUTCOME: &str = "outcome";'''
+classification = "gate_value_kind_schema_label"
+reason = "This schema vocabulary label identifies a normalized gate value kind; actual values are evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"no provider evidence satisfied role `{role_name}`"'''
+context = '''"no provider evidence satisfied role `{role_name}`"'''
+classification = "entry_readiness_gate_diagnostic_template"
+reason = "This fail-closed diagnostic reports that no normalized evidence satisfied a required role."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"multiple provider evidence items satisfy role `{role_name}` without provider_preference"'''
+context = '''"multiple provider evidence items satisfy role `{role_name}` without provider_preference"'''
+classification = "entry_readiness_gate_diagnostic_template"
+reason = "This fail-closed diagnostic reports ambiguous provider evidence when no TOML preference resolves it."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"multiple provider evidence items share preferred provider `{provider_id}` for role `{role_name}`"'''
+context = '''"multiple provider evidence items share preferred provider `{provider_id}` for role `{role_name}`"'''
+classification = "entry_readiness_gate_diagnostic_template"
+reason = "This fail-closed diagnostic reports ambiguous evidence within a preferred provider."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
+kind = "string"
+literal = '''"bolt_v3.polymarket_entry_decision_gate_provenance.v1"'''
+context = '''"bolt_v3.polymarket_entry_decision_gate_provenance.v1";'''
+classification = "entry_decision_gate_provenance_record_kind"
+reason = "This is the stable record-kind discriminator for Polymarket entry-decision gate provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
+kind = "number"
+literal = '''1'''
+context = '''const ENTRY_DECISION_GATE_PROVENANCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "entry_decision_gate_provenance_schema_version"
+reason = "This pins the Polymarket entry-decision gate provenance payload schema version; runtime values remain source-owned evidence."

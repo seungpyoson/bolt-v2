@@ -19,10 +19,14 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 use crate::{
-    bolt_v3_archetypes::binary_oracle_edge_taker::raw_taker_config,
+    bolt_v3_archetypes::{
+        ArchetypeGateRequirement, GateRole, GateValueKind,
+        binary_oracle_edge_taker::raw_taker_config,
+    },
     bolt_v3_config::{
         BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, LiveCanaryOperatorEvidenceBlock,
-        LoadedBoltV3Config, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE,
+        LoadedBoltV3Config, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND,
+        RESOLUTION_GATE_ROLE,
     },
     bolt_v3_decision_evidence::{
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
@@ -32,7 +36,7 @@ use crate::{
         APPROVAL_ENVELOPE_RECORD_KIND, APPROVAL_ENVELOPE_SCHEMA_VERSION,
         Phase8OperatorApprovalEnvelopeFile, current_build_head_sha,
     },
-    bolt_v3_market_families::{self, MarketSelectionTarget},
+    bolt_v3_market_families::{self, MarketSelectionTarget, SelectedMarketRequirement},
     bolt_v3_providers::{
         ClobV2AdapterSigningSourceMaterializationRequest,
         ClobV2CollateralAccountingSourceMaterialization,
@@ -40,6 +44,7 @@ use crate::{
         ClobV2FeeBehaviorSourceMaterializationRequest, EntryDecisionSourceProviderContext,
         ProviderSecretResolveContext, VenueAccountStateSourceMaterializationRequest,
         binding_for_provider_key, confirm_external_snapshot_before_hard_stop,
+        gate_provider_evidence_binding,
         materialize_clob_v2_adapter_signing_source_from_nt_signing_source,
         materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance,
         materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once,
@@ -323,6 +328,34 @@ const NAUTILUS_TRADER_GIT_URL: &str = "https://github.com/nautechsystems/nautilu
 const NAUTILUS_TRADER_CARGO_LOCK_SOURCE_PREFIX: &str =
     "git+https://github.com/nautechsystems/nautilus_trader.git";
 const MARKET_SELECTION_SOURCE_BLOCKER: &str = "market-selection remains blocked: T046 missing source-bound price-to-beat strategy decision input";
+const ENTRY_READINESS_GATE_SESSION_SCHEMA_VERSION: u32 = 1;
+const ENTRY_READINESS_GATE_SESSION_RECORD_KIND: &str = "bolt_v3.entry_readiness_gate_session.v1";
+const GATE_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+const GATE_EVIDENCE_RECORD_KIND: &str = "bolt_v3.gate_evidence.v1";
+const GATE_SATISFACTION_KIND_EVIDENCE: &str = "evidence";
+const GATE_SATISFACTION_KIND_NO_RESOLUTION: &str = NO_RESOLUTION_KIND;
+const GATE_PROVIDER_CAPABILITY_RESOLUTION_VALUE: &str = "resolution_value";
+const GATE_FIELD_ARTIFACT_REFS: &str = "artifact_refs";
+const GATE_FIELD_ARTIFACT_REFS_PATH: &str = "artifact_refs.path";
+const GATE_FIELD_ARTIFACT_SHA256S: &str = "artifact_sha256s";
+const GATE_FIELD_CONFIGURED_TARGET_ID: &str = "configured_target_id";
+const GATE_FIELD_CREATED_AT_MS: &str = "created_at_ms";
+const GATE_FIELD_GATE_SUBSCRIPTIONS: &str = "gate_subscriptions";
+const GATE_FIELD_NORMALIZED_VALUE_SHA256: &str = "normalized_value_sha256";
+const GATE_FIELD_PROVIDER_ID: &str = "provider_id";
+const GATE_FIELD_PROVIDER_KIND: &str = "provider_kind";
+const GATE_FIELD_PROVIDER_PROVENANCE_SHA256: &str = "provider_provenance_sha256";
+const GATE_FIELD_RESOLUTION_IDENTITY: &str = "resolution_identity";
+const GATE_FIELD_ROLE: &str = "role";
+const GATE_FIELD_ROOT_CONFIG_SHA256: &str = "root_config_sha256";
+const GATE_FIELD_SATISFACTION_KIND: &str = "satisfaction_kind";
+const GATE_FIELD_SATISFIED_ROLES: &str = "satisfied_roles";
+const GATE_FIELD_SCHEMA_VERSION: &str = "schema_version";
+const GATE_FIELD_SELECTED_AT_MS: &str = "selected_at_ms";
+const GATE_FIELD_SELECTED_MARKET_KEY: &str = "selected_market_key";
+const GATE_FIELD_STRATEGY_INSTANCE_ID: &str = "strategy_instance_id";
+const GATE_FIELD_VALUE_KIND: &str = "value_kind";
+const GATE_VALUE_KIND_OUTCOME: &str = "outcome";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3RedactedSsmManifest {
@@ -361,6 +394,114 @@ pub struct BoltV3StaticArtifactRef {
     pub name: &'static str,
     pub path: String,
     pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateArtifactRef {
+    pub path: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GateEvidenceCollectionStatus {
+    Complete,
+    Timeout,
+    Partial,
+    Error,
+    Default,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateEvidenceInput {
+    pub role: String,
+    pub provider_id: String,
+    pub provider_kind: String,
+    pub selected_market_key: String,
+    pub collector_observed_at_ms: u64,
+    pub source_observed_at_ms: u64,
+    pub freshness_max_age_ms: u64,
+    pub value_kind: String,
+    pub normalized_value: serde_json::Value,
+    pub provider_provenance: serde_json::Value,
+    pub artifact_refs: Vec<GateArtifactRef>,
+    pub collection_status: GateEvidenceCollectionStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateEvidence {
+    pub schema_version: u32,
+    pub record_kind: String,
+    pub role: String,
+    pub provider_id: String,
+    pub provider_kind: String,
+    pub selected_market_key: String,
+    pub collector_observed_at_ms: u64,
+    pub source_observed_at_ms: u64,
+    pub fresh_until_ms: u64,
+    pub value_kind: String,
+    pub normalized_value: serde_json::Value,
+    pub normalized_value_sha256: String,
+    pub provider_provenance: serde_json::Value,
+    pub provider_provenance_sha256: String,
+    pub artifact_refs: Vec<GateArtifactRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "satisfaction_kind", rename_all = "snake_case")]
+pub enum GateSatisfaction {
+    Evidence {
+        evidence: Box<GateEvidence>,
+    },
+    NoResolution {
+        selected_market_key: String,
+        resolution_identity: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntryReadinessGateSession {
+    pub schema_version: u32,
+    pub record_kind: String,
+    pub strategy_instance_id: String,
+    pub configured_target_id: String,
+    pub selected_market: SelectedMarketRequirement,
+    pub created_at_ms: u64,
+    pub satisfied_roles: BTreeMap<String, GateSatisfaction>,
+    pub session_hash: String,
+    pub artifact_refs: Vec<GateArtifactRef>,
+}
+
+pub struct EntryReadinessGateSessionRequest<'a> {
+    pub loaded: &'a LoadedBoltV3Config,
+    pub strategy_instance_id: &'a str,
+    pub selected_market: &'a SelectedMarketRequirement,
+    pub requirements: &'a [ArchetypeGateRequirement],
+    pub provider_evidence: &'a [GateEvidence],
+    pub created_at_ms: u64,
+    pub artifact_refs: Vec<GateArtifactRef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GateSessionTargetSubscription {
+    required: bool,
+    allowed_provider_ids: Option<Vec<String>>,
+    allowed_provider_kinds: Option<Vec<String>>,
+    allowed_value_kinds: Option<Vec<String>>,
+    provider_preference: Option<Vec<String>>,
+    allow_no_resolution: bool,
+    market_mappings: Option<Vec<GateSessionTargetMarketMapping>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GateSessionTargetMarketMapping {
+    family_key: String,
+    market_class: String,
+    resolution_kind: String,
+    resolution_identity: String,
+    value_kind: String,
+    provider_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -622,6 +763,12 @@ pub enum BoltV3OperatorArtifactError {
         source: serde_json::Error,
     },
     DecisionEvidenceSourceInvalid {
+        message: String,
+    },
+    GateEvidenceInvalid {
+        field: &'static str,
+    },
+    EntryReadinessGateSessionInvalid {
         message: String,
     },
     DecisionEvidenceFileRead {
@@ -964,6 +1111,12 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             }
             Self::DecisionEvidenceSourceInvalid { message } => {
                 write!(f, "entry decision evidence source is invalid: {message}")
+            }
+            Self::GateEvidenceInvalid { field } => {
+                write!(f, "gate evidence field `{field}` is invalid or unproven")
+            }
+            Self::EntryReadinessGateSessionInvalid { message } => {
+                write!(f, "entry readiness gate session is invalid: {message}")
             }
             Self::DecisionEvidenceFileRead { source, .. } => {
                 write!(f, "failed to read entry decision evidence JSONL: {source}")
@@ -1396,6 +1549,609 @@ impl Error for BoltV3OperatorArtifactError {
 impl From<BoltV3SecretError> for BoltV3OperatorArtifactError {
     fn from(error: BoltV3SecretError) -> Self {
         Self::SecretInventory(error)
+    }
+}
+
+pub fn normalize_gate_evidence(
+    input: GateEvidenceInput,
+) -> Result<GateEvidence, BoltV3OperatorArtifactError> {
+    if input.collection_status != GateEvidenceCollectionStatus::Complete {
+        return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "collection_status",
+        });
+    }
+    ensure_gate_field(GATE_FIELD_ROLE, &input.role)?;
+    ensure_gate_field(GATE_FIELD_PROVIDER_ID, &input.provider_id)?;
+    ensure_gate_field(GATE_FIELD_PROVIDER_KIND, &input.provider_kind)?;
+    ensure_gate_field(GATE_FIELD_SELECTED_MARKET_KEY, &input.selected_market_key)?;
+    ensure_gate_field(GATE_FIELD_VALUE_KIND, &input.value_kind)?;
+    if !is_lowercase_sha256(&input.selected_market_key) {
+        return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "selected_market_key",
+        });
+    }
+    if input.collector_observed_at_ms == ENTRY_DECISION_ZERO_TIMESTAMP_MS {
+        return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "collector_observed_at_ms",
+        });
+    }
+    if input.source_observed_at_ms == ENTRY_DECISION_ZERO_TIMESTAMP_MS {
+        return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "source_observed_at_ms",
+        });
+    }
+    if input.freshness_max_age_ms == ENTRY_DECISION_ZERO_TIMESTAMP_MS {
+        return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "freshness_max_age_ms",
+        });
+    }
+    if input.normalized_value.is_null() {
+        return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "normalized_value",
+        });
+    }
+    validate_gate_artifact_refs(&input.artifact_refs)?;
+    validate_provider_provenance(&input.provider_kind, &input.provider_provenance)?;
+    let fresh_until_ms = input
+        .collector_observed_at_ms
+        .checked_add(input.freshness_max_age_ms)
+        .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "fresh_until_ms",
+        })?;
+    Ok(GateEvidence {
+        schema_version: GATE_EVIDENCE_SCHEMA_VERSION,
+        record_kind: GATE_EVIDENCE_RECORD_KIND.to_string(),
+        role: input.role,
+        provider_id: input.provider_id,
+        provider_kind: input.provider_kind,
+        selected_market_key: input.selected_market_key,
+        collector_observed_at_ms: input.collector_observed_at_ms,
+        source_observed_at_ms: input.source_observed_at_ms,
+        fresh_until_ms,
+        value_kind: input.value_kind,
+        normalized_value_sha256: canonical_json_sha256_value(&input.normalized_value)?,
+        normalized_value: input.normalized_value,
+        provider_provenance_sha256: canonical_json_sha256_value(&input.provider_provenance)?,
+        provider_provenance: input.provider_provenance,
+        artifact_refs: input.artifact_refs,
+    })
+}
+
+pub fn build_entry_readiness_gate_session(
+    request: EntryReadinessGateSessionRequest<'_>,
+) -> Result<EntryReadinessGateSession, BoltV3OperatorArtifactError> {
+    if request.created_at_ms == ENTRY_DECISION_ZERO_TIMESTAMP_MS {
+        return Err(entry_readiness_error("created_at_ms must be non-zero"));
+    }
+    ensure_gate_field(
+        GATE_FIELD_STRATEGY_INSTANCE_ID,
+        request.strategy_instance_id,
+    )?;
+    let strategy = request
+        .loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == request.strategy_instance_id)
+        .ok_or_else(|| {
+            entry_readiness_error(format!(
+                "strategy instance `{}` is not loaded",
+                request.strategy_instance_id
+            ))
+        })?;
+    let Some(target) = strategy.config.target.as_table() else {
+        return Err(entry_readiness_error("strategy target must be a table"));
+    };
+    let configured_target_id = target
+        .get(GATE_FIELD_CONFIGURED_TARGET_ID)
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| entry_readiness_error("target.configured_target_id is missing"))?;
+    if configured_target_id != request.selected_market.configured_target_id {
+        return Err(entry_readiness_error(
+            "selected market configured_target_id does not match strategy target",
+        ));
+    }
+    if !is_lowercase_sha256(&request.selected_market.selected_market_key) {
+        return Err(entry_readiness_error(
+            "selected_market_key must be lowercase sha256",
+        ));
+    }
+
+    let mut satisfied_roles = BTreeMap::new();
+    for requirement in request
+        .requirements
+        .iter()
+        .filter(|requirement| requirement.required)
+    {
+        let role_name = gate_role_name(requirement.role);
+        let subscription = target_gate_subscription(strategy, role_name)?;
+        if !subscription.required {
+            return Err(entry_readiness_error(format!(
+                "target.gate_subscriptions.{role_name}.required must be true for required archetype roles"
+            )));
+        }
+        if request.selected_market.resolution_kind == NO_RESOLUTION_KIND {
+            if requirement.allow_no_resolution
+                && subscription.allow_no_resolution
+                && request.selected_market.value_kind == NO_RESOLUTION_VALUE_KIND
+            {
+                satisfied_roles.insert(
+                    role_name.to_string(),
+                    GateSatisfaction::NoResolution {
+                        selected_market_key: request.selected_market.selected_market_key.clone(),
+                        resolution_identity: request.selected_market.resolution_identity.clone(),
+                    },
+                );
+                continue;
+            }
+            return Err(entry_readiness_error(format!(
+                "role `{role_name}` does not allow no_resolution satisfaction"
+            )));
+        }
+
+        let mut candidates = Vec::new();
+        for evidence in request.provider_evidence {
+            if evidence.role != role_name
+                || evidence.selected_market_key != request.selected_market.selected_market_key
+            {
+                continue;
+            }
+            if evidence_satisfies_requirement(
+                request.loaded,
+                request.selected_market,
+                requirement,
+                &subscription,
+                evidence,
+                request.created_at_ms,
+            )? {
+                candidates.push(evidence);
+            }
+        }
+        if candidates.is_empty() {
+            return Err(entry_readiness_error(format!(
+                "no provider evidence satisfied role `{role_name}`"
+            )));
+        }
+        let selected = select_gate_evidence_by_preference(role_name, &subscription, &candidates)?;
+        satisfied_roles.insert(
+            role_name.to_string(),
+            GateSatisfaction::Evidence {
+                evidence: Box::new(selected.clone()),
+            },
+        );
+    }
+    if satisfied_roles.is_empty() {
+        return Err(entry_readiness_error(
+            "no required gate roles were satisfied",
+        ));
+    }
+    validate_gate_artifact_refs(&request.artifact_refs)?;
+    let mut session = EntryReadinessGateSession {
+        schema_version: ENTRY_READINESS_GATE_SESSION_SCHEMA_VERSION,
+        record_kind: ENTRY_READINESS_GATE_SESSION_RECORD_KIND.to_string(),
+        strategy_instance_id: request.strategy_instance_id.to_string(),
+        configured_target_id: request.selected_market.configured_target_id.clone(),
+        selected_market: request.selected_market.clone(),
+        created_at_ms: request.created_at_ms,
+        satisfied_roles,
+        session_hash: String::new(),
+        artifact_refs: request.artifact_refs,
+    };
+    session.session_hash =
+        entry_readiness_session_hash(request.loaded, &session).map_err(|message| {
+            entry_readiness_error(format!("session hash canonicalization failed: {message}"))
+        })?;
+    Ok(session)
+}
+
+fn evidence_satisfies_requirement(
+    loaded: &LoadedBoltV3Config,
+    selected_market: &SelectedMarketRequirement,
+    requirement: &ArchetypeGateRequirement,
+    subscription: &GateSessionTargetSubscription,
+    evidence: &GateEvidence,
+    created_at_ms: u64,
+) -> Result<bool, BoltV3OperatorArtifactError> {
+    if !requirement
+        .accepted_value_kinds
+        .contains(&gate_value_kind_from_name(&evidence.value_kind)?)
+    {
+        return Ok(false);
+    }
+    if !subscription_allows_value_kind(subscription, &evidence.value_kind) {
+        return Ok(false);
+    }
+    if evidence.value_kind != selected_market.value_kind {
+        return Ok(false);
+    }
+    let provider = gate_provider_evidence_binding(loaded, &evidence.provider_id)?;
+    if provider.provider_kind != evidence.provider_kind {
+        return Ok(false);
+    }
+    if !provider
+        .capabilities
+        .iter()
+        .any(|capability| capability == gate_provider_capability_for_role(requirement.role))
+    {
+        return Ok(false);
+    }
+    if !subscription_allows_provider(subscription, &evidence.provider_id, &evidence.provider_kind) {
+        return Ok(false);
+    }
+    if !subscription_mapping_matches_selected_market(
+        subscription,
+        selected_market,
+        &evidence.provider_id,
+    ) {
+        return Ok(false);
+    }
+    validate_gate_evidence_integrity(evidence)?;
+    if evidence.collector_observed_at_ms > created_at_ms || created_at_ms > evidence.fresh_until_ms
+    {
+        return Ok(false);
+    }
+    if evidence
+        .collector_observed_at_ms
+        .checked_add(provider.max_age_ms)
+        != Some(evidence.fresh_until_ms)
+    {
+        return Ok(false);
+    }
+    if evidence
+        .collector_observed_at_ms
+        .abs_diff(evidence.source_observed_at_ms)
+        > provider.max_clock_skew_ms
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn target_gate_subscription(
+    strategy: &crate::bolt_v3_config::LoadedStrategy,
+    role_name: &str,
+) -> Result<GateSessionTargetSubscription, BoltV3OperatorArtifactError> {
+    let subscription_value = strategy
+        .config
+        .target
+        .as_table()
+        .and_then(|target| target.get(GATE_FIELD_GATE_SUBSCRIPTIONS))
+        .and_then(toml::Value::as_table)
+        .and_then(|subscriptions| subscriptions.get(role_name))
+        .ok_or_else(|| {
+            entry_readiness_error(format!("target.gate_subscriptions.{role_name} is missing"))
+        })?;
+    subscription_value
+        .clone()
+        .try_into()
+        .map_err(|source: toml::de::Error| {
+            entry_readiness_error(format!(
+                "target.gate_subscriptions.{role_name} is invalid: {source}"
+            ))
+        })
+}
+
+fn select_gate_evidence_by_preference<'a>(
+    role_name: &str,
+    subscription: &GateSessionTargetSubscription,
+    candidates: &[&'a GateEvidence],
+) -> Result<&'a GateEvidence, BoltV3OperatorArtifactError> {
+    if let [candidate] = candidates {
+        return Ok(*candidate);
+    }
+    let Some(preference) = subscription.provider_preference.as_deref() else {
+        return Err(entry_readiness_error(format!(
+            "multiple provider evidence items satisfy role `{role_name}` without provider_preference"
+        )));
+    };
+    for provider_id in preference {
+        let mut matching = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| candidate.provider_id == *provider_id);
+        let first = matching.next();
+        if first.is_some() && matching.next().is_some() {
+            return Err(entry_readiness_error(format!(
+                "multiple provider evidence items share preferred provider `{provider_id}` for role `{role_name}`"
+            )));
+        }
+        if let Some(candidate) = first {
+            return Ok(candidate);
+        }
+    }
+    Err(entry_readiness_error(format!(
+        "provider_preference does not deterministically select evidence for role `{role_name}`"
+    )))
+}
+
+fn subscription_allows_provider(
+    subscription: &GateSessionTargetSubscription,
+    provider_id: &str,
+    provider_kind: &str,
+) -> bool {
+    let id_allowed = subscription
+        .allowed_provider_ids
+        .as_deref()
+        .map(|ids| ids.iter().any(|allowed| allowed == provider_id))
+        .unwrap_or(true);
+    let kind_allowed = subscription
+        .allowed_provider_kinds
+        .as_deref()
+        .map(|kinds| kinds.iter().any(|allowed| allowed == provider_kind))
+        .unwrap_or(true);
+    id_allowed && kind_allowed
+}
+
+fn subscription_allows_value_kind(
+    subscription: &GateSessionTargetSubscription,
+    value_kind: &str,
+) -> bool {
+    subscription
+        .allowed_value_kinds
+        .as_deref()
+        .map(|kinds| kinds.iter().any(|allowed| allowed == value_kind))
+        .unwrap_or(true)
+}
+
+fn subscription_mapping_matches_selected_market(
+    subscription: &GateSessionTargetSubscription,
+    selected_market: &SelectedMarketRequirement,
+    provider_id: &str,
+) -> bool {
+    subscription
+        .market_mappings
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .any(|mapping| {
+            mapping.family_key == selected_market.family_key
+                && mapping.market_class == selected_market.market_class
+                && mapping.resolution_kind == selected_market.resolution_kind
+                && mapping.resolution_identity == selected_market.resolution_identity
+                && mapping.value_kind == selected_market.value_kind
+                && mapping
+                    .provider_id
+                    .as_deref()
+                    .map(|mapped_provider| mapped_provider == provider_id)
+                    .unwrap_or(true)
+        })
+}
+
+fn validate_gate_evidence_integrity(
+    evidence: &GateEvidence,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if evidence.schema_version != GATE_EVIDENCE_SCHEMA_VERSION {
+        return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "schema_version",
+        });
+    }
+    if evidence.record_kind != GATE_EVIDENCE_RECORD_KIND {
+        return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "record_kind",
+        });
+    }
+    validate_gate_artifact_refs(&evidence.artifact_refs)?;
+    validate_provider_provenance(&evidence.provider_kind, &evidence.provider_provenance)?;
+    if canonical_json_sha256_value(&evidence.normalized_value)? != evidence.normalized_value_sha256
+    {
+        return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "normalized_value_sha256",
+        });
+    }
+    if canonical_json_sha256_value(&evidence.provider_provenance)?
+        != evidence.provider_provenance_sha256
+    {
+        return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "provider_provenance_sha256",
+        });
+    }
+    Ok(())
+}
+
+fn validate_provider_provenance(
+    provider_kind: &str,
+    provenance: &serde_json::Value,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let provenance_kind = provenance
+        .get(GATE_FIELD_PROVIDER_KIND)
+        .and_then(serde_json::Value::as_str)
+        .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "provider_provenance.provider_kind",
+        })?;
+    if provenance_kind != provider_kind {
+        return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "provider_provenance.provider_kind",
+        });
+    }
+    Ok(())
+}
+
+fn validate_gate_artifact_refs(
+    artifact_refs: &[GateArtifactRef],
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if artifact_refs.is_empty() {
+        return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "artifact_refs",
+        });
+    }
+    for artifact_ref in artifact_refs {
+        ensure_gate_field(GATE_FIELD_ARTIFACT_REFS_PATH, &artifact_ref.path)?;
+        if !is_lowercase_sha256(&artifact_ref.sha256) {
+            return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+                field: "artifact_refs.sha256",
+            });
+        }
+    }
+    Ok(())
+}
+
+fn entry_readiness_session_hash(
+    loaded: &LoadedBoltV3Config,
+    session: &EntryReadinessGateSession,
+) -> Result<String, String> {
+    let mut satisfied_roles = Vec::new();
+    for (role, satisfaction) in &session.satisfied_roles {
+        let mut role_input = serde_json::Map::new();
+        role_input.insert(GATE_FIELD_ROLE.to_string(), serde_json::json!(role));
+        match satisfaction {
+            GateSatisfaction::Evidence { evidence } => {
+                let mut artifact_refs = evidence.artifact_refs.clone();
+                artifact_refs.sort_by(|left, right| left.path.cmp(&right.path));
+                let artifact_sha256s: Vec<_> = artifact_refs
+                    .iter()
+                    .map(|artifact_ref| artifact_ref.sha256.clone())
+                    .collect();
+                role_input.insert(
+                    GATE_FIELD_SATISFACTION_KIND.to_string(),
+                    serde_json::json!(GATE_SATISFACTION_KIND_EVIDENCE),
+                );
+                role_input.insert(
+                    GATE_FIELD_PROVIDER_ID.to_string(),
+                    serde_json::json!(evidence.provider_id),
+                );
+                role_input.insert(
+                    GATE_FIELD_PROVIDER_KIND.to_string(),
+                    serde_json::json!(evidence.provider_kind),
+                );
+                role_input.insert(
+                    GATE_FIELD_VALUE_KIND.to_string(),
+                    serde_json::json!(evidence.value_kind),
+                );
+                role_input.insert(
+                    GATE_FIELD_NORMALIZED_VALUE_SHA256.to_string(),
+                    serde_json::json!(evidence.normalized_value_sha256),
+                );
+                role_input.insert(
+                    GATE_FIELD_ARTIFACT_SHA256S.to_string(),
+                    serde_json::json!(artifact_sha256s),
+                );
+                role_input.insert(
+                    GATE_FIELD_PROVIDER_PROVENANCE_SHA256.to_string(),
+                    serde_json::json!(evidence.provider_provenance_sha256),
+                );
+            }
+            GateSatisfaction::NoResolution {
+                selected_market_key,
+                resolution_identity,
+            } => {
+                role_input.insert(
+                    GATE_FIELD_SATISFACTION_KIND.to_string(),
+                    serde_json::json!(GATE_SATISFACTION_KIND_NO_RESOLUTION),
+                );
+                role_input.insert(
+                    GATE_FIELD_SELECTED_MARKET_KEY.to_string(),
+                    serde_json::json!(selected_market_key),
+                );
+                role_input.insert(
+                    GATE_FIELD_RESOLUTION_IDENTITY.to_string(),
+                    serde_json::json!(resolution_identity),
+                );
+            }
+        }
+        satisfied_roles.push(serde_json::Value::Object(role_input));
+    }
+    let mut session_artifact_refs = session.artifact_refs.clone();
+    session_artifact_refs.sort_by(|left, right| left.path.cmp(&right.path));
+
+    let mut hash_input = serde_json::Map::new();
+    hash_input.insert(
+        GATE_FIELD_SCHEMA_VERSION.to_string(),
+        serde_json::json!(ENTRY_READINESS_GATE_SESSION_SCHEMA_VERSION),
+    );
+    hash_input.insert(
+        GATE_FIELD_STRATEGY_INSTANCE_ID.to_string(),
+        serde_json::json!(session.strategy_instance_id),
+    );
+    hash_input.insert(
+        GATE_FIELD_CONFIGURED_TARGET_ID.to_string(),
+        serde_json::json!(session.configured_target_id),
+    );
+    hash_input.insert(
+        GATE_FIELD_ROOT_CONFIG_SHA256.to_string(),
+        serde_json::json!(loaded.config_bundle_checksum),
+    );
+    hash_input.insert(
+        GATE_FIELD_SELECTED_MARKET_KEY.to_string(),
+        serde_json::json!(session.selected_market.selected_market_key),
+    );
+    hash_input.insert(
+        GATE_FIELD_SELECTED_AT_MS.to_string(),
+        serde_json::json!(session.selected_market.selected_at_ms.to_string()),
+    );
+    hash_input.insert(
+        GATE_FIELD_CREATED_AT_MS.to_string(),
+        serde_json::json!(session.created_at_ms.to_string()),
+    );
+    hash_input.insert(
+        GATE_FIELD_SATISFIED_ROLES.to_string(),
+        serde_json::Value::Array(satisfied_roles),
+    );
+    hash_input.insert(
+        GATE_FIELD_ARTIFACT_REFS.to_string(),
+        serde_json::json!(session_artifact_refs),
+    );
+    canonical_json_sha256_value(&serde_json::Value::Object(hash_input)).map_err(|error| match error
+    {
+        BoltV3OperatorArtifactError::Serialize(source) => source.to_string(),
+        other => other.to_string(),
+    })
+}
+
+fn canonical_json_sha256_value(
+    value: &serde_json::Value,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    let canonical = canonical_json_value(value);
+    let bytes = serde_json::to_vec(&canonical).map_err(BoltV3OperatorArtifactError::Serialize)?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn canonical_json_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(canonical_json_value).collect())
+        }
+        serde_json::Value::Object(object) => {
+            let sorted: BTreeMap<_, _> = object
+                .iter()
+                .map(|(key, value)| (key.clone(), canonical_json_value(value)))
+                .collect();
+            serde_json::json!(sorted)
+        }
+        scalar => scalar.clone(),
+    }
+}
+
+fn ensure_gate_field(field: &'static str, value: &str) -> Result<(), BoltV3OperatorArtifactError> {
+    if value.trim().is_empty() {
+        return Err(BoltV3OperatorArtifactError::GateEvidenceInvalid { field });
+    }
+    Ok(())
+}
+
+fn gate_role_name(role: GateRole) -> &'static str {
+    match role {
+        GateRole::Resolution => RESOLUTION_GATE_ROLE,
+    }
+}
+
+fn gate_value_kind_from_name(value: &str) -> Result<GateValueKind, BoltV3OperatorArtifactError> {
+    match value {
+        PRICE_GATE_VALUE_KIND => Ok(GateValueKind::Price),
+        GATE_VALUE_KIND_OUTCOME => Ok(GateValueKind::Outcome),
+        _ => Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "value_kind",
+        }),
+    }
+}
+
+fn gate_provider_capability_for_role(role: GateRole) -> &'static str {
+    match role {
+        GateRole::Resolution => GATE_PROVIDER_CAPABILITY_RESOLUTION_VALUE,
+    }
+}
+
+fn entry_readiness_error(message: impl Into<String>) -> BoltV3OperatorArtifactError {
+    BoltV3OperatorArtifactError::EntryReadinessGateSessionInvalid {
+        message: message.into(),
     }
 }
 

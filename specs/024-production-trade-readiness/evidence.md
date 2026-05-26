@@ -818,3 +818,23 @@ This was local fake-server verification only. It did not read real AWS/SSM secre
   - `cargo test --test config_parsing`: passed after dependency alignment; 117 passed, 0 failed.
 
 No production code, live config, secret source, no-submit path, or trading operation was executed for this sync. T036H0F remains open for exact-delta review of the cleaned provider-agnostic contract before T036H1 RED tests begin.
+
+## T036H16 Provider-Neutral Gate Evidence And Entry-Readiness Session
+
+- Implemented provider-neutral `GateEvidence`, boxed `GateSatisfaction`, canonical `EntryReadinessGateSession`, and `build_entry_readiness_gate_session` in `src/bolt_v3_operator_artifacts.rs`.
+- Added provider binding lookup in `src/bolt_v3_providers/mod.rs` and Polymarket entry-decision provenance payload support in `src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs`.
+- Added `SelectedMarketRequirement` deserialization support and operator-artifact tests for complete-only evidence normalization, selected-market binding, freshness/clock-skew rejection, deterministic provider preference, and explicit no-resolution satisfaction.
+- Focused entry-readiness regression: `cargo test --test bolt_v3_operator_artifacts entry_readiness_gate_session -- --nocapture`: 4 passed, 0 failed.
+- Focused gate-evidence regression: `cargo test --test bolt_v3_operator_artifacts gate_evidence_normalization -- --nocapture`: 1 passed, 0 failed.
+- Full operator-artifact regression after final code shape: `cargo test --test bolt_v3_operator_artifacts -- --nocapture`: 179 passed, 0 failed.
+- Production library lint: `cargo clippy --locked --lib -- -D warnings`: passed.
+- Formatting and hygiene:
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+  - `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+  - `python3 scripts/verify_bolt_v3_provider_leaks.py`: `OK: Bolt-v3 provider-leak verifier passed.`
+  - `python3 scripts/verify_bolt_v3_core_boundary.py`: `OK: Bolt-v3 core boundary audit passed.`
+  - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+The join now fails closed unless normalized evidence matches the required role, value kind, selected-market key, configured provider binding, provider capability, subscription provider filters, market mapping, evidence checksums, freshness max-age, and clock-skew policy. Multiple matching evidence items require deterministic TOML `provider_preference`; no-resolution satisfaction is only accepted when archetype, target subscription, and selected-market metadata all allow it. This was local fake-fixture verification only: no live AWS/SSM, no venue connection, no no-submit run, no order submit/cancel, no root TOML mutation, and no trade side effect. T036H17 remains open for consumer-boundary rewiring to consume the readiness session.

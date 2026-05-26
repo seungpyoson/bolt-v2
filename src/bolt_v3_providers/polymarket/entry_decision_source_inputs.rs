@@ -9,6 +9,7 @@ use nautilus_polymarket::{
     http::{clob::PolymarketClobPublicClient, gamma::PolymarketGammaHttpClient},
     providers::PolymarketInstrumentProvider,
 };
+use serde::Serialize;
 
 use crate::{
     bolt_v3_market_families::{self, MarketSelectionTarget},
@@ -30,6 +31,38 @@ const ENTRY_DECISION_UP_BOOK_LABEL: &str = "up";
 const ENTRY_DECISION_DOWN_BOOK_LABEL: &str = "down";
 const ENTRY_DECISION_FEE_ZERO_THRESHOLD: f64 = 0.0;
 const ENTRY_DECISION_RETRY_INITIAL_ATTEMPT_COUNT: u64 = 1;
+const ENTRY_DECISION_GATE_PROVENANCE_RECORD_KIND: &str =
+    "bolt_v3.polymarket_entry_decision_gate_provenance.v1";
+const ENTRY_DECISION_GATE_PROVENANCE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Serialize)]
+struct PolymarketEntryDecisionGateProvenancePayload<'a> {
+    schema_version: u32,
+    record_kind: &'static str,
+    provider_id: &'a str,
+    provider_kind: &'a str,
+    selected_market_key: &'a str,
+    decision_source_sha256: &'a str,
+    instrument_source_sha256: &'a str,
+}
+
+pub fn polymarket_entry_decision_gate_provenance_payload(
+    provider_id: &str,
+    provider_kind: &str,
+    selected_market_key: &str,
+    decision_source_sha256: &str,
+    instrument_source_sha256: &str,
+) -> serde_json::Value {
+    serde_json::json!(PolymarketEntryDecisionGateProvenancePayload {
+        schema_version: ENTRY_DECISION_GATE_PROVENANCE_SCHEMA_VERSION,
+        record_kind: ENTRY_DECISION_GATE_PROVENANCE_RECORD_KIND,
+        provider_id,
+        provider_kind,
+        selected_market_key,
+        decision_source_sha256,
+        instrument_source_sha256,
+    })
+}
 
 pub fn collect_entry_decision_source_inputs(
     context: EntryDecisionSourceProviderContext<'_>,

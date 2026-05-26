@@ -89,7 +89,7 @@ pub struct SelectedMarketSourceIdentity {
     pub question_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectedMarketRequirement {
     pub configured_target_id: String,
     pub venue: String,

@@ -1,24 +1,30 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
 
 use bolt_v2::{
+    bolt_v3_archetypes::{
+        ArchetypeGateRequirement, GateRole, GateValueKind, binary_oracle_edge_taker,
+    },
     bolt_v3_config::{
-        BoltV3RootConfig, LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config,
-        load_bolt_v3_config,
+        BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, LiveCanaryBlock,
+        LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, NO_RESOLUTION_KIND,
+        NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE, load_bolt_v3_config,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3OrderIntentEvidence,
         BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot,
         BoltV3SubmitIntentKind, decision_evidence_path, read_latest_entry_decision_evidence_chain,
     },
-    bolt_v3_market_families::updown::updown_market_slug,
+    bolt_v3_market_families::{SelectedMarketRequirement, updown::updown_market_slug},
     bolt_v3_operator_artifacts::{
         EntryDecisionProofSourceMaterializationRequest, EntryDecisionRealizedVolatilityProofInput,
         EntryDecisionReferenceQuoteProofInput, EntryDecisionSourceBookSideInput,
         EntryDecisionSourceCollectionRequest, EntryDecisionSourceInputRequest,
-        EntryDecisionSourceMarketInputs, WrittenOperatorArtifact, build_redacted_ssm_manifest,
-        collect_entry_decision_source_inputs_from_configured_provider,
+        EntryDecisionSourceMarketInputs, EntryReadinessGateSessionRequest, GateArtifactRef,
+        GateEvidenceCollectionStatus, GateEvidenceInput, GateSatisfaction, WrittenOperatorArtifact,
+        build_entry_readiness_gate_session, build_redacted_ssm_manifest,
+        collect_entry_decision_source_inputs_from_configured_provider, normalize_gate_evidence,
     },
     bolt_v3_tiny_canary_evidence::{
         Phase8AbortPlanSourceProofs, Phase8FinancialEnvelopeEvidenceFile,
@@ -62,6 +68,405 @@ const TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION: u64 = 3;
 const TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE: u64 = 8;
 const TEST_PRICE_TO_BEAT_REPORT_SHA256: &str =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const TEST_GATE_SELECTED_MARKET_KEY: &str =
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const TEST_GATE_METADATA_PROVENANCE_SHA256: &str =
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const TEST_GATE_ARTIFACT_SHA256: &str =
+    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+const TEST_GATE_SESSION_ARTIFACT_SHA256: &str =
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const TEST_GATE_FRESHNESS_MAX_AGE_MS: u64 = 300_000;
+const TEST_GATE_COLLECTOR_OBSERVED_AT_MS: u64 = 1_000;
+const TEST_GATE_SOURCE_OBSERVED_AT_MS: u64 = 995;
+const TEST_GATE_CREATED_AT_MS: u64 = 1_100;
+
+#[test]
+fn gate_evidence_normalization_rejects_timeout_partial_and_default_evidence() {
+    for collection_status in [
+        GateEvidenceCollectionStatus::Timeout,
+        GateEvidenceCollectionStatus::Partial,
+        GateEvidenceCollectionStatus::Error,
+        GateEvidenceCollectionStatus::Default,
+    ] {
+        let mut input = fixture_gate_evidence_input(TEST_GATE_SELECTED_MARKET_KEY);
+        input.collection_status = collection_status;
+        let error = normalize_gate_evidence(input)
+            .expect_err("non-complete provider collection must not synthesize gate evidence");
+        assert!(
+            error.to_string().contains("collection_status"),
+            "expected collection_status rejection, got: {error}"
+        );
+    }
+}
+
+#[test]
+fn entry_readiness_gate_session_binds_normalized_resolution_evidence() {
+    let loaded = load_fixture_with_live_canary();
+    let selected_market = fixture_selected_market_requirement();
+    let evidence = normalize_gate_evidence(fixture_gate_evidence_input(
+        &selected_market.selected_market_key,
+    ))
+    .expect("fixture gate evidence should normalize");
+    let evidence_items = vec![evidence];
+    let requirements = binary_oracle_edge_taker::gate_requirements();
+
+    let session = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &evidence_items,
+    ))
+    .expect("matching provider evidence should satisfy entry readiness");
+
+    assert_eq!(session.schema_version, 1);
+    assert_eq!(session.strategy_instance_id, "bitcoin_updown_main");
+    assert_eq!(session.configured_target_id, TEST_CONFIGURED_TARGET_ID);
+    assert_eq!(
+        session.selected_market.selected_market_key,
+        TEST_GATE_SELECTED_MARKET_KEY
+    );
+    assert!(is_lowercase_sha256(&session.session_hash));
+    match session
+        .satisfied_roles
+        .get(RESOLUTION_GATE_ROLE)
+        .expect("resolution role should be satisfied")
+    {
+        GateSatisfaction::Evidence { evidence } => {
+            assert_eq!(evidence.provider_id, "resolution_oracle_primary");
+            assert_eq!(evidence.provider_kind, CHAINLINK_DATA_STREAMS_PROVIDER_KIND);
+            assert_eq!(evidence.value_kind, PRICE_GATE_VALUE_KIND);
+            assert!(is_lowercase_sha256(&evidence.normalized_value_sha256));
+            assert!(is_lowercase_sha256(&evidence.provider_provenance_sha256));
+        }
+        GateSatisfaction::NoResolution { .. } => {
+            panic!("binary-oracle fixture must require provider evidence")
+        }
+    }
+
+    let repeated = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &evidence_items,
+    ))
+    .expect("same inputs should rebuild the same session");
+    assert_eq!(session.session_hash, repeated.session_hash);
+}
+
+#[test]
+fn entry_readiness_gate_session_fails_closed_on_wrong_market_or_stale_evidence() {
+    let loaded = load_fixture_with_live_canary();
+    let selected_market = fixture_selected_market_requirement();
+    let requirements = binary_oracle_edge_taker::gate_requirements();
+
+    let wrong_market_evidence =
+        normalize_gate_evidence(fixture_gate_evidence_input(&"f".repeat(64)))
+            .expect("wrong-market evidence is structurally valid");
+    let wrong_market_items = vec![wrong_market_evidence];
+    let wrong_market_error = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &wrong_market_items,
+    ))
+    .expect_err("previous-market evidence must not satisfy current selected market");
+    assert!(
+        wrong_market_error
+            .to_string()
+            .contains("no provider evidence satisfied role"),
+        "expected selected-market binding rejection, got: {wrong_market_error}"
+    );
+
+    let stale_evidence = normalize_gate_evidence(fixture_gate_evidence_input(
+        &selected_market.selected_market_key,
+    ))
+    .expect("fixture gate evidence should normalize");
+    let stale_items = vec![stale_evidence];
+    let stale_error = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
+        created_at_ms: TEST_GATE_COLLECTOR_OBSERVED_AT_MS + TEST_GATE_FRESHNESS_MAX_AGE_MS + 1,
+        ..fixture_gate_session_request(&loaded, &selected_market, &requirements, &stale_items)
+    })
+    .expect_err("stale evidence must fail closed");
+    assert!(
+        stale_error
+            .to_string()
+            .contains("no provider evidence satisfied role"),
+        "expected stale evidence rejection, got: {stale_error}"
+    );
+}
+
+#[test]
+fn entry_readiness_gate_session_uses_provider_preference_for_multiple_matches() {
+    let mut loaded = load_fixture_with_live_canary();
+    add_backup_resolution_provider(&mut loaded);
+    let selected_market = fixture_selected_market_requirement();
+    let primary = normalize_gate_evidence(fixture_gate_evidence_input(
+        &selected_market.selected_market_key,
+    ))
+    .expect("primary evidence should normalize");
+    let mut backup_input = fixture_gate_evidence_input(&selected_market.selected_market_key);
+    backup_input.provider_id = "backup_resolution_oracle".to_string();
+    backup_input.artifact_refs[0].path = "backup-price-report.json".to_string();
+    let backup = normalize_gate_evidence(backup_input).expect("backup evidence should normalize");
+    let evidence_items = vec![backup, primary];
+    let requirements = binary_oracle_edge_taker::gate_requirements();
+
+    let session = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &evidence_items,
+    ))
+    .expect("provider_preference should select the primary evidence");
+    match session
+        .satisfied_roles
+        .get(RESOLUTION_GATE_ROLE)
+        .expect("resolution role should be satisfied")
+    {
+        GateSatisfaction::Evidence { evidence } => {
+            assert_eq!(evidence.provider_id, "resolution_oracle_primary");
+        }
+        GateSatisfaction::NoResolution { .. } => panic!("expected evidence satisfaction"),
+    }
+
+    remove_resolution_provider_preference(&mut loaded);
+    let error = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &evidence_items,
+    ))
+    .expect_err("multiple matching providers without preference must fail closed");
+    assert!(
+        error.to_string().contains("provider_preference"),
+        "expected deterministic preference rejection, got: {error}"
+    );
+}
+
+#[test]
+fn entry_readiness_gate_session_supports_explicit_no_resolution_only_when_allowed() {
+    let mut loaded = load_fixture_with_live_canary();
+    enable_no_resolution_subscription(&mut loaded);
+    let selected_market = fixture_no_resolution_selected_market_requirement();
+    let requirements = vec![ArchetypeGateRequirement {
+        role: GateRole::Resolution,
+        required: true,
+        accepted_value_kinds: BTreeSet::from([GateValueKind::Outcome]),
+        allow_no_resolution: true,
+    }];
+    let evidence_items = Vec::new();
+
+    let session = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &evidence_items,
+    ))
+    .expect("explicit no-resolution-compatible requirement should satisfy without evidence");
+    assert!(is_lowercase_sha256(&session.session_hash));
+    match session
+        .satisfied_roles
+        .get(RESOLUTION_GATE_ROLE)
+        .expect("resolution role should be present")
+    {
+        GateSatisfaction::NoResolution {
+            selected_market_key,
+            resolution_identity,
+        } => {
+            assert_eq!(selected_market_key, TEST_GATE_SELECTED_MARKET_KEY);
+            assert_eq!(resolution_identity, "none");
+        }
+        GateSatisfaction::Evidence { .. } => panic!("no-resolution should not need evidence"),
+    }
+
+    let rejecting_requirements = vec![ArchetypeGateRequirement {
+        allow_no_resolution: false,
+        ..requirements[0].clone()
+    }];
+    let error = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &rejecting_requirements,
+        &evidence_items,
+    ))
+    .expect_err("archetype must explicitly allow no-resolution");
+    assert!(
+        error.to_string().contains("does not allow no_resolution"),
+        "expected no-resolution rejection, got: {error}"
+    );
+}
+
+fn fixture_selected_market_requirement() -> SelectedMarketRequirement {
+    SelectedMarketRequirement {
+        configured_target_id: TEST_CONFIGURED_TARGET_ID.to_string(),
+        venue: "POLYMARKET".to_string(),
+        family_key: "updown".to_string(),
+        market_id: TEST_MARKET_ID.to_string(),
+        instrument_ids: vec![
+            TEST_DOWN_INSTRUMENT_ID.to_string(),
+            TEST_UP_INSTRUMENT_ID.to_string(),
+        ],
+        market_class: "binary_option".to_string(),
+        resolution_kind: CHAINLINK_DATA_STREAMS_PROVIDER_KIND.to_string(),
+        resolution_identity: "example-resolution-5m".to_string(),
+        value_kind: PRICE_GATE_VALUE_KIND.to_string(),
+        metadata_provenance_sha256: TEST_GATE_METADATA_PROVENANCE_SHA256.to_string(),
+        selected_market_key: TEST_GATE_SELECTED_MARKET_KEY.to_string(),
+        selected_at_ms: TEST_MARKET_SELECTION_NOW_MS,
+    }
+}
+
+fn fixture_no_resolution_selected_market_requirement() -> SelectedMarketRequirement {
+    SelectedMarketRequirement {
+        resolution_kind: NO_RESOLUTION_KIND.to_string(),
+        resolution_identity: "none".to_string(),
+        value_kind: NO_RESOLUTION_VALUE_KIND.to_string(),
+        ..fixture_selected_market_requirement()
+    }
+}
+
+fn fixture_gate_evidence_input(selected_market_key: &str) -> GateEvidenceInput {
+    GateEvidenceInput {
+        role: RESOLUTION_GATE_ROLE.to_string(),
+        provider_id: "resolution_oracle_primary".to_string(),
+        provider_kind: CHAINLINK_DATA_STREAMS_PROVIDER_KIND.to_string(),
+        selected_market_key: selected_market_key.to_string(),
+        collector_observed_at_ms: TEST_GATE_COLLECTOR_OBSERVED_AT_MS,
+        source_observed_at_ms: TEST_GATE_SOURCE_OBSERVED_AT_MS,
+        freshness_max_age_ms: TEST_GATE_FRESHNESS_MAX_AGE_MS,
+        value_kind: PRICE_GATE_VALUE_KIND.to_string(),
+        normalized_value: serde_json::json!({
+            "price": "50000.00",
+            "decimal_scale": TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+        }),
+        provider_provenance: serde_json::json!({
+            "provider_kind": CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
+            "feed_id": TEST_PRICE_TO_BEAT_FEED_ID,
+            "report_schema_version": TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION,
+        }),
+        artifact_refs: vec![GateArtifactRef {
+            path: "price-report.json".to_string(),
+            sha256: TEST_GATE_ARTIFACT_SHA256.to_string(),
+        }],
+        collection_status: GateEvidenceCollectionStatus::Complete,
+    }
+}
+
+fn fixture_gate_session_request<'a>(
+    loaded: &'a LoadedBoltV3Config,
+    selected_market: &'a SelectedMarketRequirement,
+    requirements: &'a [ArchetypeGateRequirement],
+    evidence_items: &'a [bolt_v2::bolt_v3_operator_artifacts::GateEvidence],
+) -> EntryReadinessGateSessionRequest<'a> {
+    EntryReadinessGateSessionRequest {
+        loaded,
+        strategy_instance_id: "bitcoin_updown_main",
+        selected_market,
+        requirements,
+        provider_evidence: evidence_items,
+        created_at_ms: TEST_GATE_CREATED_AT_MS,
+        artifact_refs: vec![GateArtifactRef {
+            path: "entry-readiness-gate-session.json".to_string(),
+            sha256: TEST_GATE_SESSION_ARTIFACT_SHA256.to_string(),
+        }],
+    }
+}
+
+fn add_backup_resolution_provider(loaded: &mut LoadedBoltV3Config) {
+    let providers = loaded
+        .root
+        .gate_providers
+        .as_mut()
+        .expect("fixture root should have gate providers");
+    let primary = providers
+        .get("resolution_oracle_primary")
+        .expect("fixture should have primary resolution provider")
+        .clone();
+    providers.insert("backup_resolution_oracle".to_string(), primary);
+
+    let mapping = resolution_market_mappings_mut(loaded)[0].clone();
+    let mut backup_mapping = mapping;
+    backup_mapping
+        .as_table_mut()
+        .expect("mapping should be a table")
+        .insert(
+            "provider_id".to_string(),
+            toml::Value::String("backup_resolution_oracle".to_string()),
+        );
+    resolution_market_mappings_mut(loaded).push(backup_mapping);
+}
+
+fn remove_resolution_provider_preference(loaded: &mut LoadedBoltV3Config) {
+    resolution_subscription_mut(loaded)
+        .remove("provider_preference")
+        .expect("fixture should have provider preference");
+}
+
+fn enable_no_resolution_subscription(loaded: &mut LoadedBoltV3Config) {
+    let subscription = resolution_subscription_mut(loaded);
+    subscription.insert(
+        "allow_no_resolution".to_string(),
+        toml::Value::Boolean(true),
+    );
+    subscription.insert(
+        "allowed_value_kinds".to_string(),
+        toml::Value::Array(vec![toml::Value::String(
+            NO_RESOLUTION_VALUE_KIND.to_string(),
+        )]),
+    );
+    let mapping = resolution_market_mappings_mut(loaded)
+        .first_mut()
+        .expect("fixture should have a resolution mapping")
+        .as_table_mut()
+        .expect("mapping should be a table");
+    mapping.insert(
+        "resolution_kind".to_string(),
+        toml::Value::String(NO_RESOLUTION_KIND.to_string()),
+    );
+    mapping.insert(
+        "resolution_identity".to_string(),
+        toml::Value::String("none".to_string()),
+    );
+    mapping.insert(
+        "value_kind".to_string(),
+        toml::Value::String(NO_RESOLUTION_VALUE_KIND.to_string()),
+    );
+    mapping.remove("provider_id");
+}
+
+fn resolution_subscription_mut(
+    loaded: &mut LoadedBoltV3Config,
+) -> &mut toml::map::Map<String, toml::Value> {
+    loaded.strategies[0]
+        .config
+        .target
+        .as_table_mut()
+        .expect("target should be a table")
+        .get_mut("gate_subscriptions")
+        .expect("gate subscriptions should exist")
+        .as_table_mut()
+        .expect("gate subscriptions should be a table")
+        .get_mut(RESOLUTION_GATE_ROLE)
+        .expect("resolution subscription should exist")
+        .as_table_mut()
+        .expect("resolution subscription should be a table")
+}
+
+fn resolution_market_mappings_mut(loaded: &mut LoadedBoltV3Config) -> &mut Vec<toml::Value> {
+    resolution_subscription_mut(loaded)
+        .get_mut("market_mappings")
+        .expect("market mappings should exist")
+        .as_array_mut()
+        .expect("market mappings should be an array")
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+}
 
 #[test]
 fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {

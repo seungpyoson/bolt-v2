@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_config::{LoadedBoltV3Config, RESOLUTION_GATE_ROLE, load_bolt_v3_config},
     bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
     bolt_v3_live_canary_gate::{
         BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_pre_consumption_gate,
@@ -2220,6 +2220,7 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             .ok_or_else(|| {
                 anyhow!("phase8 financial envelope strategy forced exit order must be a TOML table")
             })?;
+        let price_to_beat_source = price_to_beat_source_from_target(&strategy.target)?;
         Ok(Self {
             max_live_order_count: live_canary.max_live_order_count,
             max_notional_per_order: live_canary.max_notional_per_order.clone(),
@@ -2237,10 +2238,7 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             market_selection_rule: required_toml_string(target, stringify!(market_selection_rule))?,
             retry_interval_secs: required_toml_integer(target, stringify!(retry_interval_secs))?,
             blocked_after_secs: required_toml_integer(target, stringify!(blocked_after_secs))?,
-            price_to_beat_source: required_toml_string(
-                runtime_parameters,
-                stringify!(price_to_beat_source),
-            )?,
+            price_to_beat_source,
             edge_threshold_basis_points: required_toml_integer(
                 parameters,
                 stringify!(edge_threshold_basis_points),
@@ -3281,6 +3279,48 @@ fn required_toml_string(
         .and_then(toml::Value::as_str)
         .map(ToString::to_string)
         .ok_or_else(|| anyhow!("phase8 financial envelope loaded TOML field `{field}` is missing"))
+}
+
+fn price_to_beat_source_from_target(target: &toml::Value) -> Result<String> {
+    let subscription = target
+        .as_table()
+        .and_then(|target| target.get("gate_subscriptions"))
+        .and_then(toml::Value::as_table)
+        .and_then(|subscriptions| subscriptions.get(RESOLUTION_GATE_ROLE))
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| {
+            anyhow!(
+                "phase8 financial envelope requires target.gate_subscriptions.{RESOLUTION_GATE_ROLE}"
+            )
+        })?;
+    let mapping = subscription
+        .get("market_mappings")
+        .and_then(toml::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(toml::Value::as_table)
+        .next()
+        .ok_or_else(|| {
+            anyhow!("phase8 financial envelope requires a target gate market mapping")
+        })?;
+    let resolution_kind = mapping
+        .get("resolution_kind")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow!("phase8 financial envelope target gate resolution_kind is missing")
+        })?;
+    let resolution_identity = mapping
+        .get("resolution_identity")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow!("phase8 financial envelope target gate resolution_identity is missing")
+        })?;
+    Ok(format!("{}.{}", resolution_kind, resolution_identity))
 }
 
 fn required_toml_nt_enum<T>(

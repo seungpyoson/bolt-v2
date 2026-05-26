@@ -416,9 +416,9 @@ reason = "This is a nested taker strategy config schema field name; the value is
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"price_to_beat_source"'''
-context = '''"price_to_beat_source",'''
+context = '''insert_string(&mut table, "price_to_beat_source", price_to_beat_source);'''
 classification = "strategy_runtime_schema_field"
-reason = "This is an existing taker strategy config schema field name; the value comes from bolt-v3 TOML."
+reason = "This is an existing taker strategy config schema field name; the value is derived from target gate TOML during the temporary runtime bridge."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -8129,30 +8129,6 @@ classification = "entry_decision_source_input_feed_id_shape"
 reason = "This is the fixed byte32 Chainlink feed-id hex length after the 0x prefix; the configured feed id remains TOML-owned."
 
 [[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"0x"'''
-context = '''const CHAINLINK_FEED_ID_PREFIX: &str = "0x";'''
-classification = "binary_oracle_price_to_beat_feed_id_shape"
-reason = "This is Chainlink feed-id hex syntax validation for the TOML-owned price-to-beat feed binding, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "number"
-literal = "64"
-context = '''const CHAINLINK_FEED_ID_HEX_LENGTH: usize = 64;'''
-classification = "binary_oracle_price_to_beat_feed_id_shape"
-reason = "This is the fixed byte32 Chainlink feed-id hex length after the 0x prefix; the configured feed id remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "number"
-literal = "16"
-context = '''const CHAINLINK_SYNTHETIC_FEED_ID_SEGMENT_HEX_LENGTH: usize = 16;'''
-classification = "binary_oracle_price_to_beat_placeholder_shape"
-reason = "This identifies repeated-segment synthetic feed-id placeholders so production readiness cannot pass with patterned test data."
-
-[[allowed]]
 path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
 kind = "string"
 literal = '''"up"'''
@@ -8396,7 +8372,7 @@ reason = "This compile-time source include anchors final abort-plan provenance t
 path = "src/bolt_v3_config.rs"
 kind = "string"
 literal = '''"chainlink_data_streams"'''
-context = '''"chainlink_data_streams",'''
+context = '''pub const CHAINLINK_DATA_STREAMS_PROVIDER_KIND: &str = "chainlink_data_streams";'''
 classification = "gate_provider_kind_schema_label"
 reason = "This schema vocabulary label identifies a supported gate provider kind; runtime source values remain TOML or metadata owned."
 
@@ -8484,7 +8460,7 @@ reason = "This schema vocabulary label identifies a semantic provider capability
 path = "src/bolt_v3_config.rs"
 kind = "string"
 literal = '''"resolution"'''
-context = '''pub const GATE_ROLES: &[&str] = &["resolution", "decision_reference"];'''
+context = '''pub const RESOLUTION_GATE_ROLE: &str = "resolution";'''
 classification = "gate_role_schema_label"
 reason = "This schema vocabulary label identifies a provider-neutral gate role declared by strategy archetypes."
 
@@ -8492,7 +8468,7 @@ reason = "This schema vocabulary label identifies a provider-neutral gate role d
 path = "src/bolt_v3_config.rs"
 kind = "string"
 literal = '''"decision_reference"'''
-context = '''pub const GATE_ROLES: &[&str] = &["resolution", "decision_reference"];'''
+context = '''pub const GATE_ROLES: &[&str] = &[RESOLUTION_GATE_ROLE, "decision_reference"];'''
 classification = "gate_role_schema_label"
 reason = "This schema vocabulary label identifies a provider-neutral gate role declared by strategy archetypes."
 
@@ -8500,7 +8476,7 @@ reason = "This schema vocabulary label identifies a provider-neutral gate role d
 path = "src/bolt_v3_config.rs"
 kind = "string"
 literal = '''"price"'''
-context = '''"price",'''
+context = '''pub const PRICE_GATE_VALUE_KIND: &str = "price";'''
 classification = "gate_value_kind_schema_label"
 reason = "This schema vocabulary label identifies a normalized gate value kind; actual values are evidence or metadata owned."
 
@@ -8567,3 +8543,195 @@ literal = '''"{subscription_path} uses a single static provider for a rotating m
 context = '''"{subscription_path} uses a single static provider for a rotating market; add market_mappings or provider_kind rotation metadata"'''
 classification = "target_gate_validation_diagnostic_template"
 reason = "This validation diagnostic rejects static-provider wiring for rotating markets; it is not a runtime source value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = "0"
+context = '''.filter(|value| *value != 0)'''
+classification = "gate_provider_freshness_positive_guard"
+reason = "This rejects a zero max-age freshness policy while deriving the temporary taker runtime bridge from TOML-owned gate provider config."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "0"
+context = '''.then(|| provider_ids[0].as_str())'''
+classification = "target_gate_single_provider_selection"
+reason = "This indexes the only allowed provider id after a len==1 guard when selecting a TOML-owned gate provider."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"allowed_provider_ids"'''
+context = '''.get("allowed_provider_ids")'''
+classification = "target_gate_schema_field"
+reason = "This reads a provider-neutral target gate schema field; the configured provider ids remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"feed_id"'''
+context = '''.get("feed_id")'''
+classification = "gate_provider_schema_field"
+reason = "This reads the Chainlink provider-specific schema field from root gate provider TOML; the feed id value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"gate_subscriptions"'''
+context = '''.get("gate_subscriptions")'''
+classification = "target_gate_schema_field"
+reason = "This reads the provider-neutral target gate subscription schema table from strategy TOML."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"market_mappings"'''
+context = '''.get("market_mappings")'''
+classification = "target_gate_schema_field"
+reason = "This reads config-owned target gate market mappings; mapping values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"provider_id"'''
+context = '''.and_then(|mapping| mapping.get("provider_id").and_then(toml::Value::as_str))'''
+classification = "target_gate_schema_field"
+reason = "This reads the selected target gate provider id key; provider id values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"provider_preference"'''
+context = '''.get("provider_preference")'''
+classification = "target_gate_schema_field"
+reason = "This reads provider preference ordering from target gate TOML; provider ids remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"report_decimal_scale"'''
+context = '''let decimal_scale = positive_u64_provider_field(provider_config, "report_decimal_scale")?;'''
+classification = "gate_provider_schema_field"
+reason = "This reads the Chainlink report decimal-scale schema field from root gate provider TOML; the value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"report_schema_version"'''
+context = '''let schema_version = positive_u64_provider_field(provider_config, "report_schema_version")?;'''
+classification = "gate_provider_schema_field"
+reason = "This reads the Chainlink report schema-version field from root gate provider TOML; the value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"resolution_kind"'''
+context = '''mapping.get("resolution_kind").and_then(toml::Value::as_str)'''
+classification = "target_gate_schema_field"
+reason = "This reads a target gate mapping schema field used to select the configured provider kind."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"value_kind"'''
+context = '''&& mapping.get("value_kind").and_then(toml::Value::as_str)'''
+classification = "target_gate_schema_field"
+reason = "This reads a normalized target gate value-kind schema field; actual gate values remain evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = "0"
+context = '''.then(|| provider_ids[0].as_str())'''
+classification = "target_gate_single_provider_selection"
+reason = "This indexes the only allowed provider id after a len==1 guard when selecting a TOML-owned gate provider for the temporary runtime bridge."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"allowed_provider_ids"'''
+context = '''.get("allowed_provider_ids")'''
+classification = "target_gate_schema_field"
+reason = "This reads a provider-neutral target gate schema field; the configured provider ids remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"gate_subscriptions"'''
+context = '''.and_then(|target| target.get("gate_subscriptions"))'''
+classification = "target_gate_schema_field"
+reason = "This reads the provider-neutral target gate subscription schema table from strategy TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"market_mappings"'''
+context = '''.get("market_mappings")'''
+classification = "target_gate_schema_field"
+reason = "This reads config-owned target gate market mappings; mapping values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"provider_id"'''
+context = '''.and_then(|mapping| mapping.get("provider_id").and_then(toml::Value::as_str))'''
+classification = "target_gate_schema_field"
+reason = "This reads the selected target gate provider id key; provider id values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"provider_preference"'''
+context = '''.get("provider_preference")'''
+classification = "target_gate_schema_field"
+reason = "This reads provider preference ordering from target gate TOML; provider ids remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"resolution_identity"'''
+context = '''required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_identity")?;'''
+classification = "target_gate_schema_field"
+reason = "This reads the target gate resolution identity schema field; the identity value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"resolution_kind"'''
+context = '''required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_kind")?;'''
+classification = "target_gate_schema_field"
+reason = "This reads a target gate mapping schema field before deriving the temporary runtime source identity."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"gate_subscriptions"'''
+context = '''.and_then(|target| target.get("gate_subscriptions"))'''
+classification = "target_gate_schema_field"
+reason = "This reads the provider-neutral target gate subscription schema table from strategy TOML."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"market_mappings"'''
+context = '''.get("market_mappings")'''
+classification = "target_gate_schema_field"
+reason = "This reads config-owned target gate market mappings; mapping values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"resolution_identity"'''
+context = '''.get("resolution_identity")'''
+classification = "target_gate_schema_field"
+reason = "This reads the target gate resolution identity schema field; the identity value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_tiny_canary_evidence.rs"
+kind = "string"
+literal = '''"resolution_kind"'''
+context = '''.get("resolution_kind")'''
+classification = "target_gate_schema_field"
+reason = "This reads a target gate mapping schema field before deriving the approved source identity."

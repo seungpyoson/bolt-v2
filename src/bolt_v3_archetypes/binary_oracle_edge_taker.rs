@@ -33,6 +33,8 @@
 //! future archetype can introduce its own message contract without
 //! reaching back into core validation.
 
+use std::collections::BTreeSet;
+
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{Deserialize, Deserializer};
 use toml::{Value, map::Map};
@@ -43,8 +45,10 @@ use nautilus_model::{
 };
 
 use crate::{
-    bolt_v3_archetypes::ArchetypeValidationBinding,
-    bolt_v3_config::{BoltV3StrategyConfig, LoadedStrategy},
+    bolt_v3_archetypes::{
+        ArchetypeGateRequirement, ArchetypeValidationBinding, GateRole, GateValueKind,
+    },
+    bolt_v3_config::{BoltV3StrategyConfig, LoadedStrategy, RESOLUTION_GATE_ROLE},
     bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config},
     bolt_v3_position_contract::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
@@ -62,9 +66,6 @@ use crate::{
 };
 
 pub const KEY: &str = STRATEGY_KIND;
-const CHAINLINK_FEED_ID_PREFIX: &str = "0x";
-const CHAINLINK_FEED_ID_HEX_LENGTH: usize = 64;
-const CHAINLINK_SYNTHETIC_FEED_ID_SEGMENT_HEX_LENGTH: usize = 16;
 
 pub fn validation_binding() -> ArchetypeValidationBinding {
     ArchetypeValidationBinding {
@@ -78,6 +79,15 @@ pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
     strategy_kind: BinaryOracleEdgeTakerBuilder::kind,
     register: register_runtime_strategy,
 };
+
+pub fn gate_requirements() -> Vec<ArchetypeGateRequirement> {
+    vec![ArchetypeGateRequirement {
+        role: GateRole::Resolution,
+        required: true,
+        accepted_value_kinds: BTreeSet::from([GateValueKind::Price, GateValueKind::Outcome]),
+        allow_no_resolution: false,
+    }]
+}
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -103,13 +113,8 @@ pub struct RuntimeParametersBlock {
     pub vol_gap_reset_secs: u64,
     pub vol_min_observations: u64,
     pub vol_bridge_valid_secs: u64,
-    pub price_to_beat_source: String,
-    pub price_to_beat_feed_id: String,
-    pub price_to_beat_report_schema_version: u64,
-    pub price_to_beat_report_decimal_scale: u64,
     pub pricing_kurtosis: f64,
     pub theta_decay_factor: f64,
-    pub forced_flat_stale_chainlink_ms: u64,
     pub forced_flat_thin_book_min_liquidity: f64,
     pub lead_agreement_min_corr: f64,
     pub lead_jitter_max_ms: u64,
@@ -133,20 +138,45 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             vol_gap_reset_secs: u64,
             vol_min_observations: u64,
             vol_bridge_valid_secs: u64,
-            price_to_beat_source: String,
-            price_to_beat_feed_id: String,
-            price_to_beat_report_schema_version: u64,
-            price_to_beat_report_decimal_scale: u64,
             pricing_kurtosis: f64,
             theta_decay_factor: f64,
-            forced_flat_stale_chainlink_ms: u64,
             forced_flat_thin_book_min_liquidity: f64,
             lead_agreement_min_corr: f64,
             lead_jitter_max_ms: u64,
+            price_to_beat_source: Option<toml::Value>,
+            price_to_beat_feed_id: Option<toml::Value>,
+            price_to_beat_report_schema_version: Option<toml::Value>,
+            price_to_beat_report_decimal_scale: Option<toml::Value>,
+            forced_flat_stale_chainlink_ms: Option<toml::Value>,
             chainlink_data_streams_feed_id: Option<toml::Value>,
         }
 
         let wire = Wire::deserialize(deserializer)?;
+        if wire.price_to_beat_source.is_some() {
+            return Err(serde::de::Error::custom(
+                "parameters.runtime.price_to_beat_source must move to [target.gate_subscriptions.<role>]",
+            ));
+        }
+        if wire.price_to_beat_feed_id.is_some() {
+            return Err(serde::de::Error::custom(
+                "parameters.runtime.price_to_beat_feed_id must move to [gate_providers.<id>.<provider_kind>]",
+            ));
+        }
+        if wire.price_to_beat_report_schema_version.is_some() {
+            return Err(serde::de::Error::custom(
+                "parameters.runtime.price_to_beat_report_schema_version must move to [gate_providers.<id>.<provider_kind>]",
+            ));
+        }
+        if wire.price_to_beat_report_decimal_scale.is_some() {
+            return Err(serde::de::Error::custom(
+                "parameters.runtime.price_to_beat_report_decimal_scale must move to [gate_providers.<id>.<provider_kind>]",
+            ));
+        }
+        if wire.forced_flat_stale_chainlink_ms.is_some() {
+            return Err(serde::de::Error::custom(
+                "parameters.runtime.forced_flat_stale_chainlink_ms must move to [gate_providers.<id>.freshness]",
+            ));
+        }
         if wire.chainlink_data_streams_feed_id.is_some() {
             return Err(serde::de::Error::custom(
                 "parameters.runtime.chainlink_data_streams_feed_id must move to [gate_providers.<id>.chainlink_data_streams]",
@@ -164,13 +194,8 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             vol_gap_reset_secs: wire.vol_gap_reset_secs,
             vol_min_observations: wire.vol_min_observations,
             vol_bridge_valid_secs: wire.vol_bridge_valid_secs,
-            price_to_beat_source: wire.price_to_beat_source,
-            price_to_beat_feed_id: wire.price_to_beat_feed_id,
-            price_to_beat_report_schema_version: wire.price_to_beat_report_schema_version,
-            price_to_beat_report_decimal_scale: wire.price_to_beat_report_decimal_scale,
             pricing_kurtosis: wire.pricing_kurtosis,
             theta_decay_factor: wire.theta_decay_factor,
-            forced_flat_stale_chainlink_ms: wire.forced_flat_stale_chainlink_ms,
             forced_flat_thin_book_min_liquidity: wire.forced_flat_thin_book_min_liquidity,
             lead_agreement_min_corr: wire.lead_agreement_min_corr,
             lead_jitter_max_ms: wire.lead_jitter_max_ms,
@@ -416,8 +441,17 @@ pub fn raw_taker_config(
         target.cadence_seconds_source_field,
         target.cadence_seconds,
     )?;
-
     let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
+    let price_to_beat_source =
+        price_to_beat_source_from_target(strategy_instance_id, &strategy.config.target)?;
+    let resolution_provider_id =
+        resolution_gate_provider_id_from_target(strategy_instance_id, &strategy.config.target)?;
+    let forced_flat_stale_reference_ms = forced_flat_stale_reference_ms_from_gate_provider(
+        strategy_instance_id,
+        loaded,
+        &resolution_provider_id,
+    )?;
+
     let mut table = Map::new();
     insert_string(&mut table, "strategy_id", nt_strategy_id(strategy)?);
     insert_string(
@@ -512,6 +546,7 @@ pub fn raw_taker_config(
         "blocked_after_seconds",
         target.blocked_after_seconds,
     )?;
+    insert_string(&mut table, "price_to_beat_source", price_to_beat_source);
     insert_string(
         &mut table,
         "reference_venue",
@@ -599,11 +634,6 @@ pub fn raw_taker_config(
         "vol_bridge_valid_secs",
         parameters.runtime.vol_bridge_valid_secs,
     )?;
-    insert_string(
-        &mut table,
-        "price_to_beat_source",
-        parameters.runtime.price_to_beat_source.clone(),
-    );
     insert_float(
         &mut table,
         "pricing_kurtosis",
@@ -618,7 +648,7 @@ pub fn raw_taker_config(
         &mut table,
         strategy_instance_id,
         "forced_flat_stale_reference_ms",
-        parameters.runtime.forced_flat_stale_chainlink_ms,
+        forced_flat_stale_reference_ms,
     )?;
     insert_float(
         &mut table,
@@ -654,6 +684,124 @@ fn parameters_block(
                 message: error.to_string(),
             },
         )
+}
+
+fn price_to_beat_source_from_target(
+    strategy_instance_id: &str,
+    target: &toml::Value,
+) -> Result<String, BinaryOracleEdgeTakerRuntimeConfigError> {
+    let subscription = resolution_subscription_table(strategy_instance_id, target)?;
+    let mapping = first_resolution_market_mapping(strategy_instance_id, subscription)?;
+    let resolution_kind =
+        required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_kind")?;
+    let resolution_identity =
+        required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_identity")?;
+    Ok(format!("{}.{}", resolution_kind, resolution_identity))
+}
+
+fn resolution_gate_provider_id_from_target(
+    strategy_instance_id: &str,
+    target: &toml::Value,
+) -> Result<String, BinaryOracleEdgeTakerRuntimeConfigError> {
+    let subscription = resolution_subscription_table(strategy_instance_id, target)?;
+    first_resolution_market_mapping(strategy_instance_id, subscription)
+        .ok()
+        .and_then(|mapping| mapping.get("provider_id").and_then(toml::Value::as_str))
+        .or_else(|| {
+            subscription
+                .get("provider_preference")
+                .and_then(toml::Value::as_array)
+                .and_then(|provider_ids| provider_ids.first())
+                .and_then(toml::Value::as_str)
+        })
+        .or_else(|| {
+            let provider_ids = subscription
+                .get("allowed_provider_ids")
+                .and_then(toml::Value::as_array)?;
+            (provider_ids.len() == 1)
+                .then(|| provider_ids[0].as_str())
+                .flatten()
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            message: "resolution gate provider_id is required for runtime bridge".to_string(),
+        })
+}
+
+fn first_resolution_market_mapping<'a>(
+    strategy_instance_id: &str,
+    subscription: &'a toml::map::Map<String, toml::Value>,
+) -> Result<&'a toml::map::Map<String, toml::Value>, BinaryOracleEdgeTakerRuntimeConfigError> {
+    subscription
+        .get("market_mappings")
+        .and_then(toml::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(toml::Value::as_table)
+        .next()
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            message: "target gate market_mappings must include a resolution mapping".to_string(),
+        })
+}
+
+fn required_resolution_mapping_string<'a>(
+    strategy_instance_id: &str,
+    mapping: &'a toml::map::Map<String, toml::Value>,
+    field: &'static str,
+) -> Result<&'a str, BinaryOracleEdgeTakerRuntimeConfigError> {
+    mapping
+        .get(field)
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            message: format!("target gate {field} is required for price_to_beat_source"),
+        })
+}
+
+fn resolution_subscription_table<'a>(
+    strategy_instance_id: &str,
+    target: &'a toml::Value,
+) -> Result<&'a toml::map::Map<String, toml::Value>, BinaryOracleEdgeTakerRuntimeConfigError> {
+    target
+        .as_table()
+        .and_then(|target| target.get("gate_subscriptions"))
+        .and_then(toml::Value::as_table)
+        .and_then(|subscriptions| subscriptions.get(RESOLUTION_GATE_ROLE))
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            message: format!(
+                "target.gate_subscriptions.{RESOLUTION_GATE_ROLE} is required for runtime bridge"
+            ),
+        })
+}
+
+fn forced_flat_stale_reference_ms_from_gate_provider(
+    strategy_instance_id: &str,
+    loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
+    provider_id: &str,
+) -> Result<u64, BinaryOracleEdgeTakerRuntimeConfigError> {
+    loaded
+        .root
+        .gate_providers
+        .as_ref()
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(|provider| provider.freshness.as_ref())
+        .and_then(|freshness| freshness.max_age_ms)
+        .filter(|value| *value != 0)
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            message: format!(
+                "gate_providers.{provider_id}.freshness.max_age_ms is required for forced_flat_stale_reference_ms"
+            ),
+        })
 }
 
 fn nt_strategy_id(
@@ -962,77 +1110,7 @@ fn validate_parameter_bounds(
             "{context}: parameters.order_notional_target ({order_target}) must be <= root risk.default_max_notional_per_order ({default_max})"
         ));
     }
-    errors.extend(validate_price_to_beat_report_config(
-        context,
-        &parameters.runtime,
-    ));
-
     errors
-}
-
-fn validate_price_to_beat_report_config(
-    context: &str,
-    runtime: &RuntimeParametersBlock,
-) -> Vec<String> {
-    let mut errors = Vec::new();
-    if !is_lowercase_chainlink_feed_id(&runtime.price_to_beat_feed_id) {
-        errors.push(format!(
-            "{context}: parameters.runtime.price_to_beat_feed_id must be a lowercase Chainlink bytes32 feed id with `0x` prefix"
-        ));
-    } else if is_placeholder_chainlink_feed_id(&runtime.price_to_beat_feed_id) {
-        errors.push(format!(
-            "{context}: parameters.runtime.price_to_beat_feed_id must not be a placeholder feed id"
-        ));
-    }
-    if runtime.price_to_beat_report_schema_version == 0 {
-        errors.push(format!(
-            "{context}: parameters.runtime.price_to_beat_report_schema_version must be a positive integer"
-        ));
-    }
-    if runtime.price_to_beat_report_decimal_scale == 0 {
-        errors.push(format!(
-            "{context}: parameters.runtime.price_to_beat_report_decimal_scale must be a positive integer"
-        ));
-    }
-    errors
-}
-
-fn is_lowercase_chainlink_feed_id(value: &str) -> bool {
-    let Some(hex) = value.strip_prefix(CHAINLINK_FEED_ID_PREFIX) else {
-        return false;
-    };
-    hex.len() == CHAINLINK_FEED_ID_HEX_LENGTH
-        && hex
-            .chars()
-            .all(|char| matches!(char, '0'..='9' | 'a'..='f'))
-}
-
-fn is_placeholder_chainlink_feed_id(value: &str) -> bool {
-    let Some(hex) = value.strip_prefix(CHAINLINK_FEED_ID_PREFIX) else {
-        return false;
-    };
-    let mut chars = hex.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    chars.all(|char| char == first)
-        || is_repeated_hex_segment(hex, CHAINLINK_SYNTHETIC_FEED_ID_SEGMENT_HEX_LENGTH)
-}
-
-fn is_repeated_hex_segment(hex: &str, segment_len: usize) -> bool {
-    let minimum_repeated_len = segment_len.saturating_add(segment_len);
-    if segment_len == 0
-        || hex.len() < minimum_repeated_len
-        || !hex.len().is_multiple_of(segment_len)
-    {
-        return false;
-    }
-    let Some(first_segment) = hex.get(..segment_len) else {
-        return false;
-    };
-    hex.as_bytes()
-        .chunks(segment_len)
-        .all(|segment| segment == first_segment.as_bytes())
 }
 
 fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<String> {

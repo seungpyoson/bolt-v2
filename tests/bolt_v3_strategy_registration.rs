@@ -217,7 +217,7 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
         table
             .get("price_to_beat_source")
             .and_then(|value| value.as_str()),
-        Some("chainlink_data_streams.report_at_boundary")
+        Some("chainlink_data_streams.example-resolution-5m")
     );
     assert_eq!(
         table
@@ -308,6 +308,61 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
             .and_then(|order| order.get("time_in_force"))
             .and_then(|value| value.as_str()),
         Some("ioc")
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_mapping_uses_target_resolution_mapping_without_chainlink_special_case() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let provider = loaded
+        .root
+        .gate_providers
+        .as_mut()
+        .and_then(|providers| providers.get_mut("resolution_oracle_primary"))
+        .expect("fixture should include a resolution provider");
+    provider.provider_kind = Some("pyth".to_string());
+
+    let strategy = loaded
+        .strategies
+        .iter_mut()
+        .find(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    let mapping = strategy
+        .config
+        .target
+        .as_table_mut()
+        .and_then(|target| target.get_mut("gate_subscriptions"))
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|subscriptions| subscriptions.get_mut("resolution"))
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|resolution| resolution.get_mut("market_mappings"))
+        .and_then(toml::Value::as_array_mut)
+        .and_then(|mappings| mappings.first_mut())
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture strategy should include a resolution gate mapping");
+    mapping.insert(
+        "resolution_kind".to_string(),
+        toml::Value::String("pyth".to_string()),
+    );
+    mapping.insert(
+        "resolution_identity".to_string(),
+        toml::Value::String("btc-pyth-5m".to_string()),
+    );
+
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect("binary oracle strategy should not require Chainlink in the archetype bridge");
+
+    assert_eq!(
+        raw.as_table()
+            .and_then(|table| table.get("price_to_beat_source"))
+            .and_then(|value| value.as_str()),
+        Some("pyth.btc-pyth-5m")
     );
 }
 

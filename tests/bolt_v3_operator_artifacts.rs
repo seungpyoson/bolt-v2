@@ -55,6 +55,7 @@ const TEST_DOWN_OUTCOME: &str = "Down";
 const TEST_BINARY_OPTION_SIZE_INCREMENT: &str = "0.01";
 const TEST_EXECUTION_CLIENT_ID: &str = "polymarket_main";
 const TEST_CONFIGURED_TARGET_ID: &str = "btc_updown_5m";
+const TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.example-resolution-5m";
 const TEST_PRICE_TO_BEAT_FEED_ID: &str =
     "0x01a3f5c7e9b2d4f6081a3c5e7f90b2d406284a6c8e0f123456789abcdeffedcb";
 const TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION: u64 = 3;
@@ -5074,7 +5075,7 @@ fn entry_decision_evidence_source_collector_writes_configured_runtime_jsonl() {
     );
     assert_eq!(
         chain.snapshot.price_to_beat_source,
-        "chainlink_data_streams.report_at_boundary"
+        TEST_PRICE_TO_BEAT_SOURCE
     );
     assert_eq!(chain.snapshot.price_to_beat_value, "3100");
     assert_eq!(chain.intent.intent_kind, BoltV3OrderIntentKind::Entry);
@@ -5131,7 +5132,7 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
         serde_json::to_vec_pretty(&serde_json::json!({
             "schema_version": 1,
             "record_kind": "bolt_v3.source_bound_price_to_beat.v1",
-            "source": "chainlink_data_streams.report_at_boundary",
+            "source": TEST_PRICE_TO_BEAT_SOURCE,
             "price_to_beat_value": 3100.0,
             "source_report_schema_version": TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION,
             "source_report_feed_id": TEST_PRICE_TO_BEAT_FEED_ID,
@@ -5279,7 +5280,7 @@ fn write_entry_decision_source_input_proofs_with_report_provenance(
     let mut price_source = serde_json::json!({
         "schema_version": 1,
         "record_kind": "bolt_v3.source_bound_price_to_beat.v1",
-        "source": "chainlink_data_streams.report_at_boundary",
+        "source": TEST_PRICE_TO_BEAT_SOURCE,
         "price_to_beat_value": price_to_beat_value,
         "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
         "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
@@ -6581,7 +6582,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
     let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
         &strategy_input_path,
         &written.sha256,
-        "chainlink_data_streams.report_at_boundary",
+        TEST_PRICE_TO_BEAT_SOURCE,
     )
     .expect("strategy input evidence should parse");
     assert!(
@@ -8837,7 +8838,7 @@ fn strategy_input_runtime_fixture() -> StrategyInputRuntimeFixture {
         selected_market_observed_timestamp_ms: Some(TEST_MARKET_SELECTION_NOW_MS),
         polymarket_market_start_timestamp_ms: Some(TEST_MARKET_SELECTION_START_MS),
         polymarket_market_end_timestamp_ms: Some(TEST_MARKET_SELECTION_END_MS),
-        price_to_beat_source: "chainlink_data_streams.report_at_boundary".to_string(),
+        price_to_beat_source: TEST_PRICE_TO_BEAT_SOURCE.to_string(),
         price_to_beat_value: "3100".to_string(),
         reference_quote_ts_event: TEST_MARKET_SELECTION_NOW_MS,
         spot_price: "3100.5".to_string(),

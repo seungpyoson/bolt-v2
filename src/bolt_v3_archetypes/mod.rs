@@ -22,11 +22,32 @@
 
 pub mod binary_oracle_edge_taker;
 
+use std::collections::BTreeSet;
+
 use rust_decimal::Decimal;
 
 use crate::{
     bolt_v3_config::BoltV3StrategyConfig, bolt_v3_strategy_registration::StrategyRuntimeBinding,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GateRole {
+    Resolution,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GateValueKind {
+    Price,
+    Outcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchetypeGateRequirement {
+    pub role: GateRole,
+    pub required: bool,
+    pub accepted_value_kinds: BTreeSet<GateValueKind>,
+    pub allow_no_resolution: bool,
+}
 
 pub struct ArchetypeValidationBinding {
     pub key: &'static str,

@@ -23,10 +23,13 @@ use sha2::{Digest, Sha256};
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
 
 pub const TEST_DOUBLE_PROVIDER_KIND: &str = "test_double";
+pub const CHAINLINK_DATA_STREAMS_PROVIDER_KIND: &str = "chainlink_data_streams";
 pub const NO_RESOLUTION_KIND: &str = "no_resolution";
 pub const NO_RESOLUTION_VALUE_KIND: &str = "none";
+pub const RESOLUTION_GATE_ROLE: &str = "resolution";
+pub const PRICE_GATE_VALUE_KIND: &str = "price";
 pub const GATE_PROVIDER_KINDS: &[&str] = &[
-    "chainlink_data_streams",
+    CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
     "pyth",
     "exchange_index",
     "venue_native",
@@ -37,9 +40,9 @@ pub const GATE_PROVIDER_KINDS: &[&str] = &[
 ];
 pub const GATE_PROVIDER_CAPABILITIES: &[&str] =
     &["resolution_value", "reference_value", "market_metadata"];
-pub const GATE_ROLES: &[&str] = &["resolution", "decision_reference"];
+pub const GATE_ROLES: &[&str] = &[RESOLUTION_GATE_ROLE, "decision_reference"];
 pub const GATE_VALUE_KINDS: &[&str] = &[
-    "price",
+    PRICE_GATE_VALUE_KIND,
     "index",
     "outcome",
     "metadata",

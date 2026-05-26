@@ -420,78 +420,30 @@ fn bolt_v3_strategy_oms_type_accepts_nt_variants() {
 }
 
 #[test]
-fn binary_oracle_strategy_rejects_placeholder_price_to_beat_feed_id() {
-    use bolt_v2::{
-        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
-        bolt_v3_validate::validate_strategies,
-    };
-
-    let stable_root: BoltV3RootConfig = toml::from_str(
-        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
-            .expect("fixture should be readable"),
-    )
-    .expect("stable root should parse");
-    let strategy_toml = std::fs::read_to_string(support::repo_path(
-        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-    ))
-    .expect("strategy fixture should be readable")
-    .replace(
-        "price_to_beat_feed_id = \"0x01a3f5c7e9b2d4f6081a3c5e7f90b2d406284a6c8e0f123456789abcdeffedcb\"",
+fn binary_oracle_strategy_rejects_legacy_price_to_beat_feed_id_under_runtime() {
+    let messages = legacy_binary_oracle_runtime_field_messages(
         "price_to_beat_feed_id = \"0x1111111111111111111111111111111111111111111111111111111111111111\"",
     );
-    let strategy: BoltV3StrategyConfig =
-        toml::from_str(&strategy_toml).expect("strategy fixture should parse");
-    let loaded = vec![LoadedStrategy {
-        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
-        relative_path: "strategies/binary_oracle.toml".to_string(),
-        config: strategy,
-    }];
-
-    let messages = validate_strategies(&stable_root, &loaded);
     assert!(
         messages.iter().any(|message| {
             message.contains("parameters.runtime.price_to_beat_feed_id")
-                && message.contains("placeholder")
+                && message.contains("[gate_providers.<id>.")
         }),
-        "placeholder Chainlink feed id must fail live readiness validation: {messages:#?}"
+        "legacy price_to_beat_feed_id must fail closed with a gate-provider migration message: {messages:#?}"
     );
 }
 
 #[test]
-fn binary_oracle_strategy_rejects_repeated_segment_price_to_beat_feed_id() {
-    use bolt_v2::{
-        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
-        bolt_v3_validate::validate_strategies,
-    };
-
-    let stable_root: BoltV3RootConfig = toml::from_str(
-        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
-            .expect("fixture should be readable"),
-    )
-    .expect("stable root should parse");
-    let strategy_toml = std::fs::read_to_string(support::repo_path(
-        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-    ))
-    .expect("strategy fixture should be readable")
-    .replace(
-        "price_to_beat_feed_id = \"0x01a3f5c7e9b2d4f6081a3c5e7f90b2d406284a6c8e0f123456789abcdeffedcb\"",
-        "price_to_beat_feed_id = \"0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"",
+fn binary_oracle_strategy_rejects_legacy_price_to_beat_source_under_runtime() {
+    let messages = legacy_binary_oracle_runtime_field_messages(
+        "price_to_beat_source = \"chainlink_data_streams.report_at_boundary\"",
     );
-    let strategy: BoltV3StrategyConfig =
-        toml::from_str(&strategy_toml).expect("strategy fixture should parse");
-    let loaded = vec![LoadedStrategy {
-        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
-        relative_path: "strategies/binary_oracle.toml".to_string(),
-        config: strategy,
-    }];
-
-    let messages = validate_strategies(&stable_root, &loaded);
     assert!(
         messages.iter().any(|message| {
-            message.contains("parameters.runtime.price_to_beat_feed_id")
-                && message.contains("placeholder")
+            message.contains("parameters.runtime.price_to_beat_source")
+                && message.contains("target.gate_subscriptions")
         }),
-        "repeated-segment Chainlink feed id must fail live readiness validation: {messages:#?}"
+        "legacy price_to_beat_source must fail closed with a target gate migration message: {messages:#?}"
     );
 }
 
@@ -3309,6 +3261,45 @@ provider_id = "resolution_oracle_primary"
 }
 
 #[test]
+fn binary_oracle_fixture_uses_gate_subscription_without_provider_specific_runtime_fields() {
+    let source = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+
+    assert_binary_oracle_strategy_source_uses_gate_schema("fixture", &source);
+}
+
+#[test]
+fn binary_oracle_example_uses_gate_subscription_without_provider_specific_runtime_fields() {
+    let source = std::fs::read_to_string(support::repo_path(
+        "config/strategies/binary_oracle.example.toml",
+    ))
+    .expect("strategy example should be readable");
+
+    assert_binary_oracle_strategy_source_uses_gate_schema("example", &source);
+}
+
+#[test]
+fn binary_oracle_archetype_exposes_provider_neutral_gate_requirements() {
+    use std::collections::BTreeSet;
+
+    use bolt_v2::bolt_v3_archetypes::{GateRole, GateValueKind, binary_oracle_edge_taker};
+
+    let requirements = binary_oracle_edge_taker::gate_requirements();
+    assert_eq!(requirements.len(), 1);
+
+    let requirement = &requirements[0];
+    assert_eq!(requirement.role, GateRole::Resolution);
+    assert!(requirement.required);
+    assert_eq!(
+        requirement.accepted_value_kinds,
+        BTreeSet::from([GateValueKind::Price, GateValueKind::Outcome])
+    );
+    assert!(!requirement.allow_no_resolution);
+}
+
+#[test]
 fn rejects_forbidden_polymarket_env_vars_before_client_build() {
     use bolt_v2::{
         bolt_v3_config::load_bolt_v3_config,
@@ -4083,7 +4074,7 @@ fn shipped_binary_oracle_example_uses_supported_strategy_schema_version() {
 }
 
 #[test]
-fn shipped_binary_oracle_example_keeps_price_to_beat_placeholder_fail_closed() {
+fn shipped_binary_oracle_example_rejects_legacy_price_to_beat_feed_id_under_runtime() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -4094,13 +4085,16 @@ fn shipped_binary_oracle_example_keeps_price_to_beat_placeholder_fail_closed() {
             .expect("fixture should be readable"),
     )
     .expect("stable root should parse");
-    let strategy: BoltV3StrategyConfig = toml::from_str(
-        &std::fs::read_to_string(support::repo_path(
+    let strategy_toml =
+        binary_oracle_strategy_source_without_legacy_gate_runtime_fields_from_path(
             "config/strategies/binary_oracle.example.toml",
-        ))
-        .expect("example strategy should be readable"),
-    )
-    .expect("example strategy should parse");
+        )
+        .replace(
+            "[parameters.runtime]\n",
+            "[parameters.runtime]\nprice_to_beat_feed_id = \"0x1111111111111111111111111111111111111111111111111111111111111111\"\n",
+        );
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&strategy_toml).expect("example strategy should parse");
     let loaded = vec![LoadedStrategy {
         config_path: support::repo_path("config/strategies/binary_oracle.example.toml"),
         relative_path: "strategies/binary_oracle.example.toml".to_string(),
@@ -4111,9 +4105,9 @@ fn shipped_binary_oracle_example_keeps_price_to_beat_placeholder_fail_closed() {
     assert!(
         messages.iter().any(|message| {
             message.contains("parameters.runtime.price_to_beat_feed_id")
-                && message.contains("placeholder")
+                && message.contains("[gate_providers.<id>.")
         }),
-        "shipped operator example must stay fail-closed until a real feed id is provided: {messages:#?}"
+        "legacy price_to_beat_feed_id in shipped operator example must fail closed with a gate-provider migration message: {messages:#?}"
     );
 }
 
@@ -4130,6 +4124,7 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
 fn fixture_root_with_gate_providers(gate_providers_toml: &str) -> String {
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
+    let fixture = without_toml_sections(&fixture, &["gate_providers."]);
     format!("{fixture}\n{gate_providers_toml}")
 }
 
@@ -4138,7 +4133,28 @@ fn fixture_strategy_with_target_gate_subscriptions(gate_subscriptions_toml: &str
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ))
     .expect("strategy fixture should be readable");
+    let fixture = without_toml_sections(&fixture, &["target.gate_subscriptions."]);
     format!("{fixture}\n{gate_subscriptions_toml}")
+}
+
+fn without_toml_sections(source: &str, section_prefixes: &[&str]) -> String {
+    let mut keep_line = true;
+    let mut lines = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            let header = trimmed.trim_start_matches('[');
+            keep_line = !section_prefixes
+                .iter()
+                .any(|prefix| header.starts_with(prefix));
+        }
+        if keep_line {
+            lines.push(line);
+        }
+    }
+    let mut filtered = lines.join("\n");
+    filtered.push('\n');
+    filtered
 }
 
 fn target_gate_subscription_messages(gate_subscriptions_toml: &str) -> Vec<String> {
@@ -4150,6 +4166,87 @@ fn target_gate_subscription_messages(gate_subscriptions_toml: &str) -> Vec<Strin
         &strategy.target,
     );
     errors.into_iter().map(|error| error.to_string()).collect()
+}
+
+fn strategy_validation_messages_for_toml(strategy_toml: &str) -> Vec<String> {
+    use bolt_v2::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy};
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(strategy_toml).expect("strategy fixture should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    bolt_v2::bolt_v3_validate::validate_strategies(&stable_root, &loaded)
+}
+
+fn legacy_binary_oracle_runtime_field_messages(field_line: &str) -> Vec<String> {
+    let strategy_toml = binary_oracle_strategy_source_without_legacy_gate_runtime_fields_from_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    )
+    .replace(
+        "[parameters.runtime]\n",
+        &format!("[parameters.runtime]\n{field_line}\n"),
+    );
+
+    strategy_validation_messages_for_toml(&strategy_toml)
+}
+
+fn binary_oracle_strategy_source_without_legacy_gate_runtime_fields_from_path(
+    relative_path: &str,
+) -> String {
+    let source = std::fs::read_to_string(support::repo_path(relative_path))
+        .expect("binary oracle strategy source should be readable");
+    let mut filtered = source
+        .lines()
+        .filter(|line| !is_legacy_binary_oracle_gate_runtime_line(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    filtered.push('\n');
+    filtered
+}
+
+fn is_legacy_binary_oracle_gate_runtime_line(line: &&str) -> bool {
+    let trimmed = line.trim_start();
+    [
+        "price_to_beat_source",
+        "price_to_beat_feed_id",
+        "price_to_beat_report_schema_version",
+        "price_to_beat_report_decimal_scale",
+        "forced_flat_stale_chainlink_ms",
+    ]
+    .iter()
+    .any(|field| trimmed.starts_with(field))
+}
+
+fn assert_binary_oracle_strategy_source_uses_gate_schema(label: &str, source: &str) {
+    assert!(
+        source.contains("[target.gate_subscriptions.resolution]"),
+        "binary_oracle {label} must declare the provider-neutral resolution gate subscription"
+    );
+    assert!(
+        source.contains("[[target.gate_subscriptions.resolution.market_mappings]]"),
+        "binary_oracle {label} must declare config-owned resolution market mappings"
+    );
+    for forbidden in [
+        "price_to_beat_source",
+        "price_to_beat_feed_id",
+        "price_to_beat_report_schema_version",
+        "price_to_beat_report_decimal_scale",
+        "forced_flat_stale_chainlink_ms",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "binary_oracle {label} must not retain provider-specific runtime field `{forbidden}`"
+        );
+    }
 }
 
 fn mutate_parameters_exit_order(fixture: &str, mutate: impl FnOnce(&str) -> String) -> String {

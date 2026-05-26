@@ -19,8 +19,11 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 use crate::{
-    bolt_v3_archetypes::binary_oracle_edge_taker::{ParametersBlock, raw_taker_config},
-    bolt_v3_config::{BoltV3RootConfig, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
+    bolt_v3_archetypes::binary_oracle_edge_taker::raw_taker_config,
+    bolt_v3_config::{
+        BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, LiveCanaryOperatorEvidenceBlock,
+        LoadedBoltV3Config, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE,
+    },
     bolt_v3_decision_evidence::{
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
         decision_evidence_path, read_latest_entry_decision_evidence_chain,
@@ -2883,31 +2886,81 @@ fn price_to_beat_report_binding(
                 message: format!("strategy instance `{strategy_instance_id}` is not loaded"),
             },
         )?;
-    let parameters: ParametersBlock =
-        strategy
-            .config
-            .parameters
-            .clone()
-            .try_into()
-            .map_err(
-                |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
-                    message: format!(
-                        "source-bound price_to_beat report provenance config is invalid: {source}"
-                    ),
-                },
-            )?;
-    let feed_id = parameters.runtime.price_to_beat_feed_id.trim().to_string();
-    if !is_lowercase_chainlink_feed_id(&feed_id)
-        || parameters.runtime.price_to_beat_report_schema_version
-            == ENTRY_DECISION_ZERO_TIMESTAMP_MS
-        || parameters.runtime.price_to_beat_report_decimal_scale == ENTRY_DECISION_ZERO_TIMESTAMP_MS
-    {
+    let target = strategy
+        .config
+        .target
+        .as_table()
+        .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
+    let Some(resolution_subscription) = target
+        .get("gate_subscriptions")
+        .and_then(toml::Value::as_table)
+        .and_then(|subscriptions| subscriptions.get(RESOLUTION_GATE_ROLE))
+        .and_then(toml::Value::as_table)
+    else {
+        return Err(price_to_beat_report_provenance_config_invalid());
+    };
+    let provider_id = resolution_subscription
+        .get("market_mappings")
+        .and_then(toml::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(toml::Value::as_table)
+        .find(|mapping| {
+            mapping.get("resolution_kind").and_then(toml::Value::as_str)
+                == Some(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
+                && mapping.get("value_kind").and_then(toml::Value::as_str)
+                    == Some(PRICE_GATE_VALUE_KIND)
+        })
+        .and_then(|mapping| mapping.get("provider_id").and_then(toml::Value::as_str))
+        .or_else(|| {
+            resolution_subscription
+                .get("provider_preference")
+                .and_then(toml::Value::as_array)
+                .and_then(|provider_ids| provider_ids.first())
+                .and_then(toml::Value::as_str)
+        })
+        .or_else(|| {
+            let provider_ids = resolution_subscription
+                .get("allowed_provider_ids")
+                .and_then(toml::Value::as_array)?;
+            (provider_ids.len() == 1)
+                .then(|| provider_ids[0].as_str())
+                .flatten()
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
+    let provider = loaded
+        .root
+        .gate_providers
+        .as_ref()
+        .and_then(|providers| providers.get(provider_id))
+        .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
+    if provider.provider_kind.as_deref() != Some(CHAINLINK_DATA_STREAMS_PROVIDER_KIND) {
+        return Err(price_to_beat_report_provenance_config_invalid());
+    }
+    let provider_config = provider
+        .provider_config
+        .get(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
+        .and_then(toml::Value::as_table)
+        .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
+    let feed_id = provider_config
+        .get("feed_id")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
+    let schema_version = positive_u64_provider_field(provider_config, "report_schema_version")?;
+    let decimal_scale = positive_u64_provider_field(provider_config, "report_decimal_scale")?;
+    if !is_lowercase_chainlink_feed_id(&feed_id) {
         return Err(price_to_beat_report_provenance_config_invalid());
     }
     Ok(PriceToBeatReportBinding {
         feed_id,
-        schema_version: parameters.runtime.price_to_beat_report_schema_version,
-        decimal_scale: parameters.runtime.price_to_beat_report_decimal_scale,
+        schema_version,
+        decimal_scale,
     })
 }
 
@@ -2917,6 +2970,18 @@ fn price_to_beat_report_provenance_invalid() -> BoltV3OperatorArtifactError {
 
 fn price_to_beat_report_provenance_config_invalid() -> BoltV3OperatorArtifactError {
     entry_decision_source_invalid("source-bound price_to_beat report provenance config is invalid")
+}
+
+fn positive_u64_provider_field(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &'static str,
+) -> Result<u64, BoltV3OperatorArtifactError> {
+    table
+        .get(field)
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value != ENTRY_DECISION_ZERO_TIMESTAMP_MS)
+        .ok_or_else(price_to_beat_report_provenance_config_invalid)
 }
 
 fn decode_price_to_beat_report(

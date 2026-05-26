@@ -933,3 +933,27 @@ This was local fake-fixture and local source verification only. It did not use G
   - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H17 remains open for the remaining registration/live-node runtime path and complete readiness-session consumer rewiring.
+
+## T036H17 Partial Registration And Live-Node Runtime Readiness Binding
+
+- Strategy registration now loads the bounded `[live_canary.operator_evidence].gate_session_path`, verifies it against `expected_gate_session_sha256`, parses the `EntryReadinessGateSession`, validates the normalized readiness identity, checks the loaded strategy/configured target binding, and passes a `BoltV3ReadinessGateEvidenceSnapshot` into matching registration contexts.
+- The binary-oracle runtime registration binding now forwards that normalized readiness evidence into `StrategyBuildContext`, so runtime strategy input evidence is built from the operator-approved readiness session when the live operator evidence is present.
+- The runtime literal audit was updated for the new strategy-registration schema labels.
+- RED proof before implementation:
+  - `cargo test --locked --test bolt_v3_strategy_registration bolt_v3_registration_context_includes_operator_readiness_gate_session -- --nocapture` failed with `E0609` because `StrategyRegistrationContext` had no `readiness_evidence` field.
+  - `cargo test --locked --test bolt_v3_strategy_registration binary_oracle_registration_forwards_readiness_gate_session_to_build_context -- --nocapture` failed after temporarily removing the forwarding because binary-oracle registration did not consume `context.readiness_evidence`.
+- Local verification:
+  - `cargo test --locked --test bolt_v3_strategy_registration bolt_v3_registration_context_includes_operator_readiness_gate_session -- --nocapture`: 1 passed, 0 failed.
+  - `cargo test --locked --test bolt_v3_strategy_registration binary_oracle_registration_forwards_readiness_gate_session_to_build_context -- --nocapture`: 1 passed, 0 failed.
+  - `cargo test --locked --test bolt_v3_strategy_registration -- --nocapture`: 23 passed, 0 failed.
+  - `cargo test --locked --test bolt_v3_live_canary_gate operator_evidence -- --nocapture`: 14 passed, 0 failed.
+  - `cargo clippy --locked --lib -- -D warnings`: passed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+  - `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+  - `python3 scripts/verify_bolt_v3_provider_leaks.py`: `OK: Bolt-v3 provider-leak verifier passed.`
+  - `python3 scripts/verify_bolt_v3_core_boundary.py`: `OK: Bolt-v3 core boundary audit passed.`
+  - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H17 remains open for the remaining complete readiness-session consumer rewiring and any final stale provider-string replay cleanup.

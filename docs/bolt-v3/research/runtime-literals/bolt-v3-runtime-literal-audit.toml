@@ -9017,6 +9017,30 @@ classification = "operator_evidence_schema_field"
 reason = "This names the operator-evidence gate-session checksum field; the checksum value is computed from the evidence artifact."
 
 [[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"gate_session_path"'''
+context = '''const OPERATOR_EVIDENCE_GATE_SESSION_PATH_FIELD: &str = "gate_session_path";'''
+classification = "operator_evidence_schema_field"
+reason = "This names the operator-evidence gate-session path field consumed during strategy registration; the path value remains evidence-owned and hash-bound."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"expected_gate_session_sha256"'''
+context = '''const OPERATOR_EVIDENCE_EXPECTED_GATE_SESSION_SHA256_FIELD: &str = "expected_gate_session_sha256";'''
+classification = "operator_evidence_schema_field"
+reason = "This names the operator-evidence gate-session checksum field consumed during strategy registration; the checksum value is computed from the evidence artifact."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"configured_target_id"'''
+context = '''.get("configured_target_id")'''
+classification = "entry_readiness_gate_schema_field"
+reason = "This names the TOML target field used to validate that the operator gate session belongs to the loaded strategy target."
+
+[[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"evidence"'''

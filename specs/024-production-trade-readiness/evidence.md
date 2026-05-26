@@ -1030,3 +1030,23 @@ This was local fake-fixture and local source verification only. It did not use G
   - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H19 is complete locally; T036 and later tasks remain open.
+
+## T036 Current-Head Artifact Attempt And Remaining Blocker
+
+At head `6de829eb7d63c2c46fa77f2f3cf87c666708c367`, local artifact generation was retried without using GitHub Actions or CI.
+
+- Ignored local TOML migration needed before artifact generation: `config/live.local.toml` was updated locally with `[gate_providers.resolution_oracle_primary]`, Chainlink Data Streams feed/schema/scale provider binding, and Polymarket data auto-load retry fields; `config/strategies/binary_oracle.local.toml` was updated locally to use `[target.gate_subscriptions.resolution]` and to remove the legacy `parameters.runtime.price_to_beat_*` and `forced_flat_stale_chainlink_ms` fields. These files remain ignored and were not staged.
+- `operator-artifacts generate-base-static --config config/live.local.toml --output-dir /private/tmp/bolt-v2-024-final-6de829eb/final-artifacts --strategy-instance-id bitcoin_updown_main` passed and wrote:
+  - `/private/tmp/bolt-v2-024-final-6de829eb/final-artifacts/ssm-manifest.json`: `ba25a39d7172da6d07fb3fb2e2c24e48ef69ad6911e31e42b43099456991eadd`
+  - `/private/tmp/bolt-v2-024-final-6de829eb/final-artifacts/financial-envelope.json`: `008eb6afbe98ddb08c929e4103deebd3ae96f879e33ff6705d6d1ba51b6f3d56`
+  - `/private/tmp/bolt-v2-024-final-6de829eb/final-artifacts/approval-nonce.json`: `7803a086617bb3332dfc66aa60335173a1a55886af9a18652f3f6b69f637daaa`
+- Source collectors that do not require the missing entry-decision fee source passed:
+  - `host-clock-source.json`: `ec9a10b39a23603cd9865a37dc178619d6aaa5b0f555e9c1d8fe1a825cd675db`
+  - `egress-identity-source.json`: `5c31068483ec5cfd0cd39c451001c8a7f16ce52a4669905823f39e3b118df572`
+  - `clob-v2-adapter-signing-source.json`: `de6a3e3c64a62634137ff92b5e5a4ed9ab8ada6dd79daa89c89526cc426489f6`
+  - `clob-v2-fee-behavior-source.json`: `daa5778d0bc155ece1640a8e89938793aef240c1773744ea8dbf61d45925e2c2`
+  - `venue-account-state-source.json`: `d99d615d7f33b31a3142b1798a90318c1321330aafe21b618c5b70fcc8bf4bf5`
+- The venue-account source collector resolved the configured SSM-backed Polymarket credentials and queried account state only. It did not submit/cancel orders, transfer funds, run no-submit, mutate root TOML, or execute a trade.
+- Fail-closed confirmation: `operator-artifacts generate-static --config config/live.local.toml --output-dir /private/tmp/bolt-v2-024-final-6de829eb/static-attempt --strategy-instance-id bitcoin_updown_main` still refused final static readiness with `market-selection remains blocked: T046 missing source-bound price-to-beat strategy decision input; T046 remains blocked: missing source-bound price-to-beat strategy decision input; T121 remains blocked: T046 source-bound pre-run state evidence is unproven; panic gate and service policy`.
+
+T036 remains open. The next concrete input needed is the operator-approved Chainlink Data Streams report source JSON plus approved hash and the corresponding source-bound decision inputs: market-selection timestamp, decision timestamp, reference quote venue/price/observed timestamp, realized-volatility value/ready timestamp, and per-instrument fee bps. Without those inputs, `collect-chainlink-entry-decision-proof-sources` cannot write `source-bound-price.json`, `reference-quote.json`, `realized-volatility.json`, or `entry-decision-fees.json`; without `entry-decision-fees.json`, the funding/margin and CLOB collateral source collectors cannot honestly run, and T036/T037/T038 cannot be closed.

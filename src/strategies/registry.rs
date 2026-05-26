@@ -10,7 +10,9 @@ use rust_decimal::Decimal;
 use toml::Value;
 
 use crate::{
-    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_decision_evidence::{
+        BoltV3DecisionEvidenceWriter, BoltV3ReadinessGateEvidenceSnapshot,
+    },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
@@ -43,6 +45,7 @@ pub struct StrategyBuildContext {
     fee_provider: Arc<dyn FeeProvider>,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    readiness_evidence: Option<BoltV3ReadinessGateEvidenceSnapshot>,
 }
 
 impl StrategyBuildContext {
@@ -55,7 +58,16 @@ impl StrategyBuildContext {
             fee_provider,
             decision_evidence,
             submit_admission,
+            readiness_evidence: None,
         }
+    }
+
+    pub fn with_readiness_evidence(
+        mut self,
+        readiness_evidence: BoltV3ReadinessGateEvidenceSnapshot,
+    ) -> Self {
+        self.readiness_evidence = Some(readiness_evidence);
+        self
     }
 
     pub fn fee_provider(&self) -> &dyn FeeProvider {
@@ -76,6 +88,10 @@ impl StrategyBuildContext {
 
     pub fn submit_admission_arc(&self) -> Arc<BoltV3SubmitAdmissionState> {
         self.submit_admission.clone()
+    }
+
+    pub fn readiness_evidence(&self) -> Option<&BoltV3ReadinessGateEvidenceSnapshot> {
+        self.readiness_evidence.as_ref()
     }
 }
 

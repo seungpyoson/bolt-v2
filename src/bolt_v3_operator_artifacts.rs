@@ -29,8 +29,9 @@ use crate::{
         RESOLUTION_GATE_ROLE,
     },
     bolt_v3_decision_evidence::{
-        BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
-        decision_evidence_path, read_latest_entry_decision_evidence_chain,
+        BoltV3ReadinessGateEvidenceSnapshot, BoltV3StrategyInputEvidenceSnapshot,
+        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
+        read_latest_entry_decision_evidence_chain, validate_strategy_input_readiness_evidence,
     },
     bolt_v3_live_canary_gate::{
         APPROVAL_ENVELOPE_RECORD_KIND, APPROVAL_ENVELOPE_SCHEMA_VERSION,
@@ -2326,13 +2327,6 @@ fn build_market_selection_source_artifact_from_decision_evidence(
             },
         );
     }
-    if chain.snapshot.price_to_beat_source != financial_envelope.price_to_beat_source() {
-        return Err(
-            BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
-                prerequisite: "T046 remains blocked: strategy decision price-to-beat source does not match config",
-            },
-        );
-    }
     if !source_bound_price_to_beat_value_is_usable(&chain.snapshot.price_to_beat_value) {
         return Err(
             BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
@@ -2908,17 +2902,15 @@ pub fn write_strategy_input_evidence_artifact_from_runtime_snapshot(
     let financial_envelope =
         Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
             .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    validate_strategy_input_readiness_evidence(snapshot).map_err(|_| {
+        BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven {
+            prerequisite: "T046 remains blocked: strategy input readiness gate identity is missing",
+        }
+    })?;
     if snapshot.configured_target_id != financial_envelope.configured_target_id() {
         return Err(
             BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven {
                 prerequisite: "T046 remains blocked: strategy input target does not match config",
-            },
-        );
-    }
-    if snapshot.price_to_beat_source != financial_envelope.price_to_beat_source() {
-        return Err(
-            BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven {
-                prerequisite: "T046 remains blocked: strategy input price-to-beat source does not match config",
             },
         );
     }
@@ -3149,6 +3141,7 @@ pub(crate) struct EntryDecisionFeeRateSourceArtifact {
 }
 
 struct PriceToBeatReportBinding {
+    provider_id: String,
     feed_id: String,
     schema_version: u64,
     decimal_scale: u64,
@@ -3393,6 +3386,12 @@ pub fn write_entry_decision_source_inputs_from_source_files(
         record_kind: ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND.to_string(),
         market_selection_timestamp_ms: proofs.price_source.market_selection_timestamp_ms,
         decision_timestamp_ms: proofs.price_source.decision_timestamp_ms,
+        readiness_evidence: readiness_evidence_from_entry_decision_price_source(
+            loaded,
+            strategy_instance_id,
+            &selected,
+            &proofs.price_source,
+        )?,
         price_to_beat_value: proofs.price_source.price_to_beat_value,
         warmup_count,
         reference_quote: BinaryOracleEntryReferenceQuoteSource {
@@ -3714,10 +3713,100 @@ fn price_to_beat_report_binding(
         return Err(price_to_beat_report_provenance_config_invalid());
     }
     Ok(PriceToBeatReportBinding {
+        provider_id: provider_id.to_string(),
         feed_id,
         schema_version,
         decimal_scale,
     })
+}
+
+fn readiness_evidence_from_entry_decision_price_source(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    selected: &bolt_v3_market_families::SelectedBinaryOptionMarket,
+    source: &SourceBoundPriceToBeatSource,
+) -> Result<BoltV3ReadinessGateEvidenceSnapshot, BoltV3OperatorArtifactError> {
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .ok_or_else(
+            || BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+                message: format!("strategy instance `{strategy_instance_id}` is not loaded"),
+            },
+        )?;
+    let selected_market = bolt_v3_market_families::selected_market_requirement_from_target(
+        &strategy.config.target,
+        selected,
+        source.market_selection_timestamp_ms,
+    )
+    .map_err(|error| BoltV3OperatorArtifactError::MarketSelection(anyhow!(error)))?;
+    let binding = price_to_beat_report_binding(loaded, strategy_instance_id)?;
+    let provider = gate_provider_evidence_binding(loaded, &binding.provider_id)?;
+    let Some(report_sha256) = source
+        .source_report_full_sha256
+        .as_deref()
+        .filter(|value| is_lowercase_sha256(value))
+    else {
+        return Err(price_to_beat_report_provenance_invalid());
+    };
+    let report_schema_version = source
+        .source_report_schema_version
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let report_decimal_scale = source
+        .source_report_decimal_scale
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let report_feed_id = source
+        .source_report_feed_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let valid_from_timestamp_ms = source
+        .source_report_valid_from_timestamp_ms
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let observations_timestamp_ms = source
+        .source_report_observations_timestamp_ms
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let artifact_ref = GateArtifactRef {
+        path: "entry-decision-price-report".to_string(),
+        sha256: report_sha256.to_string(),
+    };
+    let evidence = normalize_gate_evidence(GateEvidenceInput {
+        role: RESOLUTION_GATE_ROLE.to_string(),
+        provider_id: binding.provider_id,
+        provider_kind: CHAINLINK_DATA_STREAMS_PROVIDER_KIND.to_string(),
+        selected_market_key: selected_market.selected_market_key.clone(),
+        collector_observed_at_ms: source.decision_timestamp_ms,
+        source_observed_at_ms: observations_timestamp_ms,
+        freshness_max_age_ms: provider.max_age_ms,
+        value_kind: PRICE_GATE_VALUE_KIND.to_string(),
+        normalized_value: serde_json::json!({
+            "price_to_beat_value": source.price_to_beat_value,
+        }),
+        provider_provenance: serde_json::json!({
+            "provider_kind": CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
+            "feed_id": report_feed_id,
+            "report_schema_version": report_schema_version,
+            "report_decimal_scale": report_decimal_scale,
+            "source_report_full_sha256": report_sha256,
+            "valid_from_timestamp_ms": valid_from_timestamp_ms,
+            "observations_timestamp_ms": observations_timestamp_ms,
+        }),
+        artifact_refs: vec![artifact_ref.clone()],
+        collection_status: GateEvidenceCollectionStatus::Complete,
+    })?;
+    let requirements = crate::bolt_v3_archetypes::binary_oracle_edge_taker::gate_requirements();
+    let provider_evidence = vec![evidence];
+    let session = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
+        loaded,
+        strategy_instance_id,
+        selected_market: &selected_market,
+        requirements: &requirements,
+        provider_evidence: &provider_evidence,
+        created_at_ms: source.decision_timestamp_ms,
+        artifact_refs: vec![artifact_ref],
+    })?;
+    Ok(BoltV3ReadinessGateEvidenceSnapshot::from_entry_readiness_gate_session(&session))
 }
 
 fn price_to_beat_report_provenance_invalid() -> BoltV3OperatorArtifactError {

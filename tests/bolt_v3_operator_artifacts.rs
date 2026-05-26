@@ -12,9 +12,10 @@ use bolt_v2::{
         NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE, load_bolt_v3_config,
     },
     bolt_v3_decision_evidence::{
-        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitIntentKind, decision_evidence_path, read_latest_entry_decision_evidence_chain,
+        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3GateEvidenceIdentity,
+        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields,
+        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind, decision_evidence_path,
+        read_latest_entry_decision_evidence_chain,
     },
     bolt_v3_market_families::{SelectedMarketRequirement, updown::updown_market_slug},
     bolt_v3_operator_artifacts::{
@@ -5399,6 +5400,22 @@ fn entry_decision_evidence_source_fixture(
             "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v1",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            "readiness_evidence": {
+                "gate_session_hash": "gate-session-hash-one",
+                "selected_market_key": TEST_GATE_SELECTED_MARKET_KEY,
+                "gate_evidence": {
+                    RESOLUTION_GATE_ROLE: {
+                        "satisfaction_kind": "evidence",
+                        "selected_market_key": TEST_GATE_SELECTED_MARKET_KEY,
+                        "provider_id": "resolution_oracle_primary",
+                        "provider_kind": CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
+                        "value_kind": PRICE_GATE_VALUE_KIND,
+                        "normalized_value_sha256": "normalized-value-sha-one",
+                        "provider_provenance_sha256": "provider-provenance-sha-one",
+                        "artifact_sha256s": ["artifact-sha-one"]
+                    }
+                }
+            },
             "price_to_beat_value": 3100.0,
             "warmup_count": 20,
             "reference_quote": {
@@ -7056,7 +7073,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
 
 #[test]
 #[allow(clippy::type_complexity)]
-fn strategy_input_writer_rejects_runtime_snapshot_target_source_and_hash_mismatches() {
+fn strategy_input_writer_rejects_runtime_snapshot_target_gate_and_hash_mismatches() {
     let cases: [(
         &str,
         fn(&mut BoltV3StrategyInputEvidenceSnapshot, &mut WrittenOperatorArtifact),
@@ -7070,11 +7087,11 @@ fn strategy_input_writer_rejects_runtime_snapshot_target_source_and_hash_mismatc
             "target",
         ),
         (
-            "price-to-beat source",
+            "readiness gate identity",
             |snapshot, _source_ref| {
-                snapshot.price_to_beat_source = "other-source".to_string();
+                snapshot.gate_evidence.clear();
             },
-            "price-to-beat source",
+            "readiness gate identity",
         ),
         (
             "market-selection source hash",
@@ -9232,6 +9249,22 @@ fn strategy_input_runtime_fixture() -> StrategyInputRuntimeFixture {
         strategy_id: strategy_instance_id.clone(),
         configured_target_id: "btc_updown_5m".to_string(),
         market_selection_ruleset_id: "btc_updown_5m".to_string(),
+        gate_session_hash: "gate-session-hash-one".to_string(),
+        selected_market_key: TEST_GATE_SELECTED_MARKET_KEY.to_string(),
+        gate_evidence: BTreeMap::from([(
+            RESOLUTION_GATE_ROLE.to_string(),
+            BoltV3GateEvidenceIdentity {
+                satisfaction_kind: "evidence".to_string(),
+                selected_market_key: TEST_GATE_SELECTED_MARKET_KEY.to_string(),
+                provider_id: Some("resolution_oracle_primary".to_string()),
+                provider_kind: Some(CHAINLINK_DATA_STREAMS_PROVIDER_KIND.to_string()),
+                value_kind: Some(PRICE_GATE_VALUE_KIND.to_string()),
+                normalized_value_sha256: Some("normalized-value-sha-one".to_string()),
+                provider_provenance_sha256: Some("provider-provenance-sha-one".to_string()),
+                artifact_sha256s: vec!["artifact-sha-one".to_string()],
+                resolution_identity: None,
+            },
+        )]),
         market_selection_outcome: "current".to_string(),
         market_id: Some(TEST_MARKET_ID.to_string()),
         polymarket_condition_id: Some(TEST_CONDITION_ID.to_string()),

@@ -39,7 +39,8 @@ use crate::{
     bolt_v3_decision_evidence::{
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot, compiled_order_price_source,
+        BoltV3OrderIntentKind, BoltV3ReadinessGateEvidenceSnapshot,
+        BoltV3StrategyInputEvidenceSnapshot, compiled_order_price_source,
     },
     bolt_v3_market_families::{
         self, MarketSelectionOutcome, MarketSelectionTarget, SelectedMarketSourceIdentity,
@@ -4045,11 +4046,19 @@ impl BinaryOracleEdgeTaker {
         let order_side = decision.order_side.ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires submission order side")
         })?;
+        let readiness_evidence = self.context.readiness_evidence().ok_or_else(|| {
+            anyhow::anyhow!(
+                "entry strategy input evidence requires readiness gate session evidence"
+            )
+        })?;
 
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
             configured_target_id: self.config.configured_target_id.clone(),
             market_selection_ruleset_id: self.config.configured_target_id.clone(),
+            gate_session_hash: readiness_evidence.gate_session_hash.clone(),
+            selected_market_key: readiness_evidence.selected_market_key.clone(),
+            gate_evidence: readiness_evidence.gate_evidence.clone(),
             market_selection_outcome: market_selection_outcome.to_string(),
             market_id: self.active.market_id.clone(),
             polymarket_condition_id: self
@@ -5312,6 +5321,7 @@ pub struct BinaryOracleEntryDecisionEvidenceSource {
     pub record_kind: String,
     pub market_selection_timestamp_ms: u64,
     pub decision_timestamp_ms: u64,
+    pub readiness_evidence: BoltV3ReadinessGateEvidenceSnapshot,
     pub price_to_beat_value: f64,
     pub warmup_count: u64,
     pub reference_quote: BinaryOracleEntryReferenceQuoteSource,
@@ -5396,7 +5406,8 @@ pub fn record_entry_decision_evidence_from_source(
             decision_evidence.clone(),
         ),
     );
-    let context = StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission);
+    let context = StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission)
+        .with_readiness_evidence(source.readiness_evidence.clone());
     let mut strategy = BinaryOracleEdgeTaker::new(
         BinaryOracleEdgeTakerBuilder::parse_config(raw_config)?,
         context,
@@ -7029,6 +7040,28 @@ mod tests {
         }
     }
 
+    fn test_readiness_gate_evidence()
+    -> crate::bolt_v3_decision_evidence::BoltV3ReadinessGateEvidenceSnapshot {
+        crate::bolt_v3_decision_evidence::BoltV3ReadinessGateEvidenceSnapshot {
+            gate_session_hash: "gate-session-hash-one".to_string(),
+            selected_market_key: "selected-market-key-one".to_string(),
+            gate_evidence: BTreeMap::from([(
+                "resolution_price".to_string(),
+                crate::bolt_v3_decision_evidence::BoltV3GateEvidenceIdentity {
+                    satisfaction_kind: "evidence".to_string(),
+                    selected_market_key: "selected-market-key-one".to_string(),
+                    provider_id: Some("provider-one".to_string()),
+                    provider_kind: Some("chainlink_data_streams".to_string()),
+                    value_kind: Some("price".to_string()),
+                    normalized_value_sha256: Some("normalized-value-sha-one".to_string()),
+                    provider_provenance_sha256: Some("provider-provenance-sha-one".to_string()),
+                    artifact_sha256s: vec!["artifact-sha-one".to_string()],
+                    resolution_identity: None,
+                },
+            )]),
+        }
+    }
+
     fn test_strategy() -> BinaryOracleEdgeTaker {
         test_strategy_with_fee_provider(RecordingFeeProvider::cold())
     }
@@ -7228,7 +7261,8 @@ mod tests {
                 lead_agreement_min_corr: 0.8,
                 lead_jitter_max_ms: 250,
             },
-            StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission),
+            StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission)
+                .with_readiness_evidence(test_readiness_gate_evidence()),
         )
     }
 
@@ -7285,7 +7319,8 @@ mod tests {
                     RecordingDecisionEvidenceWriter,
                 )),
             ),
-        );
+        )
+        .with_readiness_evidence(test_readiness_gate_evidence());
 
         let strategy = BinaryOracleEdgeTaker::new(config, context);
 
@@ -7321,7 +7356,8 @@ mod tests {
                         Arc::new(RecordingDecisionEvidenceWriter),
                     ),
                 ),
-            ),
+            )
+            .with_readiness_evidence(test_readiness_gate_evidence()),
         );
 
         assert!(strategy.core.config.use_uuid_client_order_ids);
@@ -8521,7 +8557,8 @@ mod tests {
         let (mut strategy, fee_provider) =
             ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
         strategy.context =
-            StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission);
+            StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission)
+                .with_readiness_evidence(test_readiness_gate_evidence());
         strategy.config.edge_threshold_basis_points = 1;
         strategy.active.price_to_beat = Some(3_100.0);
         strategy
@@ -11242,7 +11279,8 @@ mod tests {
                     RecordingDecisionEvidenceWriter,
                 )),
             ),
-        );
+        )
+        .with_readiness_evidence(test_readiness_gate_evidence());
         let mut strategy = BinaryOracleEdgeTaker::new(config, context);
         let _cache = register_test_strategy(&mut strategy);
         let trigger_instrument_id = InstrumentId::from("ETHUSDT.BINANCE");
@@ -11288,7 +11326,8 @@ mod tests {
                     RecordingDecisionEvidenceWriter,
                 )),
             ),
-        );
+        )
+        .with_readiness_evidence(test_readiness_gate_evidence());
         let mut strategy = BinaryOracleEdgeTaker::new(config, context);
         let _cache = register_test_strategy(&mut strategy);
         let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
@@ -12507,7 +12546,8 @@ mod tests {
                 fee_provider,
                 Arc::new(RecordingDecisionEvidenceWriter),
                 submit_admission,
-            );
+            )
+            .with_readiness_evidence(test_readiness_gate_evidence());
             strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
             strategy.config.entry_order.is_post_only = true;
             strategy.active.phase = SelectionPhase::Freeze;
@@ -14603,9 +14643,14 @@ mod tests {
         };
 
         assert_eq!(snapshot.strategy_id, strategy.config.strategy_id);
+        assert_eq!(snapshot.gate_session_hash, "gate-session-hash-one");
+        assert_eq!(snapshot.selected_market_key, "selected-market-key-one");
         assert_eq!(
-            snapshot.price_to_beat_source,
-            strategy.config.price_to_beat_source
+            snapshot
+                .gate_evidence
+                .get("resolution_price")
+                .and_then(|identity| identity.normalized_value_sha256.as_deref()),
+            Some("normalized-value-sha-one")
         );
         assert_eq!(snapshot.price_to_beat_value, "3100");
         assert_eq!(snapshot.reference_quote_ts_event, 1_200);

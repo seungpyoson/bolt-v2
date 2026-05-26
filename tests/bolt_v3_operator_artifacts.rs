@@ -86,6 +86,12 @@ const TEST_GATE_SOURCE_OBSERVED_AT_MS: u64 = 995;
 const TEST_GATE_CREATED_AT_MS: u64 = 1_100;
 const TEST_HYPERLIQUID_HIP4_PROVIDER_KIND: &str = "hyperliquid_hip4";
 const TEST_METADATA_VALUE_KIND: &str = "metadata";
+const TEST_PYTH_PROVIDER_KIND: &str = "pyth";
+const TEST_EXCHANGE_INDEX_PROVIDER_KIND: &str = "exchange_index";
+const TEST_DERIBIT_INDEX_PROVIDER_KIND: &str = "deribit_index";
+const TEST_OUTCOME_ORACLE_PROVIDER_KIND: &str = "outcome_oracle";
+const TEST_INDEX_VALUE_KIND: &str = "index";
+const TEST_OUTCOME_VALUE_KIND: &str = "outcome";
 
 #[test]
 fn gate_evidence_normalization_rejects_timeout_partial_and_default_evidence() {
@@ -438,6 +444,186 @@ fn entry_readiness_evidence_collection_dispatches_hip4_metadata_source_when_requ
     );
 }
 
+#[test]
+fn entry_readiness_gate_session_rotates_provider_kinds_without_global_chainlink_requirement() {
+    for case in [
+        (
+            "pyth_resolution_primary",
+            TEST_PYTH_PROVIDER_KIND,
+            PRICE_GATE_VALUE_KIND,
+            GateValueKind::Price,
+        ),
+        (
+            "exchange_index_primary",
+            TEST_EXCHANGE_INDEX_PROVIDER_KIND,
+            TEST_INDEX_VALUE_KIND,
+            GateValueKind::Index,
+        ),
+        (
+            "deribit_index_primary",
+            TEST_DERIBIT_INDEX_PROVIDER_KIND,
+            TEST_INDEX_VALUE_KIND,
+            GateValueKind::Index,
+        ),
+        (
+            "outcome_oracle_primary",
+            TEST_OUTCOME_ORACLE_PROVIDER_KIND,
+            TEST_OUTCOME_VALUE_KIND,
+            GateValueKind::Outcome,
+        ),
+        (
+            "test_double_primary",
+            "test_double",
+            TEST_OUTCOME_VALUE_KIND,
+            GateValueKind::Outcome,
+        ),
+    ] {
+        let (provider_id, provider_kind, value_kind, gate_value_kind) = case;
+        let mut loaded = load_fixture_with_live_canary();
+        loaded
+            .root
+            .gate_providers
+            .as_mut()
+            .expect("fixture root should have gate providers")
+            .remove("resolution_oracle_primary");
+        replace_resolution_provider_mapping(&mut loaded, provider_id, provider_kind, value_kind);
+        add_rotation_gate_provider(&mut loaded, provider_id, provider_kind);
+        let selected_market = fixture_selected_market_requirement_with(provider_kind, value_kind);
+        let evidence = normalize_gate_evidence(rotation_gate_evidence_input(
+            provider_id,
+            provider_kind,
+            value_kind,
+            &selected_market.selected_market_key,
+        ))
+        .expect("rotation gate evidence should normalize");
+        let requirements = vec![ArchetypeGateRequirement {
+            role: GateRole::Resolution,
+            required: true,
+            accepted_value_kinds: BTreeSet::from([gate_value_kind]),
+            allow_no_resolution: false,
+        }];
+        let evidence_items = vec![evidence];
+
+        let session = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
+            loaded: &loaded,
+            strategy_instance_id: "bitcoin_updown_main",
+            selected_market: &selected_market,
+            requirements: &requirements,
+            provider_evidence: &evidence_items,
+            created_at_ms: TEST_GATE_CREATED_AT_MS,
+            artifact_refs: vec![GateArtifactRef {
+                path: format!("{provider_kind}-readiness-session.json"),
+                sha256: TEST_GATE_SESSION_ARTIFACT_SHA256.to_string(),
+            }],
+        })
+        .unwrap_or_else(|error| {
+            panic!("{provider_kind} should satisfy readiness without global Chainlink: {error}")
+        });
+
+        match session
+            .satisfied_roles
+            .get(RESOLUTION_GATE_ROLE)
+            .expect("resolution role should be satisfied")
+        {
+            GateSatisfaction::Evidence { evidence } => {
+                assert_eq!(evidence.provider_id, provider_id);
+                assert_eq!(evidence.provider_kind, provider_kind);
+                assert_eq!(evidence.value_kind, value_kind);
+            }
+            GateSatisfaction::NoResolution { .. } => panic!("expected evidence satisfaction"),
+        }
+    }
+}
+
+#[test]
+fn entry_readiness_gate_session_rejects_global_provider_when_mapping_selects_other_kind() {
+    let mut loaded = load_fixture_with_live_canary();
+    replace_resolution_provider_mapping(
+        &mut loaded,
+        "pyth_resolution_primary",
+        TEST_PYTH_PROVIDER_KIND,
+        PRICE_GATE_VALUE_KIND,
+    );
+    add_rotation_gate_provider(
+        &mut loaded,
+        "pyth_resolution_primary",
+        TEST_PYTH_PROVIDER_KIND,
+    );
+    let selected_market =
+        fixture_selected_market_requirement_with(TEST_PYTH_PROVIDER_KIND, PRICE_GATE_VALUE_KIND);
+    let chainlink_evidence = normalize_gate_evidence(rotation_gate_evidence_input(
+        "resolution_oracle_primary",
+        CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
+        PRICE_GATE_VALUE_KIND,
+        &selected_market.selected_market_key,
+    ))
+    .expect("global Chainlink evidence should normalize");
+    let requirements = vec![ArchetypeGateRequirement {
+        role: GateRole::Resolution,
+        required: true,
+        accepted_value_kinds: BTreeSet::from([GateValueKind::Price]),
+        allow_no_resolution: false,
+    }];
+    let evidence_items = vec![chainlink_evidence];
+
+    let error = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
+        loaded: &loaded,
+        strategy_instance_id: "bitcoin_updown_main",
+        selected_market: &selected_market,
+        requirements: &requirements,
+        provider_evidence: &evidence_items,
+        created_at_ms: TEST_GATE_CREATED_AT_MS,
+        artifact_refs: vec![GateArtifactRef {
+            path: "entry-readiness-gate-session.json".to_string(),
+            sha256: TEST_GATE_SESSION_ARTIFACT_SHA256.to_string(),
+        }],
+    })
+    .expect_err("unselected global Chainlink evidence must not satisfy Pyth mapping");
+
+    assert!(
+        error
+            .to_string()
+            .contains("no provider evidence satisfied role"),
+        "expected selected-provider rejection, got: {error}"
+    );
+}
+
+#[test]
+fn entry_readiness_gate_session_accepts_no_resolution_without_global_gate_provider() {
+    let mut loaded = load_fixture_with_live_canary();
+    loaded.root.gate_providers = None;
+    enable_no_resolution_subscription(&mut loaded);
+    let selected_market = fixture_no_resolution_selected_market_requirement();
+    let requirements = vec![ArchetypeGateRequirement {
+        role: GateRole::Resolution,
+        required: true,
+        accepted_value_kinds: BTreeSet::from([GateValueKind::Outcome]),
+        allow_no_resolution: true,
+    }];
+
+    let session = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
+        loaded: &loaded,
+        strategy_instance_id: "bitcoin_updown_main",
+        selected_market: &selected_market,
+        requirements: &requirements,
+        provider_evidence: &[],
+        created_at_ms: TEST_GATE_CREATED_AT_MS,
+        artifact_refs: vec![GateArtifactRef {
+            path: "entry-readiness-gate-session.json".to_string(),
+            sha256: TEST_GATE_SESSION_ARTIFACT_SHA256.to_string(),
+        }],
+    })
+    .expect("no-resolution readiness should not require a global gate provider");
+
+    assert!(matches!(
+        session
+            .satisfied_roles
+            .get(RESOLUTION_GATE_ROLE)
+            .expect("resolution role should be satisfied"),
+        GateSatisfaction::NoResolution { .. }
+    ));
+}
+
 fn fixture_selected_market_requirement() -> SelectedMarketRequirement {
     SelectedMarketRequirement {
         configured_target_id: TEST_CONFIGURED_TARGET_ID.to_string(),
@@ -458,12 +644,54 @@ fn fixture_selected_market_requirement() -> SelectedMarketRequirement {
     }
 }
 
+fn fixture_selected_market_requirement_with(
+    provider_kind: &str,
+    value_kind: &str,
+) -> SelectedMarketRequirement {
+    SelectedMarketRequirement {
+        resolution_kind: provider_kind.to_string(),
+        value_kind: value_kind.to_string(),
+        ..fixture_selected_market_requirement()
+    }
+}
+
 fn fixture_no_resolution_selected_market_requirement() -> SelectedMarketRequirement {
     SelectedMarketRequirement {
         resolution_kind: NO_RESOLUTION_KIND.to_string(),
         resolution_identity: "none".to_string(),
         value_kind: NO_RESOLUTION_VALUE_KIND.to_string(),
         ..fixture_selected_market_requirement()
+    }
+}
+
+fn rotation_gate_evidence_input(
+    provider_id: &str,
+    provider_kind: &str,
+    value_kind: &str,
+    selected_market_key: &str,
+) -> GateEvidenceInput {
+    GateEvidenceInput {
+        role: RESOLUTION_GATE_ROLE.to_string(),
+        provider_id: provider_id.to_string(),
+        provider_kind: provider_kind.to_string(),
+        selected_market_key: selected_market_key.to_string(),
+        collector_observed_at_ms: TEST_GATE_COLLECTOR_OBSERVED_AT_MS,
+        source_observed_at_ms: TEST_GATE_SOURCE_OBSERVED_AT_MS,
+        freshness_max_age_ms: TEST_GATE_FRESHNESS_MAX_AGE_MS,
+        value_kind: value_kind.to_string(),
+        normalized_value: serde_json::json!({
+            "value_kind": value_kind,
+            "resolution_value": "fixture-rotation-value",
+        }),
+        provider_provenance: serde_json::json!({
+            "provider_kind": provider_kind,
+            "fixture_provider_id": provider_id,
+        }),
+        artifact_refs: vec![GateArtifactRef {
+            path: format!("{provider_kind}-source.json"),
+            sha256: TEST_GATE_ARTIFACT_SHA256.to_string(),
+        }],
+        collection_status: GateEvidenceCollectionStatus::Complete,
     }
 }
 
@@ -514,6 +742,34 @@ fn fixture_gate_session_request<'a>(
     }
 }
 
+fn add_rotation_gate_provider(
+    loaded: &mut LoadedBoltV3Config,
+    provider_id: &str,
+    provider_kind: &str,
+) {
+    loaded
+        .root
+        .gate_providers
+        .as_mut()
+        .expect("fixture root should have gate providers")
+        .insert(
+            provider_id.to_string(),
+            GateProviderBlock {
+                provider_kind: Some(provider_kind.to_string()),
+                capabilities: Some(vec!["resolution_value".to_string()]),
+                client_id: None,
+                freshness: Some(GateProviderFreshnessBlock {
+                    max_age_ms: Some(TEST_GATE_FRESHNESS_MAX_AGE_MS),
+                    max_clock_skew_ms: Some(5_000),
+                }),
+                provider_config: BTreeMap::from([(
+                    provider_kind.to_string(),
+                    toml::Value::Table(toml::map::Map::new()),
+                )]),
+            },
+        );
+}
+
 fn add_metadata_gate_provider(
     loaded: &mut LoadedBoltV3Config,
     provider_id: &str,
@@ -558,6 +814,10 @@ fn replace_resolution_provider_mapping(
     subscription.insert(
         "allowed_value_kinds".to_string(),
         toml::Value::Array(vec![toml::Value::String(value_kind.to_string())]),
+    );
+    subscription.insert(
+        "allowed_provider_kinds".to_string(),
+        toml::Value::Array(vec![toml::Value::String(provider_kind.to_string())]),
     );
     subscription.insert(
         "provider_preference".to_string(),

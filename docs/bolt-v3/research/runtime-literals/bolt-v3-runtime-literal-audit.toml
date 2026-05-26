@@ -9275,8 +9275,24 @@ reason = "This names the normalized gate value-kind schema field; actual values 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"index"'''
+context = '''const GATE_VALUE_KIND_INDEX: &str = "index";'''
+classification = "gate_value_kind_schema_label"
+reason = "This schema vocabulary label identifies a normalized gate value kind; actual values are evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"outcome"'''
 context = '''const GATE_VALUE_KIND_OUTCOME: &str = "outcome";'''
+classification = "gate_value_kind_schema_label"
+reason = "This schema vocabulary label identifies a normalized gate value kind; actual values are evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"metadata"'''
+context = '''const GATE_VALUE_KIND_METADATA: &str = "metadata";'''
 classification = "gate_value_kind_schema_label"
 reason = "This schema vocabulary label identifies a normalized gate value kind; actual values are evidence-owned."
 

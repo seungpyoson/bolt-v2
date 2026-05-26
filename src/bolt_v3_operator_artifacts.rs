@@ -366,7 +366,9 @@ const GATE_FIELD_SELECTED_AT_MS: &str = "selected_at_ms";
 const GATE_FIELD_SELECTED_MARKET_KEY: &str = "selected_market_key";
 const GATE_FIELD_STRATEGY_INSTANCE_ID: &str = "strategy_instance_id";
 const GATE_FIELD_VALUE_KIND: &str = "value_kind";
+const GATE_VALUE_KIND_INDEX: &str = "index";
 const GATE_VALUE_KIND_OUTCOME: &str = "outcome";
+const GATE_VALUE_KIND_METADATA: &str = "metadata";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BoltV3RedactedSsmManifest {
@@ -2460,7 +2462,9 @@ fn gate_role_name(role: GateRole) -> &'static str {
 fn gate_value_kind_from_name(value: &str) -> Result<GateValueKind, BoltV3OperatorArtifactError> {
     match value {
         PRICE_GATE_VALUE_KIND => Ok(GateValueKind::Price),
+        GATE_VALUE_KIND_INDEX => Ok(GateValueKind::Index),
         GATE_VALUE_KIND_OUTCOME => Ok(GateValueKind::Outcome),
+        GATE_VALUE_KIND_METADATA => Ok(GateValueKind::Metadata),
         _ => Err(BoltV3OperatorArtifactError::GateEvidenceInvalid {
             field: "value_kind",
         }),

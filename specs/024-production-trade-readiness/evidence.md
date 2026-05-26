@@ -1005,3 +1005,28 @@ This was local fake-fixture and local source verification only. It did not use G
   - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H18 is complete locally; T036H19 and later tasks remain open.
+
+## T036H19 Provider Rotation And No-Global-Provider Regressions
+
+- Added rotation regressions proving readiness sessions can be satisfied without a global Chainlink provider when the selected market and target mapping require Pyth, exchange-index, Deribit/index, outcome-oracle, or test-double-backed provider evidence.
+- Added a no-global-provider no-resolution regression proving explicit no-resolution readiness does not require any root `gate_providers` entry.
+- Added a negative regression proving configured-but-unselected global Chainlink evidence does not satisfy a Pyth-selected market mapping.
+- Extended neutral gate value-kind handling for `index` and `metadata`; binary-oracle runtime requirements still opt into only the value kinds they declare.
+- RED proof before implementation:
+  - `cargo test --locked --test bolt_v3_operator_artifacts entry_readiness_gate_session_rotates -- --nocapture` first failed because `GateValueKind::Index` did not exist.
+  - After adding `Index`, the same test failed for the `test_double` rotation case until the test target mapping explicitly set `allowed_provider_kinds` to the selected provider kind, proving the subscription gate mattered.
+- Local verification:
+  - `cargo test --locked --test bolt_v3_operator_artifacts entry_readiness_gate_session_rotates -- --nocapture`: 1 passed, 0 failed.
+  - `cargo test --locked --test bolt_v3_operator_artifacts entry_readiness_gate_session_ -- --nocapture`: 7 passed, 0 failed.
+  - `cargo test --locked --test bolt_v3_operator_artifacts -- --nocapture`: 186 passed, 0 failed.
+  - `cargo clippy --locked --lib -- -D warnings`: passed.
+  - `cargo clippy --locked --bin bolt-v2 -- -D warnings`: passed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+  - `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+  - `python3 scripts/verify_bolt_v3_provider_leaks.py`: `OK: Bolt-v3 provider-leak verifier passed.`
+  - `python3 scripts/verify_bolt_v3_core_boundary.py`: `OK: Bolt-v3 core boundary audit passed.`
+  - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H19 is complete locally; T036 and later tasks remain open.

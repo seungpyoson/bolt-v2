@@ -38,7 +38,9 @@ pub enum GateRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GateValueKind {
     Price,
+    Index,
     Outcome,
+    Metadata,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

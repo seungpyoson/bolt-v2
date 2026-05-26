@@ -108,7 +108,14 @@ const CHAINLINK_REPORT_PRICE_DECIMAL_RADIX: f64 = 10.0;
 const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";
 const CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD: &str = "report_endpoint_path";
 const CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD: &str = "http_timeout_secs";
-const CHAINLINK_DATA_STREAMS_SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";
+const CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD: &str = "api_key_ssm_parameter";
+const CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD: &str = "api_secret_ssm_parameter";
+const CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD: &str = "feed_bindings";
+const CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD: &str = "resolution_identity";
+const CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD: &str = "value_kind";
+const CHAINLINK_DATA_STREAMS_FEED_ID_FIELD: &str = "feed_id";
+const CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD: &str = "report_schema_version";
+const CHAINLINK_DATA_STREAMS_REPORT_DECIMAL_SCALE_FIELD: &str = "report_decimal_scale";
 const CHAINLINK_DATA_STREAMS_REPORT_FEED_ID_QUERY_FIELD: &str = "feedID";
 const CHAINLINK_DATA_STREAMS_REPORT_TIMESTAMP_QUERY_FIELD: &str = "timestamp";
 const CHAINLINK_DATA_STREAMS_AUTHORIZATION_HEADER: &str = "Authorization";
@@ -3490,6 +3497,12 @@ struct PriceToBeatReportBinding {
     decimal_scale: u64,
 }
 
+struct PriceToBeatProviderSelection {
+    provider_id: String,
+    resolution_identity: String,
+    value_kind: String,
+}
+
 struct DecodedPriceToBeatReport {
     feed_id: String,
     valid_from_timestamp_ms: u64,
@@ -3500,7 +3513,8 @@ struct DecodedPriceToBeatReport {
 struct ChainlinkDataStreamsReportCollectionConfig {
     rest_base_url: String,
     report_endpoint_path: String,
-    ssm_credential_parameter: String,
+    api_key_ssm_parameter: String,
+    api_secret_ssm_parameter: String,
     http_timeout_secs: u64,
 }
 
@@ -3514,13 +3528,6 @@ impl Drop for ChainlinkDataStreamsCredentials {
         self.api_key.zeroize();
         self.api_secret.zeroize();
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ChainlinkDataStreamsCredentialDocument {
-    api_key: String,
-    api_secret: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3544,10 +3551,17 @@ struct ChainlinkDataStreamsReportSource {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ChainlinkPriceReportSourceMaterializationRequest<'a> {
-    pub credential_document: &'a str,
+    pub credential_api_key: &'a str,
+    pub credential_api_secret: &'a str,
     pub report_timestamp_unix_seconds: u64,
     pub max_report_response_bytes: u64,
     pub output_path: &'a Path,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainlinkDataStreamsSsmCredentialParameters {
+    pub api_key_parameter: String,
+    pub api_secret_parameter: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3577,14 +3591,16 @@ pub(crate) fn validate_entry_decision_source_proof_files(
     })
 }
 
-pub fn chainlink_data_streams_ssm_credential_parameter(
+pub fn chainlink_data_streams_ssm_credential_parameters(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
-) -> Result<String, BoltV3OperatorArtifactError> {
-    Ok(
-        chainlink_data_streams_report_collection_config(loaded, strategy_instance_id)?
-            .ssm_credential_parameter,
-    )
+) -> Result<ChainlinkDataStreamsSsmCredentialParameters, BoltV3OperatorArtifactError> {
+    let collection_config =
+        chainlink_data_streams_report_collection_config(loaded, strategy_instance_id)?;
+    Ok(ChainlinkDataStreamsSsmCredentialParameters {
+        api_key_parameter: collection_config.api_key_ssm_parameter,
+        api_secret_parameter: collection_config.api_secret_ssm_parameter,
+    })
 }
 
 pub async fn write_chainlink_price_report_source_from_configured_provider(
@@ -3605,7 +3621,10 @@ pub async fn write_chainlink_price_report_source_from_configured_provider(
     let binding = price_to_beat_report_binding(loaded, strategy_instance_id)?;
     let collection_config =
         chainlink_data_streams_report_collection_config(loaded, strategy_instance_id)?;
-    let credentials = parse_chainlink_data_streams_credentials(request.credential_document)?;
+    let credentials = chainlink_data_streams_credentials(
+        request.credential_api_key,
+        request.credential_api_secret,
+    )?;
     let (url, path_with_query) = chainlink_data_streams_report_request_url(
         &collection_config.rest_base_url,
         &collection_config.report_endpoint_path,
@@ -4116,6 +4135,54 @@ fn price_to_beat_report_binding(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
 ) -> Result<PriceToBeatReportBinding, BoltV3OperatorArtifactError> {
+    let selection = price_to_beat_provider_selection(loaded, strategy_instance_id)?;
+    let provider = loaded
+        .root
+        .gate_providers
+        .as_ref()
+        .and_then(|providers| providers.get(&selection.provider_id))
+        .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
+    if provider.provider_kind.as_deref() != Some(CHAINLINK_DATA_STREAMS_PROVIDER_KIND) {
+        return Err(price_to_beat_report_provenance_config_invalid());
+    }
+    let provider_config = provider
+        .provider_config
+        .get(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
+        .and_then(toml::Value::as_table)
+        .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
+    let feed_binding = chainlink_data_streams_feed_binding(
+        provider_config,
+        &selection.resolution_identity,
+        &selection.value_kind,
+    )?;
+    let feed_id = string_provider_field(
+        feed_binding,
+        CHAINLINK_DATA_STREAMS_FEED_ID_FIELD,
+        price_to_beat_report_provenance_config_invalid,
+    )?;
+    let schema_version = positive_u64_provider_field(
+        feed_binding,
+        CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD,
+    )?;
+    let decimal_scale = positive_u64_provider_field(
+        feed_binding,
+        CHAINLINK_DATA_STREAMS_REPORT_DECIMAL_SCALE_FIELD,
+    )?;
+    if !is_lowercase_chainlink_feed_id(&feed_id) {
+        return Err(price_to_beat_report_provenance_config_invalid());
+    }
+    Ok(PriceToBeatReportBinding {
+        provider_id: selection.provider_id,
+        feed_id,
+        schema_version,
+        decimal_scale,
+    })
+}
+
+fn price_to_beat_provider_selection(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+) -> Result<PriceToBeatProviderSelection, BoltV3OperatorArtifactError> {
     let strategy = loaded
         .strategies
         .iter()
@@ -4138,7 +4205,7 @@ fn price_to_beat_report_binding(
     else {
         return Err(price_to_beat_report_provenance_config_invalid());
     };
-    let provider_id = resolution_subscription
+    let mapping = resolution_subscription
         .get("market_mappings")
         .and_then(toml::Value::as_array)
         .map(Vec::as_slice)
@@ -4151,7 +4218,20 @@ fn price_to_beat_report_binding(
                 && mapping.get("value_kind").and_then(toml::Value::as_str)
                     == Some(PRICE_GATE_VALUE_KIND)
         })
-        .and_then(|mapping| mapping.get("provider_id").and_then(toml::Value::as_str))
+        .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
+    let resolution_identity = string_provider_field(
+        mapping,
+        CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD,
+        price_to_beat_report_provenance_config_invalid,
+    )?;
+    let value_kind = string_provider_field(
+        mapping,
+        CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD,
+        price_to_beat_report_provenance_config_invalid,
+    )?;
+    let provider_id = mapping
+        .get("provider_id")
+        .and_then(toml::Value::as_str)
         .or_else(|| {
             resolution_subscription
                 .get("provider_preference")
@@ -4169,39 +4249,46 @@ fn price_to_beat_report_binding(
         })
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
-    let provider = loaded
-        .root
-        .gate_providers
-        .as_ref()
-        .and_then(|providers| providers.get(provider_id))
-        .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
-    if provider.provider_kind.as_deref() != Some(CHAINLINK_DATA_STREAMS_PROVIDER_KIND) {
-        return Err(price_to_beat_report_provenance_config_invalid());
-    }
-    let provider_config = provider
-        .provider_config
-        .get(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
-        .and_then(toml::Value::as_table)
-        .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
-    let feed_id = provider_config
-        .get("feed_id")
-        .and_then(toml::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
         .map(str::to_string)
         .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
-    let schema_version = positive_u64_provider_field(provider_config, "report_schema_version")?;
-    let decimal_scale = positive_u64_provider_field(provider_config, "report_decimal_scale")?;
-    if !is_lowercase_chainlink_feed_id(&feed_id) {
+    Ok(PriceToBeatProviderSelection {
+        provider_id,
+        resolution_identity,
+        value_kind,
+    })
+}
+
+fn chainlink_data_streams_feed_binding<'a>(
+    provider_config: &'a toml::map::Map<String, toml::Value>,
+    resolution_identity: &str,
+    value_kind: &str,
+) -> Result<&'a toml::map::Map<String, toml::Value>, BoltV3OperatorArtifactError> {
+    let feed_bindings = provider_config
+        .get(CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD)
+        .and_then(toml::Value::as_array)
+        .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
+    let mut matches = feed_bindings
+        .iter()
+        .filter_map(toml::Value::as_table)
+        .filter(|binding| {
+            binding
+                .get(CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD)
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                == Some(resolution_identity)
+                && binding
+                    .get(CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD)
+                    .and_then(toml::Value::as_str)
+                    .map(str::trim)
+                    == Some(value_kind)
+        });
+    let Some(first) = matches.next() else {
+        return Err(price_to_beat_report_provenance_config_invalid());
+    };
+    if matches.next().is_some() {
         return Err(price_to_beat_report_provenance_config_invalid());
     }
-    Ok(PriceToBeatReportBinding {
-        provider_id: provider_id.to_string(),
-        feed_id,
-        schema_version,
-        decimal_scale,
-    })
+    Ok(first)
 }
 
 fn chainlink_data_streams_report_collection_config(
@@ -4234,9 +4321,14 @@ fn chainlink_data_streams_report_collection_config(
     if !report_endpoint_path.starts_with('/') || report_endpoint_path.contains('?') {
         return Err(price_to_beat_report_provenance_config_invalid());
     }
-    let ssm_credential_parameter = string_provider_field(
+    let api_key_ssm_parameter = string_provider_field(
         provider_config,
-        CHAINLINK_DATA_STREAMS_SSM_CREDENTIAL_PARAMETER_FIELD,
+        CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD,
+        price_to_beat_report_provenance_config_invalid,
+    )?;
+    let api_secret_ssm_parameter = string_provider_field(
+        provider_config,
+        CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD,
         price_to_beat_report_provenance_config_invalid,
     )?;
     let http_timeout_secs = positive_u64_provider_field(
@@ -4246,7 +4338,8 @@ fn chainlink_data_streams_report_collection_config(
     Ok(ChainlinkDataStreamsReportCollectionConfig {
         rest_base_url,
         report_endpoint_path,
-        ssm_credential_parameter,
+        api_key_ssm_parameter,
+        api_secret_ssm_parameter,
         http_timeout_secs,
     })
 }
@@ -4373,18 +4466,13 @@ fn string_provider_field(
         .ok_or_else(error)
 }
 
-fn parse_chainlink_data_streams_credentials(
-    credential_document: &str,
+fn chainlink_data_streams_credentials(
+    api_key: &str,
+    api_secret: &str,
 ) -> Result<ChainlinkDataStreamsCredentials, BoltV3OperatorArtifactError> {
-    let document: ChainlinkDataStreamsCredentialDocument =
-        serde_json::from_str(credential_document).map_err(|_| {
-            entry_decision_source_invalid(
-                "Chainlink Data Streams credential document is not valid JSON",
-            )
-        })?;
     Ok(ChainlinkDataStreamsCredentials {
-        api_key: chainlink_credential_field(document.api_key, "api_key")?,
-        api_secret: chainlink_credential_field(document.api_secret, "api_secret")?,
+        api_key: chainlink_credential_field(api_key.to_string(), "api_key")?,
+        api_secret: chainlink_credential_field(api_secret.to_string(), "api_secret")?,
     })
 }
 

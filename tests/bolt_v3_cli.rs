@@ -2526,27 +2526,27 @@ fn bolt_v3_cli_exposes_collect_chainlink_price_report_source() {
 #[test]
 fn bolt_v3_cli_collects_chainlink_price_report_source_without_printing_credentials_or_report() {
     let temp = tempdir().expect("tempdir should create");
-    let feed_id = "0x01a3f5c7e9b2d4f6081a3c5e7f90b2d406284a6c8e0f123456789abcdeffedcb";
+    let feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
     let report_body = serde_json::json!({
         "report": serde_json::from_slice::<serde_json::Value>(&chainlink_v3_report_source_json(
             feed_id,
             600,
             601,
             3100.0,
-            8,
+            18,
         ))
         .expect("report JSON should parse")
     })
     .to_string();
     let (chainlink_url, chainlink_request_rx) =
         spawn_chainlink_report_server_with_body(report_body);
-    let (ssm_url, ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([(
-        "/bolt/gate-providers/chainlink/mainnet",
-        r#"{"api_key":"chainlink-api-key","api_secret":"chainlink-api-secret"}"#,
-    )]));
+    let (ssm_url, ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
+        ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
+        ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
+    ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         root.replace(
-            "rest_base_url = \"https://api.dataengine.chain.link\"\n",
+            "rest_base_url = \"https://api.testnet-dataengine.chain.link\"\n",
             &format!("rest_base_url = \"{chainlink_url}\"\n"),
         )
         .replace("http_timeout_secs = 10\n", "http_timeout_secs = 2\n")
@@ -2587,7 +2587,8 @@ fn bolt_v3_cli_collects_chainlink_price_report_source_without_printing_credentia
         "fullReport",
         "chainlink-api-key",
         "chainlink-api-secret",
-        "/bolt/gate-providers/chainlink/mainnet",
+        "/bolt/testnet/chainlink/api-key",
+        "/bolt/testnet/chainlink/api-secret",
     ] {
         assert!(
             !stdout.contains(forbidden) && !stderr.contains(forbidden),
@@ -2614,7 +2615,10 @@ fn bolt_v3_cli_collects_chainlink_price_report_source_without_printing_credentia
         .expect("SSM path should be reported");
     assert_eq!(
         ssm_paths,
-        vec!["/bolt/gate-providers/chainlink/mainnet".to_string()]
+        vec![
+            "/bolt/testnet/chainlink/api-key".to_string(),
+            "/bolt/testnet/chainlink/api-secret".to_string(),
+        ]
     );
     let chainlink_request = chainlink_request_rx
         .recv_timeout(Duration::from_secs(2))
@@ -2662,11 +2666,11 @@ max_notional_per_order = "10.00"
     });
     let report_path = temp.path().join("chainlink-report.bin");
     let report_source = chainlink_v3_report_source_json(
-        "0x01a3f5c7e9b2d4f6081a3c5e7f90b2d406284a6c8e0f123456789abcdeffedcb",
+        "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439",
         600,
         601,
         3100.0,
-        8,
+        18,
     );
     fs::write(&report_path, &report_source).expect("report payload should write");
     let report_sha256 = sha256_file_for_cli_test(&report_path);

@@ -5447,9 +5447,23 @@ pub fn record_entry_decision_evidence_from_source(
     match strategy.try_submit_entry_order(source.decision_timestamp_ms) {
         Err(error) if error.to_string().contains("submit admission is not armed") => Ok(()),
         Err(error) => Err(error),
-        Ok(_) => anyhow::bail!(
-            "entry decision evidence source unexpectedly admitted an order; submit admission must stay unarmed"
+        Ok(Some(client_order_id)) => anyhow::bail!(
+            "entry decision evidence source unexpectedly admitted order {client_order_id}; submit admission must stay unarmed"
         ),
+        Ok(None) => {
+            let decision = strategy.entry_submission_decision_at(source.decision_timestamp_ms);
+            anyhow::bail!(
+                "entry decision evidence source did not produce an entry order: blocked_reason={:?} gate_blocked_by={:?} pricing_blocked_by={:?} selected_side={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} min_worst_case_ev_bps={:?} sized_notional={:?}",
+                decision.blocked_reason,
+                decision.evaluation.gate.blocked_by,
+                decision.evaluation.pricing_blocked_by,
+                decision.evaluation.selected_side,
+                decision.evaluation.up_worst_case_ev_bps,
+                decision.evaluation.down_worst_case_ev_bps,
+                decision.evaluation.min_worst_case_ev_bps,
+                decision.evaluation.sized_notional,
+            )
+        }
     }
 }
 

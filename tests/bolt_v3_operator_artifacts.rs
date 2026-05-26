@@ -67,9 +67,11 @@ const TEST_EXECUTION_CLIENT_ID: &str = "polymarket_main";
 const TEST_CONFIGURED_TARGET_ID: &str = "btc_updown_5m";
 const TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.example-resolution-5m";
 const TEST_PRICE_TO_BEAT_FEED_ID: &str =
-    "0x01a3f5c7e9b2d4f6081a3c5e7f90b2d406284a6c8e0f123456789abcdeffedcb";
+    "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
+const TEST_ETH_CHAINLINK_TESTNET_FEED_ID: &str =
+    "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782";
 const TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION: u64 = 3;
-const TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE: u64 = 8;
+const TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE: u64 = 18;
 const TEST_PRICE_TO_BEAT_REPORT_SHA256: &str =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TEST_GATE_SELECTED_MARKET_KEY: &str =
@@ -6041,6 +6043,83 @@ fn entry_decision_evidence_replay_derives_price_from_readiness_session() {
 }
 
 #[test]
+fn entry_decision_evidence_source_collector_reports_no_entry_decision() {
+    let fixture = entry_decision_evidence_source_fixture(2);
+    let readiness_session = entry_decision_readiness_session_fixture(&fixture.loaded);
+    std::fs::write(
+        &fixture.decision_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            "readiness_session": readiness_session,
+            "warmup_count": 20,
+            "reference_quote": {
+                "venue": "binance_reference",
+                "price": 3100.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "realized_volatility": {
+                "value": 0.0005,
+                "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "fees": {
+                "fee_bps_by_instrument_id": {
+                    TEST_UP_INSTRUMENT_ID: 1000.0,
+                    TEST_DOWN_INSTRUMENT_ID: 1000.0
+                }
+            },
+            "books": {
+                "price_precision": 2,
+                "up": {
+                    "best_bid": 0.51,
+                    "bid_quantity": 100.0,
+                    "best_ask": 0.52,
+                    "ask_quantity": 100.0,
+                    "liquidity_available": 100.0
+                },
+                "down": {
+                    "best_bid": 0.48,
+                    "bid_quantity": 100.0,
+                    "best_ask": 0.49,
+                    "ask_quantity": 100.0,
+                    "liquidity_available": 100.0
+                }
+            }
+        }))
+        .expect("decision source should serialize"),
+    )
+    .expect("decision source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.decision_source_path,
+            100_000,
+            &fixture.instrument_source_path,
+            100_000,
+            100_000,
+        )
+        .expect_err("source that does not select a side must fail closed");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("did not produce an entry order"),
+        "no-entry replay should be reported directly, got: {message}"
+    );
+    assert!(
+        message.contains("blocked_reason=Some(\"no_side_selected\")"),
+        "no-entry replay should include the strategy blocked reason, got: {message}"
+    );
+    assert!(
+        !message.contains("unexpectedly admitted"),
+        "no-entry replay must not be mislabeled as submit admission, got: {message}"
+    );
+}
+
+#[test]
 fn entry_decision_evidence_source_collector_writes_configured_runtime_jsonl() {
     let fixture = entry_decision_evidence_source_fixture(2);
 
@@ -6362,6 +6441,64 @@ fn write_entry_decision_source_input_proofs_with_report_provenance(
     }
 }
 
+fn set_resolution_mapping_identity(loaded: &mut LoadedBoltV3Config, resolution_identity: &str) {
+    let mapping = resolution_market_mappings_mut(loaded)
+        .first_mut()
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture should expose one resolution mapping");
+    mapping.insert(
+        "resolution_identity".to_string(),
+        toml::Value::String(resolution_identity.to_string()),
+    );
+}
+
+fn set_chainlink_feed_bindings(loaded: &mut LoadedBoltV3Config, bindings: &[(&str, &str, u64)]) {
+    let provider_config = loaded
+        .root
+        .gate_providers
+        .as_mut()
+        .expect("fixture should configure gate providers")
+        .get_mut("resolution_oracle_primary")
+        .expect("fixture should configure resolution oracle")
+        .provider_config
+        .get_mut(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture should configure chainlink data streams");
+    let feed_bindings = bindings
+        .iter()
+        .map(|(resolution_identity, feed_id, decimal_scale)| {
+            let mut table = toml::map::Map::new();
+            table.insert(
+                "resolution_identity".to_string(),
+                toml::Value::String((*resolution_identity).to_string()),
+            );
+            table.insert(
+                "value_kind".to_string(),
+                toml::Value::String(PRICE_GATE_VALUE_KIND.to_string()),
+            );
+            table.insert(
+                "feed_id".to_string(),
+                toml::Value::String((*feed_id).to_string()),
+            );
+            table.insert(
+                "report_schema_version".to_string(),
+                toml::Value::Integer(
+                    i64::try_from(TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION).unwrap(),
+                ),
+            );
+            table.insert(
+                "report_decimal_scale".to_string(),
+                toml::Value::Integer(i64::try_from(*decimal_scale).unwrap()),
+            );
+            toml::Value::Table(table)
+        })
+        .collect();
+    provider_config.insert(
+        "feed_bindings".to_string(),
+        toml::Value::Array(feed_bindings),
+    );
+}
+
 #[test]
 fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -6489,6 +6626,92 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
     assert_eq!(
         source_inputs.instrument_source.path,
         instrument_source_output
+    );
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_selects_feed_by_resolution_identity() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    set_resolution_mapping_identity(&mut loaded, "eth-usd-5m");
+    set_chainlink_feed_bindings(
+        &mut loaded,
+        &[
+            (
+                "example-resolution-5m",
+                TEST_PRICE_TO_BEAT_FEED_ID,
+                TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+            ),
+            ("eth-usd-5m", TEST_ETH_CHAINLINK_TESTNET_FEED_ID, 18),
+        ],
+    );
+    let report_path = temp.path().join("operator-approved-chainlink-report.bin");
+    std::fs::write(
+        &report_path,
+        chainlink_v3_report_source_json(
+            TEST_ETH_CHAINLINK_TESTNET_FEED_ID,
+            600,
+            601,
+            3100.0,
+            18,
+            true,
+        ),
+    )
+    .expect("report source should write");
+    let report_sha256 = sha256_file(&report_path);
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+    let fee_rate_source_path = temp.path().join("entry-decision-fees.json");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &report_sha256,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            reference_quote: EntryDecisionReferenceQuoteProofInput {
+                venue: "binance_reference".to_string(),
+                price: 3300.0,
+                observed_ts_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            },
+            realized_volatility: EntryDecisionRealizedVolatilityProofInput {
+                value: 1.5,
+                ready_ts_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            },
+            fee_bps_by_instrument_id: BTreeMap::from([
+                (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
+                (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
+            ]),
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+            fee_rate_source_output_path: &fee_rate_source_path,
+        },
+    )
+    .expect("source-proof files should use the selected market resolution identity");
+
+    let price_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.price_to_beat_source.path).expect("price source should read"),
+    )
+    .expect("price source should parse");
+    assert_eq!(
+        price_json["source_report_feed_id"],
+        serde_json::json!(TEST_ETH_CHAINLINK_TESTNET_FEED_ID)
+    );
+    assert_eq!(
+        price_json["source_report_decimal_scale"],
+        serde_json::json!(18)
     );
 }
 

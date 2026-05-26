@@ -2,6 +2,13 @@ mod support;
 
 use std::fs;
 
+const CHAINLINK_TESTNET_BTC_USD_FEED_ID: &str =
+    "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
+const CHAINLINK_TESTNET_ETH_USD_FEED_ID: &str =
+    "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782";
+const OLD_CHAINLINK_FIXTURE_FEED_ID: &str =
+    "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472";
+
 #[test]
 fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
@@ -221,6 +228,30 @@ fn bolt_v3_operator_evidence_allows_unassigned_order_ids() {
             .is_some(),
         "operator evidence should remain configured"
     );
+}
+
+#[test]
+fn shipped_chainlink_gate_provider_examples_preserve_testnet_token_feed_ids() {
+    for relative_path in [
+        "config/root.example.toml",
+        "tests/fixtures/bolt_v3/root.toml",
+    ] {
+        let source = std::fs::read_to_string(support::repo_path(relative_path))
+            .expect("root config should be readable");
+
+        assert!(
+            source.contains(CHAINLINK_TESTNET_BTC_USD_FEED_ID),
+            "{relative_path} should keep the historical BTC/USD testnet feed id"
+        );
+        assert!(
+            source.contains(CHAINLINK_TESTNET_ETH_USD_FEED_ID),
+            "{relative_path} should keep the historical ETH/USD testnet feed id"
+        );
+        assert!(
+            !source.contains(OLD_CHAINLINK_FIXTURE_FEED_ID),
+            "{relative_path} should not ship the old generic Chainlink fixture feed as a token mapping"
+        );
+    }
 }
 
 #[test]
@@ -2816,11 +2847,16 @@ max_age_ms = 300000
 max_clock_skew_ms = 5000
 
 [gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "btc-usd-5m"
+value_kind = "price"
 feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
 report_schema_version = 3
 report_decimal_scale = 8
-endpoint_id = "mainnet-data-streams"
-ssm_credential_parameter = "/bolt/gate-providers/chainlink/mainnet"
 
 [gate_providers.venue_metadata_primary]
 provider_kind = "hyperliquid_hip4"
@@ -2841,6 +2877,80 @@ metadata_scope = "asset_universe"
     assert!(
         messages.is_empty(),
         "canonical gate provider blocks should validate: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_chainlink_data_streams_provider_level_feed_fields() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 8
+endpoint_id = "testnet-data-streams"
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+"#,
+    ))
+    .expect("legacy provider-level feed fields should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary.chainlink_data_streams")
+                && message.contains("feed_bindings")
+        }),
+        "provider-level Chainlink feed fields should fail with feed_bindings guidance: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_chainlink_data_streams_json_credential_parameter_shape() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+ssm_credential_parameter = "/bolt/gate-providers/chainlink/testnet"
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "btc-usd-5m"
+value_kind = "price"
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 8
+"#,
+    ))
+    .expect("legacy Chainlink credential shape should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("ssm_credential_parameter")
+                && message.contains("api_key_ssm_parameter")
+                && message.contains("api_secret_ssm_parameter")
+        }),
+        "legacy Chainlink JSON credential parameter should fail with migration guidance: {messages:#?}"
     );
 }
 
@@ -2947,7 +3057,7 @@ max_age_ms = 300000
 max_clock_skew_ms = 5000
 
 [gate_providers.resolution_oracle_primary.chainlink_data_streams]
-feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+endpoint_id = "testnet-data-streams"
 "#,
     ))
     .expect("missing provider_kind should parse before semantic validation");
@@ -2977,7 +3087,7 @@ max_age_ms = 300000
 max_clock_skew_ms = 5000
 
 [gate_providers.resolution_oracle_primary.chainlink_data_streams]
-feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+endpoint_id = "testnet-data-streams"
 "#,
     ))
     .expect("empty capabilities should parse before semantic validation");

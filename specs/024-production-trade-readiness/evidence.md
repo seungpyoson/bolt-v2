@@ -1033,15 +1033,24 @@ This was local fake-fixture and local source verification only. It did not use G
 
 ## T036I Chainlink Data Streams Report Source Materializer
 
-- Added `operator-artifacts collect-chainlink-price-report-source` as the narrow Chainlink adapter needed by T036. The command resolves the configured `[gate_providers.<id>.chainlink_data_streams].ssm_credential_parameter`, parses the SSM value as a JSON credential document, signs a Chainlink Data Streams REST report request, writes the bounded `feedID`/`validFromTimestamp`/`observationsTimestamp`/`fullReport` source JSON, and prints only the artifact path/hash.
+- Added `operator-artifacts collect-chainlink-price-report-source` as the narrow Chainlink adapter needed by T036. The command resolves the configured `[gate_providers.<id>.chainlink_data_streams].api_key_ssm_parameter` and `.api_secret_ssm_parameter`, signs a Chainlink Data Streams REST report request, writes the bounded `feedID`/`validFromTimestamp`/`observationsTimestamp`/`fullReport` source JSON, and prints only the artifact path/hash.
 - Kept the retired runtime client path retired: no `src/clients/chainlink.rs` was reintroduced. The source materializer lives under `src/bolt_v3_operator_artifacts.rs` and uses TOML-owned `rest_base_url`, `report_endpoint_path`, `http_timeout_secs`, feed id, schema version, decimal scale, and SSM credential parameter fields.
 - Updated tracked examples/fixtures with the TOML-owned Chainlink REST fields and updated ignored `config/live.local.toml` with the same non-secret fields.
+- Added market-resolution `feed_bindings` under `[gate_providers.<id>.chainlink_data_streams]` so the materializer selects the feed by configured `resolution_identity` and `value_kind` instead of using one provider-wide feed. Runtime code still receives these values only from TOML.
+- Rechecked the old Chainlink code before finalizing token mappings. Commit `5af253d9` names `0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439` as `BTC_TESTNET_FEED_ID` in `tests/config_schema.rs` and keeps it in the commented BTC live example; the same fix commit names `0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782` as `CORRECT_ETH_TESTNET_FEED_ID` and asserts the ETH operator snapshot must not use the BTC feed. The older `0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472` value remains treated as an old generic fixture value, not a shipped token mapping.
+- Added regression coverage that shipped root examples contain the historical BTC/USD and ETH/USD Chainlink testnet feed ids and do not ship the old generic fixture feed as a token mapping.
+- Root-cause check for the live 401: the previous implementation used two SSM parameters, `/bolt/testnet/chainlink/api-key` and `/bolt/testnet/chainlink/api-secret`. Secret-safe live probes showed those old SSM parameters still authenticated against Chainlink testnet for both BTC/USD and ETH/USD on REST and WebSocket, while the newer `/bolt/gate-providers/chainlink/testnet` JSON credential document and latest 1Password item returned 401. The fix restores the previous working two-SSM-parameter shape in the current provider TOML instead of overwriting shared SSM secrets.
 - RED proof before implementation:
   - `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_collect_chainlink_price_report_source -- --nocapture` failed with `unrecognized subcommand 'collect-chainlink-price-report-source'`.
+- RED/GREEN proof for market-agnostic feed selection:
+  - `cargo test --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer_selects_feed_by_resolution_identity -- --nocapture` first failed because the materializer used the provider-level/default feed instead of the selected market's `resolution_identity`.
+  - The same command passed after feed binding selection moved to `(resolution_identity, value_kind)`.
 - Local verification:
+  - `cargo test --test config_parsing -- --nocapture`: 137 passed, 0 failed.
   - `cargo test --test bolt_v3_cli chainlink -- --nocapture`: 4 passed, 0 failed.
+  - `cargo test --test bolt_v3_cli entry_decision_proof_sources -- --nocapture`: 2 passed, 0 failed.
   - `cargo test --test bolt_v3_cli bolt_v3_cli_collects_entry_decision_proof_sources_without_printing_inputs -- --nocapture`: 1 passed, 0 failed.
-  - `cargo test --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer -- --nocapture`: 4 passed, 0 failed.
+  - `cargo test --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer -- --nocapture`: 5 passed, 0 failed.
   - `cargo fmt --check`: passed.
   - `cargo clippy --locked --lib -- -D warnings`: passed.
   - `cargo clippy --locked --bin bolt-v2 -- -D warnings`: passed.
@@ -1049,11 +1058,12 @@ This was local fake-fixture and local source verification only. It did not use G
   - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
   - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
   - `cargo test --test bolt_v3_cli -- --nocapture`: 48 passed, 0 failed.
-  - `cargo test --test bolt_v3_operator_artifacts -- --nocapture`: 186 passed, 0 failed.
-- Current operational attempt: `cargo run --locked --bin bolt-v2 -- operator-artifacts collect-chainlink-price-report-source --config config/live.local.toml --strategy-instance-id bitcoin_updown_main --report-timestamp-unix-seconds 1779814423 --max-report-response-bytes 1000000 --output /private/tmp/bolt-v2-024-final-6de829eb/source/chainlink-price-report-source.json` failed closed before any Chainlink HTTP fetch because AWS SSM returned `ParameterNotFound` for the configured Chainlink credential parameter. `/private/tmp/bolt-v2-024-final-6de829eb/source/chainlink-price-report-source.json` was not written.
+  - `cargo test --test bolt_v3_operator_artifacts -- --nocapture`: 187 passed, 0 failed.
+  - `git diff --check`: passed.
+- Current operational attempt after restoring the previous working SSM credential shape: `cargo run --locked --bin bolt-v2 -- operator-artifacts collect-chainlink-price-report-source --config config/live.local.toml --strategy-instance-id bitcoin_updown_main --report-timestamp-unix-seconds 1779814423 --max-report-response-bytes 1000000 --output /private/tmp/bolt-v2-chainlink-recheck-btc.json` passed and wrote `/private/tmp/bolt-v2-chainlink-recheck-btc.json` with sha256 `64de7ece8c51736b3620452a132dd3c0837b264f12a54428aed5c0865e23c496`. The artifact has `feedID=0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439`, `validFromTimestamp=1779814423`, `observationsTimestamp=1779814423`, and a non-empty `fullReport`. No credentials or SSM secret values were printed.
 - The older local probe `/private/tmp/bolt-v2-t036-chainlink-probe.json` is not usable as an approved report source: its JSON keys are only `["error"]`, its sha256 is `930617e7f3a506d4adbe4d8f0984200de140d533a31c083200e2f3578fcd7656`, and it contains no `feedID`/`fullReport` report source.
 
-This was TDD-backed local fake-server verification plus one real AWS SSM lookup that returned no parameter value. It did not read real SSM secret values, connect to Chainlink with credentials, connect to a private venue account, run no-submit, submit/cancel orders, transfer funds, or execute a trade. T036 remains open until the configured Chainlink SSM credential parameter exists or `config/live.local.toml` points at an operator-approved existing credential parameter, and the source-bound decision inputs can be materialized from a real report.
+This was TDD-backed local fake-server verification plus a real AWS SSM-backed Chainlink REST collection that succeeded for the configured BTC/USD testnet feed. It did not print real SSM secret values, connect to a private venue account, run no-submit, submit/cancel orders, transfer funds, or execute a trade. T036 remains open until the source-bound decision inputs can be materialized from the real report plus real reference quote, realized-volatility, fee, market-book, pre-run, and static artifact inputs.
 
 ## T036 Current-Head Artifact Attempt And Remaining Blocker
 
@@ -1072,5 +1082,38 @@ At head `6de829eb7d63c2c46fa77f2f3cf87c666708c367`, local artifact generation wa
   - `venue-account-state-source.json`: `d99d615d7f33b31a3142b1798a90318c1321330aafe21b618c5b70fcc8bf4bf5`
 - The venue-account source collector resolved the configured SSM-backed Polymarket credentials and queried account state only. It did not submit/cancel orders, transfer funds, run no-submit, mutate root TOML, or execute a trade.
 - Fail-closed confirmation: `operator-artifacts generate-static --config config/live.local.toml --output-dir /private/tmp/bolt-v2-024-final-6de829eb/static-attempt --strategy-instance-id bitcoin_updown_main` still refused final static readiness with `market-selection remains blocked: T046 missing source-bound price-to-beat strategy decision input; T046 remains blocked: missing source-bound price-to-beat strategy decision input; T121 remains blocked: T046 source-bound pre-run state evidence is unproven; panic gate and service policy`.
+- Active-window Chainlink source collection for BTC/USD 5m at timestamp `1779820200` passed and wrote `/private/tmp/bolt-v2-chainlink-btc-1779820200.json` with sha256 `b593f2f91c69c3282ac0cb6eb4289d1ca7d3e1888c4ced2fe42e034afad629ef`. The decoded report value used for the follow-on source chain was `75979.20493228`.
+- `collect-chainlink-entry-decision-proof-sources` then wrote source-bound proof artifacts under `/private/tmp/bolt-v2-t036-active-1779820200/`:
+  - `entry-decision-fees.json`: `619d8717590e81afcc37738cd1448cf84794f5d193ba43db729bea8fea2d0919`
+  - `source-bound-price.json`: `35599eb26248e3189cb9fb9a12943b5ce538cfeb7dfff8f84148e4c67ed074a0`
+  - `realized-volatility.json`: `959ef6a814cc8ec9eba6e496b9f8a74cc2a958a1b932e5f5a7e544192011e50a`
+  - `reference-quote.json`: `976225f587f9a01bd1149306bbf6326482e493d25565c1f907cc68342ec28a41`
+- `collect-chainlink-entry-decision-source-inputs` consumed those bounded proofs plus live Polymarket selected-market instruments/books and wrote:
+  - `entry-decision-source.json`: `82c66176488b4d3333e9cbde4877c854127d7d7cbbe6a8f97153407a716352ec`
+  - `instrument-source.json`: `c1391982d108b5f2f57d2b284cb10fe8cb19f3cdbb6a44b78d12c2ed2a4f471b`
+- `generate-entry-decision-evidence-from-source` still failed closed for the active BTC window, but the corrected current-head diagnostic now identifies the real cause instead of mislabeling it as submit admission: `blocked_reason=Some("no_side_selected") gate_blocked_by=[] pricing_blocked_by=[] selected_side=None up_worst_case_ev_bps=Some(-3007.0050157895344) down_worst_case_ev_bps=Some(-2578.836977677897) min_worst_case_ev_bps=Some(100.0) sized_notional=None`. That source chain was valid and source-bound, but it did not produce an entry order, so it cannot create the required strategy-input/order-intent/admission evidence chain.
+- Current read-only funding and collateral rechecks with the same fee source still fail on the configured account: both `collect-pre-run-funding-margin-source` and `collect-pre-run-clob-v2-collateral-accounting-source` return ``CLOB V2 source field `p_usd_allowance` is invalid or unproven``.
+- Fresh read-only recheck at `2026-05-26 19:09:25 UTC` with output targets `/private/tmp/bolt-v2-t036-active-1779820200/clob-v2-collateral-accounting-source-recheck-1779822.json` and `/private/tmp/bolt-v2-t036-active-1779820200/funding-margin-source-recheck-1779822.json` still failed both collectors with ``CLOB V2 source field `p_usd_allowance` is invalid or unproven``; neither output artifact was written.
+- Root-cause check at head `a1953df8d0e4cadf82b21327da295a3fd57770ce`: the materializer rejects missing `BalanceAllowance.allowance` from NT before writing either funding/collateral proof. Official Polymarket docs state `getBalanceAllowance` returns both `balance` and `allowance`, `updateBalanceAllowance` updates the cached balance/allowance, and the deposit-wallet guide calls missing allowance an approval/sync condition rather than usable collateral (`https://docs.polymarket.com/trading/clients/l2`, `https://docs.polymarket.com/trading/deposit-wallets`).
+- Read-only signature-type comparison with temp config copies found the same missing-allowance failure for `poly_gnosis_safe`, `poly_proxy`, and `eoa`; this does not look like a simple local `poly_proxy`/`poly_gnosis_safe` enum mix-up. No submit, cancel, trade, allowance update, fund movement, or secret display was performed.
+- Added regression coverage for the no-entry replay path: `cargo test --test bolt_v3_operator_artifacts entry_decision_evidence_source_collector_reports_no_entry_decision -- --nocapture` passed, proving a balanced/no-edge source is reported as `no_side_selected` and is not mislabeled as an admitted submit.
+- Current-head verification after the diagnostic fix:
+  - `cargo test --test bolt_v3_operator_artifacts -- --nocapture`: 188 passed, 0 failed.
+  - `cargo test --test config_parsing -- --nocapture`: 138 passed, 0 failed.
+  - `cargo test --test bolt_v3_cli -- --nocapture`: 48 passed, 0 failed.
+  - `cargo test --test bolt_v3_tiny_canary_preconditions -- --nocapture`: 63 passed, 0 failed.
+  - `cargo test --test bolt_v3_tiny_canary_operator -- --nocapture`: 31 passed, 0 failed, 1 ignored.
+  - `cargo test --test bolt_v3_live_canary_gate -- --nocapture`: 70 passed, 0 failed.
+  - `cargo fmt --check`: passed.
+  - `cargo clippy --locked --lib -- -D warnings`: passed.
+  - `cargo clippy --locked --bin bolt-v2 -- -D warnings`: passed.
+  - `git diff --check`: passed.
+- T040 local verification at head `a1953df8d0e4cadf82b21327da295a3fd57770ce`:
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `just source-fence`: passed, including runtime-literal verifier self-tests/audit, provider-leak verifier self-tests/audit, core-boundary verifier self-tests/audit, naming verifier self-tests/audit, status-map verifier self-tests/audit, schema-current verifier self-tests/audit, pure-Rust verifier self-tests/audit, legacy-default fence, strategy-policy fence, runtime-capture YAML checks, `cargo fetch --locked`, 11 `bolt_v3_controlled_connect` tests, and 5 `bolt_v3_production_entrypoint` tests.
+  - `cargo clippy --locked --lib -- -D warnings`: passed.
+  - `cargo clippy --locked --bin bolt-v2 -- -D warnings`: passed.
+  - Focused readiness test suites from T039 remain current for this worktree: `bolt_v3_operator_artifacts` 188 passed; `bolt_v3_cli` 48 passed; `bolt_v3_tiny_canary_preconditions` 63 passed; `bolt_v3_tiny_canary_operator` 31 passed, 1 ignored; `bolt_v3_live_canary_gate` 70 passed.
 
-T036 remains open. The Chainlink report source now has a source-owned materializer, but the current configured Chainlink SSM credential parameter is absent (`ParameterNotFound`), so the materializer cannot fetch a real report yet. The next concrete input needed is either that configured SSM parameter populated or `config/live.local.toml` pointed at an operator-approved existing Chainlink credential parameter, followed by the real Chainlink Data Streams report source JSON plus approved hash and the corresponding source-bound decision inputs: market-selection timestamp, decision timestamp, reference quote venue/price/observed timestamp, realized-volatility value/ready timestamp, and per-instrument fee bps. Without those inputs, `collect-chainlink-entry-decision-proof-sources` cannot write `source-bound-price.json`, `reference-quote.json`, `realized-volatility.json`, or `entry-decision-fees.json`; without `entry-decision-fees.json`, the funding/margin and CLOB collateral source collectors cannot honestly run, and T036/T037/T038 cannot be closed.
+T036 remains open. The Chainlink and Polymarket source-input chain is now materializable, but the sampled active window did not produce an entry decision, and the configured account still lacks proven pUSD allowance for funding/collateral source proofs. T036/T037/T038 cannot be closed until a source-bound window produces the required no-submit evidence chain and the account-side allowance proof passes.

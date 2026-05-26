@@ -12,7 +12,7 @@ use bolt_v2::{
         FinalOperatorPacketVerificationScope, OperatorEvidenceJsonBuildInputs,
         PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
         assemble_operator_packet_from_static_manifest,
-        chainlink_data_streams_ssm_credential_parameter,
+        chainlink_data_streams_ssm_credential_parameters,
         collect_entry_decision_source_inputs_from_configured_provider,
         compute_operator_approval_envelope_sha256,
         update_live_canary_operator_evidence_toml_from_json_file,
@@ -959,11 +959,17 @@ fn run_operator_artifacts_command(
             output,
         } => {
             let loaded = load_bolt_v3_config(&config)?;
-            let credential_parameter =
-                chainlink_data_streams_ssm_credential_parameter(&loaded, &strategy_instance_id)?;
+            let credential_parameters =
+                chainlink_data_streams_ssm_credential_parameters(&loaded, &strategy_instance_id)?;
             let ssm_resolver_session = SsmResolverSession::new()?;
-            let credential_document =
-                ssm_resolver_session.resolve(&loaded.root.aws.region, &credential_parameter)?;
+            let credential_api_key = ssm_resolver_session.resolve(
+                &loaded.root.aws.region,
+                &credential_parameters.api_key_parameter,
+            )?;
+            let credential_api_secret = ssm_resolver_session.resolve(
+                &loaded.root.aws.region,
+                &credential_parameters.api_secret_parameter,
+            )?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
@@ -972,7 +978,8 @@ fn run_operator_artifacts_command(
                     &loaded,
                     &strategy_instance_id,
                     ChainlinkPriceReportSourceMaterializationRequest {
-                        credential_document: &credential_document,
+                        credential_api_key: &credential_api_key,
+                        credential_api_secret: &credential_api_secret,
                         report_timestamp_unix_seconds,
                         max_report_response_bytes,
                         output_path: &output,

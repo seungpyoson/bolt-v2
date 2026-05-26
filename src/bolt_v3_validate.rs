@@ -43,10 +43,10 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
-    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, ClientBlock, GATE_PROVIDER_CAPABILITIES,
-    GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, LoadedStrategy,
-    NautilusBlock, PersistenceBlock, RiskBlock, SSM_CREDENTIAL_PARAMETER_FIELD,
-    TEST_DOUBLE_PROVIDER_KIND,
+    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
+    ClientBlock, GATE_PROVIDER_CAPABILITIES, GATE_PROVIDER_KINDS, GateProviderBlock,
+    GateProviderFreshnessBlock, LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND,
+    PersistenceBlock, RiskBlock, SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 
 #[derive(Debug)]
@@ -83,6 +83,20 @@ impl std::error::Error for BoltV3ValidationError {}
 
 pub const SUPPORTED_ROOT_SCHEMA_VERSION: u32 = 1;
 pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;
+const CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD: &str = "feed_bindings";
+const CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD: &str = "api_key_ssm_parameter";
+const CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD: &str = "api_secret_ssm_parameter";
+const CHAINLINK_DATA_STREAMS_OLD_SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";
+const CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD: &str = "resolution_identity";
+const CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD: &str = "value_kind";
+const CHAINLINK_DATA_STREAMS_FEED_ID_FIELD: &str = "feed_id";
+const CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD: &str = "report_schema_version";
+const CHAINLINK_DATA_STREAMS_REPORT_DECIMAL_SCALE_FIELD: &str = "report_decimal_scale";
+const CHAINLINK_DATA_STREAMS_OLD_PROVIDER_LEVEL_FEED_FIELDS: &[&str] = &[
+    CHAINLINK_DATA_STREAMS_FEED_ID_FIELD,
+    CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD,
+    CHAINLINK_DATA_STREAMS_REPORT_DECIMAL_SCALE_FIELD,
+];
 
 pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();
@@ -190,6 +204,16 @@ fn validate_gate_providers(providers: &BTreeMap<String, GateProviderBlock>) -> V
                     ));
                 }
             }
+            if kind == CHAINLINK_DATA_STREAMS_PROVIDER_KIND
+                && let Some(table) = provider
+                    .provider_config
+                    .get(kind)
+                    .and_then(toml::Value::as_table)
+            {
+                errors.extend(validate_chainlink_data_streams_gate_provider(
+                    &context, table,
+                ));
+            }
         }
 
         for (table_name, value) in &provider.provider_config {
@@ -212,6 +236,181 @@ fn validate_gate_providers(providers: &BTreeMap<String, GateProviderBlock>) -> V
     }
 
     errors
+}
+
+fn validate_chainlink_data_streams_gate_provider(
+    context: &str,
+    table: &toml::map::Map<String, toml::Value>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let feed_bindings_context =
+        format!("{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD}");
+
+    if table.contains_key(CHAINLINK_DATA_STREAMS_OLD_SSM_CREDENTIAL_PARAMETER_FIELD) {
+        errors.push(format!(
+            "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_OLD_SSM_CREDENTIAL_PARAMETER_FIELD} must be replaced by {CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD} and {CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD}"
+        ));
+    }
+    errors.extend(validate_chainlink_data_streams_ssm_parameter_field(
+        context,
+        table,
+        CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD,
+    ));
+    errors.extend(validate_chainlink_data_streams_ssm_parameter_field(
+        context,
+        table,
+        CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD,
+    ));
+
+    for field in CHAINLINK_DATA_STREAMS_OLD_PROVIDER_LEVEL_FEED_FIELDS {
+        if table.contains_key(*field) {
+            errors.push(format!(
+                "{context}.chainlink_data_streams.{field} must move under [[{feed_bindings_context}]]"
+            ));
+        }
+    }
+
+    let Some(feed_bindings) = table
+        .get(CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD)
+        .and_then(toml::Value::as_array)
+        .filter(|bindings| !bindings.is_empty())
+    else {
+        errors.push(format!(
+            "{feed_bindings_context} must contain one or more resolution feed bindings"
+        ));
+        return errors;
+    };
+
+    let mut seen = HashSet::new();
+    for (index, binding_value) in feed_bindings.iter().enumerate() {
+        let binding_context = format!("{feed_bindings_context}[{index}]");
+        let Some(binding) = binding_value.as_table() else {
+            errors.push(format!("{binding_context} must be a TOML table"));
+            continue;
+        };
+        let resolution_identity = required_string_field(
+            binding,
+            &binding_context,
+            CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD,
+            &mut errors,
+        );
+        let value_kind = required_string_field(
+            binding,
+            &binding_context,
+            CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD,
+            &mut errors,
+        );
+        if let Some(value_kind) = value_kind
+            && value_kind != PRICE_GATE_VALUE_KIND
+        {
+            errors.push(format!(
+                "{binding_context}.value_kind `{value_kind}` is not supported for Chainlink Data Streams price reports"
+            ));
+        }
+        if let (Some(resolution_identity), Some(value_kind)) = (resolution_identity, value_kind)
+            && !seen.insert((resolution_identity.to_string(), value_kind.to_string()))
+        {
+            errors.push(format!(
+                "{binding_context} duplicates resolution_identity `{resolution_identity}` and value_kind `{value_kind}`"
+            ));
+        }
+        if let Some(feed_id) = required_string_field(
+            binding,
+            &binding_context,
+            CHAINLINK_DATA_STREAMS_FEED_ID_FIELD,
+            &mut errors,
+        ) && !is_lowercase_chainlink_feed_id(feed_id)
+        {
+            errors.push(format!(
+                "{binding_context}.feed_id must be a lowercase Chainlink feed id"
+            ));
+        }
+        required_positive_integer_field(
+            binding,
+            &binding_context,
+            CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD,
+            &mut errors,
+        );
+        required_positive_integer_field(
+            binding,
+            &binding_context,
+            CHAINLINK_DATA_STREAMS_REPORT_DECIMAL_SCALE_FIELD,
+            &mut errors,
+        );
+    }
+
+    errors
+}
+
+fn validate_chainlink_data_streams_ssm_parameter_field(
+    context: &str,
+    table: &toml::map::Map<String, toml::Value>,
+    field: &str,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let field_context = format!("{context}.chainlink_data_streams.{field}");
+    let Some(value) = table.get(field) else {
+        errors.push(format!("{field_context} must be a string SSM path"));
+        return errors;
+    };
+    let Some(path) = value.as_str() else {
+        errors.push(format!("{field_context} must be a string SSM path"));
+        return errors;
+    };
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        errors.push(format!("{field_context} must be a non-empty SSM path"));
+    } else {
+        if trimmed != path {
+            errors.push(format!(
+                "{field_context} must not have leading or trailing whitespace"
+            ));
+        }
+        if !trimmed.starts_with('/') {
+            errors.push(format!(
+                "{field_context} must be an absolute-style SSM parameter path starting with `/`: `{path}`"
+            ));
+        }
+    }
+    errors
+}
+
+fn required_string_field<'a>(
+    table: &'a toml::map::Map<String, toml::Value>,
+    context: &str,
+    field: &str,
+    errors: &mut Vec<String>,
+) -> Option<&'a str> {
+    match table.get(field).and_then(toml::Value::as_str) {
+        Some(value) if !value.trim().is_empty() => Some(value.trim()),
+        _ => {
+            errors.push(format!("{context}.{field} must be a non-empty string"));
+            None
+        }
+    }
+}
+
+fn required_positive_integer_field(
+    table: &toml::map::Map<String, toml::Value>,
+    context: &str,
+    field: &str,
+    errors: &mut Vec<String>,
+) {
+    if table
+        .get(field)
+        .and_then(toml::Value::as_integer)
+        .is_none_or(|value| value <= 0)
+    {
+        errors.push(format!("{context}.{field} must be a positive integer"));
+    }
+}
+
+fn is_lowercase_chainlink_feed_id(value: &str) -> bool {
+    value.len() == 66
+        && value.starts_with("0x")
+        && value[2..]
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
 }
 
 fn validate_gate_provider_freshness(

@@ -49,11 +49,26 @@ max_age_ms = 300000
 max_clock_skew_ms = 5000
 
 [gate_providers.resolution_oracle_primary.chainlink_data_streams]
-feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+endpoint_id = "testnet-data-streams"
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "btc-usd-5m"
+value_kind = "price"
+feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
 report_schema_version = 3
-report_decimal_scale = 8
-endpoint_id = "mainnet-data-streams"
-ssm_credential_parameter = "/bolt/gate-providers/chainlink/mainnet"
+report_decimal_scale = 18
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "eth-usd-5m"
+value_kind = "price"
+feed_id = "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782"
+report_schema_version = 3
+report_decimal_scale = 18
 
 [gate_providers.venue_metadata_primary]
 provider_kind = "hyperliquid_hip4"
@@ -445,7 +460,7 @@ Canonical provider provenance JSON:
 - The exact provider provenance examples are:
 
 ```json
-{"feed_id":"<feed_id>","provider_kind":"chainlink_data_streams","report_decimal_scale":8,"report_schema_version":3,"report_sha256":"<sha256>"}
+{"feed_id":"<feed_id>","provider_kind":"chainlink_data_streams","report_decimal_scale":18,"report_schema_version":3,"report_sha256":"<sha256>"}
 {"feed_id":"<feed_id>","price_message_sha256":"<sha256>","provider_kind":"pyth"}
 {"provider_kind":"exchange_index","response_sha256":"<sha256>","symbol":"<symbol>"}
 {"asset_id":"<asset_id>","metadata_sha256":"<sha256>","provider_kind":"hyperliquid_hip4"}

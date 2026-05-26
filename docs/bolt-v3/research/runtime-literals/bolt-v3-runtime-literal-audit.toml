@@ -3210,6 +3210,94 @@ reason = "The strategy schema version is a structural compatibility gate, not an
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"feed_bindings"'''
+context = '''const CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD: &str = "feed_bindings";'''
+classification = "gate_provider_schema_field"
+reason = "This is the Chainlink feed-binding table key in root gate provider TOML; feed values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"resolution_identity"'''
+context = '''const CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD: &str = "resolution_identity";'''
+classification = "gate_provider_schema_field"
+reason = "This is the Chainlink feed-binding resolution identity key; identity values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"value_kind"'''
+context = '''const CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD: &str = "value_kind";'''
+classification = "gate_provider_schema_field"
+reason = "This is the Chainlink feed-binding value-kind key; value-kind values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"feed_id"'''
+context = '''const CHAINLINK_DATA_STREAMS_FEED_ID_FIELD: &str = "feed_id";'''
+classification = "gate_provider_schema_field"
+reason = "This is the Chainlink feed id schema key; feed id values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"report_schema_version"'''
+context = '''const CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD: &str = "report_schema_version";'''
+classification = "gate_provider_schema_field"
+reason = "This is the Chainlink report schema-version schema key; schema-version values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"report_decimal_scale"'''
+context = '''const CHAINLINK_DATA_STREAMS_REPORT_DECIMAL_SCALE_FIELD: &str = "report_decimal_scale";'''
+classification = "gate_provider_schema_field"
+reason = "This is the Chainlink report decimal-scale schema key; decimal-scale values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"{binding_context} duplicates resolution_identity `{resolution_identity}` and value_kind `{value_kind}`"'''
+context = '''"{binding_context} duplicates resolution_identity `{resolution_identity}` and value_kind `{value_kind}`"'''
+classification = "gate_provider_validation_diagnostic_template"
+reason = "This validation diagnostic rejects duplicate Chainlink feed bindings; it is not a runtime source value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "0"
+context = '''.is_none_or(|value| value <= 0)'''
+classification = "gate_provider_positive_integer_guard"
+reason = "This rejects zero or negative Chainlink report schema/scale values before provider config use."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "66"
+context = '''value.len() == 66'''
+classification = "chainlink_feed_id_shape_guard"
+reason = "This validates the configured Chainlink feed id shape; the feed id value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"0x"'''
+context = '''&& value.starts_with("0x")'''
+classification = "chainlink_feed_id_shape_guard"
+reason = "This validates the configured Chainlink feed id hex prefix; the feed id value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "2"
+context = '''&& value[2..]'''
+classification = "chainlink_feed_id_shape_guard"
+reason = "This skips the Chainlink feed id hex prefix while validating shape; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
 kind = "number"
 literal = "60"
 context = "if minutes >= 60 {"
@@ -8761,6 +8849,30 @@ classification = "gate_provider_secret_schema_field"
 reason = "This schema field name points to the SSM parameter reference; secret values remain SSM-owned."
 
 [[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"api_key_ssm_parameter"'''
+context = '''const CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD: &str = "api_key_ssm_parameter";'''
+classification = "chainlink_data_streams_toml_field"
+reason = "This names the TOML-owned Chainlink API-key SSM parameter field validated at startup; the parameter path value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"api_secret_ssm_parameter"'''
+context = '''const CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD: &str = "api_secret_ssm_parameter";'''
+classification = "chainlink_data_streams_toml_field"
+reason = "This names the TOML-owned Chainlink API-secret SSM parameter field validated at startup; the parameter path value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"ssm_credential_parameter"'''
+context = '''const CHAINLINK_DATA_STREAMS_OLD_SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";'''
+classification = "chainlink_data_streams_legacy_toml_field"
+reason = "This legacy field name is kept only so validation can fail closed with migration guidance."
+
+[[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = '''"provider capability"'''
@@ -8803,10 +8915,50 @@ reason = "This reads a provider-neutral target gate schema field; the configured
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"feed_id"'''
-context = '''.get("feed_id")'''
+literal = '''"feed_bindings"'''
+context = '''const CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD: &str = "feed_bindings";'''
 classification = "gate_provider_schema_field"
-reason = "This reads the Chainlink provider-specific schema field from root gate provider TOML; the feed id value remains TOML-owned."
+reason = "This is the Chainlink feed-binding table key in root gate provider TOML; feed values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"resolution_identity"'''
+context = '''const CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD: &str = "resolution_identity";'''
+classification = "gate_provider_schema_field"
+reason = "This is the Chainlink feed-binding resolution identity key; identity values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"value_kind"'''
+context = '''const CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD: &str = "value_kind";'''
+classification = "gate_provider_schema_field"
+reason = "This is the Chainlink feed-binding value-kind key; value-kind values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"feed_id"'''
+context = '''const CHAINLINK_DATA_STREAMS_FEED_ID_FIELD: &str = "feed_id";'''
+classification = "gate_provider_schema_field"
+reason = "This is the Chainlink feed id schema key; feed id values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"report_schema_version"'''
+context = '''const CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD: &str = "report_schema_version";'''
+classification = "gate_provider_schema_field"
+reason = "This is the Chainlink report schema-version schema key; schema-version values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"report_decimal_scale"'''
+context = '''const CHAINLINK_DATA_STREAMS_REPORT_DECIMAL_SCALE_FIELD: &str = "report_decimal_scale";'''
+classification = "gate_provider_schema_field"
+reason = "This is the Chainlink report decimal-scale schema key; decimal-scale values remain TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -8828,7 +8980,7 @@ reason = "This reads config-owned target gate market mappings; mapping values re
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"provider_id"'''
-context = '''.and_then(|mapping| mapping.get("provider_id").and_then(toml::Value::as_str))'''
+context = '''.get("provider_id")'''
 classification = "target_gate_schema_field"
 reason = "This reads the selected target gate provider id key; provider id values remain TOML-owned."
 
@@ -8839,22 +8991,6 @@ literal = '''"provider_preference"'''
 context = '''.get("provider_preference")'''
 classification = "target_gate_schema_field"
 reason = "This reads provider preference ordering from target gate TOML; provider ids remain TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
-kind = "string"
-literal = '''"report_decimal_scale"'''
-context = '''let decimal_scale = positive_u64_provider_field(provider_config, "report_decimal_scale")?;'''
-classification = "gate_provider_schema_field"
-reason = "This reads the Chainlink report decimal-scale schema field from root gate provider TOML; the value remains TOML-owned."
-
-[[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
-kind = "string"
-literal = '''"report_schema_version"'''
-context = '''let schema_version = positive_u64_provider_field(provider_config, "report_schema_version")?;'''
-classification = "gate_provider_schema_field"
-reason = "This reads the Chainlink report schema-version field from root gate provider TOML; the value remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -9459,10 +9595,18 @@ reason = "This names the TOML-owned Chainlink HTTP timeout field; the timeout va
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"ssm_credential_parameter"'''
-context = '''const CHAINLINK_DATA_STREAMS_SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";'''
+literal = '''"api_key_ssm_parameter"'''
+context = '''const CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD: &str = "api_key_ssm_parameter";'''
 classification = "chainlink_data_streams_toml_field"
-reason = "This names the TOML-owned Chainlink credential SSM parameter field; the parameter path value remains config-owned."
+reason = "This names the TOML-owned Chainlink API-key SSM parameter field; the parameter path value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"api_secret_ssm_parameter"'''
+context = '''const CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD: &str = "api_secret_ssm_parameter";'''
+classification = "chainlink_data_streams_toml_field"
+reason = "This names the TOML-owned Chainlink API-secret SSM parameter field; the parameter path value remains config-owned."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -9548,17 +9692,17 @@ reason = "This is the fail-closed diagnostic for a bounded Chainlink source resp
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"api_key"'''
-context = '''api_key: chainlink_credential_field(document.api_key, "api_key")?,'''
-classification = "chainlink_data_streams_credential_schema_field"
-reason = "This is the SSM JSON credential document field name for the Chainlink API key; the credential value remains SSM-owned."
+context = '''api_key: chainlink_credential_field(api_key.to_string(), "api_key")?,'''
+classification = "chainlink_data_streams_credential_field_label"
+reason = "This is the fail-closed local label used when validating the SSM-resolved Chainlink API key; the credential value remains SSM-owned."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"api_secret"'''
-context = '''api_secret: chainlink_credential_field(document.api_secret, "api_secret")?,'''
-classification = "chainlink_data_streams_credential_schema_field"
-reason = "This is the SSM JSON credential document field name for the Chainlink API secret; the credential value remains SSM-owned."
+context = '''api_secret: chainlink_credential_field(api_secret.to_string(), "api_secret")?,'''
+classification = "chainlink_data_streams_credential_field_label"
+reason = "This is the fail-closed local label used when validating the SSM-resolved Chainlink API secret; the credential value remains SSM-owned."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

@@ -8323,6 +8323,8 @@ pub fn write_operator_evidence_json_from_artifact_paths(
             inputs.strategy_input_evidence_path,
             max_bytes,
         )?,
+        gate_session_path: None,
+        expected_gate_session_sha256: None,
         financial_envelope_path: operator_evidence_path_string(inputs.financial_envelope_path),
         financial_envelope_sha256: operator_evidence_artifact_sha256(
             loaded,

@@ -237,6 +237,10 @@ pub struct LiveCanaryOperatorEvidenceBlock {
     pub ssm_manifest_sha256: String,
     pub strategy_input_evidence_path: String,
     pub strategy_input_evidence_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate_session_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_gate_session_sha256: Option<String>,
     pub financial_envelope_path: String,
     pub financial_envelope_sha256: String,
     pub pre_run_state_path: String,

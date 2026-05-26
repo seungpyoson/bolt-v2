@@ -912,6 +912,38 @@ reason = "This is fail-closed diagnostic text; compared values come from TOML, b
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
+literal = '''"gate_session_path"'''
+context = '''"gate_session_path",'''
+classification = "live_canary_operator_evidence_field"
+reason = "This names the TOML-owned readiness gate session path field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"gate_session_path"'''
+context = '''let path = resolve_configured_path(root_path, "gate_session_path", gate_session_path)?;'''
+classification = "live_canary_operator_evidence_field"
+reason = "This names the TOML-owned readiness gate session path field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"expected_gate_session_sha256"'''
+context = '''"expected_gate_session_sha256",'''
+classification = "live_canary_operator_evidence_field"
+reason = "This names the TOML-owned readiness gate session artifact hash field validated by the live canary gate."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"configured_target_id"'''
+context = '''.get("configured_target_id")'''
+classification = "live_canary_gate_config_field"
+reason = "This names the configured target identity field used to bind a readiness gate session to the loaded strategy target."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
 literal = '''"bolt-v3 live canary approval consumption proof {} is malformed: {reason}"'''
 context = '''"bolt-v3 live canary approval consumption proof {} is malformed: {reason}",'''
 classification = "live_canary_gate_diagnostic_template"

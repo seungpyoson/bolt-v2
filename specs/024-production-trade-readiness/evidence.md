@@ -860,3 +860,31 @@ The join now fails closed unless normalized evidence matches the required role, 
   - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H17 remains open for the remaining tiny-canary, live-canary, CLI, registration, live-node runtime, replay, and final-packet readiness-session consumer paths.
+
+## T036H17 Partial Tiny And Live Canary Consumer Boundary
+
+- Tiny-canary strategy-input audit now consumes normalized readiness identity (`gate_session_hash`, `selected_market_key`, and per-role `gate_evidence`) before accepting a strategy-input evidence file. Legacy `price_to_beat_source` string equality alone is no longer treated as approval proof.
+- Live-canary operator evidence now requires `gate_session_path` and `expected_gate_session_sha256`, hash-verifies the bounded gate-session file, parses the `EntryReadinessGateSession`, validates the normalized selected-market evidence identity, and checks the session strategy/configured target against the loaded root TOML before accepting the operator report path.
+- Operator artifact pre-run replay now rejects strategy-input artifacts with missing readiness identity. The replay boundary is the normalized gate-session identity, not caller-controlled price-source text.
+- The runtime literal audit was updated for the new operator gate-session fields and configured-target validation label.
+- Local verification:
+  - `cargo test --test bolt_v3_tiny_canary_preconditions strategy_audit_uses_normalized_readiness_identity_not_price_source_string -- --nocapture`: 1 passed, 0 failed.
+  - `cargo test --test bolt_v3_tiny_canary_preconditions -- --nocapture`: 63 passed, 0 failed.
+  - `cargo test --test bolt_v3_tiny_canary_operator -- --nocapture`: 31 passed, 0 failed, 1 ignored.
+  - `cargo test --test bolt_v3_live_canary_gate gate_session -- --nocapture`: 2 passed, 0 failed.
+  - `cargo test --test bolt_v3_live_canary_gate -- --nocapture`: 70 passed, 0 failed.
+  - `cargo test --test bolt_v3_no_submit_readiness -- --nocapture`: 33 passed, 0 failed.
+  - `cargo test --test bolt_v3_operator_artifacts -- --nocapture`: 179 passed, 0 failed.
+  - `cargo test --test bolt_v3_decision_evidence -- --nocapture`: 11 passed, 0 failed.
+  - `cargo test --lib -- --nocapture`: 356 passed, 0 failed.
+  - Final combined focused rerun after the source-fence fix: `cargo test --locked --test bolt_v3_decision_evidence --test bolt_v3_tiny_canary_preconditions --test bolt_v3_tiny_canary_operator --test bolt_v3_live_canary_gate --test bolt_v3_no_submit_readiness --test bolt_v3_operator_artifacts -- --nocapture`: 387 passed, 0 failed, 1 ignored.
+  - `cargo clippy --locked --lib -- -D warnings`: passed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+  - `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+  - `python3 scripts/verify_bolt_v3_provider_leaks.py`: `OK: Bolt-v3 provider-leak verifier passed.`
+  - `python3 scripts/verify_bolt_v3_core_boundary.py`: `OK: Bolt-v3 core boundary audit passed.`
+  - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H17 remains open for the remaining CLI command contract, registration/live-node runtime path, final-packet path/hash materialization, and complete readiness-session consumer rewiring.

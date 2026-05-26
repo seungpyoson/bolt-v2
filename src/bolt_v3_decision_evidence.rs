@@ -625,6 +625,16 @@ fn validate_entry_decision_chain(
 pub(crate) fn validate_strategy_input_readiness_evidence(
     snapshot: &BoltV3StrategyInputEvidenceSnapshot,
 ) -> Result<()> {
+    validate_readiness_gate_evidence_snapshot(&BoltV3ReadinessGateEvidenceSnapshot {
+        gate_session_hash: snapshot.gate_session_hash.clone(),
+        selected_market_key: snapshot.selected_market_key.clone(),
+        gate_evidence: snapshot.gate_evidence.clone(),
+    })
+}
+
+pub(crate) fn validate_readiness_gate_evidence_snapshot(
+    snapshot: &BoltV3ReadinessGateEvidenceSnapshot,
+) -> Result<()> {
     ensure_non_empty(
         snapshot.gate_session_hash.as_str(),
         "bolt-v3 entry decision evidence gate_session_hash is missing",

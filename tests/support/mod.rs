@@ -196,6 +196,11 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         "strategy-input.json",
         serde_json::json!({"record_kind": "test_strategy_input"}),
     );
+    let gate_session_path = write_dummy_json(
+        &case_dir,
+        "entry-readiness-gate-session.json",
+        valid_entry_readiness_gate_session_json(),
+    );
     let financial_envelope_path = write_dummy_json(
         &case_dir,
         "financial-envelope.json",
@@ -220,6 +225,7 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
     let approval_consumption_path = case_dir.join("approval-consumption.json");
     let ssm_manifest_sha256 = sha256_file(&ssm_manifest_path);
     let strategy_input_evidence_sha256 = sha256_file(&strategy_input_evidence_path);
+    let expected_gate_session_sha256 = sha256_file(&gate_session_path);
     let financial_envelope_sha256 = sha256_file(&financial_envelope_path);
     let pre_run_state_sha256 = sha256_file(&pre_run_state_path);
     let abort_plan_sha256 = sha256_file(&abort_plan_path);
@@ -293,6 +299,8 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         ssm_manifest_sha256,
         strategy_input_evidence_path: strategy_input_evidence_path.to_string_lossy().to_string(),
         strategy_input_evidence_sha256,
+        gate_session_path: Some(gate_session_path.to_string_lossy().to_string()),
+        expected_gate_session_sha256: Some(expected_gate_session_sha256),
         financial_envelope_path: financial_envelope_path.to_string_lossy().to_string(),
         financial_envelope_sha256,
         pre_run_state_path: pre_run_state_path.to_string_lossy().to_string(),
@@ -327,6 +335,40 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
             .to_string_lossy()
             .to_string(),
     }
+}
+
+fn valid_entry_readiness_gate_session_json() -> serde_json::Value {
+    let selected_market_key = "b".repeat(64);
+    serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.entry_readiness_gate_session.v1",
+        "strategy_instance_id": "bitcoin_updown_main",
+        "configured_target_id": "btc_updown_5m",
+        "selected_market": {
+            "configured_target_id": "btc_updown_5m",
+            "venue": "polymarket",
+            "family_key": "updown",
+            "market_id": "condition-1",
+            "instrument_ids": ["condition-1-DOWN.POLYMARKET", "condition-1-UP.POLYMARKET"],
+            "market_class": "binary_option",
+            "resolution_kind": "price",
+            "resolution_identity": "btc-usd",
+            "value_kind": "scalar_price",
+            "metadata_provenance_sha256": "f".repeat(64),
+            "selected_market_key": selected_market_key,
+            "selected_at_ms": 1234567890_u64
+        },
+        "created_at_ms": 1234567890_u64,
+        "satisfied_roles": {
+            "resolution": {
+                "satisfaction_kind": "no_resolution",
+                "selected_market_key": selected_market_key,
+                "resolution_identity": "btc-usd"
+            }
+        },
+        "session_hash": "a".repeat(64),
+        "artifact_refs": []
+    })
 }
 
 fn live_canary_operator_evidence_case_dir() -> PathBuf {

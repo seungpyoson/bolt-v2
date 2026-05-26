@@ -202,6 +202,100 @@ async fn live_canary_gate_rejects_missing_operator_evidence_before_reading_repor
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_missing_gate_session_binding_before_reading_report() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.gate_session_path = None;
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-read-before-gate-session-check.json".to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("missing gate session binding must fail closed before report read");
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
+                field: "gate_session_path"
+            }
+        ),
+        "expected missing gate session path rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_cross_market_gate_session_before_reading_report() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut operator_evidence = valid_operator_evidence();
+    let gate_session_path = std::path::PathBuf::from(
+        operator_evidence
+            .gate_session_path
+            .as_ref()
+            .expect("valid operator evidence should bind gate session"),
+    );
+    let mut gate_session: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&gate_session_path).expect("gate session should read"),
+    )
+    .expect("gate session should parse");
+    gate_session["selected_market"]["selected_market_key"] = serde_json::json!("c".repeat(64));
+    let gate_session_bytes =
+        serde_json::to_vec(&gate_session).expect("gate session should serialize");
+    std::fs::write(&gate_session_path, &gate_session_bytes).expect("gate session should rewrite");
+    operator_evidence.expected_gate_session_sha256 = Some(sha256_hex(&gate_session_bytes));
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-read-before-gate-session-check.json".to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("cross-market gate session must fail closed before report read");
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::OperatorGateSessionInvalid { .. }
+        ),
+        "expected invalid gate session rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_parent_dir_operator_evidence_path() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

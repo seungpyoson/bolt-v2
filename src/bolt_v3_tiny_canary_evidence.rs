@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env,
     fmt::Display,
     fs,
@@ -17,7 +18,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, RESOLUTION_GATE_ROLE, load_bolt_v3_config},
-    bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+    bolt_v3_decision_evidence::{
+        BoltV3GateEvidenceIdentity, BoltV3ReadinessGateEvidenceSnapshot,
+        BoltV3StrategyInputEvidenceSnapshot, validate_readiness_gate_evidence_snapshot,
+    },
     bolt_v3_live_canary_gate::{
         BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_pre_consumption_gate,
     },
@@ -273,6 +277,12 @@ impl Phase8StrategyInputSafetyAudit {
             Decimal::from_str_exact(raw.theta_scaled_min_edge_bps.trim()).map_err(|source| {
                 anyhow!("failed to parse phase8 strategy input theta_scaled_min_edge_bps: {source}")
             })?;
+        let readiness_identity_valid = phase8_strategy_input_readiness_identity_valid(&raw);
+        let expected_price_to_beat_source = if readiness_identity_valid {
+            raw.price_to_beat_source.as_str()
+        } else {
+            expected_price_to_beat_source
+        };
         let mut audit = Self::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
             realized_volatility,
             seconds_to_market_end: raw.seconds_to_market_end,
@@ -288,6 +298,10 @@ impl Phase8StrategyInputSafetyAudit {
             pricing_kurtosis,
             theta_decay_factor,
         });
+        audit.block_if(
+            !readiness_identity_valid,
+            Phase8CanaryBlockReason::DecisionEvidenceUnavailable,
+        );
         let market_selection_outcome = raw.market_selection_outcome.trim();
         audit.block_if(
             market_selection_outcome.is_empty()
@@ -481,6 +495,25 @@ fn phase8_market_selection_start_is_nearest_next(
         == Some(market_start_timestamp_ms)
 }
 
+fn phase8_strategy_input_readiness_identity_valid(raw: &Phase8StrategyInputEvidenceFile) -> bool {
+    let Some(gate_session_hash) = raw.gate_session_hash.as_deref() else {
+        return false;
+    };
+    let Some(selected_market_key) = raw.selected_market_key.as_deref() else {
+        return false;
+    };
+    let Some(gate_evidence) = raw.gate_evidence.as_ref() else {
+        return false;
+    };
+
+    validate_readiness_gate_evidence_snapshot(&BoltV3ReadinessGateEvidenceSnapshot {
+        gate_session_hash: gate_session_hash.to_string(),
+        selected_market_key: selected_market_key.to_string(),
+        gate_evidence: gate_evidence.clone(),
+    })
+    .is_ok()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Phase8StrategyInputEvidenceFile {
@@ -493,6 +526,12 @@ pub struct Phase8StrategyInputEvidenceFile {
     worst_case_edge_basis_points: String,
     fee_rate_basis_points: String,
     price_to_beat_source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gate_session_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_market_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gate_evidence: Option<BTreeMap<String, BoltV3GateEvidenceIdentity>>,
     reference_quote_ts_event: u64,
     pricing_kurtosis: String,
     theta_decay_factor: String,
@@ -579,6 +618,9 @@ impl Phase8StrategyInputEvidenceFile {
             worst_case_edge_basis_points: snapshot.worst_case_edge_basis_points.clone(),
             fee_rate_basis_points: snapshot.fee_rate_basis_points.clone(),
             price_to_beat_source: snapshot.price_to_beat_source.clone(),
+            gate_session_hash: Some(snapshot.gate_session_hash.clone()),
+            selected_market_key: Some(snapshot.selected_market_key.clone()),
+            gate_evidence: Some(snapshot.gate_evidence.clone()),
             reference_quote_ts_event: snapshot.reference_quote_ts_event,
             pricing_kurtosis: snapshot.pricing_kurtosis.clone(),
             theta_decay_factor: snapshot.theta_decay_factor.clone(),

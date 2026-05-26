@@ -2211,7 +2211,7 @@ const DOMAIN_VERSION: &str = "2";
 }
 
 #[test]
-fn pre_run_state_writer_rejects_caller_supplied_price_source_override() {
+fn pre_run_state_writer_rejects_strategy_input_without_readiness_identity() {
     let fixture = strategy_input_runtime_fixture();
     let temp = fixture.temp.path();
     let strategy_input_path = temp.join("strategy-input.json");
@@ -2226,7 +2226,7 @@ fn pre_run_state_writer_rejects_caller_supplied_price_source_override() {
     )
     .expect("source-bound strategy input evidence should write");
     let mut strategy_input_json = read_json_value(&strategy_input_path);
-    strategy_input_json["price_to_beat_source"] = serde_json::json!("manual_source_override");
+    strategy_input_json["gate_evidence"] = serde_json::json!({});
     let strategy_input_sha256 =
         write_json_value_and_hash(&strategy_input_path, &strategy_input_json);
 
@@ -2338,15 +2338,15 @@ const DOMAIN_VERSION: &str = "2";
             },
             &pre_run_state_path,
         )
-        .expect_err("writer must derive price-to-beat source from TOML, not caller override");
+        .expect_err("writer must reject strategy input without readiness gate identity");
 
     assert!(
         error.to_string().contains("strategy_input"),
-        "price-source override rejection should identify strategy input evidence: {error}"
+        "readiness identity rejection should identify strategy input evidence: {error}"
     );
     assert!(
         !pre_run_state_path.exists(),
-        "caller-supplied price-source override must not leave a pre-run-state artifact"
+        "readiness identity failure must not leave a pre-run-state artifact"
     );
 }
 
@@ -10318,6 +10318,8 @@ fn test_operator_evidence_packet_bindings(
             .to_string_lossy()
             .to_string(),
         strategy_input_evidence_sha256: String::new(),
+        gate_session_path: None,
+        expected_gate_session_sha256: None,
         financial_envelope_path: dir
             .join("financial-envelope.json")
             .to_string_lossy()

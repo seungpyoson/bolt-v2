@@ -25,6 +25,9 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
     bolt_v3_config::{LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
+    bolt_v3_decision_evidence::{
+        BoltV3ReadinessGateEvidenceSnapshot, validate_readiness_gate_evidence_snapshot,
+    },
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
@@ -33,6 +36,7 @@ use crate::{
         REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
         STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
     },
+    bolt_v3_operator_artifacts::EntryReadinessGateSession,
 };
 
 pub const APPROVAL_ENVELOPE_SCHEMA_VERSION: i64 = 1;
@@ -167,6 +171,14 @@ pub enum BoltV3LiveCanaryGateError {
     OperatorEvidenceHashMismatch {
         field: &'static str,
         path: PathBuf,
+    },
+    OperatorGateSessionParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    OperatorGateSessionInvalid {
+        path: PathBuf,
+        reason: String,
     },
     OperatorApprovalEnvelopeRead {
         path: PathBuf,
@@ -361,6 +373,16 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
             BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch { field, path } => write!(
                 f,
                 "bolt-v3 live canary `[live_canary].operator_evidence.{field}` does not match {}",
+                path.display()
+            ),
+            BoltV3LiveCanaryGateError::OperatorGateSessionParse { path, source } => write!(
+                f,
+                "failed to parse bolt-v3 live canary gate session {}: {source}",
+                path.display()
+            ),
+            BoltV3LiveCanaryGateError::OperatorGateSessionInvalid { path, reason } => write!(
+                f,
+                "bolt-v3 live canary gate session {} is invalid: {reason}",
                 path.display()
             ),
             BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeRead { path, source } => write!(
@@ -654,6 +676,7 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
 
     let initial_unix_seconds = unix_seconds()?;
     validate_operator_evidence(
+        loaded,
         &loaded.root_path,
         block,
         approval_id,
@@ -715,6 +738,7 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
     // between-check artifact mutation fails closed. Operators must size the
     // approval window to cover both evidence validation rounds plus report I/O.
     validate_operator_evidence(
+        loaded,
         &loaded.root_path,
         block,
         approval_id,
@@ -805,6 +829,7 @@ fn parse_positive_decimal(
 }
 
 async fn validate_operator_evidence(
+    loaded: &LoadedBoltV3Config,
     root_path: &Path,
     block: &LiveCanaryBlock,
     approval_id: &str,
@@ -872,6 +897,7 @@ async fn validate_operator_evidence(
     }
 
     validate_operator_evidence_file_hashes(root_path, evidence).await?;
+    validate_operator_gate_session_binding(loaded, root_path, evidence).await?;
     validate_operator_approval_envelope(root_path, evidence, approval_id).await?;
     validate_operator_approval_consumption(
         root_path,
@@ -883,6 +909,96 @@ async fn validate_operator_evidence(
     )
     .await?;
 
+    Ok(())
+}
+
+async fn validate_operator_gate_session_binding(
+    loaded: &LoadedBoltV3Config,
+    root_path: &Path,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let gate_session_path = required_optional_operator_evidence_field(
+        "gate_session_path",
+        evidence.gate_session_path.as_deref(),
+    )?;
+    let expected_gate_session_sha256 = required_optional_operator_evidence_field(
+        "expected_gate_session_sha256",
+        evidence.expected_gate_session_sha256.as_deref(),
+    )?;
+    if !is_sha256_hex(expected_gate_session_sha256) {
+        return Err(
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape {
+                field: "expected_gate_session_sha256",
+            },
+        );
+    }
+
+    let path = resolve_configured_path(root_path, "gate_session_path", gate_session_path)?;
+    let bytes = read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes)
+        .await
+        .map_err(|source| BoltV3LiveCanaryGateError::OperatorEvidenceRead {
+            field: "gate_session_path",
+            path: path.clone(),
+            source,
+        })?;
+    if sha256_hex(&bytes) != expected_gate_session_sha256 {
+        return Err(BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch {
+            field: "expected_gate_session_sha256",
+            path,
+        });
+    }
+    let session: EntryReadinessGateSession = serde_json::from_slice(&bytes).map_err(|source| {
+        BoltV3LiveCanaryGateError::OperatorGateSessionParse {
+            path: path.clone(),
+            source,
+        }
+    })?;
+    validate_live_canary_gate_session(loaded, &session)
+        .map_err(|reason| BoltV3LiveCanaryGateError::OperatorGateSessionInvalid { path, reason })
+}
+
+fn required_optional_operator_evidence_field<'a>(
+    field: &'static str,
+    value: Option<&'a str>,
+) -> Result<&'a str, BoltV3LiveCanaryGateError> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field })
+}
+
+fn validate_live_canary_gate_session(
+    loaded: &LoadedBoltV3Config,
+    session: &EntryReadinessGateSession,
+) -> Result<(), String> {
+    let snapshot = BoltV3ReadinessGateEvidenceSnapshot::from_entry_readiness_gate_session(session);
+    validate_readiness_gate_evidence_snapshot(&snapshot).map_err(|error| error.to_string())?;
+
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == session.strategy_instance_id)
+        .ok_or_else(|| {
+            "gate session strategy_instance_id does not match loaded config".to_string()
+        })?;
+    let target = strategy
+        .config
+        .target
+        .as_table()
+        .ok_or_else(|| "gate session strategy target is not a table".to_string())?;
+    let configured_target_id = target
+        .get("configured_target_id")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| {
+            "gate session strategy target configured_target_id is missing".to_string()
+        })?;
+    if configured_target_id != session.configured_target_id
+        || configured_target_id != session.selected_market.configured_target_id
+    {
+        return Err(
+            "gate session configured_target_id does not match loaded strategy target".to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -1989,6 +2105,8 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             strategy_input_evidence_sha256: "b".repeat(64),
+            gate_session_path: None,
+            expected_gate_session_sha256: None,
             financial_envelope_path: tempdir
                 .path()
                 .join("financial-envelope.json")
@@ -2177,6 +2295,8 @@ mod tests {
             write_json_file_with_sha256(dir, "ssm-manifest.json", "ssm_manifest");
         let (strategy_input_evidence_path, strategy_input_evidence_sha256) =
             write_json_file_with_sha256(dir, "strategy-input.json", "strategy_input");
+        let (gate_session_path, expected_gate_session_sha256) =
+            write_gate_session_file_with_sha256(dir);
         let (financial_envelope_path, financial_envelope_sha256) =
             write_json_file_with_sha256(dir, "financial-envelope.json", "financial_envelope");
         let (pre_run_state_path, pre_run_state_sha256) =
@@ -2202,6 +2322,8 @@ mod tests {
             ssm_manifest_sha256,
             strategy_input_evidence_path,
             strategy_input_evidence_sha256,
+            gate_session_path: Some(gate_session_path),
+            expected_gate_session_sha256: Some(expected_gate_session_sha256),
             financial_envelope_path,
             financial_envelope_sha256,
             pre_run_state_path,
@@ -2307,6 +2429,44 @@ mod tests {
         let value = serde_json::json!({ "record_kind": record_kind });
         let bytes = serde_json::to_vec(&value).expect("test evidence should serialize");
         fs::write(&path, &bytes).expect("test evidence should be written");
+        (path.to_string_lossy().to_string(), sha256_hex(&bytes))
+    }
+
+    fn write_gate_session_file_with_sha256(dir: &Path) -> (String, String) {
+        let path = dir.join("entry-readiness-gate-session.json");
+        let selected_market_key = "b".repeat(64);
+        let value = serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.entry_readiness_gate_session.v1",
+            "strategy_instance_id": "bitcoin_updown_main",
+            "configured_target_id": "btc_updown_5m",
+            "selected_market": {
+                "configured_target_id": "btc_updown_5m",
+                "venue": "polymarket",
+                "family_key": "updown",
+                "market_id": "condition-1",
+                "instrument_ids": ["condition-1-DOWN.POLYMARKET", "condition-1-UP.POLYMARKET"],
+                "market_class": "binary_option",
+                "resolution_kind": "price",
+                "resolution_identity": "btc-usd",
+                "value_kind": "scalar_price",
+                "metadata_provenance_sha256": "f".repeat(64),
+                "selected_market_key": selected_market_key,
+                "selected_at_ms": 1234567890_u64
+            },
+            "created_at_ms": 1234567890_u64,
+            "satisfied_roles": {
+                "resolution": {
+                    "satisfaction_kind": "no_resolution",
+                    "selected_market_key": selected_market_key,
+                    "resolution_identity": "btc-usd"
+                }
+            },
+            "session_hash": "a".repeat(64),
+            "artifact_refs": []
+        });
+        let bytes = serde_json::to_vec(&value).expect("test gate session should serialize");
+        fs::write(&path, &bytes).expect("test gate session should be written");
         (path.to_string_lossy().to_string(), sha256_hex(&bytes))
     }
 

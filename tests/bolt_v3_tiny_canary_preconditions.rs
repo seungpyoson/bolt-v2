@@ -25,6 +25,16 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 
 const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.example-resolution-5m";
+const PHASE8_TEST_GATE_SESSION_HASH: &str =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const PHASE8_TEST_SELECTED_MARKET_KEY: &str =
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const PHASE8_TEST_GATE_NORMALIZED_VALUE_HASH: &str =
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const PHASE8_TEST_GATE_PROVIDER_PROVENANCE_HASH: &str =
+    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+const PHASE8_TEST_GATE_ARTIFACT_HASH: &str =
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const PHASE8_TEST_APPROVAL_ENVELOPE_SHA256: &str =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 fn phase8_required_operator_artifact_terms() -> [&'static str; 24] {
@@ -107,6 +117,20 @@ fn current_strategy_input_evidence_json(
         "worst_case_edge_basis_points": "12.5",
         "fee_rate_basis_points": "0",
         "price_to_beat_source": price_to_beat_source,
+        "gate_session_hash": PHASE8_TEST_GATE_SESSION_HASH,
+        "selected_market_key": PHASE8_TEST_SELECTED_MARKET_KEY,
+        "gate_evidence": {
+            "resolution": {
+                "satisfaction_kind": "evidence",
+                "selected_market_key": PHASE8_TEST_SELECTED_MARKET_KEY,
+                "provider_id": "chainlink_main",
+                "provider_kind": "chainlink_data_streams",
+                "value_kind": "scalar_price",
+                "normalized_value_sha256": PHASE8_TEST_GATE_NORMALIZED_VALUE_HASH,
+                "provider_provenance_sha256": PHASE8_TEST_GATE_PROVIDER_PROVENANCE_HASH,
+                "artifact_sha256s": [PHASE8_TEST_GATE_ARTIFACT_HASH]
+            }
+        },
         "reference_quote_ts_event": 1234567890_u64,
         "pricing_kurtosis": "0",
         "theta_decay_factor": "0",
@@ -124,6 +148,15 @@ fn current_strategy_input_evidence_json(
         "polymarket_market_start_timestamp_ms": 1234567000_u64,
         "polymarket_market_end_timestamp_ms": 1234867000_u64
     })
+}
+
+fn remove_strategy_input_readiness_identity(value: &mut Value) {
+    let object = value
+        .as_object_mut()
+        .expect("strategy input evidence should be a JSON object");
+    object.remove("gate_session_hash");
+    object.remove("selected_market_key");
+    object.remove("gate_evidence");
 }
 
 fn write_current_strategy_input_evidence(
@@ -401,14 +434,14 @@ fn strategy_audit_blocks_zero_time_to_market_end() {
 }
 
 #[test]
-fn strategy_audit_binds_price_to_beat_source_to_approved_source() {
+fn strategy_audit_uses_normalized_readiness_identity_not_price_source_string() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("strategy-input.json");
     let (source_path, source_hash) =
         write_current_market_selection_source(temp.path()).expect("source should write");
     write_current_strategy_input_evidence(
         &evidence_path,
-        "operator_configured_source",
+        "legacy_provider_specific_source",
         &source_path,
         &source_hash,
     )
@@ -421,19 +454,30 @@ fn strategy_audit_binds_price_to_beat_source_to_approved_source() {
         &evidence_hash,
         "operator_configured_source",
     )
-    .expect("matching configured price source should audit");
+    .expect("readiness identity should audit without legacy price-source equality");
     assert!(approved.is_approved());
 
-    let blocked = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &evidence_path,
-        &evidence_hash,
+    let mut source_string_only = current_strategy_input_evidence_json(
         PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+        &source_path,
+        &source_hash,
+    );
+    remove_strategy_input_readiness_identity(&mut source_string_only);
+    std::fs::write(
+        &evidence_path,
+        serde_json::to_vec(&source_string_only)
+            .expect("source-string-only evidence should serialize"),
     )
-    .expect("mismatched configured price source should still produce an audit");
+    .expect("source-string-only evidence should write");
+    let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
+        .expect("strategy evidence should hash");
+
+    let blocked = strategy_audit_from_evidence_file(&evidence_path, &evidence_hash)
+        .expect("source-string-only evidence should still parse into a blocked audit");
     assert!(
         blocked
             .block_reasons()
-            .contains(&Phase8CanaryBlockReason::UnsupportedPriceToBeatSource)
+            .contains(&Phase8CanaryBlockReason::DecisionEvidenceUnavailable)
     );
 }
 
@@ -886,6 +930,20 @@ fn strategy_audit_requires_nearest_next_market_selection() {
             "worst_case_edge_basis_points": "12.5",
             "fee_rate_basis_points": "0",
             "price_to_beat_source": "chainlink_data_streams.example-resolution-5m",
+            "gate_session_hash": PHASE8_TEST_GATE_SESSION_HASH,
+            "selected_market_key": PHASE8_TEST_SELECTED_MARKET_KEY,
+            "gate_evidence": {
+                "resolution": {
+                    "satisfaction_kind": "evidence",
+                    "selected_market_key": PHASE8_TEST_SELECTED_MARKET_KEY,
+                    "provider_id": "chainlink_main",
+                    "provider_kind": "chainlink_data_streams",
+                    "value_kind": "scalar_price",
+                    "normalized_value_sha256": PHASE8_TEST_GATE_NORMALIZED_VALUE_HASH,
+                    "provider_provenance_sha256": PHASE8_TEST_GATE_PROVIDER_PROVENANCE_HASH,
+                    "artifact_sha256s": [PHASE8_TEST_GATE_ARTIFACT_HASH]
+                }
+            },
             "reference_quote_ts_event": 1234567890_u64,
             "pricing_kurtosis": "0",
             "theta_decay_factor": "0",

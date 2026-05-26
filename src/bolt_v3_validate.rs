@@ -193,19 +193,19 @@ fn validate_gate_providers(providers: &BTreeMap<String, GateProviderBlock>) -> V
         }
 
         for (table_name, value) in &provider.provider_config {
-            if let Some(table) = value.as_table() {
-                if let Some(parameter) = table.get(SSM_CREDENTIAL_PARAMETER_FIELD) {
-                    match parameter.as_str() {
-                        Some(path) => errors.extend(validate_gate_provider_ssm_parameter_path(
-                            provider_id,
-                            table_name,
-                            SSM_CREDENTIAL_PARAMETER_FIELD,
-                            path,
-                        )),
-                        None => errors.push(format!(
-                            "gate_providers.{provider_id}.{table_name}.ssm_credential_parameter must be a string SSM path"
-                        )),
-                    }
+            if let Some(table) = value.as_table()
+                && let Some(parameter) = table.get(SSM_CREDENTIAL_PARAMETER_FIELD)
+            {
+                match parameter.as_str() {
+                    Some(path) => errors.extend(validate_gate_provider_ssm_parameter_path(
+                        provider_id,
+                        table_name,
+                        SSM_CREDENTIAL_PARAMETER_FIELD,
+                        path,
+                    )),
+                    None => errors.push(format!(
+                        "gate_providers.{provider_id}.{table_name}.ssm_credential_parameter must be a string SSM path"
+                    )),
                 }
             }
         }
@@ -234,12 +234,11 @@ fn validate_gate_provider_freshness(
     }
     if let (Some(max_age_ms), Some(max_clock_skew_ms)) =
         (freshness.max_age_ms, freshness.max_clock_skew_ms)
+        && max_clock_skew_ms > max_age_ms
     {
-        if max_clock_skew_ms > max_age_ms {
-            errors.push(format!(
-                "{context}.max_clock_skew_ms must be less than or equal to {context}.max_age_ms"
-            ));
-        }
+        errors.push(format!(
+            "{context}.max_clock_skew_ms must be less than or equal to {context}.max_age_ms"
+        ));
     }
 
     errors

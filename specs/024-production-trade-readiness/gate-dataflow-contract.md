@@ -511,8 +511,13 @@ Final-packet artifacts must bind the gate session by path and sha256 in the oper
 4. RED provider/evidence tests for role separation, selected-market binding, provider capability/value-kind matching, and stale evidence.
 5. RED registration/runtime/replay/final-packet tests proving no unchecked provider path exists and required gate sessions are artifact-bound.
 6. RED decision-evidence, tiny-canary, live-canary, and CLI tests proving old `price_to_beat_source` string contracts cannot satisfy readiness.
-7. GREEN implementation in the same boundary order.
-8. Add concrete provider adapters under the gate provider surface after the provider-neutral interfaces exist; initial coverage must include Chainlink Data Streams plus HIP-4/venue-native metadata, without making either provider canonical.
+7. GREEN implementation in the same boundary order:
+   - T036H13 config-only schema and validation: root gate providers, target subscriptions, registry-backed provider kinds/capabilities/value kinds, freshness, SSM-owned provider fields, provider-specific subtable ownership, `test_double` live rejection, and explicit old-schema migration errors.
+   - T036H14 archetype refactor: provider-neutral `gate_requirements()` plus example/fixture migration, with no compatibility shim.
+   - T036H15 selected-market identity: generic requirement metadata, market-complete sorted instrument/outcome ids, metadata provenance, and canonical `selected_market_key`.
+   - T036H16 evidence and join: `GateEvidence`, `GateSatisfaction`, `EntryReadinessGateSession`, role/value-kind separation, selected-market binding, freshness/clock-skew checks, deterministic `provider_preference`, no-resolution satisfaction, and canonical `session_hash`.
+   - T036H17 consumers: decision evidence, tiny canary, live canary, CLI, registration, runtime, replay, and final-packet binding consume the gate session instead of provider-specific strings.
+8. Add thin provider readiness collection functions under the gate provider surface after the provider-neutral interfaces exist; initial coverage must include Chainlink Data Streams plus existing NT Hyperliquid HIP-4/venue-native metadata, without rebuilding upstream adapters, adding a trait/plugin provider framework, or making either provider canonical.
 9. Add rotation/no-resolution final coverage proving no provider or venue is globally required.
 
 ## Non-Goals

@@ -2849,6 +2849,432 @@ fn rejects_unknown_bolt_v3_config_fields() {
 }
 
 #[test]
+fn accepts_canonical_gate_provider_root_blocks() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+client_id = "chainlink_mainnet"
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 8
+endpoint_id = "mainnet-data-streams"
+ssm_credential_parameter = "/bolt/gate-providers/chainlink/mainnet"
+
+[gate_providers.venue_metadata_primary]
+provider_kind = "hyperliquid_hip4"
+capabilities = ["market_metadata", "reference_value"]
+client_id = "hyperliquid_mainnet"
+
+[gate_providers.venue_metadata_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.venue_metadata_primary.hyperliquid_hip4]
+metadata_scope = "asset_universe"
+"#,
+    ))
+    .expect("canonical gate provider blocks should parse");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.is_empty(),
+        "canonical gate provider blocks should validate: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_gate_provider_fields_under_strategy_runtime() {
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace(
+        "[parameters.runtime]\n",
+        "[parameters.runtime]\nchainlink_data_streams_feed_id = \"0x0000000000000000000000000000000000000000000000000000000000000000\"\n",
+    );
+
+    let strategy: bolt_v2::bolt_v3_config::BoltV3StrategyConfig = toml::from_str(&strategy_toml)
+        .expect("strategy envelope parse should keep parameters archetype-neutral");
+    let error = strategy
+        .parameters
+        .try_into::<bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock>()
+        .expect_err("gate provider source fields under [parameters.runtime] must be rejected")
+        .to_string();
+
+    assert!(
+        error.contains("parameters.runtime.chainlink_data_streams_feed_id")
+            && error.contains("[gate_providers.<id>.chainlink_data_streams]"),
+        "runtime gate provider field rejection should point to the gate provider table, got: {error}"
+    );
+}
+
+#[test]
+fn rejects_gate_provider_fields_under_wrong_provider_subtable() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.hyperliquid_hip4]
+metadata_scope = "asset_universe"
+"#,
+    ))
+    .expect("wrong provider subtable should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary")
+                && message.contains("provider_kind `chainlink_data_streams`")
+                && message
+                    .contains("[gate_providers.resolution_oracle_primary.chainlink_data_streams]")
+        }),
+        "wrong provider subtable should be rejected with the matching subtable path: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_unregistered_gate_provider_kind() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "made_up_oracle"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.made_up_oracle]
+endpoint_id = "test"
+"#,
+    ))
+    .expect("unregistered provider kind should parse before registry validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary.provider_kind")
+                && message.contains("made_up_oracle")
+                && message.contains("unregistered")
+        }),
+        "unregistered gate provider kind should fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_gate_provider_without_provider_kind() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+"#,
+    ))
+    .expect("missing provider_kind should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary.provider_kind")
+                && message.contains("required")
+        }),
+        "gate provider without provider_kind should fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_gate_provider_with_empty_capabilities() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = []
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+"#,
+    ))
+    .expect("empty capabilities should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary.capabilities")
+                && message.contains("one or more")
+        }),
+        "gate provider with empty capabilities should fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_test_double_gate_provider_in_operator_root() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.fixture_resolution]
+provider_kind = "test_double"
+capabilities = ["resolution_value"]
+
+[gate_providers.fixture_resolution.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.fixture_resolution.test_double]
+fixture_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+"#,
+    ))
+    .expect("test_double provider should parse before live/local operator validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.fixture_resolution.provider_kind")
+                && message.contains("test_double")
+                && message.contains("live/local operator TOML")
+        }),
+        "test_double gate providers must be rejected outside tests: {messages:#?}"
+    );
+}
+
+#[test]
+fn accepts_canonical_target_gate_subscription() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_kinds = ["chainlink_data_streams", "pyth", "exchange_index", "venue_native", "hyperliquid_hip4", "deribit_index", "outcome_oracle"]
+allowed_value_kinds = ["price", "index", "outcome", "metadata"]
+provider_preference = ["resolution_oracle_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "btc-usd-5m"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+"#,
+    );
+
+    assert!(
+        messages.is_empty(),
+        "canonical target gate subscription should validate: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_provider_capability_as_target_gate_role() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.market_metadata]
+required = true
+allowed_provider_kinds = ["venue_native", "hyperliquid_hip4"]
+allowed_value_kinds = ["metadata"]
+allow_no_resolution = false
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.market_metadata")
+                && message.contains("provider capability")
+                && message.contains("GateRole")
+        }),
+        "market_metadata capability must not be accepted as a gate role: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_ambiguous_target_gate_market_mappings() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_ids = ["resolution_oracle_primary", "backup_resolution_oracle"]
+allowed_provider_kinds = ["chainlink_data_streams"]
+allowed_value_kinds = ["price"]
+provider_preference = ["resolution_oracle_primary", "backup_resolution_oracle"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "btc-usd-5m"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "btc-usd-5m"
+value_kind = "price"
+provider_id = "backup_resolution_oracle"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.resolution.market_mappings")
+                && message.contains("ambiguous")
+        }),
+        "duplicate market mappings should fail closed as ambiguous: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_static_single_provider_subscription_for_rotating_market() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_ids = ["resolution_oracle_primary"]
+allowed_value_kinds = ["price"]
+allow_no_resolution = false
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.resolution")
+                && message.contains("single static provider")
+                && message.contains("rotating")
+        }),
+        "rotating markets must not collapse to a single static provider assumption: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_multiple_matching_target_gate_providers_without_preference() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_ids = ["resolution_oracle_primary", "backup_resolution_oracle"]
+allowed_provider_kinds = ["chainlink_data_streams"]
+allowed_value_kinds = ["price"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "btc-usd-5m"
+value_kind = "price"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.resolution.provider_preference")
+                && message.contains("multiple")
+                && message.contains("providers")
+        }),
+        "multiple matching providers require deterministic provider_preference: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_target_gate_provider_kind_and_value_kind_mismatch() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_kinds = ["hyperliquid_hip4"]
+allowed_value_kinds = ["price"]
+provider_preference = ["venue_metadata_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "btc-usd-5m"
+value_kind = "metadata"
+provider_id = "venue_metadata_primary"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.resolution")
+                && message.contains("resolution_kind")
+                && message.contains("allowed_provider_kinds")
+                && message.contains("value_kind")
+                && message.contains("allowed_value_kinds")
+        }),
+        "provider-kind/value-kind mismatches must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_invalid_no_resolution_target_gate_usage() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_kinds = ["chainlink_data_streams"]
+allowed_value_kinds = ["price"]
+allow_no_resolution = true
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "no_resolution"
+resolution_identity = "none"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.resolution.allow_no_resolution")
+                && message.contains("no_resolution")
+                && message.contains("value_kind")
+        }),
+        "invalid no-resolution policy should fail closed: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_forbidden_polymarket_env_vars_before_client_build() {
     use bolt_v2::{
         bolt_v3_config::load_bolt_v3_config,
@@ -3665,6 +4091,31 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
         "fixture must contain `{needle}` for this validation test to mutate"
     );
     fixture.replace(needle, replacement)
+}
+
+fn fixture_root_with_gate_providers(gate_providers_toml: &str) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    format!("{fixture}\n{gate_providers_toml}")
+}
+
+fn fixture_strategy_with_target_gate_subscriptions(gate_subscriptions_toml: &str) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    format!("{fixture}\n{gate_subscriptions_toml}")
+}
+
+fn target_gate_subscription_messages(gate_subscriptions_toml: &str) -> Vec<String> {
+    let strategy_toml = fixture_strategy_with_target_gate_subscriptions(gate_subscriptions_toml);
+    let strategy: bolt_v2::bolt_v3_config::BoltV3StrategyConfig = toml::from_str(&strategy_toml)
+        .expect("strategy fixture with gate subscriptions should parse");
+    let (_, errors) = bolt_v2::bolt_v3_market_families::validate_strategy_target(
+        "strategy `binary_oracle`",
+        &strategy.target,
+    );
+    errors.into_iter().map(|error| error.to_string()).collect()
 }
 
 fn mutate_parameters_exit_order(fixture: &str, mutate: impl FnOnce(&str) -> String) -> String {

@@ -22,6 +22,31 @@ use sha2::{Digest, Sha256};
 
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
 
+pub const TEST_DOUBLE_PROVIDER_KIND: &str = "test_double";
+pub const NO_RESOLUTION_KIND: &str = "no_resolution";
+pub const NO_RESOLUTION_VALUE_KIND: &str = "none";
+pub const GATE_PROVIDER_KINDS: &[&str] = &[
+    "chainlink_data_streams",
+    "pyth",
+    "exchange_index",
+    "venue_native",
+    "hyperliquid_hip4",
+    "deribit_index",
+    "outcome_oracle",
+    TEST_DOUBLE_PROVIDER_KIND,
+];
+pub const GATE_PROVIDER_CAPABILITIES: &[&str] =
+    &["resolution_value", "reference_value", "market_metadata"];
+pub const GATE_ROLES: &[&str] = &["resolution", "decision_reference"];
+pub const GATE_VALUE_KINDS: &[&str] = &[
+    "price",
+    "index",
+    "outcome",
+    "metadata",
+    NO_RESOLUTION_VALUE_KIND,
+];
+pub const SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct BoltV3RootConfig {
@@ -36,6 +61,7 @@ pub struct BoltV3RootConfig {
     pub live_canary: Option<LiveCanaryBlock>,
     pub aws: AwsBlock,
     pub clients: BTreeMap<String, ClientBlock>,
+    pub gate_providers: Option<BTreeMap<String, GateProviderBlock>>,
 }
 
 // `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit
@@ -253,6 +279,23 @@ pub enum RotationKind {
 #[serde(deny_unknown_fields)]
 pub struct AwsBlock {
     pub region: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct GateProviderBlock {
+    pub provider_kind: Option<String>,
+    pub capabilities: Option<Vec<String>>,
+    pub client_id: Option<ClientId>,
+    pub freshness: Option<GateProviderFreshnessBlock>,
+    #[serde(flatten)]
+    pub provider_config: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct GateProviderFreshnessBlock {
+    pub max_age_ms: Option<u64>,
+    pub max_clock_skew_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

@@ -43,8 +43,10 @@ use nautilus_model::{
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
-    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, ClientBlock, LoadedStrategy, NautilusBlock,
-    PersistenceBlock, RiskBlock,
+    AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, ClientBlock, GATE_PROVIDER_CAPABILITIES,
+    GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, LoadedStrategy,
+    NautilusBlock, PersistenceBlock, RiskBlock, SSM_CREDENTIAL_PARAMETER_FIELD,
+    TEST_DOUBLE_PROVIDER_KIND,
 };
 
 #[derive(Debug)]
@@ -108,7 +110,164 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_clients_block(&root.clients));
+    if let Some(gate_providers) = &root.gate_providers {
+        errors.extend(validate_gate_providers(gate_providers));
+    }
 
+    errors
+}
+
+fn validate_gate_providers(providers: &BTreeMap<String, GateProviderBlock>) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for (provider_id, provider) in providers {
+        let context = format!("gate_providers.{provider_id}");
+        let provider_kind = match provider.provider_kind.as_deref() {
+            Some(value) if GATE_PROVIDER_KINDS.contains(&value) => Some(value),
+            Some(value) => {
+                errors.push(format!(
+                    "{context}.provider_kind `{value}` is unregistered; supported gate provider kinds are {GATE_PROVIDER_KINDS:?}"
+                ));
+                None
+            }
+            None => {
+                errors.push(format!("{context}.provider_kind is required"));
+                None
+            }
+        };
+
+        if matches!(provider_kind, Some(kind) if kind == TEST_DOUBLE_PROVIDER_KIND) {
+            errors.push(format!(
+                "{context}.provider_kind `test_double` is test-only and is not allowed in live/local operator TOML"
+            ));
+        }
+
+        match &provider.capabilities {
+            Some(capabilities) if capabilities.is_empty() => {
+                errors.push(format!(
+                    "{context}.capabilities must contain one or more semantic capabilities"
+                ));
+            }
+            Some(capabilities) => {
+                for capability in capabilities {
+                    if !GATE_PROVIDER_CAPABILITIES.contains(&capability.as_str()) {
+                        errors.push(format!(
+                            "{context}.capabilities contains unregistered capability `{capability}`; supported capabilities are {GATE_PROVIDER_CAPABILITIES:?}"
+                        ));
+                    }
+                }
+            }
+            None => errors.push(format!(
+                "{context}.capabilities must contain one or more semantic capabilities"
+            )),
+        }
+
+        match &provider.freshness {
+            Some(freshness) => errors.extend(validate_gate_provider_freshness(
+                &format!("{context}.freshness"),
+                freshness,
+            )),
+            None => errors.push(format!("{context}.freshness is required")),
+        }
+
+        if let Some(kind) = provider_kind {
+            let expected_table = format!("[{context}.{kind}]");
+            match provider.provider_config.get(kind) {
+                Some(value) if value.as_table().is_some() => {}
+                _ => errors.push(format!(
+                    "{context} with provider_kind `{kind}` must define exactly one matching provider-specific subtable {expected_table}"
+                )),
+            }
+            if provider.provider_config.len() != 1 {
+                errors.push(format!(
+                    "{context} with provider_kind `{kind}` must define exactly one provider-specific subtable; expected {expected_table}"
+                ));
+            }
+            for table_name in provider.provider_config.keys() {
+                if table_name != kind {
+                    errors.push(format!(
+                        "{context} has provider-specific subtable [gate_providers.{provider_id}.{table_name}] but provider_kind `{kind}` requires {expected_table}"
+                    ));
+                }
+            }
+        }
+
+        for (table_name, value) in &provider.provider_config {
+            if let Some(table) = value.as_table() {
+                if let Some(parameter) = table.get(SSM_CREDENTIAL_PARAMETER_FIELD) {
+                    match parameter.as_str() {
+                        Some(path) => errors.extend(validate_gate_provider_ssm_parameter_path(
+                            provider_id,
+                            table_name,
+                            SSM_CREDENTIAL_PARAMETER_FIELD,
+                            path,
+                        )),
+                        None => errors.push(format!(
+                            "gate_providers.{provider_id}.{table_name}.ssm_credential_parameter must be a string SSM path"
+                        )),
+                    }
+                }
+            }
+        }
+    }
+
+    errors
+}
+
+fn validate_gate_provider_freshness(
+    context: &str,
+    freshness: &GateProviderFreshnessBlock,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    match freshness.max_age_ms {
+        Some(0) => errors.push(format!("{context}.max_age_ms must be a positive integer")),
+        Some(_) => {}
+        None => errors.push(format!("{context}.max_age_ms is required")),
+    }
+    match freshness.max_clock_skew_ms {
+        Some(0) => errors.push(format!(
+            "{context}.max_clock_skew_ms must be a positive integer"
+        )),
+        Some(_) => {}
+        None => errors.push(format!("{context}.max_clock_skew_ms is required")),
+    }
+    if let (Some(max_age_ms), Some(max_clock_skew_ms)) =
+        (freshness.max_age_ms, freshness.max_clock_skew_ms)
+    {
+        if max_clock_skew_ms > max_age_ms {
+            errors.push(format!(
+                "{context}.max_clock_skew_ms must be less than or equal to {context}.max_age_ms"
+            ));
+        }
+    }
+
+    errors
+}
+
+fn validate_gate_provider_ssm_parameter_path(
+    provider_id: &str,
+    table_name: &str,
+    field: &str,
+    value: &str,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let context = format!("gate_providers.{provider_id}.{table_name}.{field}");
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        errors.push(format!("{context} must be a non-empty SSM path"));
+    } else {
+        if trimmed != value {
+            errors.push(format!(
+                "{context} must not have leading or trailing whitespace"
+            ));
+        }
+        if !trimmed.starts_with('/') {
+            errors.push(format!(
+                "{context} must be an absolute-style SSM parameter path starting with `/`: `{value}`"
+            ));
+        }
+    }
     errors
 }
 

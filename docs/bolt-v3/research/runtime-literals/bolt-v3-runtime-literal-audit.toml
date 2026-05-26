@@ -8391,3 +8391,179 @@ literal = '''"bolt_v3_submit_admission.rs"'''
 context = '''sha256_text(include_str!("bolt_v3_submit_admission.rs"))'''
 classification = "abort_plan_source_provenance_anchor"
 reason = "This compile-time source include anchors final abort-plan provenance to the exact submit-admission source compiled into the binary; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"chainlink_data_streams"'''
+context = '''"chainlink_data_streams",'''
+classification = "gate_provider_kind_schema_label"
+reason = "This schema vocabulary label identifies a supported gate provider kind; runtime source values remain TOML or metadata owned."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"pyth"'''
+context = '''"pyth",'''
+classification = "gate_provider_kind_schema_label"
+reason = "This schema vocabulary label identifies a supported gate provider kind; runtime source values remain TOML or metadata owned."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"exchange_index"'''
+context = '''"exchange_index",'''
+classification = "gate_provider_kind_schema_label"
+reason = "This schema vocabulary label identifies a supported gate provider kind; runtime source values remain TOML or metadata owned."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"venue_native"'''
+context = '''"venue_native",'''
+classification = "gate_provider_kind_schema_label"
+reason = "This schema vocabulary label identifies a supported gate provider kind; runtime source values remain TOML or metadata owned."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"hyperliquid_hip4"'''
+context = '''"hyperliquid_hip4",'''
+classification = "gate_provider_kind_schema_label"
+reason = "This schema vocabulary label identifies a supported gate provider kind; runtime source values remain TOML or metadata owned."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"deribit_index"'''
+context = '''"deribit_index",'''
+classification = "gate_provider_kind_schema_label"
+reason = "This schema vocabulary label identifies a supported gate provider kind; runtime source values remain TOML or metadata owned."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"outcome_oracle"'''
+context = '''"outcome_oracle",'''
+classification = "gate_provider_kind_schema_label"
+reason = "This schema vocabulary label identifies a supported gate provider kind; runtime source values remain TOML or metadata owned."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"test_double"'''
+context = '''pub const TEST_DOUBLE_PROVIDER_KIND: &str = "test_double";'''
+classification = "test_only_gate_provider_kind_schema_label"
+reason = "This schema vocabulary label identifies the test-only provider kind and is rejected in live/local operator TOML."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"resolution_value"'''
+context = '''&["resolution_value", "reference_value", "market_metadata"];'''
+classification = "gate_provider_capability_schema_label"
+reason = "This schema vocabulary label identifies a semantic provider capability, not a runtime source value."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"reference_value"'''
+context = '''&["resolution_value", "reference_value", "market_metadata"];'''
+classification = "gate_provider_capability_schema_label"
+reason = "This schema vocabulary label identifies a semantic provider capability, not a runtime source value."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"market_metadata"'''
+context = '''&["resolution_value", "reference_value", "market_metadata"];'''
+classification = "gate_provider_capability_schema_label"
+reason = "This schema vocabulary label identifies a semantic provider capability, not a runtime source value."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"resolution"'''
+context = '''pub const GATE_ROLES: &[&str] = &["resolution", "decision_reference"];'''
+classification = "gate_role_schema_label"
+reason = "This schema vocabulary label identifies a provider-neutral gate role declared by strategy archetypes."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"decision_reference"'''
+context = '''pub const GATE_ROLES: &[&str] = &["resolution", "decision_reference"];'''
+classification = "gate_role_schema_label"
+reason = "This schema vocabulary label identifies a provider-neutral gate role declared by strategy archetypes."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"price"'''
+context = '''"price",'''
+classification = "gate_value_kind_schema_label"
+reason = "This schema vocabulary label identifies a normalized gate value kind; actual values are evidence or metadata owned."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"index"'''
+context = '''"index",'''
+classification = "gate_value_kind_schema_label"
+reason = "This schema vocabulary label identifies a normalized gate value kind; actual values are evidence or metadata owned."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"outcome"'''
+context = '''"outcome",'''
+classification = "gate_value_kind_schema_label"
+reason = "This schema vocabulary label identifies a normalized gate value kind; actual values are evidence or metadata owned."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"metadata"'''
+context = '''"metadata",'''
+classification = "gate_value_kind_schema_label"
+reason = "This schema vocabulary label identifies a normalized gate value kind; actual values are evidence or metadata owned."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"none"'''
+context = '''pub const NO_RESOLUTION_VALUE_KIND: &str = "none";'''
+classification = "gate_no_resolution_schema_label"
+reason = "This schema vocabulary label names the no-resolution value-kind sentinel."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"no_resolution"'''
+context = '''pub const NO_RESOLUTION_KIND: &str = "no_resolution";'''
+classification = "gate_no_resolution_schema_label"
+reason = "This schema vocabulary label names the no-resolution mechanism sentinel."
+
+[[allowed]]
+path = "src/bolt_v3_config.rs"
+kind = "string"
+literal = '''"ssm_credential_parameter"'''
+context = '''pub const SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";'''
+classification = "gate_provider_secret_schema_field"
+reason = "This schema field name points to the SSM parameter reference; secret values remain SSM-owned."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"provider capability"'''
+context = '''"provider capability"'''
+classification = "target_gate_validation_diagnostic_label"
+reason = "This diagnostic label distinguishes provider capabilities from gate roles during target validation."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"{subscription_path} uses a single static provider for a rotating market; add market_mappings or provider_kind rotation metadata"'''
+context = '''"{subscription_path} uses a single static provider for a rotating market; add market_mappings or provider_kind rotation metadata"'''
+classification = "target_gate_validation_diagnostic_template"
+reason = "This validation diagnostic rejects static-provider wiring for rotating markets; it is not a runtime source value."

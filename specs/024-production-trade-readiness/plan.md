@@ -30,6 +30,7 @@ The current investigation found:
 - Second T036H plan review rejected the revised task list because it lacked a concrete TOML schema contract, lacked no-bypass/session RED coverage, lacked no-resolution and reference-vs-resolution negative tests, omitted strategy registration/consumption files, and kept one monolithic implementation task.
 - End-to-end T036H investigation found that provider-specific readiness also flows through decision evidence, tiny-canary evidence, CLI artifact commands, and source replay. Those are mandatory contract boundaries, not cleanup.
 - PR #487 merged the NT 0.58 bump into `main`, including upstream HIP-4 support. PR #480 must be synced to that mainline before T036H RED work, and the official gate contract must not exclude HIP-4, Deribit, outcome-oracle, sports, politics, entertainment, venue-native, or no-resolution markets through a closed provider or price-only schema.
+- Hyperliquid HIP-4 is upstream NT-owned after the NT 0.58 bump. Bolt-v3 must add a thin readiness binding over that existing NT support, not rebuild a Hyperliquid/HIP-4 adapter.
 
 See `specs/024-production-trade-readiness/evidence.md` for commands and exact outputs summarized.
 

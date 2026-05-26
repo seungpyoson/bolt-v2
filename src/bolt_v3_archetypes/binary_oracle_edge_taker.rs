@@ -34,7 +34,7 @@
 //! reaching back into core validation.
 
 use rust_decimal::{Decimal, prelude::ToPrimitive};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use toml::{Value, map::Map};
 
 use nautilus_model::{
@@ -91,8 +91,7 @@ pub struct ParametersBlock {
     pub forced_exit_order: OrderParams,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeParametersBlock {
     pub reference_publish_topic: String,
     pub warmup_tick_count: u64,
@@ -116,6 +115,68 @@ pub struct RuntimeParametersBlock {
     pub lead_jitter_max_ms: u64,
 }
 
+impl<'de> Deserialize<'de> for RuntimeParametersBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            reference_publish_topic: String,
+            warmup_tick_count: u64,
+            reentry_cooldown_secs: u64,
+            book_impact_cap_bps: u64,
+            risk_lambda: f64,
+            exit_hysteresis_bps: i64,
+            vol_window_secs: u64,
+            vol_gap_reset_secs: u64,
+            vol_min_observations: u64,
+            vol_bridge_valid_secs: u64,
+            price_to_beat_source: String,
+            price_to_beat_feed_id: String,
+            price_to_beat_report_schema_version: u64,
+            price_to_beat_report_decimal_scale: u64,
+            pricing_kurtosis: f64,
+            theta_decay_factor: f64,
+            forced_flat_stale_chainlink_ms: u64,
+            forced_flat_thin_book_min_liquidity: f64,
+            lead_agreement_min_corr: f64,
+            lead_jitter_max_ms: u64,
+            chainlink_data_streams_feed_id: Option<toml::Value>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        if wire.chainlink_data_streams_feed_id.is_some() {
+            return Err(serde::de::Error::custom(
+                "parameters.runtime.chainlink_data_streams_feed_id must move to [gate_providers.<id>.chainlink_data_streams]",
+            ));
+        }
+
+        Ok(Self {
+            reference_publish_topic: wire.reference_publish_topic,
+            warmup_tick_count: wire.warmup_tick_count,
+            reentry_cooldown_secs: wire.reentry_cooldown_secs,
+            book_impact_cap_bps: wire.book_impact_cap_bps,
+            risk_lambda: wire.risk_lambda,
+            exit_hysteresis_bps: wire.exit_hysteresis_bps,
+            vol_window_secs: wire.vol_window_secs,
+            vol_gap_reset_secs: wire.vol_gap_reset_secs,
+            vol_min_observations: wire.vol_min_observations,
+            vol_bridge_valid_secs: wire.vol_bridge_valid_secs,
+            price_to_beat_source: wire.price_to_beat_source,
+            price_to_beat_feed_id: wire.price_to_beat_feed_id,
+            price_to_beat_report_schema_version: wire.price_to_beat_report_schema_version,
+            price_to_beat_report_decimal_scale: wire.price_to_beat_report_decimal_scale,
+            pricing_kurtosis: wire.pricing_kurtosis,
+            theta_decay_factor: wire.theta_decay_factor,
+            forced_flat_stale_chainlink_ms: wire.forced_flat_stale_chainlink_ms,
+            forced_flat_thin_book_min_liquidity: wire.forced_flat_thin_book_min_liquidity,
+            lead_agreement_min_corr: wire.lead_agreement_min_corr,
+            lead_jitter_max_ms: wire.lead_jitter_max_ms,
+        })
+    }
+}
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct OrderParams {

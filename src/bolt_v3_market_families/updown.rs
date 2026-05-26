@@ -34,13 +34,19 @@
 //! price derivation, and trade-action construction. Those boundaries
 //! belong to later slices.
 
-use std::time::Duration;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
+    bolt_v3_config::{
+        GATE_PROVIDER_CAPABILITIES, GATE_PROVIDER_KINDS, GATE_ROLES, GATE_VALUE_KINDS,
+        LoadedBoltV3Config, LoadedStrategy, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND,
+    },
     bolt_v3_instrument_filters::{InstrumentFilterError, InstrumentFilterTarget},
     bolt_v3_market_families::{
         MarketFamilyValidationBinding, MarketIdentityPlan, MarketIdentityTarget,
@@ -80,6 +86,30 @@ pub struct TargetBlock {
     pub market_selection_rule: MarketSelectionRule,
     pub retry_interval_secs: u64,
     pub blocked_after_secs: u64,
+    pub gate_subscriptions: Option<BTreeMap<String, TargetGateSubscription>>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TargetGateSubscription {
+    pub required: bool,
+    pub allowed_provider_ids: Option<Vec<String>>,
+    pub allowed_provider_kinds: Option<Vec<String>>,
+    pub allowed_value_kinds: Option<Vec<String>>,
+    pub provider_preference: Option<Vec<String>>,
+    pub allow_no_resolution: bool,
+    pub market_mappings: Option<Vec<TargetGateMarketMapping>>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TargetGateMarketMapping {
+    pub family_key: String,
+    pub market_class: String,
+    pub resolution_kind: String,
+    pub resolution_identity: String,
+    pub value_kind: String,
+    pub provider_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -201,6 +231,112 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
     let MarketSelectionRule::ActiveOrNext = block.market_selection_rule;
     let TargetKind::RotatingMarket = block.kind;
     let RotatingMarketFamily::Updown = block.rotating_market_family;
+
+    errors.extend(validate_gate_subscriptions(context, &block));
+
+    errors
+}
+
+fn validate_gate_subscriptions(context: &str, block: &TargetBlock) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Some(gate_subscriptions) = &block.gate_subscriptions else {
+        return errors;
+    };
+
+    for (role, subscription) in gate_subscriptions {
+        let subscription_path = format!("{context}: target.gate_subscriptions.{role}");
+        if !GATE_ROLES.contains(&role.as_str()) {
+            let role_kind = if GATE_PROVIDER_CAPABILITIES.contains(&role.as_str()) {
+                "provider capability"
+            } else {
+                "unknown role"
+            };
+            errors.push(format!(
+                "{subscription_path} is a {role_kind}, not a GateRole"
+            ));
+            continue;
+        }
+
+        let allowed_provider_ids = subscription.allowed_provider_ids.as_deref().unwrap_or(&[]);
+        let allowed_provider_kinds = subscription
+            .allowed_provider_kinds
+            .as_deref()
+            .unwrap_or(&[]);
+        let allowed_value_kinds = subscription.allowed_value_kinds.as_deref().unwrap_or(&[]);
+        let provider_preference = subscription.provider_preference.as_deref().unwrap_or(&[]);
+        let market_mappings = subscription.market_mappings.as_deref().unwrap_or(&[]);
+
+        for provider_kind in allowed_provider_kinds {
+            if !GATE_PROVIDER_KINDS.contains(&provider_kind.as_str()) {
+                errors.push(format!(
+                    "{subscription_path}.allowed_provider_kinds contains unregistered provider kind `{provider_kind}`"
+                ));
+            }
+        }
+        for value_kind in allowed_value_kinds {
+            if !GATE_VALUE_KINDS.contains(&value_kind.as_str()) {
+                errors.push(format!(
+                    "{subscription_path}.allowed_value_kinds contains unregistered value_kind `{value_kind}`"
+                ));
+            }
+        }
+
+        if subscription.required && market_mappings.is_empty() && allowed_provider_ids.len() == 1 {
+            errors.push(format!(
+                "{subscription_path} uses a single static provider for a rotating market; add market_mappings or provider_kind rotation metadata"
+            ));
+        }
+        if allowed_provider_ids.len() > 1 && provider_preference.is_empty() {
+            errors.push(format!(
+                "{subscription_path}.provider_preference is required when multiple providers can match"
+            ));
+        }
+
+        let mut mapping_keys = BTreeSet::new();
+        for mapping in market_mappings {
+            let mapping_key = (
+                mapping.family_key.as_str(),
+                mapping.market_class.as_str(),
+                mapping.resolution_kind.as_str(),
+                mapping.resolution_identity.as_str(),
+                mapping.value_kind.as_str(),
+            );
+            if !mapping_keys.insert(mapping_key) {
+                errors.push(format!(
+                    "{subscription_path}.market_mappings contains ambiguous duplicate mapping for family_key `{}`, market_class `{}`, resolution_kind `{}`, resolution_identity `{}`, value_kind `{}`",
+                    mapping.family_key,
+                    mapping.market_class,
+                    mapping.resolution_kind,
+                    mapping.resolution_identity,
+                    mapping.value_kind
+                ));
+            }
+
+            let provider_kind_matches = allowed_provider_kinds.is_empty()
+                || allowed_provider_kinds
+                    .iter()
+                    .any(|kind| kind == &mapping.resolution_kind);
+            let value_kind_matches = allowed_value_kinds
+                .iter()
+                .any(|kind| kind == &mapping.value_kind);
+            if !provider_kind_matches || !value_kind_matches {
+                errors.push(format!(
+                    "{subscription_path} market mapping resolution_kind `{}` must match allowed_provider_kinds and value_kind `{}` must match allowed_value_kinds",
+                    mapping.resolution_kind, mapping.value_kind
+                ));
+            }
+
+            if subscription.allow_no_resolution
+                && mapping.resolution_kind == NO_RESOLUTION_KIND
+                && mapping.value_kind != NO_RESOLUTION_VALUE_KIND
+            {
+                errors.push(format!(
+                    "{subscription_path}.allow_no_resolution with no_resolution requires value_kind `none`, got `{}`",
+                    mapping.value_kind
+                ));
+            }
+        }
+    }
 
     errors
 }
@@ -1015,5 +1151,78 @@ mod tests {
         assert_eq!(updown_cadence_slug_token(3600), Some("1h"));
         assert_eq!(updown_cadence_slug_token(14400), Some("4h"));
         assert_eq!(updown_cadence_slug_token(120), None);
+    }
+
+    #[test]
+    fn updown_selected_market_requirement_uses_complete_sorted_instrument_ids() {
+        let source = std::fs::read_to_string(format!(
+            "{}/src/bolt_v3_market_families/updown.rs",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("updown source should be readable");
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("module should have a production section");
+
+        assert!(
+            production_source.contains("instrument_ids")
+                && production_source.contains("up_instrument_id")
+                && production_source.contains("down_instrument_id")
+                && production_source.contains("sort"),
+            "updown selected-market identity must use the complete sorted up/down instrument set"
+        );
+    }
+
+    #[test]
+    fn updown_selected_market_requirement_resolves_resolution_identity_and_metadata_provenance() {
+        let source = std::fs::read_to_string(format!(
+            "{}/src/bolt_v3_market_families/updown.rs",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("updown source should be readable");
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("module should have a production section");
+
+        for required in [
+            "resolution_kind",
+            "resolution_identity",
+            "value_kind",
+            "metadata_provenance_sha256",
+            "market_class",
+        ] {
+            assert!(
+                production_source.contains(required),
+                "updown selected-market requirement must expose `{required}`"
+            );
+        }
+    }
+
+    #[test]
+    fn updown_selected_market_requirement_fails_closed_for_missing_or_mismatched_identity() {
+        let source = std::fs::read_to_string(format!(
+            "{}/src/bolt_v3_market_families/updown.rs",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("updown source should be readable");
+        let production_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("module should have a production section");
+
+        for required in [
+            "strategy-traded subset",
+            "ambiguous",
+            "mismatched",
+            "venue-specific",
+            "noncanonical",
+        ] {
+            assert!(
+                production_source.contains(required),
+                "updown selected-market requirement must fail closed for `{required}` identity defects"
+            );
+        }
     }
 }

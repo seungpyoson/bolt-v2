@@ -1601,12 +1601,116 @@ classification = "diagnostic_template"
 reason = "This is the operator-diagnostic context label emitted by the per-strategy instrument-filter dispatcher when a strategy's rotating_market_family is not registered. It identifies which strategy produced the UnsupportedFamily error and is not an operator-tunable runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "string"
+literal = '''"configured_target_id"'''
+context = '''const SELECTED_MARKET_CONFIGURED_TARGET_ID_FIELD: &str = "configured_target_id";'''
+classification = "selected_market_requirement_schema_field"
+reason = "This is a canonical selected-market requirement identity field name. Its value is populated from TOML target identity before hashing."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "string"
+literal = '''"family_key"'''
+context = '''const SELECTED_MARKET_FAMILY_KEY_FIELD: &str = "family_key";'''
+classification = "selected_market_requirement_schema_field"
+reason = "This is a canonical selected-market requirement identity field name. Its value comes from the market-family binding."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "string"
+literal = '''"instrument_ids"'''
+context = '''const SELECTED_MARKET_INSTRUMENT_IDS_FIELD: &str = "instrument_ids";'''
+classification = "selected_market_requirement_schema_field"
+reason = "This is a canonical selected-market requirement identity field name. Its values come from the selected market's NT instrument identifiers."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "string"
+literal = '''"market_class"'''
+context = '''const SELECTED_MARKET_MARKET_CLASS_FIELD: &str = "market_class";'''
+classification = "selected_market_requirement_schema_field"
+reason = "This is a canonical selected-market requirement identity field name. Its value is supplied by the market-family mapping contract."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "string"
+literal = '''"market_id"'''
+context = '''const SELECTED_MARKET_MARKET_ID_FIELD: &str = "market_id";'''
+classification = "selected_market_requirement_schema_field"
+reason = "This is a canonical selected-market requirement identity field name. Its value comes from selected-market metadata."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "string"
+literal = '''"metadata_provenance key"'''
+context = '''const SELECTED_MARKET_METADATA_PROVENANCE_KEY_FIELD: &str = "metadata_provenance key";'''
+classification = "selected_market_requirement_validation_field"
+reason = "This labels metadata-provenance object keys in fail-closed validation diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "string"
+literal = '''"metadata_provenance"'''
+context = '''const SELECTED_MARKET_METADATA_PROVENANCE_FIELD: &str = "metadata_provenance";'''
+classification = "selected_market_requirement_schema_field"
+reason = "This labels the canonical metadata-provenance hash input object for selected-market identity construction."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "string"
+literal = '''"metadata_provenance_sha256"'''
+context = '''const SELECTED_MARKET_METADATA_PROVENANCE_SHA256_FIELD: &str = "metadata_provenance_sha256";'''
+classification = "selected_market_requirement_schema_field"
+reason = "This is a canonical selected-market requirement identity field name. The hash value is computed from selected-market metadata provenance."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "string"
+literal = '''"resolution_identity"'''
+context = '''const SELECTED_MARKET_RESOLUTION_IDENTITY_FIELD: &str = "resolution_identity";'''
+classification = "selected_market_requirement_schema_field"
+reason = "This is a canonical selected-market requirement identity field name. The value is resolved from selected-market metadata or TOML gate mapping."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "string"
+literal = '''"resolution_kind"'''
+context = '''const SELECTED_MARKET_RESOLUTION_KIND_FIELD: &str = "resolution_kind";'''
+classification = "selected_market_requirement_schema_field"
+reason = "This is a canonical selected-market requirement identity field name. The value is resolved from the configured gate mapping contract."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "string"
+literal = '''"value_kind"'''
+context = '''const SELECTED_MARKET_VALUE_KIND_FIELD: &str = "value_kind";'''
+classification = "selected_market_requirement_schema_field"
+reason = "This is a canonical selected-market requirement identity field name. The value is resolved from the configured gate mapping contract."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/mod.rs"
+kind = "string"
+literal = '''"venue"'''
+context = '''const SELECTED_MARKET_VENUE_FIELD: &str = "venue";'''
+classification = "selected_market_requirement_schema_field"
+reason = "This is a canonical selected-market requirement identity field name. The value comes from the selected market's NT instrument venue."
+
+[[allowed]]
 path = '''src/bolt_v3_market_families/updown.rs'''
 kind = '''number'''
 literal = '''0'''
 context = '''|| down.activation_milliseconds == 0'''
 classification = '''market_identity_missing_activation_sentinel'''
 reason = '''This detects a missing Polymarket activation timestamp and falls back to the already-derived configured period boundary, not an operator runtime value.'''
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = "2"
+context = "const REQUIRED_UPDOWN_OUTCOME_INSTRUMENT_COUNT: usize = 2;"
+classification = "updown_binary_option_outcome_count"
+reason = "This is the market-complete outcome count for binary-option updown selected-market identity: one up outcome and one down outcome."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -1703,6 +1807,94 @@ literal = "\"5m\""
 context = "(300, \"5m\"),"
 classification = "runtime_contract_slug_token_table"
 reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"binary_option"'''
+context = '''const BINARY_OPTION_MARKET_CLASS: &str = "binary_option";'''
+classification = "selected_market_contract_enum_value"
+reason = "This is the selected-market contract market_class value for updown BinaryOption markets, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"condition_id"'''
+context = '''const METADATA_CONDITION_ID_FIELD: &str = "condition_id";'''
+classification = "selected_market_metadata_provenance_field"
+reason = "This is a canonical selected-market metadata-provenance field name sourced from NT BinaryOption metadata."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"family_key"'''
+context = '''const METADATA_FAMILY_KEY_FIELD: &str = "family_key";'''
+classification = "selected_market_metadata_provenance_field"
+reason = "This is a canonical selected-market metadata-provenance field name populated by the market-family binding."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"instrument_ids"'''
+context = '''const METADATA_INSTRUMENT_IDS_FIELD: &str = "instrument_ids";'''
+classification = "selected_market_metadata_provenance_field"
+reason = "This is a canonical selected-market metadata-provenance field name containing sorted market-complete NT instrument identifiers."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"market_class"'''
+context = '''const METADATA_MARKET_CLASS_FIELD: &str = "market_class";'''
+classification = "selected_market_metadata_provenance_field"
+reason = "This is a canonical selected-market metadata-provenance field name populated from the updown market-class contract."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"market_id"'''
+context = '''const METADATA_MARKET_ID_FIELD: &str = "market_id";'''
+classification = "selected_market_metadata_provenance_field"
+reason = "This is a canonical selected-market metadata-provenance field name sourced from NT BinaryOption metadata."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"market_slug"'''
+context = '''const METADATA_MARKET_SLUG_FIELD: &str = "market_slug";'''
+classification = "selected_market_metadata_provenance_field"
+reason = "This is a canonical selected-market metadata-provenance field name sourced from NT BinaryOption metadata."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"nt_instrument_metadata"'''
+context = '''const NT_INSTRUMENT_METADATA_SOURCE_KIND: &str = "nt_instrument_metadata";'''
+classification = "selected_market_metadata_source_kind"
+reason = "This tags selected-market provenance as coming from NT instrument metadata, not from an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"question_id"'''
+context = '''const METADATA_QUESTION_ID_FIELD: &str = "question_id";'''
+classification = "selected_market_metadata_provenance_field"
+reason = "This is a canonical selected-market metadata-provenance field name sourced from NT BinaryOption metadata."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"source_kind"'''
+context = '''const METADATA_SOURCE_KIND_FIELD: &str = "source_kind";'''
+classification = "selected_market_metadata_provenance_field"
+reason = "This is a canonical selected-market metadata-provenance field name that records the source family for the provenance payload."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "string"
+literal = '''"venue"'''
+context = '''const METADATA_VENUE_FIELD: &str = "venue";'''
+classification = "selected_market_metadata_provenance_field"
+reason = "This is a canonical selected-market metadata-provenance field name populated from the selected market's NT instrument venue."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"

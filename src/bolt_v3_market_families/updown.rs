@@ -46,16 +46,32 @@ use crate::{
     bolt_v3_config::{
         GATE_PROVIDER_CAPABILITIES, GATE_PROVIDER_KINDS, GATE_ROLES, GATE_VALUE_KINDS,
         LoadedBoltV3Config, LoadedStrategy, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND,
+        RESOLUTION_GATE_ROLE,
     },
     bolt_v3_instrument_filters::{InstrumentFilterError, InstrumentFilterTarget},
     bolt_v3_market_families::{
         MarketFamilyValidationBinding, MarketIdentityPlan, MarketIdentityTarget,
         MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget,
-        SelectedBinaryOptionMarket, SelectedMarketSourceIdentity, TargetRuntimeFields,
+        SelectedBinaryOptionMarket, SelectedMarketRequirement, SelectedMarketRequirementParts,
+        SelectedMarketSourceIdentity, TargetRuntimeFields,
+        selected_market_metadata_provenance_fields, selected_market_requirement_error,
+        selected_market_requirement_from_parts,
     },
 };
 
 pub const KEY: &str = "updown";
+const BINARY_OPTION_MARKET_CLASS: &str = "binary_option";
+const NT_INSTRUMENT_METADATA_SOURCE_KIND: &str = "nt_instrument_metadata";
+const REQUIRED_UPDOWN_OUTCOME_INSTRUMENT_COUNT: usize = 2;
+const METADATA_CONDITION_ID_FIELD: &str = "condition_id";
+const METADATA_FAMILY_KEY_FIELD: &str = "family_key";
+const METADATA_INSTRUMENT_IDS_FIELD: &str = "instrument_ids";
+const METADATA_MARKET_CLASS_FIELD: &str = "market_class";
+const METADATA_MARKET_ID_FIELD: &str = "market_id";
+const METADATA_MARKET_SLUG_FIELD: &str = "market_slug";
+const METADATA_QUESTION_ID_FIELD: &str = "question_id";
+const METADATA_SOURCE_KIND_FIELD: &str = "source_kind";
+const METADATA_VENUE_FIELD: &str = "venue";
 
 pub fn validation_binding() -> MarketFamilyValidationBinding {
     MarketFamilyValidationBinding {
@@ -65,6 +81,7 @@ pub fn validation_binding() -> MarketFamilyValidationBinding {
         target_runtime_fields,
         select_binary_option_market,
         market_selection_candidate_windows,
+        selected_market_requirement,
     }
 }
 
@@ -961,6 +978,116 @@ pub fn market_selection_candidate_windows(
     ])
 }
 
+pub fn selected_market_requirement(
+    target: &toml::Value,
+    selected: &SelectedBinaryOptionMarket,
+    selected_at_ms: u64,
+) -> Result<SelectedMarketRequirement, InstrumentFilterError> {
+    let target = deserialize_target_block(target)
+        .map_err(|message| InstrumentFilterError::Other { message })?;
+    // Updown readiness currently extracts the selected market's resolution
+    // requirement. Role joins and additional gate roles belong to T036H16+.
+    let mapping = selected_market_resolution_mapping(&target)?;
+    let mut instrument_ids = vec![
+        selected.down_instrument_id.to_string(),
+        selected.up_instrument_id.to_string(),
+    ];
+    instrument_ids.sort();
+    instrument_ids.dedup();
+    if instrument_ids.len() != REQUIRED_UPDOWN_OUTCOME_INSTRUMENT_COUNT {
+        return Err(selected_market_requirement_error(
+            "selected-market instrument_ids must include distinct up/down outcomes",
+        ));
+    }
+    let up_venue = selected.up_instrument_id.venue.as_str();
+    let down_venue = selected.down_instrument_id.venue.as_str();
+    if up_venue != down_venue {
+        return Err(selected_market_requirement_error(
+            "selected-market up/down instrument venues must match",
+        ));
+    }
+
+    let mut provenance_fields = selected_market_metadata_provenance_fields([
+        (
+            METADATA_CONDITION_ID_FIELD,
+            selected.source_identity.condition_id.as_str(),
+        ),
+        (METADATA_FAMILY_KEY_FIELD, KEY),
+        (METADATA_MARKET_CLASS_FIELD, BINARY_OPTION_MARKET_CLASS),
+        (METADATA_MARKET_ID_FIELD, selected.market_id.as_str()),
+        (
+            METADATA_MARKET_SLUG_FIELD,
+            selected.source_identity.market_slug.as_str(),
+        ),
+        (
+            METADATA_QUESTION_ID_FIELD,
+            selected.source_identity.question_id.as_str(),
+        ),
+        (
+            METADATA_SOURCE_KIND_FIELD,
+            NT_INSTRUMENT_METADATA_SOURCE_KIND,
+        ),
+        (METADATA_VENUE_FIELD, up_venue),
+    ]);
+    provenance_fields.insert(
+        METADATA_INSTRUMENT_IDS_FIELD.to_string(),
+        serde_json::json!(instrument_ids),
+    );
+
+    selected_market_requirement_from_parts(SelectedMarketRequirementParts {
+        configured_target_id: target.configured_target_id.as_str(),
+        venue: up_venue,
+        family_key: KEY,
+        market_id: selected.market_id.as_str(),
+        instrument_ids,
+        market_class: mapping.market_class.as_str(),
+        resolution_kind: mapping.resolution_kind.as_str(),
+        resolution_identity: mapping.resolution_identity.as_str(),
+        value_kind: mapping.value_kind.as_str(),
+        metadata_provenance_fields: provenance_fields,
+        selected_at_ms,
+    })
+}
+
+fn selected_market_resolution_mapping(
+    target: &TargetBlock,
+) -> Result<&TargetGateMarketMapping, InstrumentFilterError> {
+    let mappings = target
+        .gate_subscriptions
+        .as_ref()
+        .and_then(|subscriptions| subscriptions.get(RESOLUTION_GATE_ROLE))
+        .and_then(|subscription| subscription.market_mappings.as_ref())
+        .filter(|mappings| !mappings.is_empty())
+        .ok_or_else(|| {
+            selected_market_requirement_error(
+                "target.gate_subscriptions.resolution.market_mappings must resolve selected-market identity",
+            )
+        })?;
+
+    let mut matches = mappings.iter().filter(|mapping| {
+        mapping.family_key == KEY && mapping.market_class == BINARY_OPTION_MARKET_CLASS
+    });
+    let Some(first) = matches.next() else {
+        return Err(selected_market_requirement_error(
+            "target.gate_subscriptions.resolution.market_mappings must include an updown binary_option mapping",
+        ));
+    };
+    if matches.next().is_some() {
+        return Err(selected_market_requirement_error(
+            "target.gate_subscriptions.resolution.market_mappings contains ambiguous updown binary_option mappings",
+        ));
+    }
+    if first.resolution_kind.is_empty()
+        || first.resolution_identity.is_empty()
+        || first.value_kind.is_empty()
+    {
+        return Err(selected_market_requirement_error(
+            "target.gate_subscriptions.resolution.market_mappings must include non-empty resolution_kind, resolution_identity, and value_kind",
+        ));
+    }
+    Ok(first)
+}
+
 fn period_start_milliseconds(
     period_start_seconds: i64,
     cadence_seconds: i64,
@@ -1112,6 +1239,223 @@ fn updown_outcome_instrument(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn selected_market_fixture() -> SelectedBinaryOptionMarket {
+        SelectedBinaryOptionMarket {
+            market_id: "market-1".to_string(),
+            instrument_id: InstrumentId::from("condition-1-UP.POLYMARKET"),
+            up_instrument_id: InstrumentId::from("condition-1-UP.POLYMARKET"),
+            down_instrument_id: InstrumentId::from("condition-1-DOWN.POLYMARKET"),
+            selection_outcome: MarketSelectionOutcome::Current,
+            start_timestamp_milliseconds: 600_000,
+            expiration_timestamp_milliseconds: 900_000,
+            seconds_to_end: 300,
+            source_identity: SelectedMarketSourceIdentity {
+                condition_id: "condition-1".to_string(),
+                market_slug: "btc-updown-5m-600".to_string(),
+                question_id: "question-1".to_string(),
+            },
+        }
+    }
+
+    fn target_with_resolution_mapping() -> toml::Value {
+        toml::toml! {
+            configured_target_id = "btc_updown_5m"
+            kind = "rotating_market"
+            rotating_market_family = "updown"
+            underlying_asset = "BTC"
+            cadence_secs = 300
+            market_selection_rule = "active_or_next"
+            retry_interval_secs = 5
+            blocked_after_secs = 30
+
+            [gate_subscriptions.resolution]
+            required = true
+            allowed_provider_kinds = ["chainlink_data_streams", "pyth"]
+            allowed_value_kinds = ["price"]
+            provider_preference = ["resolution_oracle_primary"]
+            allow_no_resolution = false
+
+            [[gate_subscriptions.resolution.market_mappings]]
+            family_key = "updown"
+            market_class = "binary_option"
+            resolution_kind = "chainlink_data_streams"
+            resolution_identity = "btc-usd-5m"
+            value_kind = "price"
+            provider_id = "resolution_oracle_primary"
+        }
+        .into()
+    }
+
+    fn resolution_mapping_array_mut(target: &mut toml::Value) -> &mut Vec<toml::Value> {
+        target
+            .as_table_mut()
+            .expect("target should be a table")
+            .get_mut("gate_subscriptions")
+            .expect("gate subscriptions should exist")
+            .as_table_mut()
+            .expect("gate subscriptions should be a table")
+            .get_mut("resolution")
+            .expect("resolution subscription should exist")
+            .as_table_mut()
+            .expect("resolution should be a table")
+            .get_mut("market_mappings")
+            .expect("market mappings should exist")
+            .as_array_mut()
+            .expect("market mappings should be an array")
+    }
+
+    fn assert_selected_market_requirement_error(target: toml::Value, expected: &str) {
+        let error = selected_market_requirement(&target, &selected_market_fixture(), 700_000)
+            .expect_err("selected-market requirement should fail closed");
+        assert!(
+            error.to_string().contains(expected),
+            "expected error to contain `{expected}`, got: {error}"
+        );
+    }
+
+    fn is_lowercase_sha256(value: &str) -> bool {
+        value.len() == 64
+            && value
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+    }
+
+    #[test]
+    fn selected_market_requirement_resolves_updown_identity_from_target_mapping() {
+        let requirement = selected_market_requirement(
+            &target_with_resolution_mapping(),
+            &selected_market_fixture(),
+            700_000,
+        )
+        .expect("updown selected-market requirement should resolve from target mapping");
+
+        assert_eq!(requirement.configured_target_id, "btc_updown_5m");
+        assert_eq!(requirement.venue, "POLYMARKET");
+        assert_eq!(requirement.family_key, KEY);
+        assert_eq!(requirement.market_id, "market-1");
+        assert_eq!(
+            requirement.instrument_ids,
+            vec!["condition-1-DOWN.POLYMARKET", "condition-1-UP.POLYMARKET"]
+        );
+        assert_eq!(requirement.market_class, "binary_option");
+        assert_eq!(requirement.resolution_kind, "chainlink_data_streams");
+        assert_eq!(requirement.resolution_identity, "btc-usd-5m");
+        assert_eq!(requirement.value_kind, "price");
+        assert_eq!(requirement.selected_at_ms, 700_000);
+        assert!(is_lowercase_sha256(&requirement.metadata_provenance_sha256));
+        assert!(is_lowercase_sha256(&requirement.selected_market_key));
+    }
+
+    #[test]
+    fn selected_market_requirement_fails_without_config_resolved_mapping() {
+        let mut target = target_with_resolution_mapping();
+        resolution_mapping_array_mut(&mut target).clear();
+
+        assert_selected_market_requirement_error(
+            target,
+            "target.gate_subscriptions.resolution.market_mappings",
+        );
+    }
+
+    #[test]
+    fn selected_market_requirement_fails_when_subscription_shape_is_absent() {
+        let mut no_gate_subscriptions = target_with_resolution_mapping();
+        no_gate_subscriptions
+            .as_table_mut()
+            .expect("target should be a table")
+            .remove("gate_subscriptions");
+        assert_selected_market_requirement_error(
+            no_gate_subscriptions,
+            "target.gate_subscriptions.resolution.market_mappings",
+        );
+
+        let mut no_resolution = target_with_resolution_mapping();
+        no_resolution
+            .as_table_mut()
+            .expect("target should be a table")
+            .get_mut("gate_subscriptions")
+            .expect("gate subscriptions should exist")
+            .as_table_mut()
+            .expect("gate subscriptions should be a table")
+            .remove("resolution");
+        assert_selected_market_requirement_error(
+            no_resolution,
+            "target.gate_subscriptions.resolution.market_mappings",
+        );
+
+        let mut no_market_mappings = target_with_resolution_mapping();
+        no_market_mappings
+            .as_table_mut()
+            .expect("target should be a table")
+            .get_mut("gate_subscriptions")
+            .expect("gate subscriptions should exist")
+            .as_table_mut()
+            .expect("gate subscriptions should be a table")
+            .get_mut("resolution")
+            .expect("resolution should exist")
+            .as_table_mut()
+            .expect("resolution should be a table")
+            .remove("market_mappings");
+        assert_selected_market_requirement_error(
+            no_market_mappings,
+            "target.gate_subscriptions.resolution.market_mappings",
+        );
+    }
+
+    #[test]
+    fn selected_market_requirement_fails_on_ambiguous_resolution_mapping() {
+        let mut target = target_with_resolution_mapping();
+        let mut alternate = resolution_mapping_array_mut(&mut target)[0].clone();
+        alternate
+            .as_table_mut()
+            .expect("mapping should be a table")
+            .insert(
+                "resolution_identity".to_string(),
+                toml::Value::String("btc-usd-backup-5m".to_string()),
+            );
+        resolution_mapping_array_mut(&mut target).push(alternate);
+
+        assert_selected_market_requirement_error(target, "ambiguous");
+    }
+
+    #[test]
+    fn selected_market_requirement_fails_when_selected_instrument_venues_differ() {
+        let mut selected = selected_market_fixture();
+        selected.down_instrument_id = InstrumentId::from("condition-1-DOWN.SIM");
+
+        let error =
+            selected_market_requirement(&target_with_resolution_mapping(), &selected, 700_000)
+                .expect_err("venue mismatch should fail closed");
+        assert!(
+            error.to_string().contains("venue"),
+            "expected venue mismatch, got: {error}"
+        );
+    }
+
+    #[test]
+    fn selected_market_requirement_fails_when_key_or_provenance_component_contains_pipe() {
+        let mut selected = selected_market_fixture();
+        selected.source_identity.question_id = "question|1".to_string();
+
+        let error =
+            selected_market_requirement(&target_with_resolution_mapping(), &selected, 700_000)
+                .expect_err("pipe in source identity should fail closed");
+        assert!(
+            error.to_string().contains("|"),
+            "expected pipe rejection, got: {error}"
+        );
+
+        let mut target = target_with_resolution_mapping();
+        resolution_mapping_array_mut(&mut target)[0]
+            .as_table_mut()
+            .expect("mapping should be a table")
+            .insert(
+                "resolution_identity".to_string(),
+                toml::Value::String("btc|usd".to_string()),
+            );
+        assert_selected_market_requirement_error(target, "|");
+    }
 
     #[test]
     fn updown_period_pair_floor_examples() {

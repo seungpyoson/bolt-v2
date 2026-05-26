@@ -3099,6 +3099,40 @@ provider_id = "resolution_oracle_primary"
 }
 
 #[test]
+fn accepts_no_resolution_target_gate_mapping_with_provider_kinds() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_kinds = ["chainlink_data_streams"]
+allowed_value_kinds = ["price", "none"]
+provider_preference = ["resolution_oracle_primary"]
+allow_no_resolution = true
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "btc-usd-5m"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "no_resolution"
+resolution_identity = "none"
+value_kind = "none"
+"#,
+    );
+
+    assert!(
+        messages.is_empty(),
+        "valid no-resolution mapping should validate even when provider kinds are listed: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_provider_capability_as_target_gate_role() {
     let messages = target_gate_subscription_messages(
         r#"

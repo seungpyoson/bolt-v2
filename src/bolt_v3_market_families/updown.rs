@@ -312,7 +312,10 @@ fn validate_gate_subscriptions(context: &str, block: &TargetBlock) -> Vec<String
                 ));
             }
 
+            let no_resolution_mapping =
+                subscription.allow_no_resolution && mapping.resolution_kind == NO_RESOLUTION_KIND;
             let provider_kind_matches = allowed_provider_kinds.is_empty()
+                || no_resolution_mapping
                 || allowed_provider_kinds
                     .iter()
                     .any(|kind| kind == &mapping.resolution_kind);

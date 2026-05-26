@@ -177,6 +177,7 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
         })
     }
 }
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct OrderParams {

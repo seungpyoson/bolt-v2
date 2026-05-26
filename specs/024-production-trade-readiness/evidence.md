@@ -957,3 +957,27 @@ This was local fake-fixture and local source verification only. It did not use G
   - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H17 remains open for the remaining complete readiness-session consumer rewiring and any final stale provider-string replay cleanup.
+
+## T036H17 Final Replay Readiness-Session Consumer Cleanup
+
+- Source-owned entry-decision replay now uses `BinaryOracleEntryDecisionEvidenceSource` schema v2 with a full `readiness_session` instead of a flattened `readiness_evidence` snapshot plus top-level `price_to_beat_value`.
+- Replay constructs the runtime readiness snapshot from the session and derives `market.price_to_beat` from the `resolution` gate's normalized `price_to_beat_value`, failing closed if the session has no evidence, the wrong value kind, or an unusable value.
+- Source-input materialization now writes the full readiness session into the replay source JSON; generated sources no longer include a top-level replay price field.
+- The runtime literal audit was updated for the v2 source schema and the normalized price field name.
+- RED proof before implementation:
+  - `cargo test --locked --test bolt_v3_operator_artifacts entry_decision_evidence_replay_derives_price_from_readiness_session -- --nocapture` failed because the current source parser rejected `readiness_session` and still expected `readiness_evidence` plus `price_to_beat_value`.
+- Local verification:
+  - `cargo test --locked --test bolt_v3_operator_artifacts entry_decision_evidence_replay_derives_price_from_readiness_session -- --nocapture`: 1 passed, 0 failed.
+  - `cargo test --locked --test bolt_v3_operator_artifacts entry_decision -- --nocapture`: 17 passed, 0 failed.
+  - `cargo test --locked --test bolt_v3_operator_artifacts -- --nocapture`: 180 passed, 0 failed.
+  - `cargo clippy --locked --lib -- -D warnings`: passed.
+  - `cargo clippy --locked --bin bolt-v2 -- -D warnings`: passed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+  - `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+  - `python3 scripts/verify_bolt_v3_provider_leaks.py`: `OK: Bolt-v3 provider-leak verifier passed.`
+  - `python3 scripts/verify_bolt_v3_core_boundary.py`: `OK: Bolt-v3 core boundary audit passed.`
+  - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H17 is complete locally; T036H18 and later tasks remain open.

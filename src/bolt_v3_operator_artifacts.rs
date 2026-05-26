@@ -29,9 +29,9 @@ use crate::{
         RESOLUTION_GATE_ROLE,
     },
     bolt_v3_decision_evidence::{
-        BoltV3ReadinessGateEvidenceSnapshot, BoltV3StrategyInputEvidenceSnapshot,
-        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
-        read_latest_entry_decision_evidence_chain, validate_strategy_input_readiness_evidence,
+        BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
+        decision_evidence_path, read_latest_entry_decision_evidence_chain,
+        validate_strategy_input_readiness_evidence,
     },
     bolt_v3_live_canary_gate::{
         APPROVAL_ENVELOPE_RECORD_KIND, APPROVAL_ENVELOPE_SCHEMA_VERSION,
@@ -3393,13 +3393,12 @@ pub fn write_entry_decision_source_inputs_from_source_files(
         record_kind: ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND.to_string(),
         market_selection_timestamp_ms: proofs.price_source.market_selection_timestamp_ms,
         decision_timestamp_ms: proofs.price_source.decision_timestamp_ms,
-        readiness_evidence: readiness_evidence_from_entry_decision_price_source(
+        readiness_session: readiness_session_from_entry_decision_price_source(
             loaded,
             strategy_instance_id,
             &selected,
             &proofs.price_source,
         )?,
-        price_to_beat_value: proofs.price_source.price_to_beat_value,
         warmup_count,
         reference_quote: BinaryOracleEntryReferenceQuoteSource {
             venue: proofs.reference_quote.venue,
@@ -3727,12 +3726,12 @@ fn price_to_beat_report_binding(
     })
 }
 
-fn readiness_evidence_from_entry_decision_price_source(
+fn readiness_session_from_entry_decision_price_source(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
     selected: &bolt_v3_market_families::SelectedBinaryOptionMarket,
     source: &SourceBoundPriceToBeatSource,
-) -> Result<BoltV3ReadinessGateEvidenceSnapshot, BoltV3OperatorArtifactError> {
+) -> Result<EntryReadinessGateSession, BoltV3OperatorArtifactError> {
     let strategy = loaded
         .strategies
         .iter()
@@ -3804,7 +3803,7 @@ fn readiness_evidence_from_entry_decision_price_source(
     })?;
     let requirements = crate::bolt_v3_archetypes::binary_oracle_edge_taker::gate_requirements();
     let provider_evidence = vec![evidence];
-    let session = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
+    build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
         loaded,
         strategy_instance_id,
         selected_market: &selected_market,
@@ -3812,8 +3811,7 @@ fn readiness_evidence_from_entry_decision_price_source(
         provider_evidence: &provider_evidence,
         created_at_ms: source.decision_timestamp_ms,
         artifact_refs: vec![artifact_ref],
-    })?;
-    Ok(BoltV3ReadinessGateEvidenceSnapshot::from_entry_readiness_gate_session(&session))
+    })
 }
 
 fn price_to_beat_report_provenance_invalid() -> BoltV3OperatorArtifactError {

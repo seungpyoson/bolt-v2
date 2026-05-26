@@ -5407,30 +5407,15 @@ fn entry_decision_evidence_source_fixture(
     )
     .expect("instrument source should write");
     let decision_source_path = temp.path().join("entry-decision-source.json");
+    let readiness_session = entry_decision_readiness_session_fixture(&loaded);
     std::fs::write(
         &decision_source_path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 1,
-            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v1",
+            "schema_version": 2,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
-            "readiness_evidence": {
-                "gate_session_hash": "gate-session-hash-one",
-                "selected_market_key": TEST_GATE_SELECTED_MARKET_KEY,
-                "gate_evidence": {
-                    RESOLUTION_GATE_ROLE: {
-                        "satisfaction_kind": "evidence",
-                        "selected_market_key": TEST_GATE_SELECTED_MARKET_KEY,
-                        "provider_id": "resolution_oracle_primary",
-                        "provider_kind": CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
-                        "value_kind": PRICE_GATE_VALUE_KIND,
-                        "normalized_value_sha256": "normalized-value-sha-one",
-                        "provider_provenance_sha256": "provider-provenance-sha-one",
-                        "artifact_sha256s": ["artifact-sha-one"]
-                    }
-                }
-            },
-            "price_to_beat_value": 3100.0,
+            "readiness_session": readiness_session,
             "warmup_count": 20,
             "reference_quote": {
                 "venue": "binance_reference",
@@ -5476,6 +5461,115 @@ fn entry_decision_evidence_source_fixture(
         decision_source_path,
         instrument_source_path,
     }
+}
+
+fn entry_decision_readiness_session_fixture(loaded: &LoadedBoltV3Config) -> serde_json::Value {
+    let selected_market = fixture_selected_market_requirement();
+    let mut input = fixture_gate_evidence_input(&selected_market.selected_market_key);
+    input.collector_observed_at_ms = TEST_MARKET_SELECTION_NOW_MS + 1_200;
+    input.source_observed_at_ms = TEST_MARKET_SELECTION_NOW_MS + 1_000;
+    input.normalized_value = serde_json::json!({
+        "price_to_beat_value": 3100.0,
+    });
+    input.provider_provenance = serde_json::json!({
+        "provider_kind": CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
+        "feed_id": TEST_PRICE_TO_BEAT_FEED_ID,
+        "report_schema_version": TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION,
+        "report_decimal_scale": TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+        "source_report_full_sha256": TEST_PRICE_TO_BEAT_REPORT_SHA256,
+        "valid_from_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+        "observations_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_000,
+    });
+    input.artifact_refs = vec![GateArtifactRef {
+        path: "entry-decision-price-report".to_string(),
+        sha256: TEST_PRICE_TO_BEAT_REPORT_SHA256.to_string(),
+    }];
+    let evidence = normalize_gate_evidence(input).expect("price evidence should normalize");
+    let requirements = binary_oracle_edge_taker::gate_requirements();
+    let session = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
+        loaded,
+        strategy_instance_id: "bitcoin_updown_main",
+        selected_market: &selected_market,
+        requirements: &requirements,
+        provider_evidence: &[evidence],
+        created_at_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+        artifact_refs: vec![GateArtifactRef {
+            path: "entry-readiness-gate-session.json".to_string(),
+            sha256: TEST_GATE_SESSION_ARTIFACT_SHA256.to_string(),
+        }],
+    })
+    .expect("entry decision readiness session should build");
+    serde_json::to_value(session).expect("readiness session should serialize")
+}
+
+#[test]
+fn entry_decision_evidence_replay_derives_price_from_readiness_session() {
+    let fixture = entry_decision_evidence_source_fixture(2);
+    let readiness_session = entry_decision_readiness_session_fixture(&fixture.loaded);
+    std::fs::write(
+        &fixture.decision_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            "readiness_session": readiness_session,
+            "warmup_count": 20,
+            "reference_quote": {
+                "venue": "binance_reference",
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "realized_volatility": {
+                "value": 1.5,
+                "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "fees": {
+                "fee_bps_by_instrument_id": {
+                    TEST_UP_INSTRUMENT_ID: 0.0,
+                    TEST_DOWN_INSTRUMENT_ID: 0.0
+                }
+            },
+            "books": {
+                "price_precision": 2,
+                "up": {
+                    "best_bid": 0.50,
+                    "bid_quantity": 500.0,
+                    "best_ask": 0.50,
+                    "ask_quantity": 500.0,
+                    "liquidity_available": 500.0
+                },
+                "down": {
+                    "best_bid": 0.48,
+                    "bid_quantity": 500.0,
+                    "best_ask": 0.49,
+                    "ask_quantity": 500.0,
+                    "liquidity_available": 500.0
+                }
+            }
+        }))
+        .expect("decision source should serialize"),
+    )
+    .expect("decision source should write");
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.decision_source_path,
+            100_000,
+            &fixture.instrument_source_path,
+            100_000,
+            100_000,
+        )
+        .expect("readiness-session entry decision evidence should replay");
+    let chain = read_latest_entry_decision_evidence_chain(&written.path, 100_000)
+        .expect("written JSONL should contain a complete entry decision chain");
+    assert_eq!(chain.snapshot.price_to_beat_value, "3100");
+    assert_eq!(
+        chain.admission.outcome,
+        BoltV3AdmissionOutcome::RejectedNotArmed
+    );
 }
 
 #[test]
@@ -5659,6 +5753,13 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
         written.instrument_source.sha256,
         sha256_file(&written.instrument_source.path)
     );
+    let decision_source_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.decision_source.path)
+            .expect("decision source should remain readable"),
+    )
+    .expect("decision source should parse as JSON");
+    assert!(decision_source_json.get("readiness_session").is_some());
+    assert!(decision_source_json.get("price_to_beat_value").is_none());
 
     let replayed =
         bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(

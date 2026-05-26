@@ -36,15 +36,18 @@ use serde::{Deserialize, Serialize};
 use toml::Value;
 
 use crate::{
+    bolt_v3_config::{PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE},
     bolt_v3_decision_evidence::{
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT, BoltV3OrderIntentEvidence,
         BoltV3OrderIntentKind, BoltV3ReadinessGateEvidenceSnapshot,
         BoltV3StrategyInputEvidenceSnapshot, compiled_order_price_source,
+        validate_readiness_gate_evidence_snapshot,
     },
     bolt_v3_market_families::{
         self, MarketSelectionOutcome, MarketSelectionTarget, SelectedMarketSourceIdentity,
     },
+    bolt_v3_operator_artifacts::{EntryReadinessGateSession, GateSatisfaction},
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
@@ -5310,9 +5313,10 @@ impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {
     }
 }
 
-pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 1;
+pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 2;
 pub const ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND: &str =
-    "bolt_v3.binary_oracle_entry_decision_source.v1";
+    "bolt_v3.binary_oracle_entry_decision_source.v2";
+const ENTRY_DECISION_PRICE_TO_BEAT_VALUE_FIELD: &str = "price_to_beat_value";
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -5321,8 +5325,7 @@ pub struct BinaryOracleEntryDecisionEvidenceSource {
     pub record_kind: String,
     pub market_selection_timestamp_ms: u64,
     pub decision_timestamp_ms: u64,
-    pub readiness_evidence: BoltV3ReadinessGateEvidenceSnapshot,
-    pub price_to_beat_value: f64,
+    pub readiness_session: EntryReadinessGateSession,
     pub warmup_count: u64,
     pub reference_quote: BinaryOracleEntryReferenceQuoteSource,
     pub realized_volatility: BinaryOracleEntryRealizedVolatilitySource,
@@ -5406,8 +5409,13 @@ pub fn record_entry_decision_evidence_from_source(
             decision_evidence.clone(),
         ),
     );
+    let readiness_evidence = BoltV3ReadinessGateEvidenceSnapshot::from_entry_readiness_gate_session(
+        &source.readiness_session,
+    );
+    let price_to_beat =
+        entry_decision_price_to_beat_from_readiness_session(&source.readiness_session)?;
     let context = StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission)
-        .with_readiness_evidence(source.readiness_evidence.clone());
+        .with_readiness_evidence(readiness_evidence);
     let mut strategy = BinaryOracleEdgeTaker::new(
         BinaryOracleEdgeTakerBuilder::parse_config(raw_config)?,
         context,
@@ -5422,7 +5430,7 @@ pub fn record_entry_decision_evidence_from_source(
     let SelectionState::Active { market } = &mut selection.decision.state else {
         anyhow::bail!("entry decision evidence source did not select an active configured market");
     };
-    market.price_to_beat = Some(source.price_to_beat_value);
+    market.price_to_beat = Some(price_to_beat);
     selection.published_at_ms = source.market_selection_timestamp_ms;
     strategy.apply_selection_snapshot(selection);
     strategy.observe_reference_quote(&FastSpotObservation {
@@ -5458,10 +5466,11 @@ fn validate_entry_decision_source(source: &BinaryOracleEntryDecisionEvidenceSour
         source.decision_timestamp_ms >= source.market_selection_timestamp_ms,
         "entry decision evidence source decision_timestamp_ms precedes market selection"
     );
-    anyhow::ensure!(
-        is_positive_finite(source.price_to_beat_value),
-        "entry decision evidence source price_to_beat_value is invalid"
+    let readiness_evidence = BoltV3ReadinessGateEvidenceSnapshot::from_entry_readiness_gate_session(
+        &source.readiness_session,
     );
+    validate_readiness_gate_evidence_snapshot(&readiness_evidence)?;
+    entry_decision_price_to_beat_from_readiness_session(&source.readiness_session)?;
     anyhow::ensure!(
         is_positive_finite(source.reference_quote.price),
         "entry decision evidence source reference quote price is invalid"
@@ -5471,6 +5480,49 @@ fn validate_entry_decision_source(source: &BinaryOracleEntryDecisionEvidenceSour
         "entry decision evidence source realized volatility is invalid"
     );
     Ok(())
+}
+
+fn entry_decision_price_to_beat_from_readiness_session(
+    session: &EntryReadinessGateSession,
+) -> Result<f64> {
+    let satisfaction = session
+        .satisfied_roles
+        .get(RESOLUTION_GATE_ROLE)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "entry decision evidence source readiness_session is missing resolution evidence"
+            )
+        })?;
+    let GateSatisfaction::Evidence { evidence } = satisfaction else {
+        anyhow::bail!(
+            "entry decision evidence source readiness_session resolution evidence is required"
+        );
+    };
+    anyhow::ensure!(
+        evidence.value_kind == PRICE_GATE_VALUE_KIND,
+        "entry decision evidence source readiness_session resolution value_kind is invalid"
+    );
+    let value = evidence
+        .normalized_value
+        .get(ENTRY_DECISION_PRICE_TO_BEAT_VALUE_FIELD)
+        .and_then(json_value_as_f64)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "entry decision evidence source readiness_session price_to_beat_value is invalid"
+            )
+        })?;
+    anyhow::ensure!(
+        is_positive_finite(value),
+        "entry decision evidence source readiness_session price_to_beat_value is invalid"
+    );
+    Ok(value)
+}
+
+fn json_value_as_f64(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_i64().map(|value| value as f64))
+        .or_else(|| value.as_u64().map(|value| value as f64))
 }
 
 fn source_fee_bps_by_instrument_id(

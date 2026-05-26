@@ -7,9 +7,10 @@ use bolt_v2::{
         ArchetypeGateRequirement, GateRole, GateValueKind, binary_oracle_edge_taker,
     },
     bolt_v3_config::{
-        BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, LiveCanaryBlock,
-        LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, NO_RESOLUTION_KIND,
-        NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE, load_bolt_v3_config,
+        BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, GateProviderBlock,
+        GateProviderFreshnessBlock, LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock,
+        LoadedBoltV3Config, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND,
+        RESOLUTION_GATE_ROLE, load_bolt_v3_config,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3GateEvidenceIdentity,
@@ -22,10 +23,12 @@ use bolt_v2::{
         EntryDecisionProofSourceMaterializationRequest, EntryDecisionRealizedVolatilityProofInput,
         EntryDecisionReferenceQuoteProofInput, EntryDecisionSourceBookSideInput,
         EntryDecisionSourceCollectionRequest, EntryDecisionSourceInputRequest,
-        EntryDecisionSourceMarketInputs, EntryReadinessGateSessionRequest, GateArtifactRef,
-        GateEvidenceCollectionStatus, GateEvidenceInput, GateSatisfaction, WrittenOperatorArtifact,
+        EntryDecisionSourceMarketInputs, EntryReadinessGateEvidenceSourceFileRequest,
+        EntryReadinessGateSessionRequest, GateArtifactRef, GateEvidenceCollectionStatus,
+        GateEvidenceInput, GateSatisfaction, WrittenOperatorArtifact,
         build_entry_readiness_gate_session, build_redacted_ssm_manifest,
-        collect_entry_decision_source_inputs_from_configured_provider, normalize_gate_evidence,
+        collect_entry_decision_source_inputs_from_configured_provider,
+        collect_entry_readiness_gate_evidence_from_source_file, normalize_gate_evidence,
     },
     bolt_v3_tiny_canary_evidence::{
         Phase8AbortPlanSourceProofs, Phase8FinancialEnvelopeEvidenceFile,
@@ -81,6 +84,8 @@ const TEST_GATE_FRESHNESS_MAX_AGE_MS: u64 = 300_000;
 const TEST_GATE_COLLECTOR_OBSERVED_AT_MS: u64 = 1_000;
 const TEST_GATE_SOURCE_OBSERVED_AT_MS: u64 = 995;
 const TEST_GATE_CREATED_AT_MS: u64 = 1_100;
+const TEST_HYPERLIQUID_HIP4_PROVIDER_KIND: &str = "hyperliquid_hip4";
+const TEST_METADATA_VALUE_KIND: &str = "metadata";
 
 #[test]
 fn gate_evidence_normalization_rejects_timeout_partial_and_default_evidence() {
@@ -298,6 +303,141 @@ fn entry_readiness_gate_session_supports_explicit_no_resolution_only_when_allowe
     );
 }
 
+#[test]
+fn entry_readiness_evidence_collection_dispatches_chainlink_from_selected_provider_kind() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let selected_market = fixture_selected_market_requirement();
+
+    let evidence = collect_entry_readiness_gate_evidence_from_source_file(
+        &loaded,
+        "bitcoin_updown_main",
+        EntryReadinessGateEvidenceSourceFileRequest {
+            role: RESOLUTION_GATE_ROLE,
+            provider_id: "resolution_oracle_primary",
+            selected_market: &selected_market,
+            source_path: &paths.price_source_path,
+            max_source_bytes: 100_000,
+            expected_source_sha256: &sha256_file(&paths.price_source_path),
+            artifact_ref_path: "source-bound-price.json",
+            collector_observed_at_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+        },
+    )
+    .expect("configured Chainlink source should collect readiness evidence");
+
+    assert_eq!(evidence.provider_id, "resolution_oracle_primary");
+    assert_eq!(evidence.provider_kind, CHAINLINK_DATA_STREAMS_PROVIDER_KIND);
+    assert_eq!(evidence.value_kind, PRICE_GATE_VALUE_KIND);
+    assert_eq!(evidence.selected_market_key, TEST_GATE_SELECTED_MARKET_KEY);
+    assert_eq!(
+        evidence.normalized_value["price_to_beat_value"],
+        serde_json::json!(3100.0)
+    );
+    assert!(
+        evidence
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.sha256 == sha256_file(&paths.price_source_path))
+    );
+}
+
+#[test]
+fn entry_readiness_evidence_collection_rejects_provider_not_selected_by_market_mapping() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let mut selected_market = fixture_selected_market_requirement();
+    selected_market.resolution_kind = TEST_HYPERLIQUID_HIP4_PROVIDER_KIND.to_string();
+    selected_market.value_kind = TEST_METADATA_VALUE_KIND.to_string();
+
+    let error = collect_entry_readiness_gate_evidence_from_source_file(
+        &loaded,
+        "bitcoin_updown_main",
+        EntryReadinessGateEvidenceSourceFileRequest {
+            role: RESOLUTION_GATE_ROLE,
+            provider_id: "resolution_oracle_primary",
+            selected_market: &selected_market,
+            source_path: &paths.price_source_path,
+            max_source_bytes: 100_000,
+            expected_source_sha256: &sha256_file(&paths.price_source_path),
+            artifact_ref_path: "source-bound-price.json",
+            collector_observed_at_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+        },
+    )
+    .expect_err("configured provider kind must match selected-market requirements");
+
+    assert!(
+        error.to_string().contains("provider_kind"),
+        "expected provider-kind binding rejection, got: {error}"
+    );
+}
+
+#[test]
+fn entry_readiness_evidence_collection_dispatches_hip4_metadata_source_when_required() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    replace_resolution_provider_mapping(
+        &mut loaded,
+        "hip4_metadata_primary",
+        TEST_HYPERLIQUID_HIP4_PROVIDER_KIND,
+        TEST_METADATA_VALUE_KIND,
+    );
+    add_metadata_gate_provider(
+        &mut loaded,
+        "hip4_metadata_primary",
+        TEST_HYPERLIQUID_HIP4_PROVIDER_KIND,
+    );
+    let mut selected_market = fixture_selected_market_requirement();
+    selected_market.resolution_kind = TEST_HYPERLIQUID_HIP4_PROVIDER_KIND.to_string();
+    selected_market.value_kind = TEST_METADATA_VALUE_KIND.to_string();
+    let source_path = temp.path().join("hip4-metadata-source.json");
+    std::fs::write(
+        &source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.normalized_readiness_gate_source.v1",
+            "provider_kind": TEST_HYPERLIQUID_HIP4_PROVIDER_KIND,
+            "value_kind": TEST_METADATA_VALUE_KIND,
+            "source_observed_at_ms": TEST_MARKET_SELECTION_NOW_MS + 1_000,
+            "normalized_value": {
+                "metadata_scope": "asset_universe",
+                "resolution_identity": selected_market.resolution_identity
+            },
+            "provider_provenance": {
+                "provider_kind": TEST_HYPERLIQUID_HIP4_PROVIDER_KIND,
+                "metadata_scope": "asset_universe"
+            }
+        }))
+        .expect("metadata source should serialize"),
+    )
+    .expect("metadata source should write");
+
+    let evidence = collect_entry_readiness_gate_evidence_from_source_file(
+        &loaded,
+        "bitcoin_updown_main",
+        EntryReadinessGateEvidenceSourceFileRequest {
+            role: RESOLUTION_GATE_ROLE,
+            provider_id: "hip4_metadata_primary",
+            selected_market: &selected_market,
+            source_path: &source_path,
+            max_source_bytes: 100_000,
+            expected_source_sha256: &sha256_file(&source_path),
+            artifact_ref_path: "hip4-metadata-source.json",
+            collector_observed_at_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+        },
+    )
+    .expect("configured HIP-4 metadata source should collect readiness evidence");
+
+    assert_eq!(evidence.provider_id, "hip4_metadata_primary");
+    assert_eq!(evidence.provider_kind, TEST_HYPERLIQUID_HIP4_PROVIDER_KIND);
+    assert_eq!(evidence.value_kind, TEST_METADATA_VALUE_KIND);
+    assert_eq!(
+        evidence.normalized_value["metadata_scope"],
+        serde_json::json!("asset_universe")
+    );
+}
+
 fn fixture_selected_market_requirement() -> SelectedMarketRequirement {
     SelectedMarketRequirement {
         configured_target_id: TEST_CONFIGURED_TARGET_ID.to_string(),
@@ -372,6 +512,74 @@ fn fixture_gate_session_request<'a>(
             sha256: TEST_GATE_SESSION_ARTIFACT_SHA256.to_string(),
         }],
     }
+}
+
+fn add_metadata_gate_provider(
+    loaded: &mut LoadedBoltV3Config,
+    provider_id: &str,
+    provider_kind: &str,
+) {
+    loaded
+        .root
+        .gate_providers
+        .as_mut()
+        .expect("fixture root should have gate providers")
+        .insert(
+            provider_id.to_string(),
+            GateProviderBlock {
+                provider_kind: Some(provider_kind.to_string()),
+                capabilities: Some(vec![
+                    "resolution_value".to_string(),
+                    "market_metadata".to_string(),
+                ]),
+                client_id: None,
+                freshness: Some(GateProviderFreshnessBlock {
+                    max_age_ms: Some(TEST_GATE_FRESHNESS_MAX_AGE_MS),
+                    max_clock_skew_ms: Some(5_000),
+                }),
+                provider_config: BTreeMap::from([(
+                    provider_kind.to_string(),
+                    toml::Value::Table(toml::map::Map::from_iter([(
+                        "metadata_scope".to_string(),
+                        toml::Value::String("asset_universe".to_string()),
+                    )])),
+                )]),
+            },
+        );
+}
+
+fn replace_resolution_provider_mapping(
+    loaded: &mut LoadedBoltV3Config,
+    provider_id: &str,
+    provider_kind: &str,
+    value_kind: &str,
+) {
+    let subscription = resolution_subscription_mut(loaded);
+    subscription.insert(
+        "allowed_value_kinds".to_string(),
+        toml::Value::Array(vec![toml::Value::String(value_kind.to_string())]),
+    );
+    subscription.insert(
+        "provider_preference".to_string(),
+        toml::Value::Array(vec![toml::Value::String(provider_id.to_string())]),
+    );
+    let mapping = resolution_market_mappings_mut(loaded)
+        .first_mut()
+        .expect("fixture should have resolution mapping")
+        .as_table_mut()
+        .expect("mapping should be a table");
+    mapping.insert(
+        "resolution_kind".to_string(),
+        toml::Value::String(provider_kind.to_string()),
+    );
+    mapping.insert(
+        "value_kind".to_string(),
+        toml::Value::String(value_kind.to_string()),
+    );
+    mapping.insert(
+        "provider_id".to_string(),
+        toml::Value::String(provider_id.to_string()),
+    );
 }
 
 fn add_backup_resolution_provider(loaded: &mut LoadedBoltV3Config) {

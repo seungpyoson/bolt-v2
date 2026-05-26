@@ -8988,6 +8988,46 @@ reason = "This is the stable record-kind discriminator for the entry-readiness g
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = '''1'''
+context = '''const NORMALIZED_READINESS_GATE_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "normalized_readiness_gate_source_schema_version"
+reason = "This pins the source-owned normalized readiness gate source schema version; runtime values remain evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.normalized_readiness_gate_source.v1"'''
+context = '''"bolt_v3.normalized_readiness_gate_source.v1";'''
+classification = "normalized_readiness_gate_source_record_kind"
+reason = "This is the stable record-kind discriminator for normalized metadata readiness source files, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"hyperliquid_hip4"'''
+context = '''const HYPERLIQUID_HIP4_PROVIDER_KIND: &str = "hyperliquid_hip4";'''
+classification = "gate_provider_kind_dispatch_key"
+reason = "This dispatch key selects the thin Hyperliquid HIP-4 metadata readiness collector; provider use is still TOML-selected."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"venue_native"'''
+context = '''const VENUE_NATIVE_PROVIDER_KIND: &str = "venue_native";'''
+classification = "gate_provider_kind_dispatch_key"
+reason = "This dispatch key selects the thin venue-native metadata readiness collector; provider use is still TOML-selected."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"entry-decision-price-report"'''
+context = '''const ENTRY_READINESS_CHAINLINK_REPORT_ARTIFACT_PATH: &str = "entry-decision-price-report";'''
+classification = "readiness_source_artifact_label"
+reason = "This is a structural artifact label for the Chainlink report provenance hash captured by readiness evidence, not a trading value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''1'''
 context = '''const GATE_EVIDENCE_SCHEMA_VERSION: u32 = 1;'''
 classification = "gate_evidence_schema_version"
 reason = "This pins the normalized provider-neutral gate-evidence artifact schema version; runtime values remain source-owned evidence."
@@ -9079,6 +9119,14 @@ literal = '''"artifact_refs.path"'''
 context = '''const GATE_FIELD_ARTIFACT_REFS_PATH: &str = "artifact_refs.path";'''
 classification = "entry_readiness_gate_schema_field"
 reason = "This names a gate evidence validation field for diagnostics; artifact paths remain evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"artifact_ref_path"'''
+context = '''const GATE_FIELD_ARTIFACT_REF_PATH: &str = "artifact_ref_path";'''
+classification = "entry_readiness_gate_schema_field"
+reason = "This names the caller-provided artifact reference label for normalized gate source evidence; artifact paths remain evidence-owned."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

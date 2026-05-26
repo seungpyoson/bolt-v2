@@ -43,9 +43,9 @@ use crate::{
         ClobV2CollateralAccountingSourceMaterialization,
         ClobV2CollateralAccountingSourceMaterializationRequest,
         ClobV2FeeBehaviorSourceMaterializationRequest, EntryDecisionSourceProviderContext,
-        ProviderSecretResolveContext, VenueAccountStateSourceMaterializationRequest,
-        binding_for_provider_key, confirm_external_snapshot_before_hard_stop,
-        gate_provider_evidence_binding,
+        GateProviderEvidenceBinding, ProviderSecretResolveContext,
+        VenueAccountStateSourceMaterializationRequest, binding_for_provider_key,
+        confirm_external_snapshot_before_hard_stop, gate_provider_evidence_binding,
         materialize_clob_v2_adapter_signing_source_from_nt_signing_source,
         materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance,
         materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once,
@@ -334,6 +334,12 @@ const NAUTILUS_TRADER_CARGO_LOCK_SOURCE_PREFIX: &str =
 const MARKET_SELECTION_SOURCE_BLOCKER: &str = "market-selection remains blocked: T046 missing source-bound price-to-beat strategy decision input";
 const ENTRY_READINESS_GATE_SESSION_SCHEMA_VERSION: u32 = 1;
 const ENTRY_READINESS_GATE_SESSION_RECORD_KIND: &str = "bolt_v3.entry_readiness_gate_session.v1";
+const NORMALIZED_READINESS_GATE_SOURCE_SCHEMA_VERSION: u32 = 1;
+const NORMALIZED_READINESS_GATE_SOURCE_RECORD_KIND: &str =
+    "bolt_v3.normalized_readiness_gate_source.v1";
+const HYPERLIQUID_HIP4_PROVIDER_KIND: &str = "hyperliquid_hip4";
+const VENUE_NATIVE_PROVIDER_KIND: &str = "venue_native";
+const ENTRY_READINESS_CHAINLINK_REPORT_ARTIFACT_PATH: &str = "entry-decision-price-report";
 const GATE_EVIDENCE_SCHEMA_VERSION: u32 = 1;
 const GATE_EVIDENCE_RECORD_KIND: &str = "bolt_v3.gate_evidence.v1";
 const GATE_SATISFACTION_KIND_EVIDENCE: &str = "evidence";
@@ -341,6 +347,7 @@ const GATE_SATISFACTION_KIND_NO_RESOLUTION: &str = NO_RESOLUTION_KIND;
 const GATE_PROVIDER_CAPABILITY_RESOLUTION_VALUE: &str = "resolution_value";
 const GATE_FIELD_ARTIFACT_REFS: &str = "artifact_refs";
 const GATE_FIELD_ARTIFACT_REFS_PATH: &str = "artifact_refs.path";
+const GATE_FIELD_ARTIFACT_REF_PATH: &str = "artifact_ref_path";
 const GATE_FIELD_ARTIFACT_SHA256S: &str = "artifact_sha256s";
 const GATE_FIELD_CONFIGURED_TARGET_ID: &str = "configured_target_id";
 const GATE_FIELD_CREATED_AT_MS: &str = "created_at_ms";
@@ -483,6 +490,29 @@ pub struct EntryReadinessGateSessionRequest<'a> {
     pub provider_evidence: &'a [GateEvidence],
     pub created_at_ms: u64,
     pub artifact_refs: Vec<GateArtifactRef>,
+}
+
+pub struct EntryReadinessGateEvidenceSourceFileRequest<'a> {
+    pub role: &'a str,
+    pub provider_id: &'a str,
+    pub selected_market: &'a SelectedMarketRequirement,
+    pub source_path: &'a Path,
+    pub max_source_bytes: u64,
+    pub expected_source_sha256: &'a str,
+    pub artifact_ref_path: &'a str,
+    pub collector_observed_at_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NormalizedReadinessGateSource {
+    schema_version: u32,
+    record_kind: String,
+    provider_kind: String,
+    value_kind: String,
+    source_observed_at_ms: u64,
+    normalized_value: serde_json::Value,
+    provider_provenance: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1620,6 +1650,294 @@ pub fn normalize_gate_evidence(
         provider_provenance_sha256: canonical_json_sha256_value(&input.provider_provenance)?,
         provider_provenance: input.provider_provenance,
         artifact_refs: input.artifact_refs,
+    })
+}
+
+pub fn collect_entry_readiness_gate_evidence_from_source_file(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    request: EntryReadinessGateEvidenceSourceFileRequest<'_>,
+) -> Result<GateEvidence, BoltV3OperatorArtifactError> {
+    let bytes =
+        read_file_bounded(request.source_path, request.max_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::DecisionEvidenceSourceRead {
+                path: request.source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let source_sha256 = hex::encode(Sha256::digest(&bytes));
+    if !is_lowercase_sha256(request.expected_source_sha256)
+        || source_sha256 != request.expected_source_sha256
+    {
+        return Err(entry_decision_source_invalid(
+            "entry readiness gate source hash does not match expected sha256",
+        ));
+    }
+    let provider = gate_provider_evidence_binding(loaded, request.provider_id)?;
+    match provider.provider_kind.as_str() {
+        CHAINLINK_DATA_STREAMS_PROVIDER_KIND => {
+            collect_chainlink_readiness_gate_evidence_from_source_bytes(
+                loaded,
+                strategy_instance_id,
+                request,
+                &provider,
+                &bytes,
+                source_sha256,
+            )
+        }
+        HYPERLIQUID_HIP4_PROVIDER_KIND | VENUE_NATIVE_PROVIDER_KIND => {
+            collect_normalized_metadata_readiness_gate_evidence_from_source_bytes(
+                loaded,
+                strategy_instance_id,
+                request,
+                &provider,
+                &bytes,
+                source_sha256,
+            )
+        }
+        other => Err(entry_decision_source_invalid(format!(
+            "entry readiness gate source collection does not support provider_kind `{other}`"
+        ))),
+    }
+}
+
+fn collect_chainlink_readiness_gate_evidence_from_source_bytes(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    request: EntryReadinessGateEvidenceSourceFileRequest<'_>,
+    provider: &GateProviderEvidenceBinding,
+    bytes: &[u8],
+    source_sha256: String,
+) -> Result<GateEvidence, BoltV3OperatorArtifactError> {
+    let source: SourceBoundPriceToBeatSource = serde_json::from_slice(bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::DecisionEvidenceSourceParse {
+            path: request.source_path.to_path_buf(),
+            source,
+        }
+    })?;
+    validate_source_bound_price_to_beat_shape(&source)?;
+    validate_price_to_beat_report_provenance(
+        loaded,
+        strategy_instance_id,
+        &source,
+        source.market_selection_timestamp_ms,
+        source.decision_timestamp_ms,
+    )?;
+    validate_entry_readiness_evidence_collection_binding(
+        loaded,
+        strategy_instance_id,
+        &request,
+        provider,
+        PRICE_GATE_VALUE_KIND,
+    )?;
+    let binding = price_to_beat_report_binding(loaded, strategy_instance_id)?;
+    if binding.provider_id != request.provider_id {
+        return Err(entry_decision_source_invalid(
+            "entry readiness gate source provider_id does not match configured report binding",
+        ));
+    }
+    let report_sha256 = source
+        .source_report_full_sha256
+        .as_deref()
+        .filter(|value| is_lowercase_sha256(value))
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let report_schema_version = source
+        .source_report_schema_version
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let report_decimal_scale = source
+        .source_report_decimal_scale
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let report_feed_id = source
+        .source_report_feed_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let valid_from_timestamp_ms = source
+        .source_report_valid_from_timestamp_ms
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    let observations_timestamp_ms = source
+        .source_report_observations_timestamp_ms
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+    normalize_gate_evidence(GateEvidenceInput {
+        role: request.role.to_string(),
+        provider_id: request.provider_id.to_string(),
+        provider_kind: provider.provider_kind.clone(),
+        selected_market_key: request.selected_market.selected_market_key.clone(),
+        collector_observed_at_ms: request.collector_observed_at_ms,
+        source_observed_at_ms: observations_timestamp_ms,
+        freshness_max_age_ms: provider.max_age_ms,
+        value_kind: PRICE_GATE_VALUE_KIND.to_string(),
+        normalized_value: serde_json::json!({
+            "price_to_beat_value": source.price_to_beat_value,
+        }),
+        provider_provenance: serde_json::json!({
+            "provider_kind": CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
+            "feed_id": report_feed_id,
+            "report_schema_version": report_schema_version,
+            "report_decimal_scale": report_decimal_scale,
+            "source_report_full_sha256": report_sha256,
+            "valid_from_timestamp_ms": valid_from_timestamp_ms,
+            "observations_timestamp_ms": observations_timestamp_ms,
+        }),
+        artifact_refs: vec![
+            source_artifact_ref(&request, source_sha256)?,
+            GateArtifactRef {
+                path: ENTRY_READINESS_CHAINLINK_REPORT_ARTIFACT_PATH.to_string(),
+                sha256: report_sha256.to_string(),
+            },
+        ],
+        collection_status: GateEvidenceCollectionStatus::Complete,
+    })
+}
+
+fn collect_normalized_metadata_readiness_gate_evidence_from_source_bytes(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    request: EntryReadinessGateEvidenceSourceFileRequest<'_>,
+    provider: &GateProviderEvidenceBinding,
+    bytes: &[u8],
+    source_sha256: String,
+) -> Result<GateEvidence, BoltV3OperatorArtifactError> {
+    let source: NormalizedReadinessGateSource =
+        serde_json::from_slice(bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::DecisionEvidenceSourceParse {
+                path: request.source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    if source.schema_version != NORMALIZED_READINESS_GATE_SOURCE_SCHEMA_VERSION {
+        return Err(entry_decision_source_invalid(
+            "normalized readiness gate source schema_version is invalid",
+        ));
+    }
+    if source.record_kind != NORMALIZED_READINESS_GATE_SOURCE_RECORD_KIND {
+        return Err(entry_decision_source_invalid(
+            "normalized readiness gate source record_kind is invalid",
+        ));
+    }
+    if source.provider_kind != provider.provider_kind {
+        return Err(entry_decision_source_invalid(
+            "normalized readiness gate source provider_kind is invalid",
+        ));
+    }
+    validate_entry_readiness_evidence_collection_binding(
+        loaded,
+        strategy_instance_id,
+        &request,
+        provider,
+        &source.value_kind,
+    )?;
+    normalize_gate_evidence(GateEvidenceInput {
+        role: request.role.to_string(),
+        provider_id: request.provider_id.to_string(),
+        provider_kind: provider.provider_kind.clone(),
+        selected_market_key: request.selected_market.selected_market_key.clone(),
+        collector_observed_at_ms: request.collector_observed_at_ms,
+        source_observed_at_ms: source.source_observed_at_ms,
+        freshness_max_age_ms: provider.max_age_ms,
+        value_kind: source.value_kind,
+        normalized_value: source.normalized_value,
+        provider_provenance: source.provider_provenance,
+        artifact_refs: vec![source_artifact_ref(&request, source_sha256)?],
+        collection_status: GateEvidenceCollectionStatus::Complete,
+    })
+}
+
+fn validate_entry_readiness_evidence_collection_binding(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    request: &EntryReadinessGateEvidenceSourceFileRequest<'_>,
+    provider: &GateProviderEvidenceBinding,
+    value_kind: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if request.collector_observed_at_ms == ENTRY_DECISION_ZERO_TIMESTAMP_MS {
+        return Err(entry_decision_source_invalid(
+            "entry readiness gate source collector_observed_at_ms is invalid",
+        ));
+    }
+    ensure_gate_field(GATE_FIELD_ROLE, request.role)?;
+    ensure_gate_field(GATE_FIELD_PROVIDER_ID, request.provider_id)?;
+    ensure_gate_field(GATE_FIELD_ARTIFACT_REF_PATH, request.artifact_ref_path)?;
+    if provider.provider_kind != request.selected_market.resolution_kind {
+        return Err(entry_decision_source_invalid(
+            "entry readiness gate source provider_kind does not match selected market",
+        ));
+    }
+    if request.selected_market.value_kind != value_kind {
+        return Err(entry_decision_source_invalid(
+            "entry readiness gate source value_kind does not match selected market",
+        ));
+    }
+    let capability = gate_provider_capability_for_role_name(request.role)?;
+    if !provider
+        .capabilities
+        .iter()
+        .any(|provider_capability| provider_capability == capability)
+    {
+        return Err(entry_decision_source_invalid(
+            "entry readiness gate source provider capability does not satisfy role",
+        ));
+    }
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .ok_or_else(|| {
+            entry_decision_source_invalid(format!(
+                "strategy instance `{strategy_instance_id}` is not loaded"
+            ))
+        })?;
+    let subscription = target_gate_subscription(strategy, request.role)?;
+    if !subscription.required {
+        return Err(entry_decision_source_invalid(
+            "entry readiness gate source role subscription must be required",
+        ));
+    }
+    if !subscription_allows_value_kind(&subscription, value_kind) {
+        return Err(entry_decision_source_invalid(
+            "entry readiness gate source value_kind is not allowed by target subscription",
+        ));
+    }
+    if !subscription_allows_provider(
+        &subscription,
+        request.provider_id,
+        provider.provider_kind.as_str(),
+    ) {
+        return Err(entry_decision_source_invalid(
+            "entry readiness gate source provider is not allowed by target subscription",
+        ));
+    }
+    if !subscription_mapping_matches_selected_market(
+        &subscription,
+        request.selected_market,
+        request.provider_id,
+    ) {
+        return Err(entry_decision_source_invalid(
+            "entry readiness gate source provider mapping does not match selected market",
+        ));
+    }
+    Ok(())
+}
+
+fn gate_provider_capability_for_role_name(
+    role: &str,
+) -> Result<&'static str, BoltV3OperatorArtifactError> {
+    match role {
+        RESOLUTION_GATE_ROLE => Ok(GATE_PROVIDER_CAPABILITY_RESOLUTION_VALUE),
+        _ => Err(entry_decision_source_invalid(
+            "entry readiness gate source role is unsupported",
+        )),
+    }
+}
+
+fn source_artifact_ref(
+    request: &EntryReadinessGateEvidenceSourceFileRequest<'_>,
+    sha256: String,
+) -> Result<GateArtifactRef, BoltV3OperatorArtifactError> {
+    ensure_gate_field(GATE_FIELD_ARTIFACT_REF_PATH, request.artifact_ref_path)?;
+    Ok(GateArtifactRef {
+        path: request.artifact_ref_path.to_string(),
+        sha256,
     })
 }
 
@@ -3540,6 +3858,28 @@ fn validate_price_to_beat_source(
     strategy_instance_id: &str,
     source: &SourceBoundPriceToBeatSource,
 ) -> Result<(), BoltV3OperatorArtifactError> {
+    validate_source_bound_price_to_beat_shape(source)?;
+    let financial_envelope =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    if source.source != financial_envelope.price_to_beat_source() {
+        return Err(entry_decision_source_invalid(
+            "source-bound price_to_beat source does not match the approved strategy source",
+        ));
+    }
+    validate_price_to_beat_report_provenance(
+        loaded,
+        strategy_instance_id,
+        source,
+        source.market_selection_timestamp_ms,
+        source.decision_timestamp_ms,
+    )?;
+    Ok(())
+}
+
+fn validate_source_bound_price_to_beat_shape(
+    source: &SourceBoundPriceToBeatSource,
+) -> Result<(), BoltV3OperatorArtifactError> {
     if source.schema_version != SOURCE_BOUND_PRICE_TO_BEAT_SOURCE_SCHEMA_VERSION {
         return Err(entry_decision_source_invalid(
             "source-bound price_to_beat schema_version is invalid",
@@ -3562,21 +3902,6 @@ fn validate_price_to_beat_source(
             "source-bound price_to_beat decision timestamp precedes market selection",
         ));
     }
-    let financial_envelope =
-        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
-            .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
-    if source.source != financial_envelope.price_to_beat_source() {
-        return Err(entry_decision_source_invalid(
-            "source-bound price_to_beat source does not match the approved strategy source",
-        ));
-    }
-    validate_price_to_beat_report_provenance(
-        loaded,
-        strategy_instance_id,
-        source,
-        source.market_selection_timestamp_ms,
-        source.decision_timestamp_ms,
-    )?;
     Ok(())
 }
 

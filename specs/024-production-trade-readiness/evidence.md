@@ -981,3 +981,27 @@ This was local fake-fixture and local source verification only. It did not use G
   - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H17 is complete locally; T036H18 and later tasks remain open.
+
+## T036H18 Thin Provider Readiness Source Collection
+
+- Added `collect_entry_readiness_gate_evidence_from_source_file` under the operator-artifact surface. It reads a bounded source file, verifies its expected sha256, resolves the configured gate provider, and dispatches by configured `provider_kind`.
+- The Chainlink Data Streams path consumes source-bound price/report provenance, validates the report binding against TOML, and emits normalized gate evidence with the source artifact hash plus the Chainlink report hash.
+- The Hyperliquid HIP-4 and venue-native paths consume normalized metadata source files and emit normalized gate evidence without rebuilding upstream adapters.
+- Collection fails closed unless the selected market, target subscription mapping, allowed provider/value kind, provider capability, and provider id all agree before evidence is normalized.
+- RED proof before implementation:
+  - `cargo test --locked --test bolt_v3_operator_artifacts entry_readiness_evidence_collection -- --nocapture` failed with unresolved imports for `EntryReadinessGateEvidenceSourceFileRequest` and `collect_entry_readiness_gate_evidence_from_source_file`.
+- Local verification:
+  - `cargo test --locked --test bolt_v3_operator_artifacts entry_readiness_evidence_collection -- --nocapture`: 3 passed, 0 failed.
+  - `cargo test --locked --test bolt_v3_operator_artifacts entry_readiness -- --nocapture`: 7 passed, 0 failed.
+  - `cargo test --locked --test bolt_v3_operator_artifacts -- --nocapture`: 183 passed, 0 failed.
+  - `cargo clippy --locked --lib -- -D warnings`: passed.
+  - `cargo clippy --locked --bin bolt-v2 -- -D warnings`: passed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+  - `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+  - `python3 scripts/verify_bolt_v3_provider_leaks.py`: `OK: Bolt-v3 provider-leak verifier passed.`
+  - `python3 scripts/verify_bolt_v3_core_boundary.py`: `OK: Bolt-v3 core boundary audit passed.`
+  - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H18 is complete locally; T036H19 and later tasks remain open.

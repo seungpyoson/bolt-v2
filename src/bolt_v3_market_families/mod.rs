@@ -450,8 +450,17 @@ pub(crate) fn selected_market_requirement_from_parts(
             "selected-market instrument_ids must not be empty",
         ));
     }
+    let mut previous_instrument_id = None;
     for instrument_id in &parts.instrument_ids {
+        if let Some(previous) = previous_instrument_id
+            && previous >= instrument_id
+        {
+            return Err(selected_market_requirement_error(
+                "selected-market instrument_ids must be sorted and unique",
+            ));
+        }
         ensure_selected_market_text(SELECTED_MARKET_INSTRUMENT_IDS_FIELD, instrument_id, false)?;
+        previous_instrument_id = Some(instrument_id);
     }
     for (key, value) in &parts.metadata_provenance_fields {
         ensure_selected_market_text(SELECTED_MARKET_METADATA_PROVENANCE_KEY_FIELD, key, false)?;
@@ -540,7 +549,7 @@ fn ensure_selected_market_json_text(
     value: &serde_json::Value,
 ) -> Result<(), InstrumentFilterError> {
     match value {
-        serde_json::Value::String(text) => ensure_selected_market_text(field, text, true),
+        serde_json::Value::String(text) => ensure_selected_market_text(field, text, false),
         serde_json::Value::Array(items) => {
             for item in items {
                 ensure_selected_market_json_text(field, item)?;
@@ -1096,6 +1105,49 @@ mod tests {
         ))
         .expect("changed fixture requirement should build");
         assert_ne!(first.selected_market_key, changed.selected_market_key);
+    }
+
+    #[test]
+    fn selected_market_requirement_rejects_unsorted_or_duplicate_instrument_ids() {
+        let mut unsorted = fixture_requirement_parts("fixture-market", 123);
+        unsorted.instrument_ids = vec![
+            "fixture-up.FIXTURE".to_string(),
+            "fixture-down.FIXTURE".to_string(),
+        ];
+        let error = selected_market_requirement_from_parts(unsorted)
+            .expect_err("unsorted instrument ids should fail closed");
+        assert!(
+            error.to_string().contains("sorted and unique"),
+            "expected sorted ids rejection, got: {error}"
+        );
+
+        let mut duplicate = fixture_requirement_parts("fixture-market", 123);
+        duplicate.instrument_ids = vec![
+            "fixture-up.FIXTURE".to_string(),
+            "fixture-up.FIXTURE".to_string(),
+        ];
+        let error = selected_market_requirement_from_parts(duplicate)
+            .expect_err("duplicate instrument ids should fail closed");
+        assert!(
+            error.to_string().contains("sorted and unique"),
+            "expected unique ids rejection, got: {error}"
+        );
+    }
+
+    #[test]
+    fn selected_market_requirement_rejects_empty_metadata_provenance_strings() {
+        let mut parts = fixture_requirement_parts("fixture-market", 123);
+        parts.metadata_provenance_fields = selected_market_metadata_provenance_fields([
+            ("family_key", "fixture_family"),
+            ("source_kind", ""),
+        ]);
+
+        let error = selected_market_requirement_from_parts(parts)
+            .expect_err("empty provenance string should fail closed");
+        assert!(
+            error.to_string().contains("metadata_provenance"),
+            "expected provenance string rejection, got: {error}"
+        );
     }
 
     #[test]

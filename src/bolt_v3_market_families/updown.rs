@@ -1348,6 +1348,23 @@ mod tests {
     }
 
     #[test]
+    fn selected_market_requirement_dispatches_through_public_family_registry() {
+        let requirement = crate::bolt_v3_market_families::selected_market_requirement_from_target(
+            &target_with_resolution_mapping(),
+            &selected_market_fixture(),
+            700_000,
+        )
+        .expect("public family registry should dispatch updown requirement extraction");
+
+        assert_eq!(requirement.family_key, KEY);
+        assert_eq!(requirement.resolution_identity, "btc-usd-5m");
+        assert_eq!(
+            requirement.instrument_ids,
+            vec!["condition-1-DOWN.POLYMARKET", "condition-1-UP.POLYMARKET"]
+        );
+    }
+
+    #[test]
     fn selected_market_requirement_fails_without_config_resolved_mapping() {
         let mut target = target_with_resolution_mapping();
         resolution_mapping_array_mut(&mut target).clear();
@@ -1455,6 +1472,20 @@ mod tests {
                 toml::Value::String("btc|usd".to_string()),
             );
         assert_selected_market_requirement_error(target, "|");
+    }
+
+    #[test]
+    fn selected_market_requirement_fails_when_metadata_provenance_component_is_empty() {
+        let mut selected = selected_market_fixture();
+        selected.source_identity.condition_id.clear();
+
+        let error =
+            selected_market_requirement(&target_with_resolution_mapping(), &selected, 700_000)
+                .expect_err("empty source identity should fail closed");
+        assert!(
+            error.to_string().contains("metadata_provenance"),
+            "expected provenance rejection, got: {error}"
+        );
     }
 
     #[test]

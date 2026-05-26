@@ -2392,11 +2392,29 @@ fn bolt_v3_cli_exposes_entry_decision_evidence_source_command() {
 }
 
 #[test]
-fn bolt_v3_cli_exposes_collect_entry_decision_source_inputs() {
+fn bolt_v3_cli_rejects_legacy_generic_entry_decision_collectors() {
+    for command in [
+        "collect-entry-decision-source-inputs",
+        "collect-entry-decision-proof-sources",
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+            .args(["operator-artifacts", command, "--help"])
+            .output()
+            .unwrap_or_else(|error| panic!("bolt-v3 {command} help should run: {error}"));
+
+        assert!(
+            !output.status.success(),
+            "generic entry-decision collector must not expose legacy provider-shaped flags: {command}"
+        );
+    }
+}
+
+#[test]
+fn bolt_v3_cli_exposes_collect_chainlink_entry_decision_source_inputs() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
             "operator-artifacts",
-            "collect-entry-decision-source-inputs",
+            "collect-chainlink-entry-decision-source-inputs",
             "--help",
         ])
         .output()
@@ -2424,11 +2442,11 @@ fn bolt_v3_cli_exposes_collect_entry_decision_source_inputs() {
 }
 
 #[test]
-fn bolt_v3_cli_exposes_collect_entry_decision_proof_sources() {
+fn bolt_v3_cli_exposes_collect_chainlink_entry_decision_proof_sources() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
             "operator-artifacts",
-            "collect-entry-decision-proof-sources",
+            "collect-chainlink-entry-decision-proof-sources",
             "--help",
         ])
         .output()
@@ -2494,7 +2512,7 @@ max_notional_per_order = "10.00"
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
             "operator-artifacts",
-            "collect-entry-decision-proof-sources",
+            "collect-chainlink-entry-decision-proof-sources",
             "--config",
             config_path.to_str().expect("fixture path should be utf-8"),
             "--strategy-instance-id",

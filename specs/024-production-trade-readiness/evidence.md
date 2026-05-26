@@ -910,3 +910,26 @@ This was local fake-fixture and local source verification only. It did not use G
   - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
 
 This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H17 remains open for the remaining generic CLI command cleanup, registration/live-node runtime path, and complete readiness-session consumer rewiring.
+
+## T036H17 Partial CLI Provider-Specific Entry Collection
+
+- Generic `operator-artifacts collect-entry-decision-source-inputs` and `operator-artifacts collect-entry-decision-proof-sources` were removed from the public CLI surface so generic entry-decision commands no longer expose Chainlink-shaped `--price-report`, `--expected-price-report-sha256`, or `--price-to-beat-source` flags.
+- The existing Chainlink Data Streams proof/source-input materialization path now lives behind provider-specific CLI commands:
+  - `operator-artifacts collect-chainlink-entry-decision-proof-sources`
+  - `operator-artifacts collect-chainlink-entry-decision-source-inputs`
+- Existing source validation remains intact: the Chainlink proof-source materializer still binds the report to TOML-derived provider/feed/schema/decimal-scale config, bounded source files, selected decision windows, and fee proof inputs before writing local artifacts.
+- RED proof before implementation:
+  - `cargo test --locked --test bolt_v3_cli entry_decision -- --nocapture` failed because the old generic collectors still exposed legacy provider-shaped flags and the new Chainlink-specific collector commands were unrecognized.
+- Local verification:
+  - `cargo test --locked --test bolt_v3_cli entry_decision -- --nocapture`: 5 passed, 0 failed.
+  - `cargo test --locked --test bolt_v3_cli -- --nocapture`: 46 passed, 0 failed.
+  - `cargo clippy --locked --bin bolt-v2 -- -D warnings`: passed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+  - `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+  - `python3 scripts/verify_bolt_v3_provider_leaks.py`: `OK: Bolt-v3 provider-leak verifier passed.`
+  - `python3 scripts/verify_bolt_v3_core_boundary.py`: `OK: Bolt-v3 core boundary audit passed.`
+  - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+
+This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H17 remains open for the remaining registration/live-node runtime path and complete readiness-session consumer rewiring.

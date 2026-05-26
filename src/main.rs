@@ -349,7 +349,7 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         max_decision_evidence_bytes: u64,
     },
-    CollectEntryDecisionSourceInputs {
+    CollectChainlinkEntryDecisionSourceInputs {
         #[arg(short, long)]
         config: PathBuf,
         #[arg(long)]
@@ -375,7 +375,7 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         instrument_source_output: PathBuf,
     },
-    CollectEntryDecisionProofSources {
+    CollectChainlinkEntryDecisionProofSources {
         #[arg(short, long)]
         config: PathBuf,
         #[arg(long)]
@@ -936,7 +936,7 @@ fn run_operator_artifacts_command(
             )?;
             print_written_operator_artifact(&written)
         }
-        OperatorArtifactsCommand::CollectEntryDecisionSourceInputs {
+        OperatorArtifactsCommand::CollectChainlinkEntryDecisionSourceInputs {
             config,
             strategy_instance_id,
             price_to_beat_source,
@@ -981,7 +981,7 @@ fn run_operator_artifacts_command(
             );
             Ok(())
         }
-        OperatorArtifactsCommand::CollectEntryDecisionProofSources {
+        OperatorArtifactsCommand::CollectChainlinkEntryDecisionProofSources {
             config,
             strategy_instance_id,
             price_report,

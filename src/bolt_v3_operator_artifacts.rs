@@ -105,6 +105,20 @@ const CHAINLINK_REPORT_V3_BENCHMARK_PRICE_WORD_INDEX: usize = 6;
 const CHAINLINK_REPORT_MILLISECONDS_PER_SECOND: u64 = 1_000;
 const CHAINLINK_REPORT_SIGN_BIT_MASK: u8 = 0x80;
 const CHAINLINK_REPORT_PRICE_DECIMAL_RADIX: f64 = 10.0;
+const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";
+const CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD: &str = "report_endpoint_path";
+const CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD: &str = "http_timeout_secs";
+const CHAINLINK_DATA_STREAMS_SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";
+const CHAINLINK_DATA_STREAMS_REPORT_FEED_ID_QUERY_FIELD: &str = "feedID";
+const CHAINLINK_DATA_STREAMS_REPORT_TIMESTAMP_QUERY_FIELD: &str = "timestamp";
+const CHAINLINK_DATA_STREAMS_AUTHORIZATION_HEADER: &str = "Authorization";
+const CHAINLINK_DATA_STREAMS_AUTHORIZATION_TIMESTAMP_HEADER: &str = "X-Authorization-Timestamp";
+const CHAINLINK_DATA_STREAMS_AUTHORIZATION_SIGNATURE_HEADER: &str =
+    "X-Authorization-Signature-SHA256";
+const CHAINLINK_DATA_STREAMS_GET_METHOD: &str = "GET";
+const CHAINLINK_DATA_STREAMS_HMAC_BLOCK_BYTES: usize = 64;
+const CHAINLINK_DATA_STREAMS_HMAC_IPAD: u8 = 0x36;
+const CHAINLINK_DATA_STREAMS_HMAC_OPAD: u8 = 0x5c;
 const REFERENCE_QUOTE_SOURCE_SCHEMA_VERSION: u32 = 1;
 const REFERENCE_QUOTE_SOURCE_RECORD_KIND: &str = "bolt_v3.reference_quote_source.v1";
 const REALIZED_VOLATILITY_SOURCE_SCHEMA_VERSION: u32 = 1;
@@ -3483,7 +3497,39 @@ struct DecodedPriceToBeatReport {
     benchmark_price: f64,
 }
 
+struct ChainlinkDataStreamsReportCollectionConfig {
+    rest_base_url: String,
+    report_endpoint_path: String,
+    ssm_credential_parameter: String,
+    http_timeout_secs: u64,
+}
+
+struct ChainlinkDataStreamsCredentials {
+    api_key: String,
+    api_secret: String,
+}
+
+impl Drop for ChainlinkDataStreamsCredentials {
+    fn drop(&mut self) {
+        self.api_key.zeroize();
+        self.api_secret.zeroize();
+    }
+}
+
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChainlinkDataStreamsCredentialDocument {
+    api_key: String,
+    api_secret: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChainlinkDataStreamsReportApiResponse {
+    report: ChainlinkDataStreamsReportSource,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ChainlinkDataStreamsReportSource {
     #[serde(rename = "feedID")]
@@ -3494,6 +3540,14 @@ struct ChainlinkDataStreamsReportSource {
     observations_timestamp: u64,
     #[serde(rename = "fullReport")]
     full_report: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ChainlinkPriceReportSourceMaterializationRequest<'a> {
+    pub credential_document: &'a str,
+    pub report_timestamp_unix_seconds: u64,
+    pub max_report_response_bytes: u64,
+    pub output_path: &'a Path,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3521,6 +3575,101 @@ pub(crate) fn validate_entry_decision_source_proof_files(
     Ok(EntryDecisionSourceProofValidation {
         market_selection_timestamp_ms: proofs.price_source.market_selection_timestamp_ms,
     })
+}
+
+pub fn chainlink_data_streams_ssm_credential_parameter(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    Ok(
+        chainlink_data_streams_report_collection_config(loaded, strategy_instance_id)?
+            .ssm_credential_parameter,
+    )
+}
+
+pub async fn write_chainlink_price_report_source_from_configured_provider(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    request: ChainlinkPriceReportSourceMaterializationRequest<'_>,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    if request.report_timestamp_unix_seconds == ENTRY_DECISION_ZERO_TIMESTAMP_MS {
+        return Err(entry_decision_source_invalid(
+            "Chainlink report timestamp must be positive",
+        ));
+    }
+    if request.max_report_response_bytes == 0 {
+        return Err(entry_decision_source_invalid(
+            "Chainlink max report response bytes must be positive",
+        ));
+    }
+    let binding = price_to_beat_report_binding(loaded, strategy_instance_id)?;
+    let collection_config =
+        chainlink_data_streams_report_collection_config(loaded, strategy_instance_id)?;
+    let credentials = parse_chainlink_data_streams_credentials(request.credential_document)?;
+    let (url, path_with_query) = chainlink_data_streams_report_request_url(
+        &collection_config.rest_base_url,
+        &collection_config.report_endpoint_path,
+        &binding.feed_id,
+        request.report_timestamp_unix_seconds,
+    )?;
+    let authorization_timestamp_ms = current_unix_timestamp_ms()?;
+    let headers = chainlink_data_streams_auth_headers(
+        &credentials,
+        &path_with_query,
+        authorization_timestamp_ms,
+    );
+    let client = HttpClient::new(
+        HashMap::from([(USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string())]),
+        Vec::new(),
+        Vec::new(),
+        None,
+        Some(collection_config.http_timeout_secs),
+        None,
+    )
+    .map_err(|source| {
+        entry_decision_source_invalid(format!(
+            "Chainlink Data Streams HTTP client could not be built: {source}"
+        ))
+    })?;
+    let response = client
+        .get(
+            url,
+            None,
+            Some(headers),
+            Some(collection_config.http_timeout_secs),
+            None,
+        )
+        .await
+        .map_err(|source| {
+            entry_decision_source_invalid(format!(
+                "Chainlink Data Streams report fetch failed: {source}"
+            ))
+        })?;
+    if !response.status.is_success() {
+        return Err(entry_decision_source_invalid(format!(
+            "Chainlink Data Streams report fetch failed with HTTP status {}",
+            response.status.as_u16()
+        )));
+    }
+    if u64::try_from(response.body.len())
+        .ok()
+        .is_none_or(|len| len > request.max_report_response_bytes)
+    {
+        return Err(entry_decision_source_invalid(
+            "Chainlink Data Streams report response exceeds configured byte limit",
+        ));
+    }
+    let api_response: ChainlinkDataStreamsReportApiResponse =
+        serde_json::from_slice(&response.body).map_err(|_| {
+            entry_decision_source_invalid(
+                "Chainlink Data Streams report response is not a valid report JSON payload",
+            )
+        })?;
+    let report_bytes = serde_json::to_vec_pretty(&api_response.report).map_err(|_| {
+        entry_decision_source_invalid("Chainlink Data Streams report source could not serialize")
+    })?;
+    decode_price_to_beat_report(&report_bytes, &binding)?;
+    write_json_artifact_create_new(request.output_path, &api_response.report)
 }
 
 pub fn write_entry_decision_proof_source_files(
@@ -4055,6 +4204,53 @@ fn price_to_beat_report_binding(
     })
 }
 
+fn chainlink_data_streams_report_collection_config(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+) -> Result<ChainlinkDataStreamsReportCollectionConfig, BoltV3OperatorArtifactError> {
+    let binding = price_to_beat_report_binding(loaded, strategy_instance_id)?;
+    let provider_config = loaded
+        .root
+        .gate_providers
+        .as_ref()
+        .and_then(|providers| providers.get(&binding.provider_id))
+        .and_then(|provider| {
+            provider
+                .provider_config
+                .get(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
+        })
+        .and_then(toml::Value::as_table)
+        .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
+    let rest_base_url = string_provider_field(
+        provider_config,
+        CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD,
+        price_to_beat_report_provenance_config_invalid,
+    )?;
+    let report_endpoint_path = string_provider_field(
+        provider_config,
+        CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD,
+        price_to_beat_report_provenance_config_invalid,
+    )?;
+    if !report_endpoint_path.starts_with('/') || report_endpoint_path.contains('?') {
+        return Err(price_to_beat_report_provenance_config_invalid());
+    }
+    let ssm_credential_parameter = string_provider_field(
+        provider_config,
+        CHAINLINK_DATA_STREAMS_SSM_CREDENTIAL_PARAMETER_FIELD,
+        price_to_beat_report_provenance_config_invalid,
+    )?;
+    let http_timeout_secs = positive_u64_provider_field(
+        provider_config,
+        CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD,
+    )?;
+    Ok(ChainlinkDataStreamsReportCollectionConfig {
+        rest_base_url,
+        report_endpoint_path,
+        ssm_credential_parameter,
+        http_timeout_secs,
+    })
+}
+
 fn readiness_session_from_entry_decision_price_source(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
@@ -4161,6 +4357,144 @@ fn positive_u64_provider_field(
         .and_then(|value| u64::try_from(value).ok())
         .filter(|value| *value != ENTRY_DECISION_ZERO_TIMESTAMP_MS)
         .ok_or_else(price_to_beat_report_provenance_config_invalid)
+}
+
+fn string_provider_field(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &'static str,
+    error: fn() -> BoltV3OperatorArtifactError,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    table
+        .get(field)
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(error)
+}
+
+fn parse_chainlink_data_streams_credentials(
+    credential_document: &str,
+) -> Result<ChainlinkDataStreamsCredentials, BoltV3OperatorArtifactError> {
+    let document: ChainlinkDataStreamsCredentialDocument =
+        serde_json::from_str(credential_document).map_err(|_| {
+            entry_decision_source_invalid(
+                "Chainlink Data Streams credential document is not valid JSON",
+            )
+        })?;
+    Ok(ChainlinkDataStreamsCredentials {
+        api_key: chainlink_credential_field(document.api_key, "api_key")?,
+        api_secret: chainlink_credential_field(document.api_secret, "api_secret")?,
+    })
+}
+
+fn chainlink_credential_field(
+    value: String,
+    field: &'static str,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    if value.trim().is_empty() || value.trim() != value || value.chars().any(char::is_whitespace) {
+        return Err(entry_decision_source_invalid(format!(
+            "Chainlink Data Streams credential field `{field}` is invalid"
+        )));
+    }
+    Ok(value)
+}
+
+fn chainlink_data_streams_report_request_url(
+    rest_base_url: &str,
+    report_endpoint_path: &str,
+    feed_id: &str,
+    report_timestamp_unix_seconds: u64,
+) -> Result<(String, String), BoltV3OperatorArtifactError> {
+    let base_url = url::Url::parse(rest_base_url)
+        .map_err(|_| price_to_beat_report_provenance_config_invalid())?;
+    let mut url = base_url
+        .join(report_endpoint_path)
+        .map_err(|_| price_to_beat_report_provenance_config_invalid())?;
+    url.query_pairs_mut()
+        .append_pair(CHAINLINK_DATA_STREAMS_REPORT_FEED_ID_QUERY_FIELD, feed_id)
+        .append_pair(
+            CHAINLINK_DATA_STREAMS_REPORT_TIMESTAMP_QUERY_FIELD,
+            &report_timestamp_unix_seconds.to_string(),
+        );
+    let mut path_with_query = url.path().to_string();
+    if let Some(query) = url.query() {
+        path_with_query.push('?');
+        path_with_query.push_str(query);
+    }
+    Ok((url.to_string(), path_with_query))
+}
+
+fn chainlink_data_streams_auth_headers(
+    credentials: &ChainlinkDataStreamsCredentials,
+    path_with_query: &str,
+    authorization_timestamp_ms: u64,
+) -> HashMap<String, String> {
+    let body_hash = hex::encode(Sha256::digest(b""));
+    let mut signing_string = format!(
+        "{} {} {} {} {}",
+        CHAINLINK_DATA_STREAMS_GET_METHOD,
+        path_with_query,
+        body_hash,
+        credentials.api_key,
+        authorization_timestamp_ms
+    );
+    let signature =
+        chainlink_hmac_sha256_hex(credentials.api_secret.as_bytes(), signing_string.as_bytes());
+    signing_string.zeroize();
+    HashMap::from([
+        (
+            CHAINLINK_DATA_STREAMS_AUTHORIZATION_HEADER.to_string(),
+            credentials.api_key.clone(),
+        ),
+        (
+            CHAINLINK_DATA_STREAMS_AUTHORIZATION_TIMESTAMP_HEADER.to_string(),
+            authorization_timestamp_ms.to_string(),
+        ),
+        (
+            CHAINLINK_DATA_STREAMS_AUTHORIZATION_SIGNATURE_HEADER.to_string(),
+            signature,
+        ),
+    ])
+}
+
+fn chainlink_hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
+    let mut key_block = if key.len() > CHAINLINK_DATA_STREAMS_HMAC_BLOCK_BYTES {
+        Sha256::digest(key).to_vec()
+    } else {
+        key.to_vec()
+    };
+    key_block.resize(CHAINLINK_DATA_STREAMS_HMAC_BLOCK_BYTES, 0);
+    let mut inner_key = key_block.clone();
+    let mut outer_key = key_block.clone();
+    for byte in &mut inner_key {
+        *byte ^= CHAINLINK_DATA_STREAMS_HMAC_IPAD;
+    }
+    for byte in &mut outer_key {
+        *byte ^= CHAINLINK_DATA_STREAMS_HMAC_OPAD;
+    }
+    let mut inner = Sha256::new();
+    inner.update(&inner_key);
+    inner.update(message);
+    let inner_hash = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(&outer_key);
+    outer.update(inner_hash);
+    let signature = hex::encode(outer.finalize());
+    key_block.zeroize();
+    inner_key.zeroize();
+    outer_key.zeroize();
+    signature
+}
+
+fn current_unix_timestamp_ms() -> Result<u64, BoltV3OperatorArtifactError> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| entry_decision_source_invalid("system clock is before Unix epoch"))?
+        .as_millis();
+    u64::try_from(millis).map_err(|_| {
+        entry_decision_source_invalid("system clock timestamp exceeds supported range")
+    })
 }
 
 fn decode_price_to_beat_report(

@@ -131,6 +131,7 @@
 - [x] T036H17 [US5] Implement readiness-session consumption as separate verified consumer boundaries in `src/bolt_v3_decision_evidence.rs`, `src/bolt_v3_tiny_canary_evidence.rs`, `src/main.rs`, `src/bolt_v3_strategy_registration.rs`, `src/strategies/binary_oracle_edge_taker.rs`, and live/final packet gate paths so decision evidence, tiny canary, live canary, CLI commands, registration, runtime, replay, and final-packet verification consume normalized evidence instead of provider-specific strings.
 - [x] T036H18 [US5] Add concrete thin Bolt readiness collection functions under the provider/operator-artifact surface only after the neutral interfaces exist; use data-driven dispatch on configured provider kind, not a trait/plugin framework; cover Chainlink Data Streams and existing NT Hyperliquid HIP-4/venue-native metadata as initial bindings, do not rebuild upstream adapters, and prove each binding captures configured source evidence only when the selected market and target subscription require that provider kind.
 - [x] T036H19 [US5] Add final RED/GREEN rotation and no-global-provider tests in `tests/bolt_v3_operator_artifacts.rs` proving Chainlink, existing NT Hyperliquid HIP-4/venue-native, no-resolution, and test-double-backed non-Chainlink provider kinds such as Pyth, exchange-index, Deribit/index, and non-price outcome-oracle markets can rotate without code changes and no provider is globally required unless selected-market metadata and target subscription require it.
+- [x] T036I [US5] Add TDD-backed `operator-artifacts collect-chainlink-price-report-source` so T036 can materialize the Chainlink Data Streams report source from TOML-owned REST endpoint fields and SSM-owned credentials without reviving the retired runtime Chainlink client.
 - [ ] T036 [US5] Assemble blocker-free `static-artifacts-manifest.json`, `approval-envelope.json`, and `operator-evidence-packet.json` from real artifacts and record paths in `specs/024-production-trade-readiness/final-packet.md`.
 - [ ] T037 [US5] Update the approved root TOML operator-evidence block in `config/live.local.toml` with final artifact paths and hashes without printing secrets.
 - [ ] T038 [US5] Run `operator-artifacts verify-final` against the exact root TOML and final packet; record command, head, hashes, and result in `specs/024-production-trade-readiness/evidence.md`.
@@ -167,7 +168,7 @@
 - T036H1-T036H12B are the required RED-test slice before implementation; each must fail before T036H13-T036H18 are implemented.
 - T036H13-T036H18 require T036H1-T036H12B and should be implemented in boundary order: config-only schema validation, archetype role declaration and fixture migration, selected-market identity, provider/operator evidence and session join, consumer/session surfaces, thin provider readiness bindings over existing upstream adapters.
 - T036H19 requires T036H13-T036H18 and must complete before T036.
-- T036-T038 require T036H1-T036H19.
+- T036-T038 require T036H1-T036H19 and T036I.
 - T039-T042 require T035-T038.
 - T043 requires T042.
 - T044 requires T043.

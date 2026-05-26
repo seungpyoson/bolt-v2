@@ -2246,6 +2246,31 @@ fn spawn_data_api_positions_server_with_bodies(
     (format!("http://{address}"), rx)
 }
 
+fn spawn_chainlink_report_server_with_body(body: String) -> (String, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test Chainlink server should bind");
+    let address = listener
+        .local_addr()
+        .expect("test Chainlink server address");
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut stream, _) = listener
+            .accept()
+            .expect("test Chainlink request should connect");
+        let request = read_test_http_request(&mut stream);
+        tx.send(request)
+            .expect("test Chainlink request should report to caller");
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("test Chainlink response should write");
+    });
+    (format!("http://{address}"), rx)
+}
+
 fn spawn_fake_ssm_server(
     values: BTreeMap<&'static str, &'static str>,
 ) -> (String, mpsc::Receiver<Vec<String>>) {
@@ -2471,6 +2496,146 @@ fn bolt_v3_cli_exposes_collect_chainlink_entry_decision_proof_sources() {
     assert!(stdout.contains("--fee-bps-by-instrument-id"));
     assert!(stdout.contains("--price-to-beat-source-output"));
     assert!(stdout.contains("--fee-rate-source-output"));
+}
+
+#[test]
+fn bolt_v3_cli_exposes_collect_chainlink_price_report_source() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-chainlink-price-report-source",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 Chainlink price-report source help should run");
+
+    assert!(
+        output.status.success(),
+        "expected Chainlink price-report source help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--strategy-instance-id"));
+    assert!(stdout.contains("--report-timestamp-unix-seconds"));
+    assert!(stdout.contains("--max-report-response-bytes"));
+    assert!(stdout.contains("--output"));
+}
+
+#[test]
+fn bolt_v3_cli_collects_chainlink_price_report_source_without_printing_credentials_or_report() {
+    let temp = tempdir().expect("tempdir should create");
+    let feed_id = "0x01a3f5c7e9b2d4f6081a3c5e7f90b2d406284a6c8e0f123456789abcdeffedcb";
+    let report_body = serde_json::json!({
+        "report": serde_json::from_slice::<serde_json::Value>(&chainlink_v3_report_source_json(
+            feed_id,
+            600,
+            601,
+            3100.0,
+            8,
+        ))
+        .expect("report JSON should parse")
+    })
+    .to_string();
+    let (chainlink_url, chainlink_request_rx) =
+        spawn_chainlink_report_server_with_body(report_body);
+    let (ssm_url, ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([(
+        "/bolt/gate-providers/chainlink/mainnet",
+        r#"{"api_key":"chainlink-api-key","api_secret":"chainlink-api-secret"}"#,
+    )]));
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        root.replace(
+            "rest_base_url = \"https://api.dataengine.chain.link\"\n",
+            &format!("rest_base_url = \"{chainlink_url}\"\n"),
+        )
+        .replace("http_timeout_secs = 10\n", "http_timeout_secs = 2\n")
+    });
+    let output_path = temp.path().join("chainlink-price-report-source.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-chainlink-price-report-source",
+            "--config",
+            config_path.to_str().expect("fixture path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+            "--report-timestamp-unix-seconds",
+            "601",
+            "--max-report-response-bytes",
+            "100000",
+            "--output",
+            output_path.to_str().expect("output path should be utf-8"),
+        ])
+        .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
+        .env("AWS_ACCESS_KEY_ID", "fake-access-key")
+        .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
+        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_MAX_ATTEMPTS", "1")
+        .output()
+        .expect("Chainlink price-report source command should run");
+
+    assert!(
+        output.status.success(),
+        "expected Chainlink price-report source command to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for forbidden in [
+        "fullReport",
+        "chainlink-api-key",
+        "chainlink-api-secret",
+        "/bolt/gate-providers/chainlink/mainnet",
+    ] {
+        assert!(
+            !stdout.contains(forbidden) && !stderr.contains(forbidden),
+            "command output must not expose `{forbidden}`; stdout={stdout}; stderr={stderr}"
+        );
+    }
+    let summary: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout summary should parse");
+    assert_eq!(summary["sha256"], sha256_file_for_cli_test(&output_path));
+
+    let written: serde_json::Value = serde_json::from_slice(
+        &fs::read(&output_path).expect("Chainlink source artifact should read"),
+    )
+    .expect("Chainlink source artifact should parse");
+    assert_eq!(written["feedID"], feed_id);
+    assert!(
+        written["fullReport"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+
+    let ssm_paths = ssm_paths_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("SSM path should be reported");
+    assert_eq!(
+        ssm_paths,
+        vec!["/bolt/gate-providers/chainlink/mainnet".to_string()]
+    );
+    let chainlink_request = chainlink_request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("Chainlink request should be reported");
+    assert!(
+        chainlink_request
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains("/api/v1/reports?feedID=")
+                && line.contains(feed_id)
+                && line.contains("timestamp=601")),
+        "Chainlink request should target the timestamp report endpoint: {chainlink_request}"
+    );
+    let lower_request = chainlink_request.to_ascii_lowercase();
+    assert!(lower_request.contains("authorization: chainlink-api-key"));
+    assert!(lower_request.contains("x-authorization-timestamp: "));
+    assert!(lower_request.contains("x-authorization-signature-sha256: "));
+    assert!(
+        !chainlink_request.contains("chainlink-api-secret"),
+        "request must not send the API secret outside the HMAC signature"
+    );
 }
 
 #[test]

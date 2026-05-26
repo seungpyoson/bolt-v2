@@ -1031,6 +1031,30 @@ This was local fake-fixture and local source verification only. It did not use G
 
 This was local fake-fixture and local source verification only. It did not use GitHub Actions, read real AWS/SSM secrets, connect to a private venue account, run no-submit, submit/cancel orders, mutate `config/live.local.toml`, transfer funds, or execute a trade. T036H19 is complete locally; T036 and later tasks remain open.
 
+## T036I Chainlink Data Streams Report Source Materializer
+
+- Added `operator-artifacts collect-chainlink-price-report-source` as the narrow Chainlink adapter needed by T036. The command resolves the configured `[gate_providers.<id>.chainlink_data_streams].ssm_credential_parameter`, parses the SSM value as a JSON credential document, signs a Chainlink Data Streams REST report request, writes the bounded `feedID`/`validFromTimestamp`/`observationsTimestamp`/`fullReport` source JSON, and prints only the artifact path/hash.
+- Kept the retired runtime client path retired: no `src/clients/chainlink.rs` was reintroduced. The source materializer lives under `src/bolt_v3_operator_artifacts.rs` and uses TOML-owned `rest_base_url`, `report_endpoint_path`, `http_timeout_secs`, feed id, schema version, decimal scale, and SSM credential parameter fields.
+- Updated tracked examples/fixtures with the TOML-owned Chainlink REST fields and updated ignored `config/live.local.toml` with the same non-secret fields.
+- RED proof before implementation:
+  - `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_collect_chainlink_price_report_source -- --nocapture` failed with `unrecognized subcommand 'collect-chainlink-price-report-source'`.
+- Local verification:
+  - `cargo test --test bolt_v3_cli chainlink -- --nocapture`: 4 passed, 0 failed.
+  - `cargo test --test bolt_v3_cli bolt_v3_cli_collects_entry_decision_proof_sources_without_printing_inputs -- --nocapture`: 1 passed, 0 failed.
+  - `cargo test --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer -- --nocapture`: 4 passed, 0 failed.
+  - `cargo fmt --check`: passed.
+  - `cargo clippy --locked --lib -- -D warnings`: passed.
+  - `cargo clippy --locked --bin bolt-v2 -- -D warnings`: passed.
+  - `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal verifier self-tests passed.`
+  - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
+  - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+  - `cargo test --test bolt_v3_cli -- --nocapture`: 48 passed, 0 failed.
+  - `cargo test --test bolt_v3_operator_artifacts -- --nocapture`: 186 passed, 0 failed.
+- Current operational attempt: `cargo run --locked --bin bolt-v2 -- operator-artifacts collect-chainlink-price-report-source --config config/live.local.toml --strategy-instance-id bitcoin_updown_main --report-timestamp-unix-seconds 1779814423 --max-report-response-bytes 1000000 --output /private/tmp/bolt-v2-024-final-6de829eb/source/chainlink-price-report-source.json` failed closed before any Chainlink HTTP fetch because AWS SSM returned `ParameterNotFound` for the configured Chainlink credential parameter. `/private/tmp/bolt-v2-024-final-6de829eb/source/chainlink-price-report-source.json` was not written.
+- The older local probe `/private/tmp/bolt-v2-t036-chainlink-probe.json` is not usable as an approved report source: its JSON keys are only `["error"]`, its sha256 is `930617e7f3a506d4adbe4d8f0984200de140d533a31c083200e2f3578fcd7656`, and it contains no `feedID`/`fullReport` report source.
+
+This was TDD-backed local fake-server verification plus one real AWS SSM lookup that returned no parameter value. It did not read real SSM secret values, connect to Chainlink with credentials, connect to a private venue account, run no-submit, submit/cancel orders, transfer funds, or execute a trade. T036 remains open until the configured Chainlink SSM credential parameter exists or `config/live.local.toml` points at an operator-approved existing credential parameter, and the source-bound decision inputs can be materialized from a real report.
+
 ## T036 Current-Head Artifact Attempt And Remaining Blocker
 
 At head `6de829eb7d63c2c46fa77f2f3cf87c666708c367`, local artifact generation was retried without using GitHub Actions or CI.
@@ -1049,4 +1073,4 @@ At head `6de829eb7d63c2c46fa77f2f3cf87c666708c367`, local artifact generation wa
 - The venue-account source collector resolved the configured SSM-backed Polymarket credentials and queried account state only. It did not submit/cancel orders, transfer funds, run no-submit, mutate root TOML, or execute a trade.
 - Fail-closed confirmation: `operator-artifacts generate-static --config config/live.local.toml --output-dir /private/tmp/bolt-v2-024-final-6de829eb/static-attempt --strategy-instance-id bitcoin_updown_main` still refused final static readiness with `market-selection remains blocked: T046 missing source-bound price-to-beat strategy decision input; T046 remains blocked: missing source-bound price-to-beat strategy decision input; T121 remains blocked: T046 source-bound pre-run state evidence is unproven; panic gate and service policy`.
 
-T036 remains open. The next concrete input needed is the operator-approved Chainlink Data Streams report source JSON plus approved hash and the corresponding source-bound decision inputs: market-selection timestamp, decision timestamp, reference quote venue/price/observed timestamp, realized-volatility value/ready timestamp, and per-instrument fee bps. Without those inputs, `collect-chainlink-entry-decision-proof-sources` cannot write `source-bound-price.json`, `reference-quote.json`, `realized-volatility.json`, or `entry-decision-fees.json`; without `entry-decision-fees.json`, the funding/margin and CLOB collateral source collectors cannot honestly run, and T036/T037/T038 cannot be closed.
+T036 remains open. The Chainlink report source now has a source-owned materializer, but the current configured Chainlink SSM credential parameter is absent (`ParameterNotFound`), so the materializer cannot fetch a real report yet. The next concrete input needed is either that configured SSM parameter populated or `config/live.local.toml` pointed at an operator-approved existing Chainlink credential parameter, followed by the real Chainlink Data Streams report source JSON plus approved hash and the corresponding source-bound decision inputs: market-selection timestamp, decision timestamp, reference quote venue/price/observed timestamp, realized-volatility value/ready timestamp, and per-instrument fee bps. Without those inputs, `collect-chainlink-entry-decision-proof-sources` cannot write `source-bound-price.json`, `reference-quote.json`, `realized-volatility.json`, or `entry-decision-fees.json`; without `entry-decision-fees.json`, the funding/margin and CLOB collateral source collectors cannot honestly run, and T036/T037/T038 cannot be closed.

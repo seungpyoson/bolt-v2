@@ -167,6 +167,9 @@ feed_id = "0x01a3f5c7e9b2d4f6081a3c5e7f90b2d406284a6c8e0f123456789abcdeffedcb"
 report_schema_version = 3
 report_decimal_scale = 8
 endpoint_id = "mainnet-data-streams"
+rest_base_url = "https://api.dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
 ssm_credential_parameter = "/bolt/gate-providers/chainlink/mainnet"
 
 [clients.polymarket_main]

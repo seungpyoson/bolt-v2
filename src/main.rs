@@ -6,16 +6,19 @@ use bolt_v2::{
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
     bolt_v3_operator_artifacts::{
+        ChainlinkPriceReportSourceMaterializationRequest,
         EntryDecisionProofSourceMaterializationRequest, EntryDecisionRealizedVolatilityProofInput,
         EntryDecisionReferenceQuoteProofInput, EntryDecisionSourceCollectionRequest,
         FinalOperatorPacketVerificationScope, OperatorEvidenceJsonBuildInputs,
         PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
         assemble_operator_packet_from_static_manifest,
+        chainlink_data_streams_ssm_credential_parameter,
         collect_entry_decision_source_inputs_from_configured_provider,
         compute_operator_approval_envelope_sha256,
         update_live_canary_operator_evidence_toml_from_json_file,
         verify_final_operator_packet_with_scope, write_abort_plan_artifact_from_source_bundle_file,
         write_abort_plan_artifact_from_source_collectors, write_base_static_operator_artifacts,
+        write_chainlink_price_report_source_from_configured_provider,
         write_entry_decision_evidence_from_source_file, write_entry_decision_proof_source_files,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_operator_evidence_json_from_artifact_paths,
@@ -348,6 +351,18 @@ enum OperatorArtifactsCommand {
         max_instrument_source_bytes: u64,
         #[arg(long)]
         max_decision_evidence_bytes: u64,
+    },
+    CollectChainlinkPriceReportSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        report_timestamp_unix_seconds: u64,
+        #[arg(long)]
+        max_report_response_bytes: u64,
+        #[arg(long)]
+        output: PathBuf,
     },
     CollectChainlinkEntryDecisionSourceInputs {
         #[arg(short, long)]
@@ -933,6 +948,36 @@ fn run_operator_artifacts_command(
                 &instrument_source,
                 max_instrument_source_bytes,
                 max_decision_evidence_bytes,
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectChainlinkPriceReportSource {
+            config,
+            strategy_instance_id,
+            report_timestamp_unix_seconds,
+            max_report_response_bytes,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let credential_parameter =
+                chainlink_data_streams_ssm_credential_parameter(&loaded, &strategy_instance_id)?;
+            let ssm_resolver_session = SsmResolverSession::new()?;
+            let credential_document =
+                ssm_resolver_session.resolve(&loaded.root.aws.region, &credential_parameter)?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let written = runtime.block_on(
+                write_chainlink_price_report_source_from_configured_provider(
+                    &loaded,
+                    &strategy_instance_id,
+                    ChainlinkPriceReportSourceMaterializationRequest {
+                        credential_document: &credential_document,
+                        report_timestamp_unix_seconds,
+                        max_report_response_bytes,
+                        output_path: &output,
+                    },
+                ),
             )?;
             print_written_operator_artifact(&written)
         }

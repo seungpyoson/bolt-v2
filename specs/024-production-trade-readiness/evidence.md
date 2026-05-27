@@ -972,6 +972,7 @@ This was local fake-fixture and local source verification only. It did not use G
   - `cargo test --locked --test bolt_v3_operator_artifacts -- --nocapture`: 180 passed, 0 failed.
   - `cargo clippy --locked --lib -- -D warnings`: passed.
   - `cargo clippy --locked --bin bolt-v2 -- -D warnings`: passed.
+  - `just source-fence`: passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks, `cargo fetch --locked`, 11 `bolt_v3_controlled_connect` tests, and 5 `bolt_v3_production_entrypoint` tests.
   - `cargo fmt --check`: passed.
   - `git diff --check`: passed.
   - `python3 scripts/verify_bolt_v3_runtime_literals.py`: `OK: Bolt-v3 runtime literal audit passed.`
@@ -1163,4 +1164,35 @@ At current head, the entry-decision fee proof no longer comes from caller-suppli
   - Current-window Gamma still returns markets for current configured slugs, proving the failure is stale-market replay, not a hardcoded BTC path.
   - A fresh SSM-backed Chainlink report collection for timestamp `1779859200` wrote `/private/tmp/bolt-v2-t036-active-1779859200/chainlink-price-report.json` with sha256 `b601f1fea423c56f6d5eff0cc29904dea47e92adebc03794e33dab8b5a74faae`; decoded report value was `75502.71227` with `valid_from_timestamp_ms=1779859200000` and `observations_timestamp_ms=1779859200000`.
 
-T036 remains open. The fee proof is now source-owned from NT-selected instruments/books, and pUSD collateral/funding proof has an on-chain source path, but final readiness still needs an honest source-bound entry decision chain. Existing reference quote and realized-volatility proof inputs are still explicit proof inputs in the current command surface; they must not be treated as fully source-owned final readiness without a current source trail.
+T036 remains open. The fee proof is now source-owned from NT-selected instruments/books, and pUSD collateral/funding proof has an on-chain source path, but final readiness still needs an honest source-bound entry decision chain.
+
+## T036I5 NT-Owned Reference Quote And Realized-Volatility Proof
+
+At current head, the entry-decision reference quote and realized-volatility proof no longer come from caller-supplied CLI values.
+
+- Implementation: `collect-chainlink-entry-decision-proof-sources` now requires a bounded `--reference-quote-observations-source` file plus byte cap. It no longer accepts `--reference-quote-venue`, `--reference-quote-price`, `--reference-quote-observed-ts-ms`, `--realized-volatility-value`, or `--realized-volatility-ready-ts-ms`.
+- Source ownership: `BoltV3NoSubmitReferenceQuote` now carries NT `QuoteTick` bid/ask prices in addition to timestamps. The new `operator-artifacts collect-reference-quote-observations-source` command runs the existing NT no-submit reference quote probe and writes `bolt_v3.reference_quote_observations_source.v1`; its structured artifact summary is path/hash-only and it does not print raw quote observations or secrets.
+- Replay ownership: `write_entry_decision_proof_source_files` derives the proof midpoint and realized volatility from that quote-observation source through `binary_oracle_edge_taker::derive_entry_reference_proofs_from_quote_observations`, which parses the same strategy runtime config and uses the existing `RealizedVolEstimator` logic. This is not BTC-specific; it matches the configured strategy `reference_data` client/instrument and runtime volatility settings.
+- RED/GREEN verification:
+  - `cargo test --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer_derives_reference_quote_and_volatility_from_quote_observations -- --nocapture` first failed because `EntryDecisionProofSourceMaterializationRequest` still had only raw reference quote and realized-volatility fields; after the change it passed.
+  - `cargo test --test bolt_v3_operator_artifacts reference_quote_observations_source_materializer_writes_nt_quote_probe_prices -- --nocapture` first failed because NT quote evidence did not carry bid/ask prices and the source writer did not exist; after the change it passed.
+  - `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_collect_reference_quote_observations_source -- --nocapture` first failed because the collector command did not exist; after the change it passed.
+- Focused verification after implementation:
+  - `cargo test --test bolt_v3_operator_artifacts entry_decision -- --nocapture`: 20 passed.
+  - `cargo test --test bolt_v3_operator_artifacts reference_quote_observations_source_materializer -- --nocapture`: 1 passed.
+  - `cargo test --test bolt_v3_cli entry_decision -- --nocapture`: 5 passed.
+  - `cargo test --test bolt_v3_cli reference_quote_observations -- --nocapture`: 1 passed.
+  - `cargo test --test bolt_v3_no_submit_readiness reference -- --nocapture`: 12 passed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `python3 scripts/test_verify_bolt_v3_runtime_literals.py`: passed.
+  - `python3 scripts/verify_bolt_v3_runtime_literals.py`: passed.
+  - `cargo clippy --locked --lib -- -D warnings`: passed.
+  - `cargo clippy --locked --bin bolt-v2 -- -D warnings`: passed.
+- Live no-submit quote-observation attempt:
+  - Command: `cargo run --bin bolt-v2 -- operator-artifacts collect-reference-quote-observations-source --config config/live.local.toml --strategy-instance-id bitcoin_updown_main --output /private/tmp/bolt-v2-t036-reference-quote-observations-source.json`.
+  - Result: failed closed and wrote no output file.
+  - Hard evidence: ignored `config/strategies/binary_oracle.local.toml` currently sets `[reference_data.primary] data_client_id = "polymarket_main"` and `instrument_id = "condition-1-UP.POLYMARKET"`, while the no-submit run loaded current Polymarket instruments and then NT rejected the subscription with `Instrument condition-1-UP.POLYMARKET not found, and auto_load_missing_instruments is disabled`. The command then stopped cleanly and returned `NoSubmitReferenceProbeFailed { reason: "reference quote probe did not observe all configured reference_data quotes within [live_canary].reference_quote_wait_timeout_seconds=20" }`.
+  - Scope/safety: this was a no-submit reference-data probe only. It connected Polymarket data/execution clients for NT no-submit readiness, reconciled account state, subscribed/unsubscribed quotes, and stopped. It did not submit, cancel, trade, transfer funds, mutate CLOB allowance/cache state, mutate on-chain state, print secrets, or write a proof artifact.
+
+T036 remains open. The source-owned quote/volatility proof code path is now present, but the current ignored local strategy reference-data config is stale/static for a rotating Polymarket market, so the live NT quote-observation source cannot yet be collected from this config.

@@ -8380,6 +8380,22 @@ reason = "This is the record-kind discriminator for the reference-quote proof, n
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = "1"
+context = '''const REFERENCE_QUOTE_OBSERVATIONS_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "entry_decision_source_input_schema_version"
+reason = "This is the NT quote-observation source schema version; quote values are collected from source evidence."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.reference_quote_observations_source.v1"'''
+context = '''"bolt_v3.reference_quote_observations_source.v1";'''
+classification = "entry_decision_source_input_record_kind"
+reason = "This is the record-kind discriminator for source-owned NT quote observations, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "1"
 context = '''const REALIZED_VOLATILITY_SOURCE_SCHEMA_VERSION: u32 = 1;'''
 classification = "entry_decision_source_input_schema_version"
 reason = "This is the realized-volatility proof schema version; volatility values remain source-file owned."

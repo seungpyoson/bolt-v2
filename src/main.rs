@@ -3,12 +3,14 @@ use std::path::PathBuf;
 
 use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
-    bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
+    bolt_v3_live_node::{
+        build_bolt_v3_live_node, build_bolt_v3_no_submit_live_node,
+        collect_no_submit_reference_quote_evidence, run_bolt_v3_live_node,
+    },
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
     bolt_v3_operator_artifacts::{
         ChainlinkPriceReportSourceMaterializationRequest,
-        EntryDecisionProofSourceMaterializationRequest, EntryDecisionRealizedVolatilityProofInput,
-        EntryDecisionReferenceQuoteProofInput, EntryDecisionSourceCollectionRequest,
+        EntryDecisionProofSourceMaterializationRequest, EntryDecisionSourceCollectionRequest,
         FinalOperatorPacketVerificationScope, OperatorEvidenceJsonBuildInputs,
         PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
         assemble_operator_packet_from_static_manifest,
@@ -32,6 +34,7 @@ use bolt_v2::{
         write_pre_run_state_artifact_from_source_bundle_file,
         write_pre_run_state_artifact_from_source_collectors,
         write_pre_run_venue_account_state_source_artifact_from_configured_account_queries,
+        write_reference_quote_observations_source_from_no_submit_evidence,
         write_static_artifacts_manifest_from_operator_evidence, write_static_operator_artifacts,
         write_strategy_input_evidence_artifact_from_decision_evidence_file,
     },
@@ -381,6 +384,14 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    CollectReferenceQuoteObservationsSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
     CollectChainlinkEntryDecisionSourceInputs {
         #[arg(short, long)]
         config: PathBuf,
@@ -421,15 +432,9 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         decision_timestamp_ms: u64,
         #[arg(long)]
-        reference_quote_venue: String,
+        reference_quote_observations_source: PathBuf,
         #[arg(long)]
-        reference_quote_price: f64,
-        #[arg(long)]
-        reference_quote_observed_ts_ms: u64,
-        #[arg(long)]
-        realized_volatility_value: f64,
-        #[arg(long)]
-        realized_volatility_ready_ts_ms: u64,
+        max_reference_quote_observations_source_bytes: u64,
         #[arg(long)]
         price_to_beat_source_output: PathBuf,
         #[arg(long)]
@@ -1041,6 +1046,28 @@ fn run_operator_artifacts_command(
             )?;
             print_written_operator_artifact(&written)
         }
+        OperatorArtifactsCommand::CollectReferenceQuoteObservationsSource {
+            config,
+            strategy_instance_id,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let mut live_node = build_bolt_v3_no_submit_live_node(&loaded)?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let local = tokio::task::LocalSet::new();
+            let evidence = runtime.block_on(local.run_until(
+                collect_no_submit_reference_quote_evidence(&mut live_node, &loaded),
+            ))?;
+            let written = write_reference_quote_observations_source_from_no_submit_evidence(
+                &loaded,
+                &strategy_instance_id,
+                &evidence,
+                &output,
+            )?;
+            print_written_operator_artifact(&written)
+        }
         OperatorArtifactsCommand::CollectChainlinkEntryDecisionSourceInputs {
             config,
             strategy_instance_id,
@@ -1093,11 +1120,8 @@ fn run_operator_artifacts_command(
             expected_price_report_sha256,
             market_selection_timestamp_ms,
             decision_timestamp_ms,
-            reference_quote_venue,
-            reference_quote_price,
-            reference_quote_observed_ts_ms,
-            realized_volatility_value,
-            realized_volatility_ready_ts_ms,
+            reference_quote_observations_source,
+            max_reference_quote_observations_source_bytes,
             price_to_beat_source_output,
             reference_quote_source_output,
             realized_volatility_source_output,
@@ -1112,15 +1136,8 @@ fn run_operator_artifacts_command(
                     expected_price_report_sha256: &expected_price_report_sha256,
                     market_selection_timestamp_ms,
                     decision_timestamp_ms,
-                    reference_quote: EntryDecisionReferenceQuoteProofInput {
-                        venue: reference_quote_venue,
-                        price: reference_quote_price,
-                        observed_ts_ms: reference_quote_observed_ts_ms,
-                    },
-                    realized_volatility: EntryDecisionRealizedVolatilityProofInput {
-                        value: realized_volatility_value,
-                        ready_ts_ms: realized_volatility_ready_ts_ms,
-                    },
+                    reference_quote_observations_source_path: &reference_quote_observations_source,
+                    max_reference_quote_observations_source_bytes,
                     price_to_beat_source_output_path: &price_to_beat_source_output,
                     reference_quote_source_output_path: &reference_quote_source_output,
                     realized_volatility_source_output_path: &realized_volatility_source_output,

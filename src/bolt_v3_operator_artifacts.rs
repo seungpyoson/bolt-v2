@@ -38,6 +38,7 @@ use crate::{
         APPROVAL_ENVELOPE_RECORD_KIND, APPROVAL_ENVELOPE_SCHEMA_VERSION,
         Phase8OperatorApprovalEnvelopeFile, current_build_head_sha,
     },
+    bolt_v3_live_node::BoltV3NoSubmitReferenceQuoteEvidence,
     bolt_v3_market_families::{self, MarketSelectionTarget, SelectedMarketRequirement},
     bolt_v3_providers::{
         ClobV2AdapterSigningSourceMaterializationRequest,
@@ -65,7 +66,9 @@ use crate::{
         BinaryOracleEntryBookSideSource, BinaryOracleEntryBooksSource,
         BinaryOracleEntryDecisionEvidenceSource, BinaryOracleEntryFeeSource,
         BinaryOracleEntryRealizedVolatilitySource, BinaryOracleEntryReferenceQuoteSource,
-        ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND, ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION,
+        BinaryOracleReferenceQuoteObservationSource, ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND,
+        ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION,
+        derive_entry_reference_proofs_from_quote_observations,
         record_entry_decision_evidence_from_source,
     },
 };
@@ -129,6 +132,9 @@ const CHAINLINK_DATA_STREAMS_HMAC_IPAD: u8 = 0x36;
 const CHAINLINK_DATA_STREAMS_HMAC_OPAD: u8 = 0x5c;
 const REFERENCE_QUOTE_SOURCE_SCHEMA_VERSION: u32 = 1;
 const REFERENCE_QUOTE_SOURCE_RECORD_KIND: &str = "bolt_v3.reference_quote_source.v1";
+const REFERENCE_QUOTE_OBSERVATIONS_SOURCE_SCHEMA_VERSION: u32 = 1;
+const REFERENCE_QUOTE_OBSERVATIONS_SOURCE_RECORD_KIND: &str =
+    "bolt_v3.reference_quote_observations_source.v1";
 const REALIZED_VOLATILITY_SOURCE_SCHEMA_VERSION: u32 = 1;
 const REALIZED_VOLATILITY_SOURCE_RECORD_KIND: &str = "bolt_v3.realized_volatility_source.v1";
 pub(crate) const ENTRY_DECISION_FEE_RATE_SOURCE_SCHEMA_VERSION: u32 = 1;
@@ -3383,27 +3389,14 @@ pub struct EntryDecisionSourceInputsWritten {
 }
 
 #[derive(Debug, Clone)]
-pub struct EntryDecisionReferenceQuoteProofInput {
-    pub venue: String,
-    pub price: f64,
-    pub observed_ts_ms: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct EntryDecisionRealizedVolatilityProofInput {
-    pub value: f64,
-    pub ready_ts_ms: u64,
-}
-
-#[derive(Debug, Clone)]
 pub struct EntryDecisionProofSourceMaterializationRequest<'a> {
     pub price_report_path: &'a Path,
     pub max_price_report_bytes: u64,
     pub expected_price_report_sha256: &'a str,
     pub market_selection_timestamp_ms: u64,
     pub decision_timestamp_ms: u64,
-    pub reference_quote: EntryDecisionReferenceQuoteProofInput,
-    pub realized_volatility: EntryDecisionRealizedVolatilityProofInput,
+    pub reference_quote_observations_source_path: &'a Path,
+    pub max_reference_quote_observations_source_bytes: u64,
     pub price_to_beat_source_output_path: &'a Path,
     pub reference_quote_source_output_path: &'a Path,
     pub realized_volatility_source_output_path: &'a Path,
@@ -3475,6 +3468,26 @@ struct RealizedVolatilitySource {
     record_kind: String,
     value: f64,
     ready_ts_ms: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReferenceQuoteObservationsSource {
+    schema_version: u32,
+    record_kind: String,
+    observations: Vec<ReferenceQuoteObservationSource>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReferenceQuoteObservationSource {
+    data_client_id: String,
+    instrument_id: String,
+    bid_price: f64,
+    ask_price: f64,
+    ts_event_unix_nanos: u64,
+    ts_init_unix_nanos: u64,
+    captured_at_unix_nanos: u64,
 }
 
 struct EntryDecisionSourceProofs {
@@ -3604,6 +3617,54 @@ pub fn chainlink_data_streams_ssm_credential_parameters(
     })
 }
 
+pub fn write_reference_quote_observations_source_from_no_submit_evidence(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    evidence: &BoltV3NoSubmitReferenceQuoteEvidence,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .ok_or_else(
+            || BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+                message: format!("strategy instance `{strategy_instance_id}` is not loaded"),
+            },
+        )?;
+    if strategy.config.reference_data.is_empty() {
+        return Err(entry_decision_source_invalid(
+            "reference quote observations source requires configured reference_data",
+        ));
+    }
+    let observations = evidence
+        .quotes
+        .iter()
+        .filter(|quote| {
+            strategy.config.reference_data.values().any(|reference| {
+                quote.data_client_id == reference.data_client_id.to_string()
+                    && quote.instrument_id == reference.instrument_id.to_string()
+            })
+        })
+        .map(|quote| ReferenceQuoteObservationSource {
+            data_client_id: quote.data_client_id.clone(),
+            instrument_id: quote.instrument_id.clone(),
+            bid_price: quote.bid_price,
+            ask_price: quote.ask_price,
+            ts_event_unix_nanos: quote.ts_event_unix_nanos,
+            ts_init_unix_nanos: quote.ts_init_unix_nanos,
+            captured_at_unix_nanos: quote.captured_at_unix_nanos,
+        })
+        .collect::<Vec<_>>();
+    let source = ReferenceQuoteObservationsSource {
+        schema_version: REFERENCE_QUOTE_OBSERVATIONS_SOURCE_SCHEMA_VERSION,
+        record_kind: REFERENCE_QUOTE_OBSERVATIONS_SOURCE_RECORD_KIND.to_string(),
+        observations,
+    };
+    validate_reference_quote_observations_source(&source)?;
+    write_json_artifact_create_new(output_path, &source)
+}
+
 pub async fn write_chainlink_price_report_source_from_configured_provider(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
@@ -3718,6 +3779,48 @@ pub fn write_entry_decision_proof_source_files(
             .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
     let report_binding = price_to_beat_report_binding(loaded, strategy_instance_id)?;
     let decoded_report = decode_price_to_beat_report(&report_bytes, &report_binding)?;
+    let reference_quote_observations: ReferenceQuoteObservationsSource =
+        read_decision_source_json_file(
+            request.reference_quote_observations_source_path,
+            request.max_reference_quote_observations_source_bytes,
+        )?;
+    validate_reference_quote_observations_source(&reference_quote_observations)?;
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .ok_or_else(
+            || BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+                message: format!("strategy instance `{strategy_instance_id}` is not loaded"),
+            },
+        )?;
+    let raw = raw_taker_config(strategy, loaded).map_err(|source| {
+        BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+            message: source.to_string(),
+        }
+    })?;
+    let quote_observations = reference_quote_observations
+        .observations
+        .iter()
+        .map(|observation| BinaryOracleReferenceQuoteObservationSource {
+            data_client_id: observation.data_client_id.as_str(),
+            instrument_id: observation.instrument_id.as_str(),
+            bid_price: observation.bid_price,
+            ask_price: observation.ask_price,
+            ts_event_unix_nanos: observation.ts_event_unix_nanos,
+        })
+        .collect::<Vec<_>>();
+    let reference_proofs = derive_entry_reference_proofs_from_quote_observations(
+        &raw,
+        &quote_observations,
+        request.market_selection_timestamp_ms,
+        request.decision_timestamp_ms,
+    )
+    .map_err(|source| {
+        entry_decision_source_invalid(format!(
+            "reference quote observations source is invalid: {source}"
+        ))
+    })?;
     let price_to_beat_source = SourceBoundPriceToBeatSource {
         schema_version: SOURCE_BOUND_PRICE_TO_BEAT_SOURCE_SCHEMA_VERSION,
         record_kind: SOURCE_BOUND_PRICE_TO_BEAT_SOURCE_RECORD_KIND.to_string(),
@@ -3738,9 +3841,9 @@ pub fn write_entry_decision_proof_source_files(
     let reference_quote_source = ReferenceQuoteSource {
         schema_version: REFERENCE_QUOTE_SOURCE_SCHEMA_VERSION,
         record_kind: REFERENCE_QUOTE_SOURCE_RECORD_KIND.to_string(),
-        venue: request.reference_quote.venue,
-        price: request.reference_quote.price,
-        observed_ts_ms: request.reference_quote.observed_ts_ms,
+        venue: reference_proofs.reference_quote.venue,
+        price: reference_proofs.reference_quote.price,
+        observed_ts_ms: reference_proofs.reference_quote.observed_ts_ms,
     };
     validate_reference_quote_source(
         &reference_quote_source,
@@ -3751,8 +3854,8 @@ pub fn write_entry_decision_proof_source_files(
     let realized_volatility_source = RealizedVolatilitySource {
         schema_version: REALIZED_VOLATILITY_SOURCE_SCHEMA_VERSION,
         record_kind: REALIZED_VOLATILITY_SOURCE_RECORD_KIND.to_string(),
-        value: request.realized_volatility.value,
-        ready_ts_ms: request.realized_volatility.ready_ts_ms,
+        value: reference_proofs.realized_volatility.value,
+        ready_ts_ms: reference_proofs.realized_volatility.ready_ts_ms,
     };
     validate_realized_volatility_source(
         &realized_volatility_source,
@@ -4835,6 +4938,45 @@ fn validate_reference_quote_source(
         return Err(entry_decision_source_invalid(
             "reference quote source timestamp is invalid",
         ));
+    }
+    Ok(())
+}
+
+fn validate_reference_quote_observations_source(
+    source: &ReferenceQuoteObservationsSource,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if source.schema_version != REFERENCE_QUOTE_OBSERVATIONS_SOURCE_SCHEMA_VERSION {
+        return Err(entry_decision_source_invalid(
+            "reference quote observations source schema_version is invalid",
+        ));
+    }
+    if source.record_kind != REFERENCE_QUOTE_OBSERVATIONS_SOURCE_RECORD_KIND {
+        return Err(entry_decision_source_invalid(
+            "reference quote observations source record_kind is invalid",
+        ));
+    }
+    if source.observations.is_empty() {
+        return Err(entry_decision_source_invalid(
+            "reference quote observations source requires observations",
+        ));
+    }
+    for observation in &source.observations {
+        if observation.data_client_id.trim().is_empty()
+            || observation.data_client_id.trim() != observation.data_client_id
+            || observation.instrument_id.trim().is_empty()
+            || observation.instrument_id.trim() != observation.instrument_id
+            || !observation.bid_price.is_finite()
+            || observation.bid_price <= ENTRY_DECISION_ZERO_THRESHOLD
+            || !observation.ask_price.is_finite()
+            || observation.ask_price <= ENTRY_DECISION_ZERO_THRESHOLD
+            || observation.ts_event_unix_nanos == ENTRY_DECISION_ZERO_TIMESTAMP_MS
+            || observation.ts_init_unix_nanos == ENTRY_DECISION_ZERO_TIMESTAMP_MS
+            || observation.captured_at_unix_nanos == ENTRY_DECISION_ZERO_TIMESTAMP_MS
+        {
+            return Err(entry_decision_source_invalid(
+                "reference quote observations source observation is invalid",
+            ));
+        }
     }
     Ok(())
 }

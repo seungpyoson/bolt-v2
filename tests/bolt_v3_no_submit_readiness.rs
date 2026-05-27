@@ -509,6 +509,8 @@ fn no_submit_readiness_accepts_fresh_quote_evidence_for_all_configured_reference
         .map(|reference| BoltV3NoSubmitReferenceQuote {
             data_client_id: reference.data_client_id.to_string(),
             instrument_id: reference.instrument_id.to_string(),
+            bid_price: 99.0,
+            ask_price: 101.0,
             ts_event_unix_nanos: fresh_event_unix_nanos,
             ts_init_unix_nanos: observed_at_unix_nanos,
             captured_at_unix_nanos: observed_at_unix_nanos,
@@ -543,6 +545,8 @@ fn no_submit_readiness_rejects_stale_quote_evidence_for_configured_references() 
         .map(|reference| BoltV3NoSubmitReferenceQuote {
             data_client_id: reference.data_client_id.to_string(),
             instrument_id: reference.instrument_id.to_string(),
+            bid_price: 99.0,
+            ask_price: 101.0,
             ts_event_unix_nanos: stale_event_unix_nanos,
             ts_init_unix_nanos: observed_at_unix_nanos,
             captured_at_unix_nanos: observed_at_unix_nanos,

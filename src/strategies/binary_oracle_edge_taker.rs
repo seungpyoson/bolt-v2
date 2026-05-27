@@ -5348,6 +5348,96 @@ pub struct BinaryOracleEntryRealizedVolatilitySource {
     pub ready_ts_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct BinaryOracleReferenceQuoteObservationSource<'a> {
+    pub data_client_id: &'a str,
+    pub instrument_id: &'a str,
+    pub bid_price: f64,
+    pub ask_price: f64,
+    pub ts_event_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BinaryOracleEntryReferenceProofSources {
+    pub reference_quote: BinaryOracleEntryReferenceQuoteSource,
+    pub realized_volatility: BinaryOracleEntryRealizedVolatilitySource,
+}
+
+pub fn derive_entry_reference_proofs_from_quote_observations(
+    raw_config: &Value,
+    observations: &[BinaryOracleReferenceQuoteObservationSource<'_>],
+    market_selection_timestamp_ms: u64,
+    decision_timestamp_ms: u64,
+) -> Result<BinaryOracleEntryReferenceProofSources> {
+    if decision_timestamp_ms < market_selection_timestamp_ms {
+        anyhow::bail!("entry reference proof decision timestamp precedes market selection");
+    }
+
+    let config = BinaryOracleEdgeTakerBuilder::parse_config(raw_config)?;
+    let mut sorted_observations = observations.to_vec();
+    sorted_observations.sort_by_key(|observation| observation.ts_event_unix_nanos);
+    let mut estimator = RealizedVolEstimator::from_config(&config);
+    let mut latest_quote = None;
+    let mut latest_ready_volatility = None;
+
+    for observation in sorted_observations {
+        if observation.data_client_id != config.reference_venue
+            || observation.instrument_id != config.reference_instrument_id
+        {
+            continue;
+        }
+        if observation.ts_event_unix_nanos == 0
+            || !is_positive_finite(observation.bid_price)
+            || !is_positive_finite(observation.ask_price)
+        {
+            anyhow::bail!("reference quote observation source contains invalid quote data");
+        }
+        let observed_ts_ms = observation.ts_event_unix_nanos / NANOS_PER_MILLI_U64;
+        if observed_ts_ms > decision_timestamp_ms {
+            continue;
+        }
+        let midpoint = (observation.bid_price + observation.ask_price) / MIDPOINT_DIVISOR_F64;
+        if !is_positive_finite(midpoint) {
+            anyhow::bail!("reference quote observation source midpoint is invalid");
+        }
+        let quote = FastSpotObservation {
+            venue_name: config.reference_venue.clone(),
+            price: midpoint,
+            observed_ts_ms,
+        };
+        if let Some(value) = estimator.observe(&quote)
+            && observed_ts_ms >= market_selection_timestamp_ms
+        {
+            latest_ready_volatility = Some(BinaryOracleEntryRealizedVolatilitySource {
+                value,
+                ready_ts_ms: observed_ts_ms,
+            });
+        }
+        if observed_ts_ms >= market_selection_timestamp_ms {
+            latest_quote = Some(BinaryOracleEntryReferenceQuoteSource {
+                venue: config.reference_venue.clone(),
+                price: midpoint,
+                observed_ts_ms,
+            });
+        }
+    }
+
+    let reference_quote = latest_quote.ok_or_else(|| {
+        anyhow::anyhow!(
+            "reference quote observation source did not produce a configured reference quote"
+        )
+    })?;
+    let realized_volatility = latest_ready_volatility.ok_or_else(|| {
+        anyhow::anyhow!(
+            "reference quote observation source did not produce ready realized volatility"
+        )
+    })?;
+    Ok(BinaryOracleEntryReferenceProofSources {
+        reference_quote,
+        realized_volatility,
+    })
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryOracleEntryFeeSource {

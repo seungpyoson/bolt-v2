@@ -2851,9 +2851,11 @@ fn bolt_v3_cli_exposes_collect_chainlink_entry_decision_proof_sources() {
     assert!(stdout.contains("--expected-price-report-sha256"));
     assert!(stdout.contains("--market-selection-timestamp-ms"));
     assert!(stdout.contains("--decision-timestamp-ms"));
-    assert!(stdout.contains("--reference-quote-venue"));
-    assert!(stdout.contains("--reference-quote-price"));
-    assert!(stdout.contains("--realized-volatility-value"));
+    assert!(stdout.contains("--reference-quote-observations-source"));
+    assert!(stdout.contains("--max-reference-quote-observations-source-bytes"));
+    assert!(!stdout.contains("--reference-quote-venue"));
+    assert!(!stdout.contains("--reference-quote-price"));
+    assert!(!stdout.contains("--realized-volatility-value"));
     assert!(stdout.contains("--price-to-beat-source-output"));
     assert!(
         !stdout.contains("--fee-bps-by-instrument-id"),
@@ -2887,6 +2889,29 @@ fn bolt_v3_cli_exposes_collect_chainlink_price_report_source() {
     assert!(stdout.contains("--strategy-instance-id"));
     assert!(stdout.contains("--report-timestamp-unix-seconds"));
     assert!(stdout.contains("--max-report-response-bytes"));
+    assert!(stdout.contains("--output"));
+}
+
+#[test]
+fn bolt_v3_cli_exposes_collect_reference_quote_observations_source() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-reference-quote-observations-source",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 reference quote observations source help should run");
+
+    assert!(
+        output.status.success(),
+        "expected reference quote observations source help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--strategy-instance-id"));
     assert!(stdout.contains("--output"));
 }
 
@@ -3041,6 +3066,8 @@ max_notional_per_order = "10.00"
     );
     fs::write(&report_path, &report_source).expect("report payload should write");
     let report_sha256 = sha256_file_for_cli_test(&report_path);
+    let reference_quote_observations_source =
+        write_reference_quote_observations_source_for_cli_test(temp.path());
     let price_output = temp.path().join("source-bound-price.json");
     let quote_output = temp.path().join("reference-quote.json");
     let vol_output = temp.path().join("realized-volatility.json");
@@ -3061,17 +3088,13 @@ max_notional_per_order = "10.00"
             "--market-selection-timestamp-ms",
             "600000",
             "--decision-timestamp-ms",
-            "601200",
-            "--reference-quote-venue",
-            "binance_reference",
-            "--reference-quote-price",
-            "3300.0",
-            "--reference-quote-observed-ts-ms",
-            "601200",
-            "--realized-volatility-value",
-            "1.5",
-            "--realized-volatility-ready-ts-ms",
-            "601200",
+            "605000",
+            "--reference-quote-observations-source",
+            reference_quote_observations_source
+                .to_str()
+                .expect("quote observations path should be utf-8"),
+            "--max-reference-quote-observations-source-bytes",
+            "100000",
             "--price-to-beat-source-output",
             price_output.to_str().expect("price output should be utf-8"),
             "--reference-quote-source-output",
@@ -3493,6 +3516,34 @@ fn sha256_file_for_cli_test(path: &Path) -> String {
     hex::encode(Sha256::digest(
         fs::read(path).expect("test artifact should read"),
     ))
+}
+
+fn write_reference_quote_observations_source_for_cli_test(dir: &Path) -> std::path::PathBuf {
+    let observations = [3300.0, 3301.0, 3302.0, 3304.0, 3308.0, 3313.0]
+        .iter()
+        .enumerate()
+        .map(|(index, price)| {
+            let ts_ms = 600_000u64 + u64::try_from(index).expect("index should fit u64") * 1_000;
+            serde_json::json!({
+                "data_client_id": "binance_reference",
+                "instrument_id": "BTCUSDT.BINANCE",
+                "bid_price": price - 1.0,
+                "ask_price": price + 1.0,
+                "ts_event_unix_nanos": ts_ms * 1_000_000,
+                "ts_init_unix_nanos": ts_ms * 1_000_000,
+                "captured_at_unix_nanos": ts_ms * 1_000_000
+            })
+        })
+        .collect::<Vec<_>>();
+    write_cli_json_artifact(
+        dir,
+        "reference-quote-observations-source.json",
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.reference_quote_observations_source.v1",
+            "observations": observations
+        }),
+    )
 }
 
 fn chainlink_v3_report_source_json(

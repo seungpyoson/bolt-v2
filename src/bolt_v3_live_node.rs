@@ -108,16 +108,18 @@ pub struct BoltV3NoSubmitReferenceCacheEvidence {
     cached_instrument_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BoltV3NoSubmitReferenceQuote {
     pub data_client_id: String,
     pub instrument_id: String,
+    pub bid_price: f64,
+    pub ask_price: f64,
     pub ts_event_unix_nanos: u64,
     pub ts_init_unix_nanos: u64,
     pub captured_at_unix_nanos: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BoltV3NoSubmitReferenceQuoteEvidence {
     pub quotes: Vec<BoltV3NoSubmitReferenceQuote>,
 }
@@ -199,6 +201,8 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
                 quotes.push(BoltV3NoSubmitReferenceQuote {
                     data_client_id: required.data_client_id.to_string(),
                     instrument_id: required.instrument_id.to_string(),
+                    bid_price: quote.bid_price.as_f64(),
+                    ask_price: quote.ask_price.as_f64(),
                     ts_event_unix_nanos: quote.ts_event.as_u64(),
                     ts_init_unix_nanos: quote.ts_init.as_u64(),
                     captured_at_unix_nanos,
@@ -868,6 +872,21 @@ where
         Err("controlled connect failed".to_string())
     };
     (connect, reference, stop)
+}
+
+pub async fn collect_no_submit_reference_quote_evidence(
+    runtime: &mut BoltV3LiveNodeRuntime,
+    loaded: &LoadedBoltV3Config,
+) -> Result<BoltV3NoSubmitReferenceQuoteEvidence, BoltV3LiveNodeError> {
+    let (run, reference_quote_evidence, reference_quote_probe, stop) =
+        run_bolt_v3_no_submit_readiness_until_observed(&mut runtime.node, loaded).await;
+    run?;
+    no_submit_required_execution_accounts_registered(runtime, loaded)?;
+    if let Err(reason) = reference_quote_probe {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeFailed { reason });
+    }
+    stop?;
+    Ok(reference_quote_evidence)
 }
 
 fn no_submit_controlled_connect_result(

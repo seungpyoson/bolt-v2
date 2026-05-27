@@ -151,8 +151,8 @@
 
 - [x] T039 [US5] Run focused readiness tests: `tests/bolt_v3_operator_artifacts.rs`, `tests/bolt_v3_tiny_canary_preconditions.rs`, `tests/bolt_v3_tiny_canary_operator.rs`, `tests/bolt_v3_live_canary_gate.rs`, and `tests/bolt_v3_cli.rs`.
 - [x] T040 [US5] Run full local verification: `cargo fmt --check`, `git diff --check`, runtime-literal verification, source/slop/hardcode/secret scans, and readiness test suites; record output summary in `specs/024-production-trade-readiness/evidence.md`.
-- [ ] T041 [US5] Push PR #480 and record exact-head GitHub CI evidence in `specs/024-production-trade-readiness/evidence.md`.
-- [ ] T042 [US5] Send exact-head final review to Claude, Gemini, DeepSeek, GLM, and Grok; record their approvals plus the operator's explicit Kimi waiver in `specs/024-production-trade-readiness/external-final-review.md`.
+- [x] T041 [US5] Push PR #480 and record exact-head GitHub CI evidence in `specs/024-production-trade-readiness/evidence.md`.
+- [x] T042 [US5] Send exact-head final review to Claude, Gemini, DeepSeek, GLM, and Grok; record their approvals plus the operator's explicit Kimi waiver in `specs/024-production-trade-readiness/external-final-review.md`.
 
 ## Phase 8: Approved Operations
 
@@ -184,4 +184,4 @@
 
 ## MVP
 
-The current next slice is T041/T042 exact-head push, CI, and final review. T047 local cleanup is complete locally; no hardcoded runtime values remains a cross-cutting invariant for every later slice.
+The current next slice is T044 tiny-capital canary after renewed explicit operator approval, then T045 post-run hygiene and T046 issue/PR/readiness-ledger updates. T047 local cleanup is complete; no hardcoded runtime values remains a cross-cutting invariant for every later slice. Final GitHub CI should be checked once at the end after remaining implementation/evidence commits, not after every docs-only update.

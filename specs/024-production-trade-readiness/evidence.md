@@ -1350,4 +1350,43 @@ The first pre-T042 source-shard review at head `2947546c2b5ef8c88e67ec4e3b2dcbfb
   - `git diff --check`: passed.
   - `just source-fence`: passed.
 
-Scope and side effects: this was local source/test/audit work only. No no-submit, tiny-capital canary, submit, cancel, transfer, on-chain mutation, secret display, GitHub CI run, or trade operation was performed. T041/T042 remain open for the next exact pushed head; T044 remains gated on renewed explicit operator approval.
+Scope and side effects: this was local source/test/audit work only. No no-submit, tiny-capital canary, submit, cancel, transfer, on-chain mutation, secret display, GitHub CI run, or trade operation was performed. This batch remained pre-T042 at the time; the later T041/T042 sections below record the exact pushed head CI and final external-review evidence. T044 remains gated on renewed explicit operator approval.
+
+## T041 Exact-Head GitHub CI
+
+T041 is complete for PR #480 reviewed code head `8b95eca9c2f410ff462954cff90c4734d01593cb`.
+
+- Local branch state before evidence update:
+  - `git rev-parse HEAD`: `8b95eca9c2f410ff462954cff90c4734d01593cb`
+  - `git status --short --branch`: `## goal/024-production-trade-readiness...origin/goal/024-production-trade-readiness`
+- `gh pr view 480 --json number,headRefName,headRefOid,baseRefName,baseRefOid,statusCheckRollup,url`:
+  - PR: https://github.com/seungpyoson/bolt-v2/pull/480
+  - Base: `main` at `53fd50d2ccd05a81e9ca65575594514315511fdc`
+  - Head branch: `goal/024-production-trade-readiness`
+  - Head OID: `8b95eca9c2f410ff462954cff90c4734d01593cb`
+  - Successful checks: `detector`, `Analyze (actions)`, `actionlint`, `Analyze (rust)`, `fmt-check`, `deny`, `clippy`, `check-aarch64`, `source-fence`, `nextest archive`, `build`, `nextest shard 1 of 4`, `nextest shard 2 of 4`, `nextest shard 3 of 4`, `nextest shard 4 of 4`, `test`, `gate`, and `CodeQL`.
+  - Skipped checks: `same-sha-main-evidence` and `deploy`.
+
+This evidence update is a docs-only audit-log change after the reviewed code head. Per the existing self-referential review-loop convention, the review manifests and `gh pr view` output are the authoritative proof for the reviewed head; CI will be checked again once the remaining live canary, hygiene, and ledger work is complete rather than after every docs-only update.
+
+## T042 Exact-Head Final External Review
+
+T042 is complete for PR #480 reviewed code head `8b95eca9c2f410ff462954cff90c4734d01593cb`.
+
+- Review bundle: `/private/tmp/bolt-v2-t042-review-8b95eca9`
+- Packet hashes:
+  - `01-operator-artifacts.diff`: `5259c8333995a063df2ad2e4069c40e871bff0a063ae2810499ea1fff659d47c`
+  - `02-operator-artifacts-tests.diff`: `5fe0c9fc3d2043fa85af3c85980fde51f02cd30494438ed94bb1f91974a8184e`
+  - `03-runtime-gates.diff`: `2db7dcb94f28a150a314e4eca2f194f7c42006a5dcdc0b1c73b544cc7a65ee30`
+  - `04-providers-market-config.diff`: `7fd180358aabe2eca9d3b76896ae1ce78a6befb9ac5a9eb4cd492cd644f480f4`
+  - `05-specs-docs-config.diff`: `d6a58042fb1488ddc95c0252ee2d08325106971c141ba40556d2cfba40efac92`
+- Counted approval coverage:
+  - Claude: 6 approved shards.
+  - Gemini: 6 approved shards.
+  - DeepSeek: 6 approved shards.
+  - GLM: 6 approved shards.
+  - Grok: 15 approved bounded chunks.
+  - Kimi: explicit operator waiver; not counted as approval.
+- Failed/superseded review attempts are recorded in `specs/024-production-trade-readiness/external-final-review.md` and are not counted as approvals.
+
+Scope and side effects: final review transmitted selected source packets to the configured reviewer routes only. No no-submit, tiny-capital canary, submit, cancel, transfer, on-chain mutation, secret display, GitHub CI rerun, or trade operation was performed while closing T042.

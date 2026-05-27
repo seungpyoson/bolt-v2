@@ -1773,6 +1773,106 @@ fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_confirms_transient_
 }
 
 #[test]
+fn bolt_v3_cli_syncs_clob_v2_balance_allowance_cache_from_configured_account() {
+    let (clob_url, clob_request_rx) = spawn_one_shot_clob_balance_allowance_update_server();
+    let (ssm_url, ssm_paths_rx) = spawn_fake_ssm_server(BTreeMap::from([
+        (
+            "/bolt/polymarket_main/private_key",
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+        ),
+        ("/bolt/polymarket_main/api_key", "poly-api-key"),
+        ("/bolt/polymarket_main/api_secret", "YWJj"),
+        ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/binance_reference/api_key", "binance-api-key"),
+        (
+            "/bolt/binance_reference/api_secret",
+            "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
+        ),
+    ]));
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        format!(
+            "{}\n{}",
+            root.replace(
+                "base_url_http = \"https://clob.polymarket.com\"",
+                &format!("base_url_http = \"{clob_url}\""),
+            ),
+            live_canary_toml_without_operator_evidence()
+        )
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "sync-clob-v2-balance-allowance-cache",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+            "--acknowledge-clob-cache-mutation",
+        ])
+        .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
+        .env("AWS_ACCESS_KEY_ID", "fake-access-key")
+        .env("AWS_SECRET_ACCESS_KEY", "fake-secret-key")
+        .env("AWS_REGION", "eu-west-1")
+        .env("AWS_MAX_ATTEMPTS", "1")
+        .output()
+        .expect("bolt-v3 CLOB V2 cache sync should run");
+
+    assert!(
+        output.status.success(),
+        "expected CLOB V2 cache sync to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for forbidden in [
+        "/bolt/polymarket_main/private_key",
+        "poly-api-key",
+        "poly-passphrase",
+        "0x1111111111111111111111111111111111111111",
+    ] {
+        assert!(
+            !stdout.contains(forbidden),
+            "stdout leaked {forbidden}: {stdout}"
+        );
+    }
+    assert!(
+        stdout.contains("\"clob_v2_balance_allowance_cache_sync_completed\": true"),
+        "{stdout}"
+    );
+
+    let request = clob_request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("fake CLOB server should capture balance-allowance update request");
+    let request_lower = request.to_ascii_lowercase();
+    assert!(
+        request.starts_with("GET /balance-allowance/update?"),
+        "{request}"
+    );
+    assert!(request.contains("asset_type=COLLATERAL"), "{request}");
+    assert!(request.contains("signature_type=1"), "{request}");
+    for header in [
+        "poly_address:",
+        "poly_signature:",
+        "poly_timestamp:",
+        "poly_api_key:",
+        "poly_passphrase:",
+    ] {
+        assert!(
+            request_lower.contains(header),
+            "missing auth header {header}: {request}"
+        );
+    }
+    let paths = ssm_paths_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("fake SSM server should report requested paths");
+    assert!(paths.contains(&"/bolt/polymarket_main/private_key".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket_main/api_key".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket_main/api_secret".to_string()));
+    assert!(paths.contains(&"/bolt/polymarket_main/passphrase".to_string()));
+}
+
+#[test]
 fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_keeps_persistent_low_balance_blocking()
 {
     let temp = tempdir().expect("tempdir should create");
@@ -2110,6 +2210,10 @@ fn spawn_one_shot_clob_balance_allowance_server(
     allowance: &'static str,
 ) -> (String, mpsc::Receiver<String>) {
     spawn_clob_balance_allowance_server_with_bodies([balance_allowance_body(balance, allowance)])
+}
+
+fn spawn_one_shot_clob_balance_allowance_update_server() -> (String, mpsc::Receiver<String>) {
+    spawn_clob_balance_allowance_server_with_bodies(["{}".to_string()])
 }
 
 fn spawn_clob_balance_allowance_server_with_bodies(

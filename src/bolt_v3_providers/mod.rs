@@ -209,6 +209,18 @@ pub struct ClobV2CollateralAccountingSourceMaterialization {
     pub(crate) confirmation_policy: ExternalSnapshotConfirmationPolicy,
 }
 
+pub struct ClobV2BalanceAllowanceCacheSyncRequest<'a> {
+    pub loaded: &'a LoadedBoltV3Config,
+    pub strategy_instance_id: &'a str,
+    pub resolved: &'a ResolvedBoltV3Secrets,
+}
+
+pub struct ClobV2BalanceAllowanceCacheSync {
+    pub execution_client_id: String,
+    pub request_path: &'static str,
+    pub base_url_http_sha256: String,
+}
+
 pub struct VenueAccountStateSourceMaterializationRequest<'a> {
     pub schema_version: u32,
     pub account_state_snapshot_record_kind: &'static str,
@@ -422,6 +434,12 @@ pub(crate) async fn materialize_clob_v2_collateral_accounting_source_from_config
         request,
     )
     .await
+}
+
+pub async fn sync_clob_v2_balance_allowance_cache_from_configured_account(
+    request: ClobV2BalanceAllowanceCacheSyncRequest<'_>,
+) -> Result<ClobV2BalanceAllowanceCacheSync, BoltV3OperatorArtifactError> {
+    polymarket::sync_clob_v2_balance_allowance_cache_from_configured_account(request).await
 }
 
 pub async fn materialize_venue_account_state_source_from_configured_account_queries(

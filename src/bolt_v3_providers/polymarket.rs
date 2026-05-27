@@ -25,6 +25,7 @@
 //! binding calls `parse_decimal_string`.
 
 mod adapter_signing_source;
+mod balance_allowance_cache;
 mod collateral_accounting_source;
 mod entry_decision_source_inputs;
 mod fee_behavior_source;
@@ -32,6 +33,7 @@ mod fees;
 mod venue_account_state_source;
 
 pub use adapter_signing_source::materialize_clob_v2_adapter_signing_source_from_nt_signing_source;
+pub use balance_allowance_cache::sync_clob_v2_balance_allowance_cache_from_configured_account;
 pub use collateral_accounting_source::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance;
 pub(crate) use collateral_accounting_source::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once;
 pub use entry_decision_source_inputs::{

@@ -9727,3 +9727,91 @@ literal = "0"
 context = '''key_block.resize(CHAINLINK_DATA_STREAMS_HMAC_BLOCK_BYTES, 0);'''
 classification = "chainlink_data_streams_hmac_protocol"
 reason = "This is the standard zero padding byte for HMAC keys shorter than the SHA-256 block size."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/balance_allowance_cache.rs"
+kind = "string"
+literal = '''"/balance-allowance/update"'''
+context = '''const CLOB_V2_BALANCE_ALLOWANCE_UPDATE_PATH: &str = "/balance-allowance/update";'''
+classification = "polymarket_clob_api_path"
+reason = "This is the fixed Polymarket CLOB REST API path for authenticated balance/allowance cache updates, not an operator-configured venue value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/balance_allowance_cache.rs"
+kind = "string"
+literal = '''"POLY_ADDRESS"'''
+context = '''("POLY_ADDRESS".to_string(), address.to_string()),'''
+classification = "polymarket_l2_auth_header_name"
+reason = "This is the fixed Polymarket L2 authentication header name; the header value is derived from SSM-resolved credentials and configured funder state."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/balance_allowance_cache.rs"
+kind = "string"
+literal = '''"POLY_SIGNATURE"'''
+context = '''("POLY_SIGNATURE".to_string(), signature),'''
+classification = "polymarket_l2_auth_header_name"
+reason = "This is the fixed Polymarket L2 authentication header name; the signature value is generated from SSM-resolved credentials for the approved cache-sync request."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/balance_allowance_cache.rs"
+kind = "string"
+literal = '''"POLY_TIMESTAMP"'''
+context = '''("POLY_TIMESTAMP".to_string(), timestamp),'''
+classification = "polymarket_l2_auth_header_name"
+reason = "This is the fixed Polymarket L2 authentication header name; the timestamp value is generated at request time."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/balance_allowance_cache.rs"
+kind = "string"
+literal = '''"POLY_API_KEY"'''
+context = '''("POLY_API_KEY".to_string(), credential.api_key().to_string()),'''
+classification = "polymarket_l2_auth_header_name"
+reason = "This is the fixed Polymarket L2 authentication header name; the API key value is resolved from SSM and is not logged."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/balance_allowance_cache.rs"
+kind = "string"
+literal = '''"POLY_PASSPHRASE"'''
+context = '''"POLY_PASSPHRASE".to_string(),'''
+classification = "polymarket_l2_auth_header_name"
+reason = "This is the fixed Polymarket L2 authentication header name; the passphrase value is resolved from SSM and is not logged."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"clob_v2_balance_allowance_cache_sync_completed"'''
+context = '''"clob_v2_balance_allowance_cache_sync_completed";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field reporting that the approved Polymarket cache-sync request completed."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"execution_client_id"'''
+context = '''const CLOB_V2_CACHE_SYNC_EXECUTION_CLIENT_OUTPUT_FIELD: &str = "execution_client_id";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field naming the configured execution client selected from TOML."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"request_path"'''
+context = '''const CLOB_V2_CACHE_SYNC_REQUEST_PATH_OUTPUT_FIELD: &str = "request_path";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field naming the fixed Polymarket cache-sync API path."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"base_url_http_sha256"'''
+context = '''const CLOB_V2_CACHE_SYNC_BASE_URL_HTTP_SHA256_OUTPUT_FIELD: &str = "base_url_http_sha256";'''
+classification = "operator_artifact_cli_output_schema"
+reason = "This is the redacted CLI output field for the hash of the configured Polymarket HTTP base URL."
+
+[[allowed]]
+path = "src/main.rs"
+kind = "string"
+literal = '''"{}"'''
+context = '''println!("{}", serde_json::to_string_pretty(&output)?);'''
+classification = "operator_artifact_cli_output_template"
+reason = "This prints the redacted cache-sync CLI status object assembled from fixed output-field names and non-secret derived metadata."

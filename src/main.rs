@@ -34,7 +34,10 @@ use bolt_v2::{
         write_static_artifacts_manifest_from_operator_evidence, write_static_operator_artifacts,
         write_strategy_input_evidence_artifact_from_decision_evidence_file,
     },
-    bolt_v3_providers::binding_for_provider_key,
+    bolt_v3_providers::{
+        ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
+        binding_for_provider_key, sync_clob_v2_balance_allowance_cache_from_configured_account,
+    },
     bolt_v3_secrets::{check_no_forbidden_credential_env_vars, resolve_bolt_v3_secrets},
     secrets::SsmResolverSession,
 };
@@ -46,6 +49,11 @@ const ENTRY_DECISION_REFERENCE_QUOTE_SOURCE_OUTPUT_FIELD: &str = "reference_quot
 const ENTRY_DECISION_REALIZED_VOLATILITY_SOURCE_OUTPUT_FIELD: &str = "realized_volatility_source";
 const ENTRY_DECISION_FEE_RATE_SOURCE_OUTPUT_FIELD: &str = "fee_rate_source";
 const OPERATOR_EVIDENCE_JSON_SHA256_OUTPUT_FIELD: &str = "operator_evidence_json_sha256";
+const CLOB_V2_CACHE_SYNC_COMPLETED_OUTPUT_FIELD: &str =
+    "clob_v2_balance_allowance_cache_sync_completed";
+const CLOB_V2_CACHE_SYNC_EXECUTION_CLIENT_OUTPUT_FIELD: &str = "execution_client_id";
+const CLOB_V2_CACHE_SYNC_REQUEST_PATH_OUTPUT_FIELD: &str = "request_path";
+const CLOB_V2_CACHE_SYNC_BASE_URL_HTTP_SHA256_OUTPUT_FIELD: &str = "base_url_http_sha256";
 
 #[derive(Parser)]
 #[command(name = "bolt-v2")]
@@ -299,6 +307,14 @@ enum OperatorArtifactsCommand {
         max_fee_rate_source_bytes: u64,
         #[arg(long)]
         output: PathBuf,
+    },
+    SyncClobV2BalanceAllowanceCache {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        acknowledge_clob_cache_mutation: bool,
     },
     CollectPreRunClobV2FeeBehaviorSource {
         #[arg(long)]
@@ -854,6 +870,32 @@ fn run_operator_artifacts_command(
             )?;
             print_written_operator_artifact(&written)
         }
+        OperatorArtifactsCommand::SyncClobV2BalanceAllowanceCache {
+            config,
+            strategy_instance_id,
+            acknowledge_clob_cache_mutation,
+        } => {
+            if !acknowledge_clob_cache_mutation {
+                return Err("sync-clob-v2-balance-allowance-cache requires --acknowledge-clob-cache-mutation".into());
+            }
+            let loaded = load_bolt_v3_config(&config)?;
+            check_no_forbidden_credential_env_vars(&loaded.root)?;
+            let ssm_resolver_session = SsmResolverSession::new()?;
+            let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let sync = runtime.block_on(
+                sync_clob_v2_balance_allowance_cache_from_configured_account(
+                    ClobV2BalanceAllowanceCacheSyncRequest {
+                        loaded: &loaded,
+                        strategy_instance_id: &strategy_instance_id,
+                        resolved: &resolved,
+                    },
+                ),
+            )?;
+            print_clob_v2_balance_allowance_cache_sync(&sync)
+        }
         OperatorArtifactsCommand::CollectPreRunClobV2FeeBehaviorSource {
             nt_execution_parse_source,
             nt_http_parse_source,
@@ -1139,6 +1181,30 @@ fn print_written_operator_artifact(
         "{}",
         serde_json::to_string_pretty(&written_operator_artifact_json(written))?
     );
+    Ok(())
+}
+
+fn print_clob_v2_balance_allowance_cache_sync(
+    sync: &ClobV2BalanceAllowanceCacheSync,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut output = serde_json::Map::new();
+    output.insert(
+        CLOB_V2_CACHE_SYNC_COMPLETED_OUTPUT_FIELD.to_string(),
+        serde_json::json!(true),
+    );
+    output.insert(
+        CLOB_V2_CACHE_SYNC_EXECUTION_CLIENT_OUTPUT_FIELD.to_string(),
+        serde_json::json!(&sync.execution_client_id),
+    );
+    output.insert(
+        CLOB_V2_CACHE_SYNC_REQUEST_PATH_OUTPUT_FIELD.to_string(),
+        serde_json::json!(sync.request_path),
+    );
+    output.insert(
+        CLOB_V2_CACHE_SYNC_BASE_URL_HTTP_SHA256_OUTPUT_FIELD.to_string(),
+        serde_json::json!(&sync.base_url_http_sha256),
+    );
+    println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
 

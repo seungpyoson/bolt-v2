@@ -5347,10 +5347,10 @@ reason = "This is the fixed Polymarket CLOB balance-allowance asset_type enum va
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
 kind = "string"
-literal = '''"micro_pusd"'''
-context = '''const CLOB_V2_COLLATERAL_BALANCE_UNIT: &str = "micro_pusd";'''
+literal = '''"p_usd"'''
+context = '''const CLOB_V2_COLLATERAL_BALANCE_UNIT: &str = "p_usd";'''
 classification = "polymarket_clob_unit_label"
-reason = "This labels the fixed unit returned by the Polymarket CLOB balance-allowance API for replayable proof hashing, not a configurable amount."
+reason = "This labels the fixed decimal pUSD unit recorded after scaling Polymarket CLOB micro-denominated balance-allowance values for replayable proof hashing, not a configurable amount."
 
 [[allowed]]
 path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"

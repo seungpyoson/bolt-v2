@@ -28,7 +28,7 @@ use crate::{
 
 const CLOB_V2_COLLATERAL_BALANCE_ALLOWANCE_PATH: &str = "/balance-allowance";
 const CLOB_V2_COLLATERAL_ASSET_TYPE: &str = "COLLATERAL";
-const CLOB_V2_COLLATERAL_BALANCE_UNIT: &str = "micro_pusd";
+const CLOB_V2_COLLATERAL_BALANCE_UNIT: &str = "p_usd";
 const CLOB_V2_COLLATERAL_PUSD_MICRO_SCALE: u32 = 1_000_000;
 const ON_CHAIN_COLLATERAL_JSON_RPC_VERSION: &str = "2.0";
 const ON_CHAIN_COLLATERAL_JSON_RPC_ETH_CALL_METHOD: &str = "eth_call";
@@ -548,6 +548,11 @@ struct ClobV2OnChainCollateralAccountingProof {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collateral_accounting_proofs_label_scaled_p_usd_values() {
+        assert_eq!(CLOB_V2_COLLATERAL_BALANCE_UNIT, "p_usd");
+    }
 
     #[test]
     fn on_chain_calldata_encodes_erc20_balance_and_allowance_selectors() {

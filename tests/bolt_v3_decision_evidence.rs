@@ -207,7 +207,7 @@ fn latest_entry_decision_evidence_chain_rejects_cross_record_field_mismatches() 
 
 #[test]
 fn latest_entry_decision_evidence_chain_rejects_missing_readiness_gate_identity() {
-    let cases: [(&str, fn(&mut [serde_json::Value; 3])); 5] = [
+    let cases: [(&str, fn(&mut [serde_json::Value; 3])); 6] = [
         ("gate_session_hash", |lines| {
             lines[0]["snapshot"]["gate_session_hash"] = serde_json::json!("");
         }),
@@ -224,6 +224,10 @@ fn latest_entry_decision_evidence_chain_rejects_missing_readiness_gate_identity(
         ("provider_provenance_sha256", |lines| {
             lines[0]["snapshot"]["gate_evidence"]["resolution_price"]["provider_provenance_sha256"] =
                 serde_json::json!("");
+        }),
+        ("artifact_sha256s", |lines| {
+            lines[0]["snapshot"]["gate_evidence"]["resolution_price"]["artifact_sha256s"] =
+                serde_json::json!([]);
         }),
     ];
 

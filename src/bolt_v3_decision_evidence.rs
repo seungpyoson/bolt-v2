@@ -684,6 +684,11 @@ pub(crate) fn validate_readiness_gate_evidence_snapshot(
                     identity.provider_provenance_sha256.as_deref(),
                     "bolt-v3 entry decision evidence gate_evidence provider_provenance_sha256 is missing",
                 )?;
+                if identity.artifact_sha256s.is_empty() {
+                    return Err(anyhow!(
+                        "bolt-v3 entry decision evidence gate_evidence artifact_sha256s is missing"
+                    ));
+                }
             }
             GATE_SATISFACTION_KIND_NO_RESOLUTION => {
                 ensure_option_non_empty(

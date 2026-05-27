@@ -8985,6 +8985,14 @@ classification = "chainlink_data_streams_validation_diagnostic"
 reason = "This fail-closed diagnostic reports a missing TOML-owned Chainlink feed binding for a configured target gate mapping."
 
 [[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]: Chainlink Data Streams mapping resolution_identity `{resolution_identity}` value_kind `{value_kind}` cannot resolve provider_id from mapping provider_id, provider_preference, or a single allowed_provider_ids entry"'''
+context = '''"{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]: Chainlink Data Streams mapping resolution_identity `{resolution_identity}` value_kind `{value_kind}` cannot resolve provider_id from mapping provider_id, provider_preference, or a single allowed_provider_ids entry"'''
+classification = "chainlink_data_streams_validation_diagnostic"
+reason = "This fail-closed diagnostic reports a target gate mapping whose TOML-owned Chainlink provider id cannot be resolved before feed binding validation."
+
+[[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = '''"provider capability"'''

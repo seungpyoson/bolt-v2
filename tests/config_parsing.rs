@@ -3368,6 +3368,32 @@ fn rejects_chainlink_target_mapping_without_matching_feed_binding() {
 }
 
 #[test]
+fn rejects_chainlink_target_mapping_without_resolvable_provider_id() {
+    let root_toml = root_with_single_chainlink_feed_binding(
+        "configured-primary-resolution",
+        CHAINLINK_TEST_FEED_ID_PRIMARY,
+    );
+    let strategy_toml = strategy_with_single_chainlink_mapping("configured-primary-resolution")
+        .replace(
+            "provider_preference = [\"resolution_oracle_primary\"]\n",
+            "",
+        )
+        .replace("provider_id = \"resolution_oracle_primary\"\n", "");
+
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("strategy `strategies/binary_oracle.toml`")
+                && message.contains("configured-primary-resolution")
+                && message.contains("provider_id")
+                && message.contains("Chainlink Data Streams")
+        }),
+        "Chainlink target mappings must resolve a concrete provider_id for feed bindings: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_unreachable_chainlink_feed_binding() {
     let root_toml = root_with_chainlink_feed_bindings(&[
         (

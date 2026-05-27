@@ -468,6 +468,7 @@ struct UpdownOutcomeInstrument {
     market_slug: String,
     question_id: String,
     instrument_id: InstrumentId,
+    activation_milliseconds: u64,
     expiration_milliseconds: u64,
 }
 
@@ -1163,9 +1164,12 @@ fn candidate_market_for_slug(
         return None;
     }
 
-    let start_timestamp_milliseconds =
+    let period_start_milliseconds =
         u64::try_from(Duration::from_secs(u64::try_from(period_start_unix_secs).ok()?).as_millis())
             .ok()?;
+    let start_timestamp_milliseconds = period_start_milliseconds
+        .max(up.activation_milliseconds)
+        .max(down.activation_milliseconds);
 
     Some(SelectedUpdownMarket {
         market_id: up.market_id,
@@ -1210,6 +1214,10 @@ fn updown_outcome_instrument(
         market_slug: info.get_str("market_slug")?.to_string(),
         question_id: info.get_str("question_id")?.to_string(),
         instrument_id: binary.id,
+        activation_milliseconds: u64::try_from(
+            Duration::from_nanos(binary.activation_ns.as_u64()).as_millis(),
+        )
+        .ok()?,
         expiration_milliseconds: u64::try_from(
             Duration::from_nanos(binary.expiration_ns.as_u64()).as_millis(),
         )
@@ -1530,6 +1538,46 @@ mod tests {
         .expect("configured current updown market should select");
 
         assert_eq!(selected.start_timestamp_milliseconds, 600_000);
+    }
+
+    #[test]
+    fn selected_updown_market_start_preserves_later_instrument_activation() {
+        let market_slug = updown_market_slug(TEST_UNDERLYING_ASSET, TEST_CADENCE_SLUG_TOKEN, 600);
+        let instruments = vec![
+            test_binary_option(
+                "configured-condition-up.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "question-1",
+                "Up",
+                650_000,
+                900_000,
+            ),
+            test_binary_option(
+                "configured-condition-down.POLYMARKET",
+                &market_slug,
+                "market-1",
+                TEST_CONDITION_ID,
+                "question-1",
+                "Down",
+                660_000,
+                900_000,
+            ),
+        ];
+
+        let selected = select_market_from_instruments(
+            UpdownSelectionTarget {
+                underlying_asset: TEST_UNDERLYING_ASSET,
+                cadence_secs: 300,
+                cadence_slug_token: TEST_CADENCE_SLUG_TOKEN,
+            },
+            &instruments,
+            600_001,
+        )
+        .expect("configured current updown market should select");
+
+        assert_eq!(selected.start_timestamp_milliseconds, 660_000);
     }
 
     #[test]

@@ -915,7 +915,7 @@ fn validate_chainlink_feed_binding_coverage(
     strategies: &[LoadedStrategy],
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    let target_references = collect_chainlink_target_mapping_references(strategies);
+    let target_references = collect_chainlink_target_mapping_references(strategies, &mut errors);
     let target_keys = target_references
         .iter()
         .map(|reference| reference.key.clone())
@@ -964,6 +964,7 @@ fn validate_chainlink_feed_binding_coverage(
 
 fn collect_chainlink_target_mapping_references(
     strategies: &[LoadedStrategy],
+    errors: &mut Vec<String>,
 ) -> Vec<ChainlinkTargetMappingReference> {
     let mut references = Vec::new();
 
@@ -997,14 +998,17 @@ fn collect_chainlink_target_mapping_references(
                 {
                     continue;
                 }
-                let Some(provider_id) = selected_chainlink_provider_id(subscription, mapping)
-                else {
-                    continue;
-                };
                 let (Some(resolution_identity), Some(value_kind)) = (
                     string_field(mapping, CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD),
                     string_field(mapping, CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD),
                 ) else {
+                    continue;
+                };
+                let Some(provider_id) = selected_chainlink_provider_id(subscription, mapping)
+                else {
+                    errors.push(format!(
+                        "{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]: Chainlink Data Streams mapping resolution_identity `{resolution_identity}` value_kind `{value_kind}` cannot resolve provider_id from mapping provider_id, provider_preference, or a single allowed_provider_ids entry"
+                    ));
                     continue;
                 };
                 references.push(ChainlinkTargetMappingReference {

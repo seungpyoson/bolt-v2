@@ -9815,3 +9815,299 @@ literal = '''"{}"'''
 context = '''println!("{}", serde_json::to_string_pretty(&output)?);'''
 classification = "operator_artifact_cli_output_template"
 reason = "This prints the redacted cache-sync CLI status object assembled from fixed output-field names and non-secret derived metadata."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.pre_run_clob_v2_collateral_accounting_on_chain_pusd_balance_allowance.v1"'''
+context = '''"bolt_v3.pre_run_clob_v2_collateral_accounting_on_chain_pusd_balance_allowance.v1";'''
+classification = "operator_artifact_schema_record_kind"
+reason = "This is the fixed schema record kind for the on-chain pUSD balance/allowance source proof."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"on_chain_collateral"'''
+context = '''Ok(!execution.contains_key("on_chain_collateral"))'''
+classification = "provider_config_section_key"
+reason = "This checks for the optional Polymarket execution on-chain collateral proof section; values inside the section remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"0"'''
+context = '''"0".to_string()'''
+classification = "decimal_string_normalization"
+reason = "This is the canonical textual zero used when normalizing arbitrary-size nonnegative decimal strings."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"http://"'''
+context = '''if !on_chain.rpc_url.starts_with("http://") && !on_chain.rpc_url.starts_with("https://") {'''
+classification = "url_scheme_validation"
+reason = "This is the allowed public HTTP URL scheme for the configured read-only Polygon RPC endpoint."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket.rs"
+kind = "string"
+literal = '''"https://"'''
+context = '''if !on_chain.rpc_url.starts_with("http://") && !on_chain.rpc_url.starts_with("https://") {'''
+classification = "url_scheme_validation"
+reason = "This is the allowed public HTTPS URL scheme for the configured read-only Polygon RPC endpoint."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"2.0"'''
+context = '''const ON_CHAIN_COLLATERAL_JSON_RPC_VERSION: &str = "2.0";'''
+classification = "json_rpc_protocol_constant"
+reason = "This is the JSON-RPC protocol version field required by Ethereum-compatible RPC endpoints."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"eth_call"'''
+context = '''const ON_CHAIN_COLLATERAL_JSON_RPC_ETH_CALL_METHOD: &str = "eth_call";'''
+classification = "json_rpc_protocol_constant"
+reason = "This is the Ethereum JSON-RPC method for read-only contract calls."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"latest"'''
+context = '''const ON_CHAIN_COLLATERAL_JSON_RPC_LATEST_BLOCK: &str = "latest";'''
+classification = "json_rpc_protocol_constant"
+reason = "This is the JSON-RPC block tag used for current read-only on-chain state."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "1"
+context = '''const ON_CHAIN_COLLATERAL_JSON_RPC_ID: u64 = 1;'''
+classification = "json_rpc_protocol_constant"
+reason = "This is a fixed request id for one-shot JSON-RPC calls where correlation is local to the request."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"Content-Type"'''
+context = '''const ON_CHAIN_COLLATERAL_CONTENT_TYPE_HEADER: &str = "Content-Type";'''
+classification = "http_protocol_header_name"
+reason = "This is the standard HTTP header name for the JSON-RPC request body media type."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"application/json"'''
+context = '''const ON_CHAIN_COLLATERAL_CONTENT_TYPE_JSON: &str = "application/json";'''
+classification = "http_protocol_media_type"
+reason = "This is the standard media type for JSON-RPC request bodies."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"balanceOf(address)"'''
+context = '''const ON_CHAIN_COLLATERAL_BALANCE_OF_SIGNATURE: &str = "balanceOf(address)";'''
+classification = "erc20_abi_signature"
+reason = "This is the ERC-20 balanceOf function signature; the selector is derived with keccak256 at runtime."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"allowance(address,address)"'''
+context = '''const ON_CHAIN_COLLATERAL_ALLOWANCE_SIGNATURE: &str = "allowance(address,address)";'''
+classification = "erc20_abi_signature"
+reason = "This is the ERC-20 allowance function signature; the selector is derived with keccak256 at runtime."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"0x"'''
+context = '''const ON_CHAIN_COLLATERAL_HEX_PREFIX: &str = "0x";'''
+classification = "ethereum_hex_encoding"
+reason = "This is the standard Ethereum hex-string prefix used for addresses, calldata, and RPC results."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "64"
+context = '''const ON_CHAIN_COLLATERAL_EVM_WORD_HEX_LEN: usize = 64;'''
+classification = "evm_abi_word_encoding"
+reason = "This is the 32-byte EVM ABI word width represented as 64 hex characters."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "40"
+context = '''const ON_CHAIN_COLLATERAL_EVM_ADDRESS_HEX_LEN: usize = 40;'''
+classification = "evm_address_encoding"
+reason = "This is the 20-byte EVM address width represented as 40 hex characters."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"jsonrpc"'''
+context = '''"jsonrpc": ON_CHAIN_COLLATERAL_JSON_RPC_VERSION,'''
+classification = "json_rpc_protocol_field"
+reason = "This is the JSON-RPC request field name for the protocol version."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"id"'''
+context = '''"id": ON_CHAIN_COLLATERAL_JSON_RPC_ID,'''
+classification = "json_rpc_protocol_field"
+reason = "This is the JSON-RPC request field name for the request id."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"method"'''
+context = '''"method": ON_CHAIN_COLLATERAL_JSON_RPC_ETH_CALL_METHOD,'''
+classification = "json_rpc_protocol_field"
+reason = "This is the JSON-RPC request field name for the method."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"params"'''
+context = '''"params": ['''
+classification = "json_rpc_protocol_field"
+reason = "This is the JSON-RPC request field name for method parameters."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"data"'''
+context = '''"data": calldata,'''
+classification = "ethereum_rpc_call_field"
+reason = "This is the Ethereum eth_call transaction object field for ABI calldata."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "32"
+context = ''') -> Result<[u8; 32], BoltV3OperatorArtifactError> {'''
+classification = "evm_abi_word_encoding"
+reason = "This is the byte width of a decoded EVM uint256 ABI word."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "32"
+context = '''fn parse_u256_word_hex(value: &str) -> Result<[u8; 32], BoltV3OperatorArtifactError> {'''
+classification = "evm_abi_word_encoding"
+reason = "This is the byte width of a decoded EVM uint256 ABI word."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "32"
+context = '''fn u256_word_to_decimal_string(word: &[u8; 32], decimals: u32) -> String {'''
+classification = "evm_abi_word_encoding"
+reason = "This is the byte width of a decoded EVM uint256 ABI word."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "0_u8"
+context = '''let mut word = [0_u8; 32];'''
+classification = "evm_abi_word_buffer_initialization"
+reason = "This initializes the fixed-size decoded EVM word buffer before copying validated bytes into it."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "32"
+context = '''let mut word = [0_u8; 32];'''
+classification = "evm_abi_word_encoding"
+reason = "This is the byte width of a decoded EVM uint256 ABI word."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "0_u8"
+context = '''let mut digits = vec![0_u8];'''
+classification = "decimal_string_conversion"
+reason = "This initializes the arbitrary-size base-10 digit accumulator at zero."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "256"
+context = '''let value = u32::from(*digit) * 256 + carry;'''
+classification = "base256_integer_conversion"
+reason = "This converts the big-endian uint256 byte stream into a base-10 digit accumulator."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "10"
+context = '''*digit = (value % 10) as u8;'''
+classification = "decimal_string_conversion"
+reason = "This is the base-10 modulus used to emit decimal digits from the uint256 accumulator."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "10"
+context = '''carry = value / 10;'''
+classification = "decimal_string_conversion"
+reason = "This is the base-10 division used to carry decimal digits from the uint256 accumulator."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "0"
+context = '''while carry != 0 {'''
+classification = "decimal_string_conversion"
+reason = "This is the zero sentinel for exhausting carry during decimal string conversion."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "10"
+context = '''digits.push((carry % 10) as u8);'''
+classification = "decimal_string_conversion"
+reason = "This is the base-10 modulus used to append decimal digits from carry."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "10"
+context = '''carry /= 10;'''
+classification = "decimal_string_conversion"
+reason = "This is the base-10 division used to consume carry."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "1"
+context = '''let mut padded = String::with_capacity(decimals + 1);'''
+classification = "decimal_string_formatting"
+reason = "This reserves one leading zero before the decimal point for sub-unit values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "1"
+context = '''padded.extend(std::iter::repeat_n('0', decimals + 1 - integer.len()));'''
+classification = "decimal_string_formatting"
+reason = "This accounts for the leading integer zero before the decimal point for sub-unit values."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "string"
+literal = '''"0"'''
+context = '''let integer = if integer.is_empty() { "0" } else { integer };'''
+classification = "decimal_string_normalization"
+reason = "This is the canonical textual zero used when normalizing arbitrary-size decimal strings."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/collateral_accounting_source.rs"
+kind = "number"
+literal = "4"
+context = '''hex::encode(&keccak256(signature.as_bytes())[..4])'''
+classification = "evm_abi_selector_encoding"
+reason = "EVM function selectors are the first four bytes of the keccak256 hash of the ABI signature."

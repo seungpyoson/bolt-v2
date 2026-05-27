@@ -161,6 +161,15 @@ pub struct PolymarketExecutionConfig {
     pub ack_timeout_secs: u64,
     pub fee_cache_ttl_secs: u64,
     pub transport_backend: TransportBackend,
+    pub on_chain_collateral: Option<PolymarketOnChainCollateralConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PolymarketOnChainCollateralConfig {
+    pub rpc_url: String,
+    pub chain_id: u64,
+    pub collateral_token_address: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -247,6 +256,7 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
             Ok(parsed) => {
                 errors.extend(validate_funder(key, &parsed));
                 errors.extend(validate_execution_bounds(key, &parsed));
+                errors.extend(validate_on_chain_collateral(key, &parsed));
             }
             Err(message) => {
                 errors.push(format!("clients.{key}.execution: {message}"));
@@ -394,6 +404,30 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
         errors.push(format!(
             "clients.{key}.execution.retry_delay_initial_ms ({}) must be <= retry_delay_max_ms ({})",
             execution.retry_delay_initial_ms, execution.retry_delay_max_ms
+        ));
+    }
+    errors
+}
+
+fn validate_on_chain_collateral(key: &str, execution: &PolymarketExecutionConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Some(on_chain) = execution.on_chain_collateral.as_ref() else {
+        return errors;
+    };
+    if !on_chain.rpc_url.starts_with("http://") && !on_chain.rpc_url.starts_with("https://") {
+        errors.push(format!(
+            "clients.{key}.execution.on_chain_collateral.rpc_url must start with http:// or https://"
+        ));
+    }
+    if on_chain.chain_id == 0 {
+        errors.push(format!(
+            "clients.{key}.execution.on_chain_collateral.chain_id must be a positive integer"
+        ));
+    }
+    if let Err(message) = check_evm_address_syntax(&on_chain.collateral_token_address) {
+        errors.push(format!(
+            "clients.{key}.execution.on_chain_collateral.collateral_token_address is not a valid EVM public address ({message}): `{}`",
+            on_chain.collateral_token_address
         ));
     }
     errors

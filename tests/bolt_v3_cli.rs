@@ -14,7 +14,10 @@ use bolt_v2::{
     bolt_v3_config::{LiveCanaryOperatorEvidenceBlock, load_bolt_v3_config},
     bolt_v3_operator_artifacts::compute_operator_approval_envelope_sha256,
 };
-use nautilus_polymarket::common::consts::DUST_POSITION_THRESHOLD;
+use nautilus_polymarket::{
+    common::consts::DUST_POSITION_THRESHOLD,
+    signing::eip712::{CTF_EXCHANGE, NEG_RISK_CTF_EXCHANGE},
+};
 use sha2::{Digest, Sha256};
 
 mod support;
@@ -1178,6 +1181,229 @@ fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_from_ssm_backed_bal
 }
 
 #[test]
+fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_from_on_chain_pusd_allowance() {
+    let temp = tempdir().expect("tempdir should create");
+    let (rpc_url, rpc_requests_rx) = spawn_eth_call_server_with_results([
+        "0x000000000000000000000000000000000000000000000000000000003b9aca00",
+        "0x0000000000000000000000000000000000000000000000000000000077359400",
+        "0x0000000000000000000000000000000000000000000000000000000059682f00",
+    ]);
+    let token_address = "0x2222222222222222222222222222222222222222";
+    let ctf_spender = format!("{CTF_EXCHANGE:#x}");
+    let neg_risk_spender = format!("{NEG_RISK_CTF_EXCHANGE:#x}");
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        let on_chain_collateral = format!(
+            r#"
+[clients.polymarket_main.execution.on_chain_collateral]
+rpc_url = "{rpc_url}"
+chain_id = 137
+collateral_token_address = "{token_address}"
+"#
+        );
+        format!(
+            "{}\n{}",
+            root.replace(
+                "transport_backend = \"sockudo\"\n\n[clients.polymarket_main.secrets]",
+                &format!(
+                    "transport_backend = \"sockudo\"\n{on_chain_collateral}\n[clients.polymarket_main.secrets]"
+                ),
+            ),
+            live_canary_toml_without_operator_evidence()
+        )
+    });
+    let fee_rate_source_path = write_cli_json_artifact(
+        temp.path(),
+        "fee-rate-source.json",
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.entry_decision_fee_rate_source.v1",
+            "fee_bps_by_instrument_id": {
+                "condition-token-up.POLYMARKET": 2.5,
+                "condition-token-down.POLYMARKET": 3.5
+            }
+        }),
+    );
+    let fee_rate_source_sha256 = sha256_file_for_cli_test(&fee_rate_source_path);
+    let output_path = temp
+        .path()
+        .join("clob-v2-collateral-accounting-source.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-pre-run-clob-v2-collateral-accounting-source",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+            "--fee-rate-source",
+            fee_rate_source_path
+                .to_str()
+                .expect("fee source path should be utf-8"),
+            "--fee-rate-source-sha256",
+            &fee_rate_source_sha256,
+            "--max-fee-rate-source-bytes",
+            "100000",
+            "--output",
+            output_path.to_str().expect("output path should be utf-8"),
+        ])
+        .output()
+        .expect("bolt-v3 on-chain CLOB V2 collateral source collection should run");
+
+    assert!(
+        output.status.success(),
+        "expected on-chain CLOB V2 collateral source collection to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for forbidden in [
+        token_address,
+        ctf_spender.as_str(),
+        neg_risk_spender.as_str(),
+        "1000000000",
+        "2000000000",
+        "1500000000",
+    ] {
+        assert!(
+            !stdout.contains(forbidden),
+            "stdout leaked {forbidden}: {stdout}"
+        );
+    }
+
+    let requests = rpc_requests_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("fake RPC server should capture eth_call requests");
+    assert_eq!(requests.len(), 3, "{requests:#?}");
+    let joined_requests = requests.join("\n");
+    assert!(
+        joined_requests.matches("POST / HTTP/1.1").count() == 3,
+        "{joined_requests}"
+    );
+    assert!(
+        joined_requests.matches("\"method\":\"eth_call\"").count() == 3,
+        "{joined_requests}"
+    );
+    assert!(
+        joined_requests.matches("\"latest\"").count() == 3,
+        "{joined_requests}"
+    );
+    assert!(joined_requests.contains("0x70a08231"), "{joined_requests}");
+    assert_eq!(joined_requests.matches("0xdd62ed3e").count(), 2);
+    assert!(
+        joined_requests.contains(&token_address.to_ascii_lowercase()),
+        "{joined_requests}"
+    );
+    assert!(
+        joined_requests.contains(ctf_spender.trim_start_matches("0x")),
+        "{joined_requests}"
+    );
+    assert!(
+        joined_requests.contains(neg_risk_spender.trim_start_matches("0x")),
+        "{joined_requests}"
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(
+        &fs::read(&output_path).expect("on-chain CLOB V2 collateral source should write"),
+    )
+    .expect("on-chain CLOB V2 collateral source should be JSON");
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(
+        json["record_kind"],
+        "bolt_v3.pre_run_clob_v2_collateral_accounting_source.v1"
+    );
+    assert_eq!(json["collateral_accounting_verified"], true);
+    assert_eq!(json["p_usd_balance"], "1000");
+    assert_eq!(json["p_usd_allowance"], "1500");
+    assert_eq!(json["required_max_notional_plus_fees"], "10.0035");
+}
+
+#[test]
+fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_accepts_on_chain_max_uint_allowance() {
+    let temp = tempdir().expect("tempdir should create");
+    let max_uint_word = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    let (rpc_url, _rpc_requests_rx) = spawn_eth_call_server_with_results([
+        "0x000000000000000000000000000000000000000000000000000000003b9aca00",
+        max_uint_word,
+        max_uint_word,
+    ]);
+    let config_path = write_bolt_v3_fixture_root(|root| {
+        let on_chain_collateral = format!(
+            r#"
+[clients.polymarket_main.execution.on_chain_collateral]
+rpc_url = "{rpc_url}"
+chain_id = 137
+collateral_token_address = "0x2222222222222222222222222222222222222222"
+"#
+        );
+        format!(
+            "{}\n{}",
+            root.replace(
+                "transport_backend = \"sockudo\"\n\n[clients.polymarket_main.secrets]",
+                &format!(
+                    "transport_backend = \"sockudo\"\n{on_chain_collateral}\n[clients.polymarket_main.secrets]"
+                ),
+            ),
+            live_canary_toml_without_operator_evidence()
+        )
+    });
+    let fee_rate_source_path = write_cli_json_artifact(
+        temp.path(),
+        "fee-rate-source.json",
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.entry_decision_fee_rate_source.v1",
+            "fee_bps_by_instrument_id": {
+                "condition-token-up.POLYMARKET": 2.5,
+                "condition-token-down.POLYMARKET": 3.5
+            }
+        }),
+    );
+    let fee_rate_source_sha256 = sha256_file_for_cli_test(&fee_rate_source_path);
+    let output_path = temp
+        .path()
+        .join("clob-v2-collateral-accounting-source.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-pre-run-clob-v2-collateral-accounting-source",
+            "--config",
+            config_path.to_str().expect("config path should be utf-8"),
+            "--strategy-instance-id",
+            "bitcoin_updown_main",
+            "--fee-rate-source",
+            fee_rate_source_path
+                .to_str()
+                .expect("fee source path should be utf-8"),
+            "--fee-rate-source-sha256",
+            &fee_rate_source_sha256,
+            "--max-fee-rate-source-bytes",
+            "100000",
+            "--output",
+            output_path.to_str().expect("output path should be utf-8"),
+        ])
+        .output()
+        .expect("bolt-v3 on-chain max allowance source collection should run");
+
+    assert!(
+        output.status.success(),
+        "expected max-uint on-chain CLOB V2 collateral source collection to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: serde_json::Value = serde_json::from_slice(
+        &fs::read(&output_path).expect("on-chain CLOB V2 collateral source should write"),
+    )
+    .expect("on-chain CLOB V2 collateral source should be JSON");
+    assert_eq!(json["p_usd_balance"], "1000");
+    assert_eq!(
+        json["p_usd_allowance"],
+        "115792089237316195423570985008687907853269984665640564039457584007913129.639935"
+    );
+}
+
+#[test]
 fn bolt_v3_cli_exposes_clob_v2_collateral_accounting_source_from_configured_balance_allowance() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
@@ -2249,6 +2475,36 @@ fn spawn_clob_balance_allowance_server_with_statuses(
                 .write_all(response.as_bytes())
                 .expect("test CLOB response should write");
         }
+    });
+    (format!("http://{address}"), rx)
+}
+
+fn spawn_eth_call_server_with_results(
+    results: impl IntoIterator<Item = &'static str>,
+) -> (String, mpsc::Receiver<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test JSON-RPC server should bind");
+    let address = listener.local_addr().expect("test JSON-RPC server address");
+    let results: Vec<&'static str> = results.into_iter().collect();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut requests = Vec::new();
+        for result in results {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("test JSON-RPC request should connect");
+            requests.push(read_test_http_request(&mut stream));
+            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":"{result}"}}"#);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("test JSON-RPC response should write");
+        }
+        tx.send(requests)
+            .expect("test JSON-RPC requests should report to caller");
     });
     (format!("http://{address}"), rx)
 }

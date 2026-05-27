@@ -194,12 +194,14 @@ pub struct ClobV2FeeBehaviorSourceMaterialization {
     pub fee_assumptions_sha256: String,
 }
 
+#[derive(Clone, Copy)]
 pub struct ClobV2CollateralAccountingSourceMaterializationRequest<'a> {
     pub schema_version: u32,
     pub balance_allowance_record_kind: &'static str,
+    pub on_chain_balance_allowance_record_kind: &'static str,
     pub loaded: &'a LoadedBoltV3Config,
     pub strategy_instance_id: &'a str,
-    pub resolved: &'a ResolvedBoltV3Secrets,
+    pub resolved: Option<&'a ResolvedBoltV3Secrets>,
 }
 
 pub struct ClobV2CollateralAccountingSourceMaterialization {

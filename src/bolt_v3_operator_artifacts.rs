@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, HashMap},
     error::Error,
     fmt, fs,
@@ -199,6 +200,8 @@ const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_RECORD_KIND: &str =
     "bolt_v3.pre_run_clob_v2_collateral_accounting_source.v1";
 const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BALANCE_ALLOWANCE_RECORD_KIND: &str =
     "bolt_v3.pre_run_clob_v2_collateral_accounting_balance_allowance.v1";
+const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_ON_CHAIN_BALANCE_ALLOWANCE_RECORD_KIND: &str =
+    "bolt_v3.pre_run_clob_v2_collateral_accounting_on_chain_pusd_balance_allowance.v1";
 const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_ASSUMPTIONS_RECORD_KIND: &str =
     "bolt_v3.pre_run_clob_v2_collateral_accounting_assumptions.v1";
 const PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
@@ -5545,6 +5548,87 @@ fn parse_clob_v2_decimal(
         .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid { field })
 }
 
+fn clob_v2_decimal_string_below_required(
+    field: &'static str,
+    value: &str,
+    required: Decimal,
+) -> Result<bool, BoltV3OperatorArtifactError> {
+    let required = required.normalize().to_string();
+    Ok(compare_nonnegative_decimal_strings(
+        field,
+        value,
+        stringify!(required_max_notional_plus_fees),
+        &required,
+    )? == Ordering::Less)
+}
+
+fn clob_v2_min_decimal_string(
+    left_field: &'static str,
+    left: &str,
+    right_field: &'static str,
+    right: &str,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    if compare_nonnegative_decimal_strings(left_field, left, right_field, right)?
+        == Ordering::Greater
+    {
+        Ok(right.to_string())
+    } else {
+        Ok(left.to_string())
+    }
+}
+
+fn compare_nonnegative_decimal_strings(
+    left_field: &'static str,
+    left: &str,
+    right_field: &'static str,
+    right: &str,
+) -> Result<Ordering, BoltV3OperatorArtifactError> {
+    let (left_integer, left_fractional) = nonnegative_decimal_parts(left_field, left)?;
+    let (right_integer, right_fractional) = nonnegative_decimal_parts(right_field, right)?;
+    match left_integer.len().cmp(&right_integer.len()) {
+        Ordering::Equal => match left_integer.cmp(&right_integer) {
+            Ordering::Equal => {
+                let width = left_fractional.len().max(right_fractional.len());
+                let mut left_fractional = left_fractional;
+                let mut right_fractional = right_fractional;
+                left_fractional.extend(std::iter::repeat_n('0', width - left_fractional.len()));
+                right_fractional.extend(std::iter::repeat_n('0', width - right_fractional.len()));
+                Ok(left_fractional.cmp(&right_fractional))
+            }
+            ordering => Ok(ordering),
+        },
+        ordering => Ok(ordering),
+    }
+}
+
+fn nonnegative_decimal_parts(
+    field: &'static str,
+    value: &str,
+) -> Result<(String, String), BoltV3OperatorArtifactError> {
+    let mut parts = value.split('.');
+    let integer = parts
+        .next()
+        .ok_or(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid { field })?;
+    let fractional = parts.next().unwrap_or("");
+    if parts.next().is_some()
+        || integer.is_empty()
+        || !integer.chars().all(|ch| ch.is_ascii_digit())
+        || !fractional.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid { field });
+    }
+    let integer = integer.trim_start_matches('0');
+    let fractional = fractional.trim_end_matches('0');
+    Ok((
+        if integer.is_empty() {
+            "0".to_string()
+        } else {
+            integer.to_string()
+        },
+        fractional.to_string(),
+    ))
+}
+
 pub fn write_pre_run_state_artifact_from_source_bundle_file(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
@@ -5757,7 +5841,7 @@ pub fn write_pre_run_clob_v2_fee_behavior_source_artifact_from_nt_fee_sources(
 pub async fn write_pre_run_clob_v2_collateral_accounting_source_artifact_from_configured_balance_allowance(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
-    resolved: &ResolvedBoltV3Secrets,
+    resolved: Option<&ResolvedBoltV3Secrets>,
     fee_rate_source_path: &Path,
     fee_rate_source_sha256: &str,
     max_fee_rate_source_bytes: u64,
@@ -5777,6 +5861,8 @@ pub async fn write_pre_run_clob_v2_collateral_accounting_source_artifact_from_co
                 schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
                 balance_allowance_record_kind:
                     PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BALANCE_ALLOWANCE_RECORD_KIND,
+                on_chain_balance_allowance_record_kind:
+                    PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_ON_CHAIN_BALANCE_ALLOWANCE_RECORD_KIND,
                 loaded,
                 strategy_instance_id,
                 resolved,
@@ -5793,6 +5879,8 @@ pub async fn write_pre_run_clob_v2_collateral_accounting_source_artifact_from_co
                     schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
                     balance_allowance_record_kind:
                         PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BALANCE_ALLOWANCE_RECORD_KIND,
+                    on_chain_balance_allowance_record_kind:
+                        PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_ON_CHAIN_BALANCE_ALLOWANCE_RECORD_KIND,
                     loaded,
                     strategy_instance_id,
                     resolved,
@@ -5807,13 +5895,15 @@ pub async fn write_pre_run_clob_v2_collateral_accounting_source_artifact_from_co
         },
     )
     .await;
-    let p_usd_balance =
-        parse_clob_v2_decimal(stringify!(p_usd_balance), &materialized.p_usd_balance)?;
-    let p_usd_allowance =
-        parse_clob_v2_decimal(stringify!(p_usd_allowance), &materialized.p_usd_allowance)?;
-    if p_usd_balance < collateral_requirement.required_max_notional_plus_fees
-        || p_usd_allowance < collateral_requirement.required_max_notional_plus_fees
-    {
+    if clob_v2_decimal_string_below_required(
+        stringify!(p_usd_balance),
+        &materialized.p_usd_balance,
+        collateral_requirement.required_max_notional_plus_fees,
+    )? || clob_v2_decimal_string_below_required(
+        stringify!(p_usd_allowance),
+        &materialized.p_usd_allowance,
+        collateral_requirement.required_max_notional_plus_fees,
+    )? {
         return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
             field: stringify!(collateral_accounting_verified),
         });
@@ -5850,10 +5940,35 @@ pub async fn write_pre_run_clob_v2_collateral_accounting_source_artifact_from_co
     write_json_artifact_create_new(output_path, &source)
 }
 
+pub fn pre_run_clob_v2_collateral_accounting_source_requires_resolved_secrets(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+) -> Result<bool, BoltV3OperatorArtifactError> {
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .ok_or(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "strategy_instance_id",
+        })?;
+    let execution_client_id = strategy.config.execution_client_id.as_str();
+    let client = loaded.root.clients.get(execution_client_id).ok_or(
+        BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
+            field: "execution_client_id",
+        },
+    )?;
+    let execution = client
+        .execution
+        .as_ref()
+        .and_then(toml::Value::as_table)
+        .ok_or(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid { field: "execution" })?;
+    Ok(!execution.contains_key("on_chain_collateral"))
+}
+
 pub async fn write_pre_run_funding_margin_source_artifact_from_configured_balance_allowance(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
-    resolved: &ResolvedBoltV3Secrets,
+    resolved: Option<&ResolvedBoltV3Secrets>,
     fee_rate_source_path: &Path,
     fee_rate_source_sha256: &str,
     max_fee_rate_source_bytes: u64,
@@ -5872,6 +5987,8 @@ pub async fn write_pre_run_funding_margin_source_artifact_from_configured_balanc
                 schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
                 balance_allowance_record_kind:
                     PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BALANCE_ALLOWANCE_RECORD_KIND,
+                on_chain_balance_allowance_record_kind:
+                    PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_ON_CHAIN_BALANCE_ALLOWANCE_RECORD_KIND,
                 loaded,
                 strategy_instance_id,
                 resolved,
@@ -5888,6 +6005,8 @@ pub async fn write_pre_run_funding_margin_source_artifact_from_configured_balanc
                     schema_version: PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_SOURCE_SCHEMA_VERSION,
                     balance_allowance_record_kind:
                         PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_BALANCE_ALLOWANCE_RECORD_KIND,
+                    on_chain_balance_allowance_record_kind:
+                        PRE_RUN_CLOB_V2_COLLATERAL_ACCOUNTING_ON_CHAIN_BALANCE_ALLOWANCE_RECORD_KIND,
                     loaded,
                     strategy_instance_id,
                     resolved,
@@ -5902,16 +6021,17 @@ pub async fn write_pre_run_funding_margin_source_artifact_from_configured_balanc
         },
     )
     .await;
-    let p_usd_balance =
-        parse_clob_v2_decimal(stringify!(p_usd_balance), &materialized.p_usd_balance)?;
-    let p_usd_allowance =
-        parse_clob_v2_decimal(stringify!(p_usd_allowance), &materialized.p_usd_allowance)?;
-    let available_collateral = if p_usd_balance < p_usd_allowance {
-        p_usd_balance
-    } else {
-        p_usd_allowance
-    };
-    if available_collateral < collateral_requirement.required_max_notional_plus_fees {
+    let available_collateral = clob_v2_min_decimal_string(
+        stringify!(p_usd_balance),
+        &materialized.p_usd_balance,
+        stringify!(p_usd_allowance),
+        &materialized.p_usd_allowance,
+    )?;
+    if clob_v2_decimal_string_below_required(
+        stringify!(available_collateral),
+        &available_collateral,
+        collateral_requirement.required_max_notional_plus_fees,
+    )? {
         return Err(
             BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
                 field: "funding_margin_covers_max_notional_plus_fees",
@@ -5921,7 +6041,7 @@ pub async fn write_pre_run_funding_margin_source_artifact_from_configured_balanc
     let source = Phase8PreRunFundingMarginSourceEvidence {
         schema_version: PRE_RUN_FUNDING_MARGIN_SOURCE_SCHEMA_VERSION,
         record_kind: PRE_RUN_FUNDING_MARGIN_SOURCE_RECORD_KIND.to_string(),
-        available_collateral: available_collateral.normalize().to_string(),
+        available_collateral,
         required_max_notional_plus_fees: collateral_requirement
             .required_max_notional_plus_fees
             .normalize()
@@ -5943,19 +6063,18 @@ fn clob_v2_materialized_balance_allowance_below_required(
     materialized: &ClobV2CollateralAccountingSourceMaterialization,
     required_max_notional_plus_fees: Decimal,
 ) -> bool {
-    let Ok(p_usd_balance) =
-        parse_clob_v2_decimal(stringify!(p_usd_balance), &materialized.p_usd_balance)
-    else {
-        return true;
-    };
-    let Ok(p_usd_allowance) =
-        parse_clob_v2_decimal(stringify!(p_usd_allowance), &materialized.p_usd_allowance)
-    else {
-        return true;
-    };
+    let balance_below = clob_v2_decimal_string_below_required(
+        stringify!(p_usd_balance),
+        &materialized.p_usd_balance,
+        required_max_notional_plus_fees,
+    );
+    let allowance_below = clob_v2_decimal_string_below_required(
+        stringify!(p_usd_allowance),
+        &materialized.p_usd_allowance,
+        required_max_notional_plus_fees,
+    );
 
-    p_usd_balance < required_max_notional_plus_fees
-        || p_usd_allowance < required_max_notional_plus_fees
+    balance_below.unwrap_or(true) || allowance_below.unwrap_or(true)
 }
 
 fn derive_clob_v2_required_max_notional_plus_fees(
@@ -6516,31 +6635,24 @@ pub fn collect_pre_run_clob_v2_collateral_accounting_source_proof(
             field: stringify!(clob_v2_collateral_accounting_verified),
         });
     }
-    let p_usd_balance = parse_clob_v2_decimal(stringify!(p_usd_balance), &source.p_usd_balance)?;
-    let p_usd_allowance =
-        parse_clob_v2_decimal(stringify!(p_usd_allowance), &source.p_usd_allowance)?;
     let required_max_notional_plus_fees = parse_clob_v2_decimal(
         stringify!(required_max_notional_plus_fees),
         &source.required_max_notional_plus_fees,
     )?;
-    if p_usd_balance < Decimal::ZERO {
-        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
-            field: stringify!(p_usd_balance),
-        });
-    }
-    if p_usd_allowance < Decimal::ZERO {
-        return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
-            field: stringify!(p_usd_allowance),
-        });
-    }
     if required_max_notional_plus_fees <= Decimal::ZERO {
         return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
             field: stringify!(required_max_notional_plus_fees),
         });
     }
-    if p_usd_balance < required_max_notional_plus_fees
-        || p_usd_allowance < required_max_notional_plus_fees
-    {
+    if clob_v2_decimal_string_below_required(
+        stringify!(p_usd_balance),
+        &source.p_usd_balance,
+        required_max_notional_plus_fees,
+    )? || clob_v2_decimal_string_below_required(
+        stringify!(p_usd_allowance),
+        &source.p_usd_allowance,
+        required_max_notional_plus_fees,
+    )? {
         return Err(BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {
             field: stringify!(clob_v2_collateral_accounting_verified),
         });

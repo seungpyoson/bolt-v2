@@ -15,6 +15,7 @@ use bolt_v2::{
         chainlink_data_streams_ssm_credential_parameters,
         collect_entry_decision_source_inputs_from_configured_provider,
         compute_operator_approval_envelope_sha256,
+        pre_run_clob_v2_collateral_accounting_source_requires_resolved_secrets,
         update_live_canary_operator_evidence_toml_from_json_file,
         verify_final_operator_packet_with_scope, write_abort_plan_artifact_from_source_bundle_file,
         write_abort_plan_artifact_from_source_collectors, write_base_static_operator_artifacts,
@@ -807,8 +808,16 @@ fn run_operator_artifacts_command(
         } => {
             let loaded = load_bolt_v3_config(&config)?;
             check_no_forbidden_credential_env_vars(&loaded.root)?;
-            let ssm_resolver_session = SsmResolverSession::new()?;
-            let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
+            let resolved =
+                if pre_run_clob_v2_collateral_accounting_source_requires_resolved_secrets(
+                    &loaded,
+                    &strategy_instance_id,
+                )? {
+                    let ssm_resolver_session = SsmResolverSession::new()?;
+                    Some(resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?)
+                } else {
+                    None
+                };
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
@@ -816,7 +825,7 @@ fn run_operator_artifacts_command(
                 write_pre_run_funding_margin_source_artifact_from_configured_balance_allowance(
                     &loaded,
                     &strategy_instance_id,
-                    &resolved,
+                    resolved.as_ref(),
                     &fee_rate_source,
                     &fee_rate_source_sha256,
                     max_fee_rate_source_bytes,
@@ -852,8 +861,16 @@ fn run_operator_artifacts_command(
         } => {
             let loaded = load_bolt_v3_config(&config)?;
             check_no_forbidden_credential_env_vars(&loaded.root)?;
-            let ssm_resolver_session = SsmResolverSession::new()?;
-            let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
+            let resolved =
+                if pre_run_clob_v2_collateral_accounting_source_requires_resolved_secrets(
+                    &loaded,
+                    &strategy_instance_id,
+                )? {
+                    let ssm_resolver_session = SsmResolverSession::new()?;
+                    Some(resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?)
+                } else {
+                    None
+                };
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
@@ -861,7 +878,7 @@ fn run_operator_artifacts_command(
                 write_pre_run_clob_v2_collateral_accounting_source_artifact_from_configured_balance_allowance(
                     &loaded,
                     &strategy_instance_id,
-                    &resolved,
+                    resolved.as_ref(),
                     &fee_rate_source,
                     &fee_rate_source_sha256,
                     max_fee_rate_source_bytes,

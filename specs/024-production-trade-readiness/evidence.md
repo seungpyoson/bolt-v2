@@ -1121,3 +1121,27 @@ At head `6de829eb7d63c2c46fa77f2f3cf87c666708c367`, local artifact generation wa
   - Focused readiness test suites from T039 remain current for this worktree: `bolt_v3_operator_artifacts` 188 passed; `bolt_v3_cli` 48 passed; `bolt_v3_tiny_canary_preconditions` 63 passed; `bolt_v3_tiny_canary_operator` 31 passed, 1 ignored; `bolt_v3_live_canary_gate` 70 passed.
 
 T036 remains open. The Chainlink and Polymarket source-input chain is now materializable, but the sampled active window did not produce an entry decision, and the configured account still lacks proven pUSD allowance for funding/collateral source proofs. T036/T037/T038 cannot be closed until a source-bound window produces the required no-submit evidence chain and the account-side allowance proof passes.
+
+## T036 On-Chain pUSD Collateral Proof Repair
+
+At head `641ccc5205a20207f65cec03c488a9b9553dc48b`, the pUSD allowance blocker above was repaired without changing the remaining strategy-entry blocker.
+
+- Implementation commit: `641ccc52 Add on-chain pUSD collateral proof`.
+- Source ownership: `collect-pre-run-clob-v2-collateral-accounting-source` now uses the existing authenticated CLOB `/balance-allowance` path unless `[clients.<id>.execution.on_chain_collateral]` is configured. When configured, it performs read-only ERC-20 `balanceOf(address)` and `allowance(address,address)` calls through `nautilus_network::http::HttpClient`, uses `nautilus_polymarket::signing::eip712::{CTF_EXCHANGE, NEG_RISK_CTF_EXCHANGE}` as the spender identities, and uses `nautilus_polymarket::common::consts::USDC_DECIMALS` for pUSD scaling. The collector is still market-agnostic and derives the selected strategy/client/required notional from TOML and existing fee-source evidence.
+- RPC endpoint proof: `https://polygon-rpc.com` failed read-only JSON-RPC with `API key disabled`; `https://1rpc.io/matic` returned HTTP 200 for the pUSD `balanceOf` probe, so ignored `config/live.local.toml` and tracked `config/root.example.toml` now use `https://1rpc.io/matic` for the on-chain collateral source.
+- Live read-only collateral command using `/private/tmp/bolt-v2-t036-active-1779820200/entry-decision-fees.json` sha256 `619d8717590e81afcc37738cd1448cf84794f5d193ba43db729bea8fea2d0919` passed and wrote `/private/tmp/bolt-v2-t036-active-1779820200/clob-v2-collateral-accounting-source-on-chain.json` with sha256 `17b04bbfcaf2d98f922ac538a455bad609625494fcfe289d681a6af1c4ff0f8a`.
+- The collateral summary was `collateral_accounting_verified=true`, `p_usd_balance=15.758792`, `required_max_notional_plus_fees=1.1`, and a max-uint effective pUSD allowance to the NT CLOB V2 spender set. No private key, API key, SSM value, submit, cancel, transfer, or on-chain transaction was used.
+- Live read-only funding-margin command with the same fee source passed and wrote `/private/tmp/bolt-v2-t036-active-1779820200/funding-margin-source-on-chain.json` with sha256 `837c899cdc22ca80ed0c9c11bcd8b4d86adab78a123ab35bde7c4574e57ceda8`.
+- Verification after the repair passed:
+  - `cargo test --test bolt_v3_cli clob_v2_collateral_accounting_source -- --nocapture`: 7 passed.
+  - `cargo test --test bolt_v3_cli funding_margin_source -- --nocapture`: 4 passed.
+  - `cargo test --test bolt_v3_cli -- --nocapture`: 51 passed.
+  - `just source-fence`: passed.
+  - `cargo clippy --locked --lib -- -D warnings`: passed.
+  - `cargo clippy --locked --bin bolt-v2 -- -D warnings`: passed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+- Rechecked the strategy decision chain at `2026-05-27 04:25:07 UTC` with `generate-entry-decision-evidence-from-source --config config/live.local.toml --strategy-instance-id bitcoin_updown_main --decision-source /private/tmp/bolt-v2-t036-active-1779820200/entry-decision-source.json --max-decision-source-bytes 100000 --instrument-source /private/tmp/bolt-v2-t036-active-1779820200/instrument-source.json --max-instrument-source-bytes 100000 --max-decision-evidence-bytes 100000`. It still failed closed with `blocked_reason=Some("no_side_selected")`, `gate_blocked_by=[]`, `pricing_blocked_by=[]`, `selected_side=None`, `up_worst_case_ev_bps=Some(-3007.0050157895344)`, `down_worst_case_ev_bps=Some(-2578.836977677897)`, `min_worst_case_ev_bps=Some(100.0)`, and `sized_notional=None`.
+- The configured decision-evidence JSONL remained empty after the failed no-entry run: size `0`, sha256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, line count `0`.
+
+T036 remains open for a narrower reason: the current source-bound market facts still do not produce an entry order, so `strategy-input.json`, `pre-run-state.json`, `static-artifacts-manifest.json`, `approval-envelope.json`, and `operator-evidence-packet.json` cannot honestly be assembled yet. The previously documented pUSD allowance blocker is no longer current for the on-chain collateral source path.

@@ -58,7 +58,7 @@
 - [x] T024F [US3] Add TDD-backed `operator-artifacts collect-pre-run-clob-v2-adapter-signing-source` so T036 can write the CLOB V2 adapter-signing source proof from the pinned NT signing source and a local ephemeral signature-recovery self-test.
 - [x] T024G [US3] Add TDD-backed `operator-artifacts collect-pre-run-clob-v2-fee-behavior-source` so T036 can write the CLOB V2 fee-behavior source proof from pinned NT fee parser sources and a local deterministic NT fee-behavior self-test.
 - [x] T024H [US3] Add TDD-backed `operator-artifacts collect-pre-run-egress-identity-source` so T036 can write the egress identity source proof from TOML-owned approved identity hash and TOML-owned observed probe source.
-- [x] T024I [US3] Add TDD-backed `operator-artifacts collect-pre-run-clob-v2-collateral-accounting-source` so T036 can write the CLOB V2 collateral accounting source proof from SSM-resolved Polymarket credentials, authenticated `/balance-allowance`, TOML-owned `max_notional_per_order`, and approved fee-rate source hash.
+- [x] T024I [US3] Add TDD-backed `operator-artifacts collect-pre-run-clob-v2-collateral-accounting-source` so T036 can write the CLOB V2 collateral accounting source proof from source-owned pUSD balance/allowance evidence, TOML-owned `max_notional_per_order`, and approved fee-rate source hash.
 - [x] T024E [US3] Replace remaining caller-supplied pre-run source inputs for venue account/open orders/positions and funding/margin with real source-owned materializer commands before T036 final-packet assembly.
 
 ## Phase 5: User Story 4 - Abort-Plan Collectors
@@ -134,6 +134,7 @@
 - [x] T036I [US5] Add TDD-backed `operator-artifacts collect-chainlink-price-report-source` so T036 can materialize the Chainlink Data Streams report source from TOML-owned REST endpoint fields and SSM-owned credentials without reviving the retired runtime Chainlink client.
 - [x] T036I1 [US5] Make Chainlink Data Streams report collection market-resolution-aware with TOML-owned `(resolution_identity, value_kind) -> feed_id/schema/scale` bindings, and preserve the previous-code BTC/USD and ETH/USD testnet feed mappings without treating the old generic fixture feed as a token mapping.
 - [x] T036I2 [US5] Restore Chainlink Data Streams credential resolution to the previous working two-SSM-parameter shape (`api_key_ssm_parameter`, `api_secret_ssm_parameter`) instead of requiring a new JSON credential document, and prove the real collector reaches Chainlink testnet for BTC/USD without printing secrets.
+- [x] T036I3 [US5] Add source-owned on-chain pUSD balance/allowance collateral proof over NT's HTTP transport and Polymarket spender constants so T036 is not blocked by authenticated CLOB `/balance-allowance` omitting `allowance`.
 - [ ] T036 [US5] Assemble blocker-free `static-artifacts-manifest.json`, `approval-envelope.json`, and `operator-evidence-packet.json` from real artifacts and record paths in `specs/024-production-trade-readiness/final-packet.md`.
 - [ ] T037 [US5] Update the approved root TOML operator-evidence block in `config/live.local.toml` with final artifact paths and hashes without printing secrets.
 - [ ] T038 [US5] Run `operator-artifacts verify-final` against the exact root TOML and final packet; record command, head, hashes, and result in `specs/024-production-trade-readiness/evidence.md`.

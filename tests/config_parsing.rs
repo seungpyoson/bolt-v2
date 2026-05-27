@@ -4,6 +4,8 @@ use std::fs;
 
 const OLD_CHAINLINK_FIXTURE_FEED_ID: &str =
     "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472";
+const CHAINLINK_BTC_TESTNET_FEED_ID: &str =
+    "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
 const CHAINLINK_TEST_FEED_ID_PRIMARY: &str =
     "0x1111111111111111111111111111111111111111111111111111111111111111";
 const CHAINLINK_TEST_FEED_ID_SECONDARY: &str =
@@ -233,6 +235,10 @@ fn shipped_chainlink_gate_provider_examples_keep_only_configured_feed_bindings()
         assert!(
             !source.contains(OLD_CHAINLINK_FIXTURE_FEED_ID),
             "{relative_path} should not ship the old generic Chainlink fixture feed as a token mapping"
+        );
+        assert!(
+            !source.contains(CHAINLINK_BTC_TESTNET_FEED_ID),
+            "{relative_path} should not ship a BTC-specific Chainlink feed as a token mapping"
         );
 
         let parsed = toml::from_str::<toml::Value>(&source).expect("root TOML should parse");
@@ -3678,6 +3684,9 @@ fn shipped_binary_oracle_examples_do_not_canonicalize_one_reference_market_or_ve
             "[clients.binance_reference.data]",
             "[clients.binance_reference.secrets]",
             "/bolt/binance_reference/",
+            "https://1rpc.io/matic",
+            "chain_id = 137",
+            "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
         ] {
             assert!(
                 !source.contains(forbidden),

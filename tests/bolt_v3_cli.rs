@@ -2904,7 +2904,7 @@ fn bolt_v3_cli_exposes_collect_chainlink_reference_quote_observations_source() {
 fn bolt_v3_cli_collects_chainlink_reference_quote_observations_source_without_printing_reports() {
     let temp = tempdir().expect("tempdir should create");
     let config_path = repo_path("tests/fixtures/bolt_v3/root.toml");
-    let feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
+    let feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000";
     let reports = [3300.0, 3301.0, 3302.0]
         .iter()
         .enumerate()
@@ -2989,7 +2989,7 @@ fn bolt_v3_cli_collects_chainlink_reference_quote_observations_source_without_pr
 #[test]
 fn bolt_v3_cli_collects_chainlink_price_report_source_without_printing_credentials_or_report() {
     let temp = tempdir().expect("tempdir should create");
-    let feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
+    let feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000";
     let report_body = serde_json::json!({
         "report": serde_json::from_slice::<serde_json::Value>(&chainlink_v3_report_source_json(
             feed_id,
@@ -3129,7 +3129,7 @@ max_notional_per_order = "10.00"
     });
     let report_path = temp.path().join("chainlink-report.bin");
     let report_source = chainlink_v3_report_source_json(
-        "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439",
+        "0x0000000000000000000000000000000000000000000000000000000000000000",
         600,
         601,
         3100.0,

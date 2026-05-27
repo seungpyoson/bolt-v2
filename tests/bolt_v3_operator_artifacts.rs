@@ -76,7 +76,7 @@ const TEST_STRATEGY_INSTANCE_ID: &str = "configured_updown_main";
 const TEST_CONFIGURED_TARGET_ID: &str = "configured_updown_target";
 const TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.configured-reference-price";
 const TEST_PRICE_TO_BEAT_FEED_ID: &str =
-    "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
 const TEST_SECONDARY_CHAINLINK_TESTNET_FEED_ID: &str =
     "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782";
 const TEST_ALT_CHAINLINK_FEED_ID: &str =

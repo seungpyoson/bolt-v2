@@ -3219,6 +3219,38 @@ reason = "This is the Chainlink feed-binding table key in root gate provider TOM
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "string"
+literal = '''"endpoint_id"'''
+context = '''const CHAINLINK_DATA_STREAMS_ENDPOINT_ID_FIELD: &str = "endpoint_id";'''
+classification = "chainlink_data_streams_toml_field"
+reason = "This names the TOML-owned Chainlink endpoint identifier field validated at startup; the endpoint identifier value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"rest_base_url"'''
+context = '''const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";'''
+classification = "chainlink_data_streams_toml_field"
+reason = "This names the TOML-owned Chainlink REST base URL field validated at startup; the runtime URL value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"report_endpoint_path"'''
+context = '''const CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD: &str = "report_endpoint_path";'''
+classification = "chainlink_data_streams_toml_field"
+reason = "This names the TOML-owned Chainlink report endpoint path field validated at startup; the endpoint path value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"http_timeout_secs"'''
+context = '''const CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD: &str = "http_timeout_secs";'''
+classification = "chainlink_data_streams_toml_field"
+reason = "This names the TOML-owned Chainlink HTTP timeout field validated at startup; the timeout value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
 literal = '''"resolution_identity"'''
 context = '''const CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD: &str = "resolution_identity";'''
 classification = "gate_provider_schema_field"

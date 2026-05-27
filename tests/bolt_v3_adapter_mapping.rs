@@ -53,6 +53,19 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     ResolvedBoltV3Secrets { clients }
 }
 
+fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.insert(
+        "binance_reference".to_string(),
+        toml::from_str(&support::repo_text(
+            "tests/fixtures/bolt_v3/binance_reference_client.toml",
+        ))
+        .expect("binance provider fixture client should parse"),
+    );
+    loaded
+}
+
 #[test]
 fn configured_sockudo_transport_backend_is_compiled_for_live_connectivity() {
     let _ = std::any::type_name::<SockudoTransport<tokio::net::TcpStream>>();
@@ -201,8 +214,7 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
 
 #[test]
 fn binance_data_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = fixture_loaded_config_with_binance_reference();
     let resolved = fixture_resolved_secrets();
 
     let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
@@ -446,8 +458,7 @@ fn live_node_build_path_propagates_adapter_mapping_failures() {
     // re-validate string shape; if future requirements need shape
     // checks at the mapper boundary, this test is the place to assert
     // that they fire.
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = fixture_loaded_config_with_binance_reference();
 
     // Force the binance api_secret resolution to fail; the live-node
     // builder must surface the error rather than silently skipping the

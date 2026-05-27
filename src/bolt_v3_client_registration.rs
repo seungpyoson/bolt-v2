@@ -172,23 +172,9 @@ mod tests {
     }
 
     fn binance_reference_client() -> crate::bolt_v3_config::ClientBlock {
-        toml::from_str(
-            r#"
-            venue = "BINANCE"
-
-            [data]
-            product_types = ["spot"]
-            environment = "mainnet"
-            base_url_http = "https://api.binance.com"
-            base_url_ws = "wss://stream-sbe.binance.com/ws"
-            instrument_status_poll_secs = 3600
-            transport_backend = "sockudo"
-
-            [secrets]
-            api_key_ssm_path = "/bolt/binance_reference/api_key"
-            api_secret_ssm_path = "/bolt/binance_reference/api_secret"
-            "#,
-        )
+        toml::from_str(include_str!(
+            "../tests/fixtures/bolt_v3/binance_reference_client.toml"
+        ))
         .expect("binance provider fixture client should parse")
     }
 

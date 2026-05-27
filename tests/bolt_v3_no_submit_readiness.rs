@@ -1,7 +1,9 @@
 mod support;
 
 use bolt_v2::{
-    bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_config::{
+        LiveCanaryBlock, LoadedBoltV3Config, ReferenceDataBlock, load_bolt_v3_config,
+    },
     bolt_v3_live_canary_gate::check_bolt_v3_live_canary_gate,
     bolt_v3_live_node::{BoltV3NoSubmitReferenceQuote, BoltV3NoSubmitReferenceQuoteEvidence},
     bolt_v3_no_submit_readiness::{
@@ -18,6 +20,7 @@ use bolt_v2::{
         REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
     },
 };
+use nautilus_model::identifiers::{ClientId, InstrumentId};
 use sha2::{Digest, Sha256};
 
 const TEST_READINESS_REPORT_MAX_AGE_SECONDS: u64 = 60;
@@ -371,7 +374,7 @@ fn no_submit_readiness_records_failed_connect_reference_skip_and_disconnect_fail
 
 #[test]
 fn no_submit_readiness_fails_when_required_reference_instrument_missing_from_cache() {
-    let loaded = loaded_with_test_live_canary();
+    let loaded = loaded_with_test_live_canary_and_reference_data();
     let reference_readiness =
         reference_readiness_from_cached_instrument_ids(&loaded, std::iter::empty::<&str>());
     let report = run_bolt_v3_no_submit_readiness_from_stage_results(
@@ -399,7 +402,7 @@ fn no_submit_readiness_fails_when_required_reference_instrument_missing_from_cac
 
 #[tokio::test(flavor = "current_thread")]
 async fn no_submit_readiness_cache_only_reference_evidence_cannot_pass_live_canary_gate() {
-    let (_tempdir, loaded, metadata) = loaded_with_temp_live_canary().await;
+    let (_tempdir, loaded, metadata) = loaded_with_temp_live_canary_and_reference_data().await;
     let cached_instrument_ids = loaded
         .strategies
         .iter()
@@ -446,7 +449,7 @@ async fn no_submit_readiness_cache_only_reference_evidence_cannot_pass_live_cana
 
 #[test]
 fn no_submit_readiness_fails_closed_when_only_required_reference_instruments_are_cached() {
-    let loaded = loaded_with_test_live_canary();
+    let loaded = loaded_with_test_live_canary_and_reference_data();
     let cached_instrument_ids = loaded
         .strategies
         .iter()
@@ -489,7 +492,7 @@ fn no_submit_readiness_fails_closed_when_only_required_reference_instruments_are
 
 #[test]
 fn no_submit_readiness_accepts_fresh_quote_evidence_for_all_configured_references() {
-    let loaded = loaded_with_test_live_canary();
+    let loaded = loaded_with_test_live_canary_and_reference_data();
     let max_age_seconds = loaded
         .root
         .live_canary
@@ -528,7 +531,7 @@ fn no_submit_readiness_accepts_fresh_quote_evidence_for_all_configured_reference
 
 #[test]
 fn no_submit_readiness_rejects_stale_quote_evidence_for_configured_references() {
-    let loaded = loaded_with_test_live_canary();
+    let loaded = loaded_with_test_live_canary_and_reference_data();
     let max_age_seconds = loaded
         .root
         .live_canary
@@ -1030,6 +1033,10 @@ fn loaded_with_test_live_canary() -> LoadedBoltV3Config {
     )
 }
 
+fn loaded_with_test_live_canary_and_reference_data() -> LoadedBoltV3Config {
+    loaded_with_configured_reference_data(loaded_with_test_live_canary())
+}
+
 async fn loaded_with_temp_live_canary() -> (
     tempfile::TempDir,
     LoadedBoltV3Config,
@@ -1063,6 +1070,56 @@ async fn loaded_with_temp_live_canary() -> (
         .await
         .expect("report metadata should be derived from loaded config");
     (tempdir, loaded, metadata)
+}
+
+async fn loaded_with_temp_live_canary_and_reference_data() -> (
+    tempfile::TempDir,
+    LoadedBoltV3Config,
+    BoltV3NoSubmitReadinessReportMetadata,
+) {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    let loaded = loaded_with_configured_reference_data(loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            operator_evidence: Some(support::valid_live_canary_operator_evidence()),
+        },
+    ));
+    let metadata = BoltV3NoSubmitReadinessReportMetadata::from_loaded(&loaded)
+        .await
+        .expect("report metadata should be derived from loaded config");
+    (tempdir, loaded, metadata)
+}
+
+fn loaded_with_configured_reference_data(mut loaded: LoadedBoltV3Config) -> LoadedBoltV3Config {
+    let strategy = loaded
+        .strategies
+        .first_mut()
+        .expect("fixture should include one strategy");
+    strategy.config.reference_data.insert(
+        "primary".to_string(),
+        ReferenceDataBlock {
+            data_client_id: ClientId::from("polymarket_main"),
+            instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
+        },
+    );
+    loaded
 }
 
 fn stage_detail<'a>(report: &'a BoltV3NoSubmitReadinessReport, stage: &str) -> &'a str {

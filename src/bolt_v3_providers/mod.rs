@@ -628,23 +628,9 @@ mod tests {
     }
 
     fn binance_reference_client() -> ClientBlock {
-        client_from_toml(
-            r#"
-            venue = "BINANCE"
-
-            [data]
-            product_types = ["spot"]
-            environment = "mainnet"
-            base_url_http = "https://api.binance.com"
-            base_url_ws = "wss://stream-sbe.binance.com/ws"
-            instrument_status_poll_secs = 3600
-            transport_backend = "sockudo"
-
-            [secrets]
-            api_key_ssm_path = "/bolt/binance_reference/api_key"
-            api_secret_ssm_path = "/bolt/binance_reference/api_secret"
-            "#,
-        )
+        client_from_toml(include_str!(
+            "../../tests/fixtures/bolt_v3/binance_reference_client.toml"
+        ))
     }
 
     fn fake_secret_value(path: &str) -> String {

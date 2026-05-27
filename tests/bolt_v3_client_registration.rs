@@ -23,10 +23,22 @@ use bolt_v2::{
 };
 use nautilus_model::identifiers::ClientId;
 
-#[test]
-fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_data() {
+fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.insert(
+        "binance_reference".to_string(),
+        toml::from_str(&support::repo_text(
+            "tests/fixtures/bolt_v3/binance_reference_client.toml",
+        ))
+        .expect("binance provider fixture client should parse"),
+    );
+    loaded
+}
+
+#[test]
+fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_data() {
+    let mut loaded = fixture_loaded_config_with_binance_reference();
     let temp = support::TempCaseDir::new("bolt-v3-client-registration-build-path");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
 

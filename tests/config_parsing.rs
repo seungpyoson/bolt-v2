@@ -3670,128 +3670,11 @@ transport_backend = "sockudo"
 fn rejects_binance_reference_data_client_missing_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let toml_text = r#"
-schema_version = 1
-trader_id = "BOLT-001"
-strategy_files = ["strategies/binary_oracle.toml"]
-
-[runtime]
-mode = "Live"
-
-[nautilus]
-load_state = true
-save_state = true
-timeout_connection_secs = 30
-timeout_reconciliation_secs = 60
-timeout_portfolio_secs = 10
-timeout_disconnection_secs = 10
-delay_post_stop_secs = 5
-timeout_shutdown_secs = 10
-
-[nautilus.data_engine]
-time_bars_build_with_no_updates = true
-time_bars_timestamp_on_close = true
-time_bars_skip_first_non_full_bar = false
-time_bars_interval_type = "LEFT_OPEN"
-time_bars_build_delay = 0
-time_bars_origins = {}
-validate_data_sequence = false
-buffer_deltas = false
-emit_quotes_from_book = false
-emit_quotes_from_book_depths = false
-external_clients = []
-debug = false
-graceful_shutdown_on_error = false
-qsize = 100000
-
-[nautilus.exec_engine]
-load_cache = true
-snapshot_orders = false
-snapshot_positions = false
-snapshot_positions_interval_secs = 0
-external_clients = []
-debug = false
-reconciliation = true
-reconciliation_startup_delay_secs = 10
-reconciliation_lookback_mins = 0
-reconciliation_instrument_ids = []
-filter_unclaimed_external_orders = false
-filter_position_reports = false
-filtered_client_order_ids = []
-generate_missing_orders = true
-inflight_check_interval_ms = 2000
-inflight_check_threshold_ms = 5000
-inflight_check_retries = 5
-open_check_interval_secs = 0
-open_check_lookback_mins = 60
-open_check_threshold_ms = 5000
-open_check_missing_retries = 5
-open_check_open_only = true
-max_single_order_queries_per_cycle = 10
-single_order_query_delay_ms = 100
-position_check_interval_secs = 0
-position_check_lookback_mins = 60
-position_check_threshold_ms = 5000
-position_check_retries = 3
-purge_closed_orders_interval_mins = 0
-purge_closed_orders_buffer_mins = 0
-purge_closed_positions_interval_mins = 0
-purge_closed_positions_buffer_mins = 0
-purge_account_events_interval_mins = 0
-purge_account_events_lookback_mins = 0
-purge_from_database = false
-own_books_audit_interval_secs = 0
-graceful_shutdown_on_error = false
-qsize = 100000
-allow_overfills = false
-manage_own_order_books = false
-
-[risk]
-default_max_notional_per_order = "10.00"
-
-[risk.nautilus]
-bypass = false
-max_order_submit_rate = "100/00:00:01"
-max_order_modify_rate = "100/00:00:01"
-max_notional_per_order = {}
-debug = false
-graceful_shutdown_on_error = false
-qsize = 100000
-
-[logging]
-stdout_level = "INFO"
-fileout_level = "INFO"
-
-[persistence]
-catalog_directory = "/var/lib/bolt/catalog"
-runtime_capture_start_poll_interval_ms = 50
-
-[persistence.decision_evidence]
-order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
-
-[persistence.streaming]
-catalog_fs_protocol = "file"
-flush_interval_ms = 1000
-replace_existing = false
-rotation_kind = "none"
-
-[aws]
-region = "eu-west-1"
-
-[clients.binance_reference]
-venue = "BINANCE"
-
-[clients.binance_reference.data]
-product_types = ["spot"]
-environment = "mainnet"
-base_url_http = "https://binance.test.invalid/http"
-base_url_ws = "wss://stream-sbe.binance.com/ws"
-instrument_status_poll_secs = 3600
-transport_backend = "sockudo"
-"#;
+    let toml_text = fixture_root_with_binance_reference_client()
+        .replace(&binance_reference_secrets_block(), "");
 
     let root: BoltV3RootConfig =
-        toml::from_str(toml_text).expect("binance-data-only TOML should parse");
+        toml::from_str(&toml_text).expect("binance-data-only TOML should parse");
     let messages = validate_root_only(&root);
     let rendered = messages.join("\n");
     assert!(
@@ -4305,27 +4188,33 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
     fixture.replace(needle, replacement)
 }
 
-const BINANCE_REFERENCE_CLIENT_TOML: &str = r#"
-[clients.binance_reference]
-venue = "BINANCE"
-
-[clients.binance_reference.data]
-product_types = ["spot"]
-environment = "mainnet"
-base_url_http = "https://api.binance.com" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http
-base_url_ws = "wss://stream-sbe.binance.com/ws" # NT: BinanceDataClientConfig.base_url_ws
-instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
-transport_backend = "sockudo"
-
-[clients.binance_reference.secrets]
-api_key_ssm_path = "/bolt/binance_reference/api_key"
-api_secret_ssm_path = "/bolt/binance_reference/api_secret"
-"#;
-
 fn fixture_root_with_binance_reference_client() -> String {
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
-    format!("{fixture}\n{BINANCE_REFERENCE_CLIENT_TOML}")
+    format!("{fixture}\n{}", binance_reference_root_fixture())
+}
+
+fn binance_reference_root_fixture() -> String {
+    support::repo_text("tests/fixtures/bolt_v3/binance_reference_root.toml")
+}
+
+fn binance_reference_data_block() -> String {
+    let fixture = binance_reference_root_fixture();
+    let start = fixture
+        .find("[clients.binance_reference.data]")
+        .expect("binance reference fixture must include a data block");
+    let end = fixture
+        .find("[clients.binance_reference.secrets]")
+        .expect("binance reference fixture must include a secrets block");
+    fixture[start..end].to_string()
+}
+
+fn binance_reference_secrets_block() -> String {
+    let fixture = binance_reference_root_fixture();
+    let start = fixture
+        .find("[clients.binance_reference.secrets]")
+        .expect("binance reference fixture must include a secrets block");
+    fixture[start..].to_string()
 }
 
 fn replace_in_binance_reference_fixture(needle: &str, replacement: &str) -> String {
@@ -4871,10 +4760,8 @@ fn rejects_non_positive_nt_risk_max_notional_map_values() {
 fn rejects_orphan_secrets_block_without_data_or_execution() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_binance_reference_fixture(
-        "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream-sbe.binance.com/ws\" # NT: BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n",
-        "",
-    );
+    let data_block = binance_reference_data_block();
+    let mutated = replace_in_binance_reference_fixture(&data_block, "");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("orphan-secrets fixture should parse");
     let messages = validate_root_only(&root);

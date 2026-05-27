@@ -1183,10 +1183,8 @@ async fn live_canary_gate_rejects_oversized_operator_evidence_file_before_hashin
 #[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_oversized_approval_consumption_before_reading_to_eof() {
     let mut operator_evidence = valid_operator_evidence();
-    let approval_envelope_len = std::fs::metadata(&operator_evidence.approval_envelope_path)
-        .expect("approval envelope should exist")
-        .len();
-    operator_evidence.max_operator_evidence_file_bytes = approval_envelope_len + 1;
+    operator_evidence.max_operator_evidence_file_bytes =
+        largest_pre_consumption_operator_evidence_file_len(&operator_evidence) + 1;
     std::fs::write(
         &operator_evidence.approval_consumption_path,
         vec![b' '; operator_evidence.max_operator_evidence_file_bytes as usize + 1],
@@ -1205,6 +1203,30 @@ async fn live_canary_gate_rejects_oversized_approval_consumption_before_reading_
         }
         other => panic!("expected oversized approval consumption read rejection, got {other:?}"),
     }
+}
+
+fn largest_pre_consumption_operator_evidence_file_len(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> u64 {
+    [
+        Some(evidence.approval_envelope_path.as_str()),
+        Some(evidence.ssm_manifest_path.as_str()),
+        Some(evidence.strategy_input_evidence_path.as_str()),
+        evidence.gate_session_path.as_deref(),
+        Some(evidence.financial_envelope_path.as_str()),
+        Some(evidence.pre_run_state_path.as_str()),
+        Some(evidence.abort_plan_path.as_str()),
+        Some(evidence.approval_nonce_path.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|path| {
+        std::fs::metadata(path)
+            .unwrap_or_else(|error| panic!("operator evidence file `{path}` should exist: {error}"))
+            .len()
+    })
+    .max()
+    .expect("operator evidence should include pre-consumption files")
 }
 
 #[tokio::test(flavor = "current_thread")]

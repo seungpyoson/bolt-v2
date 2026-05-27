@@ -9990,6 +9990,24 @@ pub fn compute_operator_approval_envelope_sha256(
     json_artifact_sha256(&approval_envelope)
 }
 
+pub fn verify_source_owned_reference_readiness_from_operator_evidence(
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or(BoltV3OperatorArtifactError::MissingLiveCanary)?;
+    let operator_evidence = live_canary
+        .operator_evidence
+        .as_ref()
+        .ok_or(BoltV3OperatorArtifactError::MissingOperatorEvidence)?;
+    validate_operator_evidence_build_head(operator_evidence)?;
+    validate_operator_evidence_gate_session_file(&loaded.root_path, operator_evidence)?;
+    verify_source_owned_static_readiness_artifacts(loaded, operator_evidence)?;
+    verify_strategy_input_replay_binding(loaded, operator_evidence)
+}
+
 pub fn verify_final_operator_packet(
     loaded: &LoadedBoltV3Config,
     operator_packet_path: &Path,

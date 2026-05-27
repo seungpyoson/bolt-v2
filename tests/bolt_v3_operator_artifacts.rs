@@ -5037,6 +5037,24 @@ fn final_packet_pre_run_verifier_accepts_packet_before_live_result_evidence_exis
 }
 
 #[test]
+fn source_owned_reference_readiness_accepts_replayable_operator_evidence_without_reference_data() {
+    let fixture = assembled_final_packet_fixture();
+    assert!(
+        fixture
+            .loaded
+            .strategies
+            .iter()
+            .all(|strategy| strategy.config.reference_data.is_empty()),
+        "fixture must exercise the source-owned decision-reference path, not legacy reference_data"
+    );
+
+    bolt_v2::bolt_v3_operator_artifacts::verify_source_owned_reference_readiness_from_operator_evidence(
+        &fixture.loaded,
+    )
+    .expect("source-owned operator evidence should satisfy reference readiness without reference_data");
+}
+
+#[test]
 fn operator_evidence_toml_patcher_updates_only_operator_evidence_block_from_json() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let config_path = temp.path().join("root.toml");

@@ -2147,6 +2147,22 @@ reason = "This fail-closed diagnostic reports that no configured strategy refere
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness.rs"
 kind = "string"
+literal = '''"no configured reference_data requirements or source-owned decision_reference requirements found"'''
+context = '''Err("no configured reference_data requirements or source-owned decision_reference requirements found".to_string())'''
+classification = "no_submit_readiness_diagnostic_template"
+reason = "This fail-closed diagnostic reports that neither legacy NT reference-data evidence nor TOML-owned decision-reference operator evidence is configured for no-submit reference readiness."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
+literal = '''"gate_subscriptions"'''
+context = '''.and_then(|target| target.get("gate_subscriptions"))'''
+classification = "toml_schema_key"
+reason = "This is the canonical strategy target TOML key used only to detect a configured decision-reference subscription; the runtime provider, market, and identity values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_no_submit_readiness.rs"
+kind = "string"
 literal = '''"{} reference_data.{role} data_client_id `{data_client_id}` instrument_id `{instrument_id}`"'''
 context = '''"{} reference_data.{role} data_client_id `{data_client_id}` instrument_id `{instrument_id}`",'''
 classification = "no_submit_readiness_diagnostic_template"

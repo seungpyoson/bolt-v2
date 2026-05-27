@@ -9,7 +9,8 @@ use bolt_v2::{
     bolt_v3_no_submit_readiness::{
         BoltV3NoSubmitReadinessError, BoltV3NoSubmitReadinessReport,
         BoltV3NoSubmitReadinessReportMetadata, BoltV3NoSubmitReadinessStatus,
-        reference_readiness_from_cached_instrument_ids, reference_readiness_from_quote_evidence,
+        reference_readiness_from_cached_instrument_ids,
+        reference_readiness_from_no_submit_evidence, reference_readiness_from_quote_evidence,
         run_bolt_v3_no_submit_readiness, run_bolt_v3_no_submit_readiness_from_stage_results,
         run_bolt_v3_no_submit_readiness_from_stage_results_at,
         run_bolt_v3_no_submit_readiness_on_runtime,
@@ -567,6 +568,31 @@ fn no_submit_readiness_rejects_stale_quote_evidence_for_configured_references() 
     assert!(
         error.contains("is stale") && error.contains("reference_quote_max_age_seconds"),
         "stale rejection should name quote freshness config, got: {error}"
+    );
+}
+
+#[test]
+fn no_submit_readiness_switches_to_source_owned_reference_when_reference_data_absent() {
+    let loaded = loaded_with_test_live_canary();
+    assert!(
+        loaded
+            .strategies
+            .iter()
+            .all(|strategy| strategy.config.reference_data.is_empty()),
+        "fixture must have no legacy reference_data requirements"
+    );
+    let evidence = BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() };
+
+    let error = reference_readiness_from_no_submit_evidence(&loaded, &evidence)
+        .expect_err("dummy operator evidence is not replayable, but path selection should change");
+
+    assert!(
+        error.contains("source-owned decision_reference readiness"),
+        "empty quote evidence should select the source-owned decision_reference path, got: {error}"
+    );
+    assert!(
+        !error.contains("no live reference quote evidence"),
+        "empty quote evidence must not be treated as missing NT reference_data proof"
     );
 }
 

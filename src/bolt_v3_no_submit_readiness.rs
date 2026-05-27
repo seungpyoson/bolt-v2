@@ -15,7 +15,9 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::{
-    bolt_v3_config::{LoadedBoltV3Config, resolve_root_relative_path},
+    bolt_v3_config::{
+        DECISION_REFERENCE_GATE_ROLE, LoadedBoltV3Config, resolve_root_relative_path,
+    },
     bolt_v3_live_node::{
         BoltV3LiveNodeError, BoltV3LiveNodeRuntime, BoltV3NoSubmitReferenceCacheEvidence,
         BoltV3NoSubmitReferenceQuote, BoltV3NoSubmitReferenceQuoteEvidence,
@@ -490,6 +492,46 @@ fn latest_reference_quotes_by_key(
     latest
 }
 
+pub fn reference_readiness_from_no_submit_evidence(
+    loaded: &LoadedBoltV3Config,
+    evidence: &BoltV3NoSubmitReferenceQuoteEvidence,
+) -> Result<(), String> {
+    if has_configured_reference_data(loaded) {
+        let observed_at_unix_nanos = evidence
+            .observed_at_unix_nanos()
+            .ok_or_else(|| "no live reference quote evidence was captured".to_string())?;
+        return reference_readiness_from_quote_evidence(loaded, evidence, observed_at_unix_nanos);
+    }
+
+    if has_configured_decision_reference(loaded) {
+        return crate::bolt_v3_operator_artifacts::verify_source_owned_reference_readiness_from_operator_evidence(loaded)
+            .map_err(|error| {
+                format!("source-owned decision_reference readiness is invalid: {error}")
+            });
+    }
+
+    Err("no configured reference_data requirements or source-owned decision_reference requirements found".to_string())
+}
+
+fn has_configured_reference_data(loaded: &LoadedBoltV3Config) -> bool {
+    loaded
+        .strategies
+        .iter()
+        .any(|strategy| !strategy.config.reference_data.is_empty())
+}
+
+fn has_configured_decision_reference(loaded: &LoadedBoltV3Config) -> bool {
+    loaded.strategies.iter().any(|strategy| {
+        strategy
+            .config
+            .target
+            .as_table()
+            .and_then(|target| target.get("gate_subscriptions"))
+            .and_then(toml::Value::as_table)
+            .is_some_and(|subscriptions| subscriptions.contains_key(DECISION_REFERENCE_GATE_ROLE))
+    })
+}
+
 pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
@@ -498,10 +540,7 @@ pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
 ) -> Result<BoltV3NoSubmitReadinessReport, BoltV3NoSubmitReadinessError> {
     let (connect, reference, disconnect) =
         controlled_no_submit_readiness(runtime, loaded, |_runtime, quote_evidence| {
-            let observed_at_unix_nanos = quote_evidence
-                .observed_at_unix_nanos()
-                .ok_or_else(|| "no live reference quote evidence was captured".to_string())?;
-            reference_readiness_from_quote_evidence(loaded, quote_evidence, observed_at_unix_nanos)
+            reference_readiness_from_no_submit_evidence(loaded, quote_evidence)
         })
         .await;
     let generated_at_unix_seconds = current_unix_seconds()?;

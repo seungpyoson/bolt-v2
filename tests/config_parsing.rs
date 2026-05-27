@@ -3317,6 +3317,35 @@ provider_id = "venue_metadata_primary"
 }
 
 #[test]
+fn rejects_target_gate_mapping_without_allowed_provider_kinds() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_value_kinds = ["price"]
+provider_preference = ["resolution_oracle_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.resolution.allowed_provider_kinds")
+                && message.contains("provider-backed")
+        }),
+        "provider-backed mappings must not accept an unbounded provider-kind set: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_invalid_no_resolution_target_gate_usage() {
     let messages = target_gate_subscription_messages(
         r#"
@@ -3390,6 +3419,45 @@ fn rejects_chainlink_target_mapping_without_resolvable_provider_id() {
                 && message.contains("Chainlink Data Streams")
         }),
         "Chainlink target mappings must resolve a concrete provider_id for feed bindings: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_target_gate_reference_to_missing_root_provider_id() {
+    let root_toml = root_with_single_chainlink_feed_binding(
+        "configured-primary-resolution",
+        CHAINLINK_TEST_FEED_ID_PRIMARY,
+    );
+    let strategy_toml = fixture_strategy_with_target_gate_subscriptions(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_ids = ["venue_metadata_primary"]
+allowed_provider_kinds = ["hyperliquid_hip4"]
+allowed_value_kinds = ["metadata"]
+provider_preference = ["venue_metadata_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "hyperliquid_hip4"
+resolution_identity = "configured-market-metadata"
+value_kind = "metadata"
+provider_id = "venue_metadata_primary"
+"#,
+    );
+
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("strategy `strategies/binary_oracle.toml`")
+                && message.contains("target.gate_subscriptions.resolution")
+                && message.contains("venue_metadata_primary")
+                && message.contains("gate_providers")
+        }),
+        "target gate provider ids must resolve to root gate_providers: {messages:#?}"
     );
 }
 

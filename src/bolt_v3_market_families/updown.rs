@@ -285,6 +285,15 @@ fn validate_gate_subscriptions(context: &str, block: &TargetBlock) -> Vec<String
                 "{subscription_path}.provider_preference is required when multiple providers can match"
             ));
         }
+        if allowed_provider_kinds.is_empty()
+            && market_mappings.iter().any(|mapping| {
+                !(subscription.allow_no_resolution && mapping.resolution_kind == NO_RESOLUTION_KIND)
+            })
+        {
+            errors.push(format!(
+                "{subscription_path}.allowed_provider_kinds must list provider kinds when market_mappings contain provider-backed resolution"
+            ));
+        }
 
         let mut mapping_keys = BTreeSet::new();
         for mapping in market_mappings {

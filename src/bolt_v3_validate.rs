@@ -88,6 +88,10 @@ impl std::error::Error for BoltV3ValidationError {}
 pub const SUPPORTED_ROOT_SCHEMA_VERSION: u32 = 1;
 pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;
 const CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD: &str = "feed_bindings";
+const CHAINLINK_DATA_STREAMS_ENDPOINT_ID_FIELD: &str = "endpoint_id";
+const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";
+const CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD: &str = "report_endpoint_path";
+const CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD: &str = "http_timeout_secs";
 const CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD: &str = "api_key_ssm_parameter";
 const CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD: &str = "api_secret_ssm_parameter";
 const CHAINLINK_DATA_STREAMS_OLD_SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";
@@ -100,6 +104,16 @@ const CHAINLINK_DATA_STREAMS_OLD_PROVIDER_LEVEL_FEED_FIELDS: &[&str] = &[
     CHAINLINK_DATA_STREAMS_FEED_ID_FIELD,
     CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD,
     CHAINLINK_DATA_STREAMS_REPORT_DECIMAL_SCALE_FIELD,
+];
+const CHAINLINK_DATA_STREAMS_PROVIDER_FIELDS: &[&str] = &[
+    CHAINLINK_DATA_STREAMS_ENDPOINT_ID_FIELD,
+    CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD,
+    CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD,
+    CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD,
+    CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD,
+    CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD,
+    CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD,
+    CHAINLINK_DATA_STREAMS_OLD_SSM_CREDENTIAL_PARAMETER_FIELD,
 ];
 const TARGET_GATE_SUBSCRIPTIONS_FIELD: &str = "gate_subscriptions";
 const TARGET_MARKET_MAPPINGS_FIELD: &str = "market_mappings";
@@ -148,13 +162,16 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_clients_block(&root.clients));
     if let Some(gate_providers) = &root.gate_providers {
-        errors.extend(validate_gate_providers(gate_providers));
+        errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
 
     errors
 }
 
-fn validate_gate_providers(providers: &BTreeMap<String, GateProviderBlock>) -> Vec<String> {
+fn validate_gate_providers(
+    providers: &BTreeMap<String, GateProviderBlock>,
+    clients: &BTreeMap<String, ClientBlock>,
+) -> Vec<String> {
     let mut errors = Vec::new();
 
     for (provider_id, provider) in providers {
@@ -205,6 +222,14 @@ fn validate_gate_providers(providers: &BTreeMap<String, GateProviderBlock>) -> V
                 freshness,
             )),
             None => errors.push(format!("{context}.freshness is required")),
+        }
+
+        if let Some(client_id) = &provider.client_id
+            && !clients.contains_key(client_id.as_str())
+        {
+            errors.push(format!(
+                "{context}.client_id `{client_id}` does not match any [clients.<id>] block"
+            ));
         }
 
         if let Some(kind) = provider_kind {
@@ -269,11 +294,57 @@ fn validate_chainlink_data_streams_gate_provider(
     let feed_bindings_context =
         format!("{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD}");
 
+    for field in table.keys() {
+        let is_old_provider_level_feed_field =
+            CHAINLINK_DATA_STREAMS_OLD_PROVIDER_LEVEL_FEED_FIELDS.contains(&field.as_str());
+        if !CHAINLINK_DATA_STREAMS_PROVIDER_FIELDS.contains(&field.as_str())
+            && !is_old_provider_level_feed_field
+        {
+            errors.push(format!(
+                "{context}.chainlink_data_streams.{field} is not a supported Chainlink Data Streams provider field"
+            ));
+        }
+    }
+
     if table.contains_key(CHAINLINK_DATA_STREAMS_OLD_SSM_CREDENTIAL_PARAMETER_FIELD) {
         errors.push(format!(
             "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_OLD_SSM_CREDENTIAL_PARAMETER_FIELD} must be replaced by {CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD} and {CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD}"
         ));
     }
+    required_string_field(
+        table,
+        &format!("{context}.chainlink_data_streams"),
+        CHAINLINK_DATA_STREAMS_ENDPOINT_ID_FIELD,
+        &mut errors,
+    );
+    if let Some(rest_base_url) = required_string_field(
+        table,
+        &format!("{context}.chainlink_data_streams"),
+        CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD,
+        &mut errors,
+    ) && url::Url::parse(rest_base_url).is_err()
+    {
+        errors.push(format!(
+            "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD} must be an absolute URL"
+        ));
+    }
+    if let Some(report_endpoint_path) = required_string_field(
+        table,
+        &format!("{context}.chainlink_data_streams"),
+        CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD,
+        &mut errors,
+    ) && (!report_endpoint_path.starts_with('/') || report_endpoint_path.contains('?'))
+    {
+        errors.push(format!(
+            "{context}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD} must be an absolute path without query parameters"
+        ));
+    }
+    required_positive_integer_field(
+        table,
+        &format!("{context}.chainlink_data_streams"),
+        CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD,
+        &mut errors,
+    );
     errors.extend(validate_chainlink_data_streams_ssm_parameter_field(
         context,
         table,

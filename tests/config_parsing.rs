@@ -2816,7 +2816,6 @@ fn accepts_canonical_gate_provider_root_blocks() {
 [gate_providers.resolution_oracle_primary]
 provider_kind = "chainlink_data_streams"
 capabilities = ["resolution_value"]
-client_id = "chainlink_testnet"
 
 [gate_providers.resolution_oracle_primary.freshness]
 max_age_ms = 300000
@@ -2824,6 +2823,9 @@ max_clock_skew_ms = 5000
 
 [gate_providers.resolution_oracle_primary.chainlink_data_streams]
 endpoint_id = "testnet-data-streams"
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 
@@ -2837,7 +2839,6 @@ report_decimal_scale = 8
 [gate_providers.venue_metadata_primary]
 provider_kind = "hyperliquid_hip4"
 capabilities = ["market_metadata", "reference_value"]
-client_id = "hyperliquid_mainnet"
 
 [gate_providers.venue_metadata_primary.freshness]
 max_age_ms = 300000
@@ -2888,6 +2889,132 @@ api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
                 && message.contains("feed_bindings")
         }),
         "provider-level Chainlink feed fields should fail with feed_bindings guidance: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_chainlink_data_streams_unknown_provider_field() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+unowned_connection_field = "must-fail"
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 8
+"#,
+    ))
+    .expect("unknown Chainlink provider fields should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary.chainlink_data_streams")
+                && message.contains("unowned_connection_field")
+        }),
+        "unknown Chainlink provider fields should fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_chainlink_data_streams_missing_rest_request_fields() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 8
+"#,
+    ))
+    .expect("missing Chainlink request fields should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("rest_base_url")),
+        "missing Chainlink rest_base_url should fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_gate_provider_client_id_without_configured_client() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+client_id = "missing_chainlink_client"
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 8
+"#,
+    ))
+    .expect("dangling gate provider client_id should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary.client_id")
+                && message.contains("missing_chainlink_client")
+        }),
+        "dangling gate provider client_id should fail closed: {messages:#?}"
     );
 }
 
@@ -4371,7 +4498,6 @@ report_decimal_scale = 8
 [gate_providers.resolution_oracle_primary]
 provider_kind = "chainlink_data_streams"
 capabilities = ["resolution_value"]
-client_id = "chainlink_testnet"
 
 [gate_providers.resolution_oracle_primary.freshness]
 max_age_ms = 300000
@@ -4379,6 +4505,9 @@ max_clock_skew_ms = 5000
 
 [gate_providers.resolution_oracle_primary.chainlink_data_streams]
 endpoint_id = "testnet-data-streams"
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
 api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 {bindings_toml}

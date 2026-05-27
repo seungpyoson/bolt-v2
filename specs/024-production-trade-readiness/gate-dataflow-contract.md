@@ -42,7 +42,7 @@ Root gate providers are examples, not canonical runtime values. Provider ids are
 [gate_providers.resolution_oracle_primary]
 provider_kind = "chainlink_data_streams"
 capabilities = ["resolution_value"]
-client_id = "chainlink_mainnet"
+client_id = "chainlink_testnet"
 
 [gate_providers.resolution_oracle_primary.freshness]
 max_age_ms = 300000
@@ -57,16 +57,16 @@ api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 
 [[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
-resolution_identity = "btc-usd-5m"
+resolution_identity = "configured-reference-price"
 value_kind = "price"
-feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439"
+feed_id = "0x1111111111111111111111111111111111111111111111111111111111111111"
 report_schema_version = 3
 report_decimal_scale = 18
 
 [[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
-resolution_identity = "eth-usd-5m"
+resolution_identity = "configured-secondary-reference-price"
 value_kind = "price"
-feed_id = "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782"
+feed_id = "0x2222222222222222222222222222222222222222222222222222222222222222"
 report_schema_version = 3
 report_decimal_scale = 18
 
@@ -97,7 +97,7 @@ allow_no_resolution = false
 family_key = "updown"
 market_class = "binary_option"
 resolution_kind = "chainlink_data_streams"
-resolution_identity = "btc-usd-5m"
+resolution_identity = "configured-reference-price"
 value_kind = "price"
 provider_id = "resolution_oracle_primary"
 ```

@@ -1608,6 +1608,25 @@ mod tests {
         }
     }
 
+    fn loaded_config_with_primary_reference_data() -> LoadedBoltV3Config {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        strategy.config.reference_data.insert(
+            "primary".to_string(),
+            ReferenceDataBlock {
+                data_client_id: ClientId::from("polymarket_main"),
+                instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
+            },
+        );
+        loaded
+    }
+
     #[test]
     fn runtime_redaction_value_buffers_zeroize_on_drop() {
         fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
@@ -1730,10 +1749,7 @@ mod tests {
 
     #[test]
     fn reference_quote_probe_does_not_satisfy_distinct_clients_with_one_quote() {
-        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
-            "tests/fixtures/bolt_v3/root.toml",
-        ))
-        .expect("fixture config should load before direct mutation");
+        let mut loaded = loaded_config_with_primary_reference_data();
         let strategy = loaded
             .strategies
             .first_mut()
@@ -1747,7 +1763,7 @@ mod tests {
         strategy.config.reference_data.insert(
             "secondary".to_string(),
             ReferenceDataBlock {
-                data_client_id: ClientId::from("polymarket_main"),
+                data_client_id: ClientId::from("secondary_reference"),
                 instrument_id: primary.instrument_id,
             },
         );
@@ -1781,10 +1797,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn reference_quote_probe_wait_wakes_when_required_quote_records() {
-        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
-            "tests/fixtures/bolt_v3/root.toml",
-        ))
-        .expect("fixture config should load");
+        let loaded = loaded_config_with_primary_reference_data();
         let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::new(&loaded);
         let required = handle
             .required
@@ -1816,10 +1829,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn reference_quote_probe_wait_accepts_quote_recorded_before_wait_starts() {
-        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
-            "tests/fixtures/bolt_v3/root.toml",
-        ))
-        .expect("fixture config should load");
+        let loaded = loaded_config_with_primary_reference_data();
         let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::new(&loaded);
         let required = handle
             .required
@@ -2064,25 +2074,25 @@ mod tests {
             .risk
             .nautilus
             .max_notional_per_order
-            .insert("ETHUSDT.BINANCE".to_string(), "12345.00".to_string());
+            .insert("REFERENCE.SOURCE".to_string(), "12345.00".to_string());
         loaded
             .root
             .risk
             .nautilus
             .max_notional_per_order
-            .insert("BTCUSDT.BINANCE".to_string(), "25000.50".to_string());
+            .insert("SECONDARY.SOURCE".to_string(), "25000.50".to_string());
         let cfg = make_live_node_config(&loaded);
 
         assert_eq!(
             cfg.risk_engine
                 .max_notional_per_order
-                .get("ETHUSDT.BINANCE"),
+                .get("REFERENCE.SOURCE"),
             Some(&"12345.00".to_string())
         );
         assert_eq!(
             cfg.risk_engine
                 .max_notional_per_order
-                .get("BTCUSDT.BINANCE"),
+                .get("SECONDARY.SOURCE"),
             Some(&"25000.50".to_string())
         );
     }

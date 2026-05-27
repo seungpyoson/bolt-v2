@@ -16,7 +16,7 @@
 //!    parameter row without reaching back into core config.
 //! 2. The archetype's bolt-v3 startup-validation policy:
 //!    - the required reference-data role
-//!      (`[reference_data.primary]`),
+//!      (`[reference_data.<role>]`, when the strategy enables an NT quote feed),
 //!    - the enabled `[parameters.entry_order]` and
 //!      `[parameters.exit_order]` and `[parameters.forced_exit_order]`
 //!      NT order-template invariants, including required GTD expiry,
@@ -29,7 +29,7 @@
 //! `strategy.strategy_archetype`. Archetype-specific error-message
 //! policy (the headline "is not allowed for `binary_oracle_edge_taker`"
 //! phrase, the per-field rule listing, and the
-//! "requires `[reference_data.primary]`" phrase) lives here so that a
+//! reference-data structural wording) lives here so that a
 //! future archetype can introduce its own message contract without
 //! reaching back into core validation.
 
@@ -48,7 +48,9 @@ use crate::{
     bolt_v3_archetypes::{
         ArchetypeGateRequirement, ArchetypeValidationBinding, GateRole, GateValueKind,
     },
-    bolt_v3_config::{BoltV3StrategyConfig, LoadedStrategy, RESOLUTION_GATE_ROLE},
+    bolt_v3_config::{
+        BoltV3StrategyConfig, DECISION_REFERENCE_GATE_ROLE, LoadedStrategy, RESOLUTION_GATE_ROLE,
+    },
     bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config},
     bolt_v3_position_contract::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
@@ -416,18 +418,31 @@ pub fn raw_taker_config(
                 strategy.config.execution_client_id
             ),
         })?;
+    let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
     let reference_data = configured_reference_data(strategy)?;
-    loaded
-        .root
-        .clients
-        .get(reference_data.data_client_id.as_str())
-        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
+    let decision_reference =
+        configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
+    if reference_data.is_some() && decision_reference.is_some() {
+        return Err(BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: format!(
-                "reference_data data_client_id `{}` is not present in loaded clients",
-                reference_data.data_client_id
+                "configure either [reference_data.<role>] or target.gate_subscriptions.{DECISION_REFERENCE_GATE_ROLE}, not both"
             ),
-        })?;
+        });
+    }
+    if let Some(reference_data) = reference_data {
+        loaded
+            .root
+            .clients
+            .get(reference_data.data_client_id.as_str())
+            .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
+                strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+                message: format!(
+                    "reference_data data_client_id `{}` is not present in loaded clients",
+                    reference_data.data_client_id
+                ),
+            })?;
+    }
 
     let order_notional_target = decimal_string_to_f64(
         &strategy.config.strategy_instance_id,
@@ -444,7 +459,6 @@ pub fn raw_taker_config(
         target.cadence_seconds_source_field,
         target.cadence_seconds,
     )?;
-    let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
     let price_to_beat_source =
         price_to_beat_source_from_target(strategy_instance_id, &strategy.config.target)?;
     let resolution_provider_id =
@@ -550,16 +564,34 @@ pub fn raw_taker_config(
         target.blocked_after_seconds,
     )?;
     insert_string(&mut table, "price_to_beat_source", price_to_beat_source);
-    insert_string(
-        &mut table,
-        "reference_venue",
-        reference_data.data_client_id.to_string(),
-    );
-    insert_string(
-        &mut table,
-        "reference_instrument_id",
-        reference_data.instrument_id.to_string(),
-    );
+    match (reference_data, decision_reference) {
+        (Some(reference_data), None) => {
+            insert_string(
+                &mut table,
+                "reference_venue",
+                reference_data.data_client_id.to_string(),
+            );
+            insert_string(
+                &mut table,
+                "reference_instrument_id",
+                reference_data.instrument_id.to_string(),
+            );
+        }
+        (None, Some(decision_reference)) => {
+            insert_string(
+                &mut table,
+                "reference_venue",
+                decision_reference.provider_id,
+            );
+            insert_string(
+                &mut table,
+                "reference_instrument_id",
+                decision_reference.resolution_identity,
+            );
+        }
+        (None, None) => {}
+        (Some(_), Some(_)) => unreachable!("dual reference paths are rejected above"),
+    }
     insert_order_config(
         &mut table,
         strategy_instance_id,
@@ -707,9 +739,62 @@ fn resolution_gate_provider_id_from_target(
     target: &toml::Value,
 ) -> Result<String, BinaryOracleEdgeTakerRuntimeConfigError> {
     let subscription = resolution_subscription_table(strategy_instance_id, target)?;
-    first_resolution_market_mapping(strategy_instance_id, subscription)
-        .ok()
-        .and_then(|mapping| mapping.get("provider_id").and_then(toml::Value::as_str))
+    let mapping = first_resolution_market_mapping(strategy_instance_id, subscription)?;
+    gate_provider_id_from_subscription(
+        strategy_instance_id,
+        RESOLUTION_GATE_ROLE,
+        subscription,
+        mapping,
+    )
+}
+
+struct DecisionReferenceTarget {
+    provider_id: String,
+    resolution_identity: String,
+}
+
+fn configured_decision_reference(
+    strategy_instance_id: &str,
+    target: &toml::Value,
+) -> Result<Option<DecisionReferenceTarget>, BinaryOracleEdgeTakerRuntimeConfigError> {
+    let Some(subscription) = target
+        .as_table()
+        .and_then(|target| target.get("gate_subscriptions"))
+        .and_then(toml::Value::as_table)
+        .and_then(|subscriptions| subscriptions.get(DECISION_REFERENCE_GATE_ROLE))
+        .and_then(toml::Value::as_table)
+    else {
+        return Ok(None);
+    };
+    let mapping = first_gate_market_mapping(
+        strategy_instance_id,
+        DECISION_REFERENCE_GATE_ROLE,
+        subscription,
+    )?;
+    let provider_id = gate_provider_id_from_subscription(
+        strategy_instance_id,
+        DECISION_REFERENCE_GATE_ROLE,
+        subscription,
+        mapping,
+    )?;
+    let resolution_identity =
+        required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_identity")?
+            .to_string();
+    Ok(Some(DecisionReferenceTarget {
+        provider_id,
+        resolution_identity,
+    }))
+}
+
+fn gate_provider_id_from_subscription(
+    strategy_instance_id: &str,
+    gate_role: &str,
+    subscription: &toml::map::Map<String, toml::Value>,
+    mapping: &toml::map::Map<String, toml::Value>,
+) -> Result<String, BinaryOracleEdgeTakerRuntimeConfigError> {
+    mapping
+        .get("provider_id")
+        .and_then(toml::Value::as_str)
         .or_else(|| {
             subscription
                 .get("provider_preference")
@@ -730,12 +815,20 @@ fn resolution_gate_provider_id_from_target(
         .map(str::to_string)
         .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
             strategy_instance_id: strategy_instance_id.to_string(),
-            message: "resolution gate provider_id is required for runtime bridge".to_string(),
+            message: format!("{gate_role} gate provider_id is required for runtime bridge"),
         })
 }
 
 fn first_resolution_market_mapping<'a>(
     strategy_instance_id: &str,
+    subscription: &'a toml::map::Map<String, toml::Value>,
+) -> Result<&'a toml::map::Map<String, toml::Value>, BinaryOracleEdgeTakerRuntimeConfigError> {
+    first_gate_market_mapping(strategy_instance_id, RESOLUTION_GATE_ROLE, subscription)
+}
+
+fn first_gate_market_mapping<'a>(
+    strategy_instance_id: &str,
+    gate_role: &str,
     subscription: &'a toml::map::Map<String, toml::Value>,
 ) -> Result<&'a toml::map::Map<String, toml::Value>, BinaryOracleEdgeTakerRuntimeConfigError> {
     subscription
@@ -748,7 +841,7 @@ fn first_resolution_market_mapping<'a>(
         .next()
         .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
             strategy_instance_id: strategy_instance_id.to_string(),
-            message: "target gate market_mappings must include a resolution mapping".to_string(),
+            message: format!("target gate market_mappings must include a {gate_role} mapping"),
         })
 }
 
@@ -1021,18 +1114,18 @@ fn oms_type_value(strategy: &LoadedStrategy) -> String {
 
 fn configured_reference_data(
     strategy: &LoadedStrategy,
-) -> Result<&crate::bolt_v3_config::ReferenceDataBlock, BinaryOracleEdgeTakerRuntimeConfigError> {
+) -> Result<
+    Option<&crate::bolt_v3_config::ReferenceDataBlock>,
+    BinaryOracleEdgeTakerRuntimeConfigError,
+> {
     let mut entries = strategy.config.reference_data.iter();
     match (entries.next(), entries.next()) {
-        (Some((_role, block)), None) => Ok(block),
-        (None, _) => Err(BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
-            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            message: "requires exactly one [reference_data.<role>] block".to_string(),
-        }),
+        (Some((_role, block)), None) => Ok(Some(block)),
+        (None, _) => Ok(None),
         (Some(_), Some(_)) => Err(BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: format!(
-                "requires exactly one [reference_data.<role>] block; got roles [{}]",
+                "allows at most one [reference_data.<role>] block; got roles [{}]",
                 reference_data_role_names(&strategy.config)
             ),
         }),
@@ -1049,12 +1142,12 @@ fn reference_data_role_names(strategy: &BoltV3StrategyConfig) -> String {
 }
 
 fn validate_required_reference_data(context: &str, strategy: &BoltV3StrategyConfig) -> Vec<String> {
-    if strategy.reference_data.contains_key("primary") {
-        Vec::new()
-    } else {
+    if strategy.reference_data.len() > 1 {
         vec![format!(
-            "{context}: strategy_archetype `binary_oracle_edge_taker` requires [reference_data.primary]"
+            "{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"
         )]
+    } else {
+        Vec::new()
     }
 }
 

@@ -1321,8 +1321,9 @@ mod tests {
             configured_target_id = "fixture-target"
             kind = "rotating_market"
             rotating_market_family = "updown"
-            underlying_asset = "BTC"
+            underlying_asset = "CONFIGURED_ASSET"
             cadence_secs = -1
+            cadence_slug_token = "configuredwindow"
             market_selection_rule = "active_or_next"
             retry_interval_secs = 1
             blocked_after_secs = 1

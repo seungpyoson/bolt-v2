@@ -18,6 +18,7 @@ use nautilus_polymarket::{
     common::consts::DUST_POSITION_THRESHOLD,
     signing::eip712::{CTF_EXCHANGE, NEG_RISK_CTF_EXCHANGE},
 };
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use sha2::{Digest, Sha256};
 
 mod support;
@@ -52,13 +53,6 @@ fn bolt_v3_secrets_check_reports_provider_secret_fields() {
              (private_key_ssm_path, api_key_ssm_path, api_secret_ssm_path, passphrase_ssm_path)"
         ),
         "expected Polymarket secret field inventory, got: {stdout}"
-    );
-    assert!(
-        stdout.contains(
-            "clients.binance_reference: required secret fields present \
-             (api_key_ssm_path, api_secret_ssm_path)"
-        ),
-        "expected Binance secret field inventory, got: {stdout}"
     );
 }
 
@@ -668,7 +662,7 @@ fn bolt_v3_cli_collects_host_clock_source_from_configured_provider_time() {
             "--config",
             config_path.to_str().expect("config path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--output",
             output_path.to_str().expect("output path should be utf-8"),
         ])
@@ -943,7 +937,7 @@ fn bolt_v3_cli_collects_egress_identity_source_from_configured_probe() {
             "--config",
             config_path.to_str().expect("fixture path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--output",
             output_path.to_str().expect("output path should be utf-8"),
         ])
@@ -1011,7 +1005,7 @@ fn bolt_v3_cli_collects_egress_identity_source_before_operator_evidence_patch() 
             "--config",
             config_path.to_str().expect("fixture path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--output",
             output_path.to_str().expect("output path should be utf-8"),
         ])
@@ -1044,11 +1038,6 @@ fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_from_ssm_backed_bal
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
-        ("/bolt/binance_reference/api_key", "binance-api-key"),
-        (
-            "/bolt/binance_reference/api_secret",
-            "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
-        ),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
@@ -1084,7 +1073,7 @@ fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_from_ssm_backed_bal
             "--config",
             config_path.to_str().expect("config path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--fee-rate-source",
             fee_rate_source_path
                 .to_str()
@@ -1235,7 +1224,7 @@ collateral_token_address = "{token_address}"
             "--config",
             config_path.to_str().expect("config path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--fee-rate-source",
             fee_rate_source_path
                 .to_str()
@@ -1371,7 +1360,7 @@ collateral_token_address = "0x2222222222222222222222222222222222222222"
             "--config",
             config_path.to_str().expect("config path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--fee-rate-source",
             fee_rate_source_path
                 .to_str()
@@ -1452,11 +1441,6 @@ fn bolt_v3_cli_collects_venue_account_state_source_from_configured_account_queri
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
-        ("/bolt/binance_reference/api_key", "binance-api-key"),
-        (
-            "/bolt/binance_reference/api_secret",
-            "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
-        ),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
@@ -1481,7 +1465,7 @@ fn bolt_v3_cli_collects_venue_account_state_source_from_configured_account_queri
             "--config",
             config_path.to_str().expect("config path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--output",
             output_path.to_str().expect("output path should be utf-8"),
         ])
@@ -1560,7 +1544,7 @@ fn bolt_v3_cli_collects_venue_account_state_source_from_configured_account_queri
         "bolt_v3.pre_run_venue_account_state_source.v1"
     );
     assert_eq!(json["execution_client_id"], "polymarket_main");
-    assert_eq!(json["configured_target_id"], "btc_updown_5m");
+    assert_eq!(json["configured_target_id"], "configured_updown_target");
     assert_eq!(json["open_order_count"], 0);
     assert_eq!(json["open_position_count"], 0);
     let snapshot_sha = json["account_state_snapshot_sha256"]
@@ -1771,11 +1755,6 @@ fn run_venue_account_state_source_fixture_with_responses(
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
-        ("/bolt/binance_reference/api_key", "binance-api-key"),
-        (
-            "/bolt/binance_reference/api_secret",
-            "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
-        ),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
@@ -1799,7 +1778,7 @@ fn run_venue_account_state_source_fixture_with_responses(
             "--config",
             config_path.to_str().expect("config path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--output",
             output_path.to_str().expect("output path should be utf-8"),
         ])
@@ -1858,11 +1837,6 @@ fn bolt_v3_cli_collects_funding_margin_source_from_ssm_backed_balance_allowance(
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
-        ("/bolt/binance_reference/api_key", "binance-api-key"),
-        (
-            "/bolt/binance_reference/api_secret",
-            "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
-        ),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
@@ -1896,7 +1870,7 @@ fn bolt_v3_cli_collects_funding_margin_source_from_ssm_backed_balance_allowance(
             "--config",
             config_path.to_str().expect("config path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--fee-rate-source",
             fee_rate_source_path
                 .to_str()
@@ -2009,11 +1983,6 @@ fn bolt_v3_cli_syncs_clob_v2_balance_allowance_cache_from_configured_account() {
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
-        ("/bolt/binance_reference/api_key", "binance-api-key"),
-        (
-            "/bolt/binance_reference/api_secret",
-            "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
-        ),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
@@ -2033,7 +2002,7 @@ fn bolt_v3_cli_syncs_clob_v2_balance_allowance_cache_from_configured_account() {
             "--config",
             config_path.to_str().expect("config path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--acknowledge-clob-cache-mutation",
         ])
         .env("AWS_ENDPOINT_URL_SSM", &ssm_url)
@@ -2259,11 +2228,6 @@ fn run_clob_v2_collateral_accounting_source_fixture(
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
-        ("/bolt/binance_reference/api_key", "binance-api-key"),
-        (
-            "/bolt/binance_reference/api_secret",
-            "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
-        ),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
@@ -2296,7 +2260,7 @@ fn run_clob_v2_collateral_accounting_source_fixture(
             "--config",
             config_path.to_str().expect("config path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--fee-rate-source",
             fee_rate_source_path
                 .to_str()
@@ -2330,11 +2294,6 @@ fn run_funding_margin_source_fixture(
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
-        ("/bolt/binance_reference/api_key", "binance-api-key"),
-        (
-            "/bolt/binance_reference/api_secret",
-            "MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f",
-        ),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
@@ -2367,7 +2326,7 @@ fn run_funding_margin_source_fixture(
             "--config",
             config_path.to_str().expect("config path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--fee-rate-source",
             fee_rate_source_path
                 .to_str()
@@ -2916,6 +2875,118 @@ fn bolt_v3_cli_exposes_collect_reference_quote_observations_source() {
 }
 
 #[test]
+fn bolt_v3_cli_exposes_collect_chainlink_reference_quote_observations_source() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "collect-chainlink-reference-quote-observations-source",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 Chainlink reference quote observations source help should run");
+
+    assert!(
+        output.status.success(),
+        "expected Chainlink reference quote observations source help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"));
+    assert!(stdout.contains("--strategy-instance-id"));
+    assert!(stdout.contains("--price-report"));
+    assert!(stdout.contains("--expected-price-report-sha256"));
+    assert!(stdout.contains("--max-price-report-bytes"));
+    assert!(stdout.contains("--output"));
+}
+
+#[test]
+fn bolt_v3_cli_collects_chainlink_reference_quote_observations_source_without_printing_reports() {
+    let temp = tempdir().expect("tempdir should create");
+    let config_path = repo_path("tests/fixtures/bolt_v3/root.toml");
+    let feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
+    let reports = [3300.0, 3301.0, 3302.0]
+        .iter()
+        .enumerate()
+        .map(|(index, price)| {
+            let timestamp_seconds = 600 + u32::try_from(index).expect("test index should fit u32");
+            let path = temp
+                .path()
+                .join(format!("chainlink-reference-{timestamp_seconds}.json"));
+            fs::write(
+                &path,
+                chainlink_v3_report_source_json(
+                    feed_id,
+                    timestamp_seconds,
+                    timestamp_seconds,
+                    *price,
+                    18,
+                ),
+            )
+            .expect("reference report should write");
+            let sha256 = sha256_file_for_cli_test(&path);
+            (path, sha256)
+        })
+        .collect::<Vec<_>>();
+    let output_path = temp
+        .path()
+        .join("chainlink-reference-quote-observations-source.json");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bolt-v2"));
+    command.args([
+        "operator-artifacts",
+        "collect-chainlink-reference-quote-observations-source",
+        "--config",
+        config_path.to_str().expect("fixture path should be utf-8"),
+        "--strategy-instance-id",
+        "configured_updown_main",
+    ]);
+    for (path, sha256) in &reports {
+        command
+            .arg("--price-report")
+            .arg(path)
+            .arg("--expected-price-report-sha256")
+            .arg(sha256);
+    }
+    let output = command
+        .args([
+            "--max-price-report-bytes",
+            "100000",
+            "--output",
+            output_path.to_str().expect("output path should be utf-8"),
+        ])
+        .output()
+        .expect("Chainlink reference observations command should run");
+
+    assert!(
+        output.status.success(),
+        "expected Chainlink reference observations command to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("fullReport"),
+        "stdout must not print raw Chainlink source reports: {stdout}"
+    );
+    let summary: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout summary should parse");
+    assert_eq!(
+        summary["sha256"],
+        serde_json::json!(sha256_file_for_cli_test(&output_path))
+    );
+    let source: serde_json::Value =
+        serde_json::from_slice(&fs::read(&output_path).expect("output should read"))
+            .expect("output JSON should parse");
+    assert_eq!(
+        source["observations"][0]["data_client_id"],
+        serde_json::json!("resolution_oracle_primary")
+    );
+    assert_eq!(
+        source["observations"][0]["instrument_id"],
+        serde_json::json!("configured-reference-price")
+    );
+}
+
+#[test]
 fn bolt_v3_cli_collects_chainlink_price_report_source_without_printing_credentials_or_report() {
     let temp = tempdir().expect("tempdir should create");
     let feed_id = "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
@@ -2952,7 +3023,7 @@ fn bolt_v3_cli_collects_chainlink_price_report_source_without_printing_credentia
             "--config",
             config_path.to_str().expect("fixture path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--report-timestamp-unix-seconds",
             "601",
             "--max-report-response-bytes",
@@ -3078,7 +3149,7 @@ max_notional_per_order = "10.00"
             "--config",
             config_path.to_str().expect("fixture path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
             "--price-report",
             report_path.to_str().expect("report path should be utf-8"),
             "--max-price-report-bytes",
@@ -3161,7 +3232,7 @@ max_notional_per_order = "10.00"
             "--output-dir",
             output_dir.to_str().expect("output path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
         ])
         .output()
         .expect("bolt-v3 static operator artifacts command should run");
@@ -3205,8 +3276,6 @@ max_notional_per_order = "10.00"
         "/bolt/polymarket_main/api_key",
         "/bolt/polymarket_main/api_secret",
         "/bolt/polymarket_main/passphrase",
-        "/bolt/binance_reference/api_key",
-        "/bolt/binance_reference/api_secret",
         "nonce_bytes",
         "nonce_material",
     ] {
@@ -3348,7 +3417,7 @@ max_notional_per_order = "10.00"
             "--output-dir",
             output_dir.to_str().expect("output path should be utf-8"),
             "--strategy-instance-id",
-            "bitcoin_updown_main",
+            "configured_updown_main",
         ])
         .output()
         .expect("bolt-v3 base static operator artifacts command should run");
@@ -3400,8 +3469,6 @@ max_notional_per_order = "10.00"
         "/bolt/polymarket_main/api_key",
         "/bolt/polymarket_main/api_secret",
         "/bolt/polymarket_main/passphrase",
-        "/bolt/binance_reference/api_key",
-        "/bolt/binance_reference/api_secret",
         "nonce_bytes",
         "nonce_material",
     ] {
@@ -3468,7 +3535,7 @@ fn bolt_v3_secrets_resolve_surfaces_ssm_failure() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stderr.contains("/bolt/binance_reference/api_secret"),
+        !stderr.contains("/bolt/polymarket_main/api_secret"),
         "stderr must not expose failing SSM path, got: {stderr}"
     );
     assert!(
@@ -3525,10 +3592,10 @@ fn write_reference_quote_observations_source_for_cli_test(dir: &Path) -> std::pa
         .map(|(index, price)| {
             let ts_ms = 600_000u64 + u64::try_from(index).expect("index should fit u64") * 1_000;
             serde_json::json!({
-                "data_client_id": "binance_reference",
-                "instrument_id": "BTCUSDT.BINANCE",
-                "bid_price": price - 1.0,
-                "ask_price": price + 1.0,
+                "data_client_id": "resolution_oracle_primary",
+                "instrument_id": "configured-reference-price",
+                "bid_price": price,
+                "ask_price": price,
                 "ts_event_unix_nanos": ts_ms * 1_000_000,
                 "ts_init_unix_nanos": ts_ms * 1_000_000,
                 "captured_at_unix_nanos": ts_ms * 1_000_000
@@ -3583,15 +3650,18 @@ fn chainlink_v3_full_report_payload(
     blob.extend_from_slice(&abi_zero_word());
     blob.extend_from_slice(&abi_zero_word());
     blob.extend_from_slice(&abi_u32_word(observations_timestamp_seconds + 60));
-    blob.extend_from_slice(&abi_i192_word(
-        (benchmark_price * 10f64.powi(decimal_scale as i32)).round() as i128,
-    ));
-    blob.extend_from_slice(&abi_i192_word(
-        ((benchmark_price - 1.0) * 10f64.powi(decimal_scale as i32)).round() as i128,
-    ));
-    blob.extend_from_slice(&abi_i192_word(
-        ((benchmark_price + 1.0) * 10f64.powi(decimal_scale as i32)).round() as i128,
-    ));
+    blob.extend_from_slice(&abi_i192_word(chainlink_scaled_price(
+        benchmark_price,
+        decimal_scale,
+    )));
+    blob.extend_from_slice(&abi_i192_word(chainlink_scaled_price(
+        benchmark_price,
+        decimal_scale,
+    )));
+    blob.extend_from_slice(&abi_i192_word(chainlink_scaled_price(
+        benchmark_price,
+        decimal_scale,
+    )));
 
     let mut payload = Vec::new();
     payload.extend_from_slice(&abi_zero_word());
@@ -3601,6 +3671,18 @@ fn chainlink_v3_full_report_payload(
     payload.extend_from_slice(&abi_usize_word(blob.len()));
     payload.extend_from_slice(&blob);
     payload
+}
+
+fn chainlink_scaled_price(benchmark_price: f64, decimal_scale: u64) -> i128 {
+    let scale = 10_i128
+        .checked_pow(u32::try_from(decimal_scale).expect("test decimal scale should fit u32"))
+        .expect("test decimal scale should fit i128");
+    let price = Decimal::from_str_exact(&benchmark_price.to_string())
+        .expect("test benchmark price should be decimal");
+    (price * Decimal::from(scale))
+        .round()
+        .to_i128()
+        .expect("test benchmark price should fit i128")
 }
 
 fn chainlink_feed_id_bytes(feed_id: &str) -> [u8; 32] {

@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use sha2::{Digest, Sha256};
 
 use bolt_v2::{
@@ -7,10 +8,11 @@ use bolt_v2::{
         ArchetypeGateRequirement, GateRole, GateValueKind, binary_oracle_edge_taker,
     },
     bolt_v3_config::{
-        BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, GateProviderBlock,
-        GateProviderFreshnessBlock, LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock,
-        LoadedBoltV3Config, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND,
-        RESOLUTION_GATE_ROLE, load_bolt_v3_config,
+        BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
+        GateProviderBlock, GateProviderFreshnessBlock, LiveCanaryBlock,
+        LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, NO_RESOLUTION_KIND,
+        NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE, ReferenceDataBlock,
+        load_bolt_v3_config,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3GateEvidenceIdentity,
@@ -21,6 +23,8 @@ use bolt_v2::{
     bolt_v3_live_node::{BoltV3NoSubmitReferenceQuote, BoltV3NoSubmitReferenceQuoteEvidence},
     bolt_v3_market_families::{SelectedMarketRequirement, updown::updown_market_slug},
     bolt_v3_operator_artifacts::{
+        ChainlinkReferencePriceReportSourceFile,
+        ChainlinkReferenceQuoteObservationsSourceMaterializationRequest,
         EntryDecisionProofSourceMaterializationRequest, EntryDecisionSourceBookSideInput,
         EntryDecisionSourceCollectionRequest, EntryDecisionSourceInputRequest,
         EntryDecisionSourceMarketInputs, EntryReadinessGateEvidenceSourceFileRequest,
@@ -29,6 +33,7 @@ use bolt_v2::{
         build_entry_readiness_gate_session, build_redacted_ssm_manifest,
         collect_entry_decision_source_inputs_from_configured_provider,
         collect_entry_readiness_gate_evidence_from_source_file, normalize_gate_evidence,
+        write_chainlink_reference_quote_observations_source_from_report_files,
         write_reference_quote_observations_source_from_no_submit_evidence,
     },
     bolt_v3_tiny_canary_evidence::{
@@ -40,7 +45,7 @@ use bolt_v2::{
 use nautilus_core::Params;
 use nautilus_model::{
     enums::AssetClass,
-    identifiers::{InstrumentId, Symbol},
+    identifiers::{ClientId, InstrumentId, Symbol},
     instruments::{BinaryOption, InstrumentAny},
     types::{Currency, Price, Quantity},
 };
@@ -49,8 +54,8 @@ mod support;
 use support::{repo_path, valid_entry_readiness_gate_session_json};
 
 // Test-only updown fixture values mirror tests/fixtures/bolt_v3/strategies/binary_oracle.toml.
-const TEST_MARKET_SELECTION_UNDERLYING_ASSET: &str = "BTC";
-const TEST_MARKET_SELECTION_CADENCE_SLUG: &str = "5m";
+const TEST_MARKET_SELECTION_UNDERLYING_ASSET: &str = "CONFIGURED_ASSET";
+const TEST_MARKET_SELECTION_CADENCE_SLUG: &str = "configuredwindow";
 const TEST_MARKET_SELECTION_CURRENT_START_SECONDS: i64 = 600;
 const TEST_MARKET_SELECTION_NOW_MS: u64 = 600_000;
 const TEST_MARKET_SELECTION_START_MS: u64 = 600_000;
@@ -65,12 +70,17 @@ const TEST_UP_OUTCOME: &str = "Up";
 const TEST_DOWN_OUTCOME: &str = "Down";
 const TEST_BINARY_OPTION_SIZE_INCREMENT: &str = "0.01";
 const TEST_EXECUTION_CLIENT_ID: &str = "polymarket_main";
-const TEST_CONFIGURED_TARGET_ID: &str = "btc_updown_5m";
-const TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.example-resolution-5m";
+const TEST_REFERENCE_DATA_CLIENT_ID: &str = "reference_data_client";
+const TEST_REFERENCE_INSTRUMENT_ID: &str = "REFERENCE.SOURCE";
+const TEST_STRATEGY_INSTANCE_ID: &str = "configured_updown_main";
+const TEST_CONFIGURED_TARGET_ID: &str = "configured_updown_target";
+const TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.configured-reference-price";
 const TEST_PRICE_TO_BEAT_FEED_ID: &str =
     "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
-const TEST_ETH_CHAINLINK_TESTNET_FEED_ID: &str =
+const TEST_SECONDARY_CHAINLINK_TESTNET_FEED_ID: &str =
     "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782";
+const TEST_ALT_CHAINLINK_FEED_ID: &str =
+    "0x1111111111111111111111111111111111111111111111111111111111111111";
 const TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION: u64 = 3;
 const TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE: u64 = 18;
 const TEST_PRICE_TO_BEAT_REPORT_SHA256: &str =
@@ -135,7 +145,7 @@ fn entry_readiness_gate_session_binds_normalized_resolution_evidence() {
     .expect("matching provider evidence should satisfy entry readiness");
 
     assert_eq!(session.schema_version, 1);
-    assert_eq!(session.strategy_instance_id, "bitcoin_updown_main");
+    assert_eq!(session.strategy_instance_id, TEST_STRATEGY_INSTANCE_ID);
     assert_eq!(session.configured_target_id, TEST_CONFIGURED_TARGET_ID);
     assert_eq!(
         session.selected_market.selected_market_key,
@@ -313,6 +323,65 @@ fn entry_readiness_gate_session_supports_explicit_no_resolution_only_when_allowe
 }
 
 #[test]
+fn entry_readiness_gate_session_keeps_decision_reference_separate_from_resolution() {
+    let mut loaded = load_fixture_with_live_canary();
+    add_decision_reference_subscription(&mut loaded);
+    add_reference_value_capability(&mut loaded, "resolution_oracle_primary");
+    let selected_market = fixture_selected_market_requirement();
+    let resolution_evidence = normalize_gate_evidence(fixture_gate_evidence_input(
+        &selected_market.selected_market_key,
+    ))
+    .expect("resolution evidence should normalize");
+    let requirements = vec![ArchetypeGateRequirement {
+        role: GateRole::DecisionReference,
+        required: true,
+        accepted_value_kinds: BTreeSet::from([GateValueKind::Price]),
+        allow_no_resolution: false,
+    }];
+    let resolution_items = vec![resolution_evidence];
+
+    let error = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &resolution_items,
+    ))
+    .expect_err("resolution evidence must not satisfy decision-reference readiness");
+    assert!(
+        error
+            .to_string()
+            .contains("no provider evidence satisfied role"),
+        "expected role-separation rejection, got: {error}"
+    );
+
+    let mut reference_input = fixture_gate_evidence_input(&selected_market.selected_market_key);
+    reference_input.role = "decision_reference".to_string();
+    reference_input.normalized_value = serde_json::json!({
+        "reference_value": "50000.00",
+        "decimal_scale": TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+    });
+    reference_input.artifact_refs[0].path = "decision-reference-source.json".to_string();
+    let reference_evidence =
+        normalize_gate_evidence(reference_input).expect("reference evidence should normalize");
+    let reference_items = vec![reference_evidence];
+
+    let session = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &reference_items,
+    ))
+    .expect("decision-reference evidence should satisfy its own role");
+    assert!(matches!(
+        session
+            .satisfied_roles
+            .get("decision_reference")
+            .expect("decision_reference role should be satisfied"),
+        GateSatisfaction::Evidence { .. }
+    ));
+}
+
+#[test]
 fn entry_readiness_evidence_collection_dispatches_chainlink_from_selected_provider_kind() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let loaded = load_fixture_with_live_canary();
@@ -321,7 +390,7 @@ fn entry_readiness_evidence_collection_dispatches_chainlink_from_selected_provid
 
     let evidence = collect_entry_readiness_gate_evidence_from_source_file(
         &loaded,
-        "bitcoin_updown_main",
+        TEST_STRATEGY_INSTANCE_ID,
         EntryReadinessGateEvidenceSourceFileRequest {
             role: RESOLUTION_GATE_ROLE,
             provider_id: "resolution_oracle_primary",
@@ -362,7 +431,7 @@ fn entry_readiness_evidence_collection_rejects_provider_not_selected_by_market_m
 
     let error = collect_entry_readiness_gate_evidence_from_source_file(
         &loaded,
-        "bitcoin_updown_main",
+        TEST_STRATEGY_INSTANCE_ID,
         EntryReadinessGateEvidenceSourceFileRequest {
             role: RESOLUTION_GATE_ROLE,
             provider_id: "resolution_oracle_primary",
@@ -424,7 +493,7 @@ fn entry_readiness_evidence_collection_dispatches_hip4_metadata_source_when_requ
 
     let evidence = collect_entry_readiness_gate_evidence_from_source_file(
         &loaded,
-        "bitcoin_updown_main",
+        TEST_STRATEGY_INSTANCE_ID,
         EntryReadinessGateEvidenceSourceFileRequest {
             role: RESOLUTION_GATE_ROLE,
             provider_id: "hip4_metadata_primary",
@@ -509,7 +578,7 @@ fn entry_readiness_gate_session_rotates_provider_kinds_without_global_chainlink_
 
         let session = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
             loaded: &loaded,
-            strategy_instance_id: "bitcoin_updown_main",
+            strategy_instance_id: TEST_STRATEGY_INSTANCE_ID,
             selected_market: &selected_market,
             requirements: &requirements,
             provider_evidence: &evidence_items,
@@ -571,7 +640,7 @@ fn entry_readiness_gate_session_rejects_global_provider_when_mapping_selects_oth
 
     let error = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
         loaded: &loaded,
-        strategy_instance_id: "bitcoin_updown_main",
+        strategy_instance_id: TEST_STRATEGY_INSTANCE_ID,
         selected_market: &selected_market,
         requirements: &requirements,
         provider_evidence: &evidence_items,
@@ -606,7 +675,7 @@ fn entry_readiness_gate_session_accepts_no_resolution_without_global_gate_provid
 
     let session = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
         loaded: &loaded,
-        strategy_instance_id: "bitcoin_updown_main",
+        strategy_instance_id: TEST_STRATEGY_INSTANCE_ID,
         selected_market: &selected_market,
         requirements: &requirements,
         provider_evidence: &[],
@@ -639,7 +708,7 @@ fn fixture_selected_market_requirement() -> SelectedMarketRequirement {
         ],
         market_class: "binary_option".to_string(),
         resolution_kind: CHAINLINK_DATA_STREAMS_PROVIDER_KIND.to_string(),
-        resolution_identity: "example-resolution-5m".to_string(),
+        resolution_identity: "configured-reference-price".to_string(),
         value_kind: PRICE_GATE_VALUE_KIND.to_string(),
         metadata_provenance_sha256: TEST_GATE_METADATA_PROVENANCE_SHA256.to_string(),
         selected_market_key: TEST_GATE_SELECTED_MARKET_KEY.to_string(),
@@ -733,7 +802,7 @@ fn fixture_gate_session_request<'a>(
 ) -> EntryReadinessGateSessionRequest<'a> {
     EntryReadinessGateSessionRequest {
         loaded,
-        strategy_instance_id: "bitcoin_updown_main",
+        strategy_instance_id: TEST_STRATEGY_INSTANCE_ID,
         selected_market,
         requirements,
         provider_evidence: evidence_items,
@@ -771,6 +840,75 @@ fn add_rotation_gate_provider(
                 )]),
             },
         );
+}
+
+fn add_decision_reference_subscription(loaded: &mut LoadedBoltV3Config) {
+    let subscription = resolution_subscription_mut(loaded).clone();
+    loaded.strategies[0]
+        .config
+        .target
+        .as_table_mut()
+        .expect("target should be a table")
+        .get_mut("gate_subscriptions")
+        .expect("gate subscriptions should exist")
+        .as_table_mut()
+        .expect("gate subscriptions should be a table")
+        .insert(
+            "decision_reference".to_string(),
+            toml::Value::Table(subscription),
+        );
+}
+
+fn add_reference_value_capability(loaded: &mut LoadedBoltV3Config, provider_id: &str) {
+    let provider = loaded
+        .root
+        .gate_providers
+        .as_mut()
+        .expect("fixture root should have gate providers")
+        .get_mut(provider_id)
+        .expect("provider should exist");
+    let capabilities = provider
+        .capabilities
+        .as_mut()
+        .expect("provider should carry capabilities");
+    if !capabilities
+        .iter()
+        .any(|capability| capability == "reference_value")
+    {
+        capabilities.push("reference_value".to_string());
+    }
+}
+
+fn configure_reference_data(loaded: &mut LoadedBoltV3Config) {
+    loaded.strategies[0]
+        .config
+        .target
+        .as_table_mut()
+        .expect("target should be a table")
+        .get_mut("gate_subscriptions")
+        .expect("gate subscriptions should exist")
+        .as_table_mut()
+        .expect("gate subscriptions should be a table")
+        .remove(DECISION_REFERENCE_GATE_ROLE);
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    loaded.strategies[0].config.reference_data.insert(
+        "primary".to_string(),
+        ReferenceDataBlock {
+            data_client_id: ClientId::from(TEST_REFERENCE_DATA_CLIENT_ID),
+            instrument_id: InstrumentId::from(TEST_REFERENCE_INSTRUMENT_ID),
+        },
+    );
 }
 
 fn add_metadata_gate_provider(
@@ -955,7 +1093,7 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
         loaded.config_bundle_checksum
     );
     assert_eq!(manifest.aws_region, loaded.root.aws.region);
-    assert_eq!(manifest.entries.len(), 6);
+    assert_eq!(manifest.entries.len(), 4);
 
     let manifest_json =
         serde_json::to_string(&manifest).expect("manifest should serialize for redaction check");
@@ -964,8 +1102,6 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
         "/bolt/polymarket_main/api_key",
         "/bolt/polymarket_main/api_secret",
         "/bolt/polymarket_main/passphrase",
-        "/bolt/binance_reference/api_key",
-        "/bolt/binance_reference/api_secret",
     ] {
         assert!(
             !manifest_json.contains(raw_path),
@@ -1005,18 +1141,6 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
         "polymarket_main",
         "POLYMARKET",
         "passphrase_ssm_path",
-    );
-    assert_manifest_entry(
-        &manifest,
-        "binance_reference",
-        "BINANCE",
-        "api_key_ssm_path",
-    );
-    assert_manifest_entry(
-        &manifest,
-        "binance_reference",
-        "BINANCE",
-        "api_secret_ssm_path",
     );
 }
 
@@ -5889,7 +6013,7 @@ fn entry_decision_evidence_source_fixture(
             "readiness_session": readiness_session,
             "warmup_count": 20,
             "reference_quote": {
-                "venue": "binance_reference",
+                "venue": TEST_REFERENCE_DATA_CLIENT_ID,
                 "price": 3300.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
@@ -5959,7 +6083,7 @@ fn entry_decision_readiness_session_fixture(loaded: &LoadedBoltV3Config) -> serd
     let requirements = binary_oracle_edge_taker::gate_requirements();
     let session = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
         loaded,
-        strategy_instance_id: "bitcoin_updown_main",
+        strategy_instance_id: TEST_STRATEGY_INSTANCE_ID,
         selected_market: &selected_market,
         requirements: &requirements,
         provider_evidence: &[evidence],
@@ -5987,7 +6111,7 @@ fn entry_decision_evidence_replay_derives_price_from_readiness_session() {
             "readiness_session": readiness_session,
             "warmup_count": 20,
             "reference_quote": {
-                "venue": "binance_reference",
+                "venue": TEST_REFERENCE_DATA_CLIENT_ID,
                 "price": 3300.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
@@ -6057,7 +6181,7 @@ fn entry_decision_evidence_source_collector_reports_no_entry_decision() {
             "readiness_session": readiness_session,
             "warmup_count": 20,
             "reference_quote": {
-                "venue": "binance_reference",
+                "venue": TEST_REFERENCE_DATA_CLIENT_ID,
                 "price": 3100.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
@@ -6231,7 +6355,7 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
         serde_json::to_vec_pretty(&serde_json::json!({
             "schema_version": 1,
             "record_kind": "bolt_v3.reference_quote_source.v1",
-            "venue": "binance_reference",
+            "venue": TEST_REFERENCE_DATA_CLIENT_ID,
             "price": 3300.0,
             "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
         }))
@@ -6418,7 +6542,7 @@ fn write_entry_decision_source_input_proofs_with_report_provenance(
         serde_json::to_vec_pretty(&serde_json::json!({
             "schema_version": 1,
             "record_kind": "bolt_v3.reference_quote_source.v1",
-            "venue": "binance_reference",
+            "venue": TEST_REFERENCE_DATA_CLIENT_ID,
             "price": 3300.0,
             "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
         }))
@@ -6513,10 +6637,10 @@ fn write_reference_quote_observations_source(path: &std::path::Path, prices: &[f
             let ts_ms = TEST_MARKET_SELECTION_NOW_MS
                 + u64::try_from(index).expect("test index should fit u64") * 1_000;
             serde_json::json!({
-                "data_client_id": "binance_reference",
-                "instrument_id": "BTCUSDT.BINANCE",
-                "bid_price": price - 1.0,
-                "ask_price": price + 1.0,
+                "data_client_id": TEST_REFERENCE_DATA_CLIENT_ID,
+                "instrument_id": TEST_REFERENCE_INSTRUMENT_ID,
+                "bid_price": price,
+                "ask_price": price,
                 "ts_event_unix_nanos": ts_ms * 1_000_000,
                 "ts_init_unix_nanos": ts_ms * 1_000_000,
                 "captured_at_unix_nanos": ts_ms * 1_000_000
@@ -6535,10 +6659,38 @@ fn write_reference_quote_observations_source(path: &std::path::Path, prices: &[f
     .expect("quote observations source should write");
 }
 
+fn write_chainlink_reference_report_sequence(
+    dir: &std::path::Path,
+) -> Vec<(std::path::PathBuf, String)> {
+    [3300.0, 3301.0, 3302.0, 3304.0, 3308.0, 3313.0]
+        .iter()
+        .enumerate()
+        .map(|(index, price)| {
+            let timestamp_secs = 600 + u32::try_from(index).expect("test index should fit u32");
+            let path = dir.join(format!("chainlink-reference-report-{timestamp_secs}.json"));
+            std::fs::write(
+                &path,
+                chainlink_v3_report_source_json(
+                    TEST_PRICE_TO_BEAT_FEED_ID,
+                    timestamp_secs,
+                    timestamp_secs,
+                    *price,
+                    TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+                    true,
+                ),
+            )
+            .expect("Chainlink reference report should write");
+            let sha256 = sha256_file(&path);
+            (path, sha256)
+        })
+        .collect()
+}
+
 #[test]
 fn reference_quote_observations_source_materializer_writes_nt_quote_probe_prices() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let loaded = load_fixture_with_live_canary();
+    let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
     let strategy_instance_id = loaded
         .strategies
         .first()
@@ -6549,8 +6701,8 @@ fn reference_quote_observations_source_materializer_writes_nt_quote_probe_prices
     let output_path = temp.path().join("reference-quote-observations-source.json");
     let evidence = BoltV3NoSubmitReferenceQuoteEvidence {
         quotes: vec![BoltV3NoSubmitReferenceQuote {
-            data_client_id: "binance_reference".to_string(),
-            instrument_id: "BTCUSDT.BINANCE".to_string(),
+            data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+            instrument_id: TEST_REFERENCE_INSTRUMENT_ID.to_string(),
             bid_price: 3299.0,
             ask_price: 3301.0,
             ts_event_unix_nanos: 600_000_000_000,
@@ -6591,6 +6743,7 @@ fn entry_decision_proof_source_materializer_derives_reference_quote_and_volatili
  {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
     loaded.root.persistence.catalog_directory =
         temp.path().join("catalog").to_string_lossy().to_string();
     let strategy_instance_id = loaded
@@ -6648,7 +6801,10 @@ fn entry_decision_proof_source_materializer_derives_reference_quote_and_volatili
         &std::fs::read(&written.reference_quote_source.path).expect("quote source should read"),
     )
     .expect("quote source should parse");
-    assert_eq!(quote_json["venue"], serde_json::json!("binance_reference"));
+    assert_eq!(
+        quote_json["venue"],
+        serde_json::json!(TEST_REFERENCE_DATA_CLIENT_ID)
+    );
     assert_eq!(quote_json["price"], serde_json::json!(3313.0));
     assert_eq!(quote_json["observed_ts_ms"], serde_json::json!(605000u64));
 
@@ -6667,9 +6823,163 @@ fn entry_decision_proof_source_materializer_derives_reference_quote_and_volatili
 }
 
 #[test]
+fn chainlink_reference_quote_observations_source_materializer_writes_provider_owned_observations() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    add_decision_reference_subscription(&mut loaded);
+    add_reference_value_capability(&mut loaded, "resolution_oracle_primary");
+    loaded.strategies[0].config.reference_data.clear();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let reports = write_chainlink_reference_report_sequence(temp.path());
+    let report_refs = reports
+        .iter()
+        .map(|(path, sha256)| ChainlinkReferencePriceReportSourceFile {
+            path,
+            expected_sha256: sha256,
+        })
+        .collect::<Vec<_>>();
+    let output_path = temp
+        .path()
+        .join("chainlink-reference-quote-observations-source.json");
+
+    let written = write_chainlink_reference_quote_observations_source_from_report_files(
+        &loaded,
+        &strategy_instance_id,
+        ChainlinkReferenceQuoteObservationsSourceMaterializationRequest {
+            price_reports: &report_refs,
+            max_price_report_bytes: 100_000,
+            output_path: &output_path,
+        },
+    )
+    .expect("Chainlink report sequence should materialize source-owned reference observations");
+
+    assert_eq!(written.path, output_path);
+    let source: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.path).expect("reference observations source should read"),
+    )
+    .expect("reference observations source should parse");
+    assert_eq!(
+        source["record_kind"],
+        serde_json::json!("bolt_v3.reference_quote_observations_source.v1")
+    );
+    assert_eq!(
+        source["observations"][0]["data_client_id"],
+        serde_json::json!("resolution_oracle_primary")
+    );
+    assert_eq!(
+        source["observations"][0]["instrument_id"],
+        serde_json::json!("configured-reference-price")
+    );
+    assert_eq!(
+        source["observations"][5]["bid_price"],
+        serde_json::json!(3313.0)
+    );
+    assert_eq!(
+        source["observations"][5]["ask_price"],
+        serde_json::json!(3313.0)
+    );
+    assert_eq!(
+        source["observations"][5]["ts_event_unix_nanos"],
+        serde_json::json!(605_000_000_000u64)
+    );
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_derives_reference_quote_and_volatility_from_chainlink_reports_without_reference_data()
+ {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    add_decision_reference_subscription(&mut loaded);
+    add_reference_value_capability(&mut loaded, "resolution_oracle_primary");
+    loaded.strategies[0].config.reference_data.clear();
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let reports = write_chainlink_reference_report_sequence(temp.path());
+    let report_refs = reports
+        .iter()
+        .map(|(path, sha256)| ChainlinkReferencePriceReportSourceFile {
+            path,
+            expected_sha256: sha256,
+        })
+        .collect::<Vec<_>>();
+    let reference_quote_observations_source_path = temp
+        .path()
+        .join("chainlink-reference-observations-source.json");
+    write_chainlink_reference_quote_observations_source_from_report_files(
+        &loaded,
+        &strategy_instance_id,
+        ChainlinkReferenceQuoteObservationsSourceMaterializationRequest {
+            price_reports: &report_refs,
+            max_price_report_bytes: 100_000,
+            output_path: &reference_quote_observations_source_path,
+        },
+    )
+    .expect("Chainlink reports should write reference observations");
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &reports[0].0,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &reports[0].1,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 5_000,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+        },
+    )
+    .expect("source-proof files should use Chainlink decision-reference reports without static reference_data");
+
+    let quote_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.reference_quote_source.path).expect("quote source should read"),
+    )
+    .expect("quote source should parse");
+    assert_eq!(
+        quote_json["venue"],
+        serde_json::json!("resolution_oracle_primary")
+    );
+    assert_eq!(quote_json["price"], serde_json::json!(3313.0));
+    assert_eq!(quote_json["observed_ts_ms"], serde_json::json!(605000u64));
+
+    let volatility_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.realized_volatility_source.path)
+            .expect("volatility source should read"),
+    )
+    .expect("volatility source should parse");
+    assert!(
+        volatility_json["value"]
+            .as_f64()
+            .is_some_and(|value| value.is_finite() && value > 0.0),
+        "volatility must be computed from Chainlink source reports: {volatility_json}"
+    );
+    assert_eq!(volatility_json["ready_ts_ms"], serde_json::json!(605000u64));
+}
+
+#[test]
 fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
     loaded.root.persistence.catalog_directory =
         temp.path().join("catalog").to_string_lossy().to_string();
     let strategy_instance_id = loaded
@@ -6795,6 +7105,7 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
 fn entry_decision_proof_source_materializer_selects_feed_by_resolution_identity() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
     let strategy_instance_id = loaded
         .strategies
         .first()
@@ -6802,23 +7113,27 @@ fn entry_decision_proof_source_materializer_selects_feed_by_resolution_identity(
         .config
         .strategy_instance_id
         .clone();
-    set_resolution_mapping_identity(&mut loaded, "eth-usd-5m");
+    set_resolution_mapping_identity(&mut loaded, "configured-secondary-market");
     set_chainlink_feed_bindings(
         &mut loaded,
         &[
             (
-                "example-resolution-5m",
+                "configured-reference-price",
                 TEST_PRICE_TO_BEAT_FEED_ID,
                 TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
             ),
-            ("eth-usd-5m", TEST_ETH_CHAINLINK_TESTNET_FEED_ID, 18),
+            (
+                "configured-secondary-market",
+                TEST_SECONDARY_CHAINLINK_TESTNET_FEED_ID,
+                18,
+            ),
         ],
     );
     let report_path = temp.path().join("operator-approved-chainlink-report.bin");
     std::fs::write(
         &report_path,
         chainlink_v3_report_source_json(
-            TEST_ETH_CHAINLINK_TESTNET_FEED_ID,
+            TEST_SECONDARY_CHAINLINK_TESTNET_FEED_ID,
             600,
             601,
             3100.0,
@@ -6862,11 +7177,84 @@ fn entry_decision_proof_source_materializer_selects_feed_by_resolution_identity(
     .expect("price source should parse");
     assert_eq!(
         price_json["source_report_feed_id"],
-        serde_json::json!(TEST_ETH_CHAINLINK_TESTNET_FEED_ID)
+        serde_json::json!(TEST_SECONDARY_CHAINLINK_TESTNET_FEED_ID)
     );
     assert_eq!(
         price_json["source_report_decimal_scale"],
         serde_json::json!(18)
+    );
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_selects_alt_feed_by_resolution_identity() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    set_resolution_mapping_identity(&mut loaded, "configured-alt-market");
+    set_chainlink_feed_bindings(
+        &mut loaded,
+        &[
+            (
+                "configured-reference-price",
+                TEST_PRICE_TO_BEAT_FEED_ID,
+                TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+            ),
+            ("configured-alt-market", TEST_ALT_CHAINLINK_FEED_ID, 8),
+        ],
+    );
+    let report_path = temp.path().join("operator-approved-chainlink-report.bin");
+    std::fs::write(
+        &report_path,
+        chainlink_v3_report_source_json(TEST_ALT_CHAINLINK_FEED_ID, 600, 601, 42.12345678, 8, true),
+    )
+    .expect("report source should write");
+    let report_sha256 = sha256_file(&report_path);
+    let reference_quote_observations_source_path =
+        temp.path().join("reference-quote-observations-source.json");
+    write_reference_quote_observations_source(
+        &reference_quote_observations_source_path,
+        &[3300.0, 3301.0, 3302.0, 3304.0, 3308.0, 3313.0],
+    );
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &report_sha256,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 5_000,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+        },
+    )
+    .expect("source-proof files should use the configured alternate resolution identity");
+
+    let price_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.price_to_beat_source.path).expect("price source should read"),
+    )
+    .expect("price source should parse");
+    assert_eq!(
+        price_json["source_report_feed_id"],
+        serde_json::json!(TEST_ALT_CHAINLINK_FEED_ID)
+    );
+    assert_eq!(
+        price_json["source_report_decimal_scale"],
+        serde_json::json!(8)
     );
 }
 
@@ -6930,7 +7318,8 @@ fn entry_decision_proof_source_materializer_refuses_unparseable_report_before_ou
 #[test]
 fn entry_decision_proof_source_materializer_rejects_quote_and_volatility_outside_decision_window() {
     let temp = tempfile::tempdir().expect("tempdir should create");
-    let loaded = load_fixture_with_live_canary();
+    let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
     let strategy_instance_id = loaded
         .strategies
         .first()
@@ -7482,7 +7871,7 @@ fn entry_decision_source_input_provider_validates_local_proofs_before_network() 
         serde_json::to_vec_pretty(&serde_json::json!({
             "schema_version": 1,
             "record_kind": "bolt_v3.reference_quote_source.v1",
-            "venue": "binance_reference",
+            "venue": TEST_REFERENCE_DATA_CLIENT_ID,
             "price": 0.0,
             "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
         }))
@@ -7833,6 +8222,10 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
     let temp = &fixture.temp;
     let strategy_input_path = temp.path().join("strategy-input.json");
     let snapshot = fixture.snapshot.clone();
+    assert_ne!(
+        snapshot.strategy_id, strategy_instance_id,
+        "fixture must exercise NT runtime StrategyId distinct from operator strategy_instance_id"
+    );
 
     let intent = BoltV3OrderIntentEvidence {
         strategy_id: snapshot.strategy_id.clone(),
@@ -10126,6 +10519,7 @@ fn strategy_input_runtime_fixture() -> StrategyInputRuntimeFixture {
         .config
         .strategy_instance_id
         .clone();
+    let runtime_strategy_id = runtime_strategy_id_for_test(&loaded, &strategy_instance_id);
     let temp = tempfile::tempdir().expect("tempdir should create");
     let market_slug = updown_market_slug(
         TEST_MARKET_SELECTION_UNDERLYING_ASSET,
@@ -10174,9 +10568,9 @@ fn strategy_input_runtime_fixture() -> StrategyInputRuntimeFixture {
             .expect("market selection source sha256 should compute"),
     };
     let snapshot = BoltV3StrategyInputEvidenceSnapshot {
-        strategy_id: strategy_instance_id.clone(),
-        configured_target_id: "btc_updown_5m".to_string(),
-        market_selection_ruleset_id: "btc_updown_5m".to_string(),
+        strategy_id: runtime_strategy_id,
+        configured_target_id: TEST_CONFIGURED_TARGET_ID.to_string(),
+        market_selection_ruleset_id: TEST_CONFIGURED_TARGET_ID.to_string(),
         gate_session_hash: "gate-session-hash-one".to_string(),
         selected_market_key: TEST_GATE_SELECTED_MARKET_KEY.to_string(),
         gate_evidence: BTreeMap::from([(
@@ -10235,6 +10629,25 @@ fn strategy_input_runtime_fixture() -> StrategyInputRuntimeFixture {
         candidate_market_start_timestamps_ms: vec![TEST_MARKET_SELECTION_START_MS],
         snapshot,
     }
+}
+
+fn runtime_strategy_id_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    strategy_instance_id: &str,
+) -> String {
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .expect("test strategy instance should be loaded");
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, loaded)
+        .expect("test strategy should map to raw runtime config");
+    raw.get("strategy_id")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .expect("raw runtime config should include strategy_id")
+        .to_string()
 }
 
 fn write_entry_decision_evidence_chain(
@@ -11553,15 +11966,18 @@ fn chainlink_v3_full_report_payload(
     blob.extend_from_slice(&abi_zero_word());
     blob.extend_from_slice(&abi_zero_word());
     blob.extend_from_slice(&abi_u32_word(observations_timestamp_seconds + 60));
-    blob.extend_from_slice(&abi_i192_word(
-        (benchmark_price * 10f64.powi(decimal_scale as i32)).round() as i128,
-    ));
-    blob.extend_from_slice(&abi_i192_word(
-        ((benchmark_price - 1.0) * 10f64.powi(decimal_scale as i32)).round() as i128,
-    ));
-    blob.extend_from_slice(&abi_i192_word(
-        ((benchmark_price + 1.0) * 10f64.powi(decimal_scale as i32)).round() as i128,
-    ));
+    blob.extend_from_slice(&abi_i192_word(chainlink_scaled_price(
+        benchmark_price,
+        decimal_scale,
+    )));
+    blob.extend_from_slice(&abi_i192_word(chainlink_scaled_price(
+        benchmark_price,
+        decimal_scale,
+    )));
+    blob.extend_from_slice(&abi_i192_word(chainlink_scaled_price(
+        benchmark_price,
+        decimal_scale,
+    )));
 
     let mut payload = Vec::new();
     payload.extend_from_slice(&abi_zero_word());
@@ -11571,6 +11987,18 @@ fn chainlink_v3_full_report_payload(
     payload.extend_from_slice(&abi_usize_word(blob.len()));
     payload.extend_from_slice(&blob);
     payload
+}
+
+fn chainlink_scaled_price(benchmark_price: f64, decimal_scale: u64) -> i128 {
+    let scale = 10_i128
+        .checked_pow(u32::try_from(decimal_scale).expect("test decimal scale should fit u32"))
+        .expect("test decimal scale should fit i128");
+    let price = Decimal::from_str_exact(&benchmark_price.to_string())
+        .expect("test benchmark price should be decimal");
+    (price * Decimal::from(scale))
+        .round()
+        .to_i128()
+        .expect("test benchmark price should fit i128")
 }
 
 fn chainlink_feed_id_bytes(feed_id: &str) -> [u8; 32] {

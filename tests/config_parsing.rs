@@ -2,12 +2,12 @@ mod support;
 
 use std::fs;
 
-const CHAINLINK_TESTNET_BTC_USD_FEED_ID: &str =
-    "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
-const CHAINLINK_TESTNET_ETH_USD_FEED_ID: &str =
-    "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782";
 const OLD_CHAINLINK_FIXTURE_FEED_ID: &str =
     "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472";
+const CHAINLINK_TEST_FEED_ID_PRIMARY: &str =
+    "0x1111111111111111111111111111111111111111111111111111111111111111";
+const CHAINLINK_TEST_FEED_ID_SECONDARY: &str =
+    "0x2222222222222222222222222222222222222222222222222222222222222222";
 
 #[test]
 fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
@@ -22,10 +22,7 @@ fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
         strategy.execution_client_id,
         nautilus_model::identifiers::ClientId::from("polymarket_main")
     );
-    assert_eq!(
-        strategy.reference_data["primary"].data_client_id,
-        nautilus_model::identifiers::ClientId::from("binance_reference")
-    );
+    assert!(strategy.reference_data.is_empty());
 
     let data_engine = &loaded.root.nautilus.data_engine;
     let exec_engine = &loaded.root.nautilus.exec_engine;
@@ -49,15 +46,10 @@ fn bolt_v3_config_uses_clients_section_with_nt_venue_identifier() {
 
     let clients = &loaded.root.clients;
     assert!(clients.contains_key("polymarket_main"));
-    assert!(clients.contains_key("binance_reference"));
 
     let polymarket = &clients["polymarket_main"];
     assert_eq!(polymarket.venue, Venue::from("POLYMARKET"));
     assert!(polymarket.execution.is_some());
-
-    let binance = &clients["binance_reference"];
-    assert_eq!(binance.venue, Venue::from("BINANCE"));
-    assert!(binance.execution.is_none());
 }
 
 #[test]
@@ -231,25 +223,37 @@ fn bolt_v3_operator_evidence_allows_unassigned_order_ids() {
 }
 
 #[test]
-fn shipped_chainlink_gate_provider_examples_preserve_testnet_token_feed_ids() {
+fn shipped_chainlink_gate_provider_examples_keep_only_configured_feed_bindings() {
     for relative_path in [
         "config/root.example.toml",
         "tests/fixtures/bolt_v3/root.toml",
     ] {
         let source = std::fs::read_to_string(support::repo_path(relative_path))
             .expect("root config should be readable");
-
-        assert!(
-            source.contains(CHAINLINK_TESTNET_BTC_USD_FEED_ID),
-            "{relative_path} should keep the historical BTC/USD testnet feed id"
-        );
-        assert!(
-            source.contains(CHAINLINK_TESTNET_ETH_USD_FEED_ID),
-            "{relative_path} should keep the historical ETH/USD testnet feed id"
-        );
         assert!(
             !source.contains(OLD_CHAINLINK_FIXTURE_FEED_ID),
             "{relative_path} should not ship the old generic Chainlink fixture feed as a token mapping"
+        );
+
+        let parsed = toml::from_str::<toml::Value>(&source).expect("root TOML should parse");
+        let feed_bindings = parsed
+            .get("gate_providers")
+            .and_then(|value| value.get("resolution_oracle_primary"))
+            .and_then(|value| value.get("chainlink_data_streams"))
+            .and_then(|value| value.get("feed_bindings"))
+            .and_then(toml::Value::as_array)
+            .expect("root config should declare Chainlink feed bindings");
+        assert_eq!(
+            feed_bindings.len(),
+            1,
+            "{relative_path} should not ship unused canonical Chainlink feed bindings"
+        );
+        assert_eq!(
+            feed_bindings[0]
+                .get("resolution_identity")
+                .and_then(toml::Value::as_str),
+            Some("configured-reference-price"),
+            "{relative_path} feed binding should match the shipped strategy mapping"
         );
     }
 }
@@ -286,33 +290,28 @@ fn bolt_v3_reference_data_instrument_id_uses_nt_typed_identifier() {
     // so NT's `impl_serialization_for_identifier!` macro runs and routes
     // through `InstrumentId::new_checked`, eliminating the bolt-side
     // runtime empty / non-empty guard.
-    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
     use nautilus_model::identifiers::InstrumentId;
 
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
+    let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_fixture_with_reference_data(
+        "reference_data_client",
+        "REFERENCE.SOURCE",
+    ))
+    .expect("strategy with optional reference_data should parse");
 
-    let reference = loaded.strategies[0]
-        .config
+    let reference = strategy
         .reference_data
         .get("primary")
-        .expect("binary_oracle strategy fixture should have reference_data.primary");
+        .expect("strategy should have reference_data.primary");
     let instrument_id: InstrumentId = reference.instrument_id;
-    assert_eq!(instrument_id.to_string(), "BTCUSDT.BINANCE");
+    assert_eq!(instrument_id.to_string(), "REFERENCE.SOURCE");
 }
 
 #[test]
 fn bolt_v3_reference_data_instrument_id_rejects_empty_string_at_parse_time() {
     use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
 
-    let strategy_toml = std::fs::read_to_string(support::repo_path(
-        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-    ))
-    .expect("strategy fixture should be readable");
-    let mutated = strategy_toml.replace(
-        "instrument_id = \"BTCUSDT.BINANCE\"",
-        "instrument_id = \"\"",
-    );
+    let mutated = strategy_fixture_with_reference_data("reference_data_client", "");
     let err = toml::from_str::<BoltV3StrategyConfig>(&mutated)
         .expect_err("empty instrument_id should be rejected by NT InstrumentId serde");
     let rendered = err.to_string();
@@ -347,12 +346,8 @@ fn bolt_v3_strategy_execution_client_id_uses_nt_typed_identifier() {
     let execution_client_id: ClientId = strategy.execution_client_id;
     assert_eq!(execution_client_id, ClientId::from("polymarket_main"));
 
-    let primary = strategy
-        .reference_data
-        .get("primary")
-        .expect("binary_oracle fixture should have reference_data.primary");
-    let data_client_id: ClientId = primary.data_client_id;
-    assert_eq!(data_client_id, ClientId::from("binance_reference"));
+    assert!(strategy.reference_data.is_empty());
+    let _typed_client_id_check = ClientId::from("reference_data_client");
 }
 
 #[test]
@@ -380,14 +375,7 @@ fn bolt_v3_strategy_execution_client_id_rejects_empty_string_at_parse_time() {
 fn bolt_v3_reference_data_data_client_id_rejects_empty_string_at_parse_time() {
     use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
 
-    let strategy_toml = std::fs::read_to_string(support::repo_path(
-        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-    ))
-    .expect("strategy fixture should be readable");
-    let mutated = strategy_toml.replace(
-        "data_client_id = \"binance_reference\"",
-        "data_client_id = \"\"",
-    );
+    let mutated = strategy_fixture_with_reference_data("", "REFERENCE.SOURCE");
     let err = toml::from_str::<BoltV3StrategyConfig>(&mutated)
         .expect_err("empty data_client_id should be rejected by NT ClientId serde");
     let rendered = err.to_string();
@@ -571,15 +559,14 @@ fn bolt_v3_reference_data_client_id_rejects_execution_only_client_with_client_vo
         bolt_v3_validate::validate_strategies,
     };
 
-    let data_block = "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream-sbe.binance.com/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n";
-    let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(data_block, ""))
-        .expect("execution-only binance fixture should parse");
-    let strategy: BoltV3StrategyConfig = toml::from_str(
-        &std::fs::read_to_string(support::repo_path(
-            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-        ))
-        .expect("strategy fixture should be readable"),
-    )
+    let data_block = "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream-sbe.binance.com/ws\" # NT: BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n";
+    let root: BoltV3RootConfig =
+        toml::from_str(&replace_in_binance_reference_fixture(data_block, ""))
+            .expect("execution-only binance fixture should parse");
+    let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_fixture_with_reference_data(
+        "binance_reference",
+        "REFERENCE.SOURCE",
+    ))
     .expect("strategy fixture should parse");
     let loaded = vec![LoadedStrategy {
         config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
@@ -602,18 +589,15 @@ fn bolt_v3_reference_data_rejects_same_instrument_across_distinct_data_clients()
         bolt_v3_validate::validate_strategies,
     };
 
-    let stable_root: BoltV3RootConfig = toml::from_str(
-        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
-            .expect("root fixture should be readable"),
-    )
-    .expect("stable root should parse");
-    let mutated_strategy = std::fs::read_to_string(support::repo_path(
-        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-    ))
-    .expect("strategy fixture should be readable")
-    .replace(
-        "[reference_data.primary]\ndata_client_id = \"binance_reference\"\ninstrument_id = \"BTCUSDT.BINANCE\"",
-        "[reference_data.primary]\ndata_client_id = \"binance_reference\"\ninstrument_id = \"BTCUSDT.BINANCE\"\n\n[reference_data.secondary]\ndata_client_id = \"polymarket_main\"\ninstrument_id = \"BTCUSDT.BINANCE\"",
+    let stable_root: BoltV3RootConfig =
+        toml::from_str(&fixture_root_with_binance_reference_client())
+            .expect("stable root should parse");
+    let mutated_strategy = format!(
+        "{}\n[reference_data.primary]\ndata_client_id = \"binance_reference\"\ninstrument_id = \"REFERENCE.SOURCE\"\n\n[reference_data.secondary]\ndata_client_id = \"polymarket_main\"\ninstrument_id = \"REFERENCE.SOURCE\"\n",
+        std::fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable")
     );
     let strategy: BoltV3StrategyConfig = toml::from_str(&mutated_strategy)
         .expect("duplicate reference instrument strategy should parse");
@@ -627,7 +611,7 @@ fn bolt_v3_reference_data_rejects_same_instrument_across_distinct_data_clients()
     let rendered = messages.join("\n");
 
     assert!(
-        rendered.contains("reference_data.secondary.instrument_id `BTCUSDT.BINANCE`")
+        rendered.contains("reference_data.secondary.instrument_id `REFERENCE.SOURCE`")
             && rendered.contains("binance_reference")
             && rendered.contains("polymarket_main")
             && rendered.contains("QuoteTick does not carry data_client_id"),
@@ -1545,7 +1529,7 @@ fn bolt_v3_archetype_accepts_triggered_entry_order_with_trigger_instrument_id() 
         .replace("order_type = \"limit\"", "order_type = \"stop_market\"")
         .replace(
             "time_in_force = \"fok\"\nis_post_only = false",
-            "time_in_force = \"gtc\"\ntrigger_price = 0.52\ntrigger_type = \"last_price\"\ntrigger_instrument_id = \"ETHUSDT.BINANCE\"\nis_post_only = false",
+            "time_in_force = \"gtc\"\ntrigger_price = 0.52\ntrigger_type = \"last_price\"\ntrigger_instrument_id = \"TRIGGER.SOURCE\"\nis_post_only = false",
         );
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&stop_market_strategy_source)
@@ -1581,7 +1565,7 @@ fn bolt_v3_archetype_rejects_non_triggered_entry_order_with_trigger_instrument_i
     .expect("strategy fixture should be readable");
     let strategy_source = fixture.replacen(
         "time_in_force = \"fok\"\nis_post_only = false",
-        "time_in_force = \"fok\"\ntrigger_instrument_id = \"ETHUSDT.BINANCE\"\nis_post_only = false",
+        "time_in_force = \"fok\"\ntrigger_instrument_id = \"TRIGGER.SOURCE\"\nis_post_only = false",
         1,
     );
 
@@ -2746,12 +2730,8 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
         loaded.root.clients["polymarket_main"].venue.as_str(),
         "POLYMARKET"
     );
-    assert_eq!(
-        loaded.root.clients["binance_reference"].venue.as_str(),
-        "BINANCE"
-    );
     assert!(loaded.root.clients["polymarket_main"].execution.is_some());
-    assert!(loaded.root.clients["binance_reference"].execution.is_none());
+    assert!(!loaded.root.clients.contains_key("binance_reference"));
 
     assert_eq!(loaded.strategies.len(), 1);
     let strategy = &loaded.strategies[0].config;
@@ -2775,11 +2755,7 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     assert_eq!(parameters.entry_order.time_in_force, TimeInForce::Fok);
     assert_eq!(parameters.exit_order.order_type, OrderType::Market);
     assert_eq!(parameters.exit_order.time_in_force, TimeInForce::Ioc);
-    assert!(strategy.reference_data.contains_key("primary"));
-    assert_eq!(
-        strategy.reference_data["primary"].data_client_id,
-        nautilus_model::identifiers::ClientId::from("binance_reference")
-    );
+    assert!(strategy.reference_data.is_empty());
 }
 
 #[test]
@@ -2840,7 +2816,7 @@ fn accepts_canonical_gate_provider_root_blocks() {
 [gate_providers.resolution_oracle_primary]
 provider_kind = "chainlink_data_streams"
 capabilities = ["resolution_value"]
-client_id = "chainlink_mainnet"
+client_id = "chainlink_testnet"
 
 [gate_providers.resolution_oracle_primary.freshness]
 max_age_ms = 300000
@@ -2852,7 +2828,7 @@ api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
 api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
 
 [[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
-resolution_identity = "btc-usd-5m"
+resolution_identity = "configured-reference-price"
 value_kind = "price"
 feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
 report_schema_version = 3
@@ -2934,7 +2910,7 @@ endpoint_id = "testnet-data-streams"
 ssm_credential_parameter = "/bolt/gate-providers/chainlink/testnet"
 
 [[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
-resolution_identity = "btc-usd-5m"
+resolution_identity = "configured-reference-price"
 value_kind = "price"
 feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
 report_schema_version = 3
@@ -3148,7 +3124,7 @@ allow_no_resolution = false
 family_key = "updown"
 market_class = "binary_option"
 resolution_kind = "chainlink_data_streams"
-resolution_identity = "btc-usd-5m"
+resolution_identity = "configured-reference-price"
 value_kind = "price"
 provider_id = "resolution_oracle_primary"
 "#,
@@ -3175,7 +3151,7 @@ allow_no_resolution = true
 family_key = "updown"
 market_class = "binary_option"
 resolution_kind = "chainlink_data_streams"
-resolution_identity = "btc-usd-5m"
+resolution_identity = "configured-reference-price"
 value_kind = "price"
 provider_id = "resolution_oracle_primary"
 
@@ -3232,7 +3208,7 @@ allow_no_resolution = false
 family_key = "updown"
 market_class = "binary_option"
 resolution_kind = "chainlink_data_streams"
-resolution_identity = "btc-usd-5m"
+resolution_identity = "configured-reference-price"
 value_kind = "price"
 provider_id = "resolution_oracle_primary"
 
@@ -3240,7 +3216,7 @@ provider_id = "resolution_oracle_primary"
 family_key = "updown"
 market_class = "binary_option"
 resolution_kind = "chainlink_data_streams"
-resolution_identity = "btc-usd-5m"
+resolution_identity = "configured-reference-price"
 value_kind = "price"
 provider_id = "backup_resolution_oracle"
 "#,
@@ -3292,7 +3268,7 @@ allow_no_resolution = false
 family_key = "updown"
 market_class = "binary_option"
 resolution_kind = "chainlink_data_streams"
-resolution_identity = "btc-usd-5m"
+resolution_identity = "configured-reference-price"
 value_kind = "price"
 "#,
     );
@@ -3322,7 +3298,7 @@ allow_no_resolution = false
 family_key = "updown"
 market_class = "binary_option"
 resolution_kind = "chainlink_data_streams"
-resolution_identity = "btc-usd-5m"
+resolution_identity = "configured-reference-price"
 value_kind = "metadata"
 provider_id = "venue_metadata_primary"
 "#,
@@ -3371,6 +3347,70 @@ provider_id = "resolution_oracle_primary"
 }
 
 #[test]
+fn rejects_chainlink_target_mapping_without_matching_feed_binding() {
+    let root_toml = root_with_single_chainlink_feed_binding(
+        "configured-primary-resolution",
+        CHAINLINK_TEST_FEED_ID_PRIMARY,
+    );
+    let strategy_toml = strategy_with_single_chainlink_mapping("configured-secondary-resolution");
+
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("strategy `strategies/binary_oracle.toml`")
+                && message.contains("configured-secondary-resolution")
+                && message.contains("feed_bindings")
+                && message.contains("no matching")
+        }),
+        "Chainlink target mapping without a matching feed binding must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_unreachable_chainlink_feed_binding() {
+    let root_toml = root_with_chainlink_feed_bindings(&[
+        (
+            "configured-primary-resolution",
+            CHAINLINK_TEST_FEED_ID_PRIMARY,
+        ),
+        (
+            "configured-secondary-resolution",
+            CHAINLINK_TEST_FEED_ID_SECONDARY,
+        ),
+    ]);
+    let strategy_toml = strategy_with_single_chainlink_mapping("configured-primary-resolution");
+
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary")
+                && message.contains("configured-secondary-resolution")
+                && message.contains("feed_bindings")
+                && message.contains("not referenced by any loaded strategy")
+        }),
+        "unreachable Chainlink feed bindings must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn accepts_alternate_chainlink_mapping_with_matching_feed_binding() {
+    let root_toml = root_with_single_chainlink_feed_binding(
+        "configured-secondary-resolution",
+        CHAINLINK_TEST_FEED_ID_SECONDARY,
+    );
+    let strategy_toml = strategy_with_single_chainlink_mapping("configured-secondary-resolution");
+
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    assert!(
+        messages.is_empty(),
+        "matching alternate Chainlink mapping should validate without fallback assumptions: {messages:#?}"
+    );
+}
+
+#[test]
 fn binary_oracle_fixture_uses_gate_subscription_without_provider_specific_runtime_fields() {
     let source = std::fs::read_to_string(support::repo_path(
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
@@ -3388,6 +3428,42 @@ fn binary_oracle_example_uses_gate_subscription_without_provider_specific_runtim
     .expect("strategy example should be readable");
 
     assert_binary_oracle_strategy_source_uses_gate_schema("example", &source);
+}
+
+#[test]
+fn shipped_binary_oracle_examples_do_not_canonicalize_one_reference_market_or_venue() {
+    for relative_path in [
+        "config/strategies/binary_oracle.example.toml",
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ] {
+        let source =
+            std::fs::read_to_string(support::repo_path(relative_path)).expect("source should read");
+        for forbidden in ["binance_reference"] {
+            assert!(
+                !source.contains(forbidden),
+                "{relative_path} must not make `{forbidden}` a canonical strategy example"
+            );
+        }
+    }
+
+    for relative_path in [
+        "config/root.example.toml",
+        "tests/fixtures/bolt_v3/root.toml",
+    ] {
+        let source =
+            std::fs::read_to_string(support::repo_path(relative_path)).expect("source should read");
+        for forbidden in [
+            "[clients.binance_reference]",
+            "[clients.binance_reference.data]",
+            "[clients.binance_reference.secrets]",
+            "/bolt/binance_reference/",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{relative_path} must not make `{forbidden}` a canonical root example"
+            );
+        }
+    }
 }
 
 #[test]
@@ -3735,7 +3811,7 @@ fn rejects_binance_spot_json_websocket_endpoint_for_reference_quotes() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
     use nautilus_binance::common::consts::BINANCE_SPOT_WS_URL;
 
-    let mutated = replace_in_fixture_root(
+    let mutated = replace_in_binance_reference_fixture(
         "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
         &format!("base_url_ws = \"{BINANCE_SPOT_WS_URL}\""),
     );
@@ -3758,7 +3834,7 @@ fn rejects_binance_spot_json_websocket_endpoint_with_trailing_slash() {
 
     let json_endpoint_with_trailing_slash =
         format!("{}/", BINANCE_SPOT_WS_URL.trim_end_matches('/'));
-    let mutated = replace_in_fixture_root(
+    let mutated = replace_in_binance_reference_fixture(
         "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
         &format!("base_url_ws = \"{json_endpoint_with_trailing_slash}\""),
     );
@@ -3780,7 +3856,7 @@ fn rejects_binance_spot_json_websocket_endpoint_with_plain_ws_scheme() {
     use nautilus_binance::common::consts::BINANCE_SPOT_WS_URL;
 
     let plain_ws_json_endpoint = BINANCE_SPOT_WS_URL.replacen("wss://", "ws://", 1);
-    let mutated = replace_in_fixture_root(
+    let mutated = replace_in_binance_reference_fixture(
         "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
         &format!("base_url_ws = \"{plain_ws_json_endpoint}\""),
     );
@@ -3800,7 +3876,7 @@ fn rejects_binance_spot_json_websocket_endpoint_with_plain_ws_scheme() {
 fn rejects_binance_spot_json_websocket_host_with_different_path() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
+    let mutated = replace_in_binance_reference_fixture(
         "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
         "base_url_ws = \"wss://stream.binance.com:9443/stream\"",
     );
@@ -3842,7 +3918,7 @@ fn rejects_invalid_binance_reference_websocket_urls_before_nt_mapping() {
         ),
     ];
     for (value, expected) in cases {
-        let mutated = replace_in_fixture_root(
+        let mutated = replace_in_binance_reference_fixture(
             "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
             &format!("base_url_ws = \"{value}\""),
         );
@@ -3867,7 +3943,7 @@ fn accepts_binance_spot_sbe_and_proxy_websocket_endpoints() {
         "ws://binance-sbe-proxy.test.invalid/ws",
         "wss://binance-sbe-proxy.test.invalid/ws",
     ] {
-        let mutated = replace_in_fixture_root(
+        let mutated = replace_in_binance_reference_fixture(
             "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
             &format!("base_url_ws = \"{value}\""),
         );
@@ -3887,10 +3963,8 @@ fn accepts_binance_spot_sbe_and_proxy_websocket_endpoints() {
 fn rejects_binance_execution_block_with_provider_vocabulary() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let fixture = fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
-        .expect("fixture should be readable");
-    let mutated =
-        format!("{fixture}\n\n[clients.binance_reference.execution]\nnot_allowed = true\n");
+    let fixture = fixture_root_with_binance_reference_client();
+    let mutated = format!("{fixture}\n[clients.binance_reference.execution]\nnot_allowed = true\n");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("binance execution mutation should parse");
     let messages = validate_root_only(&root);
@@ -4231,6 +4305,48 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
     fixture.replace(needle, replacement)
 }
 
+const BINANCE_REFERENCE_CLIENT_TOML: &str = r#"
+[clients.binance_reference]
+venue = "BINANCE"
+
+[clients.binance_reference.data]
+product_types = ["spot"]
+environment = "mainnet"
+base_url_http = "https://api.binance.com" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http
+base_url_ws = "wss://stream-sbe.binance.com/ws" # NT: BinanceDataClientConfig.base_url_ws
+instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
+transport_backend = "sockudo"
+
+[clients.binance_reference.secrets]
+api_key_ssm_path = "/bolt/binance_reference/api_key"
+api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+"#;
+
+fn fixture_root_with_binance_reference_client() -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    format!("{fixture}\n{BINANCE_REFERENCE_CLIENT_TOML}")
+}
+
+fn replace_in_binance_reference_fixture(needle: &str, replacement: &str) -> String {
+    let fixture = fixture_root_with_binance_reference_client();
+    assert!(
+        fixture.contains(needle),
+        "binance validation fixture must contain `{needle}` for this test to mutate"
+    );
+    fixture.replace(needle, replacement)
+}
+
+fn strategy_fixture_with_reference_data(data_client_id: &str, instrument_id: &str) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    format!(
+        "{fixture}\n[reference_data.primary]\ndata_client_id = \"{data_client_id}\"\ninstrument_id = \"{instrument_id}\"\n"
+    )
+}
+
 fn fixture_root_with_gate_providers(gate_providers_toml: &str) -> String {
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
@@ -4245,6 +4361,67 @@ fn fixture_strategy_with_target_gate_subscriptions(gate_subscriptions_toml: &str
     .expect("strategy fixture should be readable");
     let fixture = without_toml_sections(&fixture, &["target.gate_subscriptions."]);
     format!("{fixture}\n{gate_subscriptions_toml}")
+}
+
+fn root_with_single_chainlink_feed_binding(resolution_identity: &str, feed_id: &str) -> String {
+    root_with_chainlink_feed_bindings(&[(resolution_identity, feed_id)])
+}
+
+fn root_with_chainlink_feed_bindings(feed_bindings: &[(&str, &str)]) -> String {
+    let bindings_toml = feed_bindings
+        .iter()
+        .map(|(resolution_identity, feed_id)| {
+            format!(
+                r#"
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "{resolution_identity}"
+value_kind = "price"
+feed_id = "{feed_id}"
+report_schema_version = 3
+report_decimal_scale = 8
+"#
+            )
+        })
+        .collect::<String>();
+    fixture_root_with_gate_providers(&format!(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+client_id = "chainlink_testnet"
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+{bindings_toml}
+"#
+    ))
+}
+
+fn strategy_with_single_chainlink_mapping(resolution_identity: &str) -> String {
+    fixture_strategy_with_target_gate_subscriptions(&format!(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_kinds = ["chainlink_data_streams", "pyth", "exchange_index", "venue_native", "hyperliquid_hip4", "deribit_index", "outcome_oracle"]
+allowed_value_kinds = ["price", "index", "outcome", "metadata"]
+provider_preference = ["resolution_oracle_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "{resolution_identity}"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+"#
+    ))
 }
 
 fn without_toml_sections(source: &str, section_prefixes: &[&str]) -> String {
@@ -4279,13 +4456,19 @@ fn target_gate_subscription_messages(gate_subscriptions_toml: &str) -> Vec<Strin
 }
 
 fn strategy_validation_messages_for_toml(strategy_toml: &str) -> Vec<String> {
+    let root_toml = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("root fixture should be readable");
+    strategy_validation_messages_for_root_and_strategy_toml(&root_toml, strategy_toml)
+}
+
+fn strategy_validation_messages_for_root_and_strategy_toml(
+    root_toml: &str,
+    strategy_toml: &str,
+) -> Vec<String> {
     use bolt_v2::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy};
 
-    let stable_root: BoltV3RootConfig = toml::from_str(
-        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
-            .expect("root fixture should be readable"),
-    )
-    .expect("stable root should parse");
+    let stable_root: BoltV3RootConfig =
+        toml::from_str(root_toml).expect("root fixture should parse");
     let strategy: BoltV3StrategyConfig =
         toml::from_str(strategy_toml).expect("strategy fixture should parse");
     let loaded = vec![LoadedStrategy {
@@ -4376,7 +4559,7 @@ fn mutate_parameters_exit_order(fixture: &str, mutate: impl FnOnce(&str) -> Stri
 fn rejects_zero_explicit_nt_exec_runtime_values() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
+    let mutated = replace_in_binance_reference_fixture(
         "inflight_check_threshold_ms = 5000\ninflight_check_retries = 5",
         "inflight_check_threshold_ms = 0\ninflight_check_retries = 5",
     )
@@ -4604,7 +4787,7 @@ fn rejects_invalid_nt_risk_rate_limit_strings() {
         ("100/00:60:00", "100/00:00:01"),
         ("100/00:00:60", "100/00:00:01"),
     ] {
-        let mutated = replace_in_fixture_root(
+        let mutated = replace_in_binance_reference_fixture(
             "max_order_submit_rate = \"100/00:00:01\"\nmax_order_modify_rate = \"100/00:00:01\"",
             &format!(
                 "max_order_submit_rate = \"{submit_rate}\"\nmax_order_modify_rate = \"{modify_rate}\""
@@ -4670,14 +4853,14 @@ fn rejects_non_positive_nt_risk_max_notional_map_values() {
     for notional in ["0", "-1.00"] {
         let mutated = replace_in_fixture_root(
             "max_notional_per_order = {}",
-            &format!("max_notional_per_order = {{ \"ETHUSDT.BINANCE\" = \"{notional}\" }}"),
+            &format!("max_notional_per_order = {{ \"TRIGGER.SOURCE\" = \"{notional}\" }}"),
         );
         let root: BoltV3RootConfig =
             toml::from_str(&mutated).expect("non-positive NT max-notional fixture should parse");
         let messages = validate_root_only(&root);
         assert!(
             messages.iter().any(|m| m.contains(
-                "risk.nautilus.max_notional_per_order[`ETHUSDT.BINANCE`] must be a positive decimal string"
+                "risk.nautilus.max_notional_per_order[`TRIGGER.SOURCE`] must be a positive decimal string"
             )),
             "expected positive notional validation error for `{notional}`, got: {messages:#?}"
         );
@@ -4688,8 +4871,8 @@ fn rejects_non_positive_nt_risk_max_notional_map_values() {
 fn rejects_orphan_secrets_block_without_data_or_execution() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
-        "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream-sbe.binance.com/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n",
+    let mutated = replace_in_binance_reference_fixture(
+        "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream-sbe.binance.com/ws\" # NT: BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n",
         "",
     );
     let root: BoltV3RootConfig =
@@ -4711,20 +4894,20 @@ fn rejects_ssm_paths_missing_leading_slash() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "api_key_ssm_path = \"/bolt/binance_reference/api_key\"",
-        "api_key_ssm_path = \"bolt/binance_reference/api_key\"",
+        "private_key_ssm_path = \"/bolt/polymarket_main/private_key\"",
+        "private_key_ssm_path = \"bolt/polymarket_main/private_key\"",
     );
     let root: BoltV3RootConfig = toml::from_str(&mutated).expect("ssm-path mutation should parse");
     let messages = validate_root_only(&root);
     let rendered = messages.join("\n");
     assert!(
-        messages.iter().any(|m| m.contains("binance_reference")
-            && m.contains("api_key_ssm_path")
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("private_key_ssm_path")
             && m.contains("absolute-style SSM parameter path starting with `/`")),
         "expected SSM-path leading-slash validation error, got: {messages:#?}"
     );
-    assert!(rendered.contains("clients.binance_reference.secrets.api_key_ssm_path"));
-    let legacy_path = ["venues", "binance_reference"].join(".");
+    assert!(rendered.contains("clients.polymarket_main.secrets.private_key_ssm_path"));
+    let legacy_path = ["venues", "polymarket_main"].join(".");
     assert!(!rendered.contains(&legacy_path));
 }
 
@@ -4733,16 +4916,6 @@ fn rejects_ssm_paths_with_leading_or_trailing_whitespace() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     for (field, original, replacement) in [
-        (
-            "clients.binance_reference.secrets.api_key_ssm_path",
-            "api_key_ssm_path = \"/bolt/binance_reference/api_key\"",
-            "api_key_ssm_path = \" /bolt/binance_reference/api_key\"",
-        ),
-        (
-            "clients.binance_reference.secrets.api_secret_ssm_path",
-            "api_secret_ssm_path = \"/bolt/binance_reference/api_secret\"",
-            "api_secret_ssm_path = \"/bolt/binance_reference/api_secret \"",
-        ),
         (
             "clients.polymarket_main.secrets.private_key_ssm_path",
             "private_key_ssm_path = \"/bolt/polymarket_main/private_key\"",
@@ -4848,7 +5021,7 @@ fn allows_missing_funder_for_eoa_signature_type() {
 fn rejects_binance_data_zero_instrument_status_poll_secs() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
+    let mutated = replace_in_binance_reference_fixture(
         "instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs",
         "instrument_status_poll_secs = 0 # NT: BinanceDataClientConfig.instrument_status_poll_secs",
     );

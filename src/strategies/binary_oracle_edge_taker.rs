@@ -90,8 +90,6 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             market_selection_rule: String => String;
             retry_interval_seconds: u64 => Integer;
             blocked_after_seconds: u64 => Integer;
-            reference_venue: String => String;
-            reference_instrument_id: String => String;
             use_uuid_client_order_ids: bool => Boolean;
             use_hyphens_in_client_order_ids: bool => Boolean;
             external_order_claims: Vec<String> => Array;
@@ -293,6 +291,8 @@ macro_rules! define_config_struct {
         #[serde(deny_unknown_fields)]
         struct BinaryOracleEdgeTakerConfig {
             $( $field: $ty, )+
+            reference_venue: Option<String>,
+            reference_instrument_id: Option<String>,
             entry_order: BinaryOracleEdgeTakerOrderConfig,
             exit_order: BinaryOracleEdgeTakerOrderConfig,
             forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
@@ -2013,8 +2013,9 @@ impl BinaryOracleEdgeTaker {
             return None;
         }
         let observed_ts_ms = quote.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        let venue_name = self.config.reference_venue.as_ref()?;
         Some(FastSpotObservation {
-            venue_name: self.config.reference_venue.clone(),
+            venue_name: venue_name.clone(),
             price: midpoint,
             observed_ts_ms,
         })
@@ -2104,24 +2105,29 @@ impl BinaryOracleEdgeTaker {
         self.apply_selection_snapshot(snapshot);
     }
 
-    fn reference_instrument_id(&self) -> InstrumentId {
-        InstrumentId::from(self.config.reference_instrument_id.as_str())
+    fn reference_instrument_id(&self) -> Option<InstrumentId> {
+        self.config
+            .reference_instrument_id
+            .as_deref()
+            .map(InstrumentId::from)
     }
 
     fn subscribe_reference_quotes(&mut self) {
-        let instrument_id = self.reference_instrument_id();
-        #[cfg(not(test))]
-        self.subscribe_quotes(instrument_id, None, None);
-        #[cfg(test)]
-        let _ = instrument_id;
+        if let Some(instrument_id) = self.reference_instrument_id() {
+            #[cfg(not(test))]
+            self.subscribe_quotes(instrument_id, None, None);
+            #[cfg(test)]
+            let _ = instrument_id;
+        }
     }
 
     fn unsubscribe_reference_quotes(&mut self) {
-        let instrument_id = self.reference_instrument_id();
-        #[cfg(not(test))]
-        self.unsubscribe_quotes(instrument_id, None, None);
-        #[cfg(test)]
-        let _ = instrument_id;
+        if let Some(instrument_id) = self.reference_instrument_id() {
+            #[cfg(not(test))]
+            self.unsubscribe_quotes(instrument_id, None, None);
+            #[cfg(test)]
+            let _ = instrument_id;
+        }
     }
 
     fn replace_book_subscriptions(&mut self, next: OutcomeBookSubscriptions) {
@@ -4761,7 +4767,10 @@ impl DataActor for BinaryOracleEdgeTaker {
     }
 
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
-        if quote.instrument_id != self.reference_instrument_id() {
+        if self
+            .reference_instrument_id()
+            .is_none_or(|instrument_id| quote.instrument_id != instrument_id)
+        {
             return Ok(());
         }
         if let Some(reference_quote) = self.reference_quote_from_tick(quote) {
@@ -5107,6 +5116,8 @@ impl BinaryOracleEdgeTakerBuilder {
                 ENTRY_ORDER_FIELD
                     | EXIT_ORDER_FIELD
                     | FORCED_EXIT_ORDER_FIELD
+                    | "reference_venue"
+                    | "reference_instrument_id"
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -5118,6 +5129,26 @@ impl BinaryOracleEdgeTakerBuilder {
             field_prefix,
             errors,
         );
+        Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);
+        Self::validate_optional_string_field(
+            table,
+            field_prefix,
+            "reference_instrument_id",
+            errors,
+        );
+        if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {
+            let missing = if table.contains_key("reference_venue") {
+                "reference_instrument_id"
+            } else {
+                "reference_venue"
+            };
+            Self::push_missing(
+                errors,
+                format!("{field_prefix}.{missing}"),
+                "missing_reference_data_pair",
+                BinaryOracleEdgeTakerFieldType::String,
+            );
+        }
         Self::validate_order_table(
             table,
             field_prefix,
@@ -5139,6 +5170,24 @@ impl BinaryOracleEdgeTakerBuilder {
             concat!(stringify!(missing_), stringify!(forced_exit_order)),
             errors,
         );
+    }
+
+    fn validate_optional_string_field(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        field_name: &'static str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        if let Some(value) = table.get(field_name)
+            && !BinaryOracleEdgeTakerFieldType::String.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field_prefix}.{field_name}"),
+                BinaryOracleEdgeTakerFieldType::String,
+                value,
+            );
+        }
     }
 
     fn validate_order_table(
@@ -5374,6 +5423,14 @@ pub fn derive_entry_reference_proofs_from_quote_observations(
     }
 
     let config = BinaryOracleEdgeTakerBuilder::parse_config(raw_config)?;
+    let reference_venue = config.reference_venue.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("reference quote observation source requires configured reference_venue")
+    })?;
+    let reference_instrument_id = config.reference_instrument_id.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "reference quote observation source requires configured reference_instrument_id"
+        )
+    })?;
     let mut sorted_observations = observations.to_vec();
     sorted_observations.sort_by_key(|observation| observation.ts_event_unix_nanos);
     let mut estimator = RealizedVolEstimator::from_config(&config);
@@ -5381,8 +5438,8 @@ pub fn derive_entry_reference_proofs_from_quote_observations(
     let mut latest_ready_volatility = None;
 
     for observation in sorted_observations {
-        if observation.data_client_id != config.reference_venue
-            || observation.instrument_id != config.reference_instrument_id
+        if observation.data_client_id != *reference_venue
+            || observation.instrument_id != *reference_instrument_id
         {
             continue;
         }
@@ -5401,7 +5458,7 @@ pub fn derive_entry_reference_proofs_from_quote_observations(
             anyhow::bail!("reference quote observation source midpoint is invalid");
         }
         let quote = FastSpotObservation {
-            venue_name: config.reference_venue.clone(),
+            venue_name: reference_venue.clone(),
             price: midpoint,
             observed_ts_ms,
         };
@@ -5415,7 +5472,7 @@ pub fn derive_entry_reference_proofs_from_quote_observations(
         }
         if observed_ts_ms >= market_selection_timestamp_ms {
             latest_quote = Some(BinaryOracleEntryReferenceQuoteSource {
-                venue: config.reference_venue.clone(),
+                venue: reference_venue.clone(),
                 price: midpoint,
                 observed_ts_ms,
             });
@@ -6960,20 +7017,20 @@ mod tests {
             order_id_tag = "001"
             oms_type = "netting"
             client_id = "POLYMARKET"
-            configured_target_id = "btc_updown_5m"
+            configured_target_id = "configured_updown_target"
             target_kind = "rotating_market"
             rotating_market_family = "updown"
-            underlying_asset = "BTC"
+            underlying_asset = "CONFIGURED_ASSET"
             cadence_seconds = 300
-            cadence_slug_token = "5m"
+            cadence_slug_token = "configuredwindow"
             market_selection_rule = "active_or_next"
             retry_interval_seconds = 5
             blocked_after_seconds = 60
-            reference_venue = "binance_reference"
-            reference_instrument_id = "BTCUSDT.BINANCE"
+            reference_venue = "reference_data_client"
+            reference_instrument_id = "REFERENCE.SOURCE"
             use_uuid_client_order_ids = true
             use_hyphens_in_client_order_ids = false
-            external_order_claims = ["ETHUSDT.BINANCE"]
+            external_order_claims = ["AUXILIARY.SOURCE"]
             manage_contingent_orders = true
             manage_gtd_expiry = true
             manage_stop = true
@@ -7327,20 +7384,20 @@ mod tests {
                 order_id_tag: "001".to_string(),
                 oms_type: "netting".to_string(),
                 client_id: "POLYMARKET".to_string(),
-                configured_target_id: "btc_updown_5m".to_string(),
+                configured_target_id: "configured_updown_target".to_string(),
                 target_kind: "rotating_market".to_string(),
                 rotating_market_family: "updown".to_string(),
-                underlying_asset: "BTC".to_string(),
+                underlying_asset: "CONFIGURED_ASSET".to_string(),
                 cadence_seconds: 300,
-                cadence_slug_token: "5m".to_string(),
+                cadence_slug_token: "configuredwindow".to_string(),
                 market_selection_rule: "active_or_next".to_string(),
                 retry_interval_seconds: 5,
                 blocked_after_seconds: 60,
-                reference_venue: "binance_reference".to_string(),
-                reference_instrument_id: "BTCUSDT.BINANCE".to_string(),
+                reference_venue: Some("reference_data_client".to_string()),
+                reference_instrument_id: Some("REFERENCE.SOURCE".to_string()),
                 use_uuid_client_order_ids: true,
                 use_hyphens_in_client_order_ids: false,
-                external_order_claims: vec!["ETHUSDT.BINANCE".to_string()],
+                external_order_claims: vec!["AUXILIARY.SOURCE".to_string()],
                 manage_contingent_orders: true,
                 manage_gtd_expiry: true,
                 manage_stop: true,
@@ -7520,7 +7577,7 @@ mod tests {
         assert!(!strategy.core.config.use_hyphens_in_client_order_ids);
         assert_eq!(
             strategy.core.config.external_order_claims,
-            Some(vec![InstrumentId::from("ETHUSDT.BINANCE")])
+            Some(vec![InstrumentId::from("AUXILIARY.SOURCE")])
         );
         assert!(strategy.core.config.manage_contingent_orders);
         assert!(strategy.core.config.manage_gtd_expiry);
@@ -7568,13 +7625,13 @@ mod tests {
         let mut strategy = test_strategy();
 
         strategy
-            .on_quote(&quote_tick("BTCUSDT.BINANCE", 100.0, 102.0, 1_200))
+            .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_200))
             .expect("reference quote should process");
 
         assert_eq!(strategy.pricing.last_reference_fair_value, Some(101.0));
         assert_eq!(
             strategy.pricing.fast_spot,
-            Some(fast_spot("binance_reference", 101.0, 1_200))
+            Some(fast_spot("reference_data_client", 101.0, 1_200))
         );
     }
 
@@ -7583,7 +7640,7 @@ mod tests {
         let mut strategy = test_strategy();
 
         strategy
-            .on_quote(&quote_tick("ETHUSDT.BINANCE", 100.0, 102.0, 1_200))
+            .on_quote(&quote_tick("OTHER.SOURCE", 100.0, 102.0, 1_200))
             .expect("non-reference quote should be ignored");
 
         assert_eq!(strategy.pricing.last_reference_fair_value, None);
@@ -11423,7 +11480,7 @@ mod tests {
         entry_order.insert("trigger_price".to_string(), Value::Float(0.52));
         entry_order.insert(
             "trigger_instrument_id".to_string(),
-            Value::String("ETHUSDT.BINANCE".to_string()),
+            Value::String("TRIGGER.SOURCE".to_string()),
         );
         let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
             .expect("trigger_instrument_id should parse through runtime config");
@@ -11439,7 +11496,7 @@ mod tests {
         .with_readiness_evidence(test_readiness_gate_evidence());
         let mut strategy = BinaryOracleEdgeTaker::new(config, context);
         let _cache = register_test_strategy(&mut strategy);
-        let trigger_instrument_id = InstrumentId::from("ETHUSDT.BINANCE");
+        let trigger_instrument_id = InstrumentId::from("TRIGGER.SOURCE");
         let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
         let order = strategy
@@ -11470,7 +11527,7 @@ mod tests {
             .expect("entry_order should be a table");
         entry_order.insert(
             "trigger_instrument_id".to_string(),
-            Value::String("ETHUSDT.BINANCE".to_string()),
+            Value::String("TRIGGER.SOURCE".to_string()),
         );
         let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
             .expect("trigger_instrument_id should parse through runtime config");

@@ -34,7 +34,11 @@
 //! `pub(crate)` so the per-provider secret validators can call it the
 //! same way the archetype binding calls `parse_decimal_string`.
 
-use std::{collections::BTreeMap, collections::HashSet, path::Path, str::FromStr};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet},
+    path::Path,
+    str::FromStr,
+};
 
 use nautilus_model::{
     enums::{BarAggregation, BarIntervalType},
@@ -97,6 +101,25 @@ const CHAINLINK_DATA_STREAMS_OLD_PROVIDER_LEVEL_FEED_FIELDS: &[&str] = &[
     CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD,
     CHAINLINK_DATA_STREAMS_REPORT_DECIMAL_SCALE_FIELD,
 ];
+const TARGET_GATE_SUBSCRIPTIONS_FIELD: &str = "gate_subscriptions";
+const TARGET_MARKET_MAPPINGS_FIELD: &str = "market_mappings";
+const TARGET_RESOLUTION_KIND_FIELD: &str = "resolution_kind";
+const TARGET_PROVIDER_ID_FIELD: &str = "provider_id";
+const TARGET_PROVIDER_PREFERENCE_FIELD: &str = "provider_preference";
+const TARGET_ALLOWED_PROVIDER_IDS_FIELD: &str = "allowed_provider_ids";
+
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+struct ChainlinkFeedBindingKey {
+    provider_id: String,
+    resolution_identity: String,
+    value_kind: String,
+}
+
+#[derive(Debug, Clone)]
+struct ChainlinkTargetMappingReference {
+    key: ChainlinkFeedBindingKey,
+    context: String,
+}
 
 pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();
@@ -882,8 +905,227 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
         ));
     }
     errors.extend(validate_reference_quote_probe_sources(strategies));
+    errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));
 
     errors
+}
+
+fn validate_chainlink_feed_binding_coverage(
+    root: &BoltV3RootConfig,
+    strategies: &[LoadedStrategy],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let target_references = collect_chainlink_target_mapping_references(strategies);
+    let target_keys = target_references
+        .iter()
+        .map(|reference| reference.key.clone())
+        .collect::<BTreeSet<_>>();
+    let feed_bindings = collect_chainlink_feed_bindings(root);
+
+    for reference in &target_references {
+        let binding_count = match feed_bindings.get(&reference.key) {
+            Some(contexts) => contexts.len(),
+            None => 0,
+        };
+        match binding_count {
+            1 => {}
+            0 => errors.push(format!(
+                "{}: Chainlink Data Streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has no matching gate_providers.{}.chainlink_data_streams.feed_bindings entry",
+                reference.context,
+                reference.key.provider_id,
+                reference.key.resolution_identity,
+                reference.key.value_kind,
+                reference.key.provider_id
+            )),
+            count => errors.push(format!(
+                "{}: Chainlink Data Streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has {count} matching gate_providers.{}.chainlink_data_streams.feed_bindings entries; expected exactly one",
+                reference.context,
+                reference.key.provider_id,
+                reference.key.resolution_identity,
+                reference.key.value_kind,
+                reference.key.provider_id
+            )),
+        }
+    }
+
+    for (key, contexts) in &feed_bindings {
+        if !target_keys.contains(key) {
+            for context in contexts {
+                errors.push(format!(
+                    "{context} resolution_identity `{}` value_kind `{}` is not referenced by any loaded strategy Chainlink mapping",
+                    key.resolution_identity, key.value_kind
+                ));
+            }
+        }
+    }
+
+    errors
+}
+
+fn collect_chainlink_target_mapping_references(
+    strategies: &[LoadedStrategy],
+) -> Vec<ChainlinkTargetMappingReference> {
+    let mut references = Vec::new();
+
+    for loaded in strategies {
+        let strategy_context = format!("strategy `{}`", loaded.relative_path);
+        let Some(target) = loaded.config.target.as_table() else {
+            continue;
+        };
+        let Some(gate_subscriptions) = target
+            .get(TARGET_GATE_SUBSCRIPTIONS_FIELD)
+            .and_then(toml::Value::as_table)
+        else {
+            continue;
+        };
+        for (role, subscription_value) in gate_subscriptions {
+            let Some(subscription) = subscription_value.as_table() else {
+                continue;
+            };
+            let Some(market_mappings) = subscription
+                .get(TARGET_MARKET_MAPPINGS_FIELD)
+                .and_then(toml::Value::as_array)
+            else {
+                continue;
+            };
+            for (index, mapping_value) in market_mappings.iter().enumerate() {
+                let Some(mapping) = mapping_value.as_table() else {
+                    continue;
+                };
+                if string_field(mapping, TARGET_RESOLUTION_KIND_FIELD).as_deref()
+                    != Some(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
+                {
+                    continue;
+                }
+                let Some(provider_id) = selected_chainlink_provider_id(subscription, mapping)
+                else {
+                    continue;
+                };
+                let (Some(resolution_identity), Some(value_kind)) = (
+                    string_field(mapping, CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD),
+                    string_field(mapping, CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD),
+                ) else {
+                    continue;
+                };
+                references.push(ChainlinkTargetMappingReference {
+                    key: ChainlinkFeedBindingKey {
+                        provider_id,
+                        resolution_identity,
+                        value_kind,
+                    },
+                    context: format!(
+                        "{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]"
+                    ),
+                });
+            }
+        }
+    }
+
+    references
+}
+
+fn selected_chainlink_provider_id(
+    subscription: &toml::map::Map<String, toml::Value>,
+    mapping: &toml::map::Map<String, toml::Value>,
+) -> Option<String> {
+    string_field(mapping, TARGET_PROVIDER_ID_FIELD)
+        .or_else(|| first_string_array_value(subscription, TARGET_PROVIDER_PREFERENCE_FIELD))
+        .or_else(|| single_string_array_value(subscription, TARGET_ALLOWED_PROVIDER_IDS_FIELD))
+}
+
+fn collect_chainlink_feed_bindings(
+    root: &BoltV3RootConfig,
+) -> BTreeMap<ChainlinkFeedBindingKey, Vec<String>> {
+    let mut bindings: BTreeMap<ChainlinkFeedBindingKey, Vec<String>> = BTreeMap::new();
+    let Some(gate_providers) = &root.gate_providers else {
+        return bindings;
+    };
+
+    for (provider_id, provider) in gate_providers {
+        if provider.provider_kind.as_deref().map(str::trim)
+            != Some(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
+        {
+            continue;
+        }
+        let Some(provider_config) = provider
+            .provider_config
+            .get(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
+            .and_then(toml::Value::as_table)
+        else {
+            continue;
+        };
+        let Some(feed_bindings) = provider_config
+            .get(CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD)
+            .and_then(toml::Value::as_array)
+        else {
+            continue;
+        };
+        for (index, binding_value) in feed_bindings.iter().enumerate() {
+            let Some(binding) = binding_value.as_table() else {
+                continue;
+            };
+            let (Some(resolution_identity), Some(value_kind)) = (
+                string_field(binding, CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD),
+                string_field(binding, CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD),
+            ) else {
+                continue;
+            };
+            let key = ChainlinkFeedBindingKey {
+                provider_id: provider_id.clone(),
+                resolution_identity,
+                value_kind,
+            };
+            let context = format!(
+                "gate_providers.{provider_id}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD}[{index}]"
+            );
+            match bindings.entry(key) {
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().push(context);
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(vec![context]);
+                }
+            }
+        }
+    }
+
+    bindings
+}
+
+fn string_field(table: &toml::map::Map<String, toml::Value>, field: &str) -> Option<String> {
+    table
+        .get(field)
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn first_string_array_value(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &str,
+) -> Option<String> {
+    table
+        .get(field)
+        .and_then(toml::Value::as_array)
+        .and_then(|values| values.first())
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn single_string_array_value(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &str,
+) -> Option<String> {
+    let values = table.get(field).and_then(toml::Value::as_array)?;
+    (values.len() == 1)
+        .then(|| values[0].as_str())
+        .flatten()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn validate_reference_quote_probe_sources(strategies: &[LoadedStrategy]) -> Vec<String> {

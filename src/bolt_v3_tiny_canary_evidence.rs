@@ -555,6 +555,7 @@ impl Phase8StrategyInputEvidenceFile {
     pub fn from_runtime_snapshot_and_market_selection_source(
         snapshot: &BoltV3StrategyInputEvidenceSnapshot,
         strategy_instance_id: impl AsRef<str>,
+        runtime_strategy_id: impl AsRef<str>,
         market_selection_source: &Phase8MarketSelectionSourceEvidenceFile,
         market_selection_source_path: impl AsRef<str>,
         market_selection_source_sha256: impl AsRef<str>,
@@ -566,9 +567,15 @@ impl Phase8StrategyInputEvidenceFile {
                 "phase8 strategy input evidence requires strategy_instance_id"
             ));
         }
-        if snapshot.strategy_id != strategy_instance_id {
+        let runtime_strategy_id = runtime_strategy_id.as_ref().trim();
+        if runtime_strategy_id.is_empty() {
             return Err(anyhow!(
-                "phase8 strategy input evidence strategy_instance_id does not match runtime strategy_id"
+                "phase8 strategy input evidence requires runtime_strategy_id"
+            ));
+        }
+        if snapshot.strategy_id != runtime_strategy_id {
+            return Err(anyhow!(
+                "phase8 strategy input evidence runtime strategy_id does not match config"
             ));
         }
         let market_selection_timestamp_ms =
@@ -2129,6 +2136,7 @@ pub struct Phase8FinancialEnvelopeEvidenceFile {
     rotating_market_family: String,
     underlying_asset: String,
     cadence_secs: i64,
+    cadence_slug_token: String,
     market_selection_rule: String,
     retry_interval_secs: i64,
     blocked_after_secs: i64,
@@ -2277,6 +2285,7 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             )?,
             underlying_asset: required_toml_string(target, stringify!(underlying_asset))?,
             cadence_secs: required_toml_integer(target, stringify!(cadence_secs))?,
+            cadence_slug_token: required_toml_string(target, stringify!(cadence_slug_token))?,
             market_selection_rule: required_toml_string(target, stringify!(market_selection_rule))?,
             retry_interval_secs: required_toml_integer(target, stringify!(retry_interval_secs))?,
             blocked_after_secs: required_toml_integer(target, stringify!(blocked_after_secs))?,
@@ -2493,6 +2502,9 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         }
         if self.cadence_secs != loaded.cadence_secs {
             return Err(financial_envelope_mismatch(stringify!(cadence_secs)));
+        }
+        if self.cadence_slug_token != loaded.cadence_slug_token {
+            return Err(financial_envelope_mismatch(stringify!(cadence_slug_token)));
         }
         if self.market_selection_rule != loaded.market_selection_rule {
             return Err(financial_envelope_mismatch(stringify!(

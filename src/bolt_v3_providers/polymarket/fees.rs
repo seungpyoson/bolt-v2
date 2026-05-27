@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn clob_token_id_uses_nt_polymarket_symbol_suffix() {
-        let instrument_id = InstrumentId::from("0xcondition-with-dash-12345.POLYMARKET");
+        let instrument_id = InstrumentId::from("0xconfigured-market-with-dash-12345.POLYMARKET");
 
         assert_eq!(
             clob_token_id_from_instrument_id(instrument_id)
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn clob_token_id_rejects_non_polymarket_venue() {
-        let instrument_id = InstrumentId::from("0xcondition-12345.BINANCE");
+        let instrument_id = InstrumentId::from("0xconfigured-market-12345.SOURCE");
 
         let error = clob_token_id_from_instrument_id(instrument_id)
             .expect_err("fee lookup should reject non-Polymarket instruments");

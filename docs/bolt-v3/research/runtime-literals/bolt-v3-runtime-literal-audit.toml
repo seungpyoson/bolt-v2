@@ -431,14 +431,6 @@ reason = "This is an existing taker strategy config schema field name; the value
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = "\"primary\""
-context = "if strategy.reference_data.contains_key(\"primary\") {"
-classification = "archetype_reference_data_role"
-reason = "The binary_oracle_edge_taker archetype contract requires the [reference_data.primary] role; this literal names that archetype-owned role."
-
-[[allowed]]
-path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
-kind = "string"
 literal = '''"reentry_cooldown_secs"'''
 context = '''"reentry_cooldown_secs",'''
 classification = "strategy_runtime_schema_field"
@@ -459,6 +451,86 @@ literal = '''"reference_venue"'''
 context = '''"reference_venue",'''
 classification = '''strategy_runtime_schema_field'''
 reason = '''This is the existing taker StrategyConfig field name populated from the configured reference_data data_client_id role.'''
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_venue"'''
+context = '''"reference_venue"'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the existing taker StrategyConfig field name for the configured reference data client id."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_venue"'''
+context = '''Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);'''
+classification = "strategy_runtime_schema_field"
+reason = "This validates the existing taker StrategyConfig field name for the configured reference data client id."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_venue"'''
+context = '''if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {'''
+classification = "strategy_runtime_schema_field"
+reason = "This enforces paired configured reference data fields in the existing taker config schema."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_venue"'''
+context = '''let missing = if table.contains_key("reference_venue") {'''
+classification = "strategy_runtime_schema_field"
+reason = "This builds a diagnostic for the paired configured reference data fields in the existing taker config schema."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_venue"'''
+context = '''| "reference_venue"'''
+classification = "strategy_runtime_schema_field"
+reason = "This whitelists the existing taker StrategyConfig field name while rejecting unknown runtime config fields."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_instrument_id"'''
+context = '''"reference_instrument_id"'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the existing taker StrategyConfig field name for the configured reference instrument id."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_instrument_id"'''
+context = '''"reference_instrument_id",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the existing taker StrategyConfig field name for the configured reference instrument id."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_instrument_id"'''
+context = '''if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {'''
+classification = "strategy_runtime_schema_field"
+reason = "This enforces paired configured reference data fields in the existing taker config schema."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"reference_instrument_id"'''
+context = '''| "reference_instrument_id"'''
+classification = "strategy_runtime_schema_field"
+reason = "This whitelists the existing taker StrategyConfig field name while rejecting unknown runtime config fields."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"missing_reference_data_pair"'''
+context = '''"missing_reference_data_pair",'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a missing paired reference data field; it is not a runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -499,6 +571,22 @@ literal = '''"strategies.{strategy_instance_id} {field} cannot be represented fo
 context = '''"strategies.{strategy_instance_id} {field} cannot be represented for existing taker config: `{value}`"'''
 classification = "strategy_archetype_diagnostic_template"
 reason = "This diagnostic reports a config-to-existing-strategy numeric conversion failure; it is not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"allows at most one [reference_data.<role>] block; got roles [{}]"'''
+context = '''"allows at most one [reference_data.<role>] block; got roles [{}]",'''
+classification = "strategy_archetype_diagnostic_template"
+reason = "This diagnostic rejects ambiguous legacy reference_data role wiring before deriving runtime config; it is not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"'''
+context = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"'''
+classification = "strategy_archetype_diagnostic_template"
+reason = "This validation diagnostic rejects ambiguous legacy reference_data role wiring; it is not a runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -1737,36 +1825,12 @@ classification = "selected_market_requirement_schema_field"
 reason = "This is a canonical selected-market requirement identity field name. The value comes from the selected market's NT instrument venue."
 
 [[allowed]]
-path = '''src/bolt_v3_market_families/updown.rs'''
-kind = '''number'''
-literal = '''0'''
-context = '''|| down.activation_milliseconds == 0'''
-classification = '''market_identity_missing_activation_sentinel'''
-reason = '''This detects a missing Polymarket activation timestamp and falls back to the already-derived configured period boundary, not an operator runtime value.'''
-
-[[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = "2"
 context = "const REQUIRED_UPDOWN_OUTCOME_INSTRUMENT_COUNT: usize = 2;"
 classification = "updown_binary_option_outcome_count"
 reason = "This is the market-complete outcome count for binary-option updown selected-market identity: one up outcome and one down outcome."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "number"
-literal = "14400"
-context = "(14400, \"4h\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "number"
-literal = "300"
-context = "(300, \"5m\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -1779,18 +1843,10 @@ reason = "This is the accepted updown underlying_asset identifier length bound d
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
-literal = "3600"
-context = "(3600, \"1h\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "number"
-literal = "60"
-context = "(60, \"1m\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
+literal = "32"
+context = "} else if cadence_slug_token.chars().count() > 32 {"
+classification = "market_identity_shape_bound"
+reason = "This is the accepted updown cadence_slug_token identifier length bound; the token value itself is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -1798,55 +1854,7 @@ kind = "number"
 literal = "60"
 context = "} else if cadence_secs % 60 != 0 {"
 classification = "runtime_contract_cadence_alignment"
-reason = "The updown cadence validator requires minute-aligned periods before consulting the supported runtime-contract slug table."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "number"
-literal = "900"
-context = "(900, \"15m\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = "\"15m\""
-context = "(900, \"15m\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = "\"1h\""
-context = "(3600, \"1h\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = "\"1m\""
-context = "(60, \"1m\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = "\"4h\""
-context = "(14400, \"4h\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = "\"5m\""
-context = "(300, \"5m\"),"
-classification = "runtime_contract_slug_token_table"
-reason = "The updown cadence-to-slug table is an accepted runtime-contract table for supported rotating-market cadence values."
+reason = "The updown cadence validator requires minute-aligned periods; the market slug token paired with the cadence is TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -2030,15 +2038,7 @@ kind = "string"
 literal = "\"{asset_lower}-updown-{cadence_slug_token}-{period_start_unix_secs}\""
 context = "\"{asset_lower}-updown-{cadence_slug_token}-{period_start_unix_secs}\","
 classification = "runtime_contract_slug_template"
-reason = "This is the accepted runtime-contract slug template for the updown market family, derived from validated TOML target identity plus the audited cadence slug-token table."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
-literal = "\"{prefix}target.cadence_secs={cadence_secs} has no runtime-contract-defined updown slug-token mapping\""
-context = "\"{prefix}target.cadence_secs={cadence_secs} has no runtime-contract-defined updown slug-token mapping\","
-classification = "diagnostic_template"
-reason = "This is an error-display template for an unsupported updown cadence after validation, not an operator runtime value."
+reason = "This is the accepted runtime-contract slug template for the updown market family, derived from validated TOML target identity including the config-owned cadence slug token."
 
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness.rs"
@@ -8595,6 +8595,14 @@ reason = "This is the ReportDataV3 ABI word index for benchmarkPrice."
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
+literal = "1_000_000"
+context = '''const CHAINLINK_REPORT_NANOS_PER_MILLISECOND: u64 = 1_000_000;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is a unit conversion constant from milliseconds to nanoseconds for Chainlink-derived reference observation timestamps."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
 literal = "1_000"
 context = '''const CHAINLINK_REPORT_MILLISECONDS_PER_SECOND: u64 = 1_000;'''
 classification = "chainlink_report_protocol_decoder"
@@ -8607,14 +8615,6 @@ literal = "0x80"
 context = '''const CHAINLINK_REPORT_SIGN_BIT_MASK: u8 = 0x80;'''
 classification = "chainlink_report_protocol_decoder"
 reason = "This is the two's-complement sign-bit mask used when decoding the ReportDataV3 int192 benchmarkPrice word."
-
-[[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
-kind = "number"
-literal = "10.0"
-context = '''const CHAINLINK_REPORT_PRICE_DECIMAL_RADIX: f64 = 10.0;'''
-classification = "chainlink_report_protocol_decoder"
-reason = "This is the decimal radix used with the TOML-configured Chainlink decimal scale to convert benchmarkPrice into the existing f64 artifact field."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -8804,7 +8804,7 @@ reason = "This schema vocabulary label identifies a provider-neutral gate role d
 path = "src/bolt_v3_config.rs"
 kind = "string"
 literal = '''"decision_reference"'''
-context = '''pub const GATE_ROLES: &[&str] = &[RESOLUTION_GATE_ROLE, "decision_reference"];'''
+context = '''pub const DECISION_REFERENCE_GATE_ROLE: &str = "decision_reference";'''
 classification = "gate_role_schema_label"
 reason = "This schema vocabulary label identifies a provider-neutral gate role declared by strategy archetypes."
 
@@ -8887,6 +8887,102 @@ literal = '''"ssm_credential_parameter"'''
 context = '''const CHAINLINK_DATA_STREAMS_OLD_SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";'''
 classification = "chainlink_data_streams_legacy_toml_field"
 reason = "This legacy field name is kept only so validation can fail closed with migration guidance."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "0"
+context = '''.then(|| values[0].as_str())'''
+classification = "target_gate_single_provider_selection"
+reason = "This indexes the only allowed provider id after a len==1 guard when validating TOML-owned target gate mappings."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "1"
+context = '''1 => {}'''
+classification = "chainlink_feed_binding_cardinality"
+reason = "This is the exact one matching Chainlink feed binding required for each configured target gate mapping."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "0"
+context = '''None => 0,'''
+classification = "chainlink_feed_binding_cardinality"
+reason = "This is the zero matching feed-binding count for a TOML-owned Chainlink mapping when no binding key is present."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"allowed_provider_ids"'''
+context = '''const TARGET_ALLOWED_PROVIDER_IDS_FIELD: &str = "allowed_provider_ids";'''
+classification = "target_gate_schema_field"
+reason = "This names the provider-neutral target gate schema field; provider id values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"gate_subscriptions"'''
+context = '''const TARGET_GATE_SUBSCRIPTIONS_FIELD: &str = "gate_subscriptions";'''
+classification = "target_gate_schema_field"
+reason = "This names the provider-neutral target gate subscription table in strategy TOML."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"market_mappings"'''
+context = '''const TARGET_MARKET_MAPPINGS_FIELD: &str = "market_mappings";'''
+classification = "target_gate_schema_field"
+reason = "This names the target gate market mapping table; mapping values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"provider_id"'''
+context = '''const TARGET_PROVIDER_ID_FIELD: &str = "provider_id";'''
+classification = "target_gate_schema_field"
+reason = "This names the selected provider id schema key; provider id values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"provider_preference"'''
+context = '''const TARGET_PROVIDER_PREFERENCE_FIELD: &str = "provider_preference";'''
+classification = "target_gate_schema_field"
+reason = "This names the target gate provider preference field; provider ordering remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"resolution_kind"'''
+context = '''const TARGET_RESOLUTION_KIND_FIELD: &str = "resolution_kind";'''
+classification = "target_gate_schema_field"
+reason = "This names the target gate mapping provider-kind field; values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"gate_providers.{provider_id}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD}[{index}]"'''
+context = '''"gate_providers.{provider_id}.chainlink_data_streams.{CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD}[{index}]"'''
+classification = "chainlink_data_streams_validation_context_template"
+reason = "This diagnostic context points to the TOML-owned Chainlink feed binding row being validated."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]"'''
+context = '''"{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]"'''
+classification = "target_gate_validation_context_template"
+reason = "This diagnostic context points to the TOML-owned target gate market mapping row being validated."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"{}: Chainlink Data Streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has no matching gate_providers.{}.chainlink_data_streams.feed_bindings entry"'''
+context = '''"{}: Chainlink Data Streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has no matching gate_providers.{}.chainlink_data_streams.feed_bindings entry",'''
+classification = "chainlink_data_streams_validation_diagnostic"
+reason = "This fail-closed diagnostic reports a missing TOML-owned Chainlink feed binding for a configured target gate mapping."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -8979,6 +9075,38 @@ reason = "This is the Chainlink report decimal-scale schema key; decimal-scale v
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"reference_value"'''
+context = '''const GATE_PROVIDER_CAPABILITY_REFERENCE_VALUE: &str = "reference_value";'''
+classification = "gate_provider_capability_schema_label"
+reason = "This schema vocabulary label identifies a semantic provider capability used to select source-owned reference observations."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy_id"'''
+context = '''raw.get("strategy_id")'''
+classification = "strategy_runtime_schema_field"
+reason = "This reads the existing taker runtime strategy_id field so operator evidence can bind operator strategy_instance_id to the NT runtime strategy id."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"strategy instance `{strategy_instance_id}` has no runtime strategy_id"'''
+context = '''anyhow!("strategy instance `{strategy_instance_id}` has no runtime strategy_id")'''
+classification = "operator_artifact_validation_diagnostic"
+reason = "This fail-closed diagnostic reports a missing runtime strategy id in the generated taker config; it is not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"Chainlink reference observations require at least one report source"'''
+context = '''"Chainlink reference observations require at least one report source",'''
+classification = "operator_artifact_validation_diagnostic"
+reason = "This fail-closed diagnostic rejects an empty source-owned Chainlink reference observation sequence."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"gate_subscriptions"'''
 context = '''.get("gate_subscriptions")'''
 classification = "target_gate_schema_field"
@@ -9060,7 +9188,7 @@ reason = "This reads config-owned target gate market mappings; mapping values re
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"provider_id"'''
-context = '''.and_then(|mapping| mapping.get("provider_id").and_then(toml::Value::as_str))'''
+context = '''.get("provider_id")'''
 classification = "target_gate_schema_field"
 reason = "This reads the selected target gate provider id key; provider id values remain TOML-owned."
 
@@ -9079,6 +9207,14 @@ literal = '''"resolution_identity"'''
 context = '''required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_identity")?;'''
 classification = "target_gate_schema_field"
 reason = "This reads the target gate resolution identity schema field; the identity value remains TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"resolution_identity"'''
+context = '''required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_identity")?'''
+classification = "target_gate_schema_field"
+reason = "This reads the decision-reference target gate resolution identity schema field; the identity value remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"

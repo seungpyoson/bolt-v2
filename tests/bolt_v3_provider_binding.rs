@@ -40,13 +40,14 @@ use bolt_v2::{
     bolt_v3_adapters::{
         BoltV3AdapterMappingError, BoltV3MarketClockFn, map_bolt_v3_adapters_with_market_identity,
     },
-    bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},
+    bolt_v3_config::{ClientBlock, LoadedStrategy, load_bolt_v3_config},
     bolt_v3_market_families::{MarketIdentityPlan, updown::plan_market_identity},
     bolt_v3_providers::{
         binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
     },
     bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
 };
+use nautilus_model::identifiers::Venue;
 use nautilus_polymarket::config::PolymarketDataClientConfig;
 
 /// Mutate a single field in the strategy's raw `[target]` TOML
@@ -96,9 +97,9 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
 
     // Fixed `now_unix_secs = 601` puts the planner inside the
-    // BTC/5m window [600, 900): current=600 and next=900. The provider
-    // binding's filter must surface those slugs in `[current, next]`
-    // order on every `market_slugs()` call.
+    // configured window [600, 900): current=600 and next=900. The
+    // provider binding's filter must surface those slugs in
+    // `[current, next]` order on every `market_slugs()` call.
     let clock = fixed_clock(601);
 
     let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
@@ -126,8 +127,8 @@ fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time()
     assert_eq!(
         slugs,
         vec![
-            "btc-updown-5m-600".to_string(),
-            "btc-updown-5m-900".to_string(),
+            "configured_asset-updown-configuredwindow-600".to_string(),
+            "configured_asset-updown-configuredwindow-900".to_string(),
         ],
         "provider filter slug ordering must be [current, next]"
     );
@@ -152,40 +153,55 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
         set_target_field(
             first,
             "configured_target_id",
-            toml::Value::String("ltc_updown_15m".to_string()),
+            toml::Value::String("zeta_target".to_string()),
         );
         set_target_field(
             first,
             "underlying_asset",
-            toml::Value::String("LTC".to_string()),
+            toml::Value::String("ZETA".to_string()),
         );
         set_target_field(first, "cadence_secs", toml::Value::Integer(900));
+        set_target_field(
+            first,
+            "cadence_slug_token",
+            toml::Value::String("quarterhour".to_string()),
+        );
     }
     second.config.strategy_instance_id = "alpha_strategy_main".to_string();
     set_target_field(
         &mut second,
         "configured_target_id",
-        toml::Value::String("xrp_updown_5m".to_string()),
+        toml::Value::String("alpha_target".to_string()),
     );
     set_target_field(
         &mut second,
         "underlying_asset",
-        toml::Value::String("XRP".to_string()),
+        toml::Value::String("ALPHA".to_string()),
     );
     set_target_field(&mut second, "cadence_secs", toml::Value::Integer(300));
+    set_target_field(
+        &mut second,
+        "cadence_slug_token",
+        toml::Value::String("shortwindow".to_string()),
+    );
 
     third.config.strategy_instance_id = "mike_strategy_main".to_string();
     set_target_field(
         &mut third,
         "configured_target_id",
-        toml::Value::String("btc_updown_1h".to_string()),
+        toml::Value::String("mike_target".to_string()),
     );
     set_target_field(
         &mut third,
         "underlying_asset",
-        toml::Value::String("BTC".to_string()),
+        toml::Value::String("MIKE".to_string()),
     );
     set_target_field(&mut third, "cadence_secs", toml::Value::Integer(3600));
+    set_target_field(
+        &mut third,
+        "cadence_slug_token",
+        toml::Value::String("hourwindow".to_string()),
+    );
 
     loaded.strategies.push(second);
     loaded.strategies.push(third);
@@ -194,9 +210,9 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
 
     // Pick now=7300:
-    //   15m cadence 900  -> floor(7300/900)*900 = 7200, next = 8100
-    //   5m  cadence 300  -> floor(7300/300)*300 = 7200, next = 7500
-    //   1h  cadence 3600 -> floor(7300/3600)*3600 = 7200, next = 10800
+    //   cadence 900  -> floor(7300/900)*900 = 7200, next = 8100
+    //   cadence 300  -> floor(7300/300)*300 = 7200, next = 7500
+    //   cadence 3600 -> floor(7300/3600)*3600 = 7200, next = 10800
     let clock = fixed_clock(7300);
 
     let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
@@ -222,26 +238,26 @@ fn provider_binding_preserves_declaration_order_across_multiple_updown_targets()
     assert_eq!(
         data.filters[0].market_slugs(),
         Some(vec![
-            "ltc-updown-15m-7200".to_string(),
-            "ltc-updown-15m-8100".to_string(),
+            "zeta-updown-quarterhour-7200".to_string(),
+            "zeta-updown-quarterhour-8100".to_string(),
         ]),
-        "filters[0] must correspond to declared strategy [0] (zeta/LTC/15m)"
+        "filters[0] must correspond to declared strategy [0] (zeta)"
     );
     assert_eq!(
         data.filters[1].market_slugs(),
         Some(vec![
-            "xrp-updown-5m-7200".to_string(),
-            "xrp-updown-5m-7500".to_string(),
+            "alpha-updown-shortwindow-7200".to_string(),
+            "alpha-updown-shortwindow-7500".to_string(),
         ]),
-        "filters[1] must correspond to declared strategy [1] (alpha/XRP/5m)"
+        "filters[1] must correspond to declared strategy [1] (alpha)"
     );
     assert_eq!(
         data.filters[2].market_slugs(),
         Some(vec![
-            "btc-updown-1h-7200".to_string(),
-            "btc-updown-1h-10800".to_string(),
+            "mike-updown-hourwindow-7200".to_string(),
+            "mike-updown-hourwindow-10800".to_string(),
         ]),
-        "filters[2] must correspond to declared strategy [2] (mike/BTC/1h)"
+        "filters[2] must correspond to declared strategy [2] (mike)"
     );
 }
 
@@ -357,12 +373,12 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
         .expect("polymarket data config should downcast to NT PolymarketDataClientConfig");
     let filter = &data.filters[0];
 
-    // First cycle at counter=601: BTC/5m window [600, 900).
+    // First cycle at counter=601: configured window [600, 900).
     assert_eq!(
         filter.market_slugs(),
         Some(vec![
-            "btc-updown-5m-600".to_string(),
-            "btc-updown-5m-900".to_string(),
+            "configured_asset-updown-configuredwindow-600".to_string(),
+            "configured_asset-updown-configuredwindow-900".to_string(),
         ]),
         "first market_slugs() call must reflect counter=601"
     );
@@ -373,8 +389,8 @@ fn provider_binding_filter_recomputes_slug_pair_each_call_against_advancing_cloc
     assert_eq!(
         filter.market_slugs(),
         Some(vec![
-            "btc-updown-5m-900".to_string(),
-            "btc-updown-5m-1200".to_string(),
+            "configured_asset-updown-configuredwindow-900".to_string(),
+            "configured_asset-updown-configuredwindow-1200".to_string(),
         ]),
         "second market_slugs() call must reflect counter=901; \
          caching the slug list would fail this assertion"
@@ -390,9 +406,17 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_client() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
-    // Mutate the strategy to bind to the Binance reference client.
+    loaded.root.clients.insert(
+        "unsupported_execution_client".to_string(),
+        ClientBlock {
+            venue: Venue::from("BINANCE"),
+            data: None,
+            execution: None,
+            secrets: None,
+        },
+    );
     loaded.strategies[0].config.execution_client_id =
-        nautilus_model::identifiers::ClientId::from("binance_reference");
+        nautilus_model::identifiers::ClientId::from("unsupported_execution_client");
 
     let resolved = fixture_resolved_secrets();
     let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
@@ -406,7 +430,7 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_client() {
             field,
             message,
         } => {
-            assert_eq!(client_key, "binance_reference");
+            assert_eq!(client_key, "unsupported_execution_client");
             assert_eq!(field, "strategy.execution_client_id");
             assert!(
                 message.contains("does not support that market family"),

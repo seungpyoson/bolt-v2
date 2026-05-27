@@ -342,17 +342,17 @@ pub fn valid_entry_readiness_gate_session_json() -> serde_json::Value {
     serde_json::json!({
         "schema_version": 1,
         "record_kind": "bolt_v3.entry_readiness_gate_session.v1",
-        "strategy_instance_id": "bitcoin_updown_main",
-        "configured_target_id": "btc_updown_5m",
+        "strategy_instance_id": "configured_updown_main",
+        "configured_target_id": "configured_updown_target",
         "selected_market": {
-            "configured_target_id": "btc_updown_5m",
+            "configured_target_id": "configured_updown_target",
             "venue": "polymarket",
             "family_key": "updown",
-            "market_id": "condition-1",
-            "instrument_ids": ["condition-1-DOWN.POLYMARKET", "condition-1-UP.POLYMARKET"],
+            "market_id": "configured-condition",
+            "instrument_ids": ["configured-condition-DOWN.POLYMARKET", "configured-condition-UP.POLYMARKET"],
             "market_class": "binary_option",
             "resolution_kind": "price",
-            "resolution_identity": "btc-usd",
+            "resolution_identity": "configured-reference-price",
             "value_kind": "scalar_price",
             "metadata_provenance_sha256": "f".repeat(64),
             "selected_market_key": selected_market_key,
@@ -363,7 +363,7 @@ pub fn valid_entry_readiness_gate_session_json() -> serde_json::Value {
             "resolution": {
                 "satisfaction_kind": "no_resolution",
                 "selected_market_key": selected_market_key,
-                "resolution_identity": "btc-usd"
+                "resolution_identity": "configured-reference-price"
             }
         },
         "session_hash": "a".repeat(64),

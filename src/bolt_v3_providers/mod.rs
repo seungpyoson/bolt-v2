@@ -627,6 +627,26 @@ mod tests {
         }
     }
 
+    fn binance_reference_client() -> ClientBlock {
+        client_from_toml(
+            r#"
+            venue = "BINANCE"
+
+            [data]
+            product_types = ["spot"]
+            environment = "mainnet"
+            base_url_http = "https://api.binance.com"
+            base_url_ws = "wss://stream-sbe.binance.com/ws"
+            instrument_status_poll_secs = 3600
+            transport_backend = "sockudo"
+
+            [secrets]
+            api_key_ssm_path = "/bolt/binance_reference/api_key"
+            api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+            "#,
+        )
+    }
+
     fn fake_secret_value(path: &str) -> String {
         match path {
             "/bolt/polymarket_main/private_key" => {
@@ -824,7 +844,11 @@ mod tests {
 
     #[test]
     fn fee_provider_resolution_rejects_provider_without_fee_binding() {
-        let loaded = fixture_loaded_config();
+        let mut loaded = fixture_loaded_config();
+        loaded
+            .root
+            .clients
+            .insert("binance_reference".to_string(), binance_reference_client());
         let resolved = ResolvedBoltV3Secrets {
             clients: BTreeMap::new(),
         };

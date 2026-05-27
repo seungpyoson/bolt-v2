@@ -27,6 +27,7 @@ pub const CHAINLINK_DATA_STREAMS_PROVIDER_KIND: &str = "chainlink_data_streams";
 pub const NO_RESOLUTION_KIND: &str = "no_resolution";
 pub const NO_RESOLUTION_VALUE_KIND: &str = "none";
 pub const RESOLUTION_GATE_ROLE: &str = "resolution";
+pub const DECISION_REFERENCE_GATE_ROLE: &str = "decision_reference";
 pub const PRICE_GATE_VALUE_KIND: &str = "price";
 pub const GATE_PROVIDER_KINDS: &[&str] = &[
     CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
@@ -40,7 +41,7 @@ pub const GATE_PROVIDER_KINDS: &[&str] = &[
 ];
 pub const GATE_PROVIDER_CAPABILITIES: &[&str] =
     &["resolution_value", "reference_value", "market_metadata"];
-pub const GATE_ROLES: &[&str] = &[RESOLUTION_GATE_ROLE, "decision_reference"];
+pub const GATE_ROLES: &[&str] = &[RESOLUTION_GATE_ROLE, DECISION_REFERENCE_GATE_ROLE];
 pub const GATE_VALUE_KINDS: &[&str] = &[
     PRICE_GATE_VALUE_KIND,
     "index",
@@ -543,13 +544,10 @@ mod tests {
         assert_eq!(root.trader_id, TraderId::from("BOLT-001"));
         assert_eq!(root.runtime.mode, Environment::Live);
         assert!(root.clients.contains_key("polymarket_main"));
-        assert!(root.clients.contains_key("binance_reference"));
         let polymarket = &root.clients["polymarket_main"];
         assert_eq!(polymarket.venue, Venue::from("POLYMARKET"));
         assert!(polymarket.execution.is_some());
-        let binance = &root.clients["binance_reference"];
-        assert_eq!(binance.venue, Venue::from("BINANCE"));
-        assert!(binance.execution.is_none());
+        assert!(!root.clients.contains_key("binance_reference"));
     }
 
     #[test]
@@ -563,6 +561,6 @@ mod tests {
             .as_table()
             .expect("[target] should parse into a table");
         assert!(!target_table.is_empty());
-        assert!(strategy.reference_data.contains_key("primary"));
+        assert!(strategy.reference_data.is_empty());
     }
 }

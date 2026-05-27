@@ -9,7 +9,8 @@ use bolt_v2::{
     },
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
     bolt_v3_operator_artifacts::{
-        ChainlinkPriceReportSourceMaterializationRequest,
+        ChainlinkPriceReportSourceMaterializationRequest, ChainlinkReferencePriceReportSourceFile,
+        ChainlinkReferenceQuoteObservationsSourceMaterializationRequest,
         EntryDecisionProofSourceMaterializationRequest, EntryDecisionSourceCollectionRequest,
         FinalOperatorPacketVerificationScope, OperatorEvidenceJsonBuildInputs,
         PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
@@ -22,6 +23,7 @@ use bolt_v2::{
         verify_final_operator_packet_with_scope, write_abort_plan_artifact_from_source_bundle_file,
         write_abort_plan_artifact_from_source_collectors, write_base_static_operator_artifacts,
         write_chainlink_price_report_source_from_configured_provider,
+        write_chainlink_reference_quote_observations_source_from_report_files,
         write_entry_decision_evidence_from_source_file, write_entry_decision_proof_source_files,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_operator_evidence_json_from_artifact_paths,
@@ -389,6 +391,20 @@ enum OperatorArtifactsCommand {
         config: PathBuf,
         #[arg(long)]
         strategy_instance_id: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    CollectChainlinkReferenceQuoteObservationsSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        price_report: Vec<PathBuf>,
+        #[arg(long)]
+        expected_price_report_sha256: Vec<String>,
+        #[arg(long)]
+        max_price_report_bytes: u64,
         #[arg(long)]
         output: PathBuf,
     },
@@ -1065,6 +1081,41 @@ fn run_operator_artifacts_command(
                 &strategy_instance_id,
                 &evidence,
                 &output,
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectChainlinkReferenceQuoteObservationsSource {
+            config,
+            strategy_instance_id,
+            price_report,
+            expected_price_report_sha256,
+            max_price_report_bytes,
+            output,
+        } => {
+            if price_report.len() != expected_price_report_sha256.len() {
+                return Err(
+                    "each --price-report requires one --expected-price-report-sha256".into(),
+                );
+            }
+            let loaded = load_bolt_v3_config(&config)?;
+            let report_sources = price_report
+                .iter()
+                .zip(expected_price_report_sha256.iter())
+                .map(
+                    |(path, expected_sha256)| ChainlinkReferencePriceReportSourceFile {
+                        path,
+                        expected_sha256,
+                    },
+                )
+                .collect::<Vec<_>>();
+            let written = write_chainlink_reference_quote_observations_source_from_report_files(
+                &loaded,
+                &strategy_instance_id,
+                ChainlinkReferenceQuoteObservationsSourceMaterializationRequest {
+                    price_reports: &report_sources,
+                    max_price_report_bytes,
+                    output_path: &output,
+                },
             )?;
             print_written_operator_artifact(&written)
         }

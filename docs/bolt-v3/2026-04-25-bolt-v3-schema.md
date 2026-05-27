@@ -83,7 +83,7 @@ schema_version = 1
 trader_id = "BOLT-001"
 
 strategy_files = [
-  "strategies/bitcoin_updown_main.toml",
+  "strategies/configured_updown_main.toml",
 ]
 
 [runtime]
@@ -844,7 +844,7 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 
 - `max_live_order_count`: integer, must equal `1`
 - `max_notional_per_order`: decimal string matching `[live_canary].max_notional_per_order`
-- `strategy_instance_id`, `oms_type`, `execution_client_id`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`: strings matching the loaded strategy/TOML
+- `strategy_instance_id`, `oms_type`, `execution_client_id`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`, `cadence_slug_token`: strings matching the loaded strategy/TOML
 - `cadence_secs`, `retry_interval_secs`, `blocked_after_secs`: integer seconds matching the loaded target runtime
 - `market_selection_rule`: string matching the loaded target runtime
 - `price_to_beat_source`: string matching `[parameters.runtime].price_to_beat_source`
@@ -1156,7 +1156,7 @@ For current Binance reference-data use:
 
 ```toml
 schema_version = 2
-strategy_instance_id = "bitcoin_updown_main"
+strategy_instance_id = "configured_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
@@ -1174,18 +1174,17 @@ log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
 
 [target]
-configured_target_id = "btc_updown_5m"
+configured_target_id = "configured_updown_target"
 kind = "rotating_market"
 rotating_market_family = "updown"
-underlying_asset = "BTC"
+underlying_asset = "CONFIGURED_ASSET"
 cadence_secs = 300
+cadence_slug_token = "configuredwindow"
 market_selection_rule = "active_or_next"
 retry_interval_secs = 5
 blocked_after_secs = 60
 
-[reference_data.primary]
-data_client_id = "binance_reference"
-instrument_id = "BTCUSDT.BINANCE"
+[reference_data]
 
 [parameters.entry_order]
 side = "buy"
@@ -1701,7 +1700,7 @@ schema_version = 1
 trader_id = "BOLT-001"
 
 strategy_files = [
-  "strategies/bitcoin_updown_main.toml",
+  "strategies/configured_updown_main.toml",
 ]
 
 [runtime]
@@ -1908,7 +1907,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 ```toml
 schema_version = 2
-strategy_instance_id = "bitcoin_updown_main"
+strategy_instance_id = "configured_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
@@ -1926,18 +1925,17 @@ log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
 
 [target]
-configured_target_id = "btc_updown_5m"
+configured_target_id = "configured_updown_target"
 kind = "rotating_market"
 rotating_market_family = "updown"
-underlying_asset = "BTC"
+underlying_asset = "CONFIGURED_ASSET"
 cadence_secs = 300
+cadence_slug_token = "configuredwindow"
 market_selection_rule = "active_or_next"
 retry_interval_secs = 5
 blocked_after_secs = 60
 
-[reference_data.primary]
-data_client_id = "binance_reference"
-instrument_id = "BTCUSDT.BINANCE"
+[reference_data]
 
 [parameters.entry_order]
 side = "buy"

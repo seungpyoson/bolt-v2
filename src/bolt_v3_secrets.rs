@@ -303,6 +303,36 @@ mod tests {
         }
     }
 
+    fn binance_reference_client() -> crate::bolt_v3_config::ClientBlock {
+        toml::from_str(
+            r#"
+            venue = "BINANCE"
+
+            [data]
+            product_types = ["spot"]
+            environment = "mainnet"
+            base_url_http = "https://api.binance.com"
+            base_url_ws = "wss://stream-sbe.binance.com/ws"
+            instrument_status_poll_secs = 3600
+            transport_backend = "sockudo"
+
+            [secrets]
+            api_key_ssm_path = "/bolt/binance_reference/api_key"
+            api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+            "#,
+        )
+        .expect("binance provider fixture client should parse")
+    }
+
+    fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
+        let mut loaded = fixture_loaded_config();
+        loaded
+            .root
+            .clients
+            .insert("binance_reference".to_string(), binance_reference_client());
+        loaded
+    }
+
     fn synthetic_binance_secret() -> String {
         // PKCS8-wrapped Ed25519 private key, base64-encoded. Mirrors the
         // shape accepted by the Binance provider secret validator, so the
@@ -367,7 +397,7 @@ mod tests {
 
     #[test]
     fn flags_set_binance_var_for_configured_binance_client() {
-        let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        let root = fixture_loaded_config_with_binance_reference().root;
         let error =
             check_no_forbidden_credential_env_vars_with(&root, |var| var == "BINANCE_API_SECRET")
                 .expect_err("BINANCE_API_SECRET should trip the binance blocklist");
@@ -386,7 +416,7 @@ mod tests {
 
     #[test]
     fn resolves_configured_bolt_v3_client_secrets_from_ssm_paths() {
-        let loaded = fixture_loaded_config();
+        let loaded = fixture_loaded_config_with_binance_reference();
         let mut calls = Vec::new();
 
         let resolved = resolve_bolt_v3_secrets_with(&loaded, |region, path| {
@@ -523,7 +553,7 @@ mod tests {
         // The sentinel passes resolve_field's whitespace checks but
         // fails Ed25519 PKCS8 base64 shape validation; the wrapped
         // error must not surface the sentinel bytes.
-        let loaded = fixture_loaded_config();
+        let loaded = fixture_loaded_config_with_binance_reference();
         let sentinel = "BOLTV3_API_SECRET_SENTINEL_DO_NOT_LEAK_8D4F2E1AC3B7";
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
@@ -592,7 +622,7 @@ mod tests {
 
     #[test]
     fn resolved_bolt_v3_secrets_debug_does_not_leak_secret_values() {
-        let loaded = fixture_loaded_config();
+        let loaded = fixture_loaded_config_with_binance_reference();
 
         let resolved = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
             Ok::<_, &'static str>(fake_secret_value(path))
@@ -618,7 +648,7 @@ mod tests {
 
     #[test]
     fn ssm_failure_reports_bolt_v3_client_field_without_path() {
-        let loaded = fixture_loaded_config();
+        let loaded = fixture_loaded_config_with_binance_reference();
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
             if path == "/bolt/binance_reference/api_secret" {

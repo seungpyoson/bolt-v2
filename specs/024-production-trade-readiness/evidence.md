@@ -1196,3 +1196,112 @@ At current head, the entry-decision reference quote and realized-volatility proo
   - Scope/safety: this was a no-submit reference-data probe only. It connected Polymarket data/execution clients for NT no-submit readiness, reconciled account state, subscribed/unsubscribed quotes, and stopped. It did not submit, cancel, trade, transfer funds, mutate CLOB allowance/cache state, mutate on-chain state, print secrets, or write a proof artifact.
 
 T036 remains open. The source-owned quote/volatility proof code path is now present, but the current ignored local strategy reference-data config is stale/static for a rotating Polymarket market, so the live NT quote-observation source cannot yet be collected from this config.
+
+## T036I6 Chainlink Feed-Binding Coverage
+
+At current head, Chainlink Data Streams feed selection is now validated across the loaded root and strategy TOML instead of relying on implicit token fallback behavior.
+
+- Implementation: `validate_strategies` now cross-checks every loaded strategy target Chainlink mapping by `(provider_id, resolution_identity, value_kind)` against `[gate_providers.<id>.chainlink_data_streams].feed_bindings`, requires exactly one matching TOML-owned binding, and rejects any Chainlink feed binding not referenced by a loaded strategy mapping.
+- Scope: this is a config/validation guard only. It does not fetch Chainlink, read SSM, connect to a venue, submit/cancel orders, mutate accounts, or execute a trade.
+- Canonical config cleanup required by the new guard: removed the shipped unused secondary feed binding from `config/root.example.toml`, `tests/fixtures/bolt_v3/root.toml`, and ignored `config/live.local.toml`; the loaded strategies only map the current configured primary resolution identity.
+- RED/GREEN verification:
+  - `cargo test --test config_parsing rejects_chainlink_target_mapping_without_matching_feed_binding -- --nocapture`: failed before the validator with empty validation messages, then passed after implementation.
+  - `cargo test --test config_parsing rejects_unreachable_chainlink_feed_binding -- --nocapture`: failed before the validator with empty validation messages, then passed after implementation.
+  - `cargo test --test config_parsing chainlink -- --nocapture`: 6 passed.
+  - `cargo test --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer_selects_alt_feed_by_resolution_identity -- --nocapture`: passed.
+  - `cargo test --test bolt_v3_cli bolt_v3_cli_collects_chainlink_price_report_source_without_printing_credentials -- --nocapture`: passed.
+  - `cargo fmt`: passed.
+- Follow-up hard evidence: `operator-artifacts generate-base-static --config config/live.local.toml --output-dir /private/tmp/bolt-v2-t036-check-2/base-static --strategy-instance-id bitcoin_updown_main` passed after removing the ignored local unused secondary binding and wrote `ssm-manifest.json`, `financial-envelope.json`, and `approval-nonce.json`.
+
+T036 remains open. A fresh `collect-reference-quote-observations-source --config config/live.local.toml --strategy-instance-id bitcoin_updown_main --output /private/tmp/bolt-v2-t036-final-current/reference-quote-observations-source.json` attempt still failed closed because the ignored local strategy points `[reference_data.primary]` at `polymarket_main` / `condition-1-UP.POLYMARKET`; NT loaded current Polymarket slug instruments, rejected that stale static instrument with `Instrument condition-1-UP.POLYMARKET not found, and auto_load_missing_instruments is disabled`, and returned `NoSubmitReferenceProbeFailed { reason: "reference quote probe did not observe all configured reference_data quotes within [live_canary].reference_quote_wait_timeout_seconds=20" }`. This confirms the remaining blocker is not Chainlink feed-id tracking or pUSD allowance; it is the missing source-owned, market-agnostic decision-reference path now tracked as `T036I7`.
+
+## T036I7 Source-Owned Decision-Reference Proof Path
+
+At current head, the stale/static local `reference_data` blocker has been replaced by a TOML-owned `decision_reference` gate subscription and a bounded Chainlink report-sequence materializer for reference quote observations.
+
+- Implementation: added `write_chainlink_reference_quote_observations_source_from_report_files` and the CLI command `operator-artifacts collect-chainlink-reference-quote-observations-source`. The command consumes one or more bounded Chainlink report source files plus approved sha256 values, decodes each report through the configured `(provider_id, resolution_identity, value_kind)` feed binding, and writes `bolt_v3.reference_quote_observations_source.v1` without printing raw reports.
+- Runtime bridge: `binary_oracle_edge_taker::raw_taker_config` now derives `reference_venue` and `reference_instrument_id` from `target.gate_subscriptions.decision_reference` when legacy `[reference_data.<role>]` is absent. If both are configured, it fails closed instead of allowing dual reference paths.
+- Local/config cleanup: ignored `config/strategies/binary_oracle.local.toml` no longer points at static `polymarket_main` / `condition-1-UP.POLYMARKET` reference data. Shipped example/fixture configs now declare `decision_reference` alongside `resolution`, and the Chainlink provider capability includes `reference_value`.
+- Anti-hardcode cleanup in the touched slice: removed misleading cadence- and asset-shaped reference identities from tracked config/spec/test paths, replacing the fixture identity with `configured-reference-price`. Synthetic quote-observation helpers in the touched tests now use bid=ask for reference values instead of a fake spread.
+- Scope: this does not make Chainlink globally required. The materializer dispatches only when the configured `decision_reference` provider kind is Chainlink Data Streams; provider-neutral readiness/session logic remains separate.
+- RED/GREEN verification:
+  - `cargo test --test bolt_v3_operator_artifacts chainlink_reference_quote_observations_source_materializer -- --nocapture`: first failed on missing public API, then passed.
+  - `cargo test --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer_derives_reference_quote_and_volatility_from_chainlink_reports_without_reference_data -- --nocapture`: passed.
+  - `cargo test --test bolt_v3_cli bolt_v3_cli_exposes_collect_chainlink_reference_quote_observations_source -- --nocapture`: first failed because the command was missing, then passed.
+  - `cargo test --test bolt_v3_cli bolt_v3_cli_collects_chainlink_reference_quote_observations_source_without_printing_reports -- --nocapture`: passed.
+- Focused verification after cleanup:
+  - `cargo test --test config_parsing -- --nocapture`: 142 passed.
+  - `cargo test --test bolt_v3_operator_artifacts -- --nocapture`: 194 passed.
+  - `cargo test --test bolt_v3_cli -- --nocapture`: 54 passed.
+  - `cargo test --test bolt_v3_strategy_registration -- --nocapture`: 23 passed.
+  - `cargo test selected_market_requirement --lib -- --nocapture`: 11 passed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+
+T036 remains open. T036I7 removed the stale/static reference-data blocker and added the source-owned decision-reference proof path, but the final packet still needs fresh source artifacts, `operator-evidence` binding, and final verification through T036-T038.
+
+## T036 Current Source-Input Retry After T036I7
+
+After T036I7, the previous stale `reference_data` blocker no longer reproduces. A fresh source-owned Chainlink decision-reference chain was materialized from current-window testnet reports:
+
+- `generate-base-static --config config/live.local.toml --output-dir /private/tmp/bolt-v2-t036-current/base-static --strategy-instance-id bitcoin_updown_main` passed and wrote `ssm-manifest.json` sha256 `5eaf8a4501819c1dae10dabf7597ba77093814116f9d4112cd69ab106a49c7a1`, `financial-envelope.json` sha256 `adb344a0bdb1d03e2a0f1f24e7acf277f153e00279e054a127dd4100568aef98`, and `approval-nonce.json` sha256 `60c8314e01a7ad246529b8c6d6a0ee0a863a3ffbf686231b9b0ded1f80dccdda`.
+- SSM-backed Chainlink testnet report collection succeeded for 20 current-window report timestamps from `1779870000` through `1779870190`, every 10 seconds, without printing credentials or raw report bodies.
+- `collect-chainlink-reference-quote-observations-source` passed for those 20 reports and wrote `/private/tmp/bolt-v2-t036-current/reference-quote-observations-source.json` sha256 `debc59f69c023475388b9946fc220bcb75de163910d291ae71b908f3ad249909`.
+- `collect-chainlink-entry-decision-proof-sources` passed for market-selection timestamp `1779870000000` and decision timestamp `1779870190000`, writing:
+  - `/private/tmp/bolt-v2-t036-current/price-to-beat-source.json` sha256 `b2359dd2827e00530c38cdee7852df79847e528449e411067fe83bf8cfe9b1b1`
+  - `/private/tmp/bolt-v2-t036-current/reference-quote-source.json` sha256 `172f18894a060d5514b4ca2e25a345ccdaead836369f3e9862890df3986ec88e`
+  - `/private/tmp/bolt-v2-t036-current/realized-volatility-source.json` sha256 `3418af8f0291857f1152a7890a3ea6762932ae58d310ba88b2aae1e51f2afdcf`
+- `collect-chainlink-entry-decision-source-inputs` then failed closed before writing `entry-decision-source.json`, `instrument-source.json`, or `fee-rate-source.json` with: `entry decision evidence source is invalid: entry decision source up book is missing best ask`.
+- Immediate retry of the same source-input command failed closed earlier in the same selected-market book fetch path with: `entry decision evidence source is invalid: failed to fetch up book snapshot: HTTP error 404: {"error":"No orderbook exists for the requested token id"}`.
+
+T036 remains open for a new reason: the configured/current source-input chain now reaches the selected market orderbook proof and is blocked by unavailable or non-two-sided up-book liquidity for the selected token. This is no longer the stale `reference_data` / static condition-id blocker, and it is not a Chainlink feed-id or pUSD allowance blocker.
+
+## T036-T038 Final Packet Assembly And Pre-Run Verification
+
+At head `a15495e1b471b2a24a2a234e0f505f1d0eedd99a`, the current source-input chain was refreshed through final-packet pre-run verification.
+
+- Root cause fixed before assembly:
+  - `selected_updown_market_start_uses_configured_period_not_gamma_creation_time` first failed because live Gamma `startDate` was treated as the rotating window start; the selected market now uses the configured period start from the slug/window.
+  - `strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_source` first failed with `phase8 strategy input evidence strategy_instance_id does not match runtime strategy_id`; the artifact builder now preserves operator `strategy_instance_id` while validating the NT runtime `StrategyId` derived from the loaded strategy config.
+- Fresh source-bound decision chain:
+  - `entry-decision-source.json`: `e5d44bc6537c5c4e59e66a9db073c108e93f8229f28259a52316b55b3c377c84`
+  - `instrument-source.json`: `845cb4a9326e1a5f7cdd3018df0631cdfb56dabf6df0ea636112081af50122e5`
+  - `fee-rate-source.json`: `3c34ba73bcef23697f852d418ca57c68abc2b4fb1b66474cb836a0147c3f71f7`
+  - Decision evidence JSONL: `0ff50f02b21aec9355b85c229444914ba5b7db70351a0b7254300825791cf135`
+- T036 final artifact outputs are recorded in `specs/024-production-trade-readiness/final-packet.md`. Key hashes:
+  - `static-artifacts-manifest.json`: `0c03542f6002ab2c64fed001670faa375dca215d776ef286d338bc8fbc5bd13d`
+  - `approval-envelope.json`: `cb0358d2e6473fad5829d0e342c957e36b1c4d6827b7ce72ce9ae99ec59e0952`
+  - `operator-evidence-packet.json`: `9637e10aafbce374ce9d95cf5de1221f870958bfa7e75b399d5439d20697a70d`
+- T037 local operator-evidence patch:
+  - `operator-artifacts update-operator-evidence-toml --config config/live.local.toml --operator-evidence-json /private/tmp/bolt-v2-t036-final-attempt-3/operator-evidence.json --max-operator-evidence-json-bytes 65536`
+  - Result: root TOML sha256 `c02034fc0131a8bb6f5326ff771aaa5693388fbcdce17a34dd63652f7da8ce9a`.
+- T038 pre-run verification:
+  - Command: `operator-artifacts verify-final --config config/live.local.toml --operator-packet /private/tmp/bolt-v2-t036-final-attempt-3/operator-evidence-packet.json --verification-stage pre-run`
+  - Result: passed. Verified `approval-envelope` `cb0358d2e6473fad5829d0e342c957e36b1c4d6827b7ce72ce9ae99ec59e0952`, `operator-evidence-packet` `9637e10aafbce374ce9d95cf5de1221f870958bfa7e75b399d5439d20697a70d`, and `static-artifacts-manifest` `0c03542f6002ab2c64fed001670faa375dca215d776ef286d338bc8fbc5bd13d`.
+
+Scope and side effects: source collection used SSM-backed Chainlink report reads, read-only configured Polymarket account/funding/collateral checks, public provider-time collection, and a read-only EC2/SSM egress identity refresh plus local mirror restore. No no-submit, tiny-capital canary, submit, cancel, transfer, on-chain mutation, root tracked TOML mutation, secret display, or trade operation was run. T036, T037, and T038 are locally closed; post-run T043/T044 evidence remains future work.
+
+## T047 Final Hardcode And Architecture Cleanup
+
+T047 removed the remaining generic Rust fixture hardcodes that made BTC, Binance, and 5-minute cadence look canonical outside provider-specific Binance tests.
+
+- Generic Rust hardcode scan:
+  - `rg -n "btc_updown_5m|bitcoin_updown_main|condition-1|BTCUSDT|ETHUSDT|btc-updown-5m|example-resolution-5m|underlying_asset.*BTC|cadence_slug_token.*5m|btc-usd" src tests --glob '*.rs'`: no matches.
+  - `rg -n "\bBTC\b|\bETH\b|5m" src tests --glob '*.rs'`: only unrelated `tests/lake_batch.rs` timing-comment text remains.
+- Cleanup scope:
+  - Shared examples/fixtures use `configured_updown_main`, `configured_updown_target`, `CONFIGURED_ASSET`, `configuredwindow`, and `configured-reference-price` instead of BTC/Binance/5m-shaped identities.
+  - Provider-specific Binance tests now create scoped test-local Binance clients instead of relying on the canonical root fixture to contain `binance_reference`.
+  - Source-owned financial-envelope validation now binds TOML `cadence_slug_token`; schema docs were updated and `just source-fence` enforces the Rust/doc field set.
+- Verification:
+  - `cargo test --locked --test bolt_v3_tiny_canary_operator --test bolt_v3_strategy_registration --test nt_custom_data_catalog_integration --test nt_polymarket_filter_integration --test config_parsing -- --nocapture`: passed.
+  - `cargo test --locked --lib --test bolt_v3_tiny_canary_preconditions --test bolt_v3_operator_artifacts --test bolt_v3_provider_binding --test bolt_v3_cli -- --nocapture`: passed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `just source-fence`: passed.
+- Final-packet refresh:
+  - The prior `/private/tmp/bolt-v2-t036-final-attempt-3/operator-evidence-packet.json` failed current pre-run verification with `operator packet config_bundle_checksum does not match loaded config`.
+  - After committing T047 as `48a9c0df7846c4d08cf7aa877d96cedb8043ee12`, the pre-commit T047 packet failed current pre-run verification with `[live_canary.operator_evidence].head_sha does not match build head_sha`.
+  - Refreshed exact-head non-live artifacts under `/private/tmp/bolt-v2-t047-final-refresh` and patched ignored `config/live.local.toml`; root TOML sha256 after patch is `057170cf556295ff244c13c4327efa0adee445f777dd18a81a39f77f1dc794f3`.
+  - `operator-artifacts verify-final --config config/live.local.toml --operator-packet /private/tmp/bolt-v2-t047-final-refresh/operator-evidence-packet-48a9c0df.json --verification-stage pre-run`: passed. Verified `approval-envelope` `94215f1e08fe7fb94dc00f0c7c064c7bd2f188f104051bfe52c6dc81e57fed01`, `operator-evidence-packet` `e8e985b844c8628ab852606c9ad4d6a605110159bc0b62fb9d9e3d3b7e543e0b`, and `static-artifacts-manifest` `2c0ba198187487449a35dc69dd79e539596f0eeaf1c56ad8f8bd901525b0e0af`.
+
+No no-submit, tiny-capital canary, submit, cancel, transfer, on-chain mutation, secret display, or trade operation was run during T047.

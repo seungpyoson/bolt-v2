@@ -28,7 +28,7 @@ fn pinned_custom_data_round_trips_through_local_catalog() {
     let temp_dir = TempDir::new().unwrap();
     let mut catalog = ParquetDataCatalog::new(temp_dir.path(), None, None, None, None);
 
-    let instrument_id = InstrumentId::from("BTCUSDT.BINANCE");
+    let instrument_id = InstrumentId::from("REFERENCE.SOURCE");
     let data_type = DataType::new(
         "VerificationDecisionEvent",
         None,

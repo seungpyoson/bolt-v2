@@ -14,7 +14,10 @@ use anyhow::anyhow;
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
 use nautilus_model::instruments::{Instrument, InstrumentAny};
 use nautilus_network::http::{HttpClient, USER_AGENT};
-use rust_decimal::{Decimal, prelude::FromPrimitive};
+use rust_decimal::{
+    Decimal,
+    prelude::{FromPrimitive, ToPrimitive},
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -25,9 +28,9 @@ use crate::{
         binary_oracle_edge_taker::raw_taker_config,
     },
     bolt_v3_config::{
-        BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, LiveCanaryOperatorEvidenceBlock,
-        LoadedBoltV3Config, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND,
-        RESOLUTION_GATE_ROLE,
+        BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
+        LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, NO_RESOLUTION_KIND,
+        NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE,
     },
     bolt_v3_decision_evidence::{
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
@@ -107,8 +110,8 @@ const CHAINLINK_REPORT_V3_VALID_FROM_WORD_INDEX: usize = 1;
 const CHAINLINK_REPORT_V3_OBSERVATIONS_WORD_INDEX: usize = 2;
 const CHAINLINK_REPORT_V3_BENCHMARK_PRICE_WORD_INDEX: usize = 6;
 const CHAINLINK_REPORT_MILLISECONDS_PER_SECOND: u64 = 1_000;
+const CHAINLINK_REPORT_NANOS_PER_MILLISECOND: u64 = 1_000_000;
 const CHAINLINK_REPORT_SIGN_BIT_MASK: u8 = 0x80;
-const CHAINLINK_REPORT_PRICE_DECIMAL_RADIX: f64 = 10.0;
 const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";
 const CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD: &str = "report_endpoint_path";
 const CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD: &str = "http_timeout_secs";
@@ -375,6 +378,7 @@ const GATE_EVIDENCE_RECORD_KIND: &str = "bolt_v3.gate_evidence.v1";
 const GATE_SATISFACTION_KIND_EVIDENCE: &str = "evidence";
 const GATE_SATISFACTION_KIND_NO_RESOLUTION: &str = NO_RESOLUTION_KIND;
 const GATE_PROVIDER_CAPABILITY_RESOLUTION_VALUE: &str = "resolution_value";
+const GATE_PROVIDER_CAPABILITY_REFERENCE_VALUE: &str = "reference_value";
 const GATE_FIELD_ARTIFACT_REFS: &str = "artifact_refs";
 const GATE_FIELD_ARTIFACT_REFS_PATH: &str = "artifact_refs.path";
 const GATE_FIELD_ARTIFACT_REF_PATH: &str = "artifact_ref_path";
@@ -1956,6 +1960,7 @@ fn gate_provider_capability_for_role_name(
 ) -> Result<&'static str, BoltV3OperatorArtifactError> {
     match role {
         RESOLUTION_GATE_ROLE => Ok(GATE_PROVIDER_CAPABILITY_RESOLUTION_VALUE),
+        DECISION_REFERENCE_GATE_ROLE => Ok(GATE_PROVIDER_CAPABILITY_REFERENCE_VALUE),
         _ => Err(entry_decision_source_invalid(
             "entry readiness gate source role is unsupported",
         )),
@@ -2486,6 +2491,7 @@ fn ensure_gate_field(field: &'static str, value: &str) -> Result<(), BoltV3Opera
 fn gate_role_name(role: GateRole) -> &'static str {
     match role {
         GateRole::Resolution => RESOLUTION_GATE_ROLE,
+        GateRole::DecisionReference => DECISION_REFERENCE_GATE_ROLE,
     }
 }
 
@@ -2504,6 +2510,7 @@ fn gate_value_kind_from_name(value: &str) -> Result<GateValueKind, BoltV3Operato
 fn gate_provider_capability_for_role(role: GateRole) -> &'static str {
     match role {
         GateRole::Resolution => GATE_PROVIDER_CAPABILITY_RESOLUTION_VALUE,
+        GateRole::DecisionReference => GATE_PROVIDER_CAPABILITY_REFERENCE_VALUE,
     }
 }
 
@@ -2568,6 +2575,26 @@ pub fn build_phase8_financial_envelope(
     strategy_instance_id: &str,
 ) -> anyhow::Result<Phase8FinancialEnvelopeEvidenceFile> {
     Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+}
+
+fn runtime_strategy_id_for_loaded_strategy(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+) -> anyhow::Result<String> {
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .ok_or_else(|| anyhow!("strategy instance `{strategy_instance_id}` is not loaded"))?;
+    let raw = raw_taker_config(strategy, loaded).map_err(|error| anyhow!(error.to_string()))?;
+    raw.get("strategy_id")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            anyhow!("strategy instance `{strategy_instance_id}` has no runtime strategy_id")
+        })
 }
 
 pub fn write_approval_nonce_artifact(
@@ -2677,6 +2704,8 @@ fn build_market_selection_source_artifact_from_decision_evidence(
     let financial_envelope =
         Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
             .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    let runtime_strategy_id = runtime_strategy_id_for_loaded_strategy(loaded, strategy_instance_id)
+        .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
     if chain.snapshot.configured_target_id != financial_envelope.configured_target_id() {
         return Err(
             BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
@@ -2708,6 +2737,7 @@ fn build_market_selection_source_artifact_from_decision_evidence(
         Phase8StrategyInputEvidenceFile::from_runtime_snapshot_and_market_selection_source(
             &chain.snapshot,
             financial_envelope.strategy_instance_id(),
+            &runtime_strategy_id,
             &artifact,
             path.to_string_lossy(),
             &source_sha256,
@@ -3259,6 +3289,8 @@ pub fn write_strategy_input_evidence_artifact_from_runtime_snapshot(
     let financial_envelope =
         Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
             .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
+    let runtime_strategy_id = runtime_strategy_id_for_loaded_strategy(loaded, strategy_instance_id)
+        .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)?;
     validate_strategy_input_readiness_evidence(snapshot).map_err(|_| {
         BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven {
             prerequisite: "T046 remains blocked: strategy input readiness gate identity is missing",
@@ -3301,6 +3333,7 @@ pub fn write_strategy_input_evidence_artifact_from_runtime_snapshot(
         Phase8StrategyInputEvidenceFile::from_runtime_snapshot_and_market_selection_source(
             snapshot,
             financial_envelope.strategy_instance_id(),
+            &runtime_strategy_id,
             &market_selection_source,
             market_selection_source_ref.path.to_string_lossy(),
             &market_selection_source_ref.sha256,
@@ -3506,6 +3539,7 @@ pub(crate) struct EntryDecisionFeeRateSourceArtifact {
 
 struct PriceToBeatReportBinding {
     provider_id: String,
+    resolution_identity: String,
     feed_id: String,
     schema_version: u64,
     decimal_scale: u64,
@@ -3569,6 +3603,19 @@ pub struct ChainlinkPriceReportSourceMaterializationRequest<'a> {
     pub credential_api_secret: &'a str,
     pub report_timestamp_unix_seconds: u64,
     pub max_report_response_bytes: u64,
+    pub output_path: &'a Path,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ChainlinkReferencePriceReportSourceFile<'a> {
+    pub path: &'a Path,
+    pub expected_sha256: &'a str,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ChainlinkReferenceQuoteObservationsSourceMaterializationRequest<'a> {
+    pub price_reports: &'a [ChainlinkReferencePriceReportSourceFile<'a>],
+    pub max_price_report_bytes: u64,
     pub output_path: &'a Path,
 }
 
@@ -3663,6 +3710,70 @@ pub fn write_reference_quote_observations_source_from_no_submit_evidence(
     };
     validate_reference_quote_observations_source(&source)?;
     write_json_artifact_create_new(output_path, &source)
+}
+
+pub fn write_chainlink_reference_quote_observations_source_from_report_files(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    request: ChainlinkReferenceQuoteObservationsSourceMaterializationRequest<'_>,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    if request.price_reports.is_empty() {
+        return Err(entry_decision_source_invalid(
+            "Chainlink reference observations require at least one report source",
+        ));
+    }
+    if request.max_price_report_bytes == ENTRY_DECISION_ZERO_TIMESTAMP_MS {
+        return Err(entry_decision_source_invalid(
+            "Chainlink reference max report bytes must be positive",
+        ));
+    }
+    let binding = chainlink_report_binding_for_role(
+        loaded,
+        strategy_instance_id,
+        DECISION_REFERENCE_GATE_ROLE,
+    )?;
+    let observations = request
+        .price_reports
+        .iter()
+        .map(|report| {
+            let report_bytes = read_file_bounded(report.path, request.max_price_report_bytes)
+                .map_err(
+                    |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceRead {
+                        path: report.path.to_path_buf(),
+                        source,
+                    },
+                )?;
+            let report_sha256 = hex::encode(Sha256::digest(&report_bytes));
+            if !is_lowercase_sha256(report.expected_sha256)
+                || report_sha256 != report.expected_sha256
+            {
+                return Err(entry_decision_source_invalid(
+                    "Chainlink reference report hash does not match approved source",
+                ));
+            }
+            let decoded_report = decode_price_to_beat_report(&report_bytes, &binding)?;
+            let observed_unix_nanos = decoded_report
+                .observations_timestamp_ms
+                .checked_mul(CHAINLINK_REPORT_NANOS_PER_MILLISECOND)
+                .ok_or_else(price_to_beat_report_provenance_invalid)?;
+            Ok(ReferenceQuoteObservationSource {
+                data_client_id: binding.provider_id.clone(),
+                instrument_id: binding.resolution_identity.clone(),
+                bid_price: decoded_report.benchmark_price,
+                ask_price: decoded_report.benchmark_price,
+                ts_event_unix_nanos: observed_unix_nanos,
+                ts_init_unix_nanos: observed_unix_nanos,
+                captured_at_unix_nanos: observed_unix_nanos,
+            })
+        })
+        .collect::<Result<Vec<_>, BoltV3OperatorArtifactError>>()?;
+    let source = ReferenceQuoteObservationsSource {
+        schema_version: REFERENCE_QUOTE_OBSERVATIONS_SOURCE_SCHEMA_VERSION,
+        record_kind: REFERENCE_QUOTE_OBSERVATIONS_SOURCE_RECORD_KIND.to_string(),
+        observations,
+    };
+    validate_reference_quote_observations_source(&source)?;
+    write_json_artifact_create_new(request.output_path, &source)
 }
 
 pub async fn write_chainlink_price_report_source_from_configured_provider(
@@ -4236,7 +4347,15 @@ fn price_to_beat_report_binding(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
 ) -> Result<PriceToBeatReportBinding, BoltV3OperatorArtifactError> {
-    let selection = price_to_beat_provider_selection(loaded, strategy_instance_id)?;
+    chainlink_report_binding_for_role(loaded, strategy_instance_id, RESOLUTION_GATE_ROLE)
+}
+
+fn chainlink_report_binding_for_role(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    gate_role: &str,
+) -> Result<PriceToBeatReportBinding, BoltV3OperatorArtifactError> {
+    let selection = chainlink_provider_selection_for_role(loaded, strategy_instance_id, gate_role)?;
     let provider = loaded
         .root
         .gate_providers
@@ -4274,15 +4393,17 @@ fn price_to_beat_report_binding(
     }
     Ok(PriceToBeatReportBinding {
         provider_id: selection.provider_id,
+        resolution_identity: selection.resolution_identity,
         feed_id,
         schema_version,
         decimal_scale,
     })
 }
 
-fn price_to_beat_provider_selection(
+fn chainlink_provider_selection_for_role(
     loaded: &LoadedBoltV3Config,
     strategy_instance_id: &str,
+    gate_role: &str,
 ) -> Result<PriceToBeatProviderSelection, BoltV3OperatorArtifactError> {
     let strategy = loaded
         .strategies
@@ -4298,15 +4419,15 @@ fn price_to_beat_provider_selection(
         .target
         .as_table()
         .ok_or_else(price_to_beat_report_provenance_config_invalid)?;
-    let Some(resolution_subscription) = target
+    let Some(gate_subscription) = target
         .get("gate_subscriptions")
         .and_then(toml::Value::as_table)
-        .and_then(|subscriptions| subscriptions.get(RESOLUTION_GATE_ROLE))
+        .and_then(|subscriptions| subscriptions.get(gate_role))
         .and_then(toml::Value::as_table)
     else {
         return Err(price_to_beat_report_provenance_config_invalid());
     };
-    let mapping = resolution_subscription
+    let mapping = gate_subscription
         .get("market_mappings")
         .and_then(toml::Value::as_array)
         .map(Vec::as_slice)
@@ -4334,14 +4455,14 @@ fn price_to_beat_provider_selection(
         .get("provider_id")
         .and_then(toml::Value::as_str)
         .or_else(|| {
-            resolution_subscription
+            gate_subscription
                 .get("provider_preference")
                 .and_then(toml::Value::as_array)
                 .and_then(|provider_ids| provider_ids.first())
                 .and_then(toml::Value::as_str)
         })
         .or_else(|| {
-            let provider_ids = resolution_subscription
+            let provider_ids = gate_subscription
                 .get("allowed_provider_ids")
                 .and_then(toml::Value::as_array)?;
             (provider_ids.len() == 1)
@@ -4898,8 +5019,10 @@ fn scale_chainlink_report_price(
     decimal_scale: u64,
 ) -> Result<f64, BoltV3OperatorArtifactError> {
     let scale =
-        i32::try_from(decimal_scale).map_err(|_| price_to_beat_report_provenance_invalid())?;
-    let price = (value as f64) / CHAINLINK_REPORT_PRICE_DECIMAL_RADIX.powi(scale);
+        u32::try_from(decimal_scale).map_err(|_| price_to_beat_report_provenance_invalid())?;
+    let price = Decimal::from_i128_with_scale(value, scale)
+        .to_f64()
+        .ok_or_else(price_to_beat_report_provenance_invalid)?;
     if !price.is_finite() {
         return Err(price_to_beat_report_provenance_invalid());
     }
@@ -10347,20 +10470,28 @@ fn verify_strategy_input_replay_binding(
             field: "strategy_input_replay.market_selection_source",
         });
     }
-    let expected_strategy_input =
+    let expected_strategy_input = {
+        let runtime_strategy_id =
+            runtime_strategy_id_for_loaded_strategy(loaded, strategy_instance_id).map_err(
+                |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+                    field: "strategy_input_replay.strategy_instance_id",
+                },
+            )?;
         Phase8StrategyInputEvidenceFile::from_runtime_snapshot_and_market_selection_source(
             &decision_chain.snapshot,
             strategy_instance_id,
+            &runtime_strategy_id,
             &market_selection_source,
             market_selection_source_path_text,
             market_selection_source_sha256,
             market_selection_source.candidate_market_start_timestamps_ms(),
         )
-        .map_err(
-            |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
-                field: "strategy_input_replay.expected_strategy_input",
-            },
-        )?;
+    }
+    .map_err(
+        |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
+            field: "strategy_input_replay.expected_strategy_input",
+        },
+    )?;
     if actual_strategy_input != expected_strategy_input {
         return Err(BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
             field: "strategy_input_replay.strategy_input_evidence",

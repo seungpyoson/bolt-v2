@@ -3,7 +3,7 @@ mod support;
 use anyhow::Result;
 use bolt_v2::{
     bolt_v3_archetypes::binary_oracle_edge_taker,
-    bolt_v3_config::load_bolt_v3_config,
+    bolt_v3_config::{DECISION_REFERENCE_GATE_ROLE, ReferenceDataBlock, load_bolt_v3_config},
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_submit_admission::{
@@ -17,7 +17,7 @@ use bolt_v2::{
 };
 use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_live::node::LiveNode;
-use nautilus_model::identifiers::{InstrumentId, StrategyId};
+use nautilus_model::identifiers::{ClientId, InstrumentId, StrategyId};
 use rust_decimal::Decimal;
 use std::sync::Arc;
 
@@ -161,7 +161,10 @@ fn bolt_v3_registration_context_includes_operator_readiness_gate_session() {
             .get("resolution")
             .expect("readiness evidence should include the resolution role");
         assert_eq!(resolution.satisfaction_kind, "no_resolution");
-        assert_eq!(resolution.resolution_identity.as_deref(), Some("btc-usd"));
+        assert_eq!(
+            resolution.resolution_identity.as_deref(),
+            Some("configured-reference-price")
+        );
         assert!(resolution.provider_kind.is_none());
 
         let strategy_id = StrategyId::from("BOLT-V3-READINESS-CONTEXT");
@@ -247,7 +250,7 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
     let strategy = loaded
         .strategies
         .iter()
-        .find(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .find(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
 
     let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
@@ -256,7 +259,7 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
     let mut errors: Vec<ValidationError> = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(
         &raw,
-        "strategies.bitcoin_updown_main.parameters.runtime",
+        "strategies.configured_updown_main.parameters.runtime",
         &mut errors,
     );
 
@@ -287,13 +290,13 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
         table
             .get("reference_venue")
             .and_then(|value| value.as_str()),
-        Some("binance_reference")
+        Some("resolution_oracle_primary")
     );
     assert_eq!(
         table
             .get("reference_instrument_id")
             .and_then(|value| value.as_str()),
-        Some("BTCUSDT.BINANCE")
+        Some("configured-reference-price")
     );
     assert!(
         !table.contains_key("reference_publish_topic"),
@@ -303,7 +306,7 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
         table
             .get("price_to_beat_source")
             .and_then(|value| value.as_str()),
-        Some("chainlink_data_streams.example-resolution-5m")
+        Some("chainlink_data_streams.configured-reference-price")
     );
     assert_eq!(
         table
@@ -315,7 +318,7 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
         table
             .get("configured_target_id")
             .and_then(|value| value.as_str()),
-        Some("btc_updown_5m")
+        Some("configured_updown_target")
     );
     assert_eq!(
         table.get("target_kind").and_then(|value| value.as_str()),
@@ -331,13 +334,13 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
         table
             .get("underlying_asset")
             .and_then(|value| value.as_str()),
-        Some("BTC")
+        Some("CONFIGURED_ASSET")
     );
     assert_eq!(
         table
             .get("cadence_slug_token")
             .and_then(|value| value.as_str()),
-        Some("5m")
+        Some("configuredwindow")
     );
     assert_eq!(
         table
@@ -412,7 +415,7 @@ fn binary_oracle_runtime_mapping_uses_target_resolution_mapping_without_chainlin
     let strategy = loaded
         .strategies
         .iter_mut()
-        .find(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .find(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     let mapping = strategy
         .config
@@ -433,13 +436,13 @@ fn binary_oracle_runtime_mapping_uses_target_resolution_mapping_without_chainlin
     );
     mapping.insert(
         "resolution_identity".to_string(),
-        toml::Value::String("btc-pyth-5m".to_string()),
+        toml::Value::String("configured-pyth-resolution".to_string()),
     );
 
     let strategy = loaded
         .strategies
         .iter()
-        .find(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .find(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
         .expect("binary oracle strategy should not require Chainlink in the archetype bridge");
@@ -448,7 +451,7 @@ fn binary_oracle_runtime_mapping_uses_target_resolution_mapping_without_chainlin
         raw.as_table()
             .and_then(|table| table.get("price_to_beat_source"))
             .and_then(|value| value.as_str()),
-        Some("pyth.btc-pyth-5m")
+        Some("pyth.configured-pyth-resolution")
     );
 }
 
@@ -459,7 +462,7 @@ fn binary_oracle_runtime_mapping_preserves_post_only_gtc_entry_order() {
     let strategy_index = loaded
         .strategies
         .iter()
-        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     let parameters = loaded.strategies[strategy_index]
         .config
@@ -516,7 +519,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_market_entry_order_round_trip() 
     let strategy_index = loaded
         .strategies
         .iter()
-        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     let parameters = loaded.strategies[strategy_index]
         .config
@@ -567,7 +570,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_market_entry_order_round_trip() 
     let mut errors: Vec<ValidationError> = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(
         &raw,
-        "strategies.bitcoin_updown_main.parameters.runtime",
+        "strategies.configured_updown_main.parameters.runtime",
         &mut errors,
     );
     assert!(
@@ -591,7 +594,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_entry_order_round_t
     let strategy_index = loaded
         .strategies
         .iter()
-        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     let parameters = loaded.strategies[strategy_index]
         .config
@@ -634,7 +637,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_entry_order_round_t
     let mut errors: Vec<ValidationError> = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(
         &raw,
-        "strategies.bitcoin_updown_main.parameters.runtime",
+        "strategies.configured_updown_main.parameters.runtime",
         &mut errors,
     );
     assert!(
@@ -658,7 +661,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
     let strategy_index = loaded
         .strategies
         .iter()
-        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     let parameters = loaded.strategies[strategy_index]
         .config
@@ -713,7 +716,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
     let mut errors: Vec<ValidationError> = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(
         &raw,
-        "strategies.bitcoin_updown_main.parameters.runtime",
+        "strategies.configured_updown_main.parameters.runtime",
         &mut errors,
     );
     assert!(
@@ -737,7 +740,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_entry_order_roun
     let strategy_index = loaded
         .strategies
         .iter()
-        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     let parameters = loaded.strategies[strategy_index]
         .config
@@ -803,7 +806,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_entry_order_roun
     let mut errors: Vec<ValidationError> = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(
         &raw,
-        "strategies.bitcoin_updown_main.parameters.runtime",
+        "strategies.configured_updown_main.parameters.runtime",
         &mut errors,
     );
     assert!(
@@ -827,7 +830,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
     let strategy_index = loaded
         .strategies
         .iter()
-        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     let parameters = loaded.strategies[strategy_index]
         .config
@@ -892,7 +895,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
     let mut errors: Vec<ValidationError> = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(
         &raw,
-        "strategies.bitcoin_updown_main.parameters.runtime",
+        "strategies.configured_updown_main.parameters.runtime",
         &mut errors,
     );
     assert!(
@@ -916,7 +919,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_entry_order_round_trip() {
     let strategy_index = loaded
         .strategies
         .iter()
-        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     let parameters = loaded.strategies[strategy_index]
         .config
@@ -963,7 +966,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_entry_order_round_trip() {
     let mut errors: Vec<ValidationError> = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(
         &raw,
-        "strategies.bitcoin_updown_main.parameters.runtime",
+        "strategies.configured_updown_main.parameters.runtime",
         &mut errors,
     );
     assert!(
@@ -987,7 +990,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_entry_order_round_tr
     let strategy_index = loaded
         .strategies
         .iter()
-        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     let parameters = loaded.strategies[strategy_index]
         .config
@@ -1034,7 +1037,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_entry_order_round_tr
     let mut errors: Vec<ValidationError> = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(
         &raw,
-        "strategies.bitcoin_updown_main.parameters.runtime",
+        "strategies.configured_updown_main.parameters.runtime",
         &mut errors,
     );
     assert!(
@@ -1058,7 +1061,7 @@ fn binary_oracle_runtime_mapping_preserves_post_only_gtc_exit_order() {
     let strategy_index = loaded
         .strategies
         .iter()
-        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     let parameters = loaded.strategies[strategy_index]
         .config
@@ -1117,7 +1120,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
     let strategy_index = loaded
         .strategies
         .iter()
-        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     let parameters = loaded.strategies[strategy_index]
         .config
@@ -1164,7 +1167,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
     let mut errors: Vec<ValidationError> = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(
         &raw,
-        "strategies.bitcoin_updown_main.parameters.runtime",
+        "strategies.configured_updown_main.parameters.runtime",
         &mut errors,
     );
     assert!(
@@ -1188,7 +1191,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_tri
     let strategy_index = loaded
         .strategies
         .iter()
-        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     let parameters = loaded.strategies[strategy_index]
         .config
@@ -1235,7 +1238,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_tri
     let mut errors: Vec<ValidationError> = Vec::new();
     BinaryOracleEdgeTakerBuilder::validate_config(
         &raw,
-        "strategies.bitcoin_updown_main.parameters.runtime",
+        "strategies.configured_updown_main.parameters.runtime",
         &mut errors,
     );
     assert!(
@@ -1259,17 +1262,28 @@ fn binary_oracle_runtime_mapping_uses_configured_reference_data_role_key() {
     let strategy_index = loaded
         .strategies
         .iter()
-        .position(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
-    let reference_data = loaded.strategies[strategy_index]
+    loaded.strategies[strategy_index]
         .config
-        .reference_data
-        .remove("primary")
-        .expect("fixture should include reference data role");
+        .target
+        .as_table_mut()
+        .expect("target should be a table")
+        .get_mut("gate_subscriptions")
+        .expect("gate subscriptions should exist")
+        .as_table_mut()
+        .expect("gate subscriptions should be a table")
+        .remove(DECISION_REFERENCE_GATE_ROLE);
     loaded.strategies[strategy_index]
         .config
         .reference_data
-        .insert("reference".to_string(), reference_data);
+        .insert(
+            "reference".to_string(),
+            ReferenceDataBlock {
+                data_client_id: ClientId::from("polymarket_main"),
+                instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
+            },
+        );
 
     let strategy = &loaded.strategies[strategy_index];
     let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
@@ -1282,13 +1296,13 @@ fn binary_oracle_runtime_mapping_uses_configured_reference_data_role_key() {
         table
             .get("reference_venue")
             .and_then(|value| value.as_str()),
-        Some("binance_reference")
+        Some("polymarket_main")
     );
     assert_eq!(
         table
             .get("reference_instrument_id")
             .and_then(|value| value.as_str()),
-        Some("BTCUSDT.BINANCE")
+        Some("REFERENCE.SOURCE")
     );
 }
 
@@ -1396,7 +1410,7 @@ fn binary_oracle_runtime_rejects_execution_client_id_without_execution_block() {
     let strategy = loaded
         .strategies
         .iter_mut()
-        .find(|strategy| strategy.config.strategy_instance_id == "bitcoin_updown_main")
+        .find(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
     strategy.config.execution_client_id = "polymarket_data_only".into();
 

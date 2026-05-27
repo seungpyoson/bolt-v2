@@ -137,9 +137,11 @@
 - [x] T036I3 [US5] Add source-owned on-chain pUSD balance/allowance collateral proof over NT's HTTP transport and Polymarket spender constants so T036 is not blocked by authenticated CLOB `/balance-allowance` omitting `allowance`.
 - [x] T036I4 [US5] Move entry-decision fee proof ownership from caller-supplied `--fee-bps-by-instrument-id` inputs to the Polymarket selected-instrument source-input collector, deriving effective taker fee bps from NT `instrument_taker_fee` and `compute_commission` against the selected book ask prices.
 - [x] T036I5 [US5] Move entry-decision reference quote and realized-volatility proof ownership from caller-supplied quote/volatility CLI values to NT quote-observation source evidence, deriving midpoint and realized volatility through the existing `binary_oracle_edge_taker` reference quote and volatility logic.
-- [ ] T036 [US5] Assemble blocker-free `static-artifacts-manifest.json`, `approval-envelope.json`, and `operator-evidence-packet.json` from real artifacts and record paths in `specs/024-production-trade-readiness/final-packet.md`.
-- [ ] T037 [US5] Update the approved root TOML operator-evidence block in `config/live.local.toml` with final artifact paths and hashes without printing secrets.
-- [ ] T038 [US5] Run `operator-artifacts verify-final` against the exact root TOML and final packet; record command, head, hashes, and result in `specs/024-production-trade-readiness/evidence.md`.
+- [x] T036I6 [US5] Add Chainlink Data Streams binding coverage verification so every configured Chainlink `(resolution_identity, value_kind)` strategy target mapping has exactly one TOML-owned feed binding, no Chainlink feed binding is silently unreachable, and an alternate configured-market regression proves feed selection is token-agnostic with no asset fallback.
+- [x] T036I7 [US5] Replace the stale/static `config/strategies/binary_oracle.local.toml` reference-data blocker with a source-owned, market-agnostic decision-reference proof path: the configured provider/source must prove the underlying reference value and realized volatility without reviving Binance/BTC as canonical defaults, without substituting Polymarket outcome quotes for underlying spot/reference prices, and without static condition/instrument IDs that drift across rotating markets.
+- [x] T036 [US5] Assemble blocker-free `static-artifacts-manifest.json`, `approval-envelope.json`, and `operator-evidence-packet.json` from real artifacts and record paths in `specs/024-production-trade-readiness/final-packet.md`.
+- [x] T037 [US5] Update the approved root TOML operator-evidence block in `config/live.local.toml` with final artifact paths and hashes without printing secrets.
+- [x] T038 [US5] Run `operator-artifacts verify-final` against the exact root TOML and final packet; record command, head, hashes, and result in `specs/024-production-trade-readiness/evidence.md`.
 
 ## Phase 7: Exact-Head Verification And Final Review
 
@@ -162,6 +164,7 @@
 - [ ] T044 [US5] Execute T116/T046 tiny-capital canary with the verified root TOML and final operator packet; record evidence in `specs/024-production-trade-readiness/tiny-canary.md`.
 - [ ] T045 [US5] Run post-run artifact/log secret scan and record retention/purge decision in `specs/024-production-trade-readiness/post-run-hygiene.md`.
 - [ ] T046 [US5] Update #369, #385, #409, #360, and PR #480 with exact final readiness status and record links in `specs/024-production-trade-readiness/readiness-ledger.md`.
+- [x] T047 [US5] Run the final hardcode/architecture cleanup audit across code, examples, fixtures, specs, and operator TOML: remove or justify remaining runtime literals, static venue/market examples, stale provider-specific assumptions, and architecture drift before final review.
 
 ## Dependencies
 
@@ -181,4 +184,4 @@
 
 ## MVP
 
-The current next slice is T036H13 only: implement the gate config schema and validation after the T036H1-T036H12B RED tests prove every boundary in `specs/024-production-trade-readiness/gate-dataflow-contract.md` currently fails closed as expected. No hardcoded runtime values is a cross-cutting invariant for every slice, not a standalone build task.
+The current next slice is T041/T042 exact-head push, CI, and final review. T047 local cleanup is complete locally; no hardcoded runtime values remains a cross-cutting invariant for every later slice.

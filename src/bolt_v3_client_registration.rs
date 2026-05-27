@@ -171,6 +171,36 @@ mod tests {
         }
     }
 
+    fn binance_reference_client() -> crate::bolt_v3_config::ClientBlock {
+        toml::from_str(
+            r#"
+            venue = "BINANCE"
+
+            [data]
+            product_types = ["spot"]
+            environment = "mainnet"
+            base_url_http = "https://api.binance.com"
+            base_url_ws = "wss://stream-sbe.binance.com/ws"
+            instrument_status_poll_secs = 3600
+            transport_backend = "sockudo"
+
+            [secrets]
+            api_key_ssm_path = "/bolt/binance_reference/api_key"
+            api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+            "#,
+        )
+        .expect("binance provider fixture client should parse")
+    }
+
+    fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
+        let mut loaded = fixture_loaded_config();
+        loaded
+            .root
+            .clients
+            .insert("binance_reference".to_string(), binance_reference_client());
+        loaded
+    }
+
     fn fixture_polymarket_secrets() -> ResolvedBoltV3PolymarketSecrets {
         ResolvedBoltV3PolymarketSecrets {
             // 32-byte secp256k1 hex; the unit tests in this module never
@@ -210,6 +240,12 @@ mod tests {
         map_bolt_v3_adapters(&loaded, &resolved).expect("adapters should map")
     }
 
+    fn fixture_adapters_with_binance_reference() -> BoltV3AdapterConfigs {
+        let loaded = fixture_loaded_config_with_binance_reference();
+        let resolved = fixture_resolved_secrets();
+        map_bolt_v3_adapters(&loaded, &resolved).expect("adapters should map")
+    }
+
     fn fresh_builder() -> LiveNodeBuilder {
         LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
             .expect("Live builder should construct for unit-test fixture")
@@ -217,7 +253,7 @@ mod tests {
 
     #[test]
     fn fixture_clients_register_one_data_and_one_exec_for_polymarket_and_one_data_for_binance() {
-        let adapters = fixture_adapters();
+        let adapters = fixture_adapters_with_binance_reference();
 
         let (_builder, summary) = register_bolt_v3_clients(fresh_builder(), adapters)
             .expect("registration should succeed");

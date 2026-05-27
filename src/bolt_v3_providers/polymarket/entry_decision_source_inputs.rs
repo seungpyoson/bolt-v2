@@ -314,6 +314,13 @@ fn retry_config_from_execution_config(
                     message: format!("failed to convert configured HTTP timeout: {source}"),
                 },
             )?;
+    if std::time::Duration::from_millis(execution.retry_delay_initial_ms).is_zero()
+        || execution.retry_delay_initial_ms > execution.retry_delay_max_ms
+    {
+        return Err(entry_decision_source_invalid(
+            "entry decision source retry_delay_initial_ms must be positive and <= retry_delay_max_ms",
+        ));
+    }
     let backoff_factor =
         execution.retry_delay_max_ms as f64 / execution.retry_delay_initial_ms as f64;
     let configured_attempt_count =
@@ -428,12 +435,91 @@ fn book_side_input_from_order_book(
         bid_quantity,
         best_ask: best_ask.as_f64(),
         ask_quantity,
-        liquidity_available: bid_quantity.min(ask_quantity),
+        liquidity_available: bid_quantity + ask_quantity,
     })
 }
 
 fn entry_decision_source_invalid(message: impl Into<String>) -> BoltV3OperatorArtifactError {
     BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nautilus_model::{
+        data::BookOrder,
+        enums::{BookType, OrderSide},
+        identifiers::{AccountId, InstrumentId},
+        orderbook::OrderBook,
+        types::{Price, Quantity},
+    };
+    use nautilus_network::websocket::TransportBackend;
+
+    use super::*;
+    use crate::bolt_v3_providers::polymarket::PolymarketSignatureType;
+
+    #[test]
+    fn retry_config_rejects_zero_initial_delay() {
+        let execution = execution_config_with_retry_delays(0, 2_000);
+
+        let error = retry_config_from_execution_config(&execution)
+            .expect_err("zero initial retry delay must fail closed");
+
+        assert!(format!("{error}").contains("retry_delay_initial_ms"));
+    }
+
+    #[test]
+    fn book_side_input_reports_total_top_of_book_liquidity() {
+        let mut book = OrderBook::new(
+            InstrumentId::from("0xentry-source-book.POLYMARKET"),
+            BookType::L2_MBP,
+        );
+        book.add(
+            BookOrder::new(OrderSide::Buy, Price::from("0.50"), Quantity::from("25"), 1),
+            0,
+            1,
+            1.into(),
+        );
+        book.add(
+            BookOrder::new(
+                OrderSide::Sell,
+                Price::from("0.52"),
+                Quantity::from("100"),
+                2,
+            ),
+            0,
+            2,
+            2.into(),
+        );
+
+        let input = book_side_input_from_order_book(&book, "test")
+            .expect("two-sided top of book should produce source input");
+
+        assert_eq!(input.bid_quantity, 25.0);
+        assert_eq!(input.ask_quantity, 100.0);
+        assert_eq!(input.liquidity_available, 125.0);
+    }
+
+    fn execution_config_with_retry_delays(
+        retry_delay_initial_ms: u64,
+        retry_delay_max_ms: u64,
+    ) -> PolymarketExecutionConfig {
+        PolymarketExecutionConfig {
+            account_id: AccountId::from("POLYMARKET-TEST"),
+            signature_type: PolymarketSignatureType::PolyProxy,
+            funder: Some("0x1111111111111111111111111111111111111111".to_string()),
+            base_url_http: "https://clob.polymarket.test".to_string(),
+            base_url_ws: "wss://ws-subscriptions-clob.polymarket.test/ws/user".to_string(),
+            base_url_data_api: "https://data-api.polymarket.test".to_string(),
+            http_timeout_secs: 60,
+            max_retries: 3,
+            retry_delay_initial_ms,
+            retry_delay_max_ms,
+            ack_timeout_secs: 5,
+            fee_cache_ttl_secs: 300,
+            transport_backend: TransportBackend::Sockudo,
+            on_chain_collateral: None,
+        }
     }
 }

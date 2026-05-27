@@ -544,3 +544,61 @@ struct ClobV2OnChainCollateralAccountingProof {
     neg_risk_ctf_exchange_p_usd_allowance: String,
     effective_p_usd_allowance: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn on_chain_calldata_encodes_erc20_balance_and_allowance_selectors() {
+        let owner = normalized_evm_address("0xAa00000000000000000000000000000000000011")
+            .expect("owner address should normalize");
+        let spender = normalized_evm_address("0xbB00000000000000000000000000000000000022")
+            .expect("spender address should normalize");
+
+        assert_eq!(owner, "aa00000000000000000000000000000000000011");
+        assert_eq!(
+            balance_of_calldata(&owner),
+            "0x70a08231000000000000000000000000aa00000000000000000000000000000000000011"
+        );
+        assert_eq!(
+            allowance_calldata(&owner, &spender),
+            "0xdd62ed3e000000000000000000000000aa00000000000000000000000000000000000011000000000000000000000000bb00000000000000000000000000000000000022"
+        );
+    }
+
+    #[test]
+    fn parse_u256_word_hex_rejects_non_word_results() {
+        assert!(parse_u256_word_hex("1").is_err());
+        assert!(parse_u256_word_hex("0x1").is_err());
+        assert!(
+            parse_u256_word_hex(
+                "0x00000000000000000000000000000000000000000000000000000000000000zz"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn u256_word_to_decimal_string_formats_zero_fractional_and_max_values() {
+        let zero = word("0x0000000000000000000000000000000000000000000000000000000000000000");
+        let one_micro = word("0x0000000000000000000000000000000000000000000000000000000000000001");
+        let one_pusd = word("0x00000000000000000000000000000000000000000000000000000000000f4240");
+        let max = word("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+
+        assert_eq!(u256_word_to_decimal_string(&zero, USDC_DECIMALS), "0");
+        assert_eq!(
+            u256_word_to_decimal_string(&one_micro, USDC_DECIMALS),
+            "0.000001"
+        );
+        assert_eq!(u256_word_to_decimal_string(&one_pusd, USDC_DECIMALS), "1");
+        assert_eq!(
+            u256_word_to_decimal_string(&max, 0),
+            "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+        );
+    }
+
+    fn word(value: &str) -> [u8; 32] {
+        parse_u256_word_hex(value).expect("test word should parse")
+    }
+}

@@ -6251,6 +6251,7 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
     .expect("realized volatility source should write");
     let decision_source_output = temp.path().join("entry-decision-source.json");
     let instrument_source_output = temp.path().join("instrument-source.json");
+    let fee_rate_source_output = temp.path().join("entry-decision-fees.json");
 
     let written =
         bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
@@ -6286,12 +6287,14 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
                 },
                 decision_source_output_path: &decision_source_output,
                 instrument_source_output_path: &instrument_source_output,
+                fee_rate_source_output_path: &fee_rate_source_output,
             },
         )
         .expect("source-input collector should write source files");
 
     assert_eq!(written.decision_source.path, decision_source_output);
     assert_eq!(written.instrument_source.path, instrument_source_output);
+    assert_eq!(written.fee_rate_source.path, fee_rate_source_output);
     assert_eq!(
         written.decision_source.sha256,
         sha256_file(&written.decision_source.path)
@@ -6335,6 +6338,7 @@ struct EntryDecisionSourceInputProofPaths {
     realized_volatility_source_path: std::path::PathBuf,
     decision_source_output: std::path::PathBuf,
     instrument_source_output: std::path::PathBuf,
+    fee_rate_source_output: std::path::PathBuf,
 }
 
 fn write_entry_decision_source_input_proofs(
@@ -6438,6 +6442,7 @@ fn write_entry_decision_source_input_proofs_with_report_provenance(
         realized_volatility_source_path,
         decision_source_output: temp.path().join("entry-decision-source.json"),
         instrument_source_output: temp.path().join("instrument-source.json"),
+        fee_rate_source_output: temp.path().join("entry-decision-fees.json"),
     }
 }
 
@@ -6529,7 +6534,6 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
     let price_source_path = temp.path().join("source-bound-price.json");
     let reference_quote_source_path = temp.path().join("reference-quote.json");
     let realized_volatility_source_path = temp.path().join("realized-volatility.json");
-    let fee_rate_source_path = temp.path().join("entry-decision-fees.json");
 
     let written = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
         &loaded,
@@ -6549,14 +6553,9 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
                 value: 1.5,
                 ready_ts_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
             },
-            fee_bps_by_instrument_id: BTreeMap::from([
-                (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
-                (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
-            ]),
             price_to_beat_source_output_path: &price_source_path,
             reference_quote_source_output_path: &reference_quote_source_path,
             realized_volatility_source_output_path: &realized_volatility_source_path,
-            fee_rate_source_output_path: &fee_rate_source_path,
         },
     )
     .expect("source-proof files should write from bounded operator inputs");
@@ -6570,7 +6569,6 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
         written.realized_volatility_source.path,
         realized_volatility_source_path
     );
-    assert_eq!(written.fee_rate_source.path, fee_rate_source_path);
 
     let price_json: serde_json::Value = serde_json::from_slice(
         &std::fs::read(&written.price_to_beat_source.path).expect("price source should read"),
@@ -6604,6 +6602,7 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
     let instruments = entry_decision_source_input_instruments();
     let decision_source_output = temp.path().join("entry-decision-source.json");
     let instrument_source_output = temp.path().join("instrument-source.json");
+    let fee_rate_source_output = temp.path().join("entry-decision-fees.json");
     let source_inputs =
         bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
             &loaded,
@@ -6618,6 +6617,7 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
                 market_inputs: entry_decision_source_market_inputs(&instruments),
                 decision_source_output_path: &decision_source_output,
                 instrument_source_output_path: &instrument_source_output,
+                fee_rate_source_output_path: &fee_rate_source_output,
             },
         )
         .expect("materialized proof sources should feed source-input collector");
@@ -6627,6 +6627,7 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
         source_inputs.instrument_source.path,
         instrument_source_output
     );
+    assert_eq!(source_inputs.fee_rate_source.path, fee_rate_source_output);
 }
 
 #[test]
@@ -6669,7 +6670,6 @@ fn entry_decision_proof_source_materializer_selects_feed_by_resolution_identity(
     let price_source_path = temp.path().join("source-bound-price.json");
     let reference_quote_source_path = temp.path().join("reference-quote.json");
     let realized_volatility_source_path = temp.path().join("realized-volatility.json");
-    let fee_rate_source_path = temp.path().join("entry-decision-fees.json");
 
     let written = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
         &loaded,
@@ -6689,14 +6689,9 @@ fn entry_decision_proof_source_materializer_selects_feed_by_resolution_identity(
                 value: 1.5,
                 ready_ts_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
             },
-            fee_bps_by_instrument_id: BTreeMap::from([
-                (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
-                (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
-            ]),
             price_to_beat_source_output_path: &price_source_path,
             reference_quote_source_output_path: &reference_quote_source_path,
             realized_volatility_source_output_path: &realized_volatility_source_path,
-            fee_rate_source_output_path: &fee_rate_source_path,
         },
     )
     .expect("source-proof files should use the selected market resolution identity");
@@ -6733,7 +6728,6 @@ fn entry_decision_proof_source_materializer_refuses_unparseable_report_before_ou
     let price_source_path = temp.path().join("source-bound-price.json");
     let reference_quote_source_path = temp.path().join("reference-quote.json");
     let realized_volatility_source_path = temp.path().join("realized-volatility.json");
-    let fee_rate_source_path = temp.path().join("entry-decision-fees.json");
 
     let error = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
         &loaded,
@@ -6753,14 +6747,9 @@ fn entry_decision_proof_source_materializer_refuses_unparseable_report_before_ou
                 value: 1.5,
                 ready_ts_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
             },
-            fee_bps_by_instrument_id: BTreeMap::from([
-                (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
-                (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
-            ]),
             price_to_beat_source_output_path: &price_source_path,
             reference_quote_source_output_path: &reference_quote_source_path,
             realized_volatility_source_output_path: &realized_volatility_source_path,
-            fee_rate_source_output_path: &fee_rate_source_path,
         },
     )
     .expect_err("hash-matching but unparseable report must fail before output");
@@ -6775,7 +6764,6 @@ fn entry_decision_proof_source_materializer_refuses_unparseable_report_before_ou
         price_source_path,
         reference_quote_source_path,
         realized_volatility_source_path,
-        fee_rate_source_path,
     ] {
         assert!(
             !path.exists(),
@@ -6812,7 +6800,6 @@ fn entry_decision_proof_source_materializer_rejects_quote_and_volatility_outside
     let price_source_path = temp.path().join("source-bound-price.json");
     let reference_quote_source_path = temp.path().join("reference-quote.json");
     let realized_volatility_source_path = temp.path().join("realized-volatility.json");
-    let fee_rate_source_path = temp.path().join("entry-decision-fees.json");
 
     let error = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
         &loaded,
@@ -6832,14 +6819,9 @@ fn entry_decision_proof_source_materializer_rejects_quote_and_volatility_outside
                 value: 1.5,
                 ready_ts_ms: 0,
             },
-            fee_bps_by_instrument_id: BTreeMap::from([
-                (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
-                (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
-            ]),
             price_to_beat_source_output_path: &price_source_path,
             reference_quote_source_output_path: &reference_quote_source_path,
             realized_volatility_source_output_path: &realized_volatility_source_path,
-            fee_rate_source_output_path: &fee_rate_source_path,
         },
     )
     .expect_err("quote or volatility timestamps outside the decision window must fail");
@@ -6854,7 +6836,6 @@ fn entry_decision_proof_source_materializer_rejects_quote_and_volatility_outside
         price_source_path,
         reference_quote_source_path,
         realized_volatility_source_path,
-        fee_rate_source_path,
     ] {
         assert!(
             !path.exists(),
@@ -6879,7 +6860,6 @@ fn entry_decision_proof_source_materializer_refuses_report_hash_mismatch_before_
     let price_source_path = temp.path().join("source-bound-price.json");
     let reference_quote_source_path = temp.path().join("reference-quote.json");
     let realized_volatility_source_path = temp.path().join("realized-volatility.json");
-    let fee_rate_source_path = temp.path().join("entry-decision-fees.json");
 
     let error = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
         &loaded,
@@ -6899,14 +6879,9 @@ fn entry_decision_proof_source_materializer_refuses_report_hash_mismatch_before_
                 value: 1.5,
                 ready_ts_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
             },
-            fee_bps_by_instrument_id: BTreeMap::from([
-                (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
-                (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
-            ]),
             price_to_beat_source_output_path: &price_source_path,
             reference_quote_source_output_path: &reference_quote_source_path,
             realized_volatility_source_output_path: &realized_volatility_source_path,
-            fee_rate_source_output_path: &fee_rate_source_path,
         },
     )
     .expect_err("operator-approved report hash mismatch must fail before output");
@@ -6921,7 +6896,6 @@ fn entry_decision_proof_source_materializer_refuses_report_hash_mismatch_before_
         price_source_path,
         reference_quote_source_path,
         realized_volatility_source_path,
-        fee_rate_source_path,
     ] {
         assert!(
             !path.exists(),
@@ -7014,6 +6988,7 @@ fn entry_decision_source_input_collector_refuses_price_to_beat_without_report_pr
                 market_inputs: entry_decision_source_market_inputs(&instruments),
                 decision_source_output_path: &paths.decision_source_output,
                 instrument_source_output_path: &paths.instrument_source_output,
+                fee_rate_source_output_path: &paths.fee_rate_source_output,
             },
         )
         .expect_err("collector must reject price_to_beat without source report provenance");
@@ -7026,6 +7001,7 @@ fn entry_decision_source_input_collector_refuses_price_to_beat_without_report_pr
     );
     assert!(!paths.decision_source_output.exists());
     assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
 }
 
 #[test]
@@ -7056,6 +7032,7 @@ fn entry_decision_source_input_collector_refuses_missing_source_bound_price_to_b
                 market_inputs: entry_decision_source_market_inputs(&instruments),
                 decision_source_output_path: &paths.decision_source_output,
                 instrument_source_output_path: &paths.instrument_source_output,
+                fee_rate_source_output_path: &paths.fee_rate_source_output,
             },
         )
         .expect_err("collector must refuse invalid source-bound price_to_beat");
@@ -7066,6 +7043,7 @@ fn entry_decision_source_input_collector_refuses_missing_source_bound_price_to_b
     );
     assert!(!paths.decision_source_output.exists());
     assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
 }
 
 #[test]
@@ -7097,6 +7075,7 @@ fn entry_decision_source_input_collector_rejects_unselectable_or_incomplete_inst
                 market_inputs: entry_decision_source_market_inputs(&instruments),
                 decision_source_output_path: &paths.decision_source_output,
                 instrument_source_output_path: &paths.instrument_source_output,
+                fee_rate_source_output_path: &paths.fee_rate_source_output,
             },
         )
         .expect_err("collector must reject incomplete selected-market instrument input");
@@ -7107,6 +7086,7 @@ fn entry_decision_source_input_collector_rejects_unselectable_or_incomplete_inst
     );
     assert!(!paths.decision_source_output.exists());
     assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
 }
 
 #[test]
@@ -7139,6 +7119,7 @@ fn entry_decision_source_input_collector_rejects_empty_or_one_sided_book() {
                 market_inputs,
                 decision_source_output_path: &paths.decision_source_output,
                 instrument_source_output_path: &paths.instrument_source_output,
+                fee_rate_source_output_path: &paths.fee_rate_source_output,
             },
         )
         .expect_err("collector must reject one-sided selected-market book input");
@@ -7149,6 +7130,7 @@ fn entry_decision_source_input_collector_rejects_empty_or_one_sided_book() {
     );
     assert!(!paths.decision_source_output.exists());
     assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
 }
 
 #[test]
@@ -7182,6 +7164,7 @@ fn entry_decision_source_input_collector_rejects_crossed_book_before_write() {
                 market_inputs,
                 decision_source_output_path: &paths.decision_source_output,
                 instrument_source_output_path: &paths.instrument_source_output,
+                fee_rate_source_output_path: &paths.fee_rate_source_output,
             },
         )
         .expect_err("collector must reject crossed selected-market book input");
@@ -7192,6 +7175,7 @@ fn entry_decision_source_input_collector_rejects_crossed_book_before_write() {
     );
     assert!(!paths.decision_source_output.exists());
     assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
 }
 
 #[test]
@@ -7235,6 +7219,7 @@ fn entry_decision_source_input_collector_uses_selected_market_price_precision() 
             market_inputs: entry_decision_source_market_inputs(&instruments),
             decision_source_output_path: &paths.decision_source_output,
             instrument_source_output_path: &paths.instrument_source_output,
+            fee_rate_source_output_path: &paths.fee_rate_source_output,
         },
     )
     .expect("collector should use selected market precision, not first instrument precision");
@@ -7302,6 +7287,7 @@ fn entry_decision_source_input_collector_rejects_selected_price_precision_mismat
                 market_inputs: entry_decision_source_market_inputs(&instruments),
                 decision_source_output_path: &paths.decision_source_output,
                 instrument_source_output_path: &paths.instrument_source_output,
+                fee_rate_source_output_path: &paths.fee_rate_source_output,
             },
         )
         .expect_err("collector must reject mismatched selected-market price precision");
@@ -7312,6 +7298,7 @@ fn entry_decision_source_input_collector_rejects_selected_price_precision_mismat
     );
     assert!(!paths.decision_source_output.exists());
     assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
 }
 
 #[test]
@@ -7353,20 +7340,6 @@ fn entry_decision_source_input_provider_validates_local_proofs_before_network() 
         .expect("reference quote source should serialize"),
     )
     .expect("reference quote source should write");
-    let fee_rate_source_path = temp.path().join("entry-decision-fees.json");
-    std::fs::write(
-        &fee_rate_source_path,
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 1,
-            "record_kind": "bolt_v3.entry_decision_fee_rate_source.v1",
-            "fee_bps_by_instrument_id": {
-                TEST_UP_INSTRUMENT_ID: 0.0,
-                TEST_DOWN_INSTRUMENT_ID: 0.0
-            }
-        }))
-        .expect("fee source should serialize"),
-    )
-    .expect("fee source should write");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -7384,10 +7357,9 @@ fn entry_decision_source_input_provider_validates_local_proofs_before_network() 
                     max_reference_quote_source_bytes: 100_000,
                     realized_volatility_source_path: &paths.realized_volatility_source_path,
                     max_realized_volatility_source_bytes: 100_000,
-                    fee_rate_source_path: &fee_rate_source_path,
-                    max_fee_rate_source_bytes: 100_000,
                     decision_source_output_path: &paths.decision_source_output,
                     instrument_source_output_path: &paths.instrument_source_output,
+                    fee_rate_source_output_path: &paths.fee_rate_source_output,
                 },
             ),
         )
@@ -7399,6 +7371,7 @@ fn entry_decision_source_input_provider_validates_local_proofs_before_network() 
     );
     assert!(!paths.decision_source_output.exists());
     assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
 }
 
 #[test]

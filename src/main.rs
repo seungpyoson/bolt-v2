@@ -1,5 +1,5 @@
 use clap::Parser;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
 
 use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
@@ -399,13 +399,11 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         max_realized_volatility_source_bytes: u64,
         #[arg(long)]
-        fee_rate_source: PathBuf,
-        #[arg(long)]
-        max_fee_rate_source_bytes: u64,
-        #[arg(long)]
         decision_source_output: PathBuf,
         #[arg(long)]
         instrument_source_output: PathBuf,
+        #[arg(long)]
+        fee_rate_source_output: PathBuf,
     },
     CollectChainlinkEntryDecisionProofSources {
         #[arg(short, long)]
@@ -433,15 +431,11 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         realized_volatility_ready_ts_ms: u64,
         #[arg(long)]
-        fee_bps_by_instrument_id: Vec<String>,
-        #[arg(long)]
         price_to_beat_source_output: PathBuf,
         #[arg(long)]
         reference_quote_source_output: PathBuf,
         #[arg(long)]
         realized_volatility_source_output: PathBuf,
-        #[arg(long)]
-        fee_rate_source_output: PathBuf,
     },
     GenerateStrategyInputFromDecisionEvidence {
         #[arg(short, long)]
@@ -1056,10 +1050,9 @@ fn run_operator_artifacts_command(
             max_reference_quote_source_bytes,
             realized_volatility_source,
             max_realized_volatility_source_bytes,
-            fee_rate_source,
-            max_fee_rate_source_bytes,
             decision_source_output,
             instrument_source_output,
+            fee_rate_source_output,
         } => {
             let loaded = load_bolt_v3_config(&config)?;
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1076,10 +1069,9 @@ fn run_operator_artifacts_command(
                         max_reference_quote_source_bytes,
                         realized_volatility_source_path: &realized_volatility_source,
                         max_realized_volatility_source_bytes,
-                        fee_rate_source_path: &fee_rate_source,
-                        max_fee_rate_source_bytes,
                         decision_source_output_path: &decision_source_output,
                         instrument_source_output_path: &instrument_source_output,
+                        fee_rate_source_output_path: &fee_rate_source_output,
                     },
                 ),
             )?;
@@ -1088,6 +1080,7 @@ fn run_operator_artifacts_command(
                 serde_json::to_string_pretty(&serde_json::json!({
                     ENTRY_DECISION_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.decision_source),
                     ENTRY_DECISION_INSTRUMENT_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.instrument_source),
+                    ENTRY_DECISION_FEE_RATE_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.fee_rate_source),
                 }))?
             );
             Ok(())
@@ -1105,15 +1098,11 @@ fn run_operator_artifacts_command(
             reference_quote_observed_ts_ms,
             realized_volatility_value,
             realized_volatility_ready_ts_ms,
-            fee_bps_by_instrument_id,
             price_to_beat_source_output,
             reference_quote_source_output,
             realized_volatility_source_output,
-            fee_rate_source_output,
         } => {
             let loaded = load_bolt_v3_config(&config)?;
-            let fee_bps_by_instrument_id =
-                parse_fee_bps_by_instrument_id(&fee_bps_by_instrument_id)?;
             let written = write_entry_decision_proof_source_files(
                 &loaded,
                 &strategy_instance_id,
@@ -1132,11 +1121,9 @@ fn run_operator_artifacts_command(
                         value: realized_volatility_value,
                         ready_ts_ms: realized_volatility_ready_ts_ms,
                     },
-                    fee_bps_by_instrument_id,
                     price_to_beat_source_output_path: &price_to_beat_source_output,
                     reference_quote_source_output_path: &reference_quote_source_output,
                     realized_volatility_source_output_path: &realized_volatility_source_output,
-                    fee_rate_source_output_path: &fee_rate_source_output,
                 },
             )?;
             println!(
@@ -1145,7 +1132,6 @@ fn run_operator_artifacts_command(
                     ENTRY_DECISION_PRICE_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.price_to_beat_source),
                     ENTRY_DECISION_REFERENCE_QUOTE_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.reference_quote_source),
                     ENTRY_DECISION_REALIZED_VOLATILITY_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.realized_volatility_source),
-                    ENTRY_DECISION_FEE_RATE_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.fee_rate_source),
                 }))?
             );
             Ok(())
@@ -1230,28 +1216,6 @@ fn written_operator_artifact_json(written: &WrittenOperatorArtifact) -> serde_js
         "path": &written.path,
         "sha256": &written.sha256,
     })
-}
-
-fn parse_fee_bps_by_instrument_id(values: &[String]) -> Result<BTreeMap<String, f64>, String> {
-    let mut fees = BTreeMap::new();
-    for value in values {
-        let Some((instrument_id, fee_bps)) = value.split_once('=') else {
-            return Err(
-                "fee-bps-by-instrument-id entries must use instrument_id=fee_bps".to_string(),
-            );
-        };
-        let instrument_id = instrument_id.trim();
-        if instrument_id.is_empty() {
-            return Err("fee-bps-by-instrument-id instrument id is empty".to_string());
-        }
-        let fee_bps = fee_bps
-            .parse::<f64>()
-            .map_err(|_| "fee-bps-by-instrument-id fee bps is invalid".to_string())?;
-        if fees.insert(instrument_id.to_string(), fee_bps).is_some() {
-            return Err("fee-bps-by-instrument-id contains duplicate instrument id".to_string());
-        }
-    }
-    Ok(fees)
 }
 
 fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error::Error>> {

@@ -1145,3 +1145,22 @@ At head `641ccc5205a20207f65cec03c488a9b9553dc48b`, the pUSD allowance blocker a
 - The configured decision-evidence JSONL remained empty after the failed no-entry run: size `0`, sha256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, line count `0`.
 
 T036 remains open for a narrower reason: the current source-bound market facts still do not produce an entry order, so `strategy-input.json`, `pre-run-state.json`, `static-artifacts-manifest.json`, `approval-envelope.json`, and `operator-evidence-packet.json` cannot honestly be assembled yet. The previously documented pUSD allowance blocker is no longer current for the on-chain collateral source path.
+
+## T036I4 NT-Owned Entry-Decision Fee Proof
+
+At current head, the entry-decision fee proof no longer comes from caller-supplied CLI fee bps.
+
+- Implementation: `collect-chainlink-entry-decision-proof-sources` no longer accepts `--fee-bps-by-instrument-id` and no longer writes `entry-decision-fees.json`.
+- Source ownership: `collect-chainlink-entry-decision-source-inputs` now writes the fee-rate source artifact after the configured Polymarket provider selects instruments and books. The provider derives effective taker fee bps from NT `nautilus_polymarket::execution::parse::instrument_taker_fee` and `compute_commission`, using the selected up/down instrument metadata and the selected book ask prices. The only repo-local math is converting NT's one-share pUSD commission into bps for the existing artifact schema.
+- Market scope: the implementation is not BTC-specific. The live probes used `bitcoin_updown_main` only because the ignored local TOML strategy target is BTC up/down 5m.
+- RED/GREEN verification:
+  - `cargo test --test bolt_v3_cli collect_chainlink_entry_decision -- --nocapture` first failed because source-input help still exposed `--fee-rate-source` and proof-source help still exposed caller fee arguments; after the change it passed with 2 tests.
+  - `cargo test --test bolt_v3_operator_artifacts entry_decision -- --nocapture` passed with 19 tests, including cleanup on fee-output write failure and local-proof-before-network validation.
+  - `just source-fence` passed, including runtime literal/provider/core/naming/status/schema/pure-Rust/default/strategy-policy/source-capture checks plus 11 `bolt_v3_controlled_connect` tests and 5 `bolt_v3_production_entrypoint` tests.
+- Live artifact recheck:
+  - Replaying the old `/private/tmp/bolt-v2-t036-active-1779820200` proof set through the provider failed before fee derivation with `entry decision source requires a selectable two-sided configured market`.
+  - Hard evidence for that failure: the old proof timestamp is `1779820200000` (`2026-05-26 18:30:00 UTC`), and current Polymarket Gamma returns an empty array for both old required slugs `btc-updown-5m-1779820200` and `btc-updown-5m-1779820500`.
+  - Current-window Gamma still returns markets for current configured slugs, proving the failure is stale-market replay, not a hardcoded BTC path.
+  - A fresh SSM-backed Chainlink report collection for timestamp `1779859200` wrote `/private/tmp/bolt-v2-t036-active-1779859200/chainlink-price-report.json` with sha256 `b601f1fea423c56f6d5eff0cc29904dea47e92adebc03794e33dab8b5a74faae`; decoded report value was `75502.71227` with `valid_from_timestamp_ms=1779859200000` and `observations_timestamp_ms=1779859200000`.
+
+T036 remains open. The fee proof is now source-owned from NT-selected instruments/books, and pUSD collateral/funding proof has an on-chain source path, but final readiness still needs an honest source-bound entry decision chain. Existing reference quote and realized-volatility proof inputs are still explicit proof inputs in the current command surface; they must not be treated as fully source-owned final readiness without a current source trail.

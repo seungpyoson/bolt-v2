@@ -2820,8 +2820,9 @@ fn bolt_v3_cli_exposes_collect_chainlink_entry_decision_source_inputs() {
     assert!(stdout.contains("--max-reference-quote-source-bytes"));
     assert!(stdout.contains("--realized-volatility-source"));
     assert!(stdout.contains("--max-realized-volatility-source-bytes"));
-    assert!(stdout.contains("--fee-rate-source"));
-    assert!(stdout.contains("--max-fee-rate-source-bytes"));
+    assert!(!stdout.contains("--fee-rate-source "));
+    assert!(!stdout.contains("--max-fee-rate-source-bytes"));
+    assert!(stdout.contains("--fee-rate-source-output"));
     assert!(stdout.contains("--decision-source-output"));
     assert!(stdout.contains("--instrument-source-output"));
 }
@@ -2853,9 +2854,15 @@ fn bolt_v3_cli_exposes_collect_chainlink_entry_decision_proof_sources() {
     assert!(stdout.contains("--reference-quote-venue"));
     assert!(stdout.contains("--reference-quote-price"));
     assert!(stdout.contains("--realized-volatility-value"));
-    assert!(stdout.contains("--fee-bps-by-instrument-id"));
     assert!(stdout.contains("--price-to-beat-source-output"));
-    assert!(stdout.contains("--fee-rate-source-output"));
+    assert!(
+        !stdout.contains("--fee-bps-by-instrument-id"),
+        "proof-source materializer must not accept caller-supplied venue fee rates: {stdout}"
+    );
+    assert!(
+        !stdout.contains("--fee-rate-source-output"),
+        "fee-rate source belongs to selected-instrument source-input materialization: {stdout}"
+    );
 }
 
 #[test]
@@ -3037,7 +3044,6 @@ max_notional_per_order = "10.00"
     let price_output = temp.path().join("source-bound-price.json");
     let quote_output = temp.path().join("reference-quote.json");
     let vol_output = temp.path().join("realized-volatility.json");
-    let fee_output = temp.path().join("entry-decision-fees.json");
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
             "operator-artifacts",
@@ -3066,18 +3072,12 @@ max_notional_per_order = "10.00"
             "1.5",
             "--realized-volatility-ready-ts-ms",
             "601200",
-            "--fee-bps-by-instrument-id",
-            "condition-current-up.POLYMARKET=0.0",
-            "--fee-bps-by-instrument-id",
-            "condition-current-down.POLYMARKET=0.0",
             "--price-to-beat-source-output",
             price_output.to_str().expect("price output should be utf-8"),
             "--reference-quote-source-output",
             quote_output.to_str().expect("quote output should be utf-8"),
             "--realized-volatility-source-output",
             vol_output.to_str().expect("vol output should be utf-8"),
-            "--fee-rate-source-output",
-            fee_output.to_str().expect("fee output should be utf-8"),
         ])
         .output()
         .expect("entry-decision proof-source command should run");
@@ -3098,7 +3098,6 @@ max_notional_per_order = "10.00"
         ("price_to_beat_source", &price_output),
         ("reference_quote_source", &quote_output),
         ("realized_volatility_source", &vol_output),
-        ("fee_rate_source", &fee_output),
     ] {
         assert!(path.exists(), "{field} output should exist");
         assert_eq!(

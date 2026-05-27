@@ -3359,6 +3359,7 @@ pub struct EntryDecisionSourceInputRequest<'a> {
     pub market_inputs: EntryDecisionSourceMarketInputs<'a>,
     pub decision_source_output_path: &'a Path,
     pub instrument_source_output_path: &'a Path,
+    pub fee_rate_source_output_path: &'a Path,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3369,16 +3370,16 @@ pub struct EntryDecisionSourceCollectionRequest<'a> {
     pub max_reference_quote_source_bytes: u64,
     pub realized_volatility_source_path: &'a Path,
     pub max_realized_volatility_source_bytes: u64,
-    pub fee_rate_source_path: &'a Path,
-    pub max_fee_rate_source_bytes: u64,
     pub decision_source_output_path: &'a Path,
     pub instrument_source_output_path: &'a Path,
+    pub fee_rate_source_output_path: &'a Path,
 }
 
 #[derive(Debug, Clone)]
 pub struct EntryDecisionSourceInputsWritten {
     pub decision_source: WrittenOperatorArtifact,
     pub instrument_source: WrittenOperatorArtifact,
+    pub fee_rate_source: WrittenOperatorArtifact,
 }
 
 #[derive(Debug, Clone)]
@@ -3403,11 +3404,9 @@ pub struct EntryDecisionProofSourceMaterializationRequest<'a> {
     pub decision_timestamp_ms: u64,
     pub reference_quote: EntryDecisionReferenceQuoteProofInput,
     pub realized_volatility: EntryDecisionRealizedVolatilityProofInput,
-    pub fee_bps_by_instrument_id: BTreeMap<String, f64>,
     pub price_to_beat_source_output_path: &'a Path,
     pub reference_quote_source_output_path: &'a Path,
     pub realized_volatility_source_output_path: &'a Path,
-    pub fee_rate_source_output_path: &'a Path,
 }
 
 #[derive(Debug, Clone)]
@@ -3415,7 +3414,6 @@ pub struct EntryDecisionProofSourcesWritten {
     pub price_to_beat_source: WrittenOperatorArtifact,
     pub reference_quote_source: WrittenOperatorArtifact,
     pub realized_volatility_source: WrittenOperatorArtifact,
-    pub fee_rate_source: WrittenOperatorArtifact,
 }
 
 pub struct OperatorEvidenceJsonBuildInputs<'a> {
@@ -3762,13 +3760,6 @@ pub fn write_entry_decision_proof_source_files(
         request.decision_timestamp_ms,
     )?;
 
-    let fee_rate_source = EntryDecisionFeeRateSourceArtifact {
-        schema_version: ENTRY_DECISION_FEE_RATE_SOURCE_SCHEMA_VERSION,
-        record_kind: ENTRY_DECISION_FEE_RATE_SOURCE_RECORD_KIND.to_string(),
-        fee_bps_by_instrument_id: request.fee_bps_by_instrument_id,
-    };
-    validate_entry_decision_fee_rate_source_artifact(&fee_rate_source)?;
-
     let price_to_beat_source_written = write_json_artifact_create_new(
         request.price_to_beat_source_output_path,
         &price_to_beat_source,
@@ -3799,21 +3790,10 @@ pub fn write_entry_decision_proof_source_files(
     };
     written.push(realized_volatility_source_written.clone());
 
-    let fee_rate_source_written =
-        match write_json_artifact_create_new(request.fee_rate_source_output_path, &fee_rate_source)
-        {
-            Ok(artifact) => artifact,
-            Err(error) => {
-                remove_written_static_artifacts(&written);
-                return Err(error);
-            }
-        };
-
     Ok(EntryDecisionProofSourcesWritten {
         price_to_beat_source: price_to_beat_source_written,
         reference_quote_source: reference_quote_source_written,
         realized_volatility_source: realized_volatility_source_written,
-        fee_rate_source: fee_rate_source_written,
     })
 }
 
@@ -3880,6 +3860,12 @@ pub fn write_entry_decision_source_inputs_from_source_files(
         &request.market_inputs.fee_bps_by_instrument_id,
         &selected.down_instrument_id.to_string(),
     )?;
+    let fee_rate_source = EntryDecisionFeeRateSourceArtifact {
+        schema_version: ENTRY_DECISION_FEE_RATE_SOURCE_SCHEMA_VERSION,
+        record_kind: ENTRY_DECISION_FEE_RATE_SOURCE_RECORD_KIND.to_string(),
+        fee_bps_by_instrument_id: request.market_inputs.fee_bps_by_instrument_id.clone(),
+    };
+    validate_entry_decision_fee_rate_source_artifact(&fee_rate_source)?;
 
     let decision_source = BinaryOracleEntryDecisionEvidenceSource {
         schema_version: ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION,
@@ -3917,16 +3903,25 @@ pub fn write_entry_decision_source_inputs_from_source_files(
 
     let decision_source_written =
         write_json_artifact_create_new(request.decision_source_output_path, &decision_source)?;
-    match write_json_artifact_create_new(
+    let instrument_source_written = match write_json_artifact_create_new(
         request.instrument_source_output_path,
         &request.market_inputs.instruments,
     ) {
-        Ok(instrument_source) => Ok(EntryDecisionSourceInputsWritten {
+        Ok(instrument_source) => instrument_source,
+        Err(error) => {
+            let _ = fs::remove_file(&decision_source_written.path);
+            return Err(error);
+        }
+    };
+    match write_json_artifact_create_new(request.fee_rate_source_output_path, &fee_rate_source) {
+        Ok(fee_rate_source) => Ok(EntryDecisionSourceInputsWritten {
             decision_source: decision_source_written,
-            instrument_source,
+            instrument_source: instrument_source_written,
+            fee_rate_source,
         }),
         Err(error) => {
             let _ = fs::remove_file(&decision_source_written.path);
+            let _ = fs::remove_file(&instrument_source_written.path);
             Err(error)
         }
     }

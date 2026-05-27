@@ -1,25 +1,26 @@
 use std::{collections::BTreeMap, future::Future, pin::Pin};
 
 use nautilus_model::{
+    enums::LiquiditySide,
     instruments::{Instrument, InstrumentAny},
     orderbook::OrderBook,
 };
 use nautilus_network::retry::RetryConfig;
 use nautilus_polymarket::{
+    execution::parse::{compute_commission, instrument_taker_fee},
     http::{clob::PolymarketClobPublicClient, gamma::PolymarketGammaHttpClient},
     providers::PolymarketInstrumentProvider,
 };
+use rust_decimal::{Decimal, prelude::FromPrimitive};
 use serde::Serialize;
 
 use crate::{
     bolt_v3_market_families::{self, MarketSelectionTarget},
     bolt_v3_operator_artifacts::{
-        BoltV3OperatorArtifactError, EntryDecisionFeeRateSourceArtifact,
-        EntryDecisionSourceBookSideInput, EntryDecisionSourceInputRequest,
-        EntryDecisionSourceInputsWritten, EntryDecisionSourceMarketInputs,
-        EntryDecisionSourceProofFileRequest, read_file_bounded, selected_entry_decision_market,
-        validate_entry_decision_fee_rate_source_artifact,
-        validate_entry_decision_source_proof_files,
+        BoltV3OperatorArtifactError, EntryDecisionSourceBookSideInput,
+        EntryDecisionSourceInputRequest, EntryDecisionSourceInputsWritten,
+        EntryDecisionSourceMarketInputs, EntryDecisionSourceProofFileRequest,
+        selected_entry_decision_market, validate_entry_decision_source_proof_files,
         write_entry_decision_source_inputs_from_source_files,
     },
     bolt_v3_providers::EntryDecisionSourceProviderContext,
@@ -29,7 +30,8 @@ use super::{PolymarketDataConfig, PolymarketExecutionConfig};
 
 const ENTRY_DECISION_UP_BOOK_LABEL: &str = "up";
 const ENTRY_DECISION_DOWN_BOOK_LABEL: &str = "down";
-const ENTRY_DECISION_FEE_ZERO_THRESHOLD: f64 = 0.0;
+const ENTRY_DECISION_FEE_BPS_SCALE: f64 = 10_000.0;
+const ENTRY_DECISION_FEE_PROBE_SIZE: i64 = 1;
 const ENTRY_DECISION_RETRY_INITIAL_ATTEMPT_COUNT: u64 = 1;
 const ENTRY_DECISION_GATE_PROVENANCE_RECORD_KIND: &str =
     "bolt_v3.polymarket_entry_decision_gate_provenance.v1";
@@ -94,11 +96,6 @@ async fn collect_entry_decision_source_inputs_inner(
     )?;
     let source_config =
         polymarket_source_config_for_strategy(context.loaded, context.strategy_instance_id)?;
-    let fee_rate_source: EntryDecisionFeeRateSourceArtifact = read_decision_source_json_file(
-        context.request.fee_rate_source_path,
-        context.request.max_fee_rate_source_bytes,
-    )?;
-    validate_entry_decision_fee_rate_source_artifact(&fee_rate_source)?;
     let mut instruments = load_polymarket_instruments_for_entry_decision_source(
         context.loaded,
         context.strategy_instance_id,
@@ -153,13 +150,14 @@ async fn collect_entry_decision_source_inputs_inner(
                 message: format!("failed to fetch down book snapshot: {source}"),
             },
         )?;
-    require_entry_decision_fee_source(
-        &fee_rate_source.fee_bps_by_instrument_id,
-        &selected.up_instrument_id.to_string(),
-    )?;
-    require_entry_decision_fee_source(
-        &fee_rate_source.fee_bps_by_instrument_id,
-        &selected.down_instrument_id.to_string(),
+    let up_book_input = book_side_input_from_order_book(&up_book, ENTRY_DECISION_UP_BOOK_LABEL)?;
+    let down_book_input =
+        book_side_input_from_order_book(&down_book, ENTRY_DECISION_DOWN_BOOK_LABEL)?;
+    let fee_bps_by_instrument_id = entry_decision_fee_bps_by_instrument_id(
+        up_instrument,
+        down_instrument,
+        up_book_input.best_ask,
+        down_book_input.best_ask,
     )?;
 
     write_entry_decision_source_inputs_from_source_files(
@@ -176,35 +174,15 @@ async fn collect_entry_decision_source_inputs_inner(
                 .max_realized_volatility_source_bytes,
             market_inputs: EntryDecisionSourceMarketInputs {
                 instruments: &instruments,
-                up_book: book_side_input_from_order_book(&up_book, ENTRY_DECISION_UP_BOOK_LABEL)?,
-                down_book: book_side_input_from_order_book(
-                    &down_book,
-                    ENTRY_DECISION_DOWN_BOOK_LABEL,
-                )?,
-                fee_bps_by_instrument_id: fee_rate_source.fee_bps_by_instrument_id,
+                up_book: up_book_input,
+                down_book: down_book_input,
+                fee_bps_by_instrument_id,
             },
             decision_source_output_path: context.request.decision_source_output_path,
             instrument_source_output_path: context.request.instrument_source_output_path,
+            fee_rate_source_output_path: context.request.fee_rate_source_output_path,
         },
     )
-}
-
-fn read_decision_source_json_file<T: serde::de::DeserializeOwned>(
-    path: &std::path::Path,
-    max_bytes: u64,
-) -> Result<T, BoltV3OperatorArtifactError> {
-    let bytes = read_file_bounded(path, max_bytes).map_err(|source| {
-        BoltV3OperatorArtifactError::DecisionEvidenceSourceRead {
-            path: path.to_path_buf(),
-            source,
-        }
-    })?;
-    serde_json::from_slice(&bytes).map_err(|source| {
-        BoltV3OperatorArtifactError::DecisionEvidenceSourceParse {
-            path: path.to_path_buf(),
-            source,
-        }
-    })
 }
 
 struct PolymarketSourceConfig {
@@ -374,21 +352,49 @@ fn instrument_for_id<'a>(
         )
 }
 
-fn require_entry_decision_fee_source(
-    fee_bps_by_instrument_id: &BTreeMap<String, f64>,
-    instrument_id: &str,
-) -> Result<(), BoltV3OperatorArtifactError> {
-    let Some(fee_bps) = fee_bps_by_instrument_id.get(instrument_id) else {
+fn entry_decision_fee_bps_by_instrument_id(
+    up_instrument: &InstrumentAny,
+    down_instrument: &InstrumentAny,
+    up_entry_price: f64,
+    down_entry_price: f64,
+) -> Result<BTreeMap<String, f64>, BoltV3OperatorArtifactError> {
+    Ok(BTreeMap::from([
+        (
+            up_instrument.id().to_string(),
+            effective_taker_fee_bps_from_nt(up_instrument, up_entry_price)?,
+        ),
+        (
+            down_instrument.id().to_string(),
+            effective_taker_fee_bps_from_nt(down_instrument, down_entry_price)?,
+        ),
+    ]))
+}
+
+fn effective_taker_fee_bps_from_nt(
+    instrument: &InstrumentAny,
+    entry_price: f64,
+) -> Result<f64, BoltV3OperatorArtifactError> {
+    let price = Decimal::from_f64(entry_price).ok_or_else(|| {
+        entry_decision_source_invalid("entry decision source fee price is invalid")
+    })?;
+    if price <= Decimal::ZERO || price >= Decimal::ONE {
         return Err(entry_decision_source_invalid(
-            "entry decision source fee map is missing a selected instrument",
+            "entry decision source fee price is invalid",
         ));
-    };
-    if !fee_bps.is_finite() || *fee_bps < ENTRY_DECISION_FEE_ZERO_THRESHOLD {
+    }
+    let commission = compute_commission(
+        instrument_taker_fee(instrument),
+        Decimal::from(ENTRY_DECISION_FEE_PROBE_SIZE),
+        price,
+        LiquiditySide::Taker,
+    );
+    let fee_bps = commission / entry_price * ENTRY_DECISION_FEE_BPS_SCALE;
+    if !commission.is_finite() || commission.is_sign_negative() || !fee_bps.is_finite() {
         return Err(entry_decision_source_invalid(
             "entry decision source fee bps is invalid",
         ));
     }
-    Ok(())
+    Ok(fee_bps)
 }
 
 fn book_side_input_from_order_book(

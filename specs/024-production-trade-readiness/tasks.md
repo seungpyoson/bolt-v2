@@ -160,7 +160,7 @@
 
 **Independent Test**: final-packet no-submit passes before tiny-capital canary; both are bound to exact head, root TOML, final packet, and retained evidence hashes.
 
-- [ ] T043 [US5] Execute T131/T122 final-packet EC2/EIP no-submit rerun with the verified root TOML and final operator packet; record evidence in `specs/024-production-trade-readiness/final-no-submit.md`.
+- [x] T043 [US5] Execute T131/T122 final-packet EC2/EIP no-submit rerun with the verified root TOML and final operator packet; record evidence in `specs/024-production-trade-readiness/final-no-submit.md`.
 - [ ] T044 [US5] Execute T116/T046 tiny-capital canary with the verified root TOML and final operator packet; record evidence in `specs/024-production-trade-readiness/tiny-canary.md`.
 - [ ] T045 [US5] Run post-run artifact/log secret scan and record retention/purge decision in `specs/024-production-trade-readiness/post-run-hygiene.md`.
 - [ ] T046 [US5] Update #369, #385, #409, #360, and PR #480 with exact final readiness status and record links in `specs/024-production-trade-readiness/readiness-ledger.md`.

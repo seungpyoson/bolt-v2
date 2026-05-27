@@ -1305,3 +1305,26 @@ T047 removed the remaining generic Rust fixture hardcodes that made BTC, Binance
   - `operator-artifacts verify-final --config config/live.local.toml --operator-packet /private/tmp/bolt-v2-t047-final-refresh/operator-evidence-packet-48a9c0df.json --verification-stage pre-run`: passed. Verified `approval-envelope` `94215f1e08fe7fb94dc00f0c7c064c7bd2f188f104051bfe52c6dc81e57fed01`, `operator-evidence-packet` `e8e985b844c8628ab852606c9ad4d6a605110159bc0b62fb9d9e3d3b7e543e0b`, and `static-artifacts-manifest` `2c0ba198187487449a35dc69dd79e539596f0eeaf1c56ad8f8bd901525b0e0af`.
 
 No no-submit, tiny-capital canary, submit, cancel, transfer, on-chain mutation, secret display, or trade operation was run during T047.
+
+## T043 Final-Packet No-Submit
+
+T043 passed for build head `b993299e5aa234c199c5b97cc3a2393fcf9e2c03` after the no-submit reference-readiness path was repaired to use source-owned `decision_reference` operator evidence when legacy `[reference_data]` is absent.
+
+- RED/GREEN repair:
+  - `cargo test --test bolt_v3_operator_artifacts source_owned_reference_readiness_accepts_replayable_operator_evidence_without_reference_data -- --nocapture`: first failed because `verify_source_owned_reference_readiness_from_operator_evidence` was missing, then passed.
+  - `cargo test --test bolt_v3_no_submit_readiness no_submit_readiness_switches_to_source_owned_reference_when_reference_data_absent -- --nocapture`: first failed because `reference_readiness_from_no_submit_evidence` was missing, then passed.
+- Focused verification:
+  - `cargo test --test bolt_v3_no_submit_readiness -- --nocapture`: 34 passed.
+  - `cargo test --test bolt_v3_operator_artifacts final_packet_verifier -- --nocapture`: 32 passed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `just source-fence`: passed.
+- Final-packet refresh:
+  - Root TOML sha256 after local ignored `config/live.local.toml` operator-evidence patch: `f740afb999a7d2982cef7f3eecd2b493cb64784b73ec2a41a16f4fab0875f5ea`.
+  - `operator-artifacts verify-final --config config/live.local.toml --operator-packet /private/tmp/bolt-v2-t043-final-refresh-b993299e/operator-evidence-packet-b993299e.json --verification-stage pre-run`: passed. Verified `approval-envelope` `7e541dc5fe5bb90bbad3507d13cae92253eb10a006d2ff31578faf5959b38e67`, `operator-evidence-packet` `47af7a6ace5fe17da095d69084c5615caf279ebbe31391ee0ca97796be8e3372`, and `static-artifacts-manifest` `710e64947c98a8f052aaebabe1ceff4480bc018a68043dad63b32983075c8bf2`.
+- No-submit report:
+  - `cargo run --locked --bin bolt-v2 -- no-submit-readiness --config config/live.local.toml`: exited 0 and wrote `/Users/spson/Projects/Claude/bolt-v2/var/bolt-v3-live/reports/no-submit-readiness.json`.
+  - Report sha256: `ec5b5147c7816e4684d83e2ea0c5ffd5db1e353a409d98579bf267d86d7d40ef`.
+  - Report generated at `2026-05-27T15:39:27Z` with all seven stages satisfied: `operator_approval`, `secret_resolution`, `live_node_build`, `controlled_connect`, `reference_readiness`, `controlled_disconnect`, and `report_write`.
+
+Scope and side effects: this was a no-submit readiness run. It connected the configured Polymarket data and execution clients, reconciled account state, observed zero orders/fills/positions, stopped the NT runner, and wrote the readiness report. It did not submit, cancel, transfer, mutate on-chain state, mutate CLOB allowance/cache state, or execute a trade. T044 remains open and requires renewed explicit operator approval because it is a tiny-capital live canary.

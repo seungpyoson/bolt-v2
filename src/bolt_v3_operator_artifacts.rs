@@ -14,10 +14,7 @@ use anyhow::anyhow;
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
 use nautilus_model::instruments::{Instrument, InstrumentAny};
 use nautilus_network::http::{HttpClient, USER_AGENT};
-use rust_decimal::{
-    Decimal,
-    prelude::{FromPrimitive, ToPrimitive},
-};
+use rust_decimal::{Decimal, prelude::FromPrimitive};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
@@ -95,13 +92,14 @@ const CHAINLINK_PRICE_REPORT_SCHEMA_VERSION_V3: u64 = 3;
 const CHAINLINK_REPORT_ABI_WORD_BYTES: usize = 32;
 const CHAINLINK_REPORT_ABI_U64_VALUE_BYTES: usize = std::mem::size_of::<u64>();
 const CHAINLINK_REPORT_ABI_U32_VALUE_BYTES: usize = std::mem::size_of::<u32>();
-const CHAINLINK_REPORT_ABI_I128_VALUE_BYTES: usize = std::mem::size_of::<i128>();
+const CHAINLINK_REPORT_ABI_I192_VALUE_BYTES: usize =
+    CHAINLINK_REPORT_ABI_WORD_BYTES - CHAINLINK_REPORT_ABI_U64_VALUE_BYTES;
 const CHAINLINK_REPORT_ABI_U64_PREFIX_BYTES: usize =
     CHAINLINK_REPORT_ABI_WORD_BYTES - CHAINLINK_REPORT_ABI_U64_VALUE_BYTES;
 const CHAINLINK_REPORT_ABI_U32_PREFIX_BYTES: usize =
     CHAINLINK_REPORT_ABI_WORD_BYTES - CHAINLINK_REPORT_ABI_U32_VALUE_BYTES;
-const CHAINLINK_REPORT_ABI_I128_PREFIX_BYTES: usize =
-    CHAINLINK_REPORT_ABI_WORD_BYTES - CHAINLINK_REPORT_ABI_I128_VALUE_BYTES;
+const CHAINLINK_REPORT_ABI_I192_PREFIX_BYTES: usize =
+    CHAINLINK_REPORT_ABI_WORD_BYTES - CHAINLINK_REPORT_ABI_I192_VALUE_BYTES;
 const CHAINLINK_REPORT_BLOB_OFFSET_WORD_INDEX: usize = 3;
 const CHAINLINK_REPORT_CALLBACK_MIN_BYTES: usize = 4 * CHAINLINK_REPORT_ABI_WORD_BYTES;
 const CHAINLINK_REPORT_V3_WORD_COUNT: usize = 9;
@@ -112,6 +110,8 @@ const CHAINLINK_REPORT_V3_BENCHMARK_PRICE_WORD_INDEX: usize = 6;
 const CHAINLINK_REPORT_MILLISECONDS_PER_SECOND: u64 = 1_000;
 const CHAINLINK_REPORT_NANOS_PER_MILLISECOND: u64 = 1_000_000;
 const CHAINLINK_REPORT_SIGN_BIT_MASK: u8 = 0x80;
+const CHAINLINK_REPORT_BASE256_RADIX: f64 = 256.0;
+const CHAINLINK_REPORT_DECIMAL_RADIX: f64 = 10.0;
 const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";
 const CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD: &str = "report_endpoint_path";
 const CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD: &str = "http_timeout_secs";
@@ -2713,6 +2713,13 @@ fn build_market_selection_source_artifact_from_decision_evidence(
             },
         );
     }
+    if chain.snapshot.price_to_beat_source.trim() != financial_envelope.price_to_beat_source() {
+        return Err(
+            BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
+                prerequisite: "T046 remains blocked: strategy decision price-to-beat source does not match config",
+            },
+        );
+    }
     if !source_bound_price_to_beat_value_is_usable(&chain.snapshot.price_to_beat_value) {
         return Err(
             BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
@@ -3300,6 +3307,13 @@ pub fn write_strategy_input_evidence_artifact_from_runtime_snapshot(
         return Err(
             BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven {
                 prerequisite: "T046 remains blocked: strategy input target does not match config",
+            },
+        );
+    }
+    if snapshot.price_to_beat_source.trim() != financial_envelope.price_to_beat_source() {
+        return Err(
+            BoltV3OperatorArtifactError::StrategyInputPrerequisiteUnproven {
+                prerequisite: "T046 remains blocked: strategy input price-to-beat source does not match config",
             },
         );
     }
@@ -4903,11 +4917,10 @@ fn decode_chainlink_v3_report_blob(
     )?)
     .checked_mul(CHAINLINK_REPORT_MILLISECONDS_PER_SECOND)
     .ok_or_else(price_to_beat_report_provenance_invalid)?;
-    let benchmark_price_raw = read_chainlink_abi_i192_as_i128(
-        report_blob,
-        CHAINLINK_REPORT_V3_BENCHMARK_PRICE_WORD_INDEX,
-    )?;
-    let benchmark_price = scale_chainlink_report_price(benchmark_price_raw, binding.decimal_scale)?;
+    let benchmark_price_raw =
+        read_chainlink_abi_i192_word(report_blob, CHAINLINK_REPORT_V3_BENCHMARK_PRICE_WORD_INDEX)?;
+    let benchmark_price =
+        scale_chainlink_report_price(&benchmark_price_raw, binding.decimal_scale)?;
     Ok(DecodedPriceToBeatReport {
         feed_id,
         valid_from_timestamp_ms,
@@ -4993,40 +5006,86 @@ fn read_chainlink_abi_u32_word(
     Ok(u32::from_be_bytes(value))
 }
 
-fn read_chainlink_abi_i192_as_i128(
+fn read_chainlink_abi_i192_word(
     bytes: &[u8],
     word_index: usize,
-) -> Result<i128, BoltV3OperatorArtifactError> {
+) -> Result<[u8; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES], BoltV3OperatorArtifactError> {
     let word = read_chainlink_abi_word(bytes, word_index)?;
     let negative =
-        (word[CHAINLINK_REPORT_ABI_I128_PREFIX_BYTES] & CHAINLINK_REPORT_SIGN_BIT_MASK) != u8::MIN;
+        (word[CHAINLINK_REPORT_ABI_I192_PREFIX_BYTES] & CHAINLINK_REPORT_SIGN_BIT_MASK) != u8::MIN;
     let expected = if negative { u8::MAX } else { u8::MIN };
-    if word[..CHAINLINK_REPORT_ABI_I128_PREFIX_BYTES]
+    if word[..CHAINLINK_REPORT_ABI_I192_PREFIX_BYTES]
         .iter()
         .any(|byte| *byte != expected)
     {
         return Err(price_to_beat_report_provenance_invalid());
     }
-    let mut value = [u8::MIN; CHAINLINK_REPORT_ABI_I128_VALUE_BYTES];
+    let mut value = [u8::MIN; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES];
     value.copy_from_slice(
-        &word[CHAINLINK_REPORT_ABI_I128_PREFIX_BYTES..CHAINLINK_REPORT_ABI_WORD_BYTES],
+        &word[CHAINLINK_REPORT_ABI_I192_PREFIX_BYTES..CHAINLINK_REPORT_ABI_WORD_BYTES],
     );
-    Ok(i128::from_be_bytes(value))
+    Ok(value)
 }
 
 fn scale_chainlink_report_price(
-    value: i128,
+    value: &[u8; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES],
     decimal_scale: u64,
 ) -> Result<f64, BoltV3OperatorArtifactError> {
     let scale =
-        u32::try_from(decimal_scale).map_err(|_| price_to_beat_report_provenance_invalid())?;
-    let price = Decimal::from_i128_with_scale(value, scale)
-        .to_f64()
-        .ok_or_else(price_to_beat_report_provenance_invalid)?;
+        i32::try_from(decimal_scale).map_err(|_| price_to_beat_report_provenance_invalid())?;
+    let scale_factor = CHAINLINK_REPORT_DECIMAL_RADIX.powi(-scale);
+    if !scale_factor.is_finite() || scale_factor <= f64::from(u8::MIN) {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    let magnitude = chainlink_i192_magnitude_to_f64(value);
+    if !magnitude.is_finite() {
+        return Err(price_to_beat_report_provenance_invalid());
+    }
+    let price = if chainlink_i192_word_is_negative(value) {
+        -magnitude * scale_factor
+    } else {
+        magnitude * scale_factor
+    };
     if !price.is_finite() {
         return Err(price_to_beat_report_provenance_invalid());
     }
     Ok(price)
+}
+
+fn chainlink_i192_word_is_negative(value: &[u8; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES]) -> bool {
+    value
+        .first()
+        .is_some_and(|byte| (*byte & CHAINLINK_REPORT_SIGN_BIT_MASK) != u8::MIN)
+}
+
+fn chainlink_i192_magnitude_to_f64(value: &[u8; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES]) -> f64 {
+    let magnitude = if chainlink_i192_word_is_negative(value) {
+        chainlink_i192_twos_complement_abs(value)
+    } else {
+        *value
+    };
+    magnitude.iter().fold(f64::from(u8::MIN), |acc, byte| {
+        acc.mul_add(CHAINLINK_REPORT_BASE256_RADIX, f64::from(*byte))
+    })
+}
+
+fn chainlink_i192_twos_complement_abs(
+    value: &[u8; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES],
+) -> [u8; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES] {
+    let mut magnitude = *value;
+    for byte in &mut magnitude {
+        *byte = !*byte;
+    }
+    let mut carry = u8::from(true);
+    for byte in magnitude.iter_mut().rev() {
+        let (next, overflow) = byte.overflowing_add(carry);
+        *byte = next;
+        carry = u8::from(overflow);
+        if carry == u8::MIN {
+            break;
+        }
+    }
+    magnitude
 }
 
 fn validate_reference_quote_source(
@@ -6746,14 +6805,6 @@ pub fn collect_pre_run_funding_margin_source_proof(
             },
         );
     }
-    let available_collateral = source
-        .available_collateral
-        .parse::<Decimal>()
-        .map_err(
-            |_| BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
-                field: "available_collateral",
-            },
-        )?;
     let required_max_notional_plus_fees = source
         .required_max_notional_plus_fees
         .parse::<Decimal>()
@@ -6762,13 +6813,6 @@ pub fn collect_pre_run_funding_margin_source_proof(
                 field: stringify!(required_max_notional_plus_fees),
             },
         )?;
-    if available_collateral < Decimal::ZERO {
-        return Err(
-            BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
-                field: "available_collateral",
-            },
-        );
-    }
     if required_max_notional_plus_fees <= Decimal::ZERO {
         return Err(
             BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
@@ -6776,7 +6820,11 @@ pub fn collect_pre_run_funding_margin_source_proof(
             },
         );
     }
-    if available_collateral < required_max_notional_plus_fees {
+    if clob_v2_decimal_string_below_required(
+        "available_collateral",
+        &source.available_collateral,
+        required_max_notional_plus_fees,
+    )? {
         return Err(
             BoltV3OperatorArtifactError::PreRunFundingMarginSourceInvalid {
                 field: "funding_margin_covers_max_notional_plus_fees",

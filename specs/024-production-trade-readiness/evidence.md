@@ -1328,3 +1328,26 @@ T043 passed for build head `b993299e5aa234c199c5b97cc3a2393fcf9e2c03` after the 
   - Report generated at `2026-05-27T15:39:27Z` with all seven stages satisfied: `operator_approval`, `secret_resolution`, `live_node_build`, `controlled_connect`, `reference_readiness`, `controlled_disconnect`, and `report_write`.
 
 Scope and side effects: this was a no-submit readiness run. It connected the configured Polymarket data and execution clients, reconciled account state, observed zero orders/fills/positions, stopped the NT runner, and wrote the readiness report. It did not submit, cancel, transfer, mutate on-chain state, mutate CLOB allowance/cache state, or execute a trade. T044 remains open and requires renewed explicit operator approval because it is a tiny-capital live canary.
+
+## Pre-T042 Final Review Repair Batch
+
+The first pre-T042 source-shard review at head `2947546c2b5ef8c88e67ec4e3b2dcbfb323fba5d` was not a final exact-head approval. It found real issues that are now repaired locally before the next push.
+
+- Review findings fixed:
+  - Market-selection source evidence now rejects decision evidence whose `price_to_beat_source` does not match the TOML financial envelope.
+  - Strategy-input evidence now rejects runtime snapshots whose `price_to_beat_source` does not match the TOML financial envelope.
+  - Funding-margin proof collection now uses the same CLOB V2 decimal-string comparator as the funding-margin source writer.
+  - Chainlink ReportDataV3 benchmark decoding now validates ABI `int192` sign extension and scales the full-width two's-complement value without `Decimal::from_i128_with_scale`, avoiding Rust Decimal max-scale panics and the previous i128 bound.
+- RED evidence before fixes:
+  - `cargo test --locked --test bolt_v3_operator_artifacts market_selection_source_writer_rejects_price_to_beat_source_mismatch -- --nocapture`: failed because mismatched price source was accepted.
+  - `cargo test --locked --test bolt_v3_operator_artifacts strategy_input_writer_rejects_runtime_snapshot_target_gate_and_hash_mismatches -- --nocapture`: failed for the added price-source mismatch case because mismatched price source was accepted.
+  - `cargo test --locked --test bolt_v3_operator_artifacts pre_run_funding_margin_source_proof_uses_source_decimal_comparator -- --nocapture`: failed because the proof collector parsed `available_collateral` through Rust Decimal instead of the source decimal-string comparator.
+  - `cargo test --locked --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer_accepts_chainlink_scale_beyond_rust_decimal_limit -- --nocapture`: failed with a Rust Decimal panic, `Scale exceeds the maximum precision allowed: 29 > 28`.
+  - `cargo test --locked --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer_decodes_chainlink_int192_benchmark_price_without_i128_bound -- --nocapture`: failed with invalid source-bound price report provenance for a valid full-width ABI `int192` benchmark word.
+- GREEN verification after fixes:
+  - `cargo test --locked --test bolt_v3_operator_artifacts -- --nocapture`: 199 passed, 0 failed.
+  - `cargo fmt --check`: passed.
+  - `git diff --check`: passed.
+  - `just source-fence`: passed.
+
+Scope and side effects: this was local source/test/audit work only. No no-submit, tiny-capital canary, submit, cancel, transfer, on-chain mutation, secret display, GitHub CI run, or trade operation was performed. T041/T042 remain open for the next exact pushed head; T044 remains gated on renewed explicit operator approval.

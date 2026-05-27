@@ -7787,6 +7787,14 @@ reason = "This names a pre-run-state source-proof bundle boolean field; the valu
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"available_collateral"'''
+context = '''"available_collateral",'''
+classification = "operator_source_bundle_schema_field"
+reason = "This names the source-owned funding-margin collateral field when validating the same decimal-string comparator used by the writer."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"single_runner_lock_acquired"'''
 context = '''"single_runner_lock_acquired",'''
 classification = "operator_source_bundle_schema_field"
@@ -8663,6 +8671,22 @@ literal = "0x80"
 context = '''const CHAINLINK_REPORT_SIGN_BIT_MASK: u8 = 0x80;'''
 classification = "chainlink_report_protocol_decoder"
 reason = "This is the two's-complement sign-bit mask used when decoding the ReportDataV3 int192 benchmarkPrice word."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "256.0"
+context = '''const CHAINLINK_REPORT_BASE256_RADIX: f64 = 256.0;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the byte-radix used to decode a Chainlink ReportDataV3 int192 two's-complement benchmarkPrice word."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "10.0"
+context = '''const CHAINLINK_REPORT_DECIMAL_RADIX: f64 = 10.0;'''
+classification = "chainlink_report_protocol_decoder"
+reason = "This is the decimal scale radix used by Chainlink Data Streams report price bindings; the scale value remains TOML-owned."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

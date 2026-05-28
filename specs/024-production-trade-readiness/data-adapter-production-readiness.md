@@ -72,6 +72,14 @@ The fifth T043A source-owned proof primitive has been added but not yet run thro
 - Matrix rows only mark `production_usable = true` when the configured data client has every required T043A proof present. Missing source artifacts or incomplete behavior observations produce explicit `missing_proofs` entries.
 - A contract test was added for combining the source artifacts into a per-client matrix row without introducing venue, market, token, symbol, or cadence defaults. Cargo execution remains deferred to the final verification pass per operator direction.
 
+The sixth T043A source-owned proof primitive has been added but not yet run through final cargo/CI verification:
+
+- New read-only CLI: `operator-artifacts collect-data-client-behavior-probe-events-source --config <root.toml> --client-key <configured-client> --output <probe-events.jsonl>`.
+- The collector runs the existing no-submit LiveNode reference-quote probe, which uses NT actor subscription APIs and configured `reference_data`, then writes bounded `bolt_v3.data_client_behavior_probe_event.v1` JSONL for the selected configured client.
+- The JSONL records hashed client identity, provider key, quote-surface observation, freshness age, latency, and an evidence hash. It does not print raw client ids, instrument ids, prices, paths, or credentials.
+- The behavior source materializer now accepts partial source-owned probe sets and records missing reconnect, rate-limit, and parse-error proofs as non-observed policy rows instead of pretending they are proven. Final behavior/matrix artifacts still mark those rows non-production-usable until all required proofs are present.
+- This closes the gap that probe events were previously an external input, but it does not close T043A: the current source-owned collector covers configured quote evidence only.
+
 ## Missing Production Proof
 
 T043A remains open until a venue-neutral matrix proves the following for every PR-enabled data client, including Polymarket and each data-only NT venue binding:
@@ -79,8 +87,8 @@ T043A remains open until a venue-neutral matrix proves the following for every P
 - The client is selected from TOML/provider registry data, with no venue, asset, market, token, symbol, cadence, endpoint, or product hardcode treated as canonical.
 - The Bolt `LiveNode` build path includes the data client through the normal adapter mapping path.
 - Data-only clients reject `[execution]`, `[secrets]`, and direct credential fields unless a future explicit SSM-backed provider binding is added.
-- NT data behavior is proven beyond metadata-only smoke: quote/book/ticker/subscription behavior is verified where upstream supports it, and unsupported paths have a recorded fail-closed disposition.
-- Freshness, latency bound, reconnect, rate-limit, and parse/error behavior are verified under configured values.
+- NT data behavior is proven beyond metadata-only smoke: quote/book/ticker/subscription behavior is verified where upstream supports it, and unsupported paths have a recorded fail-closed disposition. The current source-owned probe-event collector proves only configured quote observations.
+- Freshness, latency bound, reconnect, rate-limit, and parse/error behavior are verified under configured values. Current partial probe sources intentionally mark missing policy/error proofs as missing, not production-usable.
 - The matrix records which markets/product types each client can actually cover, without implying a global Binance, BTC, 5-minute, or Polymarket-only default.
 - Focused tests and source-fence/hardcode checks pass after the matrix implementation.
 

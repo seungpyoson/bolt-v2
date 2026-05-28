@@ -890,7 +890,7 @@ struct DataClientBehaviorObservationSourceFile {
     parse_error: DataClientPolicyObservation,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct DataClientBehaviorProbeEvent {
     schema_version: u32,
     record_kind: String,
@@ -3011,6 +3011,174 @@ pub fn write_data_client_behavior_observation_source_from_probe_events(
     write_json_artifact_create_new(output_path, &source)
 }
 
+pub fn write_data_client_behavior_probe_events_from_no_submit_evidence(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    evidence: &BoltV3NoSubmitReferenceQuoteEvidence,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let events =
+        data_client_behavior_probe_events_from_no_submit_evidence(loaded, client_key, evidence)?;
+    let mut bytes = Vec::new();
+    for event in events {
+        serde_json::to_writer(&mut bytes, &event)
+            .map_err(BoltV3OperatorArtifactError::Serialize)?;
+        bytes.push(b'\n');
+    }
+    write_json_artifact_create_new_from_bytes(output_path, &bytes)
+}
+
+fn data_client_behavior_probe_events_from_no_submit_evidence(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    evidence: &BoltV3NoSubmitReferenceQuoteEvidence,
+) -> Result<Vec<DataClientBehaviorProbeEvent>, BoltV3OperatorArtifactError> {
+    if client_key.trim().is_empty() {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "client_key",
+            },
+        );
+    }
+    let client = loaded.root.clients.get(client_key).ok_or(
+        BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+            field: "client_key",
+        },
+    )?;
+    if client.data.is_none() {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "client_key.data",
+            },
+        );
+    }
+    let provider_key = client.venue.as_str();
+    binding_for_provider_key(provider_key).ok_or_else(|| {
+        BoltV3OperatorArtifactError::UnsupportedProvider {
+            client_key: client_key.to_string(),
+            provider_key: provider_key.to_string(),
+        }
+    })?;
+    let reference_targets = loaded
+        .strategies
+        .iter()
+        .flat_map(|strategy| strategy.config.reference_data.values())
+        .filter(|reference| reference.data_client_id.to_string() == client_key)
+        .map(|reference| reference.instrument_id.to_string())
+        .collect::<BTreeSet<_>>();
+    if reference_targets.is_empty() {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "reference_data",
+            },
+        );
+    }
+
+    let client_key_hash = sha256_text(client_key);
+    let mut events = Vec::new();
+    for quote in &evidence.quotes {
+        if quote.data_client_id != client_key || !reference_targets.contains(&quote.instrument_id) {
+            continue;
+        }
+        let observed_at_unix_millis =
+            nanos_to_millis_checked(quote.captured_at_unix_nanos, "quote.captured_at_unix_nanos")?;
+        if observed_at_unix_millis == 0 {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "quote.captured_at_unix_nanos",
+                },
+            );
+        }
+        let age_millis = nanos_delta_to_millis_checked(
+            quote.captured_at_unix_nanos,
+            quote.ts_event_unix_nanos,
+            "quote.ts_event_unix_nanos",
+        )?;
+        let latency_millis = nanos_delta_to_millis_checked(
+            quote.captured_at_unix_nanos,
+            quote.ts_init_unix_nanos,
+            "quote.ts_init_unix_nanos",
+        )?;
+        events.push(DataClientBehaviorProbeEvent {
+            schema_version: DATA_CLIENT_BEHAVIOR_OBSERVATION_SCHEMA_VERSION,
+            record_kind: DATA_CLIENT_BEHAVIOR_PROBE_EVENT_RECORD_KIND.to_string(),
+            client_key_hash: client_key_hash.clone(),
+            provider_key: provider_key.to_string(),
+            observed_at_unix_millis,
+            event_kind: "quote".to_string(),
+            supported_by_nt_source: true,
+            observed_through_live_node: true,
+            age_millis: Some(age_millis),
+            latency_millis: Some(latency_millis),
+            recovered: None,
+            fail_closed: None,
+            evidence_sha256: Some(data_client_quote_probe_evidence_hash(quote)?),
+            unsupported_disposition: None,
+        });
+    }
+    if events.is_empty() {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "no_submit_reference_quote_evidence",
+            },
+        );
+    }
+    events.sort_by(|left, right| {
+        (
+            left.observed_at_unix_millis,
+            left.event_kind.as_str(),
+            left.evidence_sha256.as_deref(),
+        )
+            .cmp(&(
+                right.observed_at_unix_millis,
+                right.event_kind.as_str(),
+                right.evidence_sha256.as_deref(),
+            ))
+    });
+    for event in &events {
+        validate_data_client_behavior_probe_event(event, client_key, provider_key)?;
+    }
+    Ok(events)
+}
+
+fn nanos_to_millis_checked(
+    nanos: u64,
+    field: &'static str,
+) -> Result<u64, BoltV3OperatorArtifactError> {
+    let millis = nanos / 1_000_000;
+    if millis == 0 {
+        Err(BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field })
+    } else {
+        Ok(millis)
+    }
+}
+
+fn nanos_delta_to_millis_checked(
+    end_nanos: u64,
+    start_nanos: u64,
+    field: &'static str,
+) -> Result<u64, BoltV3OperatorArtifactError> {
+    end_nanos
+        .checked_sub(start_nanos)
+        .map(|nanos| nanos / 1_000_000)
+        .ok_or(BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field })
+}
+
+fn data_client_quote_probe_evidence_hash(
+    quote: &crate::bolt_v3_live_node::BoltV3NoSubmitReferenceQuote,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    canonical_json_sha256_value(&serde_json::json!({
+        "source": "no_submit_reference_quote_probe",
+        "data_client_id_hash": sha256_text(&quote.data_client_id),
+        "instrument_id_hash": sha256_text(&quote.instrument_id),
+        "bid_price": quote.bid_price,
+        "ask_price": quote.ask_price,
+        "ts_event_unix_nanos": quote.ts_event_unix_nanos,
+        "ts_init_unix_nanos": quote.ts_init_unix_nanos,
+        "captured_at_unix_nanos": quote.captured_at_unix_nanos,
+    }))
+}
+
 fn build_data_client_behavior_observation_source_from_probe_events(
     loaded: &LoadedBoltV3Config,
     client_key: &str,
@@ -3404,11 +3572,12 @@ fn data_client_policy_observation_from_probe_events(
         .filter(|event| event.event_kind == event_kind)
         .collect();
     if policy_events.is_empty() {
-        return Err(
-            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
-                field: "probe_event.policy",
-            },
-        );
+        return Ok(DataClientPolicyObservation {
+            behavior_observed: false,
+            recovered: false,
+            fail_closed: false,
+            evidence_sha256: sha256_text(&format!("{event_kind}_probe_event_missing")),
+        });
     }
     let evidence_hashes: Vec<&str> = policy_events
         .iter()
@@ -3956,9 +4125,9 @@ fn validate_data_client_policy_observation(
     field: &'static str,
     observation: &DataClientPolicyObservation,
 ) -> Result<(), BoltV3OperatorArtifactError> {
-    if !observation.behavior_observed
-        || (!observation.recovered && !observation.fail_closed)
-        || !is_lowercase_sha256(&observation.evidence_sha256)
+    if !is_lowercase_sha256(&observation.evidence_sha256)
+        || (observation.behavior_observed && !observation.recovered && !observation.fail_closed)
+        || (!observation.behavior_observed && (observation.recovered || observation.fail_closed))
     {
         return Err(
             BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field },

@@ -25,6 +25,7 @@ use bolt_v2::{
         write_chainlink_price_report_source_from_configured_provider,
         write_chainlink_reference_quote_observations_source_from_report_files,
         write_data_client_behavior_observation_artifact_from_source_file,
+        write_data_client_behavior_observation_source_from_probe_events,
         write_data_client_live_node_mapping_source_artifact_from_config,
         write_data_client_nt_source_capability_artifact_from_config,
         write_data_client_production_readiness_matrix_artifact_from_source_files,
@@ -305,6 +306,18 @@ enum OperatorArtifactsCommand {
         behavior_source: PathBuf,
         #[arg(long)]
         max_behavior_source_bytes: u64,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    CollectDataClientBehaviorObservationSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        client_key: String,
+        #[arg(long)]
+        probe_events: PathBuf,
+        #[arg(long)]
+        max_probe_events_bytes: u64,
         #[arg(long)]
         output: PathBuf,
     },
@@ -911,6 +924,23 @@ fn run_operator_artifacts_command(
                 &client_key,
                 &behavior_source,
                 max_behavior_source_bytes,
+                &output,
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectDataClientBehaviorObservationSource {
+            config,
+            client_key,
+            probe_events,
+            max_probe_events_bytes,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let written = write_data_client_behavior_observation_source_from_probe_events(
+                &loaded,
+                &client_key,
+                &probe_events,
+                max_probe_events_bytes,
                 &output,
             )?;
             print_written_operator_artifact(&written)

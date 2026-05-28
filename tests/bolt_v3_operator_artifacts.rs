@@ -35,6 +35,7 @@ use bolt_v2::{
         collect_entry_readiness_gate_evidence_from_source_file, normalize_gate_evidence,
         write_chainlink_reference_quote_observations_source_from_report_files,
         write_data_client_behavior_observation_artifact_from_source_file,
+        write_data_client_behavior_observation_source_from_probe_events,
         write_data_client_live_node_mapping_source_artifact_from_config,
         write_data_client_nt_source_capability_artifact_from_config,
         write_data_client_production_readiness_matrix_artifact_from_source_files,
@@ -1151,6 +1152,166 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
 }
 
 #[test]
+fn data_client_behavior_observation_source_materializes_probe_events_without_raw_values() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str();
+    let temp = support::TempCaseDir::new("data-client-behavior-observation-source");
+    let client_key_hash = sha256_text(client_key);
+    let expected_configured_max_age_millis = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should include live canary")
+        .reference_quote_max_age_seconds
+        * 1_000;
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let event = |event_kind: &str,
+                 observed_at_unix_millis: u64,
+                 age_millis: Option<u64>,
+                 latency_millis: Option<u64>,
+                 recovered: Option<bool>,
+                 fail_closed: Option<bool>| {
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.data_client_behavior_probe_event.v1",
+            "client_key_hash": client_key_hash,
+            "provider_key": provider_key,
+            "observed_at_unix_millis": observed_at_unix_millis,
+            "event_kind": event_kind,
+            "supported_by_nt_source": true,
+            "observed_through_live_node": true,
+            "age_millis": age_millis,
+            "latency_millis": latency_millis,
+            "recovered": recovered,
+            "fail_closed": fail_closed,
+            "evidence_sha256": sha256_text(event_kind),
+            "unsupported_disposition": null
+        })
+    };
+    let unsupported_ticker = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.data_client_behavior_probe_event.v1",
+        "client_key_hash": client_key_hash,
+        "provider_key": provider_key,
+        "observed_at_unix_millis": 1_777_000_000_500_u64,
+        "event_kind": "ticker",
+        "supported_by_nt_source": false,
+        "observed_through_live_node": false,
+        "age_millis": null,
+        "latency_millis": null,
+        "recovered": null,
+        "fail_closed": null,
+        "evidence_sha256": null,
+        "unsupported_disposition": "ticker_subscription_source_marker_missing"
+    });
+    let lines = [
+        event(
+            "metadata",
+            1_777_000_000_000,
+            Some(400),
+            Some(80),
+            None,
+            None,
+        ),
+        event("quote", 1_777_000_000_100, Some(450), Some(90), None, None),
+        event("book", 1_777_000_000_200, Some(500), Some(100), None, None),
+        unsupported_ticker,
+        event(
+            "reconnect",
+            1_777_000_000_300,
+            None,
+            None,
+            Some(true),
+            Some(true),
+        ),
+        event(
+            "rate_limit",
+            1_777_000_000_400,
+            None,
+            None,
+            Some(false),
+            Some(true),
+        ),
+        event(
+            "parse_error",
+            1_777_000_000_500,
+            None,
+            None,
+            Some(false),
+            Some(true),
+        ),
+    ]
+    .into_iter()
+    .map(|value| serde_json::to_string(&value).expect("event should serialize"))
+    .collect::<Vec<_>>()
+    .join("\n");
+    std::fs::write(&probe_events_path, format!("{lines}\n")).expect("probe events should write");
+    let output_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+
+    let written = write_data_client_behavior_observation_source_from_probe_events(
+        &loaded,
+        client_key,
+        &probe_events_path,
+        16_384,
+        &output_path,
+    )
+    .expect("behavior observation source should write");
+
+    let source_bytes = std::fs::read(&written.path).expect("behavior source should read");
+    let rendered_source =
+        String::from_utf8(source_bytes.clone()).expect("behavior source should be utf8");
+    let source: serde_json::Value =
+        serde_json::from_slice(&source_bytes).expect("behavior source should parse");
+    assert_eq!(
+        source["record_kind"],
+        "bolt_v3.data_client_behavior_observation_source.v1"
+    );
+    assert_eq!(source["schema_version"], 1);
+    assert_eq!(
+        source["client_key_hash"].as_str(),
+        Some(client_key_hash.as_str())
+    );
+    assert_eq!(source["provider_key"].as_str(), Some(provider_key));
+    assert_eq!(
+        source["metadata_behavior"]["sample_count"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(source["quote_behavior"]["observed_through_live_node"], true);
+    assert_eq!(source["book_behavior"]["observed_through_live_node"], true);
+    assert_eq!(
+        source["ticker_behavior"]["unsupported_disposition"].as_str(),
+        Some("ticker_subscription_source_marker_missing")
+    );
+    assert_eq!(
+        source["freshness"]["configured_max_age_millis"].as_u64(),
+        Some(expected_configured_max_age_millis)
+    );
+    assert_eq!(
+        source["freshness"]["max_observed_age_millis"].as_u64(),
+        Some(500)
+    );
+    assert_eq!(
+        source["freshness"]["latency_p95_millis"].as_u64(),
+        Some(100)
+    );
+    assert_eq!(source["freshness"]["within_configured_bound"], true);
+    assert_eq!(source["reconnect"]["behavior_observed"], true);
+    assert_eq!(source["rate_limit"]["fail_closed"], true);
+    assert_eq!(source["parse_error"]["fail_closed"], true);
+    assert!(!rendered_source.contains(client_key));
+    assert!(!rendered_source.contains("probe-events.jsonl"));
+    assert!(!rendered_source.contains(&temp.path().display().to_string()));
+}
+
+#[test]
 fn data_client_production_readiness_matrix_combines_config_source_mapping_and_behavior_proofs() {
     let loaded = load_fixture_with_live_canary();
     let (client_key, client) = loaded
@@ -1215,6 +1376,13 @@ fn data_client_production_readiness_matrix_combines_config_source_mapping_and_be
     .expect("NT source capability should write");
 
     let observed_at_unix_millis = 1_777_000_000_000_u64;
+    let configured_max_age_millis = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should include live canary")
+        .reference_quote_max_age_seconds
+        * 1_000;
     let surface = |evidence_label: &str| {
         serde_json::json!({
             "supported_by_nt_source": true,
@@ -1246,7 +1414,7 @@ fn data_client_production_readiness_matrix_combines_config_source_mapping_and_be
         "book_behavior": surface("book-observation"),
         "ticker_behavior": surface("ticker-observation"),
         "freshness": {
-            "configured_max_age_millis": 5_000,
+            "configured_max_age_millis": configured_max_age_millis,
             "max_observed_age_millis": 1_000,
             "latency_sample_count": 3,
             "latency_p95_millis": 200,
@@ -1365,6 +1533,13 @@ fn data_client_behavior_observation_source_records_observed_data_path_as_unprove
     let observed_at_unix_millis = 1_777_000_000_000_u64;
     let observed_first = observed_at_unix_millis - 2_000;
     let observed_last = observed_at_unix_millis - 500;
+    let configured_max_age_millis = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should include live canary")
+        .reference_quote_max_age_seconds
+        * 1_000;
     let surface = |evidence_label: &str| {
         serde_json::json!({
             "supported_by_nt_source": true,
@@ -1405,7 +1580,7 @@ fn data_client_behavior_observation_source_records_observed_data_path_as_unprove
         "book_behavior": surface("book-observation"),
         "ticker_behavior": unsupported_surface,
         "freshness": {
-            "configured_max_age_millis": 5_000,
+            "configured_max_age_millis": configured_max_age_millis,
             "max_observed_age_millis": 1_500,
             "latency_sample_count": 6,
             "latency_p95_millis": 350,

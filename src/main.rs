@@ -5,7 +5,8 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::{
         BoltV3NoSubmitBookDeltasEvidence, BoltV3NoSubmitDataClientReadinessEvidence,
-        BoltV3NoSubmitReferenceQuoteEvidence, build_bolt_v3_live_node,
+        BoltV3NoSubmitReferenceQuoteEvidence,
+        build_bolt_v3_all_configured_client_mapping_live_node, build_bolt_v3_live_node,
         build_bolt_v3_no_submit_data_client_probe_live_node, build_bolt_v3_no_submit_live_node,
         collect_no_submit_data_client_metadata_evidence,
         collect_no_submit_data_client_readiness_evidence,
@@ -944,7 +945,7 @@ fn run_operator_artifacts_command(
             output,
         } => {
             let loaded = load_bolt_v3_config(&config)?;
-            let live_node = build_bolt_v3_no_submit_live_node(&loaded)?;
+            let live_node = build_bolt_v3_all_configured_client_mapping_live_node(&loaded)?;
             let written = write_data_client_live_node_mapping_source_artifact_from_config(
                 &loaded,
                 live_node.registration_summary(),

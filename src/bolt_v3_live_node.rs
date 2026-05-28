@@ -1453,6 +1453,17 @@ pub fn build_bolt_v3_no_submit_data_client_probe_live_node(
     Ok((runtime, no_submit_loaded))
 }
 
+pub fn build_bolt_v3_all_configured_client_mapping_live_node(
+    loaded: &LoadedBoltV3Config,
+) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
+    let resolved = resolve_bolt_v3_live_node_secrets(loaded)?;
+    let adapters =
+        map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
+    let mapping_loaded = no_submit_transport_loaded_config(loaded);
+    let (runtime, _summary) = build_live_node_with_clients(&mapping_loaded, &resolved, adapters)?;
+    Ok(runtime)
+}
+
 fn no_submit_transport_adapter_configs(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
@@ -2416,6 +2427,26 @@ where
     let adapters = map_bolt_v3_adapters(&transport_loaded, &resolved)
         .map_err(BoltV3LiveNodeError::AdapterMapping)?;
     build_live_node_with_clients(&transport_loaded, &resolved, adapters)
+}
+
+pub fn build_bolt_v3_all_configured_client_mapping_live_node_with_summary<F, R, E>(
+    loaded: &LoadedBoltV3Config,
+    env_is_set: F,
+    resolver: R,
+) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError>
+where
+    F: FnMut(&str) -> bool,
+    R: FnMut(&str, &str) -> Result<String, E>,
+    E: std::fmt::Display,
+{
+    check_no_forbidden_credential_env_vars_with(&loaded.root, env_is_set)
+        .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
+    let resolved = resolve_bolt_v3_secrets_with(loaded, resolver)
+        .map_err(BoltV3LiveNodeError::SecretResolution)?;
+    let adapters =
+        map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
+    let mapping_loaded = no_submit_transport_loaded_config(loaded);
+    build_live_node_with_clients(&mapping_loaded, &resolved, adapters)
 }
 
 fn build_live_node_with_clients(

@@ -19,7 +19,10 @@ use std::collections::BTreeMap;
 
 use bolt_v2::{
     bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config, load_bolt_v3_config},
-    bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with_summary},
+    bolt_v3_live_node::{
+        BoltV3LiveNodeError, build_bolt_v3_all_configured_client_mapping_live_node_with_summary,
+        build_bolt_v3_live_node_with_summary,
+    },
 };
 use nautilus_model::identifiers::ClientId;
 
@@ -252,9 +255,12 @@ fn live_node_registration_can_load_all_requested_data_clients_without_extra_exec
     let temp = support::TempCaseDir::new("bolt-v3-all-requested-data-client-registration");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
 
-    let (node, summary) =
-        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
-            .expect("all requested data clients should register through the LiveNode boundary");
+    let (node, summary) = build_bolt_v3_all_configured_client_mapping_live_node_with_summary(
+        &loaded,
+        |_| false,
+        support::fake_bolt_v3_resolver,
+    )
+    .expect("all requested data clients should register through the LiveNode boundary");
 
     for client_key in [
         "polymarket_main",

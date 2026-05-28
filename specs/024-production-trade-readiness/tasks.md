@@ -162,6 +162,7 @@
 
 - [x] T043 [US5] Execute T131/T122 final-packet EC2/EIP no-submit rerun with the verified root TOML and final operator packet; record evidence in `specs/024-production-trade-readiness/final-no-submit.md`.
 - [ ] T043A [US5] Validate the PR-enabled data-client adapters before treating them as production-usable: record a venue-neutral matrix in `specs/024-production-trade-readiness/data-adapter-production-readiness.md` proving config-owned LiveNode wiring, NT data-path behavior beyond metadata-only smoke, freshness/reconnect/rate-limit/error handling, credential/no-execution boundaries for data-only clients, and no venue/market hardcodes.
+- [ ] T043B [US5] Validate the selected tiny-capital trade path separately from the all-venue data-client claim: record in `specs/024-production-trade-readiness/tiny-canary.md` that the configured canary path has production-usable selected-market data evidence, final-packet/no-submit evidence at the current head, pre-consumption approval freshness checks, max-order/max-notional bounds, submit-admission/reconciliation/post-run proof contracts, and fail-closed behavior before live capital.
 - [ ] T044 [US5] Execute T116/T046 tiny-capital canary with the verified root TOML and final operator packet; record evidence in `specs/024-production-trade-readiness/tiny-canary.md`.
 - [ ] T045 [US5] Run post-run artifact/log secret scan and record retention/purge decision in `specs/024-production-trade-readiness/post-run-hygiene.md`.
 - [ ] T046 [US5] Update #369, #385, #409, #360, and PR #480 with exact final readiness status and record links in `specs/024-production-trade-readiness/readiness-ledger.md`.
@@ -181,9 +182,10 @@
 - T039-T042 require T035-T038.
 - T043 requires T042.
 - T043A requires T043.
-- T044 requires T043 and T043A.
+- T043B requires T043 and the T043A matrix row for the selected trade path to be production-usable.
+- T044 requires T043B and renewed explicit operator approval. The remaining non-selected T043A venue rows gate the PR's multi-venue data-client production-usability claim, not the selected trade path's tiny-capital canary.
 - T045-T046 require T044.
 
 ## MVP
 
-The current next slice is T043A data-client production-readiness validation, because the current public metadata smoke evidence is not enough to claim the added data clients are production-usable. After T043A, the next live step is T044 tiny-capital canary after renewed explicit operator approval, then T045 post-run hygiene and T046 issue/PR/readiness-ledger updates. T047 local cleanup is complete; no hardcoded runtime values remains a cross-cutting invariant for every later slice. Final GitHub CI should be checked once at the end after remaining implementation/evidence commits, not after every docs-only update.
+The current next slice is T043B selected trade-path readiness, because the all-venue T043A matrix now proves the configured Polymarket data row but still has fail-closed rows for unrelated data-only venues. After T043B, the next live step is T044 tiny-capital canary after renewed explicit operator approval, then T045 post-run hygiene and T046 issue/PR/readiness-ledger updates. T043A remains open for the broader multi-venue data-client production-usability claim until every requested data-only venue row is production-usable or explicitly dispositioned as unsupported by pinned NT/current venue behavior. T047 local cleanup is complete; no hardcoded runtime values remains a cross-cutting invariant for every later slice. Final GitHub CI should be checked once at the end after remaining implementation/evidence commits, not after every docs-only update.

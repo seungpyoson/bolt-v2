@@ -7,6 +7,23 @@ T044 remains gated on renewed explicit operator approval because it is a live ti
 - `max_live_order_count = 1`
 - `max_notional_per_order = "1.00"`
 
+## T043B Selected Trade-Path Gate
+
+Status: open.
+
+The selected tiny-capital path is gated separately from the all-venue T043A matrix. The current T043A matrix records the configured Polymarket data row as production-usable for same-run metadata-selected targets, while six unrelated data-only venue rows remain fail-closed. Those unrelated rows gate the PR's broad multi-venue data-client production-usability claim; they do not by themselves block a Polymarket-only tiny-capital canary.
+
+T043B must be recorded against the current head before T044 can run:
+
+- The selected data row in the T043A matrix is production-usable for the configured canary path.
+- The final packet and no-submit readiness evidence are regenerated and verified at the current head and root TOML.
+- The pre-consumption live-canary gate rejects stale source-owned strategy input before approval consumption.
+- The live canary remains capped by the configured max-order and max-notional bounds above.
+- The operator harness keeps approval consumption after entry validation, binds result paths to the runtime capture spool, and requires submit-admission, venue-order-state, restart-reconciliation, optional cancel, and post-run-hygiene proofs before writing live-canary completion evidence.
+- Any blocked attempt must produce blocked-before-submit evidence without live order refs; any successful attempt must produce the live proof refs required by `Phase8CanaryEvidence::live_canary_proof`.
+
+T043B is not live execution. It is the last non-live selected-path proof before requesting renewed T044 approval.
+
 ## Latest Non-Live Preflight
 
 Preflight head: `4302d2498eaefab25677cfaead643ff4b4c5de08`

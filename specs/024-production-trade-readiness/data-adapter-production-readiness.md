@@ -177,6 +177,17 @@ Current-head refresh after commit `202224a1` used the same ignored operational r
 - Matrix `/private/tmp/bolt-v2-t043a-202224a1-current-operational/data-client-production-readiness-matrix.json`, sha256 `6c29e52ddd8e1fe65a487290931efb58163c0ce66ffb8a622f42074d879c210a`, records `11` configured clients, `5` production-usable rows, and `6` non-production-usable rows still missing `behavior_observation`.
 - Current failing rows are source-evidenced, not assumed: Binance spot loads spot metadata but SBE WebSocket handshake is rejected by Binance with an invalid API-key header; BitMEX testnet fails the NT instrument request; Coinbase connects and subscribes but does not observe all selected book targets within the configured wait and logs a Coinbase WebSocket payload-shape parse warning; Deribit loads instruments and subscribes but does not observe all selected book targets within the configured wait; Kraken futures observes book events but the behavior-source freshness check rejects stale events above the configured max age; OKX connects and subscribes but emits NT book parse errors and does not observe all selected targets within the configured wait.
 
+## Gate Granularity
+
+The 2026-05-29 Claude adversarial review of this plan, job `d731d42d-31ad-4caf-9902-a3c76ff67a76`, requested changes on gate granularity. The accepted disposition is:
+
+- The all-client T043A matrix gates the PR's multi-venue data-client production-usability claim.
+- The selected tiny-capital canary path is gated separately by T043B and T044.
+- T044 may use only a data-client row that is production-usable in the T043A matrix and an execution path that passes the live-canary pre-consumption, no-submit, submit-admission, reconciliation, and post-run proof contracts.
+- Fail-closed rows for unrelated data-only venues do not by themselves block the selected Polymarket tiny-capital canary, but they must stay visible and cannot be described as production-usable.
+
+This keeps the readiness claim scoped to the path actually carrying capital while preserving fail-closed evidence for the broader requested venue set.
+
 ## Missing Production Proof
 
 T043A remains open until a venue-neutral matrix proves the following for every PR-enabled data client, including Polymarket and each data-only NT venue binding:
@@ -217,4 +228,4 @@ T043A should be closed by a source-owned proof path, not by prose or a transient
 
 ## Boundary
 
-T043A is a production-readiness gate for the data-client adapter additions. It is separate from the T044 Polymarket tiny-capital canary, but it must complete before PR #480 claims multi-venue data-client production usability or final production-readiness closeout.
+T043A is a production-readiness gate for the data-client adapter additions and the PR's multi-venue data-client production-usability claim. It is separate from the selected trade-path T043B/T044 gate: current non-usable rows for unrelated data-only venues must remain fail-closed and tracked, but they do not prove that the selected Polymarket tiny-capital canary path is unsafe when the selected Polymarket data row and execution pre-canary gate are both satisfied. PR #480 cannot claim broad multi-venue data-client production usability until T043A is fully closed or the remaining rows are explicitly dispositioned as unsupported.

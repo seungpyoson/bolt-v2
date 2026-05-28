@@ -6452,6 +6452,17 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
     )
     .expect("decision source should parse as JSON");
     assert!(decision_source_json.get("readiness_session").is_some());
+    let satisfied_roles = decision_source_json["readiness_session"]["satisfied_roles"]
+        .as_object()
+        .expect("readiness session roles should be an object");
+    assert!(
+        satisfied_roles.contains_key("resolution"),
+        "readiness session must include source-owned resolution evidence"
+    );
+    assert!(
+        satisfied_roles.contains_key("decision_reference"),
+        "readiness session must include source-owned decision_reference evidence"
+    );
     assert!(decision_source_json.get("price_to_beat_value").is_none());
 
     let replayed =

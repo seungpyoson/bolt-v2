@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     error::Error,
     fmt, fs,
     io::{self, Read, Write},
@@ -4631,9 +4631,19 @@ fn readiness_session_from_entry_decision_price_source(
         path: "entry-decision-price-report".to_string(),
         sha256: report_sha256.to_string(),
     };
+    let provider_id = binding.provider_id.clone();
+    let provider_provenance = serde_json::json!({
+        "provider_kind": CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
+        "feed_id": report_feed_id,
+        "report_schema_version": report_schema_version,
+        "report_decimal_scale": report_decimal_scale,
+        "source_report_full_sha256": report_sha256,
+        "valid_from_timestamp_ms": valid_from_timestamp_ms,
+        "observations_timestamp_ms": observations_timestamp_ms,
+    });
     let evidence = normalize_gate_evidence(GateEvidenceInput {
         role: RESOLUTION_GATE_ROLE.to_string(),
-        provider_id: binding.provider_id,
+        provider_id: provider_id.clone(),
         provider_kind: CHAINLINK_DATA_STREAMS_PROVIDER_KIND.to_string(),
         selected_market_key: selected_market.selected_market_key.clone(),
         collector_observed_at_ms: source.decision_timestamp_ms,
@@ -4643,20 +4653,36 @@ fn readiness_session_from_entry_decision_price_source(
         normalized_value: serde_json::json!({
             "price_to_beat_value": source.price_to_beat_value,
         }),
-        provider_provenance: serde_json::json!({
-            "provider_kind": CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
-            "feed_id": report_feed_id,
-            "report_schema_version": report_schema_version,
-            "report_decimal_scale": report_decimal_scale,
-            "source_report_full_sha256": report_sha256,
-            "valid_from_timestamp_ms": valid_from_timestamp_ms,
-            "observations_timestamp_ms": observations_timestamp_ms,
-        }),
+        provider_provenance: provider_provenance.clone(),
         artifact_refs: vec![artifact_ref.clone()],
         collection_status: GateEvidenceCollectionStatus::Complete,
     })?;
-    let requirements = crate::bolt_v3_archetypes::binary_oracle_edge_taker::gate_requirements();
-    let provider_evidence = vec![evidence];
+    let mut requirements = crate::bolt_v3_archetypes::binary_oracle_edge_taker::gate_requirements();
+    let mut provider_evidence = vec![evidence];
+    if strategy_has_decision_reference_subscription(strategy) {
+        requirements.push(ArchetypeGateRequirement {
+            role: GateRole::DecisionReference,
+            required: true,
+            accepted_value_kinds: BTreeSet::from([GateValueKind::Price, GateValueKind::Outcome]),
+            allow_no_resolution: false,
+        });
+        provider_evidence.push(normalize_gate_evidence(GateEvidenceInput {
+            role: DECISION_REFERENCE_GATE_ROLE.to_string(),
+            provider_id,
+            provider_kind: CHAINLINK_DATA_STREAMS_PROVIDER_KIND.to_string(),
+            selected_market_key: selected_market.selected_market_key.clone(),
+            collector_observed_at_ms: source.decision_timestamp_ms,
+            source_observed_at_ms: observations_timestamp_ms,
+            freshness_max_age_ms: provider.max_age_ms,
+            value_kind: PRICE_GATE_VALUE_KIND.to_string(),
+            normalized_value: serde_json::json!({
+                "reference_value": source.price_to_beat_value,
+            }),
+            provider_provenance,
+            artifact_refs: vec![artifact_ref.clone()],
+            collection_status: GateEvidenceCollectionStatus::Complete,
+        })?);
+    }
     build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
         loaded,
         strategy_instance_id,
@@ -4666,6 +4692,18 @@ fn readiness_session_from_entry_decision_price_source(
         created_at_ms: source.decision_timestamp_ms,
         artifact_refs: vec![artifact_ref],
     })
+}
+
+fn strategy_has_decision_reference_subscription(
+    strategy: &crate::bolt_v3_config::LoadedStrategy,
+) -> bool {
+    strategy
+        .config
+        .target
+        .as_table()
+        .and_then(|target| target.get("gate_subscriptions"))
+        .and_then(toml::Value::as_table)
+        .is_some_and(|subscriptions| subscriptions.contains_key(DECISION_REFERENCE_GATE_ROLE))
 }
 
 fn price_to_beat_report_provenance_invalid() -> BoltV3OperatorArtifactError {

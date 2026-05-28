@@ -9419,6 +9419,22 @@ reason = "This is a redacted diagnostic artifact label for the readiness gate-se
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"reference_value"'''
+context = '''"reference_value": source.price_to_beat_value,'''
+classification = "entry_readiness_gate_normalized_value_field"
+reason = "This names the normalized decision-reference gate payload field; the reference value is source-owned evidence."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"gate_subscriptions"'''
+context = '''.and_then(|target| target.get("gate_subscriptions"))'''
+classification = "target_gate_schema_field"
+reason = "This names the target gate-subscriptions TOML table used to detect whether source-owned decision-reference readiness evidence must be added."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"gate_session_path"'''
 context = '''const OPERATOR_EVIDENCE_GATE_SESSION_PATH_FIELD: &str = "gate_session_path";'''
 classification = "operator_evidence_schema_field"

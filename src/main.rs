@@ -12,6 +12,7 @@ use bolt_v2::{
     bolt_v3_operator_artifacts::{
         ChainlinkPriceReportSourceMaterializationRequest, ChainlinkReferencePriceReportSourceFile,
         ChainlinkReferenceQuoteObservationsSourceMaterializationRequest,
+        DataClientProductionReadinessMatrixSourceFileRequest,
         EntryDecisionProofSourceMaterializationRequest, EntryDecisionSourceCollectionRequest,
         FinalOperatorPacketVerificationScope, OperatorEvidenceJsonBuildInputs,
         PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
@@ -367,6 +368,8 @@ enum OperatorArtifactsCommand {
         live_node_mapping_source: PathBuf,
         #[arg(long)]
         nt_source_capability: Vec<PathBuf>,
+        #[arg(long)]
+        target_candidate: Vec<PathBuf>,
         #[arg(long)]
         behavior_observation: Vec<PathBuf>,
         #[arg(long)]
@@ -1081,19 +1084,23 @@ fn run_operator_artifacts_command(
             readiness_source,
             live_node_mapping_source,
             nt_source_capability,
+            target_candidate,
             behavior_observation,
             max_source_bytes,
             output,
         } => {
             let loaded = load_bolt_v3_config(&config)?;
             let written = write_data_client_production_readiness_matrix_artifact_from_source_files(
-                &loaded,
-                &readiness_source,
-                &live_node_mapping_source,
-                &nt_source_capability,
-                &behavior_observation,
-                max_source_bytes,
-                &output,
+                DataClientProductionReadinessMatrixSourceFileRequest {
+                    loaded: &loaded,
+                    readiness_source_path: &readiness_source,
+                    live_node_mapping_source_path: &live_node_mapping_source,
+                    nt_source_capability_paths: &nt_source_capability,
+                    target_candidate_paths: &target_candidate,
+                    behavior_observation_paths: &behavior_observation,
+                    max_source_bytes,
+                    output_path: &output,
+                },
             )?;
             print_written_operator_artifact(&written)
         }

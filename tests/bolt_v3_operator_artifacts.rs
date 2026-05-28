@@ -31,6 +31,7 @@ use bolt_v2::{
     bolt_v3_operator_artifacts::{
         ChainlinkReferencePriceReportSourceFile,
         ChainlinkReferenceQuoteObservationsSourceMaterializationRequest,
+        DataClientProductionReadinessMatrixSourceFileRequest,
         EntryDecisionProofSourceMaterializationRequest, EntryDecisionSourceBookSideInput,
         EntryDecisionSourceCollectionRequest, EntryDecisionSourceInputRequest,
         EntryDecisionSourceMarketInputs, EntryReadinessGateEvidenceSourceFileRequest,
@@ -2323,13 +2324,16 @@ fn data_client_production_readiness_matrix_fails_closed_without_source_owned_pol
         .path()
         .join("data-client-production-readiness-matrix.json");
     let written = write_data_client_production_readiness_matrix_artifact_from_source_files(
-        &loaded,
-        &readiness_source_path,
-        &live_node_mapping_source_path,
-        std::slice::from_ref(&nt_source_capability_path),
-        std::slice::from_ref(&behavior_observation_path),
-        max_source_bytes,
-        &output_path,
+        DataClientProductionReadinessMatrixSourceFileRequest {
+            loaded: &loaded,
+            readiness_source_path: &readiness_source_path,
+            live_node_mapping_source_path: &live_node_mapping_source_path,
+            nt_source_capability_paths: std::slice::from_ref(&nt_source_capability_path),
+            target_candidate_paths: &[],
+            behavior_observation_paths: std::slice::from_ref(&behavior_observation_path),
+            max_source_bytes,
+            output_path: &output_path,
+        },
     )
     .expect("production readiness matrix should write");
 
@@ -2391,6 +2395,245 @@ fn data_client_production_readiness_matrix_fails_closed_without_source_owned_pol
             .as_array()
             .expect("missing proofs should be an array")
             .contains(&serde_json::json!("behavior_observation"))
+    );
+}
+
+#[test]
+fn data_client_production_readiness_matrix_requires_source_owned_quote_target_binding() {
+    let mut loaded = load_fixture_with_live_canary();
+    configure_data_client_readiness_quote_probe(&mut loaded);
+    let client_key = TEST_REFERENCE_DATA_CLIENT_ID;
+    let provider_key = loaded
+        .root
+        .clients
+        .get(client_key)
+        .expect("configured probe client should exist")
+        .venue
+        .as_str();
+    let temp = support::TempCaseDir::new("data-client-matrix-target-binding");
+    let max_source_bytes = 1_000_000;
+
+    let readiness_source_path = temp.path().join("data-client-readiness-source.json");
+    write_data_client_readiness_source_artifact_from_config(&loaded, &readiness_source_path)
+        .expect("readiness source should write");
+
+    let live_node_source_path = temp.path().join("live-node-source.rs");
+    let adapter_mapping_source_path = temp.path().join("adapter-mapping-source.rs");
+    let provider_registry_source_path = temp.path().join("provider-registry-source.rs");
+    std::fs::write(
+        &live_node_source_path,
+        "fn build_source() { map_bolt_v3_adapters(); register_bolt_v3_clients(); }",
+    )
+    .expect("LiveNode source fixture should write");
+    std::fs::write(
+        &adapter_mapping_source_path,
+        "fn map_source() { for client in loaded.root.clients {} binding_for_provider_key(); binding.map_adapters(); }",
+    )
+    .expect("adapter mapping source fixture should write");
+    std::fs::write(
+        &provider_registry_source_path,
+        "pub fn binding_for_provider_key() {}",
+    )
+    .expect("provider registry source fixture should write");
+    let live_node_mapping_source_path = temp
+        .path()
+        .join("data-client-live-node-mapping-source.json");
+    let registration_summary = registration_summary_for_loaded(&loaded);
+    write_data_client_live_node_mapping_source_artifact_from_config(
+        &loaded,
+        &registration_summary,
+        &live_node_source_path,
+        &adapter_mapping_source_path,
+        &provider_registry_source_path,
+        max_source_bytes,
+        &live_node_mapping_source_path,
+    )
+    .expect("LiveNode mapping source should write");
+
+    let nt_source_path = temp.path().join("nt-adapter-source.rs");
+    std::fs::write(
+        &nt_source_path,
+        "fn request_instruments() {} fn subscribe_quote() {} fn subscribe_book() {}",
+    )
+    .expect("NT source fixture should write");
+    let nt_source_capability_path = temp.path().join("data-client-nt-source-capability.json");
+    write_data_client_nt_source_capability_artifact_from_config(
+        &loaded,
+        client_key,
+        &nt_source_path,
+        max_source_bytes,
+        &nt_source_capability_path,
+    )
+    .expect("NT source capability should write");
+
+    let observed_at_unix_millis = 1_777_000_000_000_u64;
+    let configured_max_age_millis = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should include live canary")
+        .reference_quote_max_age_seconds
+        * 1_000;
+    let surface = |evidence_label: &str| {
+        serde_json::json!({
+            "supported_by_nt_source": true,
+            "observed_through_live_node": true,
+            "sample_count": 1,
+            "first_observed_at_unix_millis": observed_at_unix_millis - 1_000,
+            "last_observed_at_unix_millis": observed_at_unix_millis,
+            "evidence_sha256": sha256_text(evidence_label),
+            "unsupported_disposition": null
+        })
+    };
+    let policy = |evidence_label: &str| {
+        serde_json::json!({
+            "behavior_observed": true,
+            "recovered": true,
+            "fail_closed": true,
+            "evidence_sha256": sha256_text(evidence_label)
+        })
+    };
+    let behavior_source = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.data_client_behavior_observation_source.v1",
+        "client_key_hash": sha256_text(client_key),
+        "provider_key": provider_key,
+        "policy_source_sha256": sha256_text("policy-source"),
+        "observed_at_unix_millis": observed_at_unix_millis,
+        "observation_window_millis": 5_000,
+        "metadata_behavior": surface("metadata-observation"),
+        "quote_behavior": surface("quote-observation"),
+        "book_behavior": surface("book-observation"),
+        "ticker_behavior": surface("ticker-observation"),
+        "freshness": {
+            "configured_max_age_millis": configured_max_age_millis,
+            "max_observed_age_millis": 1_000,
+            "latency_sample_count": 3,
+            "latency_p95_millis": 200,
+            "latency_max_millis": 300,
+            "within_configured_bound": true,
+            "evidence_sha256": sha256_text("freshness-observation")
+        },
+        "reconnect": policy("reconnect-observation"),
+        "rate_limit": policy("rate-limit-observation"),
+        "parse_error": policy("parse-error-observation")
+    });
+    let behavior_source_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+    std::fs::write(
+        &behavior_source_path,
+        serde_json::to_vec_pretty(&behavior_source).expect("source should serialize"),
+    )
+    .expect("behavior source should write");
+    let behavior_observation_path = temp.path().join("data-client-behavior-observation.json");
+    write_data_client_behavior_observation_artifact_from_source_file(
+        &loaded,
+        client_key,
+        &behavior_source_path,
+        max_source_bytes,
+        &behavior_observation_path,
+    )
+    .expect("behavior observation should write");
+
+    let output_path = temp
+        .path()
+        .join("data-client-production-readiness-matrix.json");
+    let written = write_data_client_production_readiness_matrix_artifact_from_source_files(
+        DataClientProductionReadinessMatrixSourceFileRequest {
+            loaded: &loaded,
+            readiness_source_path: &readiness_source_path,
+            live_node_mapping_source_path: &live_node_mapping_source_path,
+            nt_source_capability_paths: std::slice::from_ref(&nt_source_capability_path),
+            target_candidate_paths: &[],
+            behavior_observation_paths: std::slice::from_ref(&behavior_observation_path),
+            max_source_bytes,
+            output_path: &output_path,
+        },
+    )
+    .expect("production readiness matrix should write");
+
+    let artifact: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&written.path).expect("matrix artifact should read"))
+            .expect("matrix artifact should parse");
+    let row = artifact["clients"]
+        .as_array()
+        .expect("clients should be an array")
+        .iter()
+        .find(|row| row["client_key_hash"].as_str() == Some(sha256_text(client_key).as_str()))
+        .expect("configured data client should be recorded");
+    assert_eq!(row["behavior_observation_complete"], true);
+    assert_eq!(row["source_owned_target_binding_present"], false);
+    assert_eq!(row["production_usable"], false);
+    assert!(
+        row["missing_proofs"]
+            .as_array()
+            .expect("missing proofs should be an array")
+            .contains(&serde_json::json!("source_owned_target_binding")),
+        "complete behavior evidence must not bypass source-owned target binding"
+    );
+
+    let target_candidates_path = temp
+        .path()
+        .join("data-client-readiness-target-candidates.json");
+    write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(
+        &loaded,
+        client_key,
+        &BoltV3NoSubmitDataClientReadinessEvidence {
+            metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+                responses: vec![BoltV3NoSubmitDataClientMetadata {
+                    data_client_id: client_key.to_string(),
+                    venue: provider_key.to_string(),
+                    instrument_ids: vec![TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string()],
+                    ts_init_unix_nanos: 600_000_000_000,
+                    captured_at_unix_nanos: 600_100_000_000,
+                }],
+            },
+            quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        },
+        &target_candidates_path,
+    )
+    .expect("target candidates should write");
+    let bound_output_path = temp
+        .path()
+        .join("data-client-production-readiness-matrix-bound.json");
+    let bound_written = write_data_client_production_readiness_matrix_artifact_from_source_files(
+        DataClientProductionReadinessMatrixSourceFileRequest {
+            loaded: &loaded,
+            readiness_source_path: &readiness_source_path,
+            live_node_mapping_source_path: &live_node_mapping_source_path,
+            nt_source_capability_paths: std::slice::from_ref(&nt_source_capability_path),
+            target_candidate_paths: std::slice::from_ref(&target_candidates_path),
+            behavior_observation_paths: std::slice::from_ref(&behavior_observation_path),
+            max_source_bytes,
+            output_path: &bound_output_path,
+        },
+    )
+    .expect("bound production readiness matrix should write");
+
+    let bound_artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&bound_written.path).expect("bound matrix artifact should read"),
+    )
+    .expect("bound matrix artifact should parse");
+    assert_eq!(
+        bound_artifact["target_candidate_sha256s"]
+            .as_array()
+            .expect("target candidate hashes should be an array"),
+        &vec![serde_json::json!(sha256_file(&target_candidates_path))]
+    );
+    let bound_row = bound_artifact["clients"]
+        .as_array()
+        .expect("clients should be an array")
+        .iter()
+        .find(|row| row["client_key_hash"].as_str() == Some(sha256_text(client_key).as_str()))
+        .expect("configured data client should be recorded");
+    assert_eq!(bound_row["source_owned_target_binding_present"], true);
+    assert_eq!(bound_row["production_usable"], true);
+    assert!(
+        bound_row["missing_proofs"]
+            .as_array()
+            .expect("missing proofs should be an array")
+            .is_empty()
     );
 }
 

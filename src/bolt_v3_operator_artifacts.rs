@@ -1025,6 +1025,7 @@ struct DataClientProductionReadinessMatrixArtifact {
     readiness_source_sha256: String,
     live_node_mapping_source_sha256: String,
     nt_source_capability_sha256s: Vec<String>,
+    target_candidate_sha256s: Vec<String>,
     behavior_observation_sha256s: Vec<String>,
     clients: Vec<DataClientProductionReadinessMatrixClient>,
 }
@@ -1039,6 +1040,7 @@ struct DataClientProductionReadinessMatrixClient {
     config_inventory_present: bool,
     live_node_mapping_present: bool,
     nt_source_capability_present: bool,
+    source_owned_target_binding_present: bool,
     behavior_observation_complete: bool,
     production_usable: bool,
     readiness_status: &'static str,
@@ -3055,24 +3057,30 @@ pub fn write_data_client_behavior_observation_artifact_from_source_file(
     write_json_artifact_create_new(output_path, &artifact)
 }
 
+pub struct DataClientProductionReadinessMatrixSourceFileRequest<'a> {
+    pub loaded: &'a LoadedBoltV3Config,
+    pub readiness_source_path: &'a Path,
+    pub live_node_mapping_source_path: &'a Path,
+    pub nt_source_capability_paths: &'a [PathBuf],
+    pub target_candidate_paths: &'a [PathBuf],
+    pub behavior_observation_paths: &'a [PathBuf],
+    pub max_source_bytes: u64,
+    pub output_path: &'a Path,
+}
+
 pub fn write_data_client_production_readiness_matrix_artifact_from_source_files(
-    loaded: &LoadedBoltV3Config,
-    readiness_source_path: &Path,
-    live_node_mapping_source_path: &Path,
-    nt_source_capability_paths: &[PathBuf],
-    behavior_observation_paths: &[PathBuf],
-    max_source_bytes: u64,
-    output_path: &Path,
+    request: DataClientProductionReadinessMatrixSourceFileRequest<'_>,
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
     let artifact = build_data_client_production_readiness_matrix_artifact_from_source_files(
-        loaded,
-        readiness_source_path,
-        live_node_mapping_source_path,
-        nt_source_capability_paths,
-        behavior_observation_paths,
-        max_source_bytes,
+        request.loaded,
+        request.readiness_source_path,
+        request.live_node_mapping_source_path,
+        request.nt_source_capability_paths,
+        request.target_candidate_paths,
+        request.behavior_observation_paths,
+        request.max_source_bytes,
     )?;
-    write_json_artifact_create_new(output_path, &artifact)
+    write_json_artifact_create_new(request.output_path, &artifact)
 }
 
 pub fn write_data_client_behavior_observation_source_from_probe_events(
@@ -4448,6 +4456,7 @@ fn build_data_client_production_readiness_matrix_artifact_from_source_files(
     readiness_source_path: &Path,
     live_node_mapping_source_path: &Path,
     nt_source_capability_paths: &[PathBuf],
+    target_candidate_paths: &[PathBuf],
     behavior_observation_paths: &[PathBuf],
     max_source_bytes: u64,
 ) -> Result<DataClientProductionReadinessMatrixArtifact, BoltV3OperatorArtifactError> {
@@ -4504,6 +4513,28 @@ fn build_data_client_production_readiness_matrix_artifact_from_source_files(
     }
     nt_source_capability_sha256s.sort();
 
+    let mut target_candidates = BTreeMap::new();
+    let mut target_candidate_sha256s = Vec::new();
+    for path in target_candidate_paths {
+        let (source, sha256) = read_data_client_matrix_source_json(path, max_source_bytes)?;
+        validate_data_client_matrix_source_header(
+            &source,
+            DATA_CLIENT_READINESS_TARGET_CANDIDATES_RECORD_KIND,
+            "target_candidate",
+            loaded,
+        )?;
+        let (key, instrument_ids) = data_client_matrix_target_candidate_instrument_ids(&source)?;
+        if target_candidates.insert(key, instrument_ids).is_some() {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid {
+                    field: "target_candidate.duplicate_client",
+                },
+            );
+        }
+        target_candidate_sha256s.push(sha256);
+    }
+    target_candidate_sha256s.sort();
+
     let mut behavior_observations = BTreeSet::new();
     let mut behavior_observation_sha256s = Vec::new();
     for path in behavior_observation_paths {
@@ -4544,6 +4575,14 @@ fn build_data_client_production_readiness_matrix_artifact_from_source_files(
         let live_node_mapping_present = live_node_mapping.contains(&key);
         let nt_source_capability_present = nt_source_capabilities.contains(&key);
         let behavior_observation_complete = behavior_observations.contains(&key);
+        let source_owned_target_binding_present =
+            data_client_matrix_source_owned_target_binding_present(
+                client_key,
+                client,
+                &key,
+                behavior_observation_complete,
+                &target_candidates,
+            );
         let readiness_required = has_data;
         let market_coverage_config_values =
             toml_table_selected_values(client.data.as_ref(), data_client_market_coverage_field)?;
@@ -4559,6 +4598,12 @@ fn build_data_client_production_readiness_matrix_artifact_from_source_files(
         }
         if readiness_required && !behavior_observation_complete {
             missing_proofs.push("behavior_observation");
+        }
+        if readiness_required
+            && behavior_observation_complete
+            && !source_owned_target_binding_present
+        {
+            missing_proofs.push("source_owned_target_binding");
         }
         let production_usable = readiness_required && missing_proofs.is_empty();
         let readiness_status = if !readiness_required {
@@ -4577,6 +4622,7 @@ fn build_data_client_production_readiness_matrix_artifact_from_source_files(
             config_inventory_present,
             live_node_mapping_present,
             nt_source_capability_present,
+            source_owned_target_binding_present,
             behavior_observation_complete,
             production_usable,
             readiness_status,
@@ -4600,9 +4646,106 @@ fn build_data_client_production_readiness_matrix_artifact_from_source_files(
         readiness_source_sha256,
         live_node_mapping_source_sha256,
         nt_source_capability_sha256s,
+        target_candidate_sha256s,
         behavior_observation_sha256s,
         clients,
     })
+}
+
+fn data_client_matrix_target_candidate_instrument_ids(
+    source: &serde_json::Value,
+) -> Result<((String, String), BTreeSet<String>), BoltV3OperatorArtifactError> {
+    let key = data_client_matrix_top_level_client_key(source, "target_candidate")?;
+    let provider_key = key.1.as_str();
+    let instrument_count =
+        data_client_matrix_json_u64(source, "instrument_count", "target_candidate")? as usize;
+    let raw_instrument_ids = source
+        .get("instrument_ids")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(
+            BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid {
+                field: "target_candidate.instrument_ids",
+            },
+        )?;
+    if raw_instrument_ids.is_empty() || raw_instrument_ids.len() != instrument_count {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid {
+                field: "target_candidate.instrument_count",
+            },
+        );
+    }
+    let mut instrument_ids = BTreeSet::new();
+    for value in raw_instrument_ids {
+        let instrument_id = value.as_str().ok_or(
+            BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid {
+                field: "target_candidate.instrument_ids",
+            },
+        )?;
+        let parsed = InstrumentId::from_str(instrument_id).map_err(|_| {
+            BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid {
+                field: "target_candidate.instrument_ids",
+            }
+        })?;
+        if parsed.venue.as_str() != provider_key {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid {
+                    field: "target_candidate.instrument_ids.venue",
+                },
+            );
+        }
+        instrument_ids.insert(instrument_id.to_string());
+    }
+    if instrument_ids.len() != instrument_count {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid {
+                field: "target_candidate.instrument_ids",
+            },
+        );
+    }
+    let expected_hash = data_client_readiness_target_candidates_hash(
+        &instrument_ids.iter().cloned().collect::<Vec<_>>(),
+    );
+    if data_client_matrix_json_string(
+        source,
+        "instrument_ids_sha256",
+        "target_candidate.instrument_ids_sha256",
+    )? != expected_hash.as_str()
+    {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid {
+                field: "target_candidate.instrument_ids_sha256",
+            },
+        );
+    }
+    Ok((key, instrument_ids))
+}
+
+fn data_client_matrix_source_owned_target_binding_present(
+    _client_key: &str,
+    client: &crate::bolt_v3_config::ClientBlock,
+    key: &(String, String),
+    behavior_observation_complete: bool,
+    target_candidates: &BTreeMap<(String, String), BTreeSet<String>>,
+) -> bool {
+    if !behavior_observation_complete {
+        return false;
+    }
+    let Some(readiness_probe) = &client.readiness_probe else {
+        return false;
+    };
+    match readiness_probe.quote_target_source {
+        DataClientReadinessProbeQuoteTargetSource::MetadataResponse => true,
+        DataClientReadinessProbeQuoteTargetSource::Configured => {
+            let Some(candidates) = target_candidates.get(key) else {
+                return false;
+            };
+            !readiness_probe.quote_targets.is_empty()
+                && readiness_probe
+                    .quote_targets
+                    .values()
+                    .all(|target| candidates.contains(&target.instrument_id.to_string()))
+        }
+    }
 }
 
 fn read_data_client_matrix_source_json(

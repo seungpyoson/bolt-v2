@@ -31,8 +31,9 @@ use crate::{
     bolt_v3_client_registration::BoltV3RegistrationSummary,
     bolt_v3_config::{
         BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
-        LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, NO_RESOLUTION_KIND,
-        NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE,
+        DataClientReadinessProbeQuoteTargetSource, LiveCanaryOperatorEvidenceBlock,
+        LoadedBoltV3Config, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND,
+        RESOLUTION_GATE_ROLE,
     },
     bolt_v3_decision_evidence::{
         BoltV3ReadinessGateEvidenceSnapshot, BoltV3StrategyInputEvidenceSnapshot,
@@ -810,9 +811,12 @@ struct DataClientReadinessTargetSource {
 
 #[derive(Debug, Clone, Serialize)]
 struct DataClientReadinessProbeTargetSource {
-    configured_target_id_hash: String,
+    quote_target_source: &'static str,
+    configured_target_id_hash: Option<String>,
     event_kind: &'static str,
-    instrument_id_hash: String,
+    instrument_id_hash: Option<String>,
+    max_metadata_quote_targets: Option<usize>,
+    min_metadata_quote_targets: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -975,6 +979,8 @@ struct DataClientBehaviorProbeEvent {
     observed_through_live_node: bool,
     age_millis: Option<u64>,
     latency_millis: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    event_clock_skew_millis: Option<u64>,
     recovered: Option<bool>,
     fail_closed: Option<bool>,
     evidence_sha256: Option<String>,
@@ -3206,50 +3212,12 @@ fn data_client_behavior_probe_events_from_no_submit_evidence(
             provider_key: provider_key.to_string(),
         }
     })?;
-    let quote_targets = data_client_readiness_quote_target_instruments(client)?;
-
-    let client_key_hash = sha256_text(client_key);
-    let mut events = Vec::new();
-    for quote in &evidence.quotes {
-        if quote.data_client_id != client_key || !quote_targets.contains(&quote.instrument_id) {
-            continue;
-        }
-        let observed_at_unix_millis =
-            nanos_to_millis_checked(quote.captured_at_unix_nanos, "quote.captured_at_unix_nanos")?;
-        if observed_at_unix_millis == 0 {
-            return Err(
-                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
-                    field: "quote.captured_at_unix_nanos",
-                },
-            );
-        }
-        let age_millis = nanos_delta_to_millis_checked(
-            quote.captured_at_unix_nanos,
-            quote.ts_event_unix_nanos,
-            "quote.ts_event_unix_nanos",
-        )?;
-        let latency_millis = nanos_delta_to_millis_checked(
-            quote.captured_at_unix_nanos,
-            quote.ts_init_unix_nanos,
-            "quote.ts_init_unix_nanos",
-        )?;
-        events.push(DataClientBehaviorProbeEvent {
-            schema_version: DATA_CLIENT_BEHAVIOR_OBSERVATION_SCHEMA_VERSION,
-            record_kind: DATA_CLIENT_BEHAVIOR_PROBE_EVENT_RECORD_KIND.to_string(),
-            client_key_hash: client_key_hash.clone(),
-            provider_key: provider_key.to_string(),
-            observed_at_unix_millis,
-            event_kind: "quote".to_string(),
-            supported_by_nt_source: true,
-            observed_through_live_node: true,
-            age_millis: Some(age_millis),
-            latency_millis: Some(latency_millis),
-            recovered: None,
-            fail_closed: None,
-            evidence_sha256: Some(data_client_quote_probe_evidence_hash(quote)?),
-            unsupported_disposition: None,
-        });
-    }
+    let mut events = data_client_quote_probe_events_from_no_submit_evidence(
+        client_key,
+        provider_key,
+        client,
+        evidence,
+    )?;
     if events.is_empty() {
         return Err(
             BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
@@ -3299,12 +3267,15 @@ fn data_client_behavior_probe_events_from_no_submit_readiness_evidence(
         &evidence.metadata,
     )?;
     if client.readiness_probe.is_some() || !evidence.quotes.quotes.is_empty() {
-        events.extend(data_client_quote_probe_events_from_no_submit_evidence(
-            client_key,
-            provider_key,
-            client,
-            &evidence.quotes,
-        )?);
+        events.extend(
+            data_client_quote_probe_events_from_no_submit_readiness_evidence(
+                client_key,
+                provider_key,
+                client,
+                &evidence.metadata,
+                &evidence.quotes,
+            )?,
+        );
     }
     if events.is_empty() {
         return Err(
@@ -3355,6 +3326,7 @@ fn data_client_metadata_probe_events_from_no_submit_evidence(
             observed_through_live_node: true,
             age_millis: Some(latency_millis),
             latency_millis: Some(latency_millis),
+            event_clock_skew_millis: None,
             recovered: None,
             fail_closed: None,
             evidence_sha256: Some(data_client_metadata_probe_evidence_hash(response)?),
@@ -3378,6 +3350,31 @@ fn data_client_quote_probe_events_from_no_submit_evidence(
     evidence: &BoltV3NoSubmitReferenceQuoteEvidence,
 ) -> Result<Vec<DataClientBehaviorProbeEvent>, BoltV3OperatorArtifactError> {
     let quote_targets = data_client_readiness_quote_target_instruments(client)?;
+    data_client_quote_probe_events_for_targets(client_key, provider_key, evidence, &quote_targets)
+}
+
+fn data_client_quote_probe_events_from_no_submit_readiness_evidence(
+    client_key: &str,
+    provider_key: &str,
+    client: &crate::bolt_v3_config::ClientBlock,
+    metadata: &crate::bolt_v3_live_node::BoltV3NoSubmitDataClientMetadataEvidence,
+    evidence: &BoltV3NoSubmitReferenceQuoteEvidence,
+) -> Result<Vec<DataClientBehaviorProbeEvent>, BoltV3OperatorArtifactError> {
+    let quote_targets = data_client_readiness_quote_target_instruments_for_evidence(
+        client_key,
+        provider_key,
+        client,
+        metadata,
+    )?;
+    data_client_quote_probe_events_for_targets(client_key, provider_key, evidence, &quote_targets)
+}
+
+fn data_client_quote_probe_events_for_targets(
+    client_key: &str,
+    provider_key: &str,
+    evidence: &BoltV3NoSubmitReferenceQuoteEvidence,
+    quote_targets: &BTreeSet<String>,
+) -> Result<Vec<DataClientBehaviorProbeEvent>, BoltV3OperatorArtifactError> {
     let client_key_hash = sha256_text(client_key);
     let mut events = Vec::new();
     for quote in &evidence.quotes {
@@ -3386,11 +3383,17 @@ fn data_client_quote_probe_events_from_no_submit_evidence(
         }
         let observed_at_unix_millis =
             nanos_to_millis_checked(quote.captured_at_unix_nanos, "quote.captured_at_unix_nanos")?;
-        let age_millis = nanos_delta_to_millis_checked(
+        if observed_at_unix_millis == 0 {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "quote.captured_at_unix_nanos",
+                },
+            );
+        }
+        let (age_millis, event_clock_skew_millis) = nanos_age_and_clock_skew_millis(
             quote.captured_at_unix_nanos,
             quote.ts_event_unix_nanos,
-            "quote.ts_event_unix_nanos",
-        )?;
+        );
         let latency_millis = nanos_delta_to_millis_checked(
             quote.captured_at_unix_nanos,
             quote.ts_init_unix_nanos,
@@ -3407,6 +3410,7 @@ fn data_client_quote_probe_events_from_no_submit_evidence(
             observed_through_live_node: true,
             age_millis: Some(age_millis),
             latency_millis: Some(latency_millis),
+            event_clock_skew_millis,
             recovered: None,
             fail_closed: None,
             evidence_sha256: Some(data_client_quote_probe_evidence_hash(quote)?),
@@ -3437,6 +3441,57 @@ fn sort_and_validate_data_client_behavior_probe_events(
         validate_data_client_behavior_probe_event(event, client_key, provider_key)?;
     }
     Ok(())
+}
+
+fn data_client_readiness_quote_target_instruments_for_evidence(
+    client_key: &str,
+    provider_key: &str,
+    client: &crate::bolt_v3_config::ClientBlock,
+    metadata: &crate::bolt_v3_live_node::BoltV3NoSubmitDataClientMetadataEvidence,
+) -> Result<BTreeSet<String>, BoltV3OperatorArtifactError> {
+    let Some(readiness_probe) = &client.readiness_probe else {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "clients.<id>.readiness_probe.quote_targets",
+            },
+        );
+    };
+    match readiness_probe.quote_target_source {
+        DataClientReadinessProbeQuoteTargetSource::Configured => {
+            data_client_readiness_quote_target_instruments(client)
+        }
+        DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
+            let max_quote_targets = readiness_probe.max_metadata_quote_targets.ok_or(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "clients.<id>.readiness_probe.max_metadata_quote_targets",
+                },
+            )?;
+            if max_quote_targets == 0 {
+                return Err(
+                    BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                        field: "clients.<id>.readiness_probe.max_metadata_quote_targets",
+                    },
+                );
+            }
+            let mut metadata_instruments = BTreeSet::new();
+            for response in &metadata.responses {
+                if response.data_client_id == client_key && response.venue == provider_key {
+                    metadata_instruments.extend(response.instrument_ids.iter().cloned());
+                }
+            }
+            if metadata_instruments.is_empty() {
+                return Err(
+                    BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                        field: "metadata.instrument_ids",
+                    },
+                );
+            }
+            Ok(metadata_instruments
+                .into_iter()
+                .take(max_quote_targets)
+                .collect())
+        }
+    }
 }
 
 fn data_client_readiness_quote_target_instruments(
@@ -3922,6 +3977,14 @@ fn nanos_delta_to_millis_checked(
         .ok_or(BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field })
 }
 
+fn nanos_age_and_clock_skew_millis(end_nanos: u64, start_nanos: u64) -> (u64, Option<u64>) {
+    if end_nanos >= start_nanos {
+        ((end_nanos - start_nanos) / 1_000_000, None)
+    } else {
+        (0, Some((start_nanos - end_nanos) / 1_000_000))
+    }
+}
+
 fn data_client_quote_probe_evidence_hash(
     quote: &crate::bolt_v3_live_node::BoltV3NoSubmitReferenceQuote,
 ) -> Result<String, BoltV3OperatorArtifactError> {
@@ -4144,6 +4207,7 @@ fn validate_data_client_behavior_surface_probe_event(
     } else if event.observed_through_live_node
         || event.age_millis.is_some()
         || event.latency_millis.is_some()
+        || event.event_clock_skew_millis.is_some()
         || event.recovered.is_some()
         || event.fail_closed.is_some()
         || event.evidence_sha256.is_some()
@@ -5316,15 +5380,30 @@ fn data_client_readiness_probe_targets(
     let Some(readiness_probe) = &client.readiness_probe else {
         return Vec::new();
     };
-    readiness_probe
-        .quote_targets
-        .iter()
-        .map(|(target_id, target)| DataClientReadinessProbeTargetSource {
-            configured_target_id_hash: sha256_text(target_id),
-            event_kind: "quote",
-            instrument_id_hash: sha256_text(&target.instrument_id.to_string()),
-        })
-        .collect()
+    match readiness_probe.quote_target_source {
+        DataClientReadinessProbeQuoteTargetSource::Configured => readiness_probe
+            .quote_targets
+            .iter()
+            .map(|(target_id, target)| DataClientReadinessProbeTargetSource {
+                quote_target_source: "configured",
+                configured_target_id_hash: Some(sha256_text(target_id)),
+                event_kind: "quote",
+                instrument_id_hash: Some(sha256_text(&target.instrument_id.to_string())),
+                max_metadata_quote_targets: None,
+                min_metadata_quote_targets: None,
+            })
+            .collect(),
+        DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
+            vec![DataClientReadinessProbeTargetSource {
+                quote_target_source: "metadata_response",
+                configured_target_id_hash: None,
+                event_kind: "quote",
+                instrument_id_hash: None,
+                max_metadata_quote_targets: readiness_probe.max_metadata_quote_targets,
+                min_metadata_quote_targets: readiness_probe.min_metadata_quote_targets,
+            }]
+        }
+    }
 }
 
 fn provider_credentialed_block_name(block: ProviderCredentialedBlock) -> &'static str {

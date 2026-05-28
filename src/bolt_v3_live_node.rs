@@ -39,7 +39,7 @@
 //! from its own boundary code.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap},
     rc::Rc,
     str::FromStr,
@@ -77,7 +77,7 @@ use crate::{
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
-    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_config::{DataClientReadinessProbeQuoteTargetSource, LoadedBoltV3Config},
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
@@ -175,8 +175,12 @@ struct NoSubmitReferenceQuoteSubscription {
 
 #[derive(Debug, Clone)]
 struct BoltV3NoSubmitReferenceQuoteProbeHandle {
-    required: Vec<NoSubmitReferenceQuoteSubscription>,
-    ambiguous_instrument_ids: BTreeSet<String>,
+    required: Rc<RefCell<Vec<NoSubmitReferenceQuoteSubscription>>>,
+    ambiguous_instrument_ids: Rc<RefCell<BTreeSet<String>>>,
+    metadata_response_data_client_id: Option<ClientId>,
+    metadata_response_max_quote_targets: Option<usize>,
+    metadata_response_min_quote_targets: Option<usize>,
+    quote_targets_initialized: Rc<Cell<bool>>,
     quotes: Rc<RefCell<Vec<BoltV3NoSubmitReferenceQuote>>>,
     quote_notify: Rc<tokio::sync::Notify>,
 }
@@ -193,19 +197,50 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         ambiguous_instrument_ids: BTreeSet<String>,
     ) -> Self {
         Self {
-            required,
-            ambiguous_instrument_ids,
+            required: Rc::new(RefCell::new(required)),
+            ambiguous_instrument_ids: Rc::new(RefCell::new(ambiguous_instrument_ids)),
+            metadata_response_data_client_id: None,
+            metadata_response_max_quote_targets: None,
+            metadata_response_min_quote_targets: None,
+            quote_targets_initialized: Rc::new(Cell::new(true)),
+            quotes: Rc::new(RefCell::new(Vec::new())),
+            quote_notify: Rc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    fn from_metadata_response_plan(
+        data_client_id: ClientId,
+        max_quote_targets: usize,
+        min_quote_targets: usize,
+    ) -> Self {
+        Self {
+            required: Rc::new(RefCell::new(Vec::new())),
+            ambiguous_instrument_ids: Rc::new(RefCell::new(BTreeSet::new())),
+            metadata_response_data_client_id: Some(data_client_id),
+            metadata_response_max_quote_targets: Some(max_quote_targets),
+            metadata_response_min_quote_targets: Some(min_quote_targets),
+            quote_targets_initialized: Rc::new(Cell::new(false)),
             quotes: Rc::new(RefCell::new(Vec::new())),
             quote_notify: Rc::new(tokio::sync::Notify::new()),
         }
     }
 
     fn has_all_required_quotes(&self) -> bool {
-        if !self.ambiguous_instrument_ids.is_empty() {
+        if !self.ambiguous_instrument_ids.borrow().is_empty() {
+            return false;
+        }
+        if !self.quote_targets_initialized.get() {
+            return false;
+        }
+        let required = self.required.borrow();
+        if self.metadata_response_data_client_id.is_some() && required.is_empty() {
             return false;
         }
         let quotes = self.quotes.borrow();
-        self.required.iter().all(|required| {
+        if let Some(min_quote_targets) = self.metadata_response_min_quote_targets {
+            return observed_required_quote_count(&required, &quotes) >= min_quote_targets;
+        }
+        required.iter().all(|required| {
             quotes.iter().any(|quote| {
                 quote.data_client_id == required.data_client_id.to_string()
                     && quote.instrument_id == required.instrument_id.to_string()
@@ -214,7 +249,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
     }
 
     fn ambiguity_error(&self) -> Option<String> {
-        if self.ambiguous_instrument_ids.is_empty() {
+        if self.ambiguous_instrument_ids.borrow().is_empty() {
             return None;
         }
         Some(
@@ -229,14 +264,49 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         }
     }
 
+    fn install_metadata_response_instrument_ids(
+        &self,
+        mut instrument_ids: Vec<InstrumentId>,
+    ) -> Vec<NoSubmitReferenceQuoteSubscription> {
+        let Some(data_client_id) = self.metadata_response_data_client_id else {
+            return Vec::new();
+        };
+        if self.quote_targets_initialized.get() {
+            return Vec::new();
+        }
+        instrument_ids.sort_by_key(|instrument_id| instrument_id.to_string());
+        instrument_ids.dedup();
+        let max_quote_targets = self.metadata_response_max_quote_targets.unwrap_or(0);
+        let subscriptions = instrument_ids
+            .into_iter()
+            .take(max_quote_targets)
+            .map(|instrument_id| NoSubmitReferenceQuoteSubscription {
+                data_client_id,
+                instrument_id,
+            })
+            .collect();
+        let (required, ambiguous_instrument_ids) =
+            dedupe_no_submit_reference_quote_subscriptions(subscriptions);
+        *self.required.borrow_mut() = required.clone();
+        *self.ambiguous_instrument_ids.borrow_mut() = ambiguous_instrument_ids;
+        self.quote_targets_initialized.set(true);
+        self.quote_notify.notify_one();
+        required
+    }
+
     fn record_quote(&self, quote: &QuoteTick, captured_at_unix_nanos: u64) {
         let quote_instrument_id = quote.instrument_id.to_string();
-        if self.ambiguous_instrument_ids.contains(&quote_instrument_id) {
+        if self
+            .ambiguous_instrument_ids
+            .borrow()
+            .contains(&quote_instrument_id)
+        {
             return;
         }
+        let required = self.required.borrow().clone();
         let mut matched_required = false;
         let mut quotes = self.quotes.borrow_mut();
-        for required in &self.required {
+        for required in &required {
             if quote.instrument_id == required.instrument_id {
                 matched_required = true;
                 quotes.push(BoltV3NoSubmitReferenceQuote {
@@ -261,6 +331,25 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             self.quote_notify.notified().await;
         }
     }
+}
+
+fn observed_required_quote_count(
+    required: &[NoSubmitReferenceQuoteSubscription],
+    quotes: &[BoltV3NoSubmitReferenceQuote],
+) -> usize {
+    let mut observed = BTreeSet::new();
+    for required in required {
+        if quotes.iter().any(|quote| {
+            quote.data_client_id == required.data_client_id.to_string()
+                && quote.instrument_id == required.instrument_id.to_string()
+        }) {
+            observed.insert((
+                required.data_client_id.to_string(),
+                required.instrument_id.to_string(),
+            ));
+        }
+    }
+    observed.len()
 }
 
 #[derive(Debug, Clone)]
@@ -352,22 +441,23 @@ impl BoltV3NoSubmitReferenceQuoteProbe {
 
 impl DataActor for BoltV3NoSubmitReferenceQuoteProbe {
     fn on_start(&mut self) -> anyhow::Result<()> {
-        for required in self.handle.required.clone() {
+        let required_subscriptions = self.handle.required.borrow().clone();
+        for required in required_subscriptions {
             self.subscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
         }
         Ok(())
     }
 
     fn on_stop(&mut self) -> anyhow::Result<()> {
-        for required in self.handle.required.clone() {
+        let required_subscriptions = self.handle.required.borrow().clone();
+        for required in required_subscriptions {
             self.unsubscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
         }
         Ok(())
     }
 
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
-        self.handle
-            .record_quote(quote, self.timestamp_ns().as_u64());
+        self.handle.record_quote(quote, current_unix_nanos()?);
         Ok(())
     }
 }
@@ -397,6 +487,21 @@ impl BoltV3NoSubmitDataClientReadinessProbe {
     fn handle_instruments_metadata_response(&mut self, response: &InstrumentsResponse) {
         self.metadata_handle
             .record_response(response, self.timestamp_ns().as_u64());
+        if response.client_id == self.metadata_handle.data_client_id
+            && response.venue == self.metadata_handle.venue
+        {
+            let instrument_ids = response
+                .data
+                .iter()
+                .map(|instrument| instrument.id())
+                .collect();
+            for required in self
+                .quote_handle
+                .install_metadata_response_instrument_ids(instrument_ids)
+            {
+                self.subscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+            }
+        }
     }
 }
 
@@ -420,22 +525,23 @@ impl DataActor for BoltV3NoSubmitDataClientReadinessProbe {
             None,
             handler,
         )?;
-        for required in self.quote_handle.required.clone() {
+        let required_subscriptions = self.quote_handle.required.borrow().clone();
+        for required in required_subscriptions {
             self.subscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
         }
         Ok(())
     }
 
     fn on_stop(&mut self) -> anyhow::Result<()> {
-        for required in self.quote_handle.required.clone() {
+        let required_subscriptions = self.quote_handle.required.borrow().clone();
+        for required in required_subscriptions {
             self.unsubscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
         }
         Ok(())
     }
 
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
-        self.quote_handle
-            .record_quote(quote, self.timestamp_ns().as_u64());
+        self.quote_handle.record_quote(quote, current_unix_nanos()?);
         Ok(())
     }
 }
@@ -476,6 +582,14 @@ fn no_submit_data_client_readiness_quote_subscription_plan(
             "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
         ))
     })?;
+    if readiness_probe.quote_target_source != DataClientReadinessProbeQuoteTargetSource::Configured
+    {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "standalone data-client readiness quote probe requires quote_target_source = \"configured\"; metadata_response requires the combined data-client readiness probe"
+            ),
+        ));
+    }
     if readiness_probe.quote_targets.is_empty() {
         return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
             anyhow::anyhow!(
@@ -496,10 +610,10 @@ fn no_submit_data_client_readiness_quote_subscription_plan(
     ))
 }
 
-fn optional_no_submit_data_client_readiness_quote_subscription_plan(
+fn no_submit_data_client_readiness_quote_probe_handle(
     loaded: &LoadedBoltV3Config,
     client_key: &str,
-) -> Result<(Vec<NoSubmitReferenceQuoteSubscription>, BTreeSet<String>), BoltV3LiveNodeError> {
+) -> Result<BoltV3NoSubmitReferenceQuoteProbeHandle, BoltV3LiveNodeError> {
     let client = loaded.root.clients.get(client_key).ok_or_else(|| {
         BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
             "data-client readiness probe client_key is not configured"
@@ -513,26 +627,69 @@ fn optional_no_submit_data_client_readiness_quote_subscription_plan(
         ));
     }
     let Some(readiness_probe) = &client.readiness_probe else {
-        return Ok((Vec::new(), BTreeSet::new()));
-    };
-    if readiness_probe.quote_targets.is_empty() {
-        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
-            anyhow::anyhow!(
-                "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
-            ),
+        return Ok(BoltV3NoSubmitReferenceQuoteProbeHandle::from_plan(
+            Vec::new(),
+            BTreeSet::new(),
         ));
+    };
+    match readiness_probe.quote_target_source {
+        DataClientReadinessProbeQuoteTargetSource::Configured => {
+            if readiness_probe.quote_targets.is_empty() {
+                return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                    anyhow::anyhow!(
+                        "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
+                    ),
+                ));
+            }
+            let subscriptions = readiness_probe
+                .quote_targets
+                .values()
+                .map(|target| NoSubmitReferenceQuoteSubscription {
+                    data_client_id: ClientId::from(client_key),
+                    instrument_id: target.instrument_id,
+                })
+                .collect();
+            let (required, ambiguous_instrument_ids) =
+                dedupe_no_submit_reference_quote_subscriptions(subscriptions);
+            Ok(BoltV3NoSubmitReferenceQuoteProbeHandle::from_plan(
+                required,
+                ambiguous_instrument_ids,
+            ))
+        }
+        DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
+            let max_quote_targets = readiness_probe.max_metadata_quote_targets.ok_or_else(|| {
+                BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+                    "data-client readiness quote probe requires clients.<id>.readiness_probe.max_metadata_quote_targets when quote_target_source = \"metadata_response\""
+                ))
+            })?;
+            if max_quote_targets == 0 {
+                return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                    anyhow::anyhow!(
+                        "data-client readiness quote probe requires positive clients.<id>.readiness_probe.max_metadata_quote_targets"
+                    ),
+                ));
+            }
+            let min_quote_targets = readiness_probe.min_metadata_quote_targets.ok_or_else(|| {
+                BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+                    "data-client readiness quote probe requires clients.<id>.readiness_probe.min_metadata_quote_targets when quote_target_source = \"metadata_response\""
+                ))
+            })?;
+            if min_quote_targets == 0 || min_quote_targets > max_quote_targets {
+                return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                    anyhow::anyhow!(
+                        "data-client readiness quote probe requires clients.<id>.readiness_probe.min_metadata_quote_targets to be positive and less than or equal to max_metadata_quote_targets"
+                    ),
+                ));
+            }
+            Ok(
+                BoltV3NoSubmitReferenceQuoteProbeHandle::from_metadata_response_plan(
+                    ClientId::from(client_key),
+                    max_quote_targets,
+                    min_quote_targets,
+                ),
+            )
+        }
     }
-    let subscriptions = readiness_probe
-        .quote_targets
-        .values()
-        .map(|target| NoSubmitReferenceQuoteSubscription {
-            data_client_id: ClientId::from(client_key),
-            instrument_id: target.instrument_id,
-        })
-        .collect();
-    Ok(dedupe_no_submit_reference_quote_subscriptions(
-        subscriptions,
-    ))
 }
 
 fn dedupe_no_submit_reference_quote_subscriptions(
@@ -1057,6 +1214,9 @@ fn data_client_probe_loaded_config(
         .root
         .clients
         .retain(|configured_key, _| configured_key == client_key);
+    probe_loaded
+        .strategies
+        .retain(|strategy| strategy.config.execution_client_id == ClientId::from(client_key));
     Ok(probe_loaded)
 }
 
@@ -1170,6 +1330,15 @@ fn current_unix_seconds_i64() -> Result<i64, anyhow::Error> {
         .as_secs();
     i64::try_from(seconds)
         .map_err(|source| anyhow::anyhow!("current unix seconds exceeds i64: {source}"))
+}
+
+fn current_unix_nanos() -> Result<u64, anyhow::Error> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|source| anyhow::anyhow!("system time is before UNIX_EPOCH: {source}"))?
+        .as_nanos();
+    u64::try_from(nanos)
+        .map_err(|source| anyhow::anyhow!("current unix nanoseconds exceeds u64: {source}"))
 }
 
 pub async fn controlled_no_submit_readiness<F>(
@@ -1642,10 +1811,7 @@ fn install_no_submit_data_client_readiness_probe(
     BoltV3LiveNodeError,
 > {
     let metadata_handle = BoltV3NoSubmitDataClientMetadataProbeHandle::new(loaded, client_key)?;
-    let (required, ambiguous_instrument_ids) =
-        optional_no_submit_data_client_readiness_quote_subscription_plan(loaded, client_key)?;
-    let quote_handle =
-        BoltV3NoSubmitReferenceQuoteProbeHandle::from_plan(required, ambiguous_instrument_ids);
+    let quote_handle = no_submit_data_client_readiness_quote_probe_handle(loaded, client_key)?;
     if let Some(message) = quote_handle.ambiguity_error() {
         return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
             anyhow::anyhow!(message),
@@ -2270,7 +2436,7 @@ mod tests {
     use super::*;
     use crate::bolt_v3_config::{
         BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeQuoteTargetBlock,
-        ReferenceDataBlock,
+        DataClientReadinessProbeQuoteTargetSource, ReferenceDataBlock,
     };
     use nautilus_model::identifiers::TraderId;
     use nautilus_model::types::{Price, Quantity};
@@ -2320,6 +2486,7 @@ mod tests {
                     instrument_id: InstrumentId::from("REFERENCE.POLYMARKET"),
                 },
             )]),
+            ..DataClientReadinessProbeBlock::default()
         });
 
         let (required, ambiguous) =
@@ -2335,6 +2502,142 @@ mod tests {
         assert_eq!(
             required[0].instrument_id,
             InstrumentId::from("REFERENCE.POLYMARKET")
+        );
+    }
+
+    #[test]
+    fn data_client_readiness_metadata_response_probe_starts_pending_until_targets_arrive() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(2),
+            min_metadata_quote_targets: Some(2),
+            quote_targets: BTreeMap::new(),
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness quote handle should build");
+
+        assert!(
+            !handle.has_all_required_quotes(),
+            "metadata-response quote probes must not pass before same-run metadata installs targets"
+        );
+        let installed = handle.install_metadata_response_instrument_ids(vec![
+            InstrumentId::from("CONFIGURED-FIRST.SOURCE"),
+            InstrumentId::from("CONFIGURED-SECOND.SOURCE"),
+            InstrumentId::from("CONFIGURED-THIRD.SOURCE"),
+        ]);
+
+        assert_eq!(installed.len(), 2);
+        assert!(
+            !handle.has_all_required_quotes(),
+            "installing targets should not pass the quote probe until quotes arrive"
+        );
+        for subscription in installed {
+            handle
+                .quotes
+                .borrow_mut()
+                .push(BoltV3NoSubmitReferenceQuote {
+                    data_client_id: subscription.data_client_id.to_string(),
+                    instrument_id: subscription.instrument_id.to_string(),
+                    bid_price: 1.0,
+                    ask_price: 2.0,
+                    ts_event_unix_nanos: 1_000,
+                    ts_init_unix_nanos: 1_100,
+                    captured_at_unix_nanos: 1_200,
+                });
+        }
+
+        assert!(
+            handle.has_all_required_quotes(),
+            "metadata-response quote probes should pass after every installed source-owned target has a quote"
+        );
+    }
+
+    #[test]
+    fn data_client_readiness_metadata_response_probe_uses_configured_min_quote_targets() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(3),
+            min_metadata_quote_targets: Some(2),
+            quote_targets: BTreeMap::new(),
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness quote handle should build");
+        let installed = handle.install_metadata_response_instrument_ids(vec![
+            InstrumentId::from("CONFIGURED-FIRST.SOURCE"),
+            InstrumentId::from("CONFIGURED-SECOND.SOURCE"),
+            InstrumentId::from("CONFIGURED-THIRD.SOURCE"),
+        ]);
+
+        for subscription in installed.iter().take(1) {
+            handle
+                .quotes
+                .borrow_mut()
+                .push(BoltV3NoSubmitReferenceQuote {
+                    data_client_id: subscription.data_client_id.to_string(),
+                    instrument_id: subscription.instrument_id.to_string(),
+                    bid_price: 1.0,
+                    ask_price: 2.0,
+                    ts_event_unix_nanos: 1_000,
+                    ts_init_unix_nanos: 1_100,
+                    captured_at_unix_nanos: 1_200,
+                });
+        }
+        assert!(
+            !handle.has_all_required_quotes(),
+            "metadata-response quote probe must not pass before the configured minimum is observed"
+        );
+
+        let subscription = installed
+            .get(1)
+            .expect("second source-owned target should be installed");
+        handle
+            .quotes
+            .borrow_mut()
+            .push(BoltV3NoSubmitReferenceQuote {
+                data_client_id: subscription.data_client_id.to_string(),
+                instrument_id: subscription.instrument_id.to_string(),
+                bid_price: 1.0,
+                ask_price: 2.0,
+                ts_event_unix_nanos: 1_000,
+                ts_init_unix_nanos: 1_100,
+                captured_at_unix_nanos: 1_200,
+            });
+
+        assert!(
+            handle.has_all_required_quotes(),
+            "metadata-response quote probe should pass after the config-owned minimum is observed"
+        );
+    }
+
+    #[test]
+    fn no_submit_quote_probe_captures_quotes_with_wall_clock_time() {
+        let source = include_str!("bolt_v3_live_node.rs");
+        let runtime_source = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("runtime source should precede tests");
+
+        assert!(
+            runtime_source.contains("current_unix_nanos()?"),
+            "no-submit quote evidence must capture receive time from the process wall clock"
+        );
+        assert!(
+            !runtime_source.contains(".record_quote(quote, self.timestamp_ns().as_u64())"),
+            "actor timestamp is not strong enough evidence for quote receive time"
         );
     }
 
@@ -2420,8 +2723,8 @@ mod tests {
             .expect("selected data client should produce a scoped probe config");
 
         assert!(
-            !probe_loaded.strategies.is_empty(),
-            "adapter mapping must retain loaded strategy targets so NT Polymarket filters remain config-owned"
+            probe_loaded.strategies.is_empty(),
+            "adapter mapping must drop strategy targets that do not reference the selected probe client"
         );
         assert_eq!(probe_loaded.root_path, loaded.root_path);
         assert_eq!(
@@ -2434,6 +2737,41 @@ mod tests {
             loaded.root.clients.contains_key("polymarket_main"),
             "helper must not mutate the caller's full client bundle"
         );
+    }
+
+    #[test]
+    fn data_client_probe_adapter_mapping_drops_unrelated_strategy_targets() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let mut secondary = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        secondary.execution = None;
+        secondary.secrets = None;
+        loaded
+            .root
+            .clients
+            .insert("secondary_data".to_string(), secondary);
+
+        let probe_loaded = data_client_probe_loaded_config(&loaded, "secondary_data")
+            .expect("selected data client should produce a scoped probe config");
+
+        assert!(
+            probe_loaded.strategies.is_empty(),
+            "probe mapping input must drop strategy targets that reference clients outside the scoped probe"
+        );
+        no_submit_transport_adapter_configs(
+            &probe_loaded,
+            &crate::bolt_v3_secrets::ResolvedBoltV3Secrets {
+                clients: Default::default(),
+            },
+        )
+        .expect("scoped data-client adapter mapping must not fail on unrelated strategies");
     }
 
     #[test]
@@ -2574,6 +2912,7 @@ mod tests {
         let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::new(&loaded);
         let required = handle
             .required
+            .borrow()
             .first()
             .expect("fixture should require reference quote evidence")
             .clone();
@@ -2606,6 +2945,7 @@ mod tests {
         let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::new(&loaded);
         let required = handle
             .required
+            .borrow()
             .first()
             .expect("fixture should require reference quote evidence")
             .clone();

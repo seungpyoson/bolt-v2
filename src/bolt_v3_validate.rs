@@ -48,9 +48,10 @@ use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
-    ClientBlock, GATE_PROVIDER_CAPABILITIES, GATE_PROVIDER_KINDS, GateProviderBlock,
-    GateProviderFreshnessBlock, LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND,
-    PersistenceBlock, RiskBlock, SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
+    ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
+    GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, LoadedStrategy,
+    NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock, RiskBlock,
+    SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 
 #[derive(Debug)]
@@ -857,10 +858,61 @@ fn validate_client_readiness_probe(key: &str, client: &ClientBlock) -> Vec<Strin
             "clients.{key}.readiness_probe requires the same client to declare a [data] block"
         ));
     }
-    if readiness_probe.quote_targets.is_empty() {
-        errors.push(format!(
-            "clients.{key}.readiness_probe.quote_targets must define at least one configured quote target"
-        ));
+    match readiness_probe.quote_target_source {
+        DataClientReadinessProbeQuoteTargetSource::Configured => {
+            if readiness_probe.quote_targets.is_empty() {
+                errors.push(format!(
+                    "clients.{key}.readiness_probe.quote_targets must define at least one configured quote target when quote_target_source = \"configured\""
+                ));
+            }
+            if readiness_probe.max_metadata_quote_targets.is_some() {
+                errors.push(format!(
+                    "clients.{key}.readiness_probe.max_metadata_quote_targets is only valid when quote_target_source = \"metadata_response\""
+                ));
+            }
+            if readiness_probe.min_metadata_quote_targets.is_some() {
+                errors.push(format!(
+                    "clients.{key}.readiness_probe.min_metadata_quote_targets is only valid when quote_target_source = \"metadata_response\""
+                ));
+            }
+        }
+        DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
+            if !readiness_probe.quote_targets.is_empty() {
+                errors.push(format!(
+                    "clients.{key}.readiness_probe cannot combine quote_target_source = \"metadata_response\" with readiness_probe.quote_targets"
+                ));
+            }
+            let max_metadata_quote_targets = match readiness_probe.max_metadata_quote_targets {
+                Some(max_metadata_quote_targets) if max_metadata_quote_targets > 0 => {
+                    Some(max_metadata_quote_targets)
+                }
+                _ => {
+                    errors.push(format!(
+                        "clients.{key}.readiness_probe.max_metadata_quote_targets must be a positive integer when quote_target_source = \"metadata_response\""
+                    ));
+                    None
+                }
+            };
+            let min_metadata_quote_targets = match readiness_probe.min_metadata_quote_targets {
+                Some(min_metadata_quote_targets) if min_metadata_quote_targets > 0 => {
+                    Some(min_metadata_quote_targets)
+                }
+                _ => {
+                    errors.push(format!(
+                        "clients.{key}.readiness_probe.min_metadata_quote_targets must be a positive integer when quote_target_source = \"metadata_response\""
+                    ));
+                    None
+                }
+            };
+            if let (Some(min_metadata_quote_targets), Some(max_metadata_quote_targets)) =
+                (min_metadata_quote_targets, max_metadata_quote_targets)
+                && min_metadata_quote_targets > max_metadata_quote_targets
+            {
+                errors.push(format!(
+                    "clients.{key}.readiness_probe.min_metadata_quote_targets must be less than or equal to clients.{key}.readiness_probe.max_metadata_quote_targets"
+                ));
+            };
+        }
     }
     for (target_id, target) in &readiness_probe.quote_targets {
         if target_id.trim().is_empty() || target_id.trim() != target_id {

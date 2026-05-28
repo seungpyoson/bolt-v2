@@ -319,7 +319,31 @@ pub struct ClientBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DataClientReadinessProbeBlock {
+    #[serde(default)]
+    pub quote_target_source: DataClientReadinessProbeQuoteTargetSource,
+    pub max_metadata_quote_targets: Option<usize>,
+    pub min_metadata_quote_targets: Option<usize>,
+    #[serde(default)]
     pub quote_targets: BTreeMap<String, DataClientReadinessProbeQuoteTargetBlock>,
+}
+
+impl Default for DataClientReadinessProbeBlock {
+    fn default() -> Self {
+        Self {
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::Configured,
+            max_metadata_quote_targets: None,
+            min_metadata_quote_targets: None,
+            quote_targets: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DataClientReadinessProbeQuoteTargetSource {
+    #[default]
+    Configured,
+    MetadataResponse,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

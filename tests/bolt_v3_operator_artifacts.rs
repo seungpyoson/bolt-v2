@@ -10,10 +10,11 @@ use bolt_v2::{
     bolt_v3_client_registration::{BoltV3RegisteredClient, BoltV3RegistrationSummary},
     bolt_v3_config::{
         BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
-        DataClientReadinessProbeBlock, DataClientReadinessProbeQuoteTargetBlock, GateProviderBlock,
-        GateProviderFreshnessBlock, LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock,
-        LoadedBoltV3Config, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND,
-        RESOLUTION_GATE_ROLE, ReferenceDataBlock, load_bolt_v3_config,
+        DataClientReadinessProbeBlock, DataClientReadinessProbeQuoteTargetBlock,
+        DataClientReadinessProbeQuoteTargetSource, GateProviderBlock, GateProviderFreshnessBlock,
+        LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, NO_RESOLUTION_KIND,
+        NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE, ReferenceDataBlock,
+        load_bolt_v3_config,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3GateEvidenceIdentity,
@@ -946,6 +947,7 @@ fn configure_data_client_readiness_quote_probe(loaded: &mut LoadedBoltV3Config) 
                 instrument_id: InstrumentId::from(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID),
             },
         )]),
+        ..DataClientReadinessProbeBlock::default()
     });
     loaded
         .root
@@ -1658,6 +1660,44 @@ fn data_client_behavior_probe_events_source_uses_no_submit_reference_quotes_with
 }
 
 #[test]
+fn data_client_behavior_probe_events_source_records_future_quote_clock_skew() {
+    let mut loaded = load_fixture_with_live_canary();
+    configure_data_client_readiness_quote_probe(&mut loaded);
+    let temp = support::TempCaseDir::new("data-client-behavior-future-quote-clock-skew");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitReferenceQuoteEvidence {
+        quotes: vec![BoltV3NoSubmitReferenceQuote {
+            data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+            instrument_id: TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string(),
+            bid_price: 3299.0,
+            ask_price: 3301.0,
+            ts_event_unix_nanos: 601_000_000_000,
+            ts_init_unix_nanos: 600_100_000_000,
+            captured_at_unix_nanos: 600_500_000_000,
+        }],
+    };
+
+    let written_probe_events = write_data_client_behavior_probe_events_from_no_submit_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect("future quote event time should be recorded as source clock skew");
+
+    let rendered_events =
+        std::fs::read_to_string(&written_probe_events.path).expect("probe events should read");
+    let event: serde_json::Value =
+        serde_json::from_str(&rendered_events).expect("single event should parse");
+    assert_eq!(event["event_kind"], serde_json::json!("quote"));
+    assert_eq!(event["age_millis"], serde_json::json!(0));
+    assert_eq!(event["event_clock_skew_millis"], serde_json::json!(500));
+    assert_eq!(event["latency_millis"], serde_json::json!(400));
+    assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID));
+}
+
+#[test]
 fn data_client_behavior_probe_events_source_records_metadata_without_raw_instruments() {
     let mut loaded = load_fixture_with_live_canary();
     configure_data_client_readiness_quote_probe(&mut loaded);
@@ -1791,6 +1831,82 @@ fn data_client_behavior_probe_events_source_records_metadata_without_raw_instrum
     assert!(missing.contains(&serde_json::json!("reconnect_behavior")));
     assert!(missing.contains(&serde_json::json!("rate_limit_behavior")));
     assert!(missing.contains(&serde_json::json!("parse_error_behavior")));
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_accepts_metadata_response_quote_targets() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: Some(2),
+        min_metadata_quote_targets: Some(2),
+        quote_targets: BTreeMap::new(),
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let temp = support::TempCaseDir::new("data-client-behavior-metadata-response-quotes");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string()],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence {
+            quotes: vec![BoltV3NoSubmitReferenceQuote {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                instrument_id: TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string(),
+                bid_price: 3299.0,
+                ask_price: 3301.0,
+                ts_event_unix_nanos: 600_000_000_000,
+                ts_init_unix_nanos: 600_100_000_000,
+                captured_at_unix_nanos: 600_500_000_000,
+            }],
+        },
+    };
+
+    let written_probe_events =
+        write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+            &loaded,
+            TEST_REFERENCE_DATA_CLIENT_ID,
+            &evidence,
+            &probe_events_path,
+        )
+        .expect("metadata-response quote targets should write source-owned probe events");
+
+    let rendered_events =
+        std::fs::read_to_string(&written_probe_events.path).expect("probe events should read");
+    let events = rendered_events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().any(|event| event["event_kind"] == "metadata"));
+    assert!(events.iter().any(|event| event["event_kind"] == "quote"));
+    assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID));
+    assert!(!rendered_events.contains("3299"));
+    assert!(!rendered_events.contains("3301"));
 }
 
 #[test]

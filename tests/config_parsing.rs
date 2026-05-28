@@ -5412,6 +5412,120 @@ fn allows_multiple_configured_client_ids_for_same_nt_venue() {
 }
 
 #[test]
+fn allows_metadata_response_readiness_probe_without_static_quote_targets() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+min_metadata_quote_targets = 2
+"#
+    ))
+    .expect("metadata-response readiness probe should parse");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.is_empty(),
+        "metadata-response readiness probes should not require copied static quote target ids: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_metadata_response_readiness_probe_without_min_quote_targets() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+"#
+    ))
+    .expect("metadata-response readiness probe should parse so validation can reject missing min");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.min_metadata_quote_targets")
+                && message.contains("positive integer")
+        }),
+        "metadata-response readiness probes must declare a config-owned min quote target count: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_metadata_response_readiness_probe_with_min_greater_than_max() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 2
+min_metadata_quote_targets = 4
+"#
+    ))
+    .expect(
+        "metadata-response readiness probe should parse so validation can reject invalid bounds",
+    );
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.min_metadata_quote_targets")
+                && message.contains("less than or equal")
+        }),
+        "metadata-response readiness probe min must be bounded by max: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_readiness_probe_with_both_metadata_response_and_static_targets() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+min_metadata_quote_targets = 2
+
+[clients.polymarket_main.readiness_probe.quote_targets.configured_quote_probe]
+instrument_id = "CONFIGURED-PROBE.POLYMARKET"
+"#
+    ))
+    .expect("mixed readiness probe should parse so validation can reject the dual target source");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe")
+                && message.contains("quote_target_source")
+                && message.contains("quote_targets")
+        }),
+        "metadata-response readiness probes must reject static target ids in the same client block: {messages:#?}"
+    );
+}
+
+#[test]
 fn root_example_declares_requested_nt_data_clients_for_registration() {
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 

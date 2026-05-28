@@ -229,12 +229,11 @@ pub fn validate_kraken_client(key: &str, client: &ClientBlock) -> Vec<String> {
         client,
         KRAKEN_DATA_FIELDS,
     );
-    if let Some(data) = &client.data {
-        if let Ok(parsed) = data.clone().try_into::<KrakenDataClientConfig>() {
-            if let Err(error) = parsed.validate() {
-                errors.push(format!("clients.{key}.data: {error}"));
-            }
-        }
+    if let Some(data) = &client.data
+        && let Ok(parsed) = data.clone().try_into::<KrakenDataClientConfig>()
+        && let Err(error) = parsed.validate()
+    {
+        errors.push(format!("clients.{key}.data: {error}"));
     }
     errors
 }

@@ -34,6 +34,7 @@ use bolt_v2::{
         collect_entry_decision_source_inputs_from_configured_provider,
         collect_entry_readiness_gate_evidence_from_source_file, normalize_gate_evidence,
         write_chainlink_reference_quote_observations_source_from_report_files,
+        write_data_client_behavior_observation_artifact_from_source_file,
         write_data_client_live_node_mapping_source_artifact_from_config,
         write_data_client_nt_source_capability_artifact_from_config,
         write_data_client_readiness_source_artifact_from_config,
@@ -1145,6 +1146,155 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
         "polymarket_main",
         "POLYMARKET",
         "passphrase_ssm_path",
+    );
+}
+
+#[test]
+fn data_client_behavior_observation_source_records_observed_data_path_as_unproven() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str();
+    let temp = support::TempCaseDir::new("data-client-behavior-observation");
+    let observed_at_unix_millis = 1_777_000_000_000_u64;
+    let observed_first = observed_at_unix_millis - 2_000;
+    let observed_last = observed_at_unix_millis - 500;
+    let surface = |evidence_label: &str| {
+        serde_json::json!({
+            "supported_by_nt_source": true,
+            "observed_through_live_node": true,
+            "sample_count": 3,
+            "first_observed_at_unix_millis": observed_first,
+            "last_observed_at_unix_millis": observed_last,
+            "evidence_sha256": sha256_text(evidence_label),
+            "unsupported_disposition": null
+        })
+    };
+    let unsupported_surface = serde_json::json!({
+        "supported_by_nt_source": false,
+        "observed_through_live_node": false,
+        "sample_count": 0,
+        "first_observed_at_unix_millis": null,
+        "last_observed_at_unix_millis": null,
+        "evidence_sha256": null,
+        "unsupported_disposition": "ticker_subscription_source_marker_missing"
+    });
+    let policy = |evidence_label: &str| {
+        serde_json::json!({
+            "behavior_observed": true,
+            "recovered": true,
+            "fail_closed": true,
+            "evidence_sha256": sha256_text(evidence_label)
+        })
+    };
+    let source = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.data_client_behavior_observation_source.v1",
+        "client_key_hash": sha256_text(client_key),
+        "provider_key": provider_key,
+        "observed_at_unix_millis": observed_at_unix_millis,
+        "observation_window_millis": 5_000,
+        "metadata_behavior": surface("metadata-observation"),
+        "quote_behavior": surface("quote-observation"),
+        "book_behavior": surface("book-observation"),
+        "ticker_behavior": unsupported_surface,
+        "freshness": {
+            "configured_max_age_millis": 5_000,
+            "max_observed_age_millis": 1_500,
+            "latency_sample_count": 6,
+            "latency_p95_millis": 350,
+            "latency_max_millis": 450,
+            "within_configured_bound": true,
+            "evidence_sha256": sha256_text("freshness-observation")
+        },
+        "reconnect": policy("reconnect-observation"),
+        "rate_limit": policy("rate-limit-observation"),
+        "parse_error": policy("parse-error-observation")
+    });
+    let source_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+    std::fs::write(
+        &source_path,
+        serde_json::to_vec_pretty(&source).expect("source should serialize"),
+    )
+    .expect("behavior source should write");
+    let output_path = temp.path().join("data-client-behavior-observation.json");
+
+    let written = write_data_client_behavior_observation_artifact_from_source_file(
+        &loaded,
+        client_key,
+        &source_path,
+        4096,
+        &output_path,
+    )
+    .expect("behavior observation artifact should write");
+
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.path).expect("behavior artifact should read"),
+    )
+    .expect("behavior artifact should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.data_client_behavior_observation.v1"
+    );
+    assert_eq!(artifact["schema_version"], 1);
+    assert_eq!(
+        artifact["config_bundle_checksum"].as_str(),
+        Some(loaded.config_bundle_checksum.as_str())
+    );
+    assert_eq!(
+        artifact["client_key_hash"].as_str(),
+        Some(sha256_text(client_key).as_str())
+    );
+    assert_eq!(artifact["provider_key"].as_str(), Some(provider_key));
+    assert_eq!(
+        artifact["behavior_source_sha256"].as_str(),
+        Some(sha256_file(&source_path).as_str())
+    );
+    assert!(is_lowercase_sha256(
+        artifact["behavior_source_path_hash"]
+            .as_str()
+            .expect("source path hash should be a string")
+    ));
+    assert_eq!(artifact["behavior_observation_complete"], true);
+    assert!(
+        artifact["missing_behavior_proofs"]
+            .as_array()
+            .expect("missing behavior proofs should be an array")
+            .is_empty()
+    );
+    assert_eq!(
+        artifact["metadata_behavior"]["observed_through_live_node"],
+        true
+    );
+    assert_eq!(
+        artifact["quote_behavior"]["observed_through_live_node"],
+        true
+    );
+    assert_eq!(
+        artifact["ticker_behavior"]["unsupported_disposition"].as_str(),
+        Some("ticker_subscription_source_marker_missing")
+    );
+    assert_eq!(artifact["freshness"]["within_configured_bound"], true);
+    assert_eq!(artifact["reconnect"]["behavior_observed"], true);
+    assert_eq!(artifact["rate_limit"]["behavior_observed"], true);
+    assert_eq!(artifact["parse_error"]["behavior_observed"], true);
+    assert_eq!(artifact["production_usable"], false);
+    assert_eq!(
+        artifact["readiness_status"].as_str(),
+        Some("behavior_observation_final_matrix_missing")
+    );
+    let rendered =
+        serde_json::to_string(&artifact).expect("behavior artifact should render to string");
+    let source_path_text = source_path.to_string_lossy();
+    assert!(
+        !rendered.contains(source_path_text.as_ref()),
+        "behavior artifact should hash source paths instead of printing them: {rendered}"
     );
 }
 

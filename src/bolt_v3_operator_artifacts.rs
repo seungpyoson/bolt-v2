@@ -90,6 +90,13 @@ const DATA_CLIENT_LIVE_NODE_MAPPING_SOURCE_RECORD_KIND: &str =
     "bolt_v3.data_client_live_node_mapping_source.v1";
 const DATA_CLIENT_LIVE_NODE_MAPPING_SOURCE_STATUS_NOT_PRODUCTION_USABLE: &str =
     "live_node_mapping_source_only_behavior_probe_missing";
+const DATA_CLIENT_BEHAVIOR_OBSERVATION_SCHEMA_VERSION: u32 = 1;
+const DATA_CLIENT_BEHAVIOR_OBSERVATION_RECORD_KIND: &str =
+    "bolt_v3.data_client_behavior_observation.v1";
+const DATA_CLIENT_BEHAVIOR_OBSERVATION_SOURCE_RECORD_KIND: &str =
+    "bolt_v3.data_client_behavior_observation_source.v1";
+const DATA_CLIENT_BEHAVIOR_OBSERVATION_STATUS_NOT_PRODUCTION_USABLE: &str =
+    "behavior_observation_final_matrix_missing";
 const DATA_CLIENT_MISSING_BEHAVIOR_PROOFS: &[&str] = &[
     "metadata_behavior",
     "quote_or_book_behavior",
@@ -832,6 +839,80 @@ struct DataClientLiveNodeMappingClientSource {
     readiness_status: &'static str,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct DataClientBehaviorObservationArtifact {
+    schema_version: u32,
+    record_kind: &'static str,
+    generated_at_unix_seconds: u64,
+    config_bundle_checksum: String,
+    client_key_hash: String,
+    provider_key: String,
+    behavior_source_path_hash: String,
+    behavior_source_sha256: String,
+    observed_at_unix_millis: u64,
+    observation_window_millis: u64,
+    metadata_behavior: DataClientBehaviorSurfaceObservation,
+    quote_behavior: DataClientBehaviorSurfaceObservation,
+    book_behavior: DataClientBehaviorSurfaceObservation,
+    ticker_behavior: DataClientBehaviorSurfaceObservation,
+    freshness: DataClientFreshnessObservation,
+    reconnect: DataClientPolicyObservation,
+    rate_limit: DataClientPolicyObservation,
+    parse_error: DataClientPolicyObservation,
+    behavior_observation_complete: bool,
+    missing_behavior_proofs: Vec<&'static str>,
+    production_usable: bool,
+    readiness_status: &'static str,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct DataClientBehaviorObservationSourceFile {
+    schema_version: u32,
+    record_kind: String,
+    client_key_hash: String,
+    provider_key: String,
+    observed_at_unix_millis: u64,
+    observation_window_millis: u64,
+    metadata_behavior: DataClientBehaviorSurfaceObservation,
+    quote_behavior: DataClientBehaviorSurfaceObservation,
+    book_behavior: DataClientBehaviorSurfaceObservation,
+    ticker_behavior: DataClientBehaviorSurfaceObservation,
+    freshness: DataClientFreshnessObservation,
+    reconnect: DataClientPolicyObservation,
+    rate_limit: DataClientPolicyObservation,
+    parse_error: DataClientPolicyObservation,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct DataClientBehaviorSurfaceObservation {
+    supported_by_nt_source: bool,
+    observed_through_live_node: bool,
+    sample_count: u64,
+    first_observed_at_unix_millis: Option<u64>,
+    last_observed_at_unix_millis: Option<u64>,
+    evidence_sha256: Option<String>,
+    unsupported_disposition: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct DataClientFreshnessObservation {
+    configured_max_age_millis: u64,
+    max_observed_age_millis: u64,
+    latency_sample_count: u64,
+    latency_p95_millis: u64,
+    latency_max_millis: u64,
+    within_configured_bound: bool,
+    evidence_sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct DataClientPolicyObservation {
+    behavior_observed: bool,
+    recovered: bool,
+    fail_closed: bool,
+    evidence_sha256: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phase8PreRunReleaseManifestSourceProof {
     pub nt_revision: String,
@@ -959,6 +1040,17 @@ pub enum BoltV3OperatorArtifactError {
         source: std::io::Error,
     },
     DataClientLiveNodeMappingSourceInvalid {
+        field: &'static str,
+    },
+    DataClientBehaviorObservationSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    DataClientBehaviorObservationSourceParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    DataClientBehaviorObservationSourceInvalid {
         field: &'static str,
     },
     SecretInventory(BoltV3SecretError),
@@ -1314,6 +1406,18 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::DataClientLiveNodeMappingSourceInvalid { field } => write!(
                 f,
                 "data-client LiveNode mapping source field `{field}` is invalid or unproven"
+            ),
+            Self::DataClientBehaviorObservationSourceRead { source, .. } => write!(
+                f,
+                "failed to read data-client behavior observation source input: {source}"
+            ),
+            Self::DataClientBehaviorObservationSourceParse { source, .. } => write!(
+                f,
+                "failed to parse data-client behavior observation source input: {source}"
+            ),
+            Self::DataClientBehaviorObservationSourceInvalid { field } => write!(
+                f,
+                "data-client behavior observation source field `{field}` is invalid or unproven"
             ),
             Self::SecretInventory(error) => write!(f, "{error}"),
             Self::FinancialEnvelope(error) => write!(f, "{error}"),
@@ -1728,6 +1832,8 @@ impl Error for BoltV3OperatorArtifactError {
             Self::MarketSelection(error) => Some(error.as_ref()),
             Self::DataClientNtSourceRead { source, .. } => Some(source),
             Self::DataClientLiveNodeMappingSourceRead { source, .. } => Some(source),
+            Self::DataClientBehaviorObservationSourceRead { source, .. } => Some(source),
+            Self::DataClientBehaviorObservationSourceParse { source, .. } => Some(source),
             Self::DecisionEvidenceSourceRead { source, .. } => Some(source),
             Self::DecisionEvidenceSourceParse { source, .. } => Some(source),
             Self::DecisionEvidenceFileRead { source, .. } => Some(source),
@@ -2771,6 +2877,299 @@ pub fn write_data_client_live_node_mapping_source_artifact_from_config(
         max_source_bytes,
     )?;
     write_json_artifact_create_new(output_path, &artifact)
+}
+
+pub fn write_data_client_behavior_observation_artifact_from_source_file(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    behavior_source_path: &Path,
+    max_behavior_source_bytes: u64,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let artifact = build_data_client_behavior_observation_artifact_from_source_file(
+        loaded,
+        client_key,
+        behavior_source_path,
+        max_behavior_source_bytes,
+    )?;
+    write_json_artifact_create_new(output_path, &artifact)
+}
+
+fn build_data_client_behavior_observation_artifact_from_source_file(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    behavior_source_path: &Path,
+    max_behavior_source_bytes: u64,
+) -> Result<DataClientBehaviorObservationArtifact, BoltV3OperatorArtifactError> {
+    if client_key.trim().is_empty() {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "client_key",
+            },
+        );
+    }
+    if max_behavior_source_bytes == 0 {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "max_behavior_source_bytes",
+            },
+        );
+    }
+    let client = loaded.root.clients.get(client_key).ok_or(
+        BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+            field: "client_key",
+        },
+    )?;
+    let provider_key = client.venue.as_str();
+    binding_for_provider_key(provider_key).ok_or_else(|| {
+        BoltV3OperatorArtifactError::UnsupportedProvider {
+            client_key: client_key.to_string(),
+            provider_key: provider_key.to_string(),
+        }
+    })?;
+
+    let source_bytes =
+        read_file_bounded(behavior_source_path, max_behavior_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceRead {
+                path: behavior_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let source: DataClientBehaviorObservationSourceFile = serde_json::from_slice(&source_bytes)
+        .map_err(|source| {
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceParse {
+                path: behavior_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    validate_data_client_behavior_observation_source(&source, client_key, provider_key)?;
+    let missing_behavior_proofs = data_client_behavior_observation_missing_proofs(&source);
+    let behavior_observation_complete = missing_behavior_proofs.is_empty();
+
+    Ok(DataClientBehaviorObservationArtifact {
+        schema_version: DATA_CLIENT_BEHAVIOR_OBSERVATION_SCHEMA_VERSION,
+        record_kind: DATA_CLIENT_BEHAVIOR_OBSERVATION_RECORD_KIND,
+        generated_at_unix_seconds: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
+        client_key_hash: sha256_text(client_key),
+        provider_key: provider_key.to_string(),
+        behavior_source_path_hash: source_path_hash(behavior_source_path),
+        behavior_source_sha256: hex::encode(Sha256::digest(&source_bytes)),
+        observed_at_unix_millis: source.observed_at_unix_millis,
+        observation_window_millis: source.observation_window_millis,
+        metadata_behavior: source.metadata_behavior,
+        quote_behavior: source.quote_behavior,
+        book_behavior: source.book_behavior,
+        ticker_behavior: source.ticker_behavior,
+        freshness: source.freshness,
+        reconnect: source.reconnect,
+        rate_limit: source.rate_limit,
+        parse_error: source.parse_error,
+        behavior_observation_complete,
+        missing_behavior_proofs,
+        production_usable: false,
+        readiness_status: DATA_CLIENT_BEHAVIOR_OBSERVATION_STATUS_NOT_PRODUCTION_USABLE,
+    })
+}
+
+fn validate_data_client_behavior_observation_source(
+    source: &DataClientBehaviorObservationSourceFile,
+    client_key: &str,
+    provider_key: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if source.schema_version != DATA_CLIENT_BEHAVIOR_OBSERVATION_SCHEMA_VERSION {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "schema_version",
+            },
+        );
+    }
+    if source.record_kind != DATA_CLIENT_BEHAVIOR_OBSERVATION_SOURCE_RECORD_KIND {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "record_kind",
+            },
+        );
+    }
+    if source.client_key_hash != sha256_text(client_key) {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "client_key_hash",
+            },
+        );
+    }
+    if source.provider_key != provider_key {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "provider_key",
+            },
+        );
+    }
+    if source.observed_at_unix_millis == 0 {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "observed_at_unix_millis",
+            },
+        );
+    }
+    if source.observation_window_millis == 0 {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "observation_window_millis",
+            },
+        );
+    }
+    validate_data_client_behavior_surface_observation(
+        "metadata_behavior",
+        &source.metadata_behavior,
+    )?;
+    validate_data_client_behavior_surface_observation("quote_behavior", &source.quote_behavior)?;
+    validate_data_client_behavior_surface_observation("book_behavior", &source.book_behavior)?;
+    validate_data_client_behavior_surface_observation("ticker_behavior", &source.ticker_behavior)?;
+    validate_data_client_freshness_observation(&source.freshness)?;
+    validate_data_client_policy_observation("reconnect", &source.reconnect)?;
+    validate_data_client_policy_observation("rate_limit", &source.rate_limit)?;
+    validate_data_client_policy_observation("parse_error", &source.parse_error)?;
+    Ok(())
+}
+
+fn validate_data_client_behavior_surface_observation(
+    field: &'static str,
+    observation: &DataClientBehaviorSurfaceObservation,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if observation.supported_by_nt_source {
+        if !observation.observed_through_live_node || observation.sample_count == 0 {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field },
+            );
+        }
+        let Some(first) = observation.first_observed_at_unix_millis else {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field },
+            );
+        };
+        let Some(last) = observation.last_observed_at_unix_millis else {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field },
+            );
+        };
+        if first == 0 || last == 0 || first > last {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field },
+            );
+        }
+        let Some(evidence_sha256) = observation.evidence_sha256.as_deref() else {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field },
+            );
+        };
+        if !is_lowercase_sha256(evidence_sha256) {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field },
+            );
+        }
+        if observation.unsupported_disposition.is_some() {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field },
+            );
+        }
+    } else {
+        if observation.observed_through_live_node
+            || observation.sample_count != 0
+            || observation.first_observed_at_unix_millis.is_some()
+            || observation.last_observed_at_unix_millis.is_some()
+            || observation.evidence_sha256.is_some()
+        {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field },
+            );
+        }
+        if observation
+            .unsupported_disposition
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .is_empty()
+        {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field },
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_data_client_freshness_observation(
+    observation: &DataClientFreshnessObservation,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if observation.configured_max_age_millis == 0
+        || observation.latency_sample_count == 0
+        || observation.latency_p95_millis > observation.latency_max_millis
+        || observation.max_observed_age_millis > observation.configured_max_age_millis
+        || !observation.within_configured_bound
+        || !is_lowercase_sha256(&observation.evidence_sha256)
+    {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "freshness",
+            },
+        );
+    }
+    Ok(())
+}
+
+fn validate_data_client_policy_observation(
+    field: &'static str,
+    observation: &DataClientPolicyObservation,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if !observation.behavior_observed
+        || (!observation.recovered && !observation.fail_closed)
+        || !is_lowercase_sha256(&observation.evidence_sha256)
+    {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field },
+        );
+    }
+    Ok(())
+}
+
+fn data_client_behavior_observation_missing_proofs(
+    source: &DataClientBehaviorObservationSourceFile,
+) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if !source.metadata_behavior.supported_by_nt_source
+        || !source.metadata_behavior.observed_through_live_node
+    {
+        missing.push("metadata_behavior");
+    }
+    let market_data_observed = [
+        &source.quote_behavior,
+        &source.book_behavior,
+        &source.ticker_behavior,
+    ]
+    .iter()
+    .any(|observation| {
+        observation.supported_by_nt_source && observation.observed_through_live_node
+    });
+    if !market_data_observed {
+        missing.push("quote_or_book_or_ticker_behavior");
+    }
+    if !source.freshness.within_configured_bound {
+        missing.push("freshness_latency");
+    }
+    if !source.reconnect.behavior_observed {
+        missing.push("reconnect_behavior");
+    }
+    if !source.rate_limit.behavior_observed {
+        missing.push("rate_limit_behavior");
+    }
+    if !source.parse_error.behavior_observed {
+        missing.push("parse_error_behavior");
+    }
+    missing
 }
 
 fn build_data_client_live_node_mapping_source_artifact(

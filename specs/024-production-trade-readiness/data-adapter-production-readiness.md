@@ -53,6 +53,14 @@ The third T043A source-owned proof primitive has been added but not yet run thro
 - The artifact marks every row `production_usable = false` with status `live_node_mapping_source_only_behavior_probe_missing`; source-path proof is necessary for architecture evidence but still does not prove live data behavior, freshness, reconnect, rate-limit, or parse/error handling.
 - A contract test was added for configured-client binding, source/path hashing, source-marker capture, fail-closed unsupported disposition, and non-leakage of raw source paths. Cargo execution remains deferred to the final verification pass per operator direction.
 
+The fourth T043A source-owned proof primitive has been added but not yet run through final cargo/CI verification:
+
+- New read-only CLI: `operator-artifacts collect-data-client-behavior-observation --config <root.toml> --client-key <configured-client> --behavior-source <data-client-behavior-observation-source.json> --max-behavior-source-bytes <bytes> --output <data-client-behavior-observation.json>`.
+- The collector binds the behavior source to the loaded TOML client via hashed client key and provider key, reads a bounded JSON source file, and validates observed metadata behavior, quote/book/ticker behavior or explicit unsupported dispositions, freshness/latency bounds, reconnect behavior, rate-limit behavior, and parse/error fail-closed behavior.
+- The output hashes the source path and source bytes, preserves only the source-owned observation booleans/counts/timestamps/evidence hashes, and records whether the behavior observation is complete.
+- The artifact marks `production_usable = false` with status `behavior_observation_final_matrix_missing`; behavior observations are a necessary T043A input, but the final matrix and final verification pass still decide readiness.
+- A contract test was added for configured-client binding, behavior validation, complete-observation classification, fail-closed unsupported ticker disposition, source/path hashing, and non-leakage of raw source paths. Cargo execution remains deferred to the final verification pass per operator direction.
+
 ## Missing Production Proof
 
 T043A remains open until a venue-neutral matrix proves the following for every PR-enabled data client, including Polymarket and each data-only NT venue binding:

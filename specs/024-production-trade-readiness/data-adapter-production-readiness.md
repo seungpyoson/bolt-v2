@@ -90,13 +90,23 @@ The sixth T043A source-owned proof primitive has been added but not yet run thro
 
 - New read-only CLI: `operator-artifacts collect-data-client-behavior-probe-events-source --config <root.toml> --client-key <configured-client> --output <probe-events.jsonl>`.
 - New root TOML schema under each client: `[clients.<id>.readiness_probe.quote_targets.<target_id>] instrument_id = "<instrument.venue>"`.
-- The collector runs a no-submit LiveNode quote probe for the selected configured client's `readiness_probe.quote_targets`, using NT actor subscription APIs, then writes bounded `bolt_v3.data_client_behavior_probe_event.v1` JSONL for the selected configured client.
+- The collector scopes the no-submit `LiveNode` build to the selected configured data client, so unrelated configured clients cannot mask that client's behavior proof. It then runs metadata and configured quote probes for the selected client's `readiness_probe.quote_targets`, using NT actor subscription APIs, and writes bounded `bolt_v3.data_client_behavior_probe_event.v1` JSONL for the selected configured client.
 - Strategy `reference_data` is no longer accepted as a fallback data-client behavior probe path; probe targets are client-owned so adding/removing a data-only client and its proof target happens in the same client section.
 - The JSONL records hashed client identity, provider key, quote-surface observation, freshness age, latency, and an evidence hash. It does not print raw client ids, instrument ids, prices, paths, or credentials.
 - The behavior source materializer now accepts partial source-owned probe sets and records missing reconnect, rate-limit, and parse-error proofs as non-observed policy rows instead of pretending they are proven. Final behavior/matrix artifacts still mark those rows non-production-usable until all required proofs are present.
 - This closes the gap that probe events were previously an external input, but it does not close T043A: the current source-owned collector covers configured quote evidence only.
 
 The architecture plan was challenged with Claude adversarial review on 2026-05-29, job `326dba0f-91b4-47e3-b4bb-a76d40606815`. The useful findings were that behavior policy proofs could be represented by operator-authored JSONL and that live-node mapping could be satisfied by source-text markers alone. The current local hardening rejects unowned policy probe events, keeps reconnect/rate-limit/parse-error proofs missing until source-owned collectors exist, carries the `LiveNode` registration summary on the runtime, and requires runtime data-client registration in the matrix mapping proof. The review slot itself was not counted as a clean external approval because the plugin marked it `review_quality_failed:not_reviewed`.
+
+After commit `b360e3ba`, the hardened collector was run against ignored operational `config/live.local.toml` into `/private/tmp/bolt-v2-t043a-b360e3ba/`:
+
+- `data-client-readiness-source.json`: sha256 `a8b88446b7c771fefd781fd91d83e344b33c9d857e5977640b2addd5303a2526`.
+- `data-client-live-node-mapping-source.json`: sha256 `73111cbb33e6d7bd44d9252fa2ff2cf6c30bcc5e220986c3688fa2e09c17c193`; it records 11 clients, 11 runtime-registered data rows, 11 mapping rows, and no unsupported mapping dispositions.
+- `probe-events-bybit.jsonl`: sha256 `110f2d05e564faeb40a9fa616edb92f7e61f9ce843d3f6affb9d0e4cf8a06889`; the scoped no-submit `LiveNode` registered and connected only `bybit_data` and produced one metadata event.
+- `data-client-behavior-observation-source-bybit.json`: sha256 `f7044f7d7b7eb199f504e29ab2de711a47a42654b374ac976b3702f601099307`.
+- `data-client-behavior-observation-bybit.json`: sha256 `b225c8295f0441f76576a88eaac8fc5a1ec1d741455ac81e6ea759b111bea0d3`; it remains incomplete with missing `quote_or_book_or_ticker_behavior`, `reconnect_behavior`, `rate_limit_behavior`, and `parse_error_behavior`.
+
+This proves the per-client isolation fix removes the earlier all-client startup coupling for Bybit metadata behavior. It does not close T043A because the live config has no `bybit_data.readiness_probe.quote_targets` yet and no source-owned policy behavior collector exists.
 
 ## Missing Production Proof
 

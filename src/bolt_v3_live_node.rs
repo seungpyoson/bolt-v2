@@ -1011,11 +1011,54 @@ pub fn build_bolt_v3_no_submit_live_node(
     Ok(runtime)
 }
 
+pub fn build_bolt_v3_no_submit_data_client_probe_live_node(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<(BoltV3LiveNodeRuntime, LoadedBoltV3Config), BoltV3LiveNodeError> {
+    let probe_loaded = data_client_probe_loaded_config(loaded, client_key)?;
+    let resolved = resolve_bolt_v3_live_node_secrets(&probe_loaded)?;
+    let adapters = no_submit_transport_adapter_configs(&probe_loaded, &resolved)?;
+    let no_submit_loaded = no_submit_transport_loaded_config(&probe_loaded);
+    let (runtime, _summary) = build_live_node_with_clients(&no_submit_loaded, &resolved, adapters)?;
+    Ok((runtime, no_submit_loaded))
+}
+
 fn no_submit_transport_adapter_configs(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<BoltV3AdapterConfigs, BoltV3LiveNodeError> {
     map_bolt_v3_adapters(loaded, resolved).map_err(BoltV3LiveNodeError::AdapterMapping)
+}
+
+fn data_client_probe_loaded_config(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<LoadedBoltV3Config, BoltV3LiveNodeError> {
+    if client_key.trim().is_empty() {
+        return Err(BoltV3LiveNodeError::NoSubmitDataClientProbeFailed {
+            reason: "data-client probe client_key is not configured".to_string(),
+        });
+    }
+    let client = loaded
+        .root
+        .clients
+        .get(client_key)
+        .cloned()
+        .ok_or_else(|| BoltV3LiveNodeError::NoSubmitDataClientProbeFailed {
+            reason: "data-client probe client_key is not configured".to_string(),
+        })?;
+    if client.data.is_none() {
+        return Err(BoltV3LiveNodeError::NoSubmitDataClientProbeFailed {
+            reason: "data-client probe requires the selected client to declare [data]".to_string(),
+        });
+    }
+    let mut probe_loaded = loaded.clone();
+    probe_loaded
+        .root
+        .clients
+        .retain(|configured_key, _| configured_key == client_key);
+    probe_loaded.strategies.clear();
+    Ok(probe_loaded)
 }
 
 fn no_submit_transport_loaded_config(loaded: &LoadedBoltV3Config) -> LoadedBoltV3Config {
@@ -2352,6 +2395,45 @@ mod tests {
         assert!(
             !loaded.strategies.is_empty(),
             "helper must not mutate the caller's loaded config"
+        );
+    }
+
+    #[test]
+    fn data_client_probe_config_keeps_only_selected_data_client() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let mut secondary = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        secondary.execution = None;
+        secondary.secrets = None;
+        loaded
+            .root
+            .clients
+            .insert("secondary_data".to_string(), secondary);
+
+        let probe_loaded = data_client_probe_loaded_config(&loaded, "secondary_data")
+            .expect("selected data client should produce a scoped probe config");
+
+        assert!(
+            probe_loaded.strategies.is_empty(),
+            "client-owned readiness probes must not retain unrelated strategy references"
+        );
+        assert_eq!(probe_loaded.root_path, loaded.root_path);
+        assert_eq!(
+            probe_loaded.config_bundle_checksum,
+            loaded.config_bundle_checksum
+        );
+        assert_eq!(probe_loaded.root.clients.len(), 1);
+        assert!(probe_loaded.root.clients.contains_key("secondary_data"));
+        assert!(
+            loaded.root.clients.contains_key("polymarket_main"),
+            "helper must not mutate the caller's full client bundle"
         );
     }
 

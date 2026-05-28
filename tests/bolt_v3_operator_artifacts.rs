@@ -1171,6 +1171,10 @@ venue = "BYBIT"
 [clients.bybit_data.data]
 product_types = ["spot", "linear"]
 environment = "testnet"
+http_timeout_secs = 10
+max_retries = 2
+instrument_status_poll_secs = 60
+ws_reconnect_delay_secs = 5
 transport_backend = "sockudo"
 "#
         ),
@@ -1231,6 +1235,46 @@ transport_backend = "sockudo"
             .expect("field names should be an array")
             .contains(&serde_json::json!("product_types")),
         "Bybit data config fields should be captured without treating product values as canonical"
+    );
+    assert!(
+        bybit["timeout_policy_field_names"]
+            .as_array()
+            .expect("timeout policy fields should be an array")
+            .contains(&serde_json::json!("http_timeout_secs")),
+        "timeout policy field names should be classified from TOML"
+    );
+    assert!(
+        bybit["retry_policy_field_names"]
+            .as_array()
+            .expect("retry policy fields should be an array")
+            .contains(&serde_json::json!("max_retries")),
+        "retry policy field names should be classified from TOML"
+    );
+    assert!(
+        bybit["freshness_policy_field_names"]
+            .as_array()
+            .expect("freshness policy fields should be an array")
+            .contains(&serde_json::json!("instrument_status_poll_secs")),
+        "freshness policy field names should be classified from TOML"
+    );
+    assert!(
+        bybit["reconnect_policy_field_names"]
+            .as_array()
+            .expect("reconnect policy fields should be an array")
+            .contains(&serde_json::json!("ws_reconnect_delay_secs")),
+        "reconnect policy field names should be classified from TOML"
+    );
+    let missing_behavior_proofs = bybit["missing_behavior_proofs"]
+        .as_array()
+        .expect("missing behavior proofs should be an array");
+    assert_eq!(
+        missing_behavior_proofs,
+        &vec![
+            serde_json::json!("metadata_behavior"),
+            serde_json::json!("quote_or_book_behavior"),
+            serde_json::json!("freshness_latency"),
+            serde_json::json!("reconnect_rate_limit_error")
+        ]
     );
 
     let polymarket = clients

@@ -80,6 +80,12 @@ const DATA_CLIENT_READINESS_SOURCE_SCHEMA_VERSION: u32 = 1;
 const DATA_CLIENT_READINESS_SOURCE_RECORD_KIND: &str = "bolt_v3.data_client_readiness_source.v1";
 const DATA_CLIENT_READINESS_STATUS_NOT_PRODUCTION_USABLE: &str =
     "not_production_usable_metadata_or_config_only";
+const DATA_CLIENT_MISSING_BEHAVIOR_PROOFS: &[&str] = &[
+    "metadata_behavior",
+    "quote_or_book_behavior",
+    "freshness_latency",
+    "reconnect_rate_limit_error",
+];
 const APPROVAL_NONCE_SCHEMA_VERSION: u32 = 1;
 const APPROVAL_NONCE_RECORD_KIND: &str = "bolt_v3.operator_approval_nonce.v1";
 const APPROVAL_NONCE_BYTES: usize = 32;
@@ -733,6 +739,12 @@ struct DataClientReadinessClientSource {
     required_secret_blocks: Vec<String>,
     data_config_sha256: Option<String>,
     data_config_field_names: Vec<String>,
+    timeout_policy_field_names: Vec<String>,
+    retry_policy_field_names: Vec<String>,
+    freshness_policy_field_names: Vec<String>,
+    reconnect_policy_field_names: Vec<String>,
+    rate_limit_policy_field_names: Vec<String>,
+    missing_behavior_proofs: Vec<&'static str>,
     execution_config_sha256: Option<String>,
     execution_config_field_names: Vec<String>,
     market_identity_targets: Vec<DataClientReadinessTargetSource>,
@@ -2650,6 +2662,7 @@ fn build_data_client_readiness_source_artifact(
         let has_data = client.data.is_some();
         let has_execution = client.execution.is_some();
         let has_secrets = client.secrets.is_some();
+        let data_config_field_names = toml_table_field_names(client.data.as_ref());
         clients.push(DataClientReadinessClientSource {
             client_key_hash: sha256_text(client_key),
             provider_key: provider_key.to_string(),
@@ -2673,7 +2686,28 @@ fn build_data_client_readiness_source_artifact(
                 })
                 .collect(),
             data_config_sha256: client.data.as_ref().map(sha256_toml_value).transpose()?,
-            data_config_field_names: toml_table_field_names(client.data.as_ref()),
+            timeout_policy_field_names: classified_policy_field_names(
+                &data_config_field_names,
+                data_client_timeout_policy_field,
+            ),
+            retry_policy_field_names: classified_policy_field_names(
+                &data_config_field_names,
+                data_client_retry_policy_field,
+            ),
+            freshness_policy_field_names: classified_policy_field_names(
+                &data_config_field_names,
+                data_client_freshness_policy_field,
+            ),
+            reconnect_policy_field_names: classified_policy_field_names(
+                &data_config_field_names,
+                data_client_reconnect_policy_field,
+            ),
+            rate_limit_policy_field_names: classified_policy_field_names(
+                &data_config_field_names,
+                data_client_rate_limit_policy_field,
+            ),
+            missing_behavior_proofs: DATA_CLIENT_MISSING_BEHAVIOR_PROOFS.to_vec(),
+            data_config_field_names,
             execution_config_sha256: client
                 .execution
                 .as_ref()
@@ -2714,6 +2748,40 @@ fn toml_table_field_names(value: Option<&toml::Value>) -> Vec<String> {
         .unwrap_or_default();
     names.sort();
     names
+}
+
+fn classified_policy_field_names(
+    field_names: &[String],
+    predicate: fn(&str) -> bool,
+) -> Vec<String> {
+    field_names
+        .iter()
+        .filter(|field| predicate(field))
+        .cloned()
+        .collect()
+}
+
+fn data_client_timeout_policy_field(field: &str) -> bool {
+    field.contains("timeout")
+}
+
+fn data_client_retry_policy_field(field: &str) -> bool {
+    field.contains("retry") || field.contains("retries")
+}
+
+fn data_client_freshness_policy_field(field: &str) -> bool {
+    field.contains("freshness")
+        || field.contains("interval")
+        || field.contains("poll")
+        || field.contains("debounce")
+}
+
+fn data_client_reconnect_policy_field(field: &str) -> bool {
+    field.contains("reconnect")
+}
+
+fn data_client_rate_limit_policy_field(field: &str) -> bool {
+    field.contains("rate_limit") || field.contains("throttle")
 }
 
 fn sha256_toml_value(value: &toml::Value) -> Result<String, BoltV3OperatorArtifactError> {

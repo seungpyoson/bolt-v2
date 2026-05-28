@@ -130,6 +130,13 @@ After commit `b360e3ba`, the hardened collector was run against ignored operatio
 
 This proves the per-client isolation fix removes the earlier all-client startup coupling for Bybit metadata behavior. It does not close T043A because the live config has no `bybit_data.readiness_probe.quote_targets` yet, the source-owned policy behavior artifacts above were generated against tracked example config rather than the ignored live root, and no final behavior/matrix artifacts have bound those policy proofs to live data-path probe evidence.
 
+After commit `1b17ed66`, the non-live source artifacts were refreshed against ignored operational `config/live.local.toml` into `/private/tmp/bolt-v2-t043a-1b17ed66/`:
+
+- `data-client-readiness-source.json`: sha256 `485cecfd0da3b601178348b0c624d6350f6631bf4104a0942c104b715b2eb8eb`.
+- `data-client-live-node-mapping-source.json`: sha256 `fd3396e39d084b2427a8f36ec3fdf32003dcf97218bb92b2b9ad316ba93c46ab`; it records every configured data client through normal LiveNode registration.
+- `nt-source-*.json`: source-capability artifacts were regenerated for Binance spot/USD-M/COIN-M, BitMEX, Bybit, Coinbase, Deribit, Kraken spot/futures, OKX, and Polymarket against pinned NT revision `6e059dcbb59ac1e582132fc431a581936c216c3c`.
+- `data-client-production-readiness-matrix.json`: sha256 `4bafd0be38433b437a6d784934cd113f52dcbe617e4c8666e9e800ab594d9b70`; every row remains `production_usable = false` with `missing_proofs = ["behavior_observation"]`.
+
 ## Missing Production Proof
 
 T043A remains open until a venue-neutral matrix proves the following for every PR-enabled data client, including Polymarket and each data-only NT venue binding:

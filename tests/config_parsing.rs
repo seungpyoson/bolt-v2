@@ -5436,6 +5436,31 @@ max_metadata_quote_targets = 4
 }
 
 #[test]
+fn allows_metadata_response_readiness_probe_with_explicit_sampling_opt_in() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+allow_metadata_target_sampling = true
+"#
+    ))
+    .expect("metadata-response sampling readiness probe should parse");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.is_empty(),
+        "metadata-response sampling must be an explicit config-owned opt-in: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_metadata_response_readiness_probe_with_min_quote_targets() {
     use bolt_v2::bolt_v3_config::BoltV3RootConfig;
 
@@ -5543,6 +5568,14 @@ fn root_example_declares_requested_nt_data_clients_for_registration() {
         assert!(
             client.data.is_some(),
             "{client_key} must declare a [data] block"
+        );
+        let readiness_probe = client
+            .readiness_probe
+            .as_ref()
+            .unwrap_or_else(|| panic!("{client_key} must declare a readiness_probe block"));
+        assert!(
+            readiness_probe.allow_metadata_target_sampling,
+            "{client_key} must explicitly opt into source-owned metadata sampling"
         );
     }
 }

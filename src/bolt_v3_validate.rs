@@ -870,6 +870,11 @@ fn validate_client_readiness_probe(key: &str, client: &ClientBlock) -> Vec<Strin
                     "clients.{key}.readiness_probe.max_metadata_quote_targets is only valid when quote_target_source = \"metadata_response\""
                 ));
             }
+            if readiness_probe.allow_metadata_target_sampling {
+                errors.push(format!(
+                    "clients.{key}.readiness_probe.allow_metadata_target_sampling is only valid when quote_target_source = \"metadata_response\""
+                ));
+            }
         }
         DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
             if !readiness_probe.quote_targets.is_empty() {

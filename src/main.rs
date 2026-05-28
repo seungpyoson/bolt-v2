@@ -4,8 +4,11 @@ use std::path::PathBuf;
 use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::{
-        build_bolt_v3_live_node, build_bolt_v3_no_submit_data_client_probe_live_node,
-        build_bolt_v3_no_submit_live_node, collect_no_submit_data_client_readiness_evidence,
+        BoltV3NoSubmitBookDeltasEvidence, BoltV3NoSubmitDataClientReadinessEvidence,
+        BoltV3NoSubmitReferenceQuoteEvidence, build_bolt_v3_live_node,
+        build_bolt_v3_no_submit_data_client_probe_live_node, build_bolt_v3_no_submit_live_node,
+        collect_no_submit_data_client_metadata_evidence,
+        collect_no_submit_data_client_readiness_evidence,
         collect_no_submit_reference_quote_evidence, run_bolt_v3_live_node,
     },
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
@@ -1063,13 +1066,18 @@ fn run_operator_artifacts_command(
                 .enable_all()
                 .build()?;
             let local = tokio::task::LocalSet::new();
-            let evidence = runtime.block_on(local.run_until(
-                collect_no_submit_data_client_readiness_evidence(
+            let metadata = runtime.block_on(local.run_until(
+                collect_no_submit_data_client_metadata_evidence(
                     &mut live_node,
                     &probe_loaded,
                     &client_key,
                 ),
             ))?;
+            let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+                metadata,
+                quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+                books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+            };
             let written =
                 write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(
                     &probe_loaded,

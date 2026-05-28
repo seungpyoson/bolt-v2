@@ -223,6 +223,12 @@ api_key_ssm_path = "/bolt/polymarket_main/api_key"
 api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
 passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
 
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "book"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
 [clients.binance_spot_data]
 venue = "BINANCE"
 
@@ -237,6 +243,12 @@ transport_backend = "sockudo"
 [clients.binance_spot_data.secrets]
 api_key_ssm_path = "/bolt/binance/api-key"
 api_secret_ssm_path = "/bolt/binance/api-secret"
+
+[clients.binance_spot_data.readiness_probe]
+market_data_kind = "book"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
 
 [clients.binance_usdm_data]
 venue = "BINANCE"
@@ -253,6 +265,12 @@ transport_backend = "sockudo"
 api_key_ssm_path = "/bolt/binance/api-key"
 api_secret_ssm_path = "/bolt/binance/api-secret"
 
+[clients.binance_usdm_data.readiness_probe]
+market_data_kind = "book"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
 [clients.binance_coinm_data]
 venue = "BINANCE"
 
@@ -268,6 +286,12 @@ transport_backend = "sockudo"
 api_key_ssm_path = "/bolt/binance/api-key"
 api_secret_ssm_path = "/bolt/binance/api-secret"
 
+[clients.binance_coinm_data.readiness_probe]
+market_data_kind = "book"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
 [clients.bitmex_data]
 venue = "BITMEX"
 
@@ -275,6 +299,12 @@ venue = "BITMEX"
 environment = "testnet"
 active_only = false
 transport_backend = "sockudo"
+
+[clients.bitmex_data.readiness_probe]
+market_data_kind = "book"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
 
 [clients.bybit_data]
 venue = "BYBIT"
@@ -284,12 +314,24 @@ product_types = ["spot", "linear", "inverse", "option"]
 environment = "testnet"
 transport_backend = "sockudo"
 
+[clients.bybit_data.readiness_probe]
+market_data_kind = "book"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
 [clients.coinbase_data]
 venue = "COINBASE"
 
 [clients.coinbase_data.data]
 environment = "Live"
 transport_backend = "sockudo"
+
+[clients.coinbase_data.readiness_probe]
+market_data_kind = "book"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
 
 [clients.deribit_data]
 venue = "DERIBIT"
@@ -299,6 +341,12 @@ product_types = ["future", "option", "spot", "future_combo", "option_combo"]
 environment = "testnet"
 transport_backend = "sockudo"
 
+[clients.deribit_data.readiness_probe]
+market_data_kind = "book"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
 [clients.kraken_spot_data]
 venue = "KRAKEN"
 
@@ -307,6 +355,12 @@ product_type = "spot"
 environment = "live"
 transport_backend = "sockudo"
 
+[clients.kraken_spot_data.readiness_probe]
+market_data_kind = "book"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+
 [clients.kraken_futures_data]
 venue = "KRAKEN"
 
@@ -314,6 +368,12 @@ venue = "KRAKEN"
 product_type = "futures"
 environment = "demo"
 transport_backend = "sockudo"
+
+[clients.kraken_futures_data.readiness_probe]
+market_data_kind = "book"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
 
 [clients.okx_data]
 venue = "OKX"
@@ -324,3 +384,9 @@ contract_types = ["linear", "inverse"]
 load_spreads = true
 environment = "demo"
 transport_backend = "sockudo"
+
+[clients.okx_data.readiness_probe]
+market_data_kind = "book"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true

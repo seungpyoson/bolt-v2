@@ -64,8 +64,8 @@ use nautilus_live::{
     node::{LiveNode, LiveNodeHandle, NodeState},
 };
 use nautilus_model::{
-    data::QuoteTick,
-    enums::BarIntervalType,
+    data::{OrderBookDeltas, QuoteTick},
+    enums::{BarIntervalType, BookType},
     identifiers::{ActorId, ClientId, InstrumentId, StrategyId, Venue},
     instruments::Instrument,
 };
@@ -77,7 +77,10 @@ use crate::{
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
-    bolt_v3_config::{DataClientReadinessProbeQuoteTargetSource, LoadedBoltV3Config},
+    bolt_v3_config::{
+        DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetSource,
+        LoadedBoltV3Config,
+    },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
@@ -130,6 +133,21 @@ pub struct BoltV3NoSubmitReferenceQuoteEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3NoSubmitBookDeltas {
+    pub data_client_id: String,
+    pub instrument_id: String,
+    pub delta_count: u64,
+    pub ts_event_unix_nanos: u64,
+    pub ts_init_unix_nanos: u64,
+    pub captured_at_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3NoSubmitBookDeltasEvidence {
+    pub deltas: Vec<BoltV3NoSubmitBookDeltas>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3NoSubmitDataClientMetadata {
     pub data_client_id: String,
     pub venue: String,
@@ -147,6 +165,7 @@ pub struct BoltV3NoSubmitDataClientMetadataEvidence {
 pub struct BoltV3NoSubmitDataClientReadinessEvidence {
     pub metadata: BoltV3NoSubmitDataClientMetadataEvidence,
     pub quotes: BoltV3NoSubmitReferenceQuoteEvidence,
+    pub books: BoltV3NoSubmitBookDeltasEvidence,
 }
 
 impl BoltV3NoSubmitReferenceQuoteEvidence {
@@ -177,11 +196,14 @@ struct NoSubmitReferenceQuoteSubscription {
 struct BoltV3NoSubmitReferenceQuoteProbeHandle {
     required: Rc<RefCell<Vec<NoSubmitReferenceQuoteSubscription>>>,
     ambiguous_instrument_ids: Rc<RefCell<BTreeSet<String>>>,
+    market_data_kind: DataClientReadinessProbeMarketDataKind,
     metadata_response_data_client_id: Option<ClientId>,
     metadata_response_max_quote_targets: Option<usize>,
+    metadata_response_allow_target_sampling: bool,
     quote_targets_initialized: Rc<Cell<bool>>,
     failure_reason: Rc<RefCell<Option<String>>>,
     quotes: Rc<RefCell<Vec<BoltV3NoSubmitReferenceQuote>>>,
+    book_deltas: Rc<RefCell<Vec<BoltV3NoSubmitBookDeltas>>>,
     quote_notify: Rc<tokio::sync::Notify>,
 }
 
@@ -189,39 +211,63 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
     fn new(loaded: &LoadedBoltV3Config) -> Self {
         let (required, ambiguous_instrument_ids) =
             no_submit_reference_quote_subscription_plan(loaded);
-        Self::from_plan(required, ambiguous_instrument_ids)
+        Self::from_plan(
+            required,
+            ambiguous_instrument_ids,
+            DataClientReadinessProbeMarketDataKind::Quote,
+        )
     }
 
     fn from_plan(
         required: Vec<NoSubmitReferenceQuoteSubscription>,
         ambiguous_instrument_ids: BTreeSet<String>,
+        market_data_kind: DataClientReadinessProbeMarketDataKind,
     ) -> Self {
         Self {
             required: Rc::new(RefCell::new(required)),
             ambiguous_instrument_ids: Rc::new(RefCell::new(ambiguous_instrument_ids)),
+            market_data_kind,
             metadata_response_data_client_id: None,
             metadata_response_max_quote_targets: None,
+            metadata_response_allow_target_sampling: false,
             quote_targets_initialized: Rc::new(Cell::new(true)),
             failure_reason: Rc::new(RefCell::new(None)),
             quotes: Rc::new(RefCell::new(Vec::new())),
+            book_deltas: Rc::new(RefCell::new(Vec::new())),
             quote_notify: Rc::new(tokio::sync::Notify::new()),
         }
     }
 
-    fn from_metadata_response_plan(data_client_id: ClientId, max_quote_targets: usize) -> Self {
+    fn from_metadata_response_plan(
+        data_client_id: ClientId,
+        max_quote_targets: usize,
+        allow_target_sampling: bool,
+        market_data_kind: DataClientReadinessProbeMarketDataKind,
+    ) -> Self {
         Self {
             required: Rc::new(RefCell::new(Vec::new())),
             ambiguous_instrument_ids: Rc::new(RefCell::new(BTreeSet::new())),
+            market_data_kind,
             metadata_response_data_client_id: Some(data_client_id),
             metadata_response_max_quote_targets: Some(max_quote_targets),
+            metadata_response_allow_target_sampling: allow_target_sampling,
             quote_targets_initialized: Rc::new(Cell::new(false)),
             failure_reason: Rc::new(RefCell::new(None)),
             quotes: Rc::new(RefCell::new(Vec::new())),
+            book_deltas: Rc::new(RefCell::new(Vec::new())),
             quote_notify: Rc::new(tokio::sync::Notify::new()),
         }
     }
 
+    #[cfg(test)]
     fn has_all_required_quotes(&self) -> bool {
+        if self.market_data_kind != DataClientReadinessProbeMarketDataKind::Quote {
+            return false;
+        }
+        self.has_all_required_market_data()
+    }
+
+    fn has_all_required_market_data(&self) -> bool {
         if self.failure_error().is_some() {
             return false;
         }
@@ -235,8 +281,16 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         if self.metadata_response_data_client_id.is_some() && required.is_empty() {
             return false;
         }
-        let quotes = self.quotes.borrow();
-        observed_required_quote_count(&required, &quotes) == required.len()
+        match self.market_data_kind {
+            DataClientReadinessProbeMarketDataKind::Quote => {
+                let quotes = self.quotes.borrow();
+                observed_required_quote_count(&required, &quotes) == required.len()
+            }
+            DataClientReadinessProbeMarketDataKind::Book => {
+                let book_deltas = self.book_deltas.borrow();
+                observed_required_book_delta_count(&required, &book_deltas) == required.len()
+            }
+        }
     }
 
     fn ambiguity_error(&self) -> Option<String> {
@@ -269,6 +323,12 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         }
     }
 
+    fn book_evidence(&self) -> BoltV3NoSubmitBookDeltasEvidence {
+        BoltV3NoSubmitBookDeltasEvidence {
+            deltas: self.book_deltas.borrow().clone(),
+        }
+    }
+
     fn install_metadata_response_instrument_ids(
         &self,
         mut instrument_ids: Vec<InstrumentId>,
@@ -284,10 +344,14 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         let max_quote_targets = self.metadata_response_max_quote_targets.unwrap_or(0);
         let metadata_quote_targets = instrument_ids.len();
         if metadata_quote_targets > max_quote_targets {
-            self.fail_metadata_response_probe(format!(
-                "metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters before using this client for production readiness"
-            ));
-            return Vec::new();
+            if self.metadata_response_allow_target_sampling {
+                instrument_ids.truncate(max_quote_targets);
+            } else {
+                self.fail_metadata_response_probe(format!(
+                    "metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters or set clients.<id>.readiness_probe.allow_metadata_target_sampling=true before using this client for production readiness"
+                ));
+                return Vec::new();
+            }
         }
         let subscriptions = instrument_ids
             .into_iter()
@@ -332,7 +396,38 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             }
         }
         drop(quotes);
-        if matched_required && self.has_all_required_quotes() {
+        if matched_required && self.has_all_required_market_data() {
+            self.quote_notify.notify_one();
+        }
+    }
+
+    fn record_book_deltas(&self, deltas: &OrderBookDeltas, captured_at_unix_nanos: u64) {
+        let deltas_instrument_id = deltas.instrument_id.to_string();
+        if self
+            .ambiguous_instrument_ids
+            .borrow()
+            .contains(&deltas_instrument_id)
+        {
+            return;
+        }
+        let required = self.required.borrow().clone();
+        let mut matched_required = false;
+        let mut book_deltas = self.book_deltas.borrow_mut();
+        for required in &required {
+            if deltas.instrument_id == required.instrument_id {
+                matched_required = true;
+                book_deltas.push(BoltV3NoSubmitBookDeltas {
+                    data_client_id: required.data_client_id.to_string(),
+                    instrument_id: required.instrument_id.to_string(),
+                    delta_count: deltas.deltas.len() as u64,
+                    ts_event_unix_nanos: deltas.ts_event.as_u64(),
+                    ts_init_unix_nanos: deltas.ts_init.as_u64(),
+                    captured_at_unix_nanos,
+                });
+            }
+        }
+        drop(book_deltas);
+        if matched_required && self.has_all_required_market_data() {
             self.quote_notify.notify_one();
         }
     }
@@ -342,12 +437,31 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             if let Some(reason) = self.failure_error() {
                 return Err(reason);
             }
-            if self.has_all_required_quotes() {
+            if self.has_all_required_market_data() {
                 return Ok(());
             }
             self.quote_notify.notified().await;
         }
     }
+}
+
+fn observed_required_book_delta_count(
+    required: &[NoSubmitReferenceQuoteSubscription],
+    book_deltas: &[BoltV3NoSubmitBookDeltas],
+) -> usize {
+    let mut observed = BTreeSet::new();
+    for required in required {
+        if book_deltas.iter().any(|deltas| {
+            deltas.data_client_id == required.data_client_id.to_string()
+                && deltas.instrument_id == required.instrument_id.to_string()
+        }) {
+            observed.insert((
+                required.data_client_id.to_string(),
+                required.instrument_id.to_string(),
+            ));
+        }
+    }
+    observed.len()
 }
 
 fn observed_required_quote_count(
@@ -459,22 +573,30 @@ impl BoltV3NoSubmitReferenceQuoteProbe {
 impl DataActor for BoltV3NoSubmitReferenceQuoteProbe {
     fn on_start(&mut self) -> anyhow::Result<()> {
         let required_subscriptions = self.handle.required.borrow().clone();
+        let market_data_kind = self.handle.market_data_kind;
         for required in required_subscriptions {
-            self.subscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+            subscribe_no_submit_required_market_data(self, market_data_kind, required);
         }
         Ok(())
     }
 
     fn on_stop(&mut self) -> anyhow::Result<()> {
         let required_subscriptions = self.handle.required.borrow().clone();
+        let market_data_kind = self.handle.market_data_kind;
         for required in required_subscriptions {
-            self.unsubscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+            unsubscribe_no_submit_required_market_data(self, market_data_kind, required);
         }
         Ok(())
     }
 
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
         self.handle.record_quote(quote, current_unix_nanos()?);
+        Ok(())
+    }
+
+    fn on_book_deltas(&mut self, deltas: &OrderBookDeltas) -> anyhow::Result<()> {
+        self.handle
+            .record_book_deltas(deltas, current_unix_nanos()?);
         Ok(())
     }
 }
@@ -516,7 +638,11 @@ impl BoltV3NoSubmitDataClientReadinessProbe {
                 .quote_handle
                 .install_metadata_response_instrument_ids(instrument_ids)
             {
-                self.subscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+                subscribe_no_submit_required_market_data(
+                    self,
+                    self.quote_handle.market_data_kind,
+                    required,
+                );
             }
         }
     }
@@ -543,16 +669,18 @@ impl DataActor for BoltV3NoSubmitDataClientReadinessProbe {
             handler,
         )?;
         let required_subscriptions = self.quote_handle.required.borrow().clone();
+        let market_data_kind = self.quote_handle.market_data_kind;
         for required in required_subscriptions {
-            self.subscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+            subscribe_no_submit_required_market_data(self, market_data_kind, required);
         }
         Ok(())
     }
 
     fn on_stop(&mut self) -> anyhow::Result<()> {
         let required_subscriptions = self.quote_handle.required.borrow().clone();
+        let market_data_kind = self.quote_handle.market_data_kind;
         for required in required_subscriptions {
-            self.unsubscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+            unsubscribe_no_submit_required_market_data(self, market_data_kind, required);
         }
         Ok(())
     }
@@ -560,6 +688,53 @@ impl DataActor for BoltV3NoSubmitDataClientReadinessProbe {
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
         self.quote_handle.record_quote(quote, current_unix_nanos()?);
         Ok(())
+    }
+
+    fn on_book_deltas(&mut self, deltas: &OrderBookDeltas) -> anyhow::Result<()> {
+        self.quote_handle
+            .record_book_deltas(deltas, current_unix_nanos()?);
+        Ok(())
+    }
+}
+
+fn subscribe_no_submit_required_market_data<A: DataActor + std::fmt::Debug + 'static>(
+    actor: &mut A,
+    market_data_kind: DataClientReadinessProbeMarketDataKind,
+    required: NoSubmitReferenceQuoteSubscription,
+) {
+    match market_data_kind {
+        DataClientReadinessProbeMarketDataKind::Quote => {
+            actor.subscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+        }
+        DataClientReadinessProbeMarketDataKind::Book => {
+            actor.subscribe_book_deltas(
+                required.instrument_id,
+                BookType::L2_MBP,
+                None,
+                Some(required.data_client_id),
+                false,
+                None,
+            );
+        }
+    }
+}
+
+fn unsubscribe_no_submit_required_market_data<A: DataActor + std::fmt::Debug + 'static>(
+    actor: &mut A,
+    market_data_kind: DataClientReadinessProbeMarketDataKind,
+    required: NoSubmitReferenceQuoteSubscription,
+) {
+    match market_data_kind {
+        DataClientReadinessProbeMarketDataKind::Quote => {
+            actor.unsubscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+        }
+        DataClientReadinessProbeMarketDataKind::Book => {
+            actor.unsubscribe_book_deltas(
+                required.instrument_id,
+                Some(required.data_client_id),
+                None,
+            );
+        }
     }
 }
 
@@ -647,6 +822,7 @@ fn no_submit_data_client_readiness_quote_probe_handle(
         return Ok(BoltV3NoSubmitReferenceQuoteProbeHandle::from_plan(
             Vec::new(),
             BTreeSet::new(),
+            DataClientReadinessProbeMarketDataKind::Quote,
         ));
     };
     match readiness_probe.quote_target_source {
@@ -671,6 +847,7 @@ fn no_submit_data_client_readiness_quote_probe_handle(
             Ok(BoltV3NoSubmitReferenceQuoteProbeHandle::from_plan(
                 required,
                 ambiguous_instrument_ids,
+                readiness_probe.market_data_kind,
             ))
         }
         DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
@@ -690,6 +867,8 @@ fn no_submit_data_client_readiness_quote_probe_handle(
                 BoltV3NoSubmitReferenceQuoteProbeHandle::from_metadata_response_plan(
                     ClientId::from(client_key),
                     max_quote_targets,
+                    readiness_probe.allow_metadata_target_sampling,
+                    readiness_probe.market_data_kind,
                 ),
             )
         }
@@ -1413,13 +1592,20 @@ pub async fn collect_no_submit_data_client_readiness_evidence(
     loaded: &LoadedBoltV3Config,
     client_key: &str,
 ) -> Result<BoltV3NoSubmitDataClientReadinessEvidence, BoltV3LiveNodeError> {
-    let (run, metadata_evidence, quote_evidence, metadata_probe, reference_quote_probe, stop) =
-        run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
-            &mut runtime.node,
-            loaded,
-            client_key,
-        )
-        .await;
+    let (
+        run,
+        metadata_evidence,
+        quote_evidence,
+        book_evidence,
+        metadata_probe,
+        reference_quote_probe,
+        stop,
+    ) = run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
+        &mut runtime.node,
+        loaded,
+        client_key,
+    )
+    .await;
     run?;
     no_submit_required_execution_accounts_registered(runtime, loaded)?;
     if let Err(reason) = metadata_probe {
@@ -1432,7 +1618,36 @@ pub async fn collect_no_submit_data_client_readiness_evidence(
     Ok(BoltV3NoSubmitDataClientReadinessEvidence {
         metadata: metadata_evidence,
         quotes: quote_evidence,
+        books: book_evidence,
     })
+}
+
+pub async fn collect_no_submit_data_client_metadata_evidence(
+    runtime: &mut BoltV3LiveNodeRuntime,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<BoltV3NoSubmitDataClientMetadataEvidence, BoltV3LiveNodeError> {
+    let (
+        run,
+        metadata_evidence,
+        _quote_evidence,
+        _book_evidence,
+        metadata_probe,
+        _reference_quote_probe,
+        stop,
+    ) = run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
+        &mut runtime.node,
+        loaded,
+        client_key,
+    )
+    .await;
+    run?;
+    no_submit_required_execution_accounts_registered(runtime, loaded)?;
+    if let Err(reason) = metadata_probe {
+        return Err(BoltV3LiveNodeError::NoSubmitDataClientProbeFailed { reason });
+    }
+    stop?;
+    Ok(metadata_evidence)
 }
 
 fn no_submit_controlled_connect_result(
@@ -1496,6 +1711,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
     Result<(), BoltV3LiveNodeError>,
     BoltV3NoSubmitDataClientMetadataEvidence,
     BoltV3NoSubmitReferenceQuoteEvidence,
+    BoltV3NoSubmitBookDeltasEvidence,
     Result<(), String>,
     Result<(), String>,
     Result<(), BoltV3LiveNodeError>,
@@ -1510,6 +1726,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
                     responses: Vec::new(),
                 },
                 BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+                BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
                 Err("data-client metadata probe setup failed".to_string()),
                 Err("data-client quote probe setup failed".to_string()),
                 Err(BoltV3LiveNodeError::NoSubmitStopFailed(anyhow::anyhow!(
@@ -1525,6 +1742,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
                 Err(error),
                 metadata_probe.evidence(),
                 reference_quote_probe.evidence(),
+                reference_quote_probe.book_evidence(),
                 Err(
                     "data-client metadata probe was not observed because start timeout overflowed"
                         .to_string(),
@@ -1546,6 +1764,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
                 Err(BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow),
                 metadata_probe.evidence(),
                 reference_quote_probe.evidence(),
+                reference_quote_probe.book_evidence(),
                 Err(
                     "data-client metadata probe was not observed because stop timeout overflowed"
                         .to_string(),
@@ -1572,6 +1791,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
                 connect,
                 metadata_probe.evidence(),
                 reference_quote_probe.evidence(),
+                reference_quote_probe.book_evidence(),
                 Err("data-client metadata probe was not observed before runner exit".to_string()),
                 Err("data-client quote probe was not observed before runner exit".to_string()),
                 Ok(()),
@@ -1588,6 +1808,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
                         Err(BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_secs }),
                         metadata_probe.evidence(),
                         reference_quote_probe.evidence(),
+                        reference_quote_probe.book_evidence(),
                         Err("data-client metadata probe was not observed because no-submit runner did not reach Running".to_string()),
                         Err("data-client quote probe was not observed because no-submit runner did not reach Running".to_string()),
                         Err(BoltV3LiveNodeError::NoSubmitStopFailed(anyhow::anyhow!(
@@ -1620,6 +1841,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
                     connect,
                     metadata_probe.evidence(),
                     reference_quote_probe.evidence(),
+                    reference_quote_probe.book_evidence(),
                     metadata_probe_result.unwrap_or_else(|| {
                         Err("data-client metadata probe was not observed before runner exit".to_string())
                     }),
@@ -1639,6 +1861,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
     }
     let metadata_evidence = metadata_probe.evidence();
     let reference_quote_evidence = reference_quote_probe.evidence();
+    let book_delta_evidence = reference_quote_probe.book_evidence();
     node_handle.stop();
     let stop =
         match tokio::time::timeout(Duration::from_secs(stop_timeout_secs), &mut run_future).await {
@@ -1652,6 +1875,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
         connect,
         metadata_evidence,
         reference_quote_evidence,
+        book_delta_evidence,
         metadata_probe_result
             .unwrap_or_else(|| Err("data-client metadata probe was not observed".to_string())),
         reference_probe_result
@@ -1798,8 +2022,11 @@ fn install_no_submit_data_client_readiness_quote_probe(
 ) -> Result<BoltV3NoSubmitReferenceQuoteProbeHandle, BoltV3LiveNodeError> {
     let (required, ambiguous_instrument_ids) =
         no_submit_data_client_readiness_quote_subscription_plan(loaded, client_key)?;
-    let handle =
-        BoltV3NoSubmitReferenceQuoteProbeHandle::from_plan(required, ambiguous_instrument_ids);
+    let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::from_plan(
+        required,
+        ambiguous_instrument_ids,
+        DataClientReadinessProbeMarketDataKind::Quote,
+    );
     install_no_submit_reference_quote_probe_handle(node, loaded, handle)
 }
 
@@ -2439,9 +2666,12 @@ pub async fn disconnect_bolt_v3_clients(
 mod tests {
     use super::*;
     use crate::bolt_v3_config::{
-        BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeQuoteTargetBlock,
-        DataClientReadinessProbeQuoteTargetSource, ReferenceDataBlock,
+        BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeMarketDataKind,
+        DataClientReadinessProbeQuoteTargetBlock, DataClientReadinessProbeQuoteTargetSource,
+        ReferenceDataBlock,
     };
+    use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
+    use nautilus_model::enums::{BookAction, OrderSide};
     use nautilus_model::identifiers::TraderId;
     use nautilus_model::types::{Price, Quantity};
 
@@ -2518,8 +2748,10 @@ mod tests {
             .get_mut("polymarket_main")
             .expect("fixture should include a data client");
         client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(2),
+            allow_metadata_target_sampling: false,
             quote_targets: BTreeMap::new(),
         });
 
@@ -2570,8 +2802,10 @@ mod tests {
             .get_mut("polymarket_main")
             .expect("fixture should include a data client");
         client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(2),
+            allow_metadata_target_sampling: false,
             quote_targets: BTreeMap::new(),
         });
 
@@ -2597,6 +2831,42 @@ mod tests {
     }
 
     #[test]
+    fn data_client_readiness_metadata_response_probe_samples_when_explicitly_configured() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(2),
+            allow_metadata_target_sampling: true,
+            quote_targets: BTreeMap::new(),
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness quote handle should build");
+        let installed = handle.install_metadata_response_instrument_ids(vec![
+            InstrumentId::from("CONFIGURED-THIRD.SOURCE"),
+            InstrumentId::from("CONFIGURED-FIRST.SOURCE"),
+            InstrumentId::from("CONFIGURED-SECOND.SOURCE"),
+        ]);
+
+        assert_eq!(installed.len(), 2);
+        assert_eq!(
+            installed[0].instrument_id,
+            InstrumentId::from("CONFIGURED-FIRST.SOURCE")
+        );
+        assert_eq!(
+            installed[1].instrument_id,
+            InstrumentId::from("CONFIGURED-SECOND.SOURCE")
+        );
+        assert!(handle.failure_error().is_none());
+    }
+
+    #[test]
     fn data_client_readiness_metadata_response_probe_requires_all_metadata_quote_targets() {
         let mut loaded = fixture_loaded_config();
         let client = loaded
@@ -2605,8 +2875,10 @@ mod tests {
             .get_mut("polymarket_main")
             .expect("fixture should include a data client");
         client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(3),
+            allow_metadata_target_sampling: false,
             quote_targets: BTreeMap::new(),
         });
 
@@ -2678,6 +2950,59 @@ mod tests {
             handle.has_all_required_quotes(),
             "metadata-response quote probe should pass after all same-run metadata targets are observed"
         );
+    }
+
+    #[test]
+    fn data_client_readiness_metadata_response_probe_accepts_book_deltas_when_configured() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(1),
+            allow_metadata_target_sampling: false,
+            quote_targets: BTreeMap::new(),
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness book handle should build");
+        let installed = handle.install_metadata_response_instrument_ids(vec![InstrumentId::from(
+            "CONFIGURED-FIRST.SOURCE",
+        )]);
+
+        assert_eq!(installed.len(), 1);
+        assert!(
+            !handle.has_all_required_market_data(),
+            "book probes must not pass before a source-owned book-delta event arrives"
+        );
+        let subscription = &installed[0];
+        let delta = OrderBookDelta::new(
+            subscription.instrument_id,
+            BookAction::Add,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("1.00"),
+                Quantity::from("2.00"),
+                1,
+            ),
+            0,
+            0,
+            1_000.into(),
+            1_100.into(),
+        );
+        let deltas = OrderBookDeltas::new(subscription.instrument_id, vec![delta]);
+
+        handle.record_book_deltas(&deltas, 1_200);
+
+        assert!(
+            handle.has_all_required_market_data(),
+            "metadata-response book probes should pass after every installed source-owned target has book deltas"
+        );
+        assert_eq!(handle.book_evidence().deltas.len(), 1);
     }
 
     #[test]

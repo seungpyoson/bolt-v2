@@ -31,9 +31,9 @@ use crate::{
     bolt_v3_client_registration::BoltV3RegistrationSummary,
     bolt_v3_config::{
         BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
-        DataClientReadinessProbeQuoteTargetSource, LiveCanaryOperatorEvidenceBlock,
-        LoadedBoltV3Config, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND,
-        RESOLUTION_GATE_ROLE,
+        DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetSource,
+        LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, NO_RESOLUTION_KIND,
+        NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE,
     },
     bolt_v3_decision_evidence::{
         BoltV3ReadinessGateEvidenceSnapshot, BoltV3StrategyInputEvidenceSnapshot,
@@ -816,6 +816,7 @@ struct DataClientReadinessProbeTargetSource {
     event_kind: &'static str,
     instrument_id_hash: Option<String>,
     max_metadata_quote_targets: Option<usize>,
+    allow_metadata_target_sampling: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3273,16 +3274,38 @@ fn data_client_behavior_probe_events_from_no_submit_readiness_evidence(
         provider_key,
         &evidence.metadata,
     )?;
-    if client.readiness_probe.is_some() || !evidence.quotes.quotes.is_empty() {
-        events.extend(
-            data_client_quote_probe_events_from_no_submit_readiness_evidence(
-                client_key,
-                provider_key,
-                client,
-                &evidence.metadata,
-                &evidence.quotes,
-            )?,
-        );
+    if let Some(readiness_probe) = &client.readiness_probe {
+        match readiness_probe.market_data_kind {
+            DataClientReadinessProbeMarketDataKind::Quote => {
+                events.extend(
+                    data_client_quote_probe_events_from_no_submit_readiness_evidence(
+                        client_key,
+                        provider_key,
+                        client,
+                        &evidence.metadata,
+                        &evidence.quotes,
+                    )?,
+                );
+            }
+            DataClientReadinessProbeMarketDataKind::Book => {
+                events.extend(
+                    data_client_book_probe_events_from_no_submit_readiness_evidence(
+                        client_key,
+                        provider_key,
+                        client,
+                        &evidence.metadata,
+                        &evidence.books,
+                    )?,
+                );
+            }
+        }
+    } else if !evidence.quotes.quotes.is_empty() {
+        events.extend(data_client_quote_probe_events_from_no_submit_evidence(
+            client_key,
+            provider_key,
+            client,
+            &evidence.quotes,
+        )?);
     }
     if events.is_empty() {
         return Err(
@@ -3405,6 +3428,51 @@ fn data_client_quote_probe_events_from_no_submit_readiness_evidence(
     Ok(events)
 }
 
+fn data_client_book_probe_events_from_no_submit_readiness_evidence(
+    client_key: &str,
+    provider_key: &str,
+    client: &crate::bolt_v3_config::ClientBlock,
+    metadata: &crate::bolt_v3_live_node::BoltV3NoSubmitDataClientMetadataEvidence,
+    evidence: &crate::bolt_v3_live_node::BoltV3NoSubmitBookDeltasEvidence,
+) -> Result<Vec<DataClientBehaviorProbeEvent>, BoltV3OperatorArtifactError> {
+    let book_targets = data_client_readiness_quote_target_instruments_for_evidence(
+        client_key,
+        provider_key,
+        client,
+        metadata,
+    )?;
+    let events = data_client_book_probe_events_for_targets(
+        client_key,
+        provider_key,
+        evidence,
+        &book_targets,
+    )?;
+    if client
+        .readiness_probe
+        .as_ref()
+        .is_some_and(|readiness_probe| {
+            readiness_probe.quote_target_source
+                == DataClientReadinessProbeQuoteTargetSource::MetadataResponse
+        })
+    {
+        let observed_targets: BTreeSet<&str> = evidence
+            .deltas
+            .iter()
+            .filter(|deltas| deltas.data_client_id == client_key)
+            .filter(|deltas| book_targets.contains(&deltas.instrument_id))
+            .map(|deltas| deltas.instrument_id.as_str())
+            .collect();
+        if observed_targets.len() != book_targets.len() {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "metadata.instrument_ids.books",
+                },
+            );
+        }
+    }
+    Ok(events)
+}
+
 fn data_client_quote_probe_events_for_targets(
     client_key: &str,
     provider_key: &str,
@@ -3450,6 +3518,64 @@ fn data_client_quote_probe_events_for_targets(
             recovered: None,
             fail_closed: None,
             evidence_sha256: Some(data_client_quote_probe_evidence_hash(quote)?),
+            unsupported_disposition: None,
+        });
+    }
+    Ok(events)
+}
+
+fn data_client_book_probe_events_for_targets(
+    client_key: &str,
+    provider_key: &str,
+    evidence: &crate::bolt_v3_live_node::BoltV3NoSubmitBookDeltasEvidence,
+    book_targets: &BTreeSet<String>,
+) -> Result<Vec<DataClientBehaviorProbeEvent>, BoltV3OperatorArtifactError> {
+    let client_key_hash = sha256_text(client_key);
+    let mut events = Vec::new();
+    for deltas in &evidence.deltas {
+        if deltas.data_client_id != client_key || !book_targets.contains(&deltas.instrument_id) {
+            continue;
+        }
+        if deltas.delta_count == 0 {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "book.delta_count",
+                },
+            );
+        }
+        let observed_at_unix_millis =
+            nanos_to_millis_checked(deltas.captured_at_unix_nanos, "book.captured_at_unix_nanos")?;
+        if observed_at_unix_millis == 0 {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "book.captured_at_unix_nanos",
+                },
+            );
+        }
+        let (age_millis, event_clock_skew_millis) = nanos_age_and_clock_skew_millis(
+            deltas.captured_at_unix_nanos,
+            deltas.ts_event_unix_nanos,
+        );
+        let latency_millis = nanos_delta_to_millis_checked(
+            deltas.captured_at_unix_nanos,
+            deltas.ts_init_unix_nanos,
+            "book.ts_init_unix_nanos",
+        )?;
+        events.push(DataClientBehaviorProbeEvent {
+            schema_version: DATA_CLIENT_BEHAVIOR_OBSERVATION_SCHEMA_VERSION,
+            record_kind: DATA_CLIENT_BEHAVIOR_PROBE_EVENT_RECORD_KIND.to_string(),
+            client_key_hash: client_key_hash.clone(),
+            provider_key: provider_key.to_string(),
+            observed_at_unix_millis,
+            event_kind: "book".to_string(),
+            supported_by_nt_source: true,
+            observed_through_live_node: true,
+            age_millis: Some(age_millis),
+            latency_millis: Some(latency_millis),
+            event_clock_skew_millis,
+            recovered: None,
+            fail_closed: None,
+            evidence_sha256: Some(data_client_book_probe_evidence_hash(deltas)?),
             unsupported_disposition: None,
         });
     }
@@ -3523,11 +3649,18 @@ fn data_client_readiness_quote_target_instruments_for_evidence(
                 );
             }
             if metadata_instruments.len() > max_quote_targets {
-                return Err(
-                    BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
-                        field: "metadata.instrument_ids.max_metadata_quote_targets",
-                    },
-                );
+                if readiness_probe.allow_metadata_target_sampling {
+                    metadata_instruments = metadata_instruments
+                        .into_iter()
+                        .take(max_quote_targets)
+                        .collect();
+                } else {
+                    return Err(
+                        BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                            field: "metadata.instrument_ids.max_metadata_quote_targets",
+                        },
+                    );
+                }
             }
             Ok(metadata_instruments)
         }
@@ -4037,6 +4170,20 @@ fn data_client_quote_probe_evidence_hash(
         "ts_event_unix_nanos": quote.ts_event_unix_nanos,
         "ts_init_unix_nanos": quote.ts_init_unix_nanos,
         "captured_at_unix_nanos": quote.captured_at_unix_nanos,
+    }))
+}
+
+fn data_client_book_probe_evidence_hash(
+    deltas: &crate::bolt_v3_live_node::BoltV3NoSubmitBookDeltas,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    canonical_json_sha256_value(&serde_json::json!({
+        "source": "no_submit_book_deltas_probe",
+        "data_client_id_hash": sha256_text(&deltas.data_client_id),
+        "instrument_id_hash": sha256_text(&deltas.instrument_id),
+        "delta_count": deltas.delta_count,
+        "ts_event_unix_nanos": deltas.ts_event_unix_nanos,
+        "ts_init_unix_nanos": deltas.ts_init_unix_nanos,
+        "captured_at_unix_nanos": deltas.captured_at_unix_nanos,
     }))
 }
 
@@ -5562,20 +5709,35 @@ fn data_client_readiness_probe_targets(
             .map(|(target_id, target)| DataClientReadinessProbeTargetSource {
                 quote_target_source: "configured",
                 configured_target_id_hash: Some(sha256_text(target_id)),
-                event_kind: "quote",
+                event_kind: data_client_readiness_probe_event_kind(
+                    readiness_probe.market_data_kind,
+                ),
                 instrument_id_hash: Some(sha256_text(&target.instrument_id.to_string())),
                 max_metadata_quote_targets: None,
+                allow_metadata_target_sampling: false,
             })
             .collect(),
         DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
             vec![DataClientReadinessProbeTargetSource {
                 quote_target_source: "metadata_response",
                 configured_target_id_hash: None,
-                event_kind: "quote",
+                event_kind: data_client_readiness_probe_event_kind(
+                    readiness_probe.market_data_kind,
+                ),
                 instrument_id_hash: None,
                 max_metadata_quote_targets: readiness_probe.max_metadata_quote_targets,
+                allow_metadata_target_sampling: readiness_probe.allow_metadata_target_sampling,
             }]
         }
+    }
+}
+
+fn data_client_readiness_probe_event_kind(
+    market_data_kind: DataClientReadinessProbeMarketDataKind,
+) -> &'static str {
+    match market_data_kind {
+        DataClientReadinessProbeMarketDataKind::Quote => "quote",
+        DataClientReadinessProbeMarketDataKind::Book => "book",
     }
 }
 

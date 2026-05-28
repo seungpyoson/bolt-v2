@@ -31,6 +31,18 @@ Current-head local T043B verification at `e20e0274a94dac954aa4b36c316170d793963f
 
 T043B remains open because the current-head final packet/no-submit refresh has not yet been regenerated and verified after this head change.
 
+Current-head packet refresh attempt after the local gate checks:
+
+- Temp root: `/private/tmp/bolt-v2-t043b-e20e0274/live.local.toml`.
+- The ignored live TOML copy was stale for the current readiness-probe schema; the temp copy required explicit `market_data_kind`, `book_type`, and `allow_metadata_target_sampling` fields before it could pass config validation. The real ignored live TOML must be refreshed before any live canary attempt.
+- `operator-artifacts generate-base-static` passed and wrote `ssm-manifest.json` sha256 `501002f491b4aad097cad6524a439ae6968d751e822d278cdb5e0816f7597c22`, `financial-envelope.json` sha256 `076b7ce1374abf89ed553adef9064f7c6c410f485484dcfcf6624d6b776afd33`, and `approval-nonce.json` sha256 `b9aa4bd1b6df6d91266b96916ebe989475310ce90bba5dc13131f010784da773`.
+- `operator-artifacts generate-abort-plan-from-source-collectors` passed with current source files and wrote `/private/tmp/bolt-v2-t043b-e20e0274/abort-plan.json`, sha256 `8bca1bddfc927973a3819dfc5bb211795034fdf560b9ce1561a93c28aae69182`.
+- The refreshed packet assembled: operator-evidence JSON sha256 `dc3f5d8f6f5ca9083724eed3759184c5b0d4f1a91bf587cdc6b8024e9e073923`, temp root TOML sha256 `5728517f39bc232de9a5f28571376c00c521cfb697fee108a4569c1afab0f1f6`, static manifest sha256 `7476748fda6086587319c28f14116e66a4854ac84e82d9155779cf0be6bd8309`, approval envelope sha256 `39735123203cc6b88d17154ae7924315140ca0729f0115095bbebee8fa57bc90`, and operator packet sha256 `a29d6f1716c4bcabe1aeed4e0bc5142a0265a13b124142b97664032fa345a727`.
+- `operator-artifacts verify-final --verification-stage pre-run` failed closed with `strategy_input_replay.market_selection_source.decision_evidence_path is invalid or not bound to decision evidence`.
+- Attempting to regenerate `market-selection-source.json` from the current worktree decision-evidence JSONL failed closed with `missing source-bound market selection from NT instrument facts`.
+
+No no-submit run, live runner, approval consumption, order submit/cancel, transfer, on-chain mutation, or trade was executed in this refresh attempt. T043B now requires a fresh source-bound decision chain for the current root before the packet/no-submit refresh can pass.
+
 ## Latest Non-Live Preflight
 
 Preflight head: `4302d2498eaefab25677cfaead643ff4b4c5de08`

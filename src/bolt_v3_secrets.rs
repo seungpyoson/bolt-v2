@@ -2,11 +2,10 @@
 //! resolution for bolt-v3 clients.
 //!
 //! Per docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md Section 3, every
-//! configured client with a [secrets] block must fail live validation and
-//! startup if any canonical credential environment variables for that provider
-//! are present. The blocklist is owned by the provider handler in
-//! bolt code and must be checked before any NautilusTrader client
-//! constructor is called.
+//! configured client must fail live validation and startup if any canonical
+//! credential environment variables for that provider are present. The
+//! blocklist is owned by the provider handler in bolt code and must be checked
+//! before any NautilusTrader client constructor is called.
 //!
 //! Once the env-var blocklist passes, this module also resolves every
 //! configured `[secrets]` block from Amazon Web Services Systems Manager
@@ -38,7 +37,7 @@ impl std::fmt::Display for ForbiddenEnvVarFinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "clients.{key} (provider={provider}) declares [secrets] but the forbidden credential environment variable `{var}` is set; \
+            "clients.{key} (provider={provider}) has forbidden credential environment variable `{var}` set; \
              the bolt-v3 secret contract requires SSM resolution and forbids env-var fallbacks for this provider",
             key = self.client_key,
             provider = self.provider_key,
@@ -84,9 +83,6 @@ where
 {
     let mut findings = Vec::new();
     for (key, client) in &config.clients {
-        if client.secrets.is_none() {
-            continue;
-        }
         let blocklist = match bolt_v3_providers::binding_for_provider_key(client.venue.as_str()) {
             Some(binding) => binding.forbidden_env_vars,
             None => &[],
@@ -310,6 +306,20 @@ mod tests {
         .expect("binance provider fixture client should parse")
     }
 
+    fn bybit_data_client_without_secrets() -> crate::bolt_v3_config::ClientBlock {
+        toml::from_str(
+            r#"
+venue = "BYBIT"
+
+[data]
+product_types = ["spot", "linear"]
+environment = "testnet"
+transport_backend = "sockudo"
+"#,
+        )
+        .expect("bybit data-only fixture client should parse")
+    }
+
     fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
         let mut loaded = fixture_loaded_config();
         loaded
@@ -391,6 +401,24 @@ mod tests {
         assert_eq!(error.findings[0].client_key, "binance_reference");
         assert_eq!(error.findings[0].provider_key, binance::KEY);
         assert_eq!(error.findings[0].env_var, "BINANCE_API_SECRET");
+    }
+
+    #[test]
+    fn flags_set_provider_var_for_configured_data_only_client_without_secrets() {
+        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        root.clients.insert(
+            "bybit_data".to_string(),
+            bybit_data_client_without_secrets(),
+        );
+
+        let error = check_no_forbidden_credential_env_vars_with(&root, |var| {
+            var == "BYBIT_TESTNET_API_KEY"
+        })
+        .expect_err("BYBIT_TESTNET_API_KEY should trip the bybit blocklist");
+        assert_eq!(error.findings.len(), 1);
+        assert_eq!(error.findings[0].client_key, "bybit_data");
+        assert_eq!(error.findings[0].provider_key, "BYBIT");
+        assert_eq!(error.findings[0].env_var, "BYBIT_TESTNET_API_KEY");
     }
 
     #[test]

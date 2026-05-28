@@ -4093,6 +4093,58 @@ fn rejects_binance_execution_block_with_provider_vocabulary() {
 }
 
 #[test]
+fn rejects_market_data_only_provider_execution_secrets_and_direct_credentials() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let mutated = format!(
+        r#"{fixture}
+
+[clients.bybit_data]
+venue = "BYBIT"
+
+[clients.bybit_data.data]
+product_types = ["spot", "linear"]
+environment = "testnet"
+transport_backend = "sockudo"
+api_key = "not-from-ssm"
+
+[clients.bybit_data.execution]
+not_allowed = true
+
+[clients.bybit_data.secrets]
+api_key_ssm_path = "/bolt/bybit/api_key"
+"#
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("bybit data-only mutation should parse");
+    let messages = validate_root_only(&root);
+    let rendered = messages.join("\n");
+    assert!(
+        messages.iter().any(|message| message.contains("bybit_data")
+            && message.contains("data-only")
+            && message.contains("[execution]")),
+        "expected data-only execution-block rejection, got: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|message| message.contains("bybit_data")
+            && message.contains("data-only")
+            && message.contains("[secrets]")),
+        "expected data-only secrets-block rejection, got: {messages:#?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("bybit_data.data.api_key")
+                && message.contains("SSM-backed [secrets] binding")),
+        "expected direct credential-field rejection, got: {messages:#?}"
+    );
+    assert!(rendered.contains("(provider=BYBIT)"));
+    assert!(!rendered.contains("(venue="));
+}
+
+#[test]
 fn rejects_polymarket_client_numeric_fields_at_zero() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

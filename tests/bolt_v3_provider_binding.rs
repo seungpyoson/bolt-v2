@@ -89,6 +89,123 @@ fn fixed_clock(now_unix_secs: i64) -> BoltV3MarketClockFn {
     Arc::new(move || now_unix_secs)
 }
 
+fn data_only_client_from_toml(value: &str) -> ClientBlock {
+    toml::from_str(value).expect("test data-only client block should parse")
+}
+
+fn add_requested_market_data_clients(loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config) {
+    let clients: &[(&str, &str)] = &[
+        (
+            "bybit_data",
+            r#"
+venue = "BYBIT"
+
+[data]
+product_types = ["spot", "linear", "inverse", "option"]
+environment = "testnet"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "coinbase_data",
+            r#"
+venue = "COINBASE"
+
+[data]
+environment = "Sandbox"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "deribit_data",
+            r#"
+venue = "DERIBIT"
+
+[data]
+product_types = ["future", "option", "spot", "future_combo", "option_combo"]
+environment = "testnet"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "okx_data",
+            r#"
+venue = "OKX"
+
+[data]
+instrument_types = ["ANY"]
+environment = "demo"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "kraken_data",
+            r#"
+venue = "KRAKEN"
+
+[data]
+product_type = "spot"
+environment = "live"
+transport_backend = "sockudo"
+"#,
+        ),
+    ];
+
+    for (client_key, client_toml) in clients {
+        loaded.root.clients.insert(
+            (*client_key).to_string(),
+            data_only_client_from_toml(client_toml),
+        );
+    }
+}
+
+#[test]
+fn requested_market_data_clients_map_as_data_only_and_polymarket_remains_data_execution() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    add_requested_market_data_clients(&mut loaded);
+    let resolved = fixture_resolved_secrets();
+    let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
+    let clock = fixed_clock(601);
+
+    let configs = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
+        .expect("requested market data clients should map cleanly");
+
+    for client_key in [
+        "bybit_data",
+        "coinbase_data",
+        "deribit_data",
+        "okx_data",
+        "kraken_data",
+    ] {
+        let mapped = configs
+            .clients
+            .get(client_key)
+            .unwrap_or_else(|| panic!("{client_key} must be present in mapper output"));
+        assert!(
+            mapped.data.is_some(),
+            "{client_key} must produce an NT data client config"
+        );
+        assert!(
+            mapped.execution.is_none(),
+            "{client_key} must stay data-only in this scope"
+        );
+    }
+
+    let polymarket = configs
+        .clients
+        .get("polymarket_main")
+        .expect("polymarket_main must remain present");
+    assert!(
+        polymarket.data.is_some(),
+        "polymarket_main must remain a data client"
+    );
+    assert!(
+        polymarket.execution.is_some(),
+        "polymarket_main must remain an execution client because the fixture config has [execution]"
+    );
+}
+
 #[test]
 fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");

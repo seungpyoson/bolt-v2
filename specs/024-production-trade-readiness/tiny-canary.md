@@ -24,6 +24,13 @@ T043B must be recorded against the current head before T044 can run:
 
 T043B is not live execution. It is the last non-live selected-path proof before requesting renewed T044 approval.
 
+Current-head local T043B verification at `e20e0274a94dac954aa4b36c316170d793963f65`:
+
+- `cargo test --locked --test bolt_v3_live_canary_gate pre_consumption_gate_rejects_stale_source_owned_strategy_input_before_approval -- --nocapture`: passed, 1 passed, 0 failed.
+- `cargo test --locked --test bolt_v3_tiny_canary_operator phase8_operator_harness -- --nocapture`: passed, 7 passed, 0 failed, 1 ignored. The ignored test is the live operator harness entrypoint and remains excluded from normal local test runs; the passing sibling tests verify its source shape, approval-consumption order, runtime spool binding, submit-admission/live-proof binding, and post-run proof wait contract.
+
+T043B remains open because the current-head final packet/no-submit refresh has not yet been regenerated and verified after this head change.
+
 ## Latest Non-Live Preflight
 
 Preflight head: `4302d2498eaefab25677cfaead643ff4b4c5de08`

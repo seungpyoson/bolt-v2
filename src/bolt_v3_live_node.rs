@@ -1131,6 +1131,13 @@ pub enum BoltV3LiveNodeError {
     /// could not atomically create the operator-approval consumption
     /// proof before arming submit admission.
     OperatorApprovalConsumption(anyhow::Error),
+    /// The loaded root TOML configured clients beyond the selected
+    /// strategy-owned transport path, but the strategy-owned
+    /// execution/reference client set could not be derived or validated
+    /// against `[clients]`.
+    LiveTransportScope {
+        reason: String,
+    },
     /// The validated live canary gate report could not arm the shared
     /// submit-admission state before `LiveNode::run` was invoked.
     SubmitAdmission(BoltV3SubmitAdmissionError),
@@ -1256,6 +1263,10 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                     "bolt-v3 live canary approval consumption failed before runtime start: {error}"
                 )
             }
+            BoltV3LiveNodeError::LiveTransportScope { reason } => write!(
+                f,
+                "bolt-v3 live transport scope could not be derived from strategy-owned client bindings: {reason}"
+            ),
             BoltV3LiveNodeError::SubmitAdmission(error) => {
                 write!(
                     f,
@@ -1375,6 +1386,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::ConnectTimeout { .. }
             | BoltV3LiveNodeError::ConnectIncomplete
             | BoltV3LiveNodeError::DisconnectTimeout { .. }
+            | BoltV3LiveNodeError::LiveTransportScope { .. }
             | BoltV3LiveNodeError::NoSubmitStartTimeout { .. }
             | BoltV3LiveNodeError::NoSubmitStartTimeoutOverflow
             | BoltV3LiveNodeError::NoSubmitStartIncomplete
@@ -1394,10 +1406,11 @@ impl std::error::Error for BoltV3LiveNodeError {
 pub fn build_bolt_v3_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
-    let resolved = resolve_bolt_v3_live_node_secrets(loaded)?;
-    let adapters =
-        map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    let (runtime, _summary) = build_live_node_with_clients(loaded, &resolved, adapters)?;
+    let transport_loaded = trade_transport_loaded_config(loaded)?;
+    let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
+    let adapters = map_bolt_v3_adapters(&transport_loaded, &resolved)
+        .map_err(BoltV3LiveNodeError::AdapterMapping)?;
+    let (runtime, _summary) = build_live_node_with_clients(&transport_loaded, &resolved, adapters)?;
     Ok(runtime)
 }
 
@@ -1420,9 +1433,10 @@ fn resolve_bolt_v3_live_node_secrets(
 pub fn build_bolt_v3_no_submit_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
-    let resolved = resolve_bolt_v3_live_node_secrets(loaded)?;
-    let adapters = no_submit_transport_adapter_configs(loaded, &resolved)?;
-    let no_submit_loaded = no_submit_transport_loaded_config(loaded);
+    let transport_loaded = trade_transport_loaded_config(loaded)?;
+    let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
+    let adapters = no_submit_transport_adapter_configs(&transport_loaded, &resolved)?;
+    let no_submit_loaded = no_submit_transport_loaded_config(&transport_loaded);
     let (runtime, _summary) = build_live_node_with_clients(&no_submit_loaded, &resolved, adapters)?;
     Ok(runtime)
 }
@@ -1444,6 +1458,47 @@ fn no_submit_transport_adapter_configs(
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<BoltV3AdapterConfigs, BoltV3LiveNodeError> {
     map_bolt_v3_adapters(loaded, resolved).map_err(BoltV3LiveNodeError::AdapterMapping)
+}
+
+fn trade_transport_loaded_config(
+    loaded: &LoadedBoltV3Config,
+) -> Result<LoadedBoltV3Config, BoltV3LiveNodeError> {
+    if loaded.strategies.is_empty() {
+        return Ok(loaded.clone());
+    }
+
+    let required_clients = trade_transport_client_keys(loaded);
+    let missing_clients = required_clients
+        .iter()
+        .filter(|client_key| !loaded.root.clients.contains_key(*client_key))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_clients.is_empty() {
+        return Err(BoltV3LiveNodeError::LiveTransportScope {
+            reason: format!(
+                "strategy references unconfigured client(s): {}",
+                missing_clients.join(", ")
+            ),
+        });
+    }
+
+    let mut transport_loaded = loaded.clone();
+    transport_loaded
+        .root
+        .clients
+        .retain(|client_key, _| required_clients.contains(client_key));
+    Ok(transport_loaded)
+}
+
+fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> {
+    let mut client_keys = BTreeSet::new();
+    for strategy in &loaded.strategies {
+        client_keys.insert(strategy.config.execution_client_id.to_string());
+        for reference in strategy.config.reference_data.values() {
+            client_keys.insert(reference.data_client_id.to_string());
+        }
+    }
+    client_keys
 }
 
 fn data_client_probe_loaded_config(
@@ -2260,6 +2315,13 @@ fn no_submit_required_execution_accounts_registered(
         .root
         .clients
         .iter()
+        .filter(|(client_key, _)| {
+            runtime
+                .registration_summary()
+                .clients
+                .get(*client_key)
+                .is_some_and(|registered| registered.execution)
+        })
         .filter(|(_, client)| client.execution.is_some())
         .filter(|(_, client)| cache.account_for_venue(&client.venue).is_none())
         .map(|(client_key, client)| format!("clients.{client_key} ({})", client.venue))
@@ -2346,13 +2408,14 @@ where
     R: FnMut(&str, &str) -> Result<String, E>,
     E: std::fmt::Display,
 {
-    check_no_forbidden_credential_env_vars_with(&loaded.root, env_is_set)
+    let transport_loaded = trade_transport_loaded_config(loaded)?;
+    check_no_forbidden_credential_env_vars_with(&transport_loaded.root, env_is_set)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
-    let resolved = resolve_bolt_v3_secrets_with(loaded, resolver)
+    let resolved = resolve_bolt_v3_secrets_with(&transport_loaded, resolver)
         .map_err(BoltV3LiveNodeError::SecretResolution)?;
-    let adapters =
-        map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    build_live_node_with_clients(loaded, &resolved, adapters)
+    let adapters = map_bolt_v3_adapters(&transport_loaded, &resolved)
+        .map_err(BoltV3LiveNodeError::AdapterMapping)?;
+    build_live_node_with_clients(&transport_loaded, &resolved, adapters)
 }
 
 fn build_live_node_with_clients(
@@ -3165,6 +3228,58 @@ mod tests {
         assert!(
             !loaded.strategies.is_empty(),
             "helper must not mutate the caller's loaded config"
+        );
+    }
+
+    #[test]
+    fn trade_transport_config_keeps_only_strategy_bound_clients() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let mut reference_client = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        reference_client.execution = None;
+        reference_client.secrets = None;
+        let unrelated_client = reference_client.clone();
+        loaded
+            .root
+            .clients
+            .insert("reference_data".to_string(), reference_client);
+        loaded
+            .root
+            .clients
+            .insert("unrelated_data".to_string(), unrelated_client);
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        strategy.config.reference_data.insert(
+            "primary".to_string(),
+            ReferenceDataBlock {
+                data_client_id: ClientId::from("reference_data"),
+                instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
+            },
+        );
+
+        let scoped = trade_transport_loaded_config(&loaded)
+            .expect("strategy-bound transport scope should be derived from config");
+
+        assert_eq!(scoped.root.clients.len(), 2);
+        assert!(scoped.root.clients.contains_key("polymarket_main"));
+        assert!(scoped.root.clients.contains_key("reference_data"));
+        assert!(
+            !scoped.root.clients.contains_key("unrelated_data"),
+            "unrelated configured data clients must not block the selected trade path"
+        );
+        assert_eq!(scoped.strategies.len(), loaded.strategies.len());
+        assert!(
+            loaded.root.clients.contains_key("unrelated_data"),
+            "helper must not mutate the caller's full client bundle"
         );
     }
 

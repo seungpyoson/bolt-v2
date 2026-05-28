@@ -29,7 +29,7 @@ Current-head local T043B verification at `e20e0274a94dac954aa4b36c316170d793963f
 - `cargo test --locked --test bolt_v3_live_canary_gate pre_consumption_gate_rejects_stale_source_owned_strategy_input_before_approval -- --nocapture`: passed, 1 passed, 0 failed.
 - `cargo test --locked --test bolt_v3_tiny_canary_operator phase8_operator_harness -- --nocapture`: passed, 7 passed, 0 failed, 1 ignored. The ignored test is the live operator harness entrypoint and remains excluded from normal local test runs; the passing sibling tests verify its source shape, approval-consumption order, runtime spool binding, submit-admission/live-proof binding, and post-run proof wait contract.
 
-T043B remains open because the current-head final packet/no-submit refresh has not yet been regenerated and verified after this head change.
+T043B remains open because the selected-path topology fix below must be committed before the final current-head operator packet can be regenerated and verified. Any commit after packet generation changes `HEAD` and intentionally makes the packet stale.
 
 Current-head packet refresh attempt after the local gate checks:
 
@@ -42,6 +42,16 @@ Current-head packet refresh attempt after the local gate checks:
 - Attempting to regenerate `market-selection-source.json` from the current worktree decision-evidence JSONL failed closed with `missing source-bound market selection from NT instrument facts`.
 
 No no-submit run, live runner, approval consumption, order submit/cancel, transfer, on-chain mutation, or trade was executed in this refresh attempt. T043B now requires a fresh source-bound decision chain for the current root before the packet/no-submit refresh can pass.
+
+Selected-path topology repair:
+
+- Root cause: the no-submit and live build paths registered every client in the loaded root TOML. NT requires every registered client to connect before the node reaches `Running`, so unrelated data-only clients can mask or block the selected tiny-capital trade path.
+- Fix direction: derive the selected trade transport scope from strategy-owned TOML bindings: each loaded strategy's `execution_client_id` plus every configured `reference_data.*.data_client_id`. The broad T043A clients remain configured in root TOML and remain available to source-owned per-client probes; they are not registered into the selected trade runner unless the strategy references them.
+- Runtime evidence from the same temp root that previously exposed the blocker: `cargo run --locked --bin bolt-v2 -- no-submit-readiness --config /private/tmp/bolt-v2-t043b-e20e0274/live.local.toml` exited 0 after registering only `DataClient-polymarket_main` and `ExecutionClient-polymarket_main`, reaching `All engine clients connected`, starting the no-submit probe actor, stopping via handle, and writing a readiness report.
+- Report evidence: `var/bolt-v3-live/reports/no-submit-readiness.json` schema `bolt-v3.no-submit-readiness.v2`, executable identity `d40c097290e9620a90632532842569eaab645a555db1c41e0bb9a82d5cb71dc9`, config bundle checksum `2ea35975a274f175a5bc17d4c6d7f8811b18b950ef385ba97cb788effed06978`, generated at Unix seconds `1780009626`, with all seven stages satisfied: `operator_approval`, `secret_resolution`, `live_node_build`, `controlled_connect`, `reference_readiness`, `controlled_disconnect`, and `report_write`.
+- Regression evidence: `cargo test --locked --lib trade_transport_config_keeps_only_strategy_bound_clients -- --nocapture` passed; `cargo test --locked --lib no_submit_transport -- --nocapture` passed; `cargo test --locked --test bolt_v3_no_submit_readiness -- --nocapture` passed, 34 passed; `cargo test --locked --test bolt_v3_live_canary_gate pre_consumption_gate_rejects_stale_source_owned_strategy_input_before_approval -- --nocapture` passed.
+
+No live runner, approval consumption, order submit/cancel, transfer, on-chain mutation, or trade was executed in the topology repair. The next T043B step after committing the repair is to regenerate the final operator packet at the new head and rerun no-submit against that exact head.
 
 ## Latest Non-Live Preflight
 

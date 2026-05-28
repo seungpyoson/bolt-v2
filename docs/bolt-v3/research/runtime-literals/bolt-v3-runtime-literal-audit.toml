@@ -9394,6 +9394,14 @@ reason = "This is a structural artifact label for the Chainlink report provenanc
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"entry-decision-reference-report"'''
+context = '''const ENTRY_READINESS_REFERENCE_REPORT_ARTIFACT_PATH: &str = "entry-decision-reference-report";'''
+classification = "readiness_source_artifact_label"
+reason = "This is a structural artifact label for the decision-reference report provenance hash captured by readiness evidence, not a trading value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = '''1'''
 context = '''const GATE_EVIDENCE_SCHEMA_VERSION: u32 = 1;'''
@@ -9420,7 +9428,7 @@ reason = "This is a redacted diagnostic artifact label for the readiness gate-se
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"reference_value"'''
-context = '''"reference_value": source.price_to_beat_value,'''
+context = '''"reference_value": reference_quote.price,'''
 classification = "entry_readiness_gate_normalized_value_field"
 reason = "This names the normalized decision-reference gate payload field; the reference value is source-owned evidence."
 
@@ -9875,14 +9883,6 @@ reason = "This fail-closed diagnostic reports a readiness evidence identity that
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"entry-decision-price-report"'''
-context = '''path: "entry-decision-price-report".to_string(),'''
-classification = "entry_readiness_gate_artifact_label"
-reason = "This is a stable local artifact-ref label for source-owned entry-decision price-report evidence; the hash is source-owned."
-
-[[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
-kind = "string"
 literal = '''"price_to_beat_value"'''
 context = '''"price_to_beat_value": source.price_to_beat_value,'''
 classification = "entry_readiness_gate_normalized_value_field"
@@ -9943,6 +9943,62 @@ literal = '''"observations_timestamp_ms"'''
 context = '''"observations_timestamp_ms": observations_timestamp_ms,'''
 classification = "entry_readiness_gate_provenance_field"
 reason = "This names the source-owned report observation timestamp field used for readiness evidence freshness."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = '''2.0'''
+context = '''&& ((observation.bid_price + observation.ask_price) / 2.0'''
+classification = "midpoint_math_constant"
+reason = "This is the midpoint divisor used to match bid/ask observations to a derived reference quote; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"feed_id"'''
+context = '''"feed_id": reference_report_feed_id,'''
+classification = "entry_readiness_gate_provenance_field"
+reason = "This names the source-owned decision-reference Chainlink feed id provenance field validated against TOML provider binding."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"report_schema_version"'''
+context = '''"report_schema_version": reference_report_schema_version,'''
+classification = "entry_readiness_gate_provenance_field"
+reason = "This names the source-owned decision-reference report schema provenance field validated against TOML provider binding."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"report_decimal_scale"'''
+context = '''"report_decimal_scale": reference_report_decimal_scale,'''
+classification = "entry_readiness_gate_provenance_field"
+reason = "This names the source-owned decision-reference report decimal-scale provenance field validated against TOML provider binding."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"source_report_full_sha256"'''
+context = '''"source_report_full_sha256": reference_report_sha256,'''
+classification = "entry_readiness_gate_provenance_field"
+reason = "This names the source-owned decision-reference full report checksum field used to bind readiness evidence to the collected report."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"valid_from_timestamp_ms"'''
+context = '''"valid_from_timestamp_ms": reference_valid_from_timestamp_ms,'''
+classification = "entry_readiness_gate_provenance_field"
+reason = "This names the source-owned decision-reference report validity timestamp field used in readiness evidence provenance."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"observations_timestamp_ms"'''
+context = '''"observations_timestamp_ms": reference_observations_timestamp_ms,'''
+classification = "entry_readiness_gate_provenance_field"
+reason = "This names the source-owned decision-reference report observation timestamp field used for readiness evidence freshness."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

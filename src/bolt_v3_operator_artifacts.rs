@@ -373,6 +373,7 @@ const NORMALIZED_READINESS_GATE_SOURCE_RECORD_KIND: &str =
 const HYPERLIQUID_HIP4_PROVIDER_KIND: &str = "hyperliquid_hip4";
 const VENUE_NATIVE_PROVIDER_KIND: &str = "venue_native";
 const ENTRY_READINESS_CHAINLINK_REPORT_ARTIFACT_PATH: &str = "entry-decision-price-report";
+const ENTRY_READINESS_REFERENCE_REPORT_ARTIFACT_PATH: &str = "entry-decision-reference-report";
 const GATE_EVIDENCE_SCHEMA_VERSION: u32 = 1;
 const GATE_EVIDENCE_RECORD_KIND: &str = "bolt_v3.gate_evidence.v1";
 const GATE_SATISFACTION_KIND_EVIDENCE: &str = "evidence";
@@ -3506,6 +3507,13 @@ struct ReferenceQuoteSource {
     venue: String,
     price: f64,
     observed_ts_ms: u64,
+    source_report_schema_version: Option<u64>,
+    source_report_feed_id: Option<String>,
+    source_report_decimal_scale: Option<u64>,
+    source_report_full_sha256: Option<String>,
+    source_report_valid_from_timestamp_ms: Option<u64>,
+    source_report_observations_timestamp_ms: Option<u64>,
+    source_report_benchmark_price: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -3535,6 +3543,13 @@ struct ReferenceQuoteObservationSource {
     ts_event_unix_nanos: u64,
     ts_init_unix_nanos: u64,
     captured_at_unix_nanos: u64,
+    source_report_schema_version: Option<u64>,
+    source_report_feed_id: Option<String>,
+    source_report_decimal_scale: Option<u64>,
+    source_report_full_sha256: Option<String>,
+    source_report_valid_from_timestamp_ms: Option<u64>,
+    source_report_observations_timestamp_ms: Option<u64>,
+    source_report_benchmark_price: Option<f64>,
 }
 
 struct EntryDecisionSourceProofs {
@@ -3715,6 +3730,13 @@ pub fn write_reference_quote_observations_source_from_no_submit_evidence(
             ts_event_unix_nanos: quote.ts_event_unix_nanos,
             ts_init_unix_nanos: quote.ts_init_unix_nanos,
             captured_at_unix_nanos: quote.captured_at_unix_nanos,
+            source_report_schema_version: None,
+            source_report_feed_id: None,
+            source_report_decimal_scale: None,
+            source_report_full_sha256: None,
+            source_report_valid_from_timestamp_ms: None,
+            source_report_observations_timestamp_ms: None,
+            source_report_benchmark_price: None,
         })
         .collect::<Vec<_>>();
     let source = ReferenceQuoteObservationsSource {
@@ -3778,6 +3800,15 @@ pub fn write_chainlink_reference_quote_observations_source_from_report_files(
                 ts_event_unix_nanos: observed_unix_nanos,
                 ts_init_unix_nanos: observed_unix_nanos,
                 captured_at_unix_nanos: observed_unix_nanos,
+                source_report_schema_version: Some(binding.schema_version),
+                source_report_feed_id: Some(decoded_report.feed_id),
+                source_report_decimal_scale: Some(binding.decimal_scale),
+                source_report_full_sha256: Some(report_sha256),
+                source_report_valid_from_timestamp_ms: Some(decoded_report.valid_from_timestamp_ms),
+                source_report_observations_timestamp_ms: Some(
+                    decoded_report.observations_timestamp_ms,
+                ),
+                source_report_benchmark_price: Some(decoded_report.benchmark_price),
             })
         })
         .collect::<Result<Vec<_>, BoltV3OperatorArtifactError>>()?;
@@ -3963,13 +3994,49 @@ pub fn write_entry_decision_proof_source_files(
     };
     validate_price_to_beat_source(loaded, strategy_instance_id, &price_to_beat_source)?;
 
-    let reference_quote_source = ReferenceQuoteSource {
+    let mut reference_quote_source = ReferenceQuoteSource {
         schema_version: REFERENCE_QUOTE_SOURCE_SCHEMA_VERSION,
         record_kind: REFERENCE_QUOTE_SOURCE_RECORD_KIND.to_string(),
         venue: reference_proofs.reference_quote.venue,
         price: reference_proofs.reference_quote.price,
         observed_ts_ms: reference_proofs.reference_quote.observed_ts_ms,
+        source_report_schema_version: None,
+        source_report_feed_id: None,
+        source_report_decimal_scale: None,
+        source_report_full_sha256: None,
+        source_report_valid_from_timestamp_ms: None,
+        source_report_observations_timestamp_ms: None,
+        source_report_benchmark_price: None,
     };
+    if let Some(observation) =
+        reference_quote_observations
+            .observations
+            .iter()
+            .find(|observation| {
+                let observed_ts_ms =
+                    observation.ts_event_unix_nanos / CHAINLINK_REPORT_NANOS_PER_MILLISECOND;
+                observation.data_client_id == reference_quote_source.venue
+                    && observed_ts_ms == reference_quote_source.observed_ts_ms
+                    && ((observation.bid_price + observation.ask_price) / 2.0
+                        - reference_quote_source.price)
+                        .abs()
+                        <= f64::EPSILON
+            })
+    {
+        reference_quote_source.source_report_schema_version =
+            observation.source_report_schema_version;
+        reference_quote_source.source_report_feed_id = observation.source_report_feed_id.clone();
+        reference_quote_source.source_report_decimal_scale =
+            observation.source_report_decimal_scale;
+        reference_quote_source.source_report_full_sha256 =
+            observation.source_report_full_sha256.clone();
+        reference_quote_source.source_report_valid_from_timestamp_ms =
+            observation.source_report_valid_from_timestamp_ms;
+        reference_quote_source.source_report_observations_timestamp_ms =
+            observation.source_report_observations_timestamp_ms;
+        reference_quote_source.source_report_benchmark_price =
+            observation.source_report_benchmark_price;
+    }
     validate_reference_quote_source(
         &reference_quote_source,
         request.market_selection_timestamp_ms,
@@ -4105,6 +4172,7 @@ pub fn write_entry_decision_source_inputs_from_source_files(
             strategy_instance_id,
             &selected,
             &proofs.price_source,
+            &proofs.reference_quote,
         )?,
         warmup_count,
         reference_quote: BinaryOracleEntryReferenceQuoteSource {
@@ -4585,6 +4653,7 @@ fn readiness_session_from_entry_decision_price_source(
     strategy_instance_id: &str,
     selected: &bolt_v3_market_families::SelectedBinaryOptionMarket,
     source: &SourceBoundPriceToBeatSource,
+    reference_quote: &ReferenceQuoteSource,
 ) -> Result<EntryReadinessGateSession, BoltV3OperatorArtifactError> {
     let strategy = loaded
         .strategies
@@ -4628,7 +4697,7 @@ fn readiness_session_from_entry_decision_price_source(
         .source_report_observations_timestamp_ms
         .ok_or_else(price_to_beat_report_provenance_invalid)?;
     let artifact_ref = GateArtifactRef {
-        path: "entry-decision-price-report".to_string(),
+        path: ENTRY_READINESS_CHAINLINK_REPORT_ARTIFACT_PATH.to_string(),
         sha256: report_sha256.to_string(),
     };
     let provider_id = binding.provider_id.clone();
@@ -4646,7 +4715,7 @@ fn readiness_session_from_entry_decision_price_source(
         provider_id: provider_id.clone(),
         provider_kind: CHAINLINK_DATA_STREAMS_PROVIDER_KIND.to_string(),
         selected_market_key: selected_market.selected_market_key.clone(),
-        collector_observed_at_ms: source.decision_timestamp_ms,
+        collector_observed_at_ms: observations_timestamp_ms,
         source_observed_at_ms: observations_timestamp_ms,
         freshness_max_age_ms: provider.max_age_ms,
         value_kind: PRICE_GATE_VALUE_KIND.to_string(),
@@ -4659,6 +4728,7 @@ fn readiness_session_from_entry_decision_price_source(
     })?;
     let mut requirements = crate::bolt_v3_archetypes::binary_oracle_edge_taker::gate_requirements();
     let mut provider_evidence = vec![evidence];
+    let mut session_artifact_refs = vec![artifact_ref.clone()];
     if strategy_has_decision_reference_subscription(strategy) {
         requirements.push(ArchetypeGateRequirement {
             role: GateRole::DecisionReference,
@@ -4666,22 +4736,80 @@ fn readiness_session_from_entry_decision_price_source(
             accepted_value_kinds: BTreeSet::from([GateValueKind::Price, GateValueKind::Outcome]),
             allow_no_resolution: false,
         });
+        let reference_binding = chainlink_report_binding_for_role(
+            loaded,
+            strategy_instance_id,
+            DECISION_REFERENCE_GATE_ROLE,
+        )?;
+        let Some(reference_report_sha256) = reference_quote
+            .source_report_full_sha256
+            .as_deref()
+            .filter(|value| is_lowercase_sha256(value))
+        else {
+            return Err(decision_reference_report_provenance_invalid());
+        };
+        let reference_report_schema_version = reference_quote
+            .source_report_schema_version
+            .ok_or_else(decision_reference_report_provenance_invalid)?;
+        let reference_report_decimal_scale = reference_quote
+            .source_report_decimal_scale
+            .ok_or_else(decision_reference_report_provenance_invalid)?;
+        let reference_report_feed_id = reference_quote
+            .source_report_feed_id
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(decision_reference_report_provenance_invalid)?;
+        let reference_valid_from_timestamp_ms = reference_quote
+            .source_report_valid_from_timestamp_ms
+            .ok_or_else(decision_reference_report_provenance_invalid)?;
+        let reference_observations_timestamp_ms = reference_quote
+            .source_report_observations_timestamp_ms
+            .ok_or_else(decision_reference_report_provenance_invalid)?;
+        let reference_benchmark_price = reference_quote
+            .source_report_benchmark_price
+            .ok_or_else(decision_reference_report_provenance_invalid)?;
+        if reference_quote.venue != reference_binding.provider_id
+            || reference_report_schema_version != reference_binding.schema_version
+            || reference_report_feed_id != reference_binding.feed_id
+            || reference_report_decimal_scale != reference_binding.decimal_scale
+            || reference_valid_from_timestamp_ms > reference_observations_timestamp_ms
+            || reference_observations_timestamp_ms != reference_quote.observed_ts_ms
+            || (reference_benchmark_price - reference_quote.price).abs() > f64::EPSILON
+        {
+            return Err(decision_reference_report_provenance_invalid());
+        }
+        let reference_provider =
+            gate_provider_evidence_binding(loaded, &reference_binding.provider_id)?;
+        let reference_artifact_ref = GateArtifactRef {
+            path: ENTRY_READINESS_REFERENCE_REPORT_ARTIFACT_PATH.to_string(),
+            sha256: reference_report_sha256.to_string(),
+        };
+        let reference_provider_provenance = serde_json::json!({
+            "provider_kind": CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
+            "feed_id": reference_report_feed_id,
+            "report_schema_version": reference_report_schema_version,
+            "report_decimal_scale": reference_report_decimal_scale,
+            "source_report_full_sha256": reference_report_sha256,
+            "valid_from_timestamp_ms": reference_valid_from_timestamp_ms,
+            "observations_timestamp_ms": reference_observations_timestamp_ms,
+        });
         provider_evidence.push(normalize_gate_evidence(GateEvidenceInput {
             role: DECISION_REFERENCE_GATE_ROLE.to_string(),
-            provider_id,
+            provider_id: reference_binding.provider_id,
             provider_kind: CHAINLINK_DATA_STREAMS_PROVIDER_KIND.to_string(),
             selected_market_key: selected_market.selected_market_key.clone(),
-            collector_observed_at_ms: source.decision_timestamp_ms,
-            source_observed_at_ms: observations_timestamp_ms,
-            freshness_max_age_ms: provider.max_age_ms,
+            collector_observed_at_ms: reference_observations_timestamp_ms,
+            source_observed_at_ms: reference_observations_timestamp_ms,
+            freshness_max_age_ms: reference_provider.max_age_ms,
             value_kind: PRICE_GATE_VALUE_KIND.to_string(),
             normalized_value: serde_json::json!({
-                "reference_value": source.price_to_beat_value,
+                "reference_value": reference_quote.price,
             }),
-            provider_provenance,
-            artifact_refs: vec![artifact_ref.clone()],
+            provider_provenance: reference_provider_provenance,
+            artifact_refs: vec![reference_artifact_ref.clone()],
             collection_status: GateEvidenceCollectionStatus::Complete,
         })?);
+        session_artifact_refs.push(reference_artifact_ref);
     }
     build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
         loaded,
@@ -4690,7 +4818,7 @@ fn readiness_session_from_entry_decision_price_source(
         requirements: &requirements,
         provider_evidence: &provider_evidence,
         created_at_ms: source.decision_timestamp_ms,
-        artifact_refs: vec![artifact_ref],
+        artifact_refs: session_artifact_refs,
     })
 }
 
@@ -4708,6 +4836,10 @@ fn strategy_has_decision_reference_subscription(
 
 fn price_to_beat_report_provenance_invalid() -> BoltV3OperatorArtifactError {
     entry_decision_source_invalid("source-bound price_to_beat report provenance is invalid")
+}
+
+fn decision_reference_report_provenance_invalid() -> BoltV3OperatorArtifactError {
+    entry_decision_source_invalid("source-bound decision_reference report provenance is invalid")
 }
 
 fn price_to_beat_report_provenance_config_invalid() -> BoltV3OperatorArtifactError {

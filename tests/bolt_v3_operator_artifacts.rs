@@ -6359,10 +6359,10 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
             "source_report_decimal_scale": TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
             "source_report_full_sha256": TEST_PRICE_TO_BEAT_REPORT_SHA256,
             "source_report_valid_from_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
-            "source_report_observations_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_000,
+            "source_report_observations_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "source_report_benchmark_price": 3100.0,
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
-            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 30_000
         }))
         .expect("price source should serialize"),
     )
@@ -6373,9 +6373,16 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
         serde_json::to_vec_pretty(&serde_json::json!({
             "schema_version": 1,
             "record_kind": "bolt_v3.reference_quote_source.v1",
-            "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+            "venue": "resolution_oracle_primary",
             "price": 3300.0,
-            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 30_000,
+            "source_report_schema_version": TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION,
+            "source_report_feed_id": TEST_PRICE_TO_BEAT_FEED_ID,
+            "source_report_decimal_scale": TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+            "source_report_full_sha256": TEST_GATE_ARTIFACT_SHA256,
+            "source_report_valid_from_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 30_000,
+            "source_report_observations_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 30_000,
+            "source_report_benchmark_price": 3300.0
         }))
         .expect("reference quote source should serialize"),
     )
@@ -6387,7 +6394,7 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
             "schema_version": 1,
             "record_kind": "bolt_v3.realized_volatility_source.v1",
             "value": 1.5,
-            "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 30_000
         }))
         .expect("realized volatility source should serialize"),
     )
@@ -6462,6 +6469,16 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
     assert!(
         satisfied_roles.contains_key("decision_reference"),
         "readiness session must include source-owned decision_reference evidence"
+    );
+    assert_eq!(
+        decision_source_json["readiness_session"]["satisfied_roles"]["resolution"]["evidence"]["normalized_value"]
+            ["price_to_beat_value"],
+        serde_json::json!(3100.0)
+    );
+    assert_eq!(
+        decision_source_json["readiness_session"]["satisfied_roles"]["decision_reference"]["evidence"]
+            ["normalized_value"]["reference_value"],
+        serde_json::json!(3300.0)
     );
     assert!(decision_source_json.get("price_to_beat_value").is_none());
 
@@ -6566,16 +6583,50 @@ fn write_entry_decision_source_input_proofs_with_report_provenance(
     )
     .expect("price source should write");
     let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let mut reference_quote_source = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.reference_quote_source.v1",
+        "venue": "resolution_oracle_primary",
+        "price": 3300.0,
+        "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+    });
+    if include_report_provenance {
+        let object = reference_quote_source
+            .as_object_mut()
+            .expect("reference quote source proof should be a JSON object");
+        object.insert(
+            "source_report_schema_version".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION),
+        );
+        object.insert(
+            "source_report_feed_id".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_FEED_ID),
+        );
+        object.insert(
+            "source_report_decimal_scale".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE),
+        );
+        object.insert(
+            "source_report_full_sha256".to_string(),
+            serde_json::json!(TEST_GATE_ARTIFACT_SHA256),
+        );
+        object.insert(
+            "source_report_valid_from_timestamp_ms".to_string(),
+            serde_json::json!(TEST_MARKET_SELECTION_NOW_MS + 1_200),
+        );
+        object.insert(
+            "source_report_observations_timestamp_ms".to_string(),
+            serde_json::json!(TEST_MARKET_SELECTION_NOW_MS + 1_200),
+        );
+        object.insert(
+            "source_report_benchmark_price".to_string(),
+            serde_json::json!(3300.0),
+        );
+    }
     std::fs::write(
         &reference_quote_source_path,
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 1,
-            "record_kind": "bolt_v3.reference_quote_source.v1",
-            "venue": TEST_REFERENCE_DATA_CLIENT_ID,
-            "price": 3300.0,
-            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
-        }))
-        .expect("reference quote source should serialize"),
+        serde_json::to_vec_pretty(&reference_quote_source)
+            .expect("reference quote source should serialize"),
     )
     .expect("reference quote source should write");
     let realized_volatility_source_path = temp.path().join("realized-volatility.json");

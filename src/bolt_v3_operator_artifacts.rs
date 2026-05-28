@@ -3486,10 +3486,23 @@ fn data_client_readiness_quote_target_instruments_for_evidence(
                     },
                 );
             }
-            Ok(metadata_instruments
-                .into_iter()
-                .take(max_quote_targets)
-                .collect())
+            if metadata_instruments.len() > max_quote_targets {
+                return Err(
+                    BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                        field: "metadata.instrument_ids.max_metadata_quote_targets",
+                    },
+                );
+            }
+            if let Some(min_quote_targets) = readiness_probe.min_metadata_quote_targets
+                && metadata_instruments.len() < min_quote_targets
+            {
+                return Err(
+                    BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                        field: "metadata.instrument_ids.min_metadata_quote_targets",
+                    },
+                );
+            }
+            Ok(metadata_instruments)
         }
     }
 }

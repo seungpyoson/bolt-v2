@@ -181,6 +181,7 @@ struct BoltV3NoSubmitReferenceQuoteProbeHandle {
     metadata_response_max_quote_targets: Option<usize>,
     metadata_response_min_quote_targets: Option<usize>,
     quote_targets_initialized: Rc<Cell<bool>>,
+    failure_reason: Rc<RefCell<Option<String>>>,
     quotes: Rc<RefCell<Vec<BoltV3NoSubmitReferenceQuote>>>,
     quote_notify: Rc<tokio::sync::Notify>,
 }
@@ -203,6 +204,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             metadata_response_max_quote_targets: None,
             metadata_response_min_quote_targets: None,
             quote_targets_initialized: Rc::new(Cell::new(true)),
+            failure_reason: Rc::new(RefCell::new(None)),
             quotes: Rc::new(RefCell::new(Vec::new())),
             quote_notify: Rc::new(tokio::sync::Notify::new()),
         }
@@ -220,12 +222,16 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             metadata_response_max_quote_targets: Some(max_quote_targets),
             metadata_response_min_quote_targets: Some(min_quote_targets),
             quote_targets_initialized: Rc::new(Cell::new(false)),
+            failure_reason: Rc::new(RefCell::new(None)),
             quotes: Rc::new(RefCell::new(Vec::new())),
             quote_notify: Rc::new(tokio::sync::Notify::new()),
         }
     }
 
     fn has_all_required_quotes(&self) -> bool {
+        if self.failure_error().is_some() {
+            return false;
+        }
         if !self.ambiguous_instrument_ids.borrow().is_empty() {
             return false;
         }
@@ -258,6 +264,20 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         )
     }
 
+    fn failure_error(&self) -> Option<String> {
+        self.failure_reason.borrow().clone()
+    }
+
+    fn fail_metadata_response_probe(&self, reason: String) {
+        if self.failure_reason.borrow().is_none() {
+            *self.failure_reason.borrow_mut() = Some(reason);
+        }
+        self.required.borrow_mut().clear();
+        self.ambiguous_instrument_ids.borrow_mut().clear();
+        self.quote_targets_initialized.set(true);
+        self.quote_notify.notify_one();
+    }
+
     fn evidence(&self) -> BoltV3NoSubmitReferenceQuoteEvidence {
         BoltV3NoSubmitReferenceQuoteEvidence {
             quotes: self.quotes.borrow().clone(),
@@ -277,9 +297,22 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         instrument_ids.sort_by_key(|instrument_id| instrument_id.to_string());
         instrument_ids.dedup();
         let max_quote_targets = self.metadata_response_max_quote_targets.unwrap_or(0);
+        let min_quote_targets = self.metadata_response_min_quote_targets.unwrap_or(0);
+        let metadata_quote_targets = instrument_ids.len();
+        if metadata_quote_targets > max_quote_targets {
+            self.fail_metadata_response_probe(format!(
+                "metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters before using this client for production readiness"
+            ));
+            return Vec::new();
+        }
+        if metadata_quote_targets < min_quote_targets {
+            self.fail_metadata_response_probe(format!(
+                "metadata_response produced {metadata_quote_targets} source-owned quote targets, below clients.<id>.readiness_probe.min_metadata_quote_targets={min_quote_targets}; broaden TOML-owned metadata filters before using this client for production readiness"
+            ));
+            return Vec::new();
+        }
         let subscriptions = instrument_ids
             .into_iter()
-            .take(max_quote_targets)
             .map(|instrument_id| NoSubmitReferenceQuoteSubscription {
                 data_client_id,
                 instrument_id,
@@ -326,8 +359,14 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         }
     }
 
-    async fn wait_for_all_required_quotes(&self) {
-        while !self.has_all_required_quotes() {
+    async fn wait_for_all_required_quotes(&self) -> Result<(), String> {
+        loop {
+            if let Some(reason) = self.failure_error() {
+                return Err(reason);
+            }
+            if self.has_all_required_quotes() {
+                return Ok(());
+            }
             self.quote_notify.notified().await;
         }
     }
@@ -1920,14 +1959,14 @@ async fn await_no_submit_reference_quote_probe(
         );
     }
     tokio::time::timeout(Duration::from_secs(timeout_secs), async {
-        probe.wait_for_all_required_quotes().await;
+        probe.wait_for_all_required_quotes().await
     })
     .await
     .map_err(|_| {
         format!(
             "reference quote probe did not observe all {configured_targets_label} within [live_canary].reference_quote_wait_timeout_seconds={timeout_secs}"
         )
-    })
+    })?
 }
 
 async fn await_no_submit_running(node_handle: &LiveNodeHandle, loaded: &LoadedBoltV3Config) {
@@ -2530,7 +2569,6 @@ mod tests {
         let installed = handle.install_metadata_response_instrument_ids(vec![
             InstrumentId::from("CONFIGURED-FIRST.SOURCE"),
             InstrumentId::from("CONFIGURED-SECOND.SOURCE"),
-            InstrumentId::from("CONFIGURED-THIRD.SOURCE"),
         ]);
 
         assert_eq!(installed.len(), 2);
@@ -2556,6 +2594,42 @@ mod tests {
         assert!(
             handle.has_all_required_quotes(),
             "metadata-response quote probes should pass after every installed source-owned target has a quote"
+        );
+    }
+
+    #[test]
+    fn data_client_readiness_metadata_response_probe_rejects_unbounded_metadata_universe() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(2),
+            min_metadata_quote_targets: Some(1),
+            quote_targets: BTreeMap::new(),
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness quote handle should build");
+        let installed = handle.install_metadata_response_instrument_ids(vec![
+            InstrumentId::from("CONFIGURED-FIRST.SOURCE"),
+            InstrumentId::from("CONFIGURED-SECOND.SOURCE"),
+            InstrumentId::from("CONFIGURED-THIRD.SOURCE"),
+        ]);
+
+        assert!(
+            installed.is_empty(),
+            "metadata-response probes must not truncate a broad metadata universe into an arbitrary sample"
+        );
+        let failure = handle
+            .failure_error()
+            .expect("unbounded metadata universe should fail closed");
+        assert!(
+            failure.contains("max_metadata_quote_targets"),
+            "failure should name the TOML-owned bound: {failure}"
         );
     }
 
@@ -2929,14 +3003,15 @@ mod tests {
         tokio::pin!(wait);
 
         tokio::select! {
-            () = &mut wait => panic!("wait should not complete before required quote evidence"),
+            result = &mut wait => panic!("wait should not complete before required quote evidence: {result:?}"),
             () = tokio::time::sleep(Duration::from_millis(5)) => {}
         }
 
         handle.record_quote(&quote, 2);
         tokio::time::timeout(Duration::from_millis(100), &mut wait)
             .await
-            .expect("notify must wake required-quote wait");
+            .expect("notify must wake required-quote wait")
+            .expect("required quote wait should succeed");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2965,7 +3040,8 @@ mod tests {
             handle.wait_for_all_required_quotes(),
         )
         .await
-        .expect("pre-observed quote must not be lost before wait starts");
+        .expect("pre-observed quote must not be lost before wait starts")
+        .expect("required quote wait should succeed");
     }
 
     #[test]

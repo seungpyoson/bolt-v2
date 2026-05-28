@@ -5423,7 +5423,6 @@ fn allows_metadata_response_readiness_probe_without_static_quote_targets() {
 [clients.polymarket_main.readiness_probe]
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 4
-min_metadata_quote_targets = 2
 "#
     ))
     .expect("metadata-response readiness probe should parse");
@@ -5437,34 +5436,30 @@ min_metadata_quote_targets = 2
 }
 
 #[test]
-fn rejects_metadata_response_readiness_probe_without_min_quote_targets() {
-    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+fn rejects_metadata_response_readiness_probe_with_min_quote_targets() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
 
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
-    let root: BoltV3RootConfig = toml::from_str(&format!(
+    let error = toml::from_str::<BoltV3RootConfig>(&format!(
         r#"{fixture}
 
 [clients.polymarket_main.readiness_probe]
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 4
+min_metadata_quote_targets = 2
 "#
     ))
-    .expect("metadata-response readiness probe should parse so validation can reject missing min");
-
-    let messages = validate_root_only(&root);
+    .expect_err("metadata-response readiness probes must not accept hardcoded min target counts");
 
     assert!(
-        messages.iter().any(|message| {
-            message.contains("clients.polymarket_main.readiness_probe.min_metadata_quote_targets")
-                && message.contains("positive integer")
-        }),
-        "metadata-response readiness probes must declare a config-owned min quote target count: {messages:#?}"
+        error.to_string().contains("min_metadata_quote_targets"),
+        "parse error should name the removed min target count field: {error}"
     );
 }
 
 #[test]
-fn rejects_metadata_response_readiness_probe_with_min_greater_than_max() {
+fn rejects_metadata_response_readiness_probe_without_max_quote_targets() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
@@ -5474,22 +5469,18 @@ fn rejects_metadata_response_readiness_probe_with_min_greater_than_max() {
 
 [clients.polymarket_main.readiness_probe]
 quote_target_source = "metadata_response"
-max_metadata_quote_targets = 2
-min_metadata_quote_targets = 4
 "#
     ))
-    .expect(
-        "metadata-response readiness probe should parse so validation can reject invalid bounds",
-    );
+    .expect("metadata-response readiness probe should parse so validation can reject missing max");
 
     let messages = validate_root_only(&root);
 
     assert!(
         messages.iter().any(|message| {
-            message.contains("clients.polymarket_main.readiness_probe.min_metadata_quote_targets")
-                && message.contains("less than or equal")
+            message.contains("clients.polymarket_main.readiness_probe.max_metadata_quote_targets")
+                && message.contains("positive integer")
         }),
-        "metadata-response readiness probe min must be bounded by max: {messages:#?}"
+        "metadata-response readiness probe must declare a config-owned safety bound: {messages:#?}"
     );
 }
 
@@ -5505,7 +5496,6 @@ fn rejects_readiness_probe_with_both_metadata_response_and_static_targets() {
 [clients.polymarket_main.readiness_probe]
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 4
-min_metadata_quote_targets = 2
 
 [clients.polymarket_main.readiness_probe.quote_targets.configured_quote_probe]
 instrument_id = "CONFIGURED-PROBE.POLYMARKET"

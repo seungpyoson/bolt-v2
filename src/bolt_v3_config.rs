@@ -322,7 +322,6 @@ pub struct DataClientReadinessProbeBlock {
     #[serde(default)]
     pub quote_target_source: DataClientReadinessProbeQuoteTargetSource,
     pub max_metadata_quote_targets: Option<usize>,
-    pub min_metadata_quote_targets: Option<usize>,
     #[serde(default)]
     pub quote_targets: BTreeMap<String, DataClientReadinessProbeQuoteTargetBlock>,
 }
@@ -332,7 +331,6 @@ impl Default for DataClientReadinessProbeBlock {
         Self {
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::Configured,
             max_metadata_quote_targets: None,
-            min_metadata_quote_targets: None,
             quote_targets: BTreeMap::new(),
         }
     }

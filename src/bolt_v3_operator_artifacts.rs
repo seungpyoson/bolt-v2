@@ -816,7 +816,6 @@ struct DataClientReadinessProbeTargetSource {
     event_kind: &'static str,
     instrument_id_hash: Option<String>,
     max_metadata_quote_targets: Option<usize>,
-    min_metadata_quote_targets: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3366,7 +3365,36 @@ fn data_client_quote_probe_events_from_no_submit_readiness_evidence(
         client,
         metadata,
     )?;
-    data_client_quote_probe_events_for_targets(client_key, provider_key, evidence, &quote_targets)
+    let events = data_client_quote_probe_events_for_targets(
+        client_key,
+        provider_key,
+        evidence,
+        &quote_targets,
+    )?;
+    if client
+        .readiness_probe
+        .as_ref()
+        .is_some_and(|readiness_probe| {
+            readiness_probe.quote_target_source
+                == DataClientReadinessProbeQuoteTargetSource::MetadataResponse
+        })
+    {
+        let observed_targets: BTreeSet<&str> = evidence
+            .quotes
+            .iter()
+            .filter(|quote| quote.data_client_id == client_key)
+            .filter(|quote| quote_targets.contains(&quote.instrument_id))
+            .map(|quote| quote.instrument_id.as_str())
+            .collect();
+        if observed_targets.len() != quote_targets.len() {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "metadata.instrument_ids.quotes",
+                },
+            );
+        }
+    }
+    Ok(events)
 }
 
 fn data_client_quote_probe_events_for_targets(
@@ -3490,15 +3518,6 @@ fn data_client_readiness_quote_target_instruments_for_evidence(
                 return Err(
                     BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
                         field: "metadata.instrument_ids.max_metadata_quote_targets",
-                    },
-                );
-            }
-            if let Some(min_quote_targets) = readiness_probe.min_metadata_quote_targets
-                && metadata_instruments.len() < min_quote_targets
-            {
-                return Err(
-                    BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
-                        field: "metadata.instrument_ids.min_metadata_quote_targets",
                     },
                 );
             }
@@ -5403,7 +5422,6 @@ fn data_client_readiness_probe_targets(
                 event_kind: "quote",
                 instrument_id_hash: Some(sha256_text(&target.instrument_id.to_string())),
                 max_metadata_quote_targets: None,
-                min_metadata_quote_targets: None,
             })
             .collect(),
         DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
@@ -5413,7 +5431,6 @@ fn data_client_readiness_probe_targets(
                 event_kind: "quote",
                 instrument_id_hash: None,
                 max_metadata_quote_targets: readiness_probe.max_metadata_quote_targets,
-                min_metadata_quote_targets: readiness_probe.min_metadata_quote_targets,
             }]
         }
     }

@@ -179,7 +179,6 @@ struct BoltV3NoSubmitReferenceQuoteProbeHandle {
     ambiguous_instrument_ids: Rc<RefCell<BTreeSet<String>>>,
     metadata_response_data_client_id: Option<ClientId>,
     metadata_response_max_quote_targets: Option<usize>,
-    metadata_response_min_quote_targets: Option<usize>,
     quote_targets_initialized: Rc<Cell<bool>>,
     failure_reason: Rc<RefCell<Option<String>>>,
     quotes: Rc<RefCell<Vec<BoltV3NoSubmitReferenceQuote>>>,
@@ -202,7 +201,6 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             ambiguous_instrument_ids: Rc::new(RefCell::new(ambiguous_instrument_ids)),
             metadata_response_data_client_id: None,
             metadata_response_max_quote_targets: None,
-            metadata_response_min_quote_targets: None,
             quote_targets_initialized: Rc::new(Cell::new(true)),
             failure_reason: Rc::new(RefCell::new(None)),
             quotes: Rc::new(RefCell::new(Vec::new())),
@@ -210,17 +208,12 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         }
     }
 
-    fn from_metadata_response_plan(
-        data_client_id: ClientId,
-        max_quote_targets: usize,
-        min_quote_targets: usize,
-    ) -> Self {
+    fn from_metadata_response_plan(data_client_id: ClientId, max_quote_targets: usize) -> Self {
         Self {
             required: Rc::new(RefCell::new(Vec::new())),
             ambiguous_instrument_ids: Rc::new(RefCell::new(BTreeSet::new())),
             metadata_response_data_client_id: Some(data_client_id),
             metadata_response_max_quote_targets: Some(max_quote_targets),
-            metadata_response_min_quote_targets: Some(min_quote_targets),
             quote_targets_initialized: Rc::new(Cell::new(false)),
             failure_reason: Rc::new(RefCell::new(None)),
             quotes: Rc::new(RefCell::new(Vec::new())),
@@ -243,15 +236,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             return false;
         }
         let quotes = self.quotes.borrow();
-        if let Some(min_quote_targets) = self.metadata_response_min_quote_targets {
-            return observed_required_quote_count(&required, &quotes) >= min_quote_targets;
-        }
-        required.iter().all(|required| {
-            quotes.iter().any(|quote| {
-                quote.data_client_id == required.data_client_id.to_string()
-                    && quote.instrument_id == required.instrument_id.to_string()
-            })
-        })
+        observed_required_quote_count(&required, &quotes) == required.len()
     }
 
     fn ambiguity_error(&self) -> Option<String> {
@@ -297,17 +282,10 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         instrument_ids.sort_by_key(|instrument_id| instrument_id.to_string());
         instrument_ids.dedup();
         let max_quote_targets = self.metadata_response_max_quote_targets.unwrap_or(0);
-        let min_quote_targets = self.metadata_response_min_quote_targets.unwrap_or(0);
         let metadata_quote_targets = instrument_ids.len();
         if metadata_quote_targets > max_quote_targets {
             self.fail_metadata_response_probe(format!(
                 "metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters before using this client for production readiness"
-            ));
-            return Vec::new();
-        }
-        if metadata_quote_targets < min_quote_targets {
-            self.fail_metadata_response_probe(format!(
-                "metadata_response produced {metadata_quote_targets} source-owned quote targets, below clients.<id>.readiness_probe.min_metadata_quote_targets={min_quote_targets}; broaden TOML-owned metadata filters before using this client for production readiness"
             ));
             return Vec::new();
         }
@@ -708,23 +686,10 @@ fn no_submit_data_client_readiness_quote_probe_handle(
                     ),
                 ));
             }
-            let min_quote_targets = readiness_probe.min_metadata_quote_targets.ok_or_else(|| {
-                BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
-                    "data-client readiness quote probe requires clients.<id>.readiness_probe.min_metadata_quote_targets when quote_target_source = \"metadata_response\""
-                ))
-            })?;
-            if min_quote_targets == 0 || min_quote_targets > max_quote_targets {
-                return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
-                    anyhow::anyhow!(
-                        "data-client readiness quote probe requires clients.<id>.readiness_probe.min_metadata_quote_targets to be positive and less than or equal to max_metadata_quote_targets"
-                    ),
-                ));
-            }
             Ok(
                 BoltV3NoSubmitReferenceQuoteProbeHandle::from_metadata_response_plan(
                     ClientId::from(client_key),
                     max_quote_targets,
-                    min_quote_targets,
                 ),
             )
         }
@@ -2555,7 +2520,6 @@ mod tests {
         client.readiness_probe = Some(DataClientReadinessProbeBlock {
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(2),
-            min_metadata_quote_targets: Some(2),
             quote_targets: BTreeMap::new(),
         });
 
@@ -2608,7 +2572,6 @@ mod tests {
         client.readiness_probe = Some(DataClientReadinessProbeBlock {
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(2),
-            min_metadata_quote_targets: Some(1),
             quote_targets: BTreeMap::new(),
         });
 
@@ -2634,7 +2597,7 @@ mod tests {
     }
 
     #[test]
-    fn data_client_readiness_metadata_response_probe_uses_configured_min_quote_targets() {
+    fn data_client_readiness_metadata_response_probe_requires_all_metadata_quote_targets() {
         let mut loaded = fixture_loaded_config();
         let client = loaded
             .root
@@ -2644,7 +2607,6 @@ mod tests {
         client.readiness_probe = Some(DataClientReadinessProbeBlock {
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(3),
-            min_metadata_quote_targets: Some(2),
             quote_targets: BTreeMap::new(),
         });
 
@@ -2672,7 +2634,7 @@ mod tests {
         }
         assert!(
             !handle.has_all_required_quotes(),
-            "metadata-response quote probe must not pass before the configured minimum is observed"
+            "metadata-response quote probe must not pass before every same-run metadata target is observed"
         );
 
         let subscription = installed
@@ -2692,8 +2654,29 @@ mod tests {
             });
 
         assert!(
+            !handle.has_all_required_quotes(),
+            "metadata-response quote probe should still wait for the final same-run metadata target"
+        );
+
+        let subscription = installed
+            .get(2)
+            .expect("third source-owned target should be installed");
+        handle
+            .quotes
+            .borrow_mut()
+            .push(BoltV3NoSubmitReferenceQuote {
+                data_client_id: subscription.data_client_id.to_string(),
+                instrument_id: subscription.instrument_id.to_string(),
+                bid_price: 1.0,
+                ask_price: 2.0,
+                ts_event_unix_nanos: 1_000,
+                ts_init_unix_nanos: 1_100,
+                captured_at_unix_nanos: 1_200,
+            });
+
+        assert!(
             handle.has_all_required_quotes(),
-            "metadata-response quote probe should pass after the config-owned minimum is observed"
+            "metadata-response quote probe should pass after all same-run metadata targets are observed"
         );
     }
 

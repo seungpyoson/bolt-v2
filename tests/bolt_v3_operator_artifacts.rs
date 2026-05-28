@@ -1847,7 +1847,6 @@ fn data_client_behavior_probe_events_source_accepts_metadata_response_quote_targ
     reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
-        min_metadata_quote_targets: Some(1),
         quote_targets: BTreeMap::new(),
     });
     loaded
@@ -2037,7 +2036,6 @@ fn data_client_behavior_probe_events_source_rejects_metadata_response_target_tru
     reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
-        min_metadata_quote_targets: Some(1),
         quote_targets: BTreeMap::new(),
     });
     loaded
@@ -2082,6 +2080,73 @@ fn data_client_behavior_probe_events_source_rejects_metadata_response_target_tru
     assert!(
         error.to_string().contains("max_metadata_quote_targets"),
         "error should name the TOML-owned metadata bound: {error}"
+    );
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_requires_quotes_for_all_metadata_response_targets() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: Some(2),
+        quote_targets: BTreeMap::new(),
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let first_instrument = format!("CONFIGURED-FIRST.{provider_key}");
+    let second_instrument = format!("CONFIGURED-SECOND.{provider_key}");
+    let temp = support::TempCaseDir::new("data-client-behavior-metadata-response-all-targets");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![first_instrument.clone(), second_instrument],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence {
+            quotes: vec![BoltV3NoSubmitReferenceQuote {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                instrument_id: first_instrument,
+                bid_price: 3299.0,
+                ask_price: 3301.0,
+                ts_event_unix_nanos: 600_000_000_000,
+                ts_init_unix_nanos: 600_100_000_000,
+                captured_at_unix_nanos: 600_500_000_000,
+            }],
+        },
+    };
+
+    let error = write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect_err("metadata-response behavior evidence must observe every metadata target");
+
+    assert!(
+        error.to_string().contains("metadata.instrument_ids.quotes"),
+        "error should name missing metadata-target quote evidence: {error}"
     );
 }
 

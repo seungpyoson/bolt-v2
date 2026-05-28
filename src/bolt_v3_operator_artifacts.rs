@@ -100,8 +100,14 @@ const DATA_CLIENT_BEHAVIOR_OBSERVATION_SOURCE_RECORD_KIND: &str =
     "bolt_v3.data_client_behavior_observation_source.v1";
 const DATA_CLIENT_BEHAVIOR_PROBE_EVENT_RECORD_KIND: &str =
     "bolt_v3.data_client_behavior_probe_event.v1";
+const DATA_CLIENT_POLICY_BEHAVIOR_SOURCE_RECORD_KIND: &str =
+    "bolt_v3.data_client_policy_behavior_source.v1";
 const DATA_CLIENT_BEHAVIOR_OBSERVATION_STATUS_NOT_PRODUCTION_USABLE: &str =
     "behavior_observation_final_matrix_missing";
+const DATA_CLIENT_POLICY_BEHAVIOR_SOURCE_STATUS_COMPLETE: &str =
+    "data_client_policy_behavior_source_complete";
+const DATA_CLIENT_POLICY_BEHAVIOR_SOURCE_STATUS_MISSING_MARKERS: &str =
+    "data_client_policy_behavior_source_missing_markers";
 const DATA_CLIENT_PRODUCTION_READINESS_MATRIX_SCHEMA_VERSION: u32 = 1;
 const DATA_CLIENT_PRODUCTION_READINESS_MATRIX_RECORD_KIND: &str =
     "bolt_v3.data_client_production_readiness_matrix.v1";
@@ -869,6 +875,8 @@ struct DataClientBehaviorObservationArtifact {
     provider_key: String,
     behavior_source_path_hash: String,
     behavior_source_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy_source_sha256: Option<String>,
     observed_at_unix_millis: u64,
     observation_window_millis: u64,
     metadata_behavior: DataClientBehaviorSurfaceObservation,
@@ -891,6 +899,8 @@ struct DataClientBehaviorObservationSourceFile {
     record_kind: String,
     client_key_hash: String,
     provider_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    policy_source_sha256: Option<String>,
     observed_at_unix_millis: u64,
     observation_window_millis: u64,
     metadata_behavior: DataClientBehaviorSurfaceObservation,
@@ -901,6 +911,31 @@ struct DataClientBehaviorObservationSourceFile {
     reconnect: DataClientPolicyObservation,
     rate_limit: DataClientPolicyObservation,
     parse_error: DataClientPolicyObservation,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct DataClientPolicyBehaviorSourceArtifact {
+    schema_version: u32,
+    record_kind: String,
+    generated_at_unix_seconds: u64,
+    config_bundle_checksum: String,
+    client_key_hash: String,
+    provider_key: String,
+    nt_policy_source_path_hashes: Vec<String>,
+    nt_policy_source_sha256s: Vec<String>,
+    nt_policy_source_byte_len: usize,
+    reconnect: DataClientPolicyObservation,
+    rate_limit: DataClientPolicyObservation,
+    parse_error: DataClientPolicyObservation,
+    source_owned_policy_observation_complete: bool,
+    production_usable: bool,
+    readiness_status: String,
+}
+
+#[derive(Debug, Clone)]
+struct DataClientLoadedPolicyBehaviorSource {
+    source_sha256: String,
+    artifact: DataClientPolicyBehaviorSourceArtifact,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -3022,8 +3057,50 @@ pub fn write_data_client_behavior_observation_source_from_probe_events(
         client_key,
         probe_events_path,
         max_probe_events_bytes,
+        None,
     )?;
     write_json_artifact_create_new(output_path, &source)
+}
+
+pub fn write_data_client_behavior_observation_source_from_probe_events_and_policy_source(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    probe_events_path: &Path,
+    max_probe_events_bytes: u64,
+    policy_source_path: &Path,
+    max_policy_source_bytes: u64,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let policy_source = read_data_client_policy_behavior_source_artifact(
+        loaded,
+        client_key,
+        policy_source_path,
+        max_policy_source_bytes,
+    )?;
+    let source = build_data_client_behavior_observation_source_from_probe_events(
+        loaded,
+        client_key,
+        probe_events_path,
+        max_probe_events_bytes,
+        Some(&policy_source),
+    )?;
+    write_json_artifact_create_new(output_path, &source)
+}
+
+pub fn write_data_client_policy_behavior_source_artifact_from_nt_sources(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    nt_policy_source_paths: &[PathBuf],
+    max_source_bytes: u64,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let artifact = build_data_client_policy_behavior_source_artifact_from_nt_sources(
+        loaded,
+        client_key,
+        nt_policy_source_paths,
+        max_source_bytes,
+    )?;
+    write_json_artifact_create_new(output_path, &artifact)
 }
 
 pub fn write_data_client_behavior_probe_events_from_no_submit_evidence(
@@ -3349,6 +3426,329 @@ fn data_client_readiness_quote_target_instruments(
         .collect())
 }
 
+fn build_data_client_policy_behavior_source_artifact_from_nt_sources(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    nt_policy_source_paths: &[PathBuf],
+    max_source_bytes: u64,
+) -> Result<DataClientPolicyBehaviorSourceArtifact, BoltV3OperatorArtifactError> {
+    if client_key.trim().is_empty() {
+        return Err(BoltV3OperatorArtifactError::DataClientNtSourceInvalid {
+            field: "client_key",
+        });
+    }
+    if nt_policy_source_paths.is_empty() {
+        return Err(BoltV3OperatorArtifactError::DataClientNtSourceInvalid {
+            field: "nt_policy_source_paths",
+        });
+    }
+    if max_source_bytes == 0 {
+        return Err(BoltV3OperatorArtifactError::DataClientNtSourceInvalid {
+            field: "max_source_bytes",
+        });
+    }
+    let client = loaded.root.clients.get(client_key).ok_or(
+        BoltV3OperatorArtifactError::DataClientNtSourceInvalid {
+            field: "client_key",
+        },
+    )?;
+    if client.data.is_none() {
+        return Err(BoltV3OperatorArtifactError::DataClientNtSourceInvalid {
+            field: "client_key.data",
+        });
+    }
+    let provider_key = client.venue.as_str();
+    binding_for_provider_key(provider_key).ok_or_else(|| {
+        BoltV3OperatorArtifactError::UnsupportedProvider {
+            client_key: client_key.to_string(),
+            provider_key: provider_key.to_string(),
+        }
+    })?;
+
+    let mut source_path_hashes = Vec::new();
+    let mut source_sha256s = Vec::new();
+    let mut source_byte_len = 0_usize;
+    let mut source_texts = Vec::new();
+    for path in nt_policy_source_paths {
+        let bytes = read_file_bounded(path, max_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::DataClientNtSourceRead {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
+        if bytes.is_empty() {
+            return Err(BoltV3OperatorArtifactError::DataClientNtSourceInvalid {
+                field: "nt_policy_source",
+            });
+        }
+        source_byte_len = source_byte_len.saturating_add(bytes.len());
+        source_path_hashes.push(source_path_hash(path));
+        source_sha256s.push(hex::encode(Sha256::digest(&bytes)));
+        source_texts.push(String::from_utf8_lossy(&bytes).to_string());
+    }
+    source_path_hashes.sort();
+    source_sha256s.sort();
+    let source_text = source_texts.join("\n");
+    let reconnect = data_client_policy_source_observation(
+        "reconnect",
+        data_client_policy_source_reconnect_markers(&source_text),
+        &source_sha256s,
+    )?;
+    let rate_limit = data_client_policy_source_observation(
+        "rate_limit",
+        data_client_policy_source_rate_limit_markers(&source_text),
+        &source_sha256s,
+    )?;
+    let parse_error = data_client_policy_source_observation(
+        "parse_error",
+        data_client_policy_source_parse_error_markers(&source_text),
+        &source_sha256s,
+    )?;
+    let source_owned_policy_observation_complete =
+        data_client_policy_observation_proven(&reconnect)
+            && data_client_policy_observation_proven(&rate_limit)
+            && data_client_policy_observation_proven(&parse_error);
+    let readiness_status = if source_owned_policy_observation_complete {
+        DATA_CLIENT_POLICY_BEHAVIOR_SOURCE_STATUS_COMPLETE
+    } else {
+        DATA_CLIENT_POLICY_BEHAVIOR_SOURCE_STATUS_MISSING_MARKERS
+    };
+    Ok(DataClientPolicyBehaviorSourceArtifact {
+        schema_version: DATA_CLIENT_BEHAVIOR_OBSERVATION_SCHEMA_VERSION,
+        record_kind: DATA_CLIENT_POLICY_BEHAVIOR_SOURCE_RECORD_KIND.to_string(),
+        generated_at_unix_seconds: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
+        client_key_hash: sha256_text(client_key),
+        provider_key: provider_key.to_string(),
+        nt_policy_source_path_hashes: source_path_hashes,
+        nt_policy_source_sha256s: source_sha256s,
+        nt_policy_source_byte_len: source_byte_len,
+        reconnect,
+        rate_limit,
+        parse_error,
+        source_owned_policy_observation_complete,
+        production_usable: false,
+        readiness_status: readiness_status.to_string(),
+    })
+}
+
+fn read_data_client_policy_behavior_source_artifact(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    policy_source_path: &Path,
+    max_policy_source_bytes: u64,
+) -> Result<DataClientLoadedPolicyBehaviorSource, BoltV3OperatorArtifactError> {
+    if max_policy_source_bytes == 0 {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "max_policy_source_bytes",
+            },
+        );
+    }
+    let client = loaded.root.clients.get(client_key).ok_or(
+        BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+            field: "client_key",
+        },
+    )?;
+    let provider_key = client.venue.as_str();
+    let bytes =
+        read_file_bounded(policy_source_path, max_policy_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceRead {
+                path: policy_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let source_sha256 = hex::encode(Sha256::digest(&bytes));
+    let artifact: DataClientPolicyBehaviorSourceArtifact =
+        serde_json::from_slice(&bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceParse {
+                path: policy_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    validate_data_client_policy_behavior_source_artifact(
+        &artifact,
+        loaded,
+        client_key,
+        provider_key,
+    )?;
+    Ok(DataClientLoadedPolicyBehaviorSource {
+        source_sha256,
+        artifact,
+    })
+}
+
+fn validate_data_client_policy_behavior_source_artifact(
+    source: &DataClientPolicyBehaviorSourceArtifact,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    provider_key: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if source.schema_version != DATA_CLIENT_BEHAVIOR_OBSERVATION_SCHEMA_VERSION {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "policy_source.schema_version",
+            },
+        );
+    }
+    if source.record_kind != DATA_CLIENT_POLICY_BEHAVIOR_SOURCE_RECORD_KIND {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "policy_source.record_kind",
+            },
+        );
+    }
+    if source.config_bundle_checksum.as_str() != loaded.config_bundle_checksum.as_str() {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "policy_source.config_bundle_checksum",
+            },
+        );
+    }
+    if source.client_key_hash != sha256_text(client_key) {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "policy_source.client_key_hash",
+            },
+        );
+    }
+    if source.provider_key != provider_key {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "policy_source.provider_key",
+            },
+        );
+    }
+    if source.nt_policy_source_path_hashes.is_empty()
+        || source.nt_policy_source_sha256s.is_empty()
+        || source
+            .nt_policy_source_path_hashes
+            .iter()
+            .any(|hash| !is_lowercase_sha256(hash))
+        || source
+            .nt_policy_source_sha256s
+            .iter()
+            .any(|hash| !is_lowercase_sha256(hash))
+        || source.nt_policy_source_byte_len == 0
+    {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "policy_source.nt_policy_source",
+            },
+        );
+    }
+    validate_data_client_policy_observation("policy_source.reconnect", &source.reconnect)?;
+    validate_data_client_policy_observation("policy_source.rate_limit", &source.rate_limit)?;
+    validate_data_client_policy_observation("policy_source.parse_error", &source.parse_error)?;
+    let complete = data_client_policy_observation_proven(&source.reconnect)
+        && data_client_policy_observation_proven(&source.rate_limit)
+        && data_client_policy_observation_proven(&source.parse_error);
+    if source.source_owned_policy_observation_complete != complete {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "policy_source.source_owned_policy_observation_complete",
+            },
+        );
+    }
+    Ok(())
+}
+
+fn data_client_policy_source_observation(
+    event_kind: &'static str,
+    markers: DataClientPolicySourceMarkers,
+    source_sha256s: &[String],
+) -> Result<DataClientPolicyObservation, BoltV3OperatorArtifactError> {
+    if !markers.behavior_observed {
+        return Ok(missing_data_client_policy_observation(event_kind));
+    }
+    let evidence_inputs: Vec<&str> = source_sha256s.iter().map(String::as_str).collect();
+    let evidence_sha256 = data_client_policy_source_evidence_hash(
+        event_kind,
+        markers.recovered,
+        markers.fail_closed,
+        &evidence_inputs,
+    );
+    let observation = DataClientPolicyObservation {
+        behavior_observed: true,
+        recovered: markers.recovered,
+        fail_closed: markers.fail_closed,
+        evidence_sha256,
+    };
+    validate_data_client_policy_observation(event_kind, &observation)?;
+    Ok(observation)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DataClientPolicySourceMarkers {
+    behavior_observed: bool,
+    recovered: bool,
+    fail_closed: bool,
+}
+
+fn data_client_policy_source_reconnect_markers(source: &str) -> DataClientPolicySourceMarkers {
+    let normalized = source.to_ascii_lowercase();
+    DataClientPolicySourceMarkers {
+        behavior_observed: normalized.contains("reconnect"),
+        recovered: normalized.contains("resubscribe")
+            || normalized.contains("restore_subscriptions")
+            || normalized.contains("subscriptions"),
+        fail_closed: normalized.contains("disconnect")
+            || normalized.contains("map_err")
+            || normalized.contains("error"),
+    }
+}
+
+fn data_client_policy_source_rate_limit_markers(source: &str) -> DataClientPolicySourceMarkers {
+    let normalized = source.to_ascii_lowercase();
+    DataClientPolicySourceMarkers {
+        behavior_observed: normalized.contains("rate_limit")
+            || normalized.contains("rate limit")
+            || normalized.contains("throttle")
+            || normalized.contains("429"),
+        recovered: normalized.contains("retry") || normalized.contains("backoff"),
+        fail_closed: normalized.contains("is_retryable")
+            || normalized.contains("map_err")
+            || normalized.contains("error")
+            || normalized.contains("429"),
+    }
+}
+
+fn data_client_policy_source_parse_error_markers(source: &str) -> DataClientPolicySourceMarkers {
+    let normalized = source.to_ascii_lowercase();
+    let parses_with_error = normalized.contains("parse")
+        && (normalized.contains("map_err")
+            || normalized.contains("result")
+            || normalized.contains("fail_closed"));
+    DataClientPolicySourceMarkers {
+        behavior_observed: parses_with_error,
+        recovered: false,
+        fail_closed: parses_with_error,
+    }
+}
+
+fn data_client_policy_source_evidence_hash(
+    event_kind: &'static str,
+    recovered: bool,
+    fail_closed: bool,
+    source_sha256s: &[&str],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(event_kind.as_bytes());
+    hasher.update([u8::from(recovered)]);
+    hasher.update([u8::from(fail_closed)]);
+    for source_sha256 in source_sha256s {
+        hasher.update(source_sha256.as_bytes());
+    }
+    hex::encode(hasher.finalize())
+}
+
+fn data_client_policy_observation_proven(observation: &DataClientPolicyObservation) -> bool {
+    observation.behavior_observed && (observation.recovered || observation.fail_closed)
+}
+
 fn nanos_to_millis_checked(
     nanos: u64,
     field: &'static str,
@@ -3411,6 +3811,7 @@ fn build_data_client_behavior_observation_source_from_probe_events(
     client_key: &str,
     probe_events_path: &Path,
     max_probe_events_bytes: u64,
+    policy_source: Option<&DataClientLoadedPolicyBehaviorSource>,
 ) -> Result<DataClientBehaviorObservationSourceFile, BoltV3OperatorArtifactError> {
     if client_key.trim().is_empty() {
         return Err(
@@ -3457,6 +3858,7 @@ fn build_data_client_behavior_observation_source_from_probe_events(
         client_key,
         provider_key,
         configured_max_age_millis,
+        policy_source,
     )
 }
 
@@ -3616,6 +4018,7 @@ fn materialize_data_client_behavior_observation_source_from_probe_events(
     client_key: &str,
     provider_key: &str,
     configured_max_age_millis: u64,
+    policy_source: Option<&DataClientLoadedPolicyBehaviorSource>,
 ) -> Result<DataClientBehaviorObservationSourceFile, BoltV3OperatorArtifactError> {
     let observed_at_unix_millis = events
         .iter()
@@ -3636,11 +4039,13 @@ fn materialize_data_client_behavior_observation_source_from_probe_events(
         .max(1);
     let freshness =
         data_client_freshness_observation_from_probe_events(events, configured_max_age_millis)?;
+    let policy_source_sha256 = policy_source.map(|source| source.source_sha256.clone());
     let source = DataClientBehaviorObservationSourceFile {
         schema_version: DATA_CLIENT_BEHAVIOR_OBSERVATION_SCHEMA_VERSION,
         record_kind: DATA_CLIENT_BEHAVIOR_OBSERVATION_SOURCE_RECORD_KIND.to_string(),
         client_key_hash: sha256_text(client_key),
         provider_key: provider_key.to_string(),
+        policy_source_sha256,
         observed_at_unix_millis,
         observation_window_millis,
         metadata_behavior: data_client_surface_observation_from_probe_events(events, "metadata")?,
@@ -3648,9 +4053,15 @@ fn materialize_data_client_behavior_observation_source_from_probe_events(
         book_behavior: data_client_surface_observation_from_probe_events(events, "book")?,
         ticker_behavior: data_client_surface_observation_from_probe_events(events, "ticker")?,
         freshness,
-        reconnect: data_client_policy_observation_from_probe_events(events, "reconnect")?,
-        rate_limit: data_client_policy_observation_from_probe_events(events, "rate_limit")?,
-        parse_error: data_client_policy_observation_from_probe_events(events, "parse_error")?,
+        reconnect: policy_source
+            .map(|source| source.artifact.reconnect.clone())
+            .unwrap_or_else(|| missing_data_client_policy_observation("reconnect")),
+        rate_limit: policy_source
+            .map(|source| source.artifact.rate_limit.clone())
+            .unwrap_or_else(|| missing_data_client_policy_observation("rate_limit")),
+        parse_error: policy_source
+            .map(|source| source.artifact.parse_error.clone())
+            .unwrap_or_else(|| missing_data_client_policy_observation("parse_error")),
     };
     validate_data_client_behavior_observation_source(&source, client_key, provider_key)?;
     Ok(source)
@@ -3765,36 +4176,13 @@ fn data_client_freshness_observation_from_probe_events(
     })
 }
 
-fn data_client_policy_observation_from_probe_events(
-    events: &[DataClientBehaviorProbeEvent],
-    event_kind: &'static str,
-) -> Result<DataClientPolicyObservation, BoltV3OperatorArtifactError> {
-    let policy_events: Vec<&DataClientBehaviorProbeEvent> = events
-        .iter()
-        .filter(|event| event.event_kind == event_kind)
-        .collect();
-    if policy_events.is_empty() {
-        return Ok(DataClientPolicyObservation {
-            behavior_observed: false,
-            recovered: false,
-            fail_closed: false,
-            evidence_sha256: sha256_text(&format!("{event_kind}_probe_event_missing")),
-        });
+fn missing_data_client_policy_observation(event_kind: &'static str) -> DataClientPolicyObservation {
+    DataClientPolicyObservation {
+        behavior_observed: false,
+        recovered: false,
+        fail_closed: false,
+        evidence_sha256: sha256_text(&format!("{event_kind}_policy_source_missing")),
     }
-    let evidence_hashes: Vec<&str> = policy_events
-        .iter()
-        .map(|event| event.evidence_sha256.as_deref().unwrap_or_default())
-        .collect();
-    Ok(DataClientPolicyObservation {
-        behavior_observed: true,
-        recovered: policy_events
-            .iter()
-            .any(|event| event.recovered.unwrap_or(false)),
-        fail_closed: policy_events
-            .iter()
-            .any(|event| event.fail_closed.unwrap_or(false)),
-        evidence_sha256: data_client_aggregate_evidence_hash(&evidence_hashes),
-    })
 }
 
 fn data_client_aggregate_evidence_hash(evidence_hashes: &[&str]) -> String {
@@ -4156,6 +4544,7 @@ fn build_data_client_behavior_observation_artifact_from_source_file(
         provider_key: provider_key.to_string(),
         behavior_source_path_hash: source_path_hash(behavior_source_path),
         behavior_source_sha256: hex::encode(Sha256::digest(&source_bytes)),
+        policy_source_sha256: source.policy_source_sha256,
         observed_at_unix_millis: source.observed_at_unix_millis,
         observation_window_millis: source.observation_window_millis,
         metadata_behavior: source.metadata_behavior,
@@ -4203,6 +4592,17 @@ fn validate_data_client_behavior_observation_source(
         return Err(
             BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
                 field: "provider_key",
+            },
+        );
+    }
+    if source
+        .policy_source_sha256
+        .as_deref()
+        .is_some_and(|sha256| !is_lowercase_sha256(sha256))
+    {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "policy_source_sha256",
             },
         );
     }
@@ -4358,12 +4758,19 @@ fn data_client_behavior_observation_missing_proofs(
     if !source.freshness.within_configured_bound {
         missing.push("freshness_latency");
     }
-    // The current source-owned LiveNode probe collector emits metadata and market-data
-    // surface observations only. Policy behavior remains unproven until a collector
-    // can produce those observations from NT/LiveNode instead of operator-supplied JSON.
-    missing.push("reconnect_behavior");
-    missing.push("rate_limit_behavior");
-    missing.push("parse_error_behavior");
+    let policy_source_present = source
+        .policy_source_sha256
+        .as_deref()
+        .is_some_and(is_lowercase_sha256);
+    if !policy_source_present || !data_client_policy_observation_proven(&source.reconnect) {
+        missing.push("reconnect_behavior");
+    }
+    if !policy_source_present || !data_client_policy_observation_proven(&source.rate_limit) {
+        missing.push("rate_limit_behavior");
+    }
+    if !policy_source_present || !data_client_policy_observation_proven(&source.parse_error) {
+        missing.push("parse_error_behavior");
+    }
     missing
 }
 

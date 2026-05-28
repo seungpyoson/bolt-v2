@@ -27,9 +27,11 @@ use bolt_v2::{
         write_chainlink_reference_quote_observations_source_from_report_files,
         write_data_client_behavior_observation_artifact_from_source_file,
         write_data_client_behavior_observation_source_from_probe_events,
+        write_data_client_behavior_observation_source_from_probe_events_and_policy_source,
         write_data_client_behavior_probe_events_from_no_submit_readiness_evidence,
         write_data_client_live_node_mapping_source_artifact_from_config,
         write_data_client_nt_source_capability_artifact_from_config,
+        write_data_client_policy_behavior_source_artifact_from_nt_sources,
         write_data_client_production_readiness_matrix_artifact_from_source_files,
         write_data_client_readiness_source_artifact_from_config,
         write_entry_decision_evidence_from_source_file, write_entry_decision_proof_source_files,
@@ -320,6 +322,22 @@ enum OperatorArtifactsCommand {
         probe_events: PathBuf,
         #[arg(long)]
         max_probe_events_bytes: u64,
+        #[arg(long)]
+        policy_source: Option<PathBuf>,
+        #[arg(long)]
+        max_policy_source_bytes: Option<u64>,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    CollectDataClientPolicyBehaviorSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        client_key: String,
+        #[arg(long)]
+        nt_policy_source: Vec<PathBuf>,
+        #[arg(long)]
+        max_source_bytes: u64,
         #[arg(long)]
         output: PathBuf,
     },
@@ -945,14 +963,50 @@ fn run_operator_artifacts_command(
             client_key,
             probe_events,
             max_probe_events_bytes,
+            policy_source,
+            max_policy_source_bytes,
             output,
         } => {
             let loaded = load_bolt_v3_config(&config)?;
-            let written = write_data_client_behavior_observation_source_from_probe_events(
+            let written = if let Some(policy_source) = policy_source.as_ref() {
+                let max_policy_source_bytes = max_policy_source_bytes.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--max-policy-source-bytes is required when --policy-source is set"
+                    )
+                })?;
+                write_data_client_behavior_observation_source_from_probe_events_and_policy_source(
+                    &loaded,
+                    &client_key,
+                    &probe_events,
+                    max_probe_events_bytes,
+                    policy_source,
+                    max_policy_source_bytes,
+                    &output,
+                )?
+            } else {
+                write_data_client_behavior_observation_source_from_probe_events(
+                    &loaded,
+                    &client_key,
+                    &probe_events,
+                    max_probe_events_bytes,
+                    &output,
+                )?
+            };
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectDataClientPolicyBehaviorSource {
+            config,
+            client_key,
+            nt_policy_source,
+            max_source_bytes,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let written = write_data_client_policy_behavior_source_artifact_from_nt_sources(
                 &loaded,
                 &client_key,
-                &probe_events,
-                max_probe_events_bytes,
+                &nt_policy_source,
+                max_source_bytes,
                 &output,
             )?;
             print_written_operator_artifact(&written)

@@ -41,10 +41,12 @@ use bolt_v2::{
         write_chainlink_reference_quote_observations_source_from_report_files,
         write_data_client_behavior_observation_artifact_from_source_file,
         write_data_client_behavior_observation_source_from_probe_events,
+        write_data_client_behavior_observation_source_from_probe_events_and_policy_source,
         write_data_client_behavior_probe_events_from_no_submit_evidence,
         write_data_client_behavior_probe_events_from_no_submit_readiness_evidence,
         write_data_client_live_node_mapping_source_artifact_from_config,
         write_data_client_nt_source_capability_artifact_from_config,
+        write_data_client_policy_behavior_source_artifact_from_nt_sources,
         write_data_client_production_readiness_matrix_artifact_from_source_files,
         write_data_client_readiness_source_artifact_from_config,
         write_entry_readiness_gate_session_artifact_from_decision_source_file,
@@ -1336,6 +1338,137 @@ fn data_client_behavior_observation_source_materializes_probe_events_without_raw
     assert!(!rendered_source.contains(client_key));
     assert!(!rendered_source.contains("probe-events.jsonl"));
     assert!(!rendered_source.contains(&temp.path().display().to_string()));
+}
+
+#[test]
+fn data_client_behavior_observation_source_accepts_source_owned_policy_proof() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str();
+    let client_key_hash = sha256_text(client_key);
+    let temp = support::TempCaseDir::new("data-client-source-owned-policy-proof");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let surface_event = |event_kind: &str, observed_at_unix_millis: u64| {
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.data_client_behavior_probe_event.v1",
+            "client_key_hash": client_key_hash,
+            "provider_key": provider_key,
+            "observed_at_unix_millis": observed_at_unix_millis,
+            "event_kind": event_kind,
+            "supported_by_nt_source": true,
+            "observed_through_live_node": true,
+            "age_millis": 500,
+            "latency_millis": 100,
+            "recovered": null,
+            "fail_closed": null,
+            "evidence_sha256": sha256_text(event_kind),
+            "unsupported_disposition": null
+        })
+    };
+    let probe_lines = [
+        surface_event("metadata", 1_777_000_000_000),
+        surface_event("quote", 1_777_000_000_100),
+    ]
+    .into_iter()
+    .map(|value| serde_json::to_string(&value).expect("event should serialize"))
+    .collect::<Vec<_>>()
+    .join("\n");
+    std::fs::write(&probe_events_path, format!("{probe_lines}\n"))
+        .expect("probe events should write");
+
+    let nt_policy_source_path = temp.path().join("nt-policy-source.rs");
+    std::fs::write(
+        &nt_policy_source_path,
+        r#"
+        fn reconnect_and_restore_subscriptions() {
+            reconnect();
+            restore_subscriptions();
+        }
+
+        fn rate_limit_policy() {
+            if response_status == 429 {
+                retry_with_backoff();
+            }
+        }
+
+        fn parse_error_policy() -> Result<(), Error> {
+            parse_frame().map_err(|error| fail_closed(error))?;
+            Ok(())
+        }
+        "#,
+    )
+    .expect("NT policy source should write");
+    let policy_source_path = temp.path().join("data-client-policy-behavior-source.json");
+    let written_policy = write_data_client_policy_behavior_source_artifact_from_nt_sources(
+        &loaded,
+        client_key,
+        std::slice::from_ref(&nt_policy_source_path),
+        16_384,
+        &policy_source_path,
+    )
+    .expect("source-owned policy proof should write");
+    let policy_artifact: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&written_policy.path).expect("policy should read"))
+            .expect("policy should parse");
+    assert_eq!(
+        policy_artifact["record_kind"],
+        "bolt_v3.data_client_policy_behavior_source.v1"
+    );
+    assert_eq!(policy_artifact["reconnect"]["behavior_observed"], true);
+    assert_eq!(policy_artifact["rate_limit"]["behavior_observed"], true);
+    assert_eq!(policy_artifact["parse_error"]["behavior_observed"], true);
+
+    let behavior_source_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+    let written_source =
+        write_data_client_behavior_observation_source_from_probe_events_and_policy_source(
+            &loaded,
+            client_key,
+            &probe_events_path,
+            16_384,
+            &written_policy.path,
+            16_384,
+            &behavior_source_path,
+        )
+        .expect("behavior source should accept source-owned policy proof");
+    let source: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&written_source.path).expect("source should read"))
+            .expect("source should parse");
+    assert_eq!(
+        source["policy_source_sha256"].as_str(),
+        Some(sha256_file(&written_policy.path).as_str())
+    );
+    assert_eq!(source["reconnect"]["behavior_observed"], true);
+    assert_eq!(source["rate_limit"]["behavior_observed"], true);
+    assert_eq!(source["parse_error"]["behavior_observed"], true);
+
+    let behavior_observation_path = temp.path().join("data-client-behavior-observation.json");
+    write_data_client_behavior_observation_artifact_from_source_file(
+        &loaded,
+        client_key,
+        &written_source.path,
+        16_384,
+        &behavior_observation_path,
+    )
+    .expect("behavior observation should write");
+    let observation: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&behavior_observation_path).expect("observation should read"),
+    )
+    .expect("observation should parse");
+    assert_eq!(observation["behavior_observation_complete"], true);
+    assert!(
+        observation["missing_behavior_proofs"]
+            .as_array()
+            .expect("missing proofs should be an array")
+            .is_empty()
+    );
 }
 
 #[test]

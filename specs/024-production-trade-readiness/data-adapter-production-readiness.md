@@ -96,7 +96,19 @@ The sixth T043A source-owned proof primitive has been added but not yet run thro
 - The behavior source materializer now accepts partial source-owned probe sets and records missing reconnect, rate-limit, and parse-error proofs as non-observed policy rows instead of pretending they are proven. Final behavior/matrix artifacts still mark those rows non-production-usable until all required proofs are present.
 - This closes the gap that probe events were previously an external input, but it does not close T043A: the current source-owned collector covers configured quote evidence only.
 
+The seventh T043A source-owned proof primitive has been added but not yet run through final cargo/CI verification:
+
+- New read-only CLI: `operator-artifacts collect-data-client-policy-behavior-source --config <root.toml> --client-key <configured-client> --nt-policy-source <pinned-nt-source.rs> --max-source-bytes <bytes> --output <data-client-policy-behavior-source.json>`.
+- `operator-artifacts collect-data-client-behavior-observation-source` now accepts optional `--policy-source <data-client-policy-behavior-source.json> --max-policy-source-bytes <bytes>`.
+- Generic `bolt_v3.data_client_behavior_probe_event.v1` JSONL still rejects reconnect/rate-limit/parse-error events. Policy behavior can only enter the behavior observation source through the separate policy artifact generated from bounded pinned NT source files.
+- The policy artifact hashes NT source paths and bytes, records source-owned reconnect, rate-limit, and parse/error observations, and does not print raw source paths, credentials, venue secrets, instruments, tokens, prices, endpoints, or runtime values.
+- Hand-authored behavior sources with policy fields but no `policy_source_sha256` remain non-production-usable, so the matrix cannot be completed by simply writing policy booleans into JSON.
+
+Current WIP evidence from `config/root.example.toml` into `/private/tmp/bolt-v2-t043a-policy/`: `collect-data-client-policy-behavior-source` produced `data_client_policy_behavior_source_complete` artifacts for all 11 configured data clients. The artifact sha256s are `binance_spot_data` `bd0ad4ff2a4ed29dbbf21e0240520482a4a650edda95016d034b7907d355db59`, `binance_usdm_data` `541b41061a23d93dec30613bfb2fdffc926b0d0b059c5cacdf88e04877691472`, `binance_coinm_data` `cf3ba861eb8d94d88e24158d481a5bf23c5406494f73feea912ae71b433d7f67`, `bitmex_data` `fc19ec7298e25a3405a3c8ae6d1627b8289817b817e673aa4a082a8d42c4c98e`, `bybit_data` `8f5b4ab57b0cf24b7643d403fe1c2fc74445957dc83bec0acb66a3dffdbf9412`, `coinbase_data` `d588e94c8ff99f31305c5332d2295d50b528e93b1784cafc114178486b4ae9bb`, `deribit_data` `1777933002724975c58eb79de27ac024748514de4b30dd1daf693d921f9ea313`, `kraken_spot_data` `13d47908f12ff28a290fcf833ba4e1ebf25469ca93a12b0a8ff1e4b7e80d440f`, `kraken_futures_data` `48497b7c49820d1fd1ad77bcd085094a5bd3ff42db6bb3e1bfef3e6ed9c6a769`, `okx_data` `ca3e8d2fb126a5c9355055e782e0e1707afcaa3ebb8befedc0cda94140de19ae`, and `polymarket_main` `457492559074c3065dd9956bd53cfef494f9311fe39764f0e069ffef4233eba7`.
+
 The architecture plan was challenged with Claude adversarial review on 2026-05-29, job `326dba0f-91b4-47e3-b4bb-a76d40606815`. The useful findings were that behavior policy proofs could be represented by operator-authored JSONL and that live-node mapping could be satisfied by source-text markers alone. The current local hardening rejects unowned policy probe events, keeps reconnect/rate-limit/parse-error proofs missing until source-owned collectors exist, carries the `LiveNode` registration summary on the runtime, and requires runtime data-client registration in the matrix mapping proof. The review slot itself was not counted as a clean external approval because the plugin marked it `review_quality_failed:not_reviewed`.
+
+A later Claude architecture challenge rejected the proposed `metadata_quote_target = "first_sorted_instrument"` direction because it created a second readiness path and selected an arbitrary instrument that was not strategy-relevant or reproducible. That WIP was removed; behavior probes remain client-owned through explicit `clients.<id>.readiness_probe.quote_targets`, and missing targets keep rows non-production-usable.
 
 After commit `b360e3ba`, the hardened collector was run against ignored operational `config/live.local.toml` into `/private/tmp/bolt-v2-t043a-b360e3ba/`:
 
@@ -106,7 +118,7 @@ After commit `b360e3ba`, the hardened collector was run against ignored operatio
 - `data-client-behavior-observation-source-bybit.json`: sha256 `f7044f7d7b7eb199f504e29ab2de711a47a42654b374ac976b3702f601099307`.
 - `data-client-behavior-observation-bybit.json`: sha256 `b225c8295f0441f76576a88eaac8fc5a1ec1d741455ac81e6ea759b111bea0d3`; it remains incomplete with missing `quote_or_book_or_ticker_behavior`, `reconnect_behavior`, `rate_limit_behavior`, and `parse_error_behavior`.
 
-This proves the per-client isolation fix removes the earlier all-client startup coupling for Bybit metadata behavior. It does not close T043A because the live config has no `bybit_data.readiness_probe.quote_targets` yet and no source-owned policy behavior collector exists.
+This proves the per-client isolation fix removes the earlier all-client startup coupling for Bybit metadata behavior. It does not close T043A because the live config has no `bybit_data.readiness_probe.quote_targets` yet, the source-owned policy behavior artifacts above were generated against tracked example config rather than the ignored live root, and no final behavior/matrix artifacts have bound those policy proofs to live data-path probe evidence.
 
 ## Missing Production Proof
 

@@ -183,7 +183,13 @@ pub fn repo_text(relative: &str) -> String {
 
 pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock {
     let case_dir = live_canary_operator_evidence_case_dir();
-    let now = current_unix_seconds() as i64;
+    let now_u64 = current_unix_seconds();
+    let now = i64::try_from(now_u64).expect("current unix seconds should fit in i64");
+    let one_second_ms: u64 = std::time::Duration::from_secs(1)
+        .as_millis()
+        .try_into()
+        .expect("one second should fit in u64 milliseconds");
+    let now_ms = now_u64.saturating_mul(one_second_ms);
     let approval_not_before_unix_seconds = now - 60;
     let approval_not_after_unix_seconds = now + 3600;
     let ssm_manifest_path = write_dummy_json(
@@ -220,14 +226,14 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
             "realized_volatility": "1.5",
             "spot_price": "3101",
             "price_to_beat_value": "3100",
-            "reference_quote_ts_event": 1234567900_u64,
+            "reference_quote_ts_event": now_ms,
             "polymarket_condition_id": "configured-condition",
             "polymarket_market_slug": "configured-market",
             "polymarket_question_id": "configured-question",
             "up_instrument_id": "configured-condition-UP.POLYMARKET",
             "down_instrument_id": "configured-condition-DOWN.POLYMARKET",
-            "polymarket_market_start_timestamp_ms": 1234567890_u64,
-            "polymarket_market_end_timestamp_ms": 1234568190_u64
+            "polymarket_market_start_timestamp_ms": now_ms,
+            "polymarket_market_end_timestamp_ms": now_ms.saturating_add(one_second_ms)
         }),
     );
     let gate_session_path = write_dummy_json(
@@ -462,14 +468,15 @@ pub fn loaded_bolt_v3_live_canary_with_satisfied_report(
     loaded.root.risk.default_max_notional_per_order = max_notional_per_order.to_string();
     let report_path = temp_path.join("no-submit-readiness.json");
     write_satisfied_no_submit_readiness_report(&report_path, &loaded.config_bundle_checksum);
+    let readiness_report_max_age_seconds = 60;
     loaded.root.live_canary = Some(bolt_v2::bolt_v3_config::LiveCanaryBlock {
         approval_id: "operator-approved-canary-001".to_string(),
         no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
         max_live_order_count,
         max_notional_per_order: max_notional_per_order.to_string(),
         max_no_submit_readiness_report_bytes: 4096,
-        readiness_report_max_age_seconds: 60,
-        reference_quote_max_age_seconds: 10,
+        readiness_report_max_age_seconds,
+        reference_quote_max_age_seconds: readiness_report_max_age_seconds,
         reference_quote_wait_timeout_seconds: 10,
         reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
         reference_quote_probe_log_events: true,

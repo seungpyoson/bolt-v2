@@ -1281,6 +1281,46 @@ async fn live_canary_pre_consumption_gate_accepts_without_pre_run_order_id_hashe
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn pre_consumption_gate_rejects_stale_source_owned_strategy_input_before_approval() {
+    let mut loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(
+        1,
+        rust_decimal::Decimal::new(25, 2),
+    );
+    let reference_quote_max_age_seconds = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should include live_canary")
+        .reference_quote_max_age_seconds;
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|block| block.operator_evidence.as_mut())
+        .expect("fixture should include operator evidence");
+    make_strategy_input_reference_quote_stale(
+        operator_evidence,
+        reference_quote_max_age_seconds + 1,
+    );
+    std::fs::remove_file(&operator_evidence.approval_consumption_path)
+        .expect("fixture should start with removable approval consumption proof");
+
+    let error = check_bolt_v3_live_canary_pre_consumption_gate(&loaded)
+        .await
+        .expect_err(
+            "stale source-owned strategy_input reference quote must fail before approval consumption",
+        );
+
+    assert!(
+        error.to_string().contains("strategy_input_evidence")
+            && error
+                .to_string()
+                .contains("reference_quote_max_age_seconds"),
+        "expected stale source-owned strategy_input rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_missing_operator_evidence_file_before_hashing() {
     let mut operator_evidence = valid_operator_evidence();
     let missing = std::path::Path::new(&operator_evidence.ssm_manifest_path)
@@ -3204,6 +3244,35 @@ fn bind_approval_envelope_value(
         .expect("approval envelope should be written");
     evidence.approval_envelope_sha256 = sha256_hex(&bytes);
     write_valid_approval_consumption_proof(evidence);
+}
+
+fn make_strategy_input_reference_quote_stale(
+    evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    stale_by_seconds: u64,
+) {
+    let path = std::path::Path::new(&evidence.strategy_input_evidence_path);
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).expect("strategy input should read"))
+            .expect("strategy input should parse");
+    let one_second_ms: u64 = std::time::Duration::from_secs(1)
+        .as_millis()
+        .try_into()
+        .expect("one second should fit in u64 milliseconds");
+    let stale_reference_quote_ts_ms = current_unix_seconds_for_test()
+        .saturating_sub(stale_by_seconds)
+        .saturating_mul(one_second_ms);
+    value
+        .as_object_mut()
+        .expect("strategy input should be an object")
+        .insert(
+            "reference_quote_ts_event".to_string(),
+            serde_json::json!(stale_reference_quote_ts_ms),
+        );
+    let bytes = serde_json::to_vec(&value).expect("strategy input should serialize");
+    std::fs::write(path, &bytes).expect("strategy input should rewrite");
+    evidence.strategy_input_evidence_sha256 = sha256_hex(&bytes);
+    let envelope = valid_approval_envelope_value(evidence);
+    bind_approval_envelope_value(evidence, envelope);
 }
 
 fn valid_approval_envelope_value(evidence: &LiveCanaryOperatorEvidenceBlock) -> serde_json::Value {

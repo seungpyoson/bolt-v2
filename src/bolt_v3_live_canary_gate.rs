@@ -24,7 +24,10 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
-    bolt_v3_config::{LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
+    bolt_v3_config::{
+        DECISION_REFERENCE_GATE_ROLE, LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock,
+        LoadedBoltV3Config,
+    },
     bolt_v3_decision_evidence::{
         BoltV3ReadinessGateEvidenceSnapshot, validate_readiness_gate_evidence_snapshot,
     },
@@ -41,6 +44,7 @@ use crate::{
 
 pub const APPROVAL_ENVELOPE_SCHEMA_VERSION: i64 = 1;
 pub const APPROVAL_ENVELOPE_RECORD_KIND: &str = "phase8_operator_approval_envelope";
+const MILLIS_PER_SECOND_U64: u64 = 1_000;
 
 /// Successful live canary gate evaluation.
 ///
@@ -177,6 +181,14 @@ pub enum BoltV3LiveCanaryGateError {
         source: serde_json::Error,
     },
     OperatorGateSessionInvalid {
+        path: PathBuf,
+        reason: String,
+    },
+    OperatorStrategyInputEvidenceParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    OperatorStrategyInputEvidenceInvalid {
         path: PathBuf,
         reason: String,
     },
@@ -385,6 +397,20 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                 "bolt-v3 live canary gate session {} is invalid: {reason}",
                 path.display()
             ),
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceParse { path, source } => {
+                write!(
+                    f,
+                    "failed to parse bolt-v3 live canary strategy_input_evidence {}: {source}",
+                    path.display()
+                )
+            }
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid { path, reason } => {
+                write!(
+                    f,
+                    "bolt-v3 live canary strategy_input_evidence {} is invalid: {reason}",
+                    path.display()
+                )
+            }
             BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeRead { path, source } => write!(
                 f,
                 "failed to read bolt-v3 live canary approval envelope {}: {source}",
@@ -898,6 +924,14 @@ async fn validate_operator_evidence(
 
     validate_operator_evidence_file_hashes(root_path, evidence).await?;
     validate_operator_gate_session_binding(loaded, root_path, evidence).await?;
+    validate_operator_strategy_input_freshness(
+        loaded,
+        root_path,
+        evidence,
+        block.reference_quote_max_age_seconds,
+        approval_window_unix_seconds,
+    )
+    .await?;
     validate_operator_approval_envelope(root_path, evidence, approval_id).await?;
     validate_operator_approval_consumption(
         root_path,
@@ -910,6 +944,111 @@ async fn validate_operator_evidence(
     .await?;
 
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct OperatorStrategyInputFreshness {
+    reference_quote_ts_event: Option<u64>,
+}
+
+async fn validate_operator_strategy_input_freshness(
+    loaded: &LoadedBoltV3Config,
+    root_path: &Path,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    reference_quote_max_age_seconds: u64,
+    current_unix_seconds: u64,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    if !loaded_has_source_owned_decision_reference(loaded) {
+        return Ok(());
+    }
+    let path = resolve_configured_path(
+        root_path,
+        "strategy_input_evidence_path",
+        &evidence.strategy_input_evidence_path,
+    )?;
+    let bytes = read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes)
+        .await
+        .map_err(|source| BoltV3LiveCanaryGateError::OperatorEvidenceRead {
+            field: "strategy_input_evidence_sha256",
+            path: path.clone(),
+            source,
+        })?;
+    let input: OperatorStrategyInputFreshness =
+        serde_json::from_slice(&bytes).map_err(|source| {
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceParse {
+                path: path.clone(),
+                source,
+            }
+        })?;
+    let Some(reference_quote_ts_event) = input.reference_quote_ts_event else {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "reference_quote_ts_event is missing".to_string(),
+            },
+        );
+    };
+    if reference_quote_ts_event == 0 {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "reference_quote_ts_event is invalid".to_string(),
+            },
+        );
+    }
+    let Some(current_unix_ms) = current_unix_seconds.checked_mul(MILLIS_PER_SECOND_U64) else {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "current_unix_seconds is invalid: overflows milliseconds".to_string(),
+            },
+        );
+    };
+    if reference_quote_ts_event > current_unix_ms {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: format!(
+                    "reference_quote_ts_event is invalid: {reference_quote_ts_event} is in the future relative to current_unix_ms {current_unix_ms}"
+                ),
+            },
+        );
+    }
+    let Some(max_age_ms) = reference_quote_max_age_seconds.checked_mul(MILLIS_PER_SECOND_U64)
+    else {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: format!(
+                    "reference_quote_max_age_seconds is invalid: {reference_quote_max_age_seconds} overflows milliseconds"
+                ),
+            },
+        );
+    };
+    let age_ms = current_unix_ms.saturating_sub(reference_quote_ts_event);
+    if age_ms > max_age_ms {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: format!(
+                    "reference_quote_ts_event is invalid: age_ms={age_ms} exceeds [live_canary].reference_quote_max_age_seconds={reference_quote_max_age_seconds}"
+                ),
+            },
+        );
+    }
+    Ok(())
+}
+
+fn loaded_has_source_owned_decision_reference(loaded: &LoadedBoltV3Config) -> bool {
+    loaded.strategies.iter().any(|strategy| {
+        strategy
+            .config
+            .target
+            .as_table()
+            .and_then(|target| target.get("gate_subscriptions"))
+            .and_then(toml::Value::as_table)
+            .is_some_and(|subscriptions| subscriptions.contains_key(DECISION_REFERENCE_GATE_ROLE))
+    })
 }
 
 async fn validate_operator_gate_session_binding(

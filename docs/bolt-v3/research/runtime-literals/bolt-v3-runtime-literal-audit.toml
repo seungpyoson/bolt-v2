@@ -878,6 +878,14 @@ reason = "The gate reads one byte beyond the configured cap to detect oversized 
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
+kind = "number"
+literal = '''1_000'''
+context = '''const MILLIS_PER_SECOND_U64: u64 = 1_000;'''
+classification = "time_unit_conversion"
+reason = "This is a named SI time-unit conversion constant used to compare source-owned evidence milliseconds against TOML-owned seconds; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
 literal = '''"."'''
 context = '''.unwrap_or_else(|| Path::new("."))'''
@@ -2159,6 +2167,14 @@ literal = '''"gate_subscriptions"'''
 context = '''.and_then(|target| target.get("gate_subscriptions"))'''
 classification = "toml_schema_key"
 reason = "This is the canonical strategy target TOML key used only to detect a configured decision-reference subscription; the runtime provider, market, and identity values remain TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"gate_subscriptions"'''
+context = '''.and_then(|target| target.get("gate_subscriptions"))'''
+classification = "toml_schema_key"
+reason = "This is the canonical strategy target TOML key used only to detect a configured decision-reference subscription; the runtime provider, market, token, and freshness values remain TOML/evidence-owned."
 
 [[allowed]]
 path = "src/bolt_v3_no_submit_readiness.rs"

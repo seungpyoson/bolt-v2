@@ -174,7 +174,14 @@ fn bolt_v3_registration_context_includes_operator_readiness_gate_session() {
         assert_eq!(runtime_seed.selected_market_key, "b".repeat(64));
         assert_eq!(runtime_seed.price_to_beat_value, 3_100.0);
         assert_eq!(runtime_seed.reference_price, 3_101.0);
-        assert_eq!(runtime_seed.reference_quote_ts_event, 1_234_567_900);
+        assert_eq!(
+            runtime_seed.reference_quote_ts_event,
+            runtime_seed.market_start_timestamp_ms
+        );
+        assert!(
+            runtime_seed.market_end_timestamp_ms > runtime_seed.market_start_timestamp_ms,
+            "runtime readiness seed should preserve a forward market window"
+        );
         assert_eq!(runtime_seed.realized_volatility, 1.5);
         assert_eq!(runtime_seed.reference_venue, "resolution_oracle_primary");
 

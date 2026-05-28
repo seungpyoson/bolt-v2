@@ -34,6 +34,7 @@ use bolt_v2::{
         collect_entry_decision_source_inputs_from_configured_provider,
         collect_entry_readiness_gate_evidence_from_source_file, normalize_gate_evidence,
         write_chainlink_reference_quote_observations_source_from_report_files,
+        write_data_client_live_node_mapping_source_artifact_from_config,
         write_data_client_nt_source_capability_artifact_from_config,
         write_data_client_readiness_source_artifact_from_config,
         write_entry_readiness_gate_session_artifact_from_decision_source_file,
@@ -1145,6 +1146,143 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
         "POLYMARKET",
         "passphrase_ssm_path",
     );
+}
+
+#[test]
+fn data_client_live_node_mapping_source_records_normal_adapter_path_as_unproven() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let temp = support::TempCaseDir::new("data-client-live-node-mapping-source");
+    let live_node_source = r#"
+fn build_source() {
+    let adapters = map_bolt_v3_adapters(loaded, resolved)?;
+    register_bolt_v3_clients(builder, adapters)?;
+}
+"#;
+    let adapter_mapping_source = r#"
+fn map_source() {
+    for (client_key, client) in &loaded.root.clients {
+        let binding = binding_for_provider_key(client.venue.as_str())?;
+        binding.map_adapters(context_for(client_key, client))?;
+    }
+}
+"#;
+    let provider_registry_source = r#"
+pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
+    provider_bindings().iter().find(|binding| binding.key == key)
+}
+"#;
+    let live_node_source_path = temp.path().join("live-node-source.rs");
+    let adapter_mapping_source_path = temp.path().join("adapter-mapping-source.rs");
+    let provider_registry_source_path = temp.path().join("provider-registry-source.rs");
+    std::fs::write(&live_node_source_path, live_node_source)
+        .expect("LiveNode source fixture should write");
+    std::fs::write(&adapter_mapping_source_path, adapter_mapping_source)
+        .expect("adapter mapping source fixture should write");
+    std::fs::write(&provider_registry_source_path, provider_registry_source)
+        .expect("provider registry source fixture should write");
+    let output_path = temp
+        .path()
+        .join("data-client-live-node-mapping-source.json");
+
+    let written = write_data_client_live_node_mapping_source_artifact_from_config(
+        &loaded,
+        &live_node_source_path,
+        &adapter_mapping_source_path,
+        &provider_registry_source_path,
+        4096,
+        &output_path,
+    )
+    .expect("LiveNode mapping source artifact should write");
+
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.path).expect("mapping source artifact should read"),
+    )
+    .expect("mapping source artifact should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.data_client_live_node_mapping_source.v1"
+    );
+    assert_eq!(artifact["schema_version"], 1);
+    assert_eq!(
+        artifact["config_bundle_checksum"].as_str(),
+        Some(loaded.config_bundle_checksum.as_str())
+    );
+    assert_eq!(
+        artifact["live_node_source_sha256"].as_str(),
+        Some(hex::encode(Sha256::digest(live_node_source.as_bytes())).as_str())
+    );
+    assert_eq!(
+        artifact["adapter_mapping_source_sha256"].as_str(),
+        Some(hex::encode(Sha256::digest(adapter_mapping_source.as_bytes())).as_str())
+    );
+    assert_eq!(
+        artifact["provider_registry_source_sha256"].as_str(),
+        Some(hex::encode(Sha256::digest(provider_registry_source.as_bytes())).as_str())
+    );
+    assert_eq!(artifact["live_node_calls_adapter_mapping"], true);
+    assert_eq!(artifact["live_node_registers_mapped_clients"], true);
+    assert_eq!(artifact["adapter_mapping_iterates_loaded_clients"], true);
+    assert_eq!(
+        artifact["adapter_mapping_dispatches_provider_binding"],
+        true
+    );
+    assert_eq!(artifact["adapter_mapping_uses_provider_lookup"], true);
+    assert_eq!(artifact["provider_registry_exposes_binding_lookup"], true);
+    assert!(
+        artifact["unsupported_dispositions"]
+            .as_array()
+            .expect("unsupported dispositions should be an array")
+            .is_empty(),
+        "complete source markers should not produce unsupported mapping dispositions"
+    );
+
+    let client_key_hash = sha256_text(client_key);
+    let clients = artifact["clients"]
+        .as_array()
+        .expect("clients should be an array");
+    let recorded = clients
+        .iter()
+        .find(|recorded| recorded["client_key_hash"].as_str() == Some(client_key_hash.as_str()))
+        .expect("configured client should be recorded");
+    assert_eq!(
+        recorded["provider_key"].as_str(),
+        Some(client.venue.as_str())
+    );
+    assert_eq!(recorded["has_data"], client.data.is_some());
+    assert_eq!(recorded["has_execution"], client.execution.is_some());
+    assert_eq!(recorded["provider_binding_registered"], true);
+    assert_eq!(
+        recorded["data_block_flows_through_mapping_source"],
+        client.data.is_some()
+    );
+    assert_eq!(
+        recorded["execution_block_flows_through_mapping_source"],
+        client.execution.is_some()
+    );
+    assert_eq!(recorded["production_usable"], false);
+    assert_eq!(
+        recorded["readiness_status"].as_str(),
+        Some("live_node_mapping_source_only_behavior_probe_missing")
+    );
+
+    let rendered = serde_json::to_string(&artifact).expect("mapping source artifact should render");
+    for path in [
+        &live_node_source_path,
+        &adapter_mapping_source_path,
+        &provider_registry_source_path,
+    ] {
+        let path_text = path.to_string_lossy();
+        assert!(
+            !rendered.contains(path_text.as_ref()),
+            "mapping source artifact should hash source paths instead of printing them: {rendered}"
+        );
+    }
 }
 
 #[test]

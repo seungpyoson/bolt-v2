@@ -24,6 +24,7 @@ use bolt_v2::{
         write_abort_plan_artifact_from_source_collectors, write_base_static_operator_artifacts,
         write_chainlink_price_report_source_from_configured_provider,
         write_chainlink_reference_quote_observations_source_from_report_files,
+        write_data_client_live_node_mapping_source_artifact_from_config,
         write_data_client_nt_source_capability_artifact_from_config,
         write_data_client_readiness_source_artifact_from_config,
         write_entry_decision_evidence_from_source_file, write_entry_decision_proof_source_files,
@@ -274,6 +275,20 @@ enum OperatorArtifactsCommand {
         client_key: String,
         #[arg(long)]
         nt_adapter_source: PathBuf,
+        #[arg(long)]
+        max_source_bytes: u64,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    CollectDataClientLiveNodeMappingSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        live_node_source: PathBuf,
+        #[arg(long)]
+        adapter_mapping_source: PathBuf,
+        #[arg(long)]
+        provider_registry_source: PathBuf,
         #[arg(long)]
         max_source_bytes: u64,
         #[arg(long)]
@@ -829,6 +844,25 @@ fn run_operator_artifacts_command(
                 &loaded,
                 &client_key,
                 &nt_adapter_source,
+                max_source_bytes,
+                &output,
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectDataClientLiveNodeMappingSource {
+            config,
+            live_node_source,
+            adapter_mapping_source,
+            provider_registry_source,
+            max_source_bytes,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let written = write_data_client_live_node_mapping_source_artifact_from_config(
+                &loaded,
+                &live_node_source,
+                &adapter_mapping_source,
+                &provider_registry_source,
                 max_source_bytes,
                 &output,
             )?;

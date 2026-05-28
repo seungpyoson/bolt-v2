@@ -45,6 +45,14 @@ The second T043A source-owned proof primitive has been added but not yet run thr
 - The artifact marks the row `production_usable = false` with status `nt_source_capability_only_behavior_probe_missing`; NT source markers are evidence of available upstream surfaces, not evidence that the configured LiveNode data path behaves correctly under production conditions.
 - A contract test was added for configured-client binding, source/path hashing, source-surface marker capture, fail-closed unsupported disposition, and non-leakage of raw source paths. Cargo execution remains deferred to the final verification pass per operator direction.
 
+The third T043A source-owned proof primitive has been added but not yet run through final cargo/CI verification:
+
+- New read-only CLI: `operator-artifacts collect-data-client-live-node-mapping-source --config <root.toml> --live-node-source <src/bolt_v3_live_node.rs> --adapter-mapping-source <src/bolt_v3_adapters.rs> --provider-registry-source <src/bolt_v3_providers/mod.rs> --max-source-bytes <bytes> --output <data-client-live-node-mapping-source.json>`.
+- The collector binds configured clients through the loaded TOML/provider registry, hashes Bolt's LiveNode, adapter mapping, and provider-registry source files, and records source markers showing that the normal build path calls adapter mapping, dispatches provider bindings across loaded clients, and registers the mapped clients.
+- Per-client rows record hashed client key, provider key, data/execution block presence, provider-binding registration, and whether data/execution blocks flow through the normal mapping source path.
+- The artifact marks every row `production_usable = false` with status `live_node_mapping_source_only_behavior_probe_missing`; source-path proof is necessary for architecture evidence but still does not prove live data behavior, freshness, reconnect, rate-limit, or parse/error handling.
+- A contract test was added for configured-client binding, source/path hashing, source-marker capture, fail-closed unsupported disposition, and non-leakage of raw source paths. Cargo execution remains deferred to the final verification pass per operator direction.
+
 ## Missing Production Proof
 
 T043A remains open until a venue-neutral matrix proves the following for every PR-enabled data client, including Polymarket and each data-only NT venue binding:

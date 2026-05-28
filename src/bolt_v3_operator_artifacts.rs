@@ -85,6 +85,11 @@ const DATA_CLIENT_NT_SOURCE_CAPABILITY_RECORD_KIND: &str =
     "bolt_v3.data_client_nt_source_capability.v1";
 const DATA_CLIENT_NT_SOURCE_CAPABILITY_STATUS_NOT_PRODUCTION_USABLE: &str =
     "nt_source_capability_only_behavior_probe_missing";
+const DATA_CLIENT_LIVE_NODE_MAPPING_SOURCE_SCHEMA_VERSION: u32 = 1;
+const DATA_CLIENT_LIVE_NODE_MAPPING_SOURCE_RECORD_KIND: &str =
+    "bolt_v3.data_client_live_node_mapping_source.v1";
+const DATA_CLIENT_LIVE_NODE_MAPPING_SOURCE_STATUS_NOT_PRODUCTION_USABLE: &str =
+    "live_node_mapping_source_only_behavior_probe_missing";
 const DATA_CLIENT_MISSING_BEHAVIOR_PROOFS: &[&str] = &[
     "metadata_behavior",
     "quote_or_book_behavior",
@@ -782,6 +787,41 @@ struct DataClientNtSourceCapabilityArtifact {
     readiness_status: &'static str,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct DataClientLiveNodeMappingSourceArtifact {
+    schema_version: u32,
+    record_kind: &'static str,
+    generated_at_unix_seconds: u64,
+    config_bundle_checksum: String,
+    live_node_source_path_hash: String,
+    live_node_source_sha256: String,
+    adapter_mapping_source_path_hash: String,
+    adapter_mapping_source_sha256: String,
+    provider_registry_source_path_hash: String,
+    provider_registry_source_sha256: String,
+    live_node_calls_adapter_mapping: bool,
+    live_node_registers_mapped_clients: bool,
+    adapter_mapping_iterates_loaded_clients: bool,
+    adapter_mapping_dispatches_provider_binding: bool,
+    adapter_mapping_uses_provider_lookup: bool,
+    provider_registry_exposes_binding_lookup: bool,
+    unsupported_dispositions: Vec<&'static str>,
+    clients: Vec<DataClientLiveNodeMappingClientSource>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DataClientLiveNodeMappingClientSource {
+    client_key_hash: String,
+    provider_key: String,
+    has_data: bool,
+    has_execution: bool,
+    provider_binding_registered: bool,
+    data_block_flows_through_mapping_source: bool,
+    execution_block_flows_through_mapping_source: bool,
+    production_usable: bool,
+    readiness_status: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phase8PreRunReleaseManifestSourceProof {
     pub nt_revision: String,
@@ -902,6 +942,13 @@ pub enum BoltV3OperatorArtifactError {
         source: std::io::Error,
     },
     DataClientNtSourceInvalid {
+        field: &'static str,
+    },
+    DataClientLiveNodeMappingSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    DataClientLiveNodeMappingSourceInvalid {
         field: &'static str,
     },
     SecretInventory(BoltV3SecretError),
@@ -1249,6 +1296,14 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::DataClientNtSourceInvalid { field } => write!(
                 f,
                 "NT data-client source capability field `{field}` is invalid or unproven"
+            ),
+            Self::DataClientLiveNodeMappingSourceRead { source, .. } => write!(
+                f,
+                "failed to read data-client LiveNode mapping source input: {source}"
+            ),
+            Self::DataClientLiveNodeMappingSourceInvalid { field } => write!(
+                f,
+                "data-client LiveNode mapping source field `{field}` is invalid or unproven"
             ),
             Self::SecretInventory(error) => write!(f, "{error}"),
             Self::FinancialEnvelope(error) => write!(f, "{error}"),
@@ -1662,6 +1717,7 @@ impl Error for BoltV3OperatorArtifactError {
             Self::FinancialEnvelope(error) => Some(error.as_ref()),
             Self::MarketSelection(error) => Some(error.as_ref()),
             Self::DataClientNtSourceRead { source, .. } => Some(source),
+            Self::DataClientLiveNodeMappingSourceRead { source, .. } => Some(source),
             Self::DecisionEvidenceSourceRead { source, .. } => Some(source),
             Self::DecisionEvidenceSourceParse { source, .. } => Some(source),
             Self::DecisionEvidenceFileRead { source, .. } => Some(source),
@@ -2689,6 +2745,155 @@ pub fn write_data_client_nt_source_capability_artifact_from_config(
     write_json_artifact_create_new(output_path, &artifact)
 }
 
+pub fn write_data_client_live_node_mapping_source_artifact_from_config(
+    loaded: &LoadedBoltV3Config,
+    live_node_source_path: &Path,
+    adapter_mapping_source_path: &Path,
+    provider_registry_source_path: &Path,
+    max_source_bytes: u64,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let artifact = build_data_client_live_node_mapping_source_artifact(
+        loaded,
+        live_node_source_path,
+        adapter_mapping_source_path,
+        provider_registry_source_path,
+        max_source_bytes,
+    )?;
+    write_json_artifact_create_new(output_path, &artifact)
+}
+
+fn build_data_client_live_node_mapping_source_artifact(
+    loaded: &LoadedBoltV3Config,
+    live_node_source_path: &Path,
+    adapter_mapping_source_path: &Path,
+    provider_registry_source_path: &Path,
+    max_source_bytes: u64,
+) -> Result<DataClientLiveNodeMappingSourceArtifact, BoltV3OperatorArtifactError> {
+    if max_source_bytes == 0 {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientLiveNodeMappingSourceInvalid {
+                field: "max_source_bytes",
+            },
+        );
+    }
+
+    let live_node_source_bytes = read_file_bounded(live_node_source_path, max_source_bytes)
+        .map_err(
+            |source| BoltV3OperatorArtifactError::DataClientLiveNodeMappingSourceRead {
+                path: live_node_source_path.to_path_buf(),
+                source,
+            },
+        )?;
+    let adapter_mapping_source_bytes =
+        read_file_bounded(adapter_mapping_source_path, max_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::DataClientLiveNodeMappingSourceRead {
+                path: adapter_mapping_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let provider_registry_source_bytes =
+        read_file_bounded(provider_registry_source_path, max_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::DataClientLiveNodeMappingSourceRead {
+                path: provider_registry_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let live_node_source_text = String::from_utf8_lossy(&live_node_source_bytes);
+    let adapter_mapping_source_text = String::from_utf8_lossy(&adapter_mapping_source_bytes);
+    let provider_registry_source_text = String::from_utf8_lossy(&provider_registry_source_bytes);
+
+    let live_node_calls_adapter_mapping =
+        source_contains_any_symbol(&live_node_source_text, &["map_bolt_v3_adapters"]);
+    let live_node_registers_mapped_clients =
+        source_contains_any_symbol(&live_node_source_text, &["register_bolt_v3_clients"]);
+    let adapter_mapping_iterates_loaded_clients =
+        source_contains_any_symbol(&adapter_mapping_source_text, &["loaded.root.clients"]);
+    let adapter_mapping_dispatches_provider_binding =
+        source_contains_any_symbol(&adapter_mapping_source_text, &["map_adapters"]);
+    let adapter_mapping_uses_provider_lookup =
+        source_contains_any_symbol(&adapter_mapping_source_text, &["binding_for_provider_key"]);
+    let provider_registry_exposes_binding_lookup = source_contains_any_symbol(
+        &provider_registry_source_text,
+        &["binding_for_provider_key"],
+    );
+
+    let mut unsupported_dispositions = Vec::new();
+    if !live_node_calls_adapter_mapping {
+        unsupported_dispositions.push("live_node_adapter_mapping_marker_missing");
+    }
+    if !live_node_registers_mapped_clients {
+        unsupported_dispositions.push("live_node_client_registration_marker_missing");
+    }
+    if !adapter_mapping_iterates_loaded_clients {
+        unsupported_dispositions.push("adapter_mapping_loaded_clients_marker_missing");
+    }
+    if !adapter_mapping_dispatches_provider_binding {
+        unsupported_dispositions.push("adapter_mapping_provider_dispatch_marker_missing");
+    }
+    if !adapter_mapping_uses_provider_lookup {
+        unsupported_dispositions.push("adapter_mapping_provider_lookup_marker_missing");
+    }
+    if !provider_registry_exposes_binding_lookup {
+        unsupported_dispositions.push("provider_registry_lookup_marker_missing");
+    }
+
+    let source_path_proven = unsupported_dispositions.is_empty();
+    let mut clients = Vec::new();
+    for (client_key, client) in &loaded.root.clients {
+        let provider_key = client.venue.as_str();
+        binding_for_provider_key(provider_key).ok_or_else(|| {
+            BoltV3OperatorArtifactError::UnsupportedProvider {
+                client_key: client_key.clone(),
+                provider_key: provider_key.to_string(),
+            }
+        })?;
+        let has_data = client.data.is_some();
+        let has_execution = client.execution.is_some();
+        clients.push(DataClientLiveNodeMappingClientSource {
+            client_key_hash: sha256_text(client_key),
+            provider_key: provider_key.to_string(),
+            has_data,
+            has_execution,
+            provider_binding_registered: true,
+            data_block_flows_through_mapping_source: has_data && source_path_proven,
+            execution_block_flows_through_mapping_source: has_execution && source_path_proven,
+            production_usable: false,
+            readiness_status: DATA_CLIENT_LIVE_NODE_MAPPING_SOURCE_STATUS_NOT_PRODUCTION_USABLE,
+        });
+    }
+    clients.sort_by(|left, right| {
+        (left.provider_key.as_str(), left.client_key_hash.as_str())
+            .cmp(&(right.provider_key.as_str(), right.client_key_hash.as_str()))
+    });
+
+    Ok(DataClientLiveNodeMappingSourceArtifact {
+        schema_version: DATA_CLIENT_LIVE_NODE_MAPPING_SOURCE_SCHEMA_VERSION,
+        record_kind: DATA_CLIENT_LIVE_NODE_MAPPING_SOURCE_RECORD_KIND,
+        generated_at_unix_seconds: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
+        live_node_source_path_hash: source_path_hash(live_node_source_path),
+        live_node_source_sha256: hex::encode(Sha256::digest(&live_node_source_bytes)),
+        adapter_mapping_source_path_hash: source_path_hash(adapter_mapping_source_path),
+        adapter_mapping_source_sha256: hex::encode(Sha256::digest(&adapter_mapping_source_bytes)),
+        provider_registry_source_path_hash: source_path_hash(provider_registry_source_path),
+        provider_registry_source_sha256: hex::encode(Sha256::digest(
+            &provider_registry_source_bytes,
+        )),
+        live_node_calls_adapter_mapping,
+        live_node_registers_mapped_clients,
+        adapter_mapping_iterates_loaded_clients,
+        adapter_mapping_dispatches_provider_binding,
+        adapter_mapping_uses_provider_lookup,
+        provider_registry_exposes_binding_lookup,
+        unsupported_dispositions,
+        clients,
+    })
+}
+
 fn build_data_client_nt_source_capability_artifact(
     loaded: &LoadedBoltV3Config,
     client_key: &str,
@@ -2769,9 +2974,7 @@ fn build_data_client_nt_source_capability_artifact(
         config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         client_key_hash: sha256_text(client_key),
         provider_key: provider_key.to_string(),
-        nt_source_path_hash: sha256_text(
-            &normalize_path_components(nt_adapter_source_path).to_string_lossy(),
-        ),
+        nt_source_path_hash: source_path_hash(nt_adapter_source_path),
         nt_source_sha256: hex::encode(Sha256::digest(&source_bytes)),
         nt_source_byte_len: source_bytes.len(),
         metadata_request_instruments_surface_present,
@@ -2786,19 +2989,23 @@ fn build_data_client_nt_source_capability_artifact(
 }
 
 fn nt_source_contains_any(source_text: &str, markers: &[&str]) -> bool {
-    markers
-        .iter()
-        .any(|marker| nt_source_symbol_present(source_text, marker))
+    source_contains_any_symbol(source_text, markers)
 }
 
-fn nt_source_symbol_present(source_text: &str, marker: &str) -> bool {
+fn source_contains_any_symbol(source_text: &str, markers: &[&str]) -> bool {
+    markers
+        .iter()
+        .any(|marker| source_symbol_present(source_text, marker))
+}
+
+fn source_symbol_present(source_text: &str, marker: &str) -> bool {
     let mut offset = 0;
     while let Some(index) = source_text[offset..].find(marker) {
         let start = offset + index;
         let end = start + marker.len();
         let before = source_text[..start].chars().next_back();
         let after = source_text[end..].chars().next();
-        if !nt_source_identifier_char(before) && !nt_source_identifier_char(after) {
+        if !source_identifier_char(before) && !source_identifier_char(after) {
             return true;
         }
         offset = end;
@@ -2806,11 +3013,15 @@ fn nt_source_symbol_present(source_text: &str, marker: &str) -> bool {
     false
 }
 
-fn nt_source_identifier_char(char: Option<char>) -> bool {
+fn source_identifier_char(char: Option<char>) -> bool {
     match char {
         Some(char) => char == '_' || char.is_ascii_alphanumeric(),
         None => false,
     }
+}
+
+fn source_path_hash(path: &Path) -> String {
+    sha256_text(&normalize_path_components(path).to_string_lossy())
 }
 
 fn build_data_client_readiness_source_artifact(

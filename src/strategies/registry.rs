@@ -3,7 +3,10 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 use anyhow::{Context, Result};
 use futures_util::future::BoxFuture;
 use nautilus_common::{actor::DataActor, component::Component};
-use nautilus_model::identifiers::{InstrumentId, StrategyId};
+use nautilus_model::{
+    identifiers::{InstrumentId, StrategyId},
+    instruments::{Instrument, InstrumentAny},
+};
 use nautilus_system::trader::Trader;
 use nautilus_trading::Strategy;
 use rust_decimal::Decimal;
@@ -38,6 +41,9 @@ pub type BoxedStrategy = Box<dyn RuntimeStrategy>;
 
 pub trait FeeProvider: Send + Sync {
     fn fee_bps(&self, instrument_id: InstrumentId) -> Option<Decimal>;
+    fn entry_fee_bps(&self, instrument: &InstrumentAny, _entry_price: Decimal) -> Option<Decimal> {
+        self.fee_bps(instrument.id())
+    }
     fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>>;
 }
 

@@ -2585,6 +2585,14 @@ classification = '''validation_field_label'''
 reason = '''This label names the Polymarket execution config field being validated in a positive-integer check; the value itself is TOML-owned.'''
 
 [[allowed]]
+path = "src/bolt_v3_providers/polymarket/fees.rs"
+kind = "number"
+literal = "10_000"
+context = "const ENTRY_FEE_BPS_SCALE: i64 = 10_000;"
+classification = "fee_bps_unit_scale"
+reason = "This is the fixed basis-points unit scale used to convert NT pUSD commission into entry-fee bps; it is not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"http_timeout_secs\""

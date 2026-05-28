@@ -2782,8 +2782,8 @@ impl BinaryOracleEdgeTaker {
             lead_agreement_corr: self.pricing.last_lead_agreement_corr,
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
-            up_fee_bps: self.outcome_fee_bps(OutcomeSide::Up),
-            down_fee_bps: self.outcome_fee_bps(OutcomeSide::Down),
+            up_fee_bps: self.entry_fee_bps(OutcomeSide::Up),
+            down_fee_bps: self.entry_fee_bps(OutcomeSide::Down),
             up_entry_cost: self.executable_entry_cost(OutcomeSide::Up),
             down_entry_cost: self.executable_entry_cost(OutcomeSide::Down),
             up_worst_case_ev_bps: evaluation.up_worst_case_ev_bps,
@@ -2943,12 +2943,28 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn outcome_fee_bps(&self, side: OutcomeSide) -> Option<f64> {
-        let instrument_id = match side {
-            OutcomeSide::Up => self.active.outcome_fees.up_instrument_id,
-            OutcomeSide::Down => self.active.outcome_fees.down_instrument_id,
-        }?;
-        self.context.fee_provider().fee_bps(instrument_id)?.to_f64()
+    fn entry_fee_bps(&self, side: OutcomeSide) -> Option<f64> {
+        let entry_price = self.executable_entry_cost(side)?;
+        self.entry_fee_bps_at_price(side, entry_price)
+    }
+
+    fn entry_fee_bps_at_price(&self, side: OutcomeSide, entry_price: f64) -> Option<f64> {
+        let instrument_id = self.instrument_id_for_side(side)?;
+        let Some(instrument) = self.current_instrument(instrument_id) else {
+            #[cfg(test)]
+            {
+                return self.context.fee_provider().fee_bps(instrument_id)?.to_f64();
+            }
+            #[cfg(not(test))]
+            {
+                return None;
+            }
+        };
+        let entry_price = Decimal::from_f64(entry_price)?;
+        self.context
+            .fee_provider()
+            .entry_fee_bps(&instrument, entry_price)?
+            .to_f64()
     }
 
     fn active_book_for_outcome(&self, side: OutcomeSide) -> &OutcomeBookState {
@@ -4060,7 +4076,7 @@ impl BinaryOracleEdgeTaker {
             anyhow::anyhow!("entry strategy input evidence requires selected side")
         })?;
         let fee_rate_basis_points = self
-            .outcome_fee_bps(selected_side)
+            .entry_fee_bps_at_price(selected_side, price.as_f64())
             .filter(|value| is_non_negative_finite(*value))
             .ok_or_else(|| {
                 anyhow::anyhow!("entry strategy input evidence requires selected outcome fee")
@@ -4547,7 +4563,7 @@ impl BinaryOracleEdgeTaker {
         let Some(historical_entry_fee_bps) = decision
             .evaluation
             .selected_side
-            .and_then(|selected_side| self.outcome_fee_bps(selected_side))
+            .and_then(|selected_side| self.entry_fee_bps_at_price(selected_side, price))
         else {
             log::warn!(
                 "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason=historical_entry_fee_unavailable",
@@ -4683,7 +4699,25 @@ impl BinaryOracleEdgeTaker {
         };
         evaluation.fair_probability_up = Some(fair_probability_up);
 
-        let up_fee_bps = match self.outcome_fee_bps(OutcomeSide::Up) {
+        let up_entry_cost = match self.executable_entry_cost(OutcomeSide::Up) {
+            Some(value) => value,
+            None => {
+                evaluation.pricing_blocked_by.push(
+                    EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Up),
+                );
+                return evaluation;
+            }
+        };
+        let down_entry_cost = match self.executable_entry_cost(OutcomeSide::Down) {
+            Some(value) => value,
+            None => {
+                evaluation.pricing_blocked_by.push(
+                    EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Down),
+                );
+                return evaluation;
+            }
+        };
+        let up_fee_bps = match self.entry_fee_bps_at_price(OutcomeSide::Up, up_entry_cost) {
             Some(value) => value,
             None => {
                 evaluation
@@ -4692,7 +4726,7 @@ impl BinaryOracleEdgeTaker {
                 return evaluation;
             }
         };
-        let down_fee_bps = match self.outcome_fee_bps(OutcomeSide::Down) {
+        let down_fee_bps = match self.entry_fee_bps_at_price(OutcomeSide::Down, down_entry_cost) {
             Some(value) => value,
             None => {
                 evaluation
@@ -4712,24 +4746,6 @@ impl BinaryOracleEdgeTaker {
                 }
             };
         evaluation.uncertainty_band_probability = Some(uncertainty_band_probability);
-        let up_entry_cost = match self.executable_entry_cost(OutcomeSide::Up) {
-            Some(value) => value,
-            None => {
-                evaluation.pricing_blocked_by.push(
-                    EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Up),
-                );
-                return evaluation;
-            }
-        };
-        let down_entry_cost = match self.executable_entry_cost(OutcomeSide::Down) {
-            Some(value) => value,
-            None => {
-                evaluation.pricing_blocked_by.push(
-                    EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Down),
-                );
-                return evaluation;
-            }
-        };
 
         evaluation.up_worst_case_ev_bps = compute_worst_case_ev_bps(
             OutcomeSide::Up,
@@ -7157,6 +7173,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingFeeProvider {
         fees: Mutex<HashMap<String, Decimal>>,
+        entry_fees: Mutex<HashMap<String, Decimal>>,
         warm_calls: Mutex<Vec<String>>,
     }
 
@@ -7167,6 +7184,13 @@ mod tests {
 
         fn set_fee(&self, instrument_id: &str, fee_bps: Decimal) {
             self.fees
+                .lock()
+                .expect("recording fee provider mutex poisoned")
+                .insert(instrument_id.to_string(), fee_bps);
+        }
+
+        fn set_entry_fee_bps(&self, instrument_id: &str, fee_bps: Decimal) {
+            self.entry_fees
                 .lock()
                 .expect("recording fee provider mutex poisoned")
                 .insert(instrument_id.to_string(), fee_bps);
@@ -7187,6 +7211,19 @@ mod tests {
                 .expect("recording fee provider mutex poisoned")
                 .get(instrument_id.to_string().as_str())
                 .copied()
+        }
+
+        fn entry_fee_bps(
+            &self,
+            instrument: &InstrumentAny,
+            _entry_price: Decimal,
+        ) -> Option<Decimal> {
+            self.entry_fees
+                .lock()
+                .expect("recording fee provider mutex poisoned")
+                .get(instrument.id().to_string().as_str())
+                .copied()
+                .or_else(|| self.fee_bps(instrument.id()))
         }
 
         fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
@@ -9000,7 +9037,7 @@ mod tests {
             instrument_id,
             outcome_side: Some(outcome_side),
             outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: strategy.outcome_fee_bps(outcome_side).or(Some(0.0)),
+            historical_entry_fee_bps: strategy.entry_fee_bps(outcome_side).or(Some(0.0)),
             interval_open: Some(3_100.0),
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
@@ -13759,6 +13796,27 @@ mod tests {
 
         assert!(strategy.active.outcome_fees.up_ready);
         assert!(strategy.active.outcome_fees.down_ready);
+    }
+
+    #[test]
+    fn entry_evaluation_uses_price_adjusted_fee_bps_not_cached_base_fee_rate() {
+        let (mut strategy, fee_provider) =
+            ready_to_trade_strategy_with_recording_fees(Decimal::from(1000), Decimal::from(1000));
+        fee_provider.set_entry_fee_bps(
+            "condition-MKT-1-MKT-1-UP.POLYMARKET",
+            Decimal::from_str("511.111111111111").expect("test decimal should parse"),
+        );
+        fee_provider.set_entry_fee_bps(
+            "condition-MKT-1-MKT-1-DOWN.POLYMARKET",
+            Decimal::from_str("182.027027027027").expect("test decimal should parse"),
+        );
+        register_test_strategy_with_active_instruments(&mut strategy);
+
+        let decision = strategy.entry_submission_decision_at(1_200);
+        let fields = strategy.entry_evaluation_log_fields_at(1_200, &decision);
+
+        assert_eq!(fields.up_fee_bps, Some(511.111111111111));
+        assert_eq!(fields.down_fee_bps, Some(182.027027027027));
     }
 
     #[tokio::test(flavor = "current_thread")]

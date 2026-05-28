@@ -10,10 +10,10 @@ use bolt_v2::{
     bolt_v3_client_registration::{BoltV3RegisteredClient, BoltV3RegistrationSummary},
     bolt_v3_config::{
         BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
-        DataClientReadinessProbeBlock, DataClientReadinessProbeMarketDataKind,
-        DataClientReadinessProbeQuoteTargetBlock, DataClientReadinessProbeQuoteTargetSource,
-        GateProviderBlock, GateProviderFreshnessBlock, LiveCanaryBlock,
-        LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, NO_RESOLUTION_KIND,
+        DataClientReadinessProbeBlock, DataClientReadinessProbeBookType,
+        DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetBlock,
+        DataClientReadinessProbeQuoteTargetSource, GateProviderBlock, GateProviderFreshnessBlock,
+        LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, NO_RESOLUTION_KIND,
         NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE, ReferenceDataBlock,
         load_bolt_v3_config,
     },
@@ -1850,6 +1850,7 @@ fn data_client_behavior_probe_events_source_accepts_metadata_response_quote_targ
     reference_client.secrets = None;
     reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
         market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+        book_type: None,
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: false,
@@ -1928,6 +1929,7 @@ fn data_client_behavior_probe_events_source_accepts_metadata_response_book_targe
     reference_client.secrets = None;
     reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
         market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
+        book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: false,
@@ -2004,6 +2006,7 @@ fn data_client_behavior_probe_events_source_accepts_explicit_metadata_response_s
     reference_client.secrets = None;
     reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
         market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
+        book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: true,
@@ -2219,6 +2222,7 @@ fn data_client_behavior_probe_events_source_rejects_metadata_response_target_tru
     reference_client.secrets = None;
     reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
         market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+        book_type: None,
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: false,
@@ -2283,6 +2287,7 @@ fn data_client_behavior_probe_events_source_requires_quotes_for_all_metadata_res
     reference_client.secrets = None;
     reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
         market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+        book_type: None,
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: false,
@@ -3456,6 +3461,8 @@ transport_backend = "sockudo"
 
 [clients.bybit_data.readiness_probe]
 market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "configured"
 
 [clients.bybit_data.readiness_probe.quote_targets.configured_quote_probe]
 instrument_id = "CONFIGURED-PROBE.BYBIT"

@@ -5421,6 +5421,7 @@ fn allows_metadata_response_readiness_probe_without_static_quote_targets() {
         r#"{fixture}
 
 [clients.polymarket_main.readiness_probe]
+market_data_kind = "quote"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 4
 "#
@@ -5445,6 +5446,7 @@ fn allows_metadata_response_readiness_probe_with_explicit_sampling_opt_in() {
         r#"{fixture}
 
 [clients.polymarket_main.readiness_probe]
+market_data_kind = "quote"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 4
 allow_metadata_target_sampling = true
@@ -5461,6 +5463,63 @@ allow_metadata_target_sampling = true
 }
 
 #[test]
+fn rejects_book_readiness_probe_without_book_type() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "book"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+"#
+    ))
+    .expect("book readiness probe should parse so validation can reject missing book type");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.book_type")
+                && message.contains("market_data_kind = \"book\"")
+        }),
+        "book probes must declare the NT book type in TOML: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_quote_readiness_probe_with_book_type() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "quote"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+"#
+    ))
+    .expect("quote readiness probe should parse so validation can reject book type");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.book_type")
+                && message.contains("market_data_kind = \"book\"")
+        }),
+        "quote probes must not carry a book subscription type: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_metadata_response_readiness_probe_with_min_quote_targets() {
     use bolt_v2::bolt_v3_config::BoltV3RootConfig;
 
@@ -5470,6 +5529,7 @@ fn rejects_metadata_response_readiness_probe_with_min_quote_targets() {
         r#"{fixture}
 
 [clients.polymarket_main.readiness_probe]
+market_data_kind = "quote"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 4
 min_metadata_quote_targets = 2
@@ -5493,6 +5553,7 @@ fn rejects_metadata_response_readiness_probe_without_max_quote_targets() {
         r#"{fixture}
 
 [clients.polymarket_main.readiness_probe]
+market_data_kind = "quote"
 quote_target_source = "metadata_response"
 "#
     ))
@@ -5519,6 +5580,7 @@ fn rejects_readiness_probe_with_both_metadata_response_and_static_targets() {
         r#"{fixture}
 
 [clients.polymarket_main.readiness_probe]
+market_data_kind = "quote"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 4
 

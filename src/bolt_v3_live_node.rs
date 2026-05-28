@@ -78,8 +78,8 @@ use crate::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
     bolt_v3_config::{
-        DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetSource,
-        LoadedBoltV3Config,
+        DataClientReadinessProbeBookType, DataClientReadinessProbeMarketDataKind,
+        DataClientReadinessProbeQuoteTargetSource, LoadedBoltV3Config,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
@@ -197,6 +197,7 @@ struct BoltV3NoSubmitReferenceQuoteProbeHandle {
     required: Rc<RefCell<Vec<NoSubmitReferenceQuoteSubscription>>>,
     ambiguous_instrument_ids: Rc<RefCell<BTreeSet<String>>>,
     market_data_kind: DataClientReadinessProbeMarketDataKind,
+    book_type: Option<DataClientReadinessProbeBookType>,
     metadata_response_data_client_id: Option<ClientId>,
     metadata_response_max_quote_targets: Option<usize>,
     metadata_response_allow_target_sampling: bool,
@@ -215,6 +216,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             required,
             ambiguous_instrument_ids,
             DataClientReadinessProbeMarketDataKind::Quote,
+            None,
         )
     }
 
@@ -222,11 +224,13 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         required: Vec<NoSubmitReferenceQuoteSubscription>,
         ambiguous_instrument_ids: BTreeSet<String>,
         market_data_kind: DataClientReadinessProbeMarketDataKind,
+        book_type: Option<DataClientReadinessProbeBookType>,
     ) -> Self {
         Self {
             required: Rc::new(RefCell::new(required)),
             ambiguous_instrument_ids: Rc::new(RefCell::new(ambiguous_instrument_ids)),
             market_data_kind,
+            book_type,
             metadata_response_data_client_id: None,
             metadata_response_max_quote_targets: None,
             metadata_response_allow_target_sampling: false,
@@ -243,11 +247,13 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         max_quote_targets: usize,
         allow_target_sampling: bool,
         market_data_kind: DataClientReadinessProbeMarketDataKind,
+        book_type: Option<DataClientReadinessProbeBookType>,
     ) -> Self {
         Self {
             required: Rc::new(RefCell::new(Vec::new())),
             ambiguous_instrument_ids: Rc::new(RefCell::new(BTreeSet::new())),
             market_data_kind,
+            book_type,
             metadata_response_data_client_id: Some(data_client_id),
             metadata_response_max_quote_targets: Some(max_quote_targets),
             metadata_response_allow_target_sampling: allow_target_sampling,
@@ -574,8 +580,9 @@ impl DataActor for BoltV3NoSubmitReferenceQuoteProbe {
     fn on_start(&mut self) -> anyhow::Result<()> {
         let required_subscriptions = self.handle.required.borrow().clone();
         let market_data_kind = self.handle.market_data_kind;
+        let book_type = self.handle.book_type;
         for required in required_subscriptions {
-            subscribe_no_submit_required_market_data(self, market_data_kind, required);
+            subscribe_no_submit_required_market_data(self, market_data_kind, book_type, required)?;
         }
         Ok(())
     }
@@ -583,8 +590,14 @@ impl DataActor for BoltV3NoSubmitReferenceQuoteProbe {
     fn on_stop(&mut self) -> anyhow::Result<()> {
         let required_subscriptions = self.handle.required.borrow().clone();
         let market_data_kind = self.handle.market_data_kind;
+        let book_type = self.handle.book_type;
         for required in required_subscriptions {
-            unsubscribe_no_submit_required_market_data(self, market_data_kind, required);
+            unsubscribe_no_submit_required_market_data(
+                self,
+                market_data_kind,
+                book_type,
+                required,
+            )?;
         }
         Ok(())
     }
@@ -638,11 +651,16 @@ impl BoltV3NoSubmitDataClientReadinessProbe {
                 .quote_handle
                 .install_metadata_response_instrument_ids(instrument_ids)
             {
-                subscribe_no_submit_required_market_data(
+                if let Err(error) = subscribe_no_submit_required_market_data(
                     self,
                     self.quote_handle.market_data_kind,
+                    self.quote_handle.book_type,
                     required,
-                );
+                ) {
+                    self.quote_handle
+                        .fail_metadata_response_probe(error.to_string());
+                    break;
+                }
             }
         }
     }
@@ -670,8 +688,9 @@ impl DataActor for BoltV3NoSubmitDataClientReadinessProbe {
         )?;
         let required_subscriptions = self.quote_handle.required.borrow().clone();
         let market_data_kind = self.quote_handle.market_data_kind;
+        let book_type = self.quote_handle.book_type;
         for required in required_subscriptions {
-            subscribe_no_submit_required_market_data(self, market_data_kind, required);
+            subscribe_no_submit_required_market_data(self, market_data_kind, book_type, required)?;
         }
         Ok(())
     }
@@ -679,8 +698,14 @@ impl DataActor for BoltV3NoSubmitDataClientReadinessProbe {
     fn on_stop(&mut self) -> anyhow::Result<()> {
         let required_subscriptions = self.quote_handle.required.borrow().clone();
         let market_data_kind = self.quote_handle.market_data_kind;
+        let book_type = self.quote_handle.book_type;
         for required in required_subscriptions {
-            unsubscribe_no_submit_required_market_data(self, market_data_kind, required);
+            unsubscribe_no_submit_required_market_data(
+                self,
+                market_data_kind,
+                book_type,
+                required,
+            )?;
         }
         Ok(())
     }
@@ -700,16 +725,22 @@ impl DataActor for BoltV3NoSubmitDataClientReadinessProbe {
 fn subscribe_no_submit_required_market_data<A: DataActor + std::fmt::Debug + 'static>(
     actor: &mut A,
     market_data_kind: DataClientReadinessProbeMarketDataKind,
+    book_type: Option<DataClientReadinessProbeBookType>,
     required: NoSubmitReferenceQuoteSubscription,
-) {
+) -> anyhow::Result<()> {
     match market_data_kind {
         DataClientReadinessProbeMarketDataKind::Quote => {
             actor.subscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
         }
         DataClientReadinessProbeMarketDataKind::Book => {
+            let book_type = book_type.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "clients.<id>.readiness_probe.book_type must be configured when market_data_kind = \"book\""
+                )
+            })?;
             actor.subscribe_book_deltas(
                 required.instrument_id,
-                BookType::L2_MBP,
+                data_client_readiness_probe_book_type_to_nt(book_type),
                 None,
                 Some(required.data_client_id),
                 false,
@@ -717,24 +748,42 @@ fn subscribe_no_submit_required_market_data<A: DataActor + std::fmt::Debug + 'st
             );
         }
     }
+    Ok(())
 }
 
 fn unsubscribe_no_submit_required_market_data<A: DataActor + std::fmt::Debug + 'static>(
     actor: &mut A,
     market_data_kind: DataClientReadinessProbeMarketDataKind,
+    book_type: Option<DataClientReadinessProbeBookType>,
     required: NoSubmitReferenceQuoteSubscription,
-) {
+) -> anyhow::Result<()> {
     match market_data_kind {
         DataClientReadinessProbeMarketDataKind::Quote => {
             actor.unsubscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
         }
         DataClientReadinessProbeMarketDataKind::Book => {
+            let _ = book_type.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "clients.<id>.readiness_probe.book_type must be configured when market_data_kind = \"book\""
+                )
+            })?;
             actor.unsubscribe_book_deltas(
                 required.instrument_id,
                 Some(required.data_client_id),
                 None,
             );
         }
+    }
+    Ok(())
+}
+
+fn data_client_readiness_probe_book_type_to_nt(
+    book_type: DataClientReadinessProbeBookType,
+) -> BookType {
+    match book_type {
+        DataClientReadinessProbeBookType::L1Mbp => BookType::L1_MBP,
+        DataClientReadinessProbeBookType::L2Mbp => BookType::L2_MBP,
+        DataClientReadinessProbeBookType::L3Mbo => BookType::L3_MBO,
     }
 }
 
@@ -823,6 +872,7 @@ fn no_submit_data_client_readiness_quote_probe_handle(
             Vec::new(),
             BTreeSet::new(),
             DataClientReadinessProbeMarketDataKind::Quote,
+            None,
         ));
     };
     match readiness_probe.quote_target_source {
@@ -848,6 +898,7 @@ fn no_submit_data_client_readiness_quote_probe_handle(
                 required,
                 ambiguous_instrument_ids,
                 readiness_probe.market_data_kind,
+                readiness_probe.book_type,
             ))
         }
         DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
@@ -869,6 +920,7 @@ fn no_submit_data_client_readiness_quote_probe_handle(
                     max_quote_targets,
                     readiness_probe.allow_metadata_target_sampling,
                     readiness_probe.market_data_kind,
+                    readiness_probe.book_type,
                 ),
             )
         }
@@ -2026,6 +2078,7 @@ fn install_no_submit_data_client_readiness_quote_probe(
         required,
         ambiguous_instrument_ids,
         DataClientReadinessProbeMarketDataKind::Quote,
+        None,
     );
     install_no_submit_reference_quote_probe_handle(node, loaded, handle)
 }
@@ -2666,9 +2719,9 @@ pub async fn disconnect_bolt_v3_clients(
 mod tests {
     use super::*;
     use crate::bolt_v3_config::{
-        BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeMarketDataKind,
-        DataClientReadinessProbeQuoteTargetBlock, DataClientReadinessProbeQuoteTargetSource,
-        ReferenceDataBlock,
+        BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeBookType,
+        DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetBlock,
+        DataClientReadinessProbeQuoteTargetSource, ReferenceDataBlock,
     };
     use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
     use nautilus_model::enums::{BookAction, OrderSide};
@@ -2749,6 +2802,7 @@ mod tests {
             .expect("fixture should include a data client");
         client.readiness_probe = Some(DataClientReadinessProbeBlock {
             market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+            book_type: None,
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(2),
             allow_metadata_target_sampling: false,
@@ -2803,6 +2857,7 @@ mod tests {
             .expect("fixture should include a data client");
         client.readiness_probe = Some(DataClientReadinessProbeBlock {
             market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+            book_type: None,
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(2),
             allow_metadata_target_sampling: false,
@@ -2840,6 +2895,7 @@ mod tests {
             .expect("fixture should include a data client");
         client.readiness_probe = Some(DataClientReadinessProbeBlock {
             market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+            book_type: None,
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(2),
             allow_metadata_target_sampling: true,
@@ -2876,6 +2932,7 @@ mod tests {
             .expect("fixture should include a data client");
         client.readiness_probe = Some(DataClientReadinessProbeBlock {
             market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+            book_type: None,
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(3),
             allow_metadata_target_sampling: false,
@@ -2962,6 +3019,7 @@ mod tests {
             .expect("fixture should include a data client");
         client.readiness_probe = Some(DataClientReadinessProbeBlock {
             market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
+            book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(1),
             allow_metadata_target_sampling: false,

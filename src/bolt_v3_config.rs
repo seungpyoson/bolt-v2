@@ -319,9 +319,8 @@ pub struct ClientBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DataClientReadinessProbeBlock {
-    #[serde(default)]
     pub market_data_kind: DataClientReadinessProbeMarketDataKind,
-    #[serde(default)]
+    pub book_type: Option<DataClientReadinessProbeBookType>,
     pub quote_target_source: DataClientReadinessProbeQuoteTargetSource,
     pub max_metadata_quote_targets: Option<usize>,
     #[serde(default)]
@@ -334,6 +333,7 @@ impl Default for DataClientReadinessProbeBlock {
     fn default() -> Self {
         Self {
             market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+            book_type: None,
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::Configured,
             max_metadata_quote_targets: None,
             allow_metadata_target_sampling: false,
@@ -348,6 +348,14 @@ pub enum DataClientReadinessProbeMarketDataKind {
     #[default]
     Quote,
     Book,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DataClientReadinessProbeBookType {
+    L1Mbp,
+    L2Mbp,
+    L3Mbo,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]

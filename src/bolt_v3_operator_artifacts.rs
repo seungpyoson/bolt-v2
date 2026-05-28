@@ -31,9 +31,10 @@ use crate::{
     bolt_v3_client_registration::BoltV3RegistrationSummary,
     bolt_v3_config::{
         BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
-        DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetSource,
-        LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, NO_RESOLUTION_KIND,
-        NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE,
+        DataClientReadinessProbeBookType, DataClientReadinessProbeMarketDataKind,
+        DataClientReadinessProbeQuoteTargetSource, LiveCanaryOperatorEvidenceBlock,
+        LoadedBoltV3Config, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND,
+        RESOLUTION_GATE_ROLE,
     },
     bolt_v3_decision_evidence::{
         BoltV3ReadinessGateEvidenceSnapshot, BoltV3StrategyInputEvidenceSnapshot,
@@ -814,6 +815,7 @@ struct DataClientReadinessProbeTargetSource {
     quote_target_source: &'static str,
     configured_target_id_hash: Option<String>,
     event_kind: &'static str,
+    book_type: Option<&'static str>,
     instrument_id_hash: Option<String>,
     max_metadata_quote_targets: Option<usize>,
     allow_metadata_target_sampling: bool,
@@ -5712,6 +5714,9 @@ fn data_client_readiness_probe_targets(
                 event_kind: data_client_readiness_probe_event_kind(
                     readiness_probe.market_data_kind,
                 ),
+                book_type: readiness_probe
+                    .book_type
+                    .map(data_client_readiness_probe_book_type_name),
                 instrument_id_hash: Some(sha256_text(&target.instrument_id.to_string())),
                 max_metadata_quote_targets: None,
                 allow_metadata_target_sampling: false,
@@ -5724,6 +5729,9 @@ fn data_client_readiness_probe_targets(
                 event_kind: data_client_readiness_probe_event_kind(
                     readiness_probe.market_data_kind,
                 ),
+                book_type: readiness_probe
+                    .book_type
+                    .map(data_client_readiness_probe_book_type_name),
                 instrument_id_hash: None,
                 max_metadata_quote_targets: readiness_probe.max_metadata_quote_targets,
                 allow_metadata_target_sampling: readiness_probe.allow_metadata_target_sampling,
@@ -5738,6 +5746,16 @@ fn data_client_readiness_probe_event_kind(
     match market_data_kind {
         DataClientReadinessProbeMarketDataKind::Quote => "quote",
         DataClientReadinessProbeMarketDataKind::Book => "book",
+    }
+}
+
+fn data_client_readiness_probe_book_type_name(
+    book_type: DataClientReadinessProbeBookType,
+) -> &'static str {
+    match book_type {
+        DataClientReadinessProbeBookType::L1Mbp => "l1_mbp",
+        DataClientReadinessProbeBookType::L2Mbp => "l2_mbp",
+        DataClientReadinessProbeBookType::L3Mbo => "l3_mbo",
     }
 }
 

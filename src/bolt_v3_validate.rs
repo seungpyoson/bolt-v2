@@ -858,6 +858,22 @@ fn validate_client_readiness_probe(key: &str, client: &ClientBlock) -> Vec<Strin
             "clients.{key}.readiness_probe requires the same client to declare a [data] block"
         ));
     }
+    match readiness_probe.market_data_kind {
+        crate::bolt_v3_config::DataClientReadinessProbeMarketDataKind::Quote => {
+            if readiness_probe.book_type.is_some() {
+                errors.push(format!(
+                    "clients.{key}.readiness_probe.book_type is only valid when market_data_kind = \"book\""
+                ));
+            }
+        }
+        crate::bolt_v3_config::DataClientReadinessProbeMarketDataKind::Book => {
+            if readiness_probe.book_type.is_none() {
+                errors.push(format!(
+                    "clients.{key}.readiness_probe.book_type must be configured when market_data_kind = \"book\""
+                ));
+            }
+        }
+    }
     match readiness_probe.quote_target_source {
         DataClientReadinessProbeQuoteTargetSource::Configured => {
             if readiness_probe.quote_targets.is_empty() {

@@ -225,6 +225,7 @@ passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
 
 [clients.polymarket_main.readiness_probe]
 market_data_kind = "book"
+book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
@@ -246,6 +247,7 @@ api_secret_ssm_path = "/bolt/binance/api-secret"
 
 [clients.binance_spot_data.readiness_probe]
 market_data_kind = "book"
+book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
@@ -267,6 +269,7 @@ api_secret_ssm_path = "/bolt/binance/api-secret"
 
 [clients.binance_usdm_data.readiness_probe]
 market_data_kind = "book"
+book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
@@ -288,6 +291,7 @@ api_secret_ssm_path = "/bolt/binance/api-secret"
 
 [clients.binance_coinm_data.readiness_probe]
 market_data_kind = "book"
+book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
@@ -302,6 +306,7 @@ transport_backend = "sockudo"
 
 [clients.bitmex_data.readiness_probe]
 market_data_kind = "book"
+book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
@@ -316,6 +321,7 @@ transport_backend = "sockudo"
 
 [clients.bybit_data.readiness_probe]
 market_data_kind = "book"
+book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
@@ -329,6 +335,7 @@ transport_backend = "sockudo"
 
 [clients.coinbase_data.readiness_probe]
 market_data_kind = "book"
+book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
@@ -343,6 +350,7 @@ transport_backend = "sockudo"
 
 [clients.deribit_data.readiness_probe]
 market_data_kind = "book"
+book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
@@ -357,6 +365,7 @@ transport_backend = "sockudo"
 
 [clients.kraken_spot_data.readiness_probe]
 market_data_kind = "book"
+book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
@@ -371,6 +380,7 @@ transport_backend = "sockudo"
 
 [clients.kraken_futures_data.readiness_probe]
 market_data_kind = "book"
+book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
@@ -387,6 +397,7 @@ transport_backend = "sockudo"
 
 [clients.okx_data.readiness_probe]
 market_data_kind = "book"
+book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true

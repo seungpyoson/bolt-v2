@@ -392,6 +392,7 @@ const GATE_FIELD_NORMALIZED_VALUE_SHA256: &str = "normalized_value_sha256";
 const GATE_FIELD_PROVIDER_ID: &str = "provider_id";
 const GATE_FIELD_PROVIDER_KIND: &str = "provider_kind";
 const GATE_FIELD_PROVIDER_PROVENANCE_SHA256: &str = "provider_provenance_sha256";
+const GATE_FIELD_RECORD_KIND: &str = "record_kind";
 const GATE_FIELD_RESOLUTION_IDENTITY: &str = "resolution_identity";
 const GATE_FIELD_ROLE: &str = "role";
 const GATE_FIELD_ROOT_CONFIG_SHA256: &str = "root_config_sha256";
@@ -5642,17 +5643,17 @@ pub fn write_entry_readiness_gate_session_artifact_from_decision_source_file(
             }
         })?;
     if decision_source.schema_version != ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION {
-        return Err(entry_decision_source_invalid("schema_version"));
+        return Err(entry_decision_source_invalid(GATE_FIELD_SCHEMA_VERSION));
     }
     if decision_source.record_kind != ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND {
-        return Err(entry_decision_source_invalid("record_kind"));
+        return Err(entry_decision_source_invalid(GATE_FIELD_RECORD_KIND));
     }
     let session = &decision_source.readiness_session;
     if session.schema_version != ENTRY_READINESS_GATE_SESSION_SCHEMA_VERSION {
-        return Err(entry_readiness_error("schema_version"));
+        return Err(entry_readiness_error(GATE_FIELD_SCHEMA_VERSION));
     }
     if session.record_kind != ENTRY_READINESS_GATE_SESSION_RECORD_KIND {
-        return Err(entry_readiness_error("record_kind"));
+        return Err(entry_readiness_error(GATE_FIELD_RECORD_KIND));
     }
     if session.strategy_instance_id != strategy_instance_id {
         return Err(entry_readiness_error(

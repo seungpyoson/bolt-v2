@@ -9787,6 +9787,14 @@ reason = "This names the canonical gate-session hash input schema-version key."
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"record_kind"'''
+context = '''const GATE_FIELD_RECORD_KIND: &str = "record_kind";'''
+classification = "entry_readiness_gate_hash_field"
+reason = "This names the canonical source and gate-session record-kind key used for structural artifact validation."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"selected_at_ms"'''
 context = '''const GATE_FIELD_SELECTED_AT_MS: &str = "selected_at_ms";'''
 classification = "entry_readiness_gate_hash_field"

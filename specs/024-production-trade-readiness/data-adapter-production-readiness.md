@@ -34,6 +34,17 @@ The first T043A source-owned proof primitive has been added but not yet run thro
 - The artifact marks every row `production_usable = false` with status `not_production_usable_metadata_or_config_only`; later T043A slices must add behavior/freshness/reconnect/rate-limit proof before any row can become production-usable.
 - A contract test was added for the artifact shape and no-SSM-path leakage, but cargo execution is intentionally deferred to the final verification pass per operator direction.
 
+The second T043A source-owned proof primitive has been added but not yet run through final cargo/CI verification:
+
+- New read-only CLI: `operator-artifacts collect-data-client-nt-source-capability --config <root.toml> --client-key <configured-client> --nt-adapter-source <pinned-nt-source.rs> --max-source-bytes <bytes> --output <data-client-nt-source-capability.json>`.
+- The collector binds the client through the loaded TOML/provider registry, reads a bounded pinned NT adapter source file, and writes a JSON artifact with:
+  - `record_kind = "bolt_v3.data_client_nt_source_capability.v1"`.
+  - `config_bundle_checksum`.
+  - hashed client key, provider key, hashed source path, source sha256, source byte length, and source-level capability-marker booleans for metadata, quote, book, and ticker surfaces.
+  - explicit unsupported-source dispositions for missing metadata, quote, book, or ticker surfaces.
+- The artifact marks the row `production_usable = false` with status `nt_source_capability_only_behavior_probe_missing`; NT source markers are evidence of available upstream surfaces, not evidence that the configured LiveNode data path behaves correctly under production conditions.
+- A contract test was added for configured-client binding, source/path hashing, source-surface marker capture, fail-closed unsupported disposition, and non-leakage of raw source paths. Cargo execution remains deferred to the final verification pass per operator direction.
+
 ## Missing Production Proof
 
 T043A remains open until a venue-neutral matrix proves the following for every PR-enabled data client, including Polymarket and each data-only NT venue binding:

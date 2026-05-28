@@ -80,6 +80,11 @@ const DATA_CLIENT_READINESS_SOURCE_SCHEMA_VERSION: u32 = 1;
 const DATA_CLIENT_READINESS_SOURCE_RECORD_KIND: &str = "bolt_v3.data_client_readiness_source.v1";
 const DATA_CLIENT_READINESS_STATUS_NOT_PRODUCTION_USABLE: &str =
     "not_production_usable_metadata_or_config_only";
+const DATA_CLIENT_NT_SOURCE_CAPABILITY_SCHEMA_VERSION: u32 = 1;
+const DATA_CLIENT_NT_SOURCE_CAPABILITY_RECORD_KIND: &str =
+    "bolt_v3.data_client_nt_source_capability.v1";
+const DATA_CLIENT_NT_SOURCE_CAPABILITY_STATUS_NOT_PRODUCTION_USABLE: &str =
+    "nt_source_capability_only_behavior_probe_missing";
 const DATA_CLIENT_MISSING_BEHAVIOR_PROOFS: &[&str] = &[
     "metadata_behavior",
     "quote_or_book_behavior",
@@ -756,6 +761,27 @@ struct DataClientReadinessTargetSource {
     family_key: &'static str,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct DataClientNtSourceCapabilityArtifact {
+    schema_version: u32,
+    record_kind: &'static str,
+    generated_at_unix_seconds: u64,
+    config_bundle_checksum: String,
+    client_key_hash: String,
+    provider_key: String,
+    nt_source_path_hash: String,
+    nt_source_sha256: String,
+    nt_source_byte_len: usize,
+    metadata_request_instruments_surface_present: bool,
+    metadata_request_instrument_surface_present: bool,
+    quote_subscription_surface_present: bool,
+    book_subscription_surface_present: bool,
+    ticker_subscription_surface_present: bool,
+    unsupported_dispositions: Vec<&'static str>,
+    production_usable: bool,
+    readiness_status: &'static str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phase8PreRunReleaseManifestSourceProof {
     pub nt_revision: String,
@@ -870,6 +896,13 @@ pub enum BoltV3OperatorArtifactError {
     UnsupportedProvider {
         client_key: String,
         provider_key: String,
+    },
+    DataClientNtSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    DataClientNtSourceInvalid {
+        field: &'static str,
     },
     SecretInventory(BoltV3SecretError),
     FinancialEnvelope(anyhow::Error),
@@ -1209,6 +1242,13 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             } => write!(
                 f,
                 "clients.{client_key}.venue `{provider_key}` is not supported by this build"
+            ),
+            Self::DataClientNtSourceRead { source, .. } => {
+                write!(f, "failed to read NT data-client source input: {source}")
+            }
+            Self::DataClientNtSourceInvalid { field } => write!(
+                f,
+                "NT data-client source capability field `{field}` is invalid or unproven"
             ),
             Self::SecretInventory(error) => write!(f, "{error}"),
             Self::FinancialEnvelope(error) => write!(f, "{error}"),
@@ -1621,6 +1661,7 @@ impl Error for BoltV3OperatorArtifactError {
             Self::SecretInventory(error) => Some(error),
             Self::FinancialEnvelope(error) => Some(error.as_ref()),
             Self::MarketSelection(error) => Some(error.as_ref()),
+            Self::DataClientNtSourceRead { source, .. } => Some(source),
             Self::DecisionEvidenceSourceRead { source, .. } => Some(source),
             Self::DecisionEvidenceSourceParse { source, .. } => Some(source),
             Self::DecisionEvidenceFileRead { source, .. } => Some(source),
@@ -2630,6 +2671,146 @@ pub fn write_data_client_readiness_source_artifact_from_config(
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
     let artifact = build_data_client_readiness_source_artifact(loaded)?;
     write_json_artifact_create_new(output_path, &artifact)
+}
+
+pub fn write_data_client_nt_source_capability_artifact_from_config(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    nt_adapter_source_path: &Path,
+    max_source_bytes: u64,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let artifact = build_data_client_nt_source_capability_artifact(
+        loaded,
+        client_key,
+        nt_adapter_source_path,
+        max_source_bytes,
+    )?;
+    write_json_artifact_create_new(output_path, &artifact)
+}
+
+fn build_data_client_nt_source_capability_artifact(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    nt_adapter_source_path: &Path,
+    max_source_bytes: u64,
+) -> Result<DataClientNtSourceCapabilityArtifact, BoltV3OperatorArtifactError> {
+    if client_key.trim().is_empty() {
+        return Err(BoltV3OperatorArtifactError::DataClientNtSourceInvalid {
+            field: "client_key",
+        });
+    }
+    if max_source_bytes == 0 {
+        return Err(BoltV3OperatorArtifactError::DataClientNtSourceInvalid {
+            field: "max_source_bytes",
+        });
+    }
+
+    let client = loaded.root.clients.get(client_key).ok_or(
+        BoltV3OperatorArtifactError::DataClientNtSourceInvalid {
+            field: "client_key",
+        },
+    )?;
+    let provider_key = client.venue.as_str();
+    binding_for_provider_key(provider_key).ok_or_else(|| {
+        BoltV3OperatorArtifactError::UnsupportedProvider {
+            client_key: client_key.to_string(),
+            provider_key: provider_key.to_string(),
+        }
+    })?;
+    let source_bytes =
+        read_file_bounded(nt_adapter_source_path, max_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::DataClientNtSourceRead {
+                path: nt_adapter_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    let source_text = String::from_utf8_lossy(&source_bytes);
+    let metadata_request_instruments_surface_present =
+        nt_source_contains_any(&source_text, &["request_instruments"]);
+    let metadata_request_instrument_surface_present =
+        nt_source_contains_any(&source_text, &["request_instrument"]);
+    let quote_subscription_surface_present =
+        nt_source_contains_any(&source_text, &["subscribe_quote", "SubscribeQuote"]);
+    let book_subscription_surface_present = nt_source_contains_any(
+        &source_text,
+        &[
+            "subscribe_book",
+            "subscribe_order_book",
+            "SubscribeBook",
+            "SubscribeOrderBook",
+        ],
+    );
+    let ticker_subscription_surface_present =
+        nt_source_contains_any(&source_text, &["subscribe_ticker", "SubscribeTicker"]);
+
+    let mut unsupported_dispositions = Vec::new();
+    if !metadata_request_instruments_surface_present && !metadata_request_instrument_surface_present
+    {
+        unsupported_dispositions.push("metadata_request_source_marker_missing");
+    }
+    if !quote_subscription_surface_present {
+        unsupported_dispositions.push("quote_subscription_source_marker_missing");
+    }
+    if !book_subscription_surface_present {
+        unsupported_dispositions.push("book_subscription_source_marker_missing");
+    }
+    if !ticker_subscription_surface_present {
+        unsupported_dispositions.push("ticker_subscription_source_marker_missing");
+    }
+
+    Ok(DataClientNtSourceCapabilityArtifact {
+        schema_version: DATA_CLIENT_NT_SOURCE_CAPABILITY_SCHEMA_VERSION,
+        record_kind: DATA_CLIENT_NT_SOURCE_CAPABILITY_RECORD_KIND,
+        generated_at_unix_seconds: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
+        client_key_hash: sha256_text(client_key),
+        provider_key: provider_key.to_string(),
+        nt_source_path_hash: sha256_text(
+            &normalize_path_components(nt_adapter_source_path).to_string_lossy(),
+        ),
+        nt_source_sha256: hex::encode(Sha256::digest(&source_bytes)),
+        nt_source_byte_len: source_bytes.len(),
+        metadata_request_instruments_surface_present,
+        metadata_request_instrument_surface_present,
+        quote_subscription_surface_present,
+        book_subscription_surface_present,
+        ticker_subscription_surface_present,
+        unsupported_dispositions,
+        production_usable: false,
+        readiness_status: DATA_CLIENT_NT_SOURCE_CAPABILITY_STATUS_NOT_PRODUCTION_USABLE,
+    })
+}
+
+fn nt_source_contains_any(source_text: &str, markers: &[&str]) -> bool {
+    markers
+        .iter()
+        .any(|marker| nt_source_symbol_present(source_text, marker))
+}
+
+fn nt_source_symbol_present(source_text: &str, marker: &str) -> bool {
+    let mut offset = 0;
+    while let Some(index) = source_text[offset..].find(marker) {
+        let start = offset + index;
+        let end = start + marker.len();
+        let before = source_text[..start].chars().next_back();
+        let after = source_text[end..].chars().next();
+        if !nt_source_identifier_char(before) && !nt_source_identifier_char(after) {
+            return true;
+        }
+        offset = end;
+    }
+    false
+}
+
+fn nt_source_identifier_char(char: Option<char>) -> bool {
+    match char {
+        Some(char) => char == '_' || char.is_ascii_alphanumeric(),
+        None => false,
+    }
 }
 
 fn build_data_client_readiness_source_artifact(

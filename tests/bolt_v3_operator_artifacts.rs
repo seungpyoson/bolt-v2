@@ -34,6 +34,7 @@ use bolt_v2::{
         collect_entry_decision_source_inputs_from_configured_provider,
         collect_entry_readiness_gate_evidence_from_source_file, normalize_gate_evidence,
         write_chainlink_reference_quote_observations_source_from_report_files,
+        write_data_client_nt_source_capability_artifact_from_config,
         write_data_client_readiness_source_artifact_from_config,
         write_entry_readiness_gate_session_artifact_from_decision_source_file,
         write_reference_quote_observations_source_from_no_submit_evidence,
@@ -1143,6 +1144,103 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
         "polymarket_main",
         "POLYMARKET",
         "passphrase_ssm_path",
+    );
+}
+
+#[test]
+fn data_client_nt_source_capability_records_configured_client_source_markers_as_unproven() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str().to_string();
+    let temp = support::TempCaseDir::new("data-client-nt-source-capability");
+    let nt_source = r#"
+pub async fn request_instruments(&self) {}
+pub async fn request_instrument(&self) {}
+fn subscribe_quote() {}
+struct SubscribeOrderBook;
+"#;
+    let source_path = temp.path().join("nt-adapter-source.rs");
+    std::fs::write(&source_path, nt_source).expect("NT source fixture should write");
+    let output_path = temp.path().join("data-client-nt-source-capability.json");
+
+    let written = write_data_client_nt_source_capability_artifact_from_config(
+        &loaded,
+        client_key,
+        &source_path,
+        4096,
+        &output_path,
+    )
+    .expect("NT source capability artifact should write");
+
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.path).expect("source capability artifact should read"),
+    )
+    .expect("source capability artifact should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.data_client_nt_source_capability.v1"
+    );
+    assert_eq!(artifact["schema_version"], 1);
+    assert_eq!(
+        artifact["config_bundle_checksum"].as_str(),
+        Some(loaded.config_bundle_checksum.as_str())
+    );
+    assert_eq!(
+        artifact["client_key_hash"].as_str(),
+        Some(sha256_text(client_key).as_str())
+    );
+    assert_eq!(
+        artifact["provider_key"].as_str(),
+        Some(provider_key.as_str())
+    );
+    assert_eq!(
+        artifact["nt_source_sha256"].as_str(),
+        Some(hex::encode(Sha256::digest(nt_source.as_bytes())).as_str())
+    );
+    assert_eq!(
+        artifact["nt_source_byte_len"].as_u64(),
+        Some(nt_source.len() as u64)
+    );
+    assert!(is_lowercase_sha256(
+        artifact["nt_source_path_hash"]
+            .as_str()
+            .expect("source path hash should be a string")
+    ));
+    assert_eq!(
+        artifact["metadata_request_instruments_surface_present"],
+        true
+    );
+    assert_eq!(
+        artifact["metadata_request_instrument_surface_present"],
+        true
+    );
+    assert_eq!(artifact["quote_subscription_surface_present"], true);
+    assert_eq!(artifact["book_subscription_surface_present"], true);
+    assert_eq!(artifact["ticker_subscription_surface_present"], false);
+    assert_eq!(
+        artifact["unsupported_dispositions"]
+            .as_array()
+            .expect("unsupported dispositions should be an array"),
+        &vec![serde_json::json!(
+            "ticker_subscription_source_marker_missing"
+        )]
+    );
+    assert_eq!(artifact["production_usable"], false);
+    assert_eq!(
+        artifact["readiness_status"].as_str(),
+        Some("nt_source_capability_only_behavior_probe_missing")
+    );
+    let rendered = serde_json::to_string(&artifact)
+        .expect("source capability artifact should render to string");
+    let source_path_text = source_path.to_string_lossy();
+    assert!(
+        !rendered.contains(source_path_text.as_ref()),
+        "source capability artifact should hash the source path instead of printing it: {rendered}"
     );
 }
 

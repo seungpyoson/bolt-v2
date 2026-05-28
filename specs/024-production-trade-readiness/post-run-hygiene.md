@@ -8,7 +8,7 @@ T045 cannot be completed until the T044 tiny-capital canary runs and produces th
 
 The post-run hygiene proof must be written to the operator-evidence `post_run_hygiene_path` used for the canary packet. Current preflight path:
 
-- `/private/tmp/bolt-v2-t044-preflight-c6fe228c/post-run-hygiene.json`
+- `/private/tmp/bolt-v2-t044-preflight-4302d249/post-run-hygiene.json`
 
 The proof must satisfy the current `phase8_assert_post_run_hygiene_proof` contract:
 

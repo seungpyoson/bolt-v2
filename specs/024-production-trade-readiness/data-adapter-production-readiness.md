@@ -24,6 +24,15 @@ The current evidence is initial adapter binding and metadata smoke only:
 
 `config/root.example.toml` now declares the requested data-client registration scope: Binance spot/USD-M/COIN-M, BitMEX, Bybit, Coinbase, Deribit, Kraken spot/futures, OKX, and Polymarket. The normal LiveNode registration boundary has been tested for that configured set. This proves config parsing, adapter mapping, provider binding, LiveNode registration, data-only boundary checks, and one-time public metadata reachability. It does not prove production readiness.
 
+After commit `693bf2bd`, the read-only T043A source collectors were run against tracked `config/root.example.toml` into `/private/tmp/bolt-v2-t043a-693bf2bd/`:
+
+- `data-client-readiness-source.json`: sha256 `64788af932efb980296f999cdc9343eea3740b24679de38fa4a06fefd041eab0`.
+- `data-client-live-node-mapping-source.json`: sha256 `2a52543fe75032c3c2fa0f07865165f1d553feadbd6d6d07f8b39de6e9cafbeb`.
+- NT source-capability artifacts were generated for all 11 configured data clients.
+- `data-client-production-readiness-matrix.json`: sha256 `ed173ece80040dd3241c3be069c18aff6a27c969165f6fa86784d4d46d50d5a2`; it records 11 clients, 0 production-usable rows, and `missing_proofs = ["behavior_observation"]` for every row.
+
+This confirms the current architectural blocker is now behavior proof, not registration or provider binding.
+
 ## Implementation Progress
 
 The first T043A source-owned proof primitive has been added but not yet run through final cargo/CI verification:

@@ -2026,10 +2026,25 @@ transport_backend = "sockudo"
         environment_fingerprint["value_kind"].as_str(),
         Some("string")
     );
-    for raw_config_value in ["spot", "linear", "testnet", "sockudo"] {
+    assert_eq!(
+        bybit["market_coverage_config_values"]["product_types"]
+            .as_array()
+            .expect("configured product coverage should be an array"),
+        &vec![serde_json::json!("spot"), serde_json::json!("linear")]
+    );
+    let coverage_fingerprints = bybit["market_coverage_config_field_fingerprints"]
+        .as_array()
+        .expect("market coverage fingerprints should be an array");
+    assert!(
+        coverage_fingerprints
+            .iter()
+            .any(|fingerprint| fingerprint["field_name"] == "product_types"),
+        "market coverage field fingerprints should include product_types"
+    );
+    for raw_config_value in ["testnet", "sockudo"] {
         assert!(
             !rendered.contains(raw_config_value),
-            "readiness artifact should fingerprint configured values instead of printing `{raw_config_value}`: {rendered}"
+            "readiness artifact should not print non-coverage configured values like `{raw_config_value}`: {rendered}"
         );
     }
     assert!(

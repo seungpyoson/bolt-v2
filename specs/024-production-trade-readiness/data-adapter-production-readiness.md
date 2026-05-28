@@ -34,6 +34,7 @@ The first T043A source-owned proof primitive has been added but not yet run thro
 - The artifact marks every row `production_usable = false` with status `not_production_usable_metadata_or_config_only`; later T043A slices must add behavior/freshness/reconnect/rate-limit proof before any row can become production-usable.
 - A contract test was added for the artifact shape and no-SSM-path leakage, but cargo execution is intentionally deferred to the final verification pass per operator direction.
 - The data-only provider binding now rejects TOML `[data]` fields that are not present on the pinned NT config struct, both during startup validation and at the adapter-mapper boundary, so invented fields cannot be treated as readiness policy evidence.
+- The readiness source and final matrix now carry only TOML-owned product/market coverage fields such as `product_types`, `instrument_types`, `contract_types`, `instrument_families`, and `load_spreads`; endpoints, credentials, transport values, and timeout values remain hashed/classified rather than printed as market coverage.
 
 The second T043A source-owned proof primitive has been added but not yet run through final cargo/CI verification:
 

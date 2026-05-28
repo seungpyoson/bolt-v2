@@ -762,6 +762,8 @@ struct DataClientReadinessClientSource {
     data_config_sha256: Option<String>,
     data_config_field_names: Vec<String>,
     data_config_field_fingerprints: Vec<DataClientReadinessConfigFieldFingerprint>,
+    market_coverage_config_values: BTreeMap<String, serde_json::Value>,
+    market_coverage_config_field_fingerprints: Vec<DataClientReadinessConfigFieldFingerprint>,
     timeout_policy_field_names: Vec<String>,
     retry_policy_field_names: Vec<String>,
     freshness_policy_field_names: Vec<String>,
@@ -963,6 +965,7 @@ struct DataClientProductionReadinessMatrixClient {
     production_usable: bool,
     readiness_status: &'static str,
     missing_proofs: Vec<&'static str>,
+    market_coverage_config_values: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3541,6 +3544,8 @@ fn build_data_client_production_readiness_matrix_artifact_from_source_files(
         let nt_source_capability_present = nt_source_capabilities.contains(&key);
         let behavior_observation_complete = behavior_observations.contains(&key);
         let readiness_required = has_data;
+        let market_coverage_config_values =
+            toml_table_selected_values(client.data.as_ref(), data_client_market_coverage_field)?;
         let mut missing_proofs = Vec::new();
         if readiness_required && !config_inventory_present {
             missing_proofs.push("config_inventory");
@@ -3575,6 +3580,7 @@ fn build_data_client_production_readiness_matrix_artifact_from_source_files(
             production_usable,
             readiness_status,
             missing_proofs,
+            market_coverage_config_values,
         });
     }
     clients.sort_by(|left, right| {
@@ -4290,6 +4296,12 @@ fn build_data_client_readiness_source_artifact(
         let has_secrets = client.secrets.is_some();
         let data_config_field_names = toml_table_field_names(client.data.as_ref());
         let data_config_field_fingerprints = toml_table_field_fingerprints(client.data.as_ref())?;
+        let market_coverage_config_values =
+            toml_table_selected_values(client.data.as_ref(), data_client_market_coverage_field)?;
+        let market_coverage_config_field_fingerprints = toml_table_selected_field_fingerprints(
+            client.data.as_ref(),
+            data_client_market_coverage_field,
+        )?;
         clients.push(DataClientReadinessClientSource {
             client_key_hash: sha256_text(client_key),
             provider_key: provider_key.to_string(),
@@ -4314,6 +4326,8 @@ fn build_data_client_readiness_source_artifact(
                 .collect(),
             data_config_sha256: client.data.as_ref().map(sha256_toml_value).transpose()?,
             data_config_field_fingerprints,
+            market_coverage_config_values,
+            market_coverage_config_field_fingerprints,
             timeout_policy_field_names: classified_policy_field_names(
                 &data_config_field_names,
                 data_client_timeout_policy_field,
@@ -4399,6 +4413,45 @@ fn toml_table_field_fingerprints(
     Ok(fingerprints)
 }
 
+fn toml_table_selected_field_fingerprints(
+    value: Option<&toml::Value>,
+    predicate: fn(&str) -> bool,
+) -> Result<Vec<DataClientReadinessConfigFieldFingerprint>, BoltV3OperatorArtifactError> {
+    let mut fingerprints = Vec::new();
+    if let Some(table) = value.and_then(toml::Value::as_table) {
+        for (field_name, value) in table {
+            if predicate(field_name) {
+                fingerprints.push(DataClientReadinessConfigFieldFingerprint {
+                    field_name: field_name.clone(),
+                    value_kind: toml_value_kind(value),
+                    value_item_count: toml_value_item_count(value),
+                    value_sha256: sha256_toml_value(value)?,
+                });
+            }
+        }
+    }
+    fingerprints.sort_by(|left, right| left.field_name.cmp(&right.field_name));
+    Ok(fingerprints)
+}
+
+fn toml_table_selected_values(
+    value: Option<&toml::Value>,
+    predicate: fn(&str) -> bool,
+) -> Result<BTreeMap<String, serde_json::Value>, BoltV3OperatorArtifactError> {
+    let mut values = BTreeMap::new();
+    if let Some(table) = value.and_then(toml::Value::as_table) {
+        for (field_name, value) in table {
+            if predicate(field_name) {
+                values.insert(
+                    field_name.clone(),
+                    serde_json::to_value(value).map_err(BoltV3OperatorArtifactError::Serialize)?,
+                );
+            }
+        }
+    }
+    Ok(values)
+}
+
 fn toml_value_kind(value: &toml::Value) -> &'static str {
     match value {
         toml::Value::String(_) => "string",
@@ -4451,6 +4504,21 @@ fn data_client_reconnect_policy_field(field: &str) -> bool {
 
 fn data_client_rate_limit_policy_field(field: &str) -> bool {
     field.contains("rate_limit") || field.contains("throttle")
+}
+
+fn data_client_market_coverage_field(field: &str) -> bool {
+    matches!(
+        field,
+        "product_type"
+            | "product_types"
+            | "instrument_type"
+            | "instrument_types"
+            | "contract_type"
+            | "contract_types"
+            | "instrument_family"
+            | "instrument_families"
+            | "load_spreads"
+    )
 }
 
 fn sha256_toml_value(value: &toml::Value) -> Result<String, BoltV3OperatorArtifactError> {

@@ -67,7 +67,7 @@ async fn live_canary_gate_rejects_empty_approval_id() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -102,7 +102,7 @@ async fn live_canary_gate_rejects_empty_readiness_report_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -137,7 +137,7 @@ async fn live_canary_gate_rejects_parent_dir_readiness_report_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -179,7 +179,7 @@ async fn live_canary_gate_rejects_missing_operator_evidence_before_reading_repor
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -216,7 +216,7 @@ async fn live_canary_gate_rejects_missing_gate_session_binding_before_reading_re
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -271,7 +271,7 @@ async fn live_canary_gate_rejects_cross_market_gate_session_before_reading_repor
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -310,7 +310,7 @@ async fn live_canary_gate_rejects_parent_dir_operator_evidence_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -354,7 +354,7 @@ async fn live_canary_gate_rejects_parent_dir_strategy_cancel_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -398,7 +398,7 @@ async fn live_canary_gate_rejects_malformed_operator_evidence_hash_shape() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -441,7 +441,7 @@ async fn live_canary_gate_rejects_uppercase_operator_evidence_hash_shape() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -486,7 +486,7 @@ async fn live_canary_gate_rejects_operator_evidence_file_hash_mismatch() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -532,7 +532,7 @@ async fn live_canary_gate_rejects_approval_envelope_hash_mismatch() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -602,7 +602,7 @@ async fn live_canary_gate_rejects_approval_envelope_circular_fields() {
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-                reference_quote_max_age_seconds: 10,
+                reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
                 reference_quote_wait_timeout_seconds: 10,
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
@@ -655,7 +655,7 @@ async fn live_canary_gate_rejects_approval_envelope_toml_drift_after_hash_match(
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -697,7 +697,7 @@ async fn live_canary_gate_accepts_non_circular_approval_envelope_schema() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -738,7 +738,7 @@ async fn live_canary_gate_rejects_approval_consumption_hash_mismatch() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -792,7 +792,7 @@ async fn live_canary_gate_rejects_approval_consumption_strategy_cancel_path_hash
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -838,7 +838,7 @@ async fn live_canary_gate_rejects_approval_consumption_missing_head_sha() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -885,7 +885,7 @@ async fn live_canary_gate_rejects_approval_consumption_head_sha_mismatch() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -932,7 +932,7 @@ async fn live_canary_gate_rejects_stale_self_consistent_head_sha() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -979,7 +979,7 @@ async fn live_canary_gate_rejects_malformed_operator_evidence_head_sha() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -1045,7 +1045,7 @@ async fn live_canary_gate_rejects_approval_consumption_root_toml_sha256_mismatch
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -1097,7 +1097,7 @@ async fn live_canary_gate_rejects_stale_approval_consumption_beyond_configured_m
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -1321,6 +1321,33 @@ async fn pre_consumption_gate_rejects_stale_source_owned_strategy_input_before_a
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn pre_consumption_gate_rejects_source_order_notional_above_live_cap_before_approval() {
+    let mut loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(
+        1,
+        rust_decimal::Decimal::new(100, 2),
+    );
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|block| block.operator_evidence.as_mut())
+        .expect("fixture should include operator evidence");
+    make_latest_decision_evidence_notional(operator_evidence, "1.01");
+    std::fs::remove_file(&operator_evidence.approval_consumption_path)
+        .expect("fixture should start with removable approval consumption proof");
+
+    let error = check_bolt_v3_live_canary_pre_consumption_gate(&loaded)
+        .await
+        .expect_err("source-owned order notional above canary cap must fail before approval");
+
+    assert!(
+        error.to_string().contains("decision_evidence")
+            && error.to_string().contains("max_notional_per_order"),
+        "expected source-owned notional cap rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_missing_operator_evidence_file_before_hashing() {
     let mut operator_evidence = valid_operator_evidence();
     let missing = std::path::Path::new(&operator_evidence.ssm_manifest_path)
@@ -1385,7 +1412,7 @@ async fn live_canary_gate_rejects_symlinked_readiness_report_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -1426,7 +1453,7 @@ async fn live_canary_gate_rejects_zero_order_count() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -1464,7 +1491,7 @@ async fn live_canary_gate_rejects_zero_report_byte_cap() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 0,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -1502,7 +1529,7 @@ async fn live_canary_gate_rejects_zero_readiness_report_max_age() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: 0,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -1580,7 +1607,7 @@ async fn live_canary_gate_rejects_zero_reference_quote_wait_timeout() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 0,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -1619,7 +1646,7 @@ async fn live_canary_gate_rejects_blank_reference_quote_probe_actor_id() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: " ".to_string(),
             reference_quote_probe_log_events: true,
@@ -1663,7 +1690,7 @@ async fn live_canary_gate_rejects_malformed_reference_quote_probe_actor_id() {
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-                reference_quote_max_age_seconds: 10,
+                reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
                 reference_quote_wait_timeout_seconds: 10,
                 reference_quote_probe_actor_id: actor_id.to_string(),
                 reference_quote_probe_log_events: true,
@@ -1749,7 +1776,7 @@ async fn live_canary_gate_rejects_invalid_canary_notional_values() {
                 max_notional_per_order: candidate.to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-                reference_quote_max_age_seconds: 10,
+                reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
                 reference_quote_wait_timeout_seconds: 10,
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
@@ -1792,7 +1819,7 @@ async fn live_canary_gate_rejects_invalid_root_notional_values() {
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-                reference_quote_max_age_seconds: 10,
+                reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
                 reference_quote_wait_timeout_seconds: 10,
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
@@ -1836,7 +1863,7 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
             max_notional_per_order: " 1.00 ".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -1883,7 +1910,7 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
             max_notional_per_order: "10.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -1921,7 +1948,7 @@ async fn live_canary_gate_rejects_report_expired_at_late_gate_timestamp() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -1970,7 +1997,7 @@ async fn live_canary_gate_rejects_operator_window_expired_at_gate_timestamp() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: 3_600,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2106,7 +2133,7 @@ async fn live_canary_gate_rejects_operator_evidence_window_without_positive_dura
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2154,7 +2181,7 @@ async fn live_canary_gate_rejects_operator_evidence_window_before_current_time()
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2203,7 +2230,7 @@ async fn live_canary_gate_rejects_operator_evidence_window_after_current_time() 
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2254,7 +2281,7 @@ async fn live_canary_gate_rejects_stale_no_submit_linkage_fields() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2308,7 +2335,7 @@ async fn live_canary_gate_rejects_no_submit_report_missing_generated_at() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2354,7 +2381,7 @@ async fn live_canary_gate_rejects_expired_no_submit_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2399,7 +2426,7 @@ async fn live_canary_gate_uses_toml_owned_readiness_report_max_age_seconds() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: configured_max_age_seconds,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2463,7 +2490,7 @@ async fn live_canary_gate_rejects_missing_wrong_or_non_string_schema_version() {
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-                reference_quote_max_age_seconds: 10,
+                reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
                 reference_quote_wait_timeout_seconds: 10,
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
@@ -2506,7 +2533,7 @@ async fn live_canary_gate_rejects_notional_above_root_risk_cap() {
             max_notional_per_order: "11.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2547,7 +2574,7 @@ async fn live_canary_gate_rejects_empty_stage_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2590,7 +2617,7 @@ async fn live_canary_gate_rejects_report_missing_stages_key() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2635,7 +2662,7 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2680,7 +2707,7 @@ async fn live_canary_gate_reports_each_unsatisfied_required_stage_once() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2726,7 +2753,7 @@ async fn live_canary_gate_rejects_missing_no_submit_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2765,7 +2792,7 @@ async fn live_canary_gate_rejects_malformed_no_submit_report_json() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2809,7 +2836,7 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: report_len,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2842,7 +2869,7 @@ async fn live_canary_gate_rejects_no_submit_report_above_configured_byte_cap() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 1,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2884,7 +2911,7 @@ async fn live_canary_gate_distinguishes_non_object_report_from_missing_stages() 
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2935,7 +2962,7 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -2980,7 +3007,7 @@ async fn live_canary_gate_rejects_name_only_stage_field() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -3039,7 +3066,7 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -3105,7 +3132,7 @@ async fn check_operator_evidence_rejection(
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
@@ -3273,6 +3300,30 @@ fn make_strategy_input_reference_quote_stale(
     evidence.strategy_input_evidence_sha256 = sha256_hex(&bytes);
     let envelope = valid_approval_envelope_value(evidence);
     bind_approval_envelope_value(evidence, envelope);
+}
+
+fn make_latest_decision_evidence_notional(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    notional: &str,
+) {
+    let path = std::path::Path::new(&evidence.decision_evidence_path);
+    let text = std::fs::read_to_string(path).expect("decision evidence should read");
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(line).expect("decision evidence line should parse");
+        if value.get("kind").and_then(serde_json::Value::as_str) == Some("admission_decision") {
+            value
+                .get_mut("decision")
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("admission decision should be an object")
+                .insert("notional".to_string(), serde_json::json!(notional));
+        }
+        lines.push(serde_json::to_string(&value).expect("decision evidence should serialize"));
+    }
+    let mut rewritten = lines.join("\n");
+    rewritten.push('\n');
+    std::fs::write(path, rewritten).expect("decision evidence should rewrite");
 }
 
 fn valid_approval_envelope_value(evidence: &LiveCanaryOperatorEvidenceBlock) -> serde_json::Value {

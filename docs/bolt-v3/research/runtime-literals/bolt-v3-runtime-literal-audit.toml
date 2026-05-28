@@ -992,6 +992,14 @@ reason = "This label identifies the live-canary config field being parsed as a p
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
+literal = '''"source-owned entry order notional {notional} exceeds [live_canary].max_notional_per_order={max_notional_per_order}"'''
+context = '''"source-owned entry order notional {notional} exceeds [live_canary].max_notional_per_order={max_notional_per_order}"'''
+classification = "live_canary_gate_diagnostic_template"
+reason = "This fail-closed diagnostic compares source-owned decision evidence against the TOML-owned live-canary notional cap; neither value is hardcoded."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
 literal = '''"stage `{name}` status is `{}`"'''
 context = '''"stage `{name}` status is `{}`",'''
 classification = "live_canary_gate_diagnostic_template"
@@ -1476,6 +1484,14 @@ literal = '''"decision_evidence_path"'''
 context = '''("decision_evidence_path", &evidence.decision_evidence_path),'''
 classification = "operator_evidence_schema_field"
 reason = "This is an operator evidence schema field name; the runtime value comes from TOML or proof JSON and is validated fail-closed."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"decision_evidence_path"'''
+context = '''"decision_evidence_path",'''
+classification = "operator_evidence_schema_field"
+reason = "This is an operator evidence schema field name used to resolve the TOML-owned decision-evidence path for fail-closed notional-cap validation."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"

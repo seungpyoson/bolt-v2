@@ -29,7 +29,8 @@ use crate::{
         LoadedBoltV3Config,
     },
     bolt_v3_decision_evidence::{
-        BoltV3ReadinessGateEvidenceSnapshot, validate_readiness_gate_evidence_snapshot,
+        BoltV3ReadinessGateEvidenceSnapshot, read_latest_entry_decision_evidence_chain,
+        validate_readiness_gate_evidence_snapshot,
     },
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
@@ -189,6 +190,10 @@ pub enum BoltV3LiveCanaryGateError {
         source: serde_json::Error,
     },
     OperatorStrategyInputEvidenceInvalid {
+        path: PathBuf,
+        reason: String,
+    },
+    OperatorDecisionEvidenceInvalid {
         path: PathBuf,
         reason: String,
     },
@@ -408,6 +413,13 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                 write!(
                     f,
                     "bolt-v3 live canary strategy_input_evidence {} is invalid: {reason}",
+                    path.display()
+                )
+            }
+            BoltV3LiveCanaryGateError::OperatorDecisionEvidenceInvalid { path, reason } => {
+                write!(
+                    f,
+                    "bolt-v3 live canary decision_evidence {} is invalid: {reason}",
                     path.display()
                 )
             }
@@ -703,9 +715,9 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
     let initial_unix_seconds = unix_seconds()?;
     validate_operator_evidence(
         loaded,
-        &loaded.root_path,
         block,
         approval_id,
+        max_notional_per_order,
         initial_unix_seconds,
         initial_unix_seconds,
         approval_consumption_expectation,
@@ -765,9 +777,9 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
     // approval window to cover both evidence validation rounds plus report I/O.
     validate_operator_evidence(
         loaded,
-        &loaded.root_path,
         block,
         approval_id,
+        max_notional_per_order,
         late_unix_seconds,
         initial_unix_seconds,
         approval_consumption_expectation,
@@ -856,13 +868,14 @@ fn parse_positive_decimal(
 
 async fn validate_operator_evidence(
     loaded: &LoadedBoltV3Config,
-    root_path: &Path,
     block: &LiveCanaryBlock,
     approval_id: &str,
+    max_notional_per_order: Decimal,
     approval_window_unix_seconds: u64,
     approval_consumption_freshness_unix_seconds: u64,
     approval_consumption_expectation: ApprovalConsumptionExpectation,
 ) -> Result<(), BoltV3LiveCanaryGateError> {
+    let root_path = &loaded.root_path;
     let evidence = block
         .operator_evidence
         .as_ref()
@@ -942,7 +955,53 @@ async fn validate_operator_evidence(
         approval_consumption_expectation,
     )
     .await?;
+    validate_operator_decision_notional_within_canary_cap(
+        root_path,
+        evidence,
+        max_notional_per_order,
+    )?;
 
+    Ok(())
+}
+
+fn validate_operator_decision_notional_within_canary_cap(
+    root_path: &Path,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    max_notional_per_order: Decimal,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let path = resolve_configured_path(
+        root_path,
+        "decision_evidence_path",
+        &evidence.decision_evidence_path,
+    )?;
+    let chain =
+        read_latest_entry_decision_evidence_chain(&path, evidence.max_operator_evidence_file_bytes)
+            .map_err(
+                |source| BoltV3LiveCanaryGateError::OperatorDecisionEvidenceInvalid {
+                    path: path.clone(),
+                    reason: source.to_string(),
+                },
+            )?;
+    let notional = Decimal::from_str(chain.admission.notional.trim()).map_err(|source| {
+        BoltV3LiveCanaryGateError::OperatorDecisionEvidenceInvalid {
+            path: path.clone(),
+            reason: format!("entry order notional is not a decimal: {source}"),
+        }
+    })?;
+    if notional <= Decimal::ZERO {
+        return Err(BoltV3LiveCanaryGateError::OperatorDecisionEvidenceInvalid {
+            path,
+            reason: "entry order notional must be positive".to_string(),
+        });
+    }
+    if notional > max_notional_per_order {
+        return Err(BoltV3LiveCanaryGateError::OperatorDecisionEvidenceInvalid {
+            path,
+            reason: format!(
+                "source-owned entry order notional {notional} exceeds [live_canary].max_notional_per_order={max_notional_per_order}"
+            ),
+        });
+    }
     Ok(())
 }
 

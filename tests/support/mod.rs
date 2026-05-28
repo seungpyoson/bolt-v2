@@ -5,6 +5,7 @@ pub(crate) mod stub_runtime_strategy;
 use std::{
     any::Any,
     cell::RefCell,
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     rc::Rc,
@@ -263,6 +264,8 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         serde_json::json!({"record_kind": "test_approval_nonce"}),
     );
     let approval_consumption_path = case_dir.join("approval-consumption.json");
+    let decision_evidence_path = case_dir.join("decision-evidence.jsonl");
+    write_valid_decision_evidence_chain(&decision_evidence_path, now_ms, "0.01");
     let ssm_manifest_sha256 = sha256_file(&ssm_manifest_path);
     let strategy_input_evidence_sha256 = sha256_file(&strategy_input_evidence_path);
     let expected_gate_session_sha256 = sha256_file(&gate_session_path);
@@ -353,10 +356,7 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         approval_nonce_path: approval_nonce_path.to_string_lossy().to_string(),
         approval_nonce_sha256,
         approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-        decision_evidence_path: case_dir
-            .join("decision-evidence.jsonl")
-            .to_string_lossy()
-            .to_string(),
+        decision_evidence_path: decision_evidence_path.to_string_lossy().to_string(),
         nt_submit_event_path: case_dir
             .join("nt-submit-event.json")
             .to_string_lossy()
@@ -375,6 +375,149 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
             .to_string_lossy()
             .to_string(),
     }
+}
+
+fn write_valid_decision_evidence_chain(path: &Path, now_ms: u64, notional: &str) {
+    use bolt_v2::bolt_v3_decision_evidence::{
+        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3GateEvidenceIdentity,
+        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields,
+        BoltV3StrategyInputEvidenceSnapshot,
+    };
+    use bolt_v2::bolt_v3_submit_admission::BoltV3SubmitIntentKind;
+
+    let mut gate_evidence = BTreeMap::new();
+    gate_evidence.insert(
+        "decision_reference".to_string(),
+        BoltV3GateEvidenceIdentity {
+            satisfaction_kind: "evidence".to_string(),
+            selected_market_key: "b".repeat(64),
+            provider_id: Some("resolution_oracle_primary".to_string()),
+            provider_kind: Some("chainlink_data_streams".to_string()),
+            value_kind: Some("price".to_string()),
+            normalized_value_sha256: Some("c".repeat(64)),
+            provider_provenance_sha256: Some("d".repeat(64)),
+            resolution_identity: None,
+            artifact_sha256s: vec!["e".repeat(64)],
+        },
+    );
+    gate_evidence.insert(
+        "resolution".to_string(),
+        BoltV3GateEvidenceIdentity {
+            satisfaction_kind: "no_resolution".to_string(),
+            selected_market_key: "b".repeat(64),
+            provider_id: None,
+            provider_kind: None,
+            value_kind: None,
+            normalized_value_sha256: None,
+            provider_provenance_sha256: None,
+            resolution_identity: Some("configured-reference-price".to_string()),
+            artifact_sha256s: Vec::new(),
+        },
+    );
+    let snapshot = BoltV3StrategyInputEvidenceSnapshot {
+        strategy_id: "binary_oracle_edge_taker-001".to_string(),
+        configured_target_id: "configured_updown_target".to_string(),
+        market_selection_ruleset_id: "configured_updown_target".to_string(),
+        gate_session_hash: "a".repeat(64),
+        selected_market_key: "b".repeat(64),
+        gate_evidence,
+        market_selection_outcome: "current".to_string(),
+        market_id: Some("configured-market".to_string()),
+        polymarket_condition_id: Some("configured-condition".to_string()),
+        polymarket_market_slug: Some("configured-market".to_string()),
+        polymarket_question_id: Some("configured-question".to_string()),
+        up_instrument_id: Some("configured-condition-UP.POLYMARKET".to_string()),
+        down_instrument_id: Some("configured-condition-DOWN.POLYMARKET".to_string()),
+        market_selection_timestamp_ms: Some(now_ms),
+        selected_market_observed_timestamp_ms: Some(now_ms),
+        polymarket_market_start_timestamp_ms: Some(now_ms),
+        polymarket_market_end_timestamp_ms: Some(now_ms.saturating_add(60_000)),
+        price_to_beat_source: "configured-reference-price".to_string(),
+        price_to_beat_value: "3100".to_string(),
+        reference_quote_ts_event: now_ms,
+        spot_price: "3101".to_string(),
+        reference_fair_value: Some("3101".to_string()),
+        realized_volatility: "1.5".to_string(),
+        seconds_to_market_end: 60,
+        pricing_kurtosis: "3".to_string(),
+        theta_decay_factor: "1".to_string(),
+        theta_scaled_min_edge_bps: "100".to_string(),
+        fair_probability_up: "0.5".to_string(),
+        uncertainty_band_probability: "0.1".to_string(),
+        expected_edge_basis_points: "200".to_string(),
+        worst_case_edge_basis_points: "150".to_string(),
+        fee_rate_basis_points: "10".to_string(),
+        selected_side: Some("up".to_string()),
+        submission_instrument_id: "configured-condition-UP.POLYMARKET".to_string(),
+        submission_order_side: "BUY".to_string(),
+        submission_price: "0.50".to_string(),
+        submission_quantity: "1.0".to_string(),
+        client_order_id: "configured-client-order".to_string(),
+    };
+    let intent = BoltV3OrderIntentEvidence {
+        strategy_id: snapshot.strategy_id.clone(),
+        intent_kind: BoltV3OrderIntentKind::Entry,
+        instrument_id: snapshot.submission_instrument_id.clone(),
+        client_order_id: snapshot.client_order_id.clone(),
+        order_side: snapshot.submission_order_side.clone(),
+        price: snapshot.submission_price.clone(),
+        quantity: snapshot.submission_quantity.clone(),
+        order_fields: BoltV3OrderIntentOrderFields {
+            order_type: "LIMIT".to_string(),
+            time_in_force: "FOK".to_string(),
+            price: Some(snapshot.submission_price.clone()),
+            trigger_price: None,
+            activation_price: None,
+            trigger_type: None,
+            trigger_instrument_id: None,
+            trailing_offset: None,
+            trailing_offset_type: None,
+            expire_time_unix_nanos: None,
+            is_post_only: false,
+            is_reduce_only: false,
+            is_quote_quantity: false,
+        },
+    };
+    let admission = BoltV3AdmissionDecisionEvidence {
+        strategy_id: snapshot.strategy_id.clone(),
+        client_order_id: snapshot.client_order_id.clone(),
+        instrument_id: snapshot.submission_instrument_id.clone(),
+        notional: notional.to_string(),
+        intent_kind: BoltV3SubmitIntentKind::Entry,
+        outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+    };
+    let lines = [
+        serde_json::json!({
+            "schema_version": 5,
+            "recorded_at_utc_ns": 1_i64,
+            "gate_id": "bolt_v3.strategy_input_snapshot",
+            "gate_version": "0.1.0",
+            "kind": "strategy_input_snapshot",
+            "snapshot": snapshot,
+        }),
+        serde_json::json!({
+            "schema_version": 5,
+            "recorded_at_utc_ns": 2_i64,
+            "gate_id": "bolt_v3.order_intent",
+            "gate_version": "0.1.0",
+            "kind": "order_intent",
+            "intent": intent,
+        }),
+        serde_json::json!({
+            "schema_version": 5,
+            "recorded_at_utc_ns": 3_i64,
+            "gate_id": "bolt_v3.submit_admission",
+            "gate_version": "0.1.0",
+            "kind": "admission_decision",
+            "decision": admission,
+        }),
+    ];
+    let mut jsonl = String::new();
+    for line in lines {
+        jsonl.push_str(&serde_json::to_string(&line).expect("decision evidence should encode"));
+        jsonl.push('\n');
+    }
+    fs::write(path, jsonl).expect("decision evidence should write");
 }
 
 pub fn valid_entry_readiness_gate_session_json() -> serde_json::Value {

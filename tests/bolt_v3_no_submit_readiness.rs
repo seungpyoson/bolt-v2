@@ -26,6 +26,8 @@ use sha2::{Digest, Sha256};
 
 const TEST_READINESS_REPORT_MAX_AGE_SECONDS: u64 = 60;
 const TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS: u64 = 5;
+const TEST_GATE_OPERATOR_REFERENCE_QUOTE_MAX_AGE_SECONDS: u64 =
+    TEST_READINESS_REPORT_MAX_AGE_SECONDS;
 
 #[tokio::test(flavor = "current_thread")]
 async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
@@ -42,8 +44,9 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
-            reference_quote_wait_timeout_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_GATE_OPERATOR_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds:
+                TEST_GATE_OPERATOR_REFERENCE_QUOTE_MAX_AGE_SECONDS,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
@@ -641,8 +644,9 @@ fn no_submit_readiness_rejects_empty_configured_operator_approval_before_build()
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
-            reference_quote_wait_timeout_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_GATE_OPERATOR_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds:
+                TEST_GATE_OPERATOR_REFERENCE_QUOTE_MAX_AGE_SECONDS,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
@@ -1081,8 +1085,9 @@ async fn loaded_with_temp_live_canary() -> (
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
-            reference_quote_wait_timeout_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_GATE_OPERATOR_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds:
+                TEST_GATE_OPERATOR_REFERENCE_QUOTE_MAX_AGE_SECONDS,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
@@ -1116,8 +1121,9 @@ async fn loaded_with_temp_live_canary_and_reference_data() -> (
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
-            reference_quote_wait_timeout_seconds: TEST_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_GATE_OPERATOR_REFERENCE_QUOTE_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds:
+                TEST_GATE_OPERATOR_REFERENCE_QUOTE_MAX_AGE_SECONDS,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,

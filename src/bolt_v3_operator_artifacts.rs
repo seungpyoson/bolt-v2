@@ -46,7 +46,7 @@ use crate::{
         ClobV2CollateralAccountingSourceMaterialization,
         ClobV2CollateralAccountingSourceMaterializationRequest,
         ClobV2FeeBehaviorSourceMaterializationRequest, EntryDecisionSourceProviderContext,
-        GateProviderEvidenceBinding, ProviderSecretResolveContext,
+        GateProviderEvidenceBinding, ProviderCredentialedBlock, ProviderSecretResolveContext,
         VenueAccountStateSourceMaterializationRequest, binding_for_provider_key,
         confirm_external_snapshot_before_hard_stop, gate_provider_evidence_binding,
         materialize_clob_v2_adapter_signing_source_from_nt_signing_source,
@@ -76,6 +76,10 @@ use crate::{
 
 const REDACTED_SSM_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const REDACTED_SSM_MANIFEST_RECORD_KIND: &str = "bolt_v3.redacted_ssm_manifest.v1";
+const DATA_CLIENT_READINESS_SOURCE_SCHEMA_VERSION: u32 = 1;
+const DATA_CLIENT_READINESS_SOURCE_RECORD_KIND: &str = "bolt_v3.data_client_readiness_source.v1";
+const DATA_CLIENT_READINESS_STATUS_NOT_PRODUCTION_USABLE: &str =
+    "not_production_usable_metadata_or_config_only";
 const APPROVAL_NONCE_SCHEMA_VERSION: u32 = 1;
 const APPROVAL_NONCE_RECORD_KIND: &str = "bolt_v3.operator_approval_nonce.v1";
 const APPROVAL_NONCE_BYTES: usize = 32;
@@ -703,6 +707,41 @@ pub struct BoltV3BaseStaticArtifactsWriteOutcome {
 pub struct WrittenOperatorArtifact {
     pub path: PathBuf,
     pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DataClientReadinessSourceArtifact {
+    schema_version: u32,
+    record_kind: &'static str,
+    generated_at_unix_seconds: u64,
+    config_bundle_checksum: String,
+    clients: Vec<DataClientReadinessClientSource>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DataClientReadinessClientSource {
+    client_key_hash: String,
+    provider_key: String,
+    has_data: bool,
+    has_execution: bool,
+    has_secrets: bool,
+    data_only_scope: bool,
+    strategy_routed: bool,
+    production_usable: bool,
+    readiness_status: &'static str,
+    supported_market_families: Vec<&'static str>,
+    required_secret_blocks: Vec<String>,
+    data_config_sha256: Option<String>,
+    data_config_field_names: Vec<String>,
+    execution_config_sha256: Option<String>,
+    execution_config_field_names: Vec<String>,
+    market_identity_targets: Vec<DataClientReadinessTargetSource>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DataClientReadinessTargetSource {
+    configured_target_id_hash: String,
+    family_key: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2571,6 +2610,115 @@ pub fn build_redacted_ssm_manifest(
         aws_region: loaded.root.aws.region.clone(),
         entries,
     })
+}
+
+pub fn write_data_client_readiness_source_artifact_from_config(
+    loaded: &LoadedBoltV3Config,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let artifact = build_data_client_readiness_source_artifact(loaded)?;
+    write_json_artifact_create_new(output_path, &artifact)
+}
+
+fn build_data_client_readiness_source_artifact(
+    loaded: &LoadedBoltV3Config,
+) -> Result<DataClientReadinessSourceArtifact, BoltV3OperatorArtifactError> {
+    let plan = bolt_v3_market_families::market_identity_plan_from_config(loaded)
+        .map_err(|error| BoltV3OperatorArtifactError::MarketSelection(anyhow!(error)))?;
+    let mut targets_by_client: BTreeMap<String, Vec<DataClientReadinessTargetSource>> =
+        BTreeMap::new();
+    for target in plan.execution_client_target_refs() {
+        targets_by_client
+            .entry(target.execution_client_id.to_string())
+            .or_default()
+            .push(DataClientReadinessTargetSource {
+                configured_target_id_hash: sha256_text(target.configured_target_id),
+                family_key: target.family_key,
+            });
+    }
+
+    let mut clients = Vec::new();
+    for (client_key, client) in &loaded.root.clients {
+        let provider_key = client.venue.as_str();
+        let binding = binding_for_provider_key(provider_key).ok_or_else(|| {
+            BoltV3OperatorArtifactError::UnsupportedProvider {
+                client_key: client_key.clone(),
+                provider_key: provider_key.to_string(),
+            }
+        })?;
+        let market_identity_targets = targets_by_client.remove(client_key).unwrap_or_default();
+        let has_data = client.data.is_some();
+        let has_execution = client.execution.is_some();
+        let has_secrets = client.secrets.is_some();
+        clients.push(DataClientReadinessClientSource {
+            client_key_hash: sha256_text(client_key),
+            provider_key: provider_key.to_string(),
+            has_data,
+            has_execution,
+            has_secrets,
+            data_only_scope: has_data && !has_execution && !has_secrets,
+            strategy_routed: !market_identity_targets.is_empty(),
+            production_usable: false,
+            readiness_status: DATA_CLIENT_READINESS_STATUS_NOT_PRODUCTION_USABLE,
+            supported_market_families: binding.supported_market_families.to_vec(),
+            required_secret_blocks: binding
+                .required_secret_blocks
+                .iter()
+                .map(|requirement| {
+                    format!(
+                        "{}:{}",
+                        provider_credentialed_block_name(requirement.block),
+                        requirement.consumer
+                    )
+                })
+                .collect(),
+            data_config_sha256: client.data.as_ref().map(sha256_toml_value).transpose()?,
+            data_config_field_names: toml_table_field_names(client.data.as_ref()),
+            execution_config_sha256: client
+                .execution
+                .as_ref()
+                .map(sha256_toml_value)
+                .transpose()?,
+            execution_config_field_names: toml_table_field_names(client.execution.as_ref()),
+            market_identity_targets,
+        });
+    }
+    clients.sort_by(|left, right| {
+        (left.provider_key.as_str(), left.client_key_hash.as_str())
+            .cmp(&(right.provider_key.as_str(), right.client_key_hash.as_str()))
+    });
+
+    Ok(DataClientReadinessSourceArtifact {
+        schema_version: DATA_CLIENT_READINESS_SOURCE_SCHEMA_VERSION,
+        record_kind: DATA_CLIENT_READINESS_SOURCE_RECORD_KIND,
+        generated_at_unix_seconds: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
+        clients,
+    })
+}
+
+fn provider_credentialed_block_name(block: ProviderCredentialedBlock) -> &'static str {
+    match block {
+        ProviderCredentialedBlock::Data => "data",
+        ProviderCredentialedBlock::Execution => "execution",
+    }
+}
+
+fn toml_table_field_names(value: Option<&toml::Value>) -> Vec<String> {
+    let mut names: Vec<String> = value
+        .and_then(toml::Value::as_table)
+        .map(|table| table.keys().cloned().collect())
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+fn sha256_toml_value(value: &toml::Value) -> Result<String, BoltV3OperatorArtifactError> {
+    let bytes = serde_json::to_vec(value).map_err(BoltV3OperatorArtifactError::Serialize)?;
+    Ok(hex::encode(Sha256::digest(bytes)))
 }
 
 pub fn build_phase8_financial_envelope(

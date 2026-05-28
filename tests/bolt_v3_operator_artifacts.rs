@@ -34,6 +34,7 @@ use bolt_v2::{
         collect_entry_decision_source_inputs_from_configured_provider,
         collect_entry_readiness_gate_evidence_from_source_file, normalize_gate_evidence,
         write_chainlink_reference_quote_observations_source_from_report_files,
+        write_data_client_readiness_source_artifact_from_config,
         write_entry_readiness_gate_session_artifact_from_decision_source_file,
         write_reference_quote_observations_source_from_no_submit_evidence,
     },
@@ -1142,6 +1143,111 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
         "polymarket_main",
         "POLYMARKET",
         "passphrase_ssm_path",
+    );
+}
+
+#[test]
+fn data_client_readiness_source_records_data_only_clients_as_unproven() {
+    let temp = support::TempCaseDir::new("data-client-readiness-source");
+    let strategy_dir = temp.path().join("strategies");
+    std::fs::create_dir_all(&strategy_dir).expect("strategy dir should create");
+    std::fs::copy(
+        repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        strategy_dir.join("binary_oracle.toml"),
+    )
+    .expect("strategy fixture should copy");
+
+    let root_fixture = std::fs::read_to_string(repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("root fixture should read");
+    let root_path = temp.path().join("root.toml");
+    std::fs::write(
+        &root_path,
+        format!(
+            r#"{root_fixture}
+
+[clients.bybit_data]
+venue = "BYBIT"
+
+[clients.bybit_data.data]
+product_types = ["spot", "linear"]
+environment = "testnet"
+transport_backend = "sockudo"
+"#
+        ),
+    )
+    .expect("root fixture with data-only client should write");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture config should load");
+    let output_path = temp.path().join("data-client-readiness-source.json");
+
+    let written = write_data_client_readiness_source_artifact_from_config(&loaded, &output_path)
+        .expect("readiness source should write");
+
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.path).expect("readiness artifact should read"),
+    )
+    .expect("readiness artifact should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.data_client_readiness_source.v1"
+    );
+    assert_eq!(artifact["schema_version"], 1);
+    assert_eq!(
+        artifact["config_bundle_checksum"].as_str(),
+        Some(loaded.config_bundle_checksum.as_str())
+    );
+
+    let rendered =
+        serde_json::to_string(&artifact).expect("readiness artifact should render to string");
+    assert!(
+        !rendered.contains("/bolt/"),
+        "readiness artifact must not print SSM paths or secret values: {rendered}"
+    );
+
+    let clients = artifact["clients"]
+        .as_array()
+        .expect("clients should be an array");
+    let bybit = clients
+        .iter()
+        .find(|client| client["provider_key"] == "BYBIT")
+        .expect("Bybit data client should be recorded");
+    let bybit_client_key_hash = sha256_text("bybit_data");
+    assert_eq!(
+        bybit["client_key_hash"].as_str(),
+        Some(bybit_client_key_hash.as_str())
+    );
+    assert_eq!(bybit["has_data"], true);
+    assert_eq!(bybit["has_execution"], false);
+    assert_eq!(bybit["has_secrets"], false);
+    assert_eq!(bybit["data_only_scope"], true);
+    assert_eq!(bybit["strategy_routed"], false);
+    assert_eq!(bybit["production_usable"], false);
+    assert_eq!(
+        bybit["readiness_status"].as_str(),
+        Some("not_production_usable_metadata_or_config_only")
+    );
+    assert!(
+        bybit["data_config_field_names"]
+            .as_array()
+            .expect("field names should be an array")
+            .contains(&serde_json::json!("product_types")),
+        "Bybit data config fields should be captured without treating product values as canonical"
+    );
+
+    let polymarket = clients
+        .iter()
+        .find(|client| client["provider_key"] == "POLYMARKET")
+        .expect("Polymarket client should be recorded");
+    assert_eq!(polymarket["has_data"], true);
+    assert_eq!(polymarket["has_execution"], true);
+    assert_eq!(polymarket["has_secrets"], true);
+    assert_eq!(polymarket["strategy_routed"], true);
+    assert_eq!(polymarket["production_usable"], false);
+    assert!(
+        !polymarket["market_identity_targets"]
+            .as_array()
+            .expect("market identity targets should be an array")
+            .is_empty(),
+        "Polymarket should be marked as strategy-routed through the configured target"
     );
 }
 

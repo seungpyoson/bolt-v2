@@ -20,6 +20,18 @@ The current evidence is initial adapter binding and metadata smoke only:
 
 This proves basic config parsing, adapter mapping, data-only boundary checks, and one-time public metadata reachability. It does not prove production readiness.
 
+## Implementation Progress
+
+The first T043A source-owned proof primitive has been added but not yet run through final cargo/CI verification:
+
+- New read-only CLI: `operator-artifacts collect-data-client-readiness-source --config <root.toml> --output <data-client-readiness-source.json>`.
+- The collector loads the root TOML and provider registry, derives a market-identity plan, and writes a bounded JSON artifact with:
+  - `record_kind = "bolt_v3.data_client_readiness_source.v1"`.
+  - `config_bundle_checksum`.
+  - per-client `client_key_hash`, `provider_key`, data/execution/secrets capability booleans, data-only scope, strategy-routed flag, supported market families, required secret-block classes, hashed data/execution config, field-name inventories, and hashed routed target ids.
+- The artifact marks every row `production_usable = false` with status `not_production_usable_metadata_or_config_only`; later T043A slices must add behavior/freshness/reconnect/rate-limit proof before any row can become production-usable.
+- A contract test was added for the artifact shape and no-SSM-path leakage, but cargo execution is intentionally deferred to the final verification pass per operator direction.
+
 ## Missing Production Proof
 
 T043A remains open until a venue-neutral matrix proves the following for every PR-enabled data client, including Polymarket and each data-only NT venue binding:

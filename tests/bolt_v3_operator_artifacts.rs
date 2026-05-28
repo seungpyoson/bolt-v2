@@ -34,6 +34,7 @@ use bolt_v2::{
         collect_entry_decision_source_inputs_from_configured_provider,
         collect_entry_readiness_gate_evidence_from_source_file, normalize_gate_evidence,
         write_chainlink_reference_quote_observations_source_from_report_files,
+        write_entry_readiness_gate_session_artifact_from_decision_source_file,
         write_reference_quote_observations_source_from_no_submit_evidence,
     },
     bolt_v3_tiny_canary_evidence::{
@@ -6481,6 +6482,26 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
         serde_json::json!(3300.0)
     );
     assert!(decision_source_json.get("price_to_beat_value").is_none());
+    let gate_session_output = temp.path().join("entry-readiness-gate-session.json");
+    let gate_session_written =
+        write_entry_readiness_gate_session_artifact_from_decision_source_file(
+            &loaded,
+            &strategy_instance_id,
+            &written.decision_source.path,
+            100_000,
+            &gate_session_output,
+        )
+        .expect("source-owned readiness session should write as its own artifact");
+    assert_eq!(gate_session_written.path, gate_session_output);
+    assert_eq!(
+        gate_session_written.sha256,
+        sha256_file(&gate_session_written.path)
+    );
+    let gate_session_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&gate_session_written.path).expect("gate session should remain readable"),
+    )
+    .expect("gate session should parse as JSON");
+    assert_eq!(gate_session_json, decision_source_json["readiness_session"]);
 
     let replayed =
         bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(

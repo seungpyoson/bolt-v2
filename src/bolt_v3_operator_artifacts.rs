@@ -30,8 +30,9 @@ use crate::{
         NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE,
     },
     bolt_v3_decision_evidence::{
-        BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
-        decision_evidence_path, read_latest_entry_decision_evidence_chain,
+        BoltV3ReadinessGateEvidenceSnapshot, BoltV3StrategyInputEvidenceSnapshot,
+        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
+        read_latest_entry_decision_evidence_chain, validate_readiness_gate_evidence_snapshot,
         validate_strategy_input_readiness_evidence,
     },
     bolt_v3_live_canary_gate::{
@@ -5617,6 +5618,82 @@ pub fn write_entry_decision_evidence_from_source_file(
         path,
         sha256: hex::encode(Sha256::digest(&bytes)),
     })
+}
+
+pub fn write_entry_readiness_gate_session_artifact_from_decision_source_file(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    decision_source_path: &Path,
+    max_decision_source_bytes: u64,
+    path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let decision_source_bytes = read_file_bounded(decision_source_path, max_decision_source_bytes)
+        .map_err(
+            |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceRead {
+                path: decision_source_path.to_path_buf(),
+                source,
+            },
+        )?;
+    let decision_source: BinaryOracleEntryDecisionEvidenceSource =
+        serde_json::from_slice(&decision_source_bytes).map_err(|source| {
+            BoltV3OperatorArtifactError::DecisionEvidenceSourceParse {
+                path: decision_source_path.to_path_buf(),
+                source,
+            }
+        })?;
+    if decision_source.schema_version != ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION {
+        return Err(entry_decision_source_invalid("schema_version"));
+    }
+    if decision_source.record_kind != ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND {
+        return Err(entry_decision_source_invalid("record_kind"));
+    }
+    let session = &decision_source.readiness_session;
+    if session.schema_version != ENTRY_READINESS_GATE_SESSION_SCHEMA_VERSION {
+        return Err(entry_readiness_error("schema_version"));
+    }
+    if session.record_kind != ENTRY_READINESS_GATE_SESSION_RECORD_KIND {
+        return Err(entry_readiness_error("record_kind"));
+    }
+    if session.strategy_instance_id != strategy_instance_id {
+        return Err(entry_readiness_error(
+            "strategy_instance_id does not match requested strategy",
+        ));
+    }
+    if session.created_at_ms != decision_source.decision_timestamp_ms {
+        return Err(entry_readiness_error(
+            "created_at_ms does not match source decision_timestamp_ms",
+        ));
+    }
+    let expected_session_hash =
+        entry_readiness_session_hash(loaded, session).map_err(entry_readiness_error)?;
+    if session.session_hash != expected_session_hash {
+        return Err(entry_readiness_error("session_hash does not match session"));
+    }
+    let snapshot = BoltV3ReadinessGateEvidenceSnapshot::from_entry_readiness_gate_session(session);
+    validate_readiness_gate_evidence_snapshot(&snapshot)
+        .map_err(|error| entry_readiness_error(error.to_string()))?;
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .ok_or_else(|| entry_readiness_error("strategy_instance_id is not loaded"))?;
+    let target = strategy
+        .config
+        .target
+        .as_table()
+        .ok_or_else(|| entry_readiness_error("strategy target must be a table"))?;
+    let configured_target_id = target
+        .get(GATE_FIELD_CONFIGURED_TARGET_ID)
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| entry_readiness_error("target.configured_target_id is missing"))?;
+    if configured_target_id != session.configured_target_id
+        || configured_target_id != session.selected_market.configured_target_id
+    {
+        return Err(entry_readiness_error(
+            "configured_target_id does not match loaded strategy target",
+        ));
+    }
+    write_json_artifact_create_new(path, session)
 }
 
 pub fn write_pre_run_state_artifact(

@@ -25,6 +25,7 @@ use bolt_v2::{
         write_chainlink_price_report_source_from_configured_provider,
         write_chainlink_reference_quote_observations_source_from_report_files,
         write_entry_decision_evidence_from_source_file, write_entry_decision_proof_source_files,
+        write_entry_readiness_gate_session_artifact_from_decision_source_file,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_operator_evidence_json_from_artifact_paths,
         write_pre_run_clob_v2_adapter_signing_source_artifact_from_nt_signing_source,
@@ -373,6 +374,18 @@ enum OperatorArtifactsCommand {
         max_instrument_source_bytes: u64,
         #[arg(long)]
         max_decision_evidence_bytes: u64,
+    },
+    GenerateEntryReadinessGateSessionFromSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        decision_source: PathBuf,
+        #[arg(long)]
+        max_decision_source_bytes: u64,
+        #[arg(long)]
+        output: PathBuf,
     },
     CollectChainlinkPriceReportSource {
         #[arg(short, long)]
@@ -1022,6 +1035,23 @@ fn run_operator_artifacts_command(
                 &instrument_source,
                 max_instrument_source_bytes,
                 max_decision_evidence_bytes,
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::GenerateEntryReadinessGateSessionFromSource {
+            config,
+            strategy_instance_id,
+            decision_source,
+            max_decision_source_bytes,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let written = write_entry_readiness_gate_session_artifact_from_decision_source_file(
+                &loaded,
+                &strategy_instance_id,
+                &decision_source,
+                max_decision_source_bytes,
+                &output,
             )?;
             print_written_operator_artifact(&written)
         }

@@ -20,7 +20,11 @@ use bolt_v2::{
         BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind, decision_evidence_path,
         read_latest_entry_decision_evidence_chain,
     },
-    bolt_v3_live_node::{BoltV3NoSubmitReferenceQuote, BoltV3NoSubmitReferenceQuoteEvidence},
+    bolt_v3_live_node::{
+        BoltV3NoSubmitDataClientMetadata, BoltV3NoSubmitDataClientMetadataEvidence,
+        BoltV3NoSubmitDataClientReadinessEvidence, BoltV3NoSubmitReferenceQuote,
+        BoltV3NoSubmitReferenceQuoteEvidence,
+    },
     bolt_v3_market_families::{SelectedMarketRequirement, updown::updown_market_slug},
     bolt_v3_operator_artifacts::{
         ChainlinkReferencePriceReportSourceFile,
@@ -37,6 +41,7 @@ use bolt_v2::{
         write_data_client_behavior_observation_artifact_from_source_file,
         write_data_client_behavior_observation_source_from_probe_events,
         write_data_client_behavior_probe_events_from_no_submit_evidence,
+        write_data_client_behavior_probe_events_from_no_submit_readiness_evidence,
         write_data_client_live_node_mapping_source_artifact_from_config,
         write_data_client_nt_source_capability_artifact_from_config,
         write_data_client_production_readiness_matrix_artifact_from_source_files,
@@ -1435,6 +1440,142 @@ fn data_client_behavior_probe_events_source_uses_no_submit_reference_quotes_with
         .as_array()
         .expect("missing proofs should be an array");
     assert!(missing.contains(&serde_json::json!("metadata_behavior")));
+    assert!(missing.contains(&serde_json::json!("reconnect_behavior")));
+    assert!(missing.contains(&serde_json::json!("rate_limit_behavior")));
+    assert!(missing.contains(&serde_json::json!("parse_error_behavior")));
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_records_metadata_without_raw_instruments() {
+    let mut loaded = load_fixture_with_live_canary();
+    configure_data_client_readiness_quote_probe(&mut loaded);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let raw_metadata_instruments = vec![
+        "CONFIGURED-ALPHA.SOURCE".to_string(),
+        "CONFIGURED-BRAVO.SOURCE".to_string(),
+    ];
+    let temp = support::TempCaseDir::new("data-client-behavior-metadata-probe-events-source");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let behavior_source_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+    let behavior_observation_path = temp.path().join("data-client-behavior-observation.json");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: raw_metadata_instruments.clone(),
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence {
+            quotes: vec![BoltV3NoSubmitReferenceQuote {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                instrument_id: TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string(),
+                bid_price: 3299.0,
+                ask_price: 3301.0,
+                ts_event_unix_nanos: 600_000_000_000,
+                ts_init_unix_nanos: 600_100_000_000,
+                captured_at_unix_nanos: 600_500_000_000,
+            }],
+        },
+    };
+
+    let written_probe_events =
+        write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+            &loaded,
+            TEST_REFERENCE_DATA_CLIENT_ID,
+            &evidence,
+            &probe_events_path,
+        )
+        .expect("source-owned no-submit readiness evidence should write probe events");
+
+    let rendered_events =
+        std::fs::read_to_string(&written_probe_events.path).expect("probe events should read");
+    let events = rendered_events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 2);
+    let metadata_event = events
+        .iter()
+        .find(|event| event["event_kind"] == serde_json::json!("metadata"))
+        .expect("metadata event should be present");
+    let quote_event = events
+        .iter()
+        .find(|event| event["event_kind"] == serde_json::json!("quote"))
+        .expect("quote event should be present");
+    assert_eq!(
+        metadata_event["record_kind"],
+        serde_json::json!("bolt_v3.data_client_behavior_probe_event.v1")
+    );
+    assert_eq!(metadata_event["supported_by_nt_source"], true);
+    assert_eq!(metadata_event["observed_through_live_node"], true);
+    assert_eq!(metadata_event["age_millis"], serde_json::json!(400));
+    assert_eq!(metadata_event["latency_millis"], serde_json::json!(400));
+    assert_eq!(
+        metadata_event["client_key_hash"].as_str(),
+        Some(sha256_text(TEST_REFERENCE_DATA_CLIENT_ID).as_str())
+    );
+    assert!(is_lowercase_sha256(
+        metadata_event["evidence_sha256"]
+            .as_str()
+            .expect("metadata event should include evidence hash")
+    ));
+    assert_eq!(quote_event["event_kind"], serde_json::json!("quote"));
+    assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_TARGET_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID));
+    for instrument_id in &raw_metadata_instruments {
+        assert!(
+            !rendered_events.contains(instrument_id),
+            "raw metadata instrument id must not be rendered"
+        );
+    }
+    assert!(!rendered_events.contains("3299"));
+    assert!(!rendered_events.contains("3301"));
+
+    write_data_client_behavior_observation_source_from_probe_events(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &probe_events_path,
+        16_384,
+        &behavior_source_path,
+    )
+    .expect("metadata and quote probe evidence should materialize missing proofs");
+    let written_observation = write_data_client_behavior_observation_artifact_from_source_file(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &behavior_source_path,
+        16_384,
+        &behavior_observation_path,
+    )
+    .expect("partial behavior source should write a non-production observation artifact");
+    let observation: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written_observation.path).expect("observation should read"),
+    )
+    .expect("observation should parse");
+    assert_eq!(
+        observation["metadata_behavior"]["observed_through_live_node"],
+        true
+    );
+    assert_eq!(
+        observation["quote_behavior"]["observed_through_live_node"],
+        true
+    );
+    assert_eq!(observation["production_usable"], false);
+    let missing = observation["missing_behavior_proofs"]
+        .as_array()
+        .expect("missing proofs should be an array");
+    assert!(!missing.contains(&serde_json::json!("metadata_behavior")));
+    assert!(!missing.contains(&serde_json::json!("quote_behavior")));
     assert!(missing.contains(&serde_json::json!("reconnect_behavior")));
     assert!(missing.contains(&serde_json::json!("rate_limit_behavior")));
     assert!(missing.contains(&serde_json::json!("parse_error_behavior")));

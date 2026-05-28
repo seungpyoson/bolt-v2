@@ -5,6 +5,7 @@
 //! `[data]` TOML through to the pinned NautilusTrader data-client config
 //! type and factory for that venue.
 
+use nautilus_bitmex::{config::BitmexDataClientConfig, factories::BitmexDataClientFactory};
 use nautilus_bybit::{config::BybitDataClientConfig, factories::BybitDataClientFactory};
 use nautilus_coinbase::{config::CoinbaseDataClientConfig, factories::CoinbaseDataClientFactory};
 use nautilus_common::factories::{ClientConfig, DataClientFactory};
@@ -25,6 +26,7 @@ use crate::{
     bolt_v3_secrets::BoltV3SecretError,
 };
 
+pub const BITMEX_KEY: &str = "BITMEX";
 pub const BYBIT_KEY: &str = "BYBIT";
 pub const COINBASE_KEY: &str = "COINBASE";
 pub const DERIBIT_KEY: &str = "DERIBIT";
@@ -32,15 +34,22 @@ pub const OKX_KEY: &str = "OKX";
 pub const KRAKEN_KEY: &str = "KRAKEN";
 
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
-pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[];
-pub const SECRET_FIELD_NAMES: &[&str] = &[];
+pub const NO_REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[];
+pub const NO_SECRET_FIELD_NAMES: &[&str] = &[];
 
+pub const BITMEX_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_bitmex::common::credential"];
 pub const BYBIT_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_bybit::common::credential"];
 pub const COINBASE_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_coinbase::common::credential"];
 pub const DERIBIT_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_deribit::common::credential"];
 pub const OKX_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_okx::common::credential"];
 pub const KRAKEN_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_kraken::common::credential"];
 
+pub const BITMEX_FORBIDDEN_ENV_VARS: &[&str] = &[
+    "BITMEX_TESTNET_API_KEY",
+    "BITMEX_TESTNET_API_SECRET",
+    "BITMEX_API_KEY",
+    "BITMEX_API_SECRET",
+];
 pub const BYBIT_FORBIDDEN_ENV_VARS: &[&str] = &[
     "BYBIT_DEMO_API_KEY",
     "BYBIT_DEMO_API_SECRET",
@@ -72,9 +81,31 @@ const DIRECT_CREDENTIAL_FIELDS: &[&str] = &[
     "api_secret",
     "api_passphrase",
     "private_key",
+    "username",
+    "password",
+    "app_key",
     "wallet_address",
 ];
 
+const BITMEX_DATA_FIELDS: &[&str] = &[
+    "api_key",
+    "api_secret",
+    "base_url_http",
+    "base_url_ws",
+    "proxy_url",
+    "http_timeout_secs",
+    "max_retries",
+    "retry_delay_initial_ms",
+    "retry_delay_max_ms",
+    "heartbeat_interval_secs",
+    "recv_window_ms",
+    "active_only",
+    "update_instruments_interval_mins",
+    "environment",
+    "max_requests_per_second",
+    "max_requests_per_minute",
+    "transport_backend",
+];
 const BYBIT_DATA_FIELDS: &[&str] = &[
     "api_key",
     "api_secret",
@@ -161,6 +192,9 @@ const KRAKEN_DATA_FIELDS: &[&str] = &[
     "max_requests_per_second",
     "transport_backend",
 ];
+pub fn validate_bitmex_client(key: &str, client: &ClientBlock) -> Vec<String> {
+    validate_data_only_client::<BitmexDataClientConfig>(BITMEX_KEY, key, client, BITMEX_DATA_FIELDS)
+}
 
 pub fn validate_bybit_client(key: &str, client: &ClientBlock) -> Vec<String> {
     validate_data_only_client::<BybitDataClientConfig>(BYBIT_KEY, key, client, BYBIT_DATA_FIELDS)
@@ -328,6 +362,17 @@ pub fn configured_secret_paths(
     } else {
         Ok(Vec::new())
     }
+}
+
+pub fn map_bitmex_adapters(
+    context: ProviderAdapterMapContext<'_>,
+) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
+    map_data_only_adapters::<BitmexDataClientConfig, _>(
+        context,
+        BitmexDataClientFactory::new(),
+        BITMEX_KEY,
+        BITMEX_DATA_FIELDS,
+    )
 }
 
 pub fn map_bybit_adapters(

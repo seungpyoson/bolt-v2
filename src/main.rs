@@ -5,7 +5,7 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::{
         build_bolt_v3_live_node, build_bolt_v3_no_submit_live_node,
-        collect_no_submit_data_client_readiness_quote_evidence,
+        collect_no_submit_data_client_readiness_evidence,
         collect_no_submit_reference_quote_evidence, run_bolt_v3_live_node,
     },
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
@@ -27,7 +27,7 @@ use bolt_v2::{
         write_chainlink_reference_quote_observations_source_from_report_files,
         write_data_client_behavior_observation_artifact_from_source_file,
         write_data_client_behavior_observation_source_from_probe_events,
-        write_data_client_behavior_probe_events_from_no_submit_evidence,
+        write_data_client_behavior_probe_events_from_no_submit_readiness_evidence,
         write_data_client_live_node_mapping_source_artifact_from_config,
         write_data_client_nt_source_capability_artifact_from_config,
         write_data_client_production_readiness_matrix_artifact_from_source_files,
@@ -967,18 +967,19 @@ fn run_operator_artifacts_command(
                 .build()?;
             let local = tokio::task::LocalSet::new();
             let evidence = runtime.block_on(local.run_until(
-                collect_no_submit_data_client_readiness_quote_evidence(
+                collect_no_submit_data_client_readiness_evidence(
                     &mut live_node,
                     &loaded,
                     &client_key,
                 ),
             ))?;
-            let written = write_data_client_behavior_probe_events_from_no_submit_evidence(
-                &loaded,
-                &client_key,
-                &evidence,
-                &output,
-            )?;
+            let written =
+                write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+                    &loaded,
+                    &client_key,
+                    &evidence,
+                    &output,
+                )?;
             print_written_operator_artifact(&written)
         }
         OperatorArtifactsCommand::CollectDataClientProductionReadinessMatrix {

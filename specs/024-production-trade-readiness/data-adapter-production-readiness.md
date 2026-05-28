@@ -6,7 +6,11 @@ Status: open. The PR-enabled data-client adapters are not yet proven production-
 
 The current evidence is initial adapter binding and metadata smoke only:
 
-- `cargo test requested_market_data_clients_map_as_data_only_and_polymarket_remains_data_execution`: passed.
+- `cargo test requested_market_data_clients_map_as_data_only_and_execution_stays_config_owned`: passed.
+- `cargo test nt_source_supported_rust_data_client_provider_bindings_are_registered`: passed.
+- `cargo test allows_multiple_configured_client_ids_for_same_nt_venue`: passed.
+- `cargo test root_example_declares_requested_nt_data_clients_for_registration`: passed.
+- `cargo test live_node_registration_can_load_all_requested_data_clients_without_extra_execution_clients`: passed.
 - `cargo test flags_set_provider_var_for_configured_data_only_client_without_secrets`: passed.
 - `cargo test rejects_market_data_only_provider_execution_secrets_and_direct_credentials`: passed.
 - `cargo test --locked data_only`: passed.
@@ -18,7 +22,7 @@ The current evidence is initial adapter binding and metadata smoke only:
   - Kraken: 1863 instruments/products.
   - Binance: 1380 instruments/products.
 
-This proves basic config parsing, adapter mapping, data-only boundary checks, and one-time public metadata reachability. It does not prove production readiness.
+`config/root.example.toml` now declares the requested data-client registration scope: Binance spot/USD-M/COIN-M, BitMEX, Bybit, Coinbase, Deribit, Kraken spot/futures, OKX, and Polymarket. The normal LiveNode registration boundary has been tested for that configured set. This proves config parsing, adapter mapping, provider binding, LiveNode registration, data-only boundary checks, and one-time public metadata reachability. It does not prove production readiness.
 
 ## Implementation Progress
 
@@ -88,7 +92,7 @@ T043A remains open until a venue-neutral matrix proves the following for every P
 
 - The client is selected from TOML/provider registry data, with no venue, asset, market, token, symbol, cadence, endpoint, or product hardcode treated as canonical.
 - The Bolt `LiveNode` build path includes the data client through the normal adapter mapping path.
-- Data-only clients reject `[execution]`, `[secrets]`, and direct credential fields unless a future explicit SSM-backed provider binding is added.
+- Data-only clients reject `[execution]`, `[secrets]`, and direct credential fields unless the provider has an explicit SSM-backed credential binding. Binance is credentialed through its provider-owned SSM binding; the other added exchange data-only bindings remain non-credentialed.
 - NT data behavior is proven beyond metadata-only smoke: quote/book/ticker/subscription behavior is verified where upstream supports it, and unsupported paths have a recorded fail-closed disposition. The current source-owned probe-event collector proves only client-owned configured quote observations.
 - Freshness, latency bound, reconnect, rate-limit, and parse/error behavior are verified under configured values. Current partial probe sources intentionally mark missing policy/error proofs as missing, not production-usable.
 - The matrix records which markets/product types each client can actually cover, without implying a global Binance, BTC, 5-minute, or Polymarket-only default.
@@ -99,12 +103,13 @@ T043A remains open until a venue-neutral matrix proves the following for every P
 | Client/provider | Current source-owned proof | Production gaps | Current disposition |
 | --- | --- | --- | --- |
 | Polymarket | Provider binding supports data and execution; the T043 no-submit run built the LiveNode, connected, reconciled account state, observed zero orders/fills/positions, and disconnected cleanly. | T044 still has no successful tiny-capital submit artifact. Multi-venue data-client readiness is not implied by the Polymarket canary path. | Usable only for the already-scoped Polymarket T043/T044 path after renewed operator approval. |
-| Binance | Existing credentialed data client adapter maps through the provider registry; live config currently does not declare a Binance client. | It is not configured in the current live root TOML, and no current LiveNode data-path proof covers Binance for production trading inputs. | Not production-usable for this PR without a T043A matrix row proving configured data behavior. |
-| Bybit | Thin data-only binding exists in `src/bolt_v3_providers/market_data.rs`; it rejects `[execution]`, `[secrets]`, and direct credential fields; one-time NT public HTTP metadata smoke fetched instruments/products. | No LiveNode data-path proof, no quote/book/ticker/subscription proof, no freshness/reconnect/rate-limit/error proof, and no market-coverage matrix. | Open T043A item. |
-| Coinbase | Thin data-only binding exists; one-time NT public HTTP metadata smoke fetched instruments/products. | Same missing production proofs as Bybit. | Open T043A item. |
-| Deribit | Thin data-only binding exists; one-time NT public HTTP metadata smoke fetched instruments/products. | Same missing production proofs as Bybit; Deribit/index readiness-provider vocabulary does not prove this NT data-client adapter. | Open T043A item. |
-| OKX | Thin data-only binding exists; one-time NT public HTTP metadata smoke fetched instruments/products. | Same missing production proofs as Bybit. | Open T043A item. |
-| Kraken | Thin data-only binding exists; one-time NT public HTTP metadata smoke fetched instruments/products; validation also calls NT Kraken config validation when parsing succeeds. | Same missing production proofs as Bybit. | Open T043A item. |
+| Binance | Credentialed provider binding maps through the registry and `config/root.example.toml` declares separate `binance_spot_data`, `binance_usdm_data`, and `binance_coinm_data` clients because pinned NT's Binance factory constructs one data client from one product type. LiveNode registration covers all three. | Current configured coverage is spot, USD-M, and COIN-M only. Pinned NT's Binance data factory rejects margin/options; no current LiveNode data-path proof covers Binance quotes/books/tickers/freshness/reconnect/rate-limit behavior for production trading inputs. | Open T043A item. Configured and registered, not production-usable yet. |
+| BitMEX | Thin data-only binding exists and `config/root.example.toml` declares `bitmex_data`; LiveNode registration covers it. | No quote/book/ticker/subscription proof, no freshness/reconnect/rate-limit/error proof, and no production matrix completion. | Open T043A item. Configured and registered, not production-usable yet. |
+| Bybit | Thin data-only binding exists and `config/root.example.toml` declares spot, linear, inverse, and option product types; it rejects `[execution]`, `[secrets]`, and direct credential fields; one-time NT public HTTP metadata smoke fetched instruments/products; LiveNode registration covers it. | No quote/book/ticker/subscription proof, no freshness/reconnect/rate-limit/error proof, and no production matrix completion. | Open T043A item. Configured and registered, not production-usable yet. |
+| Coinbase | Thin data-only binding exists; `config/root.example.toml` declares it; one-time NT public HTTP metadata smoke fetched instruments/products; LiveNode registration covers it. | Same missing production proofs as Bybit. | Open T043A item. Configured and registered, not production-usable yet. |
+| Deribit | Thin data-only binding exists; `config/root.example.toml` declares future, option, spot, future-combo, and option-combo product types; one-time NT public HTTP metadata smoke fetched instruments/products; LiveNode registration covers it. | Same missing production proofs as Bybit; Deribit/index readiness-provider vocabulary does not prove this NT data-client adapter. | Open T043A item. Configured and registered, not production-usable yet. |
+| OKX | Thin data-only binding exists; `config/root.example.toml` declares SPOT, MARGIN, SWAP, FUTURES, EVENTS, linear/inverse contract types, and spreads; one-time NT public HTTP metadata smoke fetched instruments/products; LiveNode registration covers it. | Same missing production proofs as Bybit. OKX OPTION is not configured because pinned NT requires explicit `instrument_families`; no hardcoded BTC/ETH option families were added. | Open T043A item. Configured and registered, not production-usable yet. |
+| Kraken | Thin data-only binding exists; `config/root.example.toml` declares separate spot and futures clients because pinned NT's Kraken factory selects one product type; one-time NT public HTTP metadata smoke fetched instruments/products; validation also calls NT Kraken config validation when parsing succeeds; LiveNode registration covers both. | Same missing production proofs as Bybit. | Open T043A item. Configured and registered, not production-usable yet. |
 
 ## Implementation Checklist
 
@@ -115,7 +120,7 @@ T043A should be closed by a source-owned proof path, not by prose or a transient
 - Prove the normal `build_bolt_v3_live_node` or no-submit LiveNode build path includes each configured data client through `map_bolt_v3_adapters`; do not instantiate a second raw-adapter path as production evidence.
 - For public market-data behavior, collect bounded evidence through the pinned NT client surface for supported metadata and quote/book/ticker/subscription behavior; for unsupported surfaces, write an explicit fail-closed unsupported-path disposition.
 - Record freshness, timeout, retry, reconnect, rate-limit, and parse/error behavior from TOML-owned config and observed bounded read-only probes.
-- Keep data-only clients non-credentialed in this PR unless a future explicit SSM-backed secret binding is added; do not use environment variables or direct credential fields.
+- Keep uncredentialed data-only clients free of `[secrets]` and direct credential fields. Credentialed data providers must use explicit provider-owned SSM bindings only; do not use environment variables, 1Password, or direct credential fields.
 - Add hardcode/source-fence checks that prevent BTC, Binance, Polymarket, 5-minute cadence, or any single venue/product from becoming a canonical default for the matrix.
 - Run the focused tests and final source-fence/CI only at the final verification pass, per the current operator direction to defer cargo/CI churn.
 

@@ -4048,6 +4048,33 @@ fn rejects_invalid_binance_reference_websocket_urls_before_nt_mapping() {
 }
 
 #[test]
+fn rejects_invalid_binance_futures_websocket_url_without_spot_sbe_guidance() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_binance_reference_fixture(
+        "product_types = [\"spot\"]",
+        "product_types = [\"usd_m\"]",
+    )
+    .replace(
+        "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
+        "base_url_ws = \"https://fstream.binance.com/market/ws\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("invalid futures websocket fixture should parse");
+    let messages = validate_root_only(&root);
+    let rendered = messages.join("\n");
+    assert!(
+        rendered.contains("clients.binance_reference.data.base_url_ws")
+            && rendered.contains("valid Binance WebSocket URL"),
+        "expected generic Binance websocket URL validation error, got: {messages:#?}"
+    );
+    assert!(
+        !rendered.contains("Spot") && !rendered.contains("SBE"),
+        "futures websocket validation must not emit Spot/SBE guidance, got: {rendered}"
+    );
+}
+
+#[test]
 fn accepts_binance_spot_sbe_and_proxy_websocket_endpoints() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
@@ -5366,10 +5393,10 @@ fn rejects_polymarket_data_auto_load_retry_initial_after_max() {
 }
 
 #[test]
-fn rejects_more_than_one_polymarket_client_in_current_slice() {
+fn allows_multiple_configured_client_ids_for_same_nt_venue() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n\n[clients.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
+    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = format!("{fixture}{extra_client}");
@@ -5377,10 +5404,41 @@ fn rejects_more_than_one_polymarket_client_in_current_slice() {
         toml::from_str(&mutated).expect("two-polymarket-venues fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
-        messages
+        !messages
             .iter()
-            .any(|m| m.contains("at most one [clients.<id>] block per venue")
-                && m.contains("polymarket")),
-        "expected one-venue-per-kind validation error, got: {messages:#?}"
+            .any(|m| m.contains("at most one [clients.<id>] block per venue")),
+        "client routing is keyed by [clients.<id>], so same-venue client ids must be accepted; got: {messages:#?}"
     );
+}
+
+#[test]
+fn root_example_declares_requested_nt_data_clients_for_registration() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+
+    let loaded = load_bolt_v3_config(&support::repo_path("config/root.example.toml"))
+        .expect("root.example.toml should load with requested data clients");
+
+    for client_key in [
+        "binance_spot_data",
+        "binance_usdm_data",
+        "binance_coinm_data",
+        "bitmex_data",
+        "bybit_data",
+        "coinbase_data",
+        "deribit_data",
+        "kraken_spot_data",
+        "kraken_futures_data",
+        "okx_data",
+        "polymarket_main",
+    ] {
+        let client = loaded
+            .root
+            .clients
+            .get(client_key)
+            .unwrap_or_else(|| panic!("{client_key} must be configured in root.example.toml"));
+        assert!(
+            client.data.is_some(),
+            "{client_key} must declare a [data] block"
+        );
+    }
 }

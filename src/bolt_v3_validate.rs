@@ -839,34 +839,6 @@ fn validate_clients_block(clients: &BTreeMap<String, ClientBlock>) -> Vec<String
         errors.push("clients must define at least one client block".to_string());
         return errors;
     }
-    // The current bolt-v3 scope is one client per NT venue. Multi-client
-    // routing (multiple keyed clients for the same venue) is not yet
-    // covered by the NT typed-venue routing path or by bolt-v3 strategy
-    // validation. NT client registration names can differ, but engine
-    // instrument subscriptions still key on typed venues such as
-    // POLYMARKET/BINANCE, so we fail closed until that routing is
-    // explicitly designed.
-    let mut venue_counts: BTreeMap<String, Vec<&str>> = BTreeMap::new();
-    for (key, client) in clients {
-        match venue_counts.entry(client.venue.as_str().to_string()) {
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
-                entry.get_mut().push(key.as_str());
-            }
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(vec![key.as_str()]);
-            }
-        }
-    }
-    for (venue, keys) in &venue_counts {
-        if keys.len() > 1 {
-            errors.push(format!(
-                "clients: at most one [clients.<id>] block per venue is supported in this slice; \
-                 venue `{venue}` is declared by {} clients: {}",
-                keys.len(),
-                keys.join(", ")
-            ));
-        }
-    }
     for (key, client) in clients {
         errors.extend(crate::bolt_v3_providers::validate_client_block(key, client));
         errors.extend(validate_client_readiness_probe(key, client));

@@ -18,7 +18,7 @@ mod support;
 use std::collections::BTreeMap;
 
 use bolt_v2::{
-    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with_summary},
 };
 use nautilus_model::identifiers::ClientId;
@@ -34,6 +34,154 @@ fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
         .expect("binance provider fixture client should parse"),
     );
     loaded
+}
+
+fn data_client_from_toml(value: &str) -> ClientBlock {
+    toml::from_str(value).expect("test data client block should parse")
+}
+
+fn add_all_requested_data_clients(loaded: &mut LoadedBoltV3Config) {
+    let clients: &[(&str, &str)] = &[
+        (
+            "binance_spot_data",
+            r#"
+venue = "BINANCE"
+
+[data]
+product_types = ["spot"]
+environment = "mainnet"
+base_url_http = "https://api.binance.com"
+base_url_ws = "wss://stream-sbe.binance.com/ws"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[secrets]
+api_key_ssm_path = "/bolt/binance_reference/api_key"
+api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+"#,
+        ),
+        (
+            "binance_usdm_data",
+            r#"
+venue = "BINANCE"
+
+[data]
+product_types = ["usd_m"]
+environment = "testnet"
+base_url_http = "https://demo-fapi.binance.com"
+base_url_ws = "wss://fstream.binancefuture.com/ws"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[secrets]
+api_key_ssm_path = "/bolt/binance_reference/api_key"
+api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+"#,
+        ),
+        (
+            "binance_coinm_data",
+            r#"
+venue = "BINANCE"
+
+[data]
+product_types = ["coin_m"]
+environment = "testnet"
+base_url_http = "https://testnet.binancefuture.com"
+base_url_ws = "wss://dstream.binancefuture.com/ws"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[secrets]
+api_key_ssm_path = "/bolt/binance_reference/api_key"
+api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+"#,
+        ),
+        (
+            "bitmex_data",
+            r#"
+venue = "BITMEX"
+
+[data]
+environment = "testnet"
+active_only = false
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "bybit_data",
+            r#"
+venue = "BYBIT"
+
+[data]
+product_types = ["spot", "linear", "inverse", "option"]
+environment = "testnet"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "coinbase_data",
+            r#"
+venue = "COINBASE"
+
+[data]
+environment = "Sandbox"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "deribit_data",
+            r#"
+venue = "DERIBIT"
+
+[data]
+product_types = ["future", "option", "spot", "future_combo", "option_combo"]
+environment = "testnet"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "kraken_spot_data",
+            r#"
+venue = "KRAKEN"
+
+[data]
+product_type = "spot"
+environment = "live"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "kraken_futures_data",
+            r#"
+venue = "KRAKEN"
+
+[data]
+product_type = "futures"
+environment = "demo"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "okx_data",
+            r#"
+venue = "OKX"
+
+[data]
+instrument_types = ["SPOT", "MARGIN", "SWAP", "FUTURES", "EVENTS"]
+contract_types = ["linear", "inverse"]
+load_spreads = true
+environment = "demo"
+transport_backend = "sockudo"
+"#,
+        ),
+    ];
+
+    for (client_key, client_toml) in clients {
+        loaded.root.clients.insert(
+            (*client_key).to_string(),
+            data_client_from_toml(client_toml),
+        );
+    }
 }
 
 #[test]
@@ -93,6 +241,59 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
     assert!(
         !registered_exec.contains(&ClientId::from("binance_reference")),
         "binance_reference has no [execution] block, must not be on the exec engine; got {registered_exec:?}"
+    );
+}
+
+#[test]
+fn live_node_registration_can_load_all_requested_data_clients_without_extra_execution_clients() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    add_all_requested_data_clients(&mut loaded);
+    let temp = support::TempCaseDir::new("bolt-v3-all-requested-data-client-registration");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+
+    let (node, summary) =
+        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
+            .expect("all requested data clients should register through the LiveNode boundary");
+
+    for client_key in [
+        "polymarket_main",
+        "binance_spot_data",
+        "binance_usdm_data",
+        "binance_coinm_data",
+        "bitmex_data",
+        "bybit_data",
+        "coinbase_data",
+        "deribit_data",
+        "kraken_spot_data",
+        "kraken_futures_data",
+        "okx_data",
+    ] {
+        let row = summary
+            .clients
+            .get(client_key)
+            .unwrap_or_else(|| panic!("{client_key} must appear in registration summary"));
+        assert!(row.data, "{client_key} must register as data-capable");
+        assert!(
+            node.registered_data_client_ids()
+                .contains(&ClientId::from(client_key)),
+            "{client_key} must be registered with NT data engine"
+        );
+    }
+
+    let mut expected_exec: Vec<ClientId> = loaded
+        .root
+        .clients
+        .iter()
+        .filter(|(_, client)| client.execution.is_some())
+        .map(|(client_key, _)| ClientId::from(client_key.as_str()))
+        .collect();
+    expected_exec.sort();
+    let mut registered_exec = node.registered_exec_client_ids();
+    registered_exec.sort();
+    assert_eq!(
+        registered_exec, expected_exec,
+        "registering requested data clients must not create execution clients beyond TOML-declared [execution] blocks"
     );
 }
 

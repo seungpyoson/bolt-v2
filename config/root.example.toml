@@ -222,3 +222,105 @@ private_key_ssm_path = "/bolt/polymarket_main/private_key"
 api_key_ssm_path = "/bolt/polymarket_main/api_key"
 api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
 passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
+
+[clients.binance_spot_data]
+venue = "BINANCE"
+
+[clients.binance_spot_data.data]
+product_types = ["spot"]
+environment = "mainnet"
+base_url_http = "https://api.binance.com"
+base_url_ws = "wss://stream-sbe.binance.com/ws"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[clients.binance_spot_data.secrets]
+api_key_ssm_path = "/bolt/binance/api-key"
+api_secret_ssm_path = "/bolt/binance/api-secret"
+
+[clients.binance_usdm_data]
+venue = "BINANCE"
+
+[clients.binance_usdm_data.data]
+product_types = ["usd_m"]
+environment = "live"
+base_url_http = "https://fapi.binance.com"
+base_url_ws = "wss://fstream.binance.com/market/ws"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[clients.binance_usdm_data.secrets]
+api_key_ssm_path = "/bolt/binance/api-key"
+api_secret_ssm_path = "/bolt/binance/api-secret"
+
+[clients.binance_coinm_data]
+venue = "BINANCE"
+
+[clients.binance_coinm_data.data]
+product_types = ["coin_m"]
+environment = "live"
+base_url_http = "https://dapi.binance.com"
+base_url_ws = "wss://dstream.binance.com/ws"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[clients.binance_coinm_data.secrets]
+api_key_ssm_path = "/bolt/binance/api-key"
+api_secret_ssm_path = "/bolt/binance/api-secret"
+
+[clients.bitmex_data]
+venue = "BITMEX"
+
+[clients.bitmex_data.data]
+environment = "testnet"
+active_only = false
+transport_backend = "sockudo"
+
+[clients.bybit_data]
+venue = "BYBIT"
+
+[clients.bybit_data.data]
+product_types = ["spot", "linear", "inverse", "option"]
+environment = "testnet"
+transport_backend = "sockudo"
+
+[clients.coinbase_data]
+venue = "COINBASE"
+
+[clients.coinbase_data.data]
+environment = "Sandbox"
+transport_backend = "sockudo"
+
+[clients.deribit_data]
+venue = "DERIBIT"
+
+[clients.deribit_data.data]
+product_types = ["future", "option", "spot", "future_combo", "option_combo"]
+environment = "testnet"
+transport_backend = "sockudo"
+
+[clients.kraken_spot_data]
+venue = "KRAKEN"
+
+[clients.kraken_spot_data.data]
+product_type = "spot"
+environment = "live"
+transport_backend = "sockudo"
+
+[clients.kraken_futures_data]
+venue = "KRAKEN"
+
+[clients.kraken_futures_data.data]
+product_type = "futures"
+environment = "demo"
+transport_backend = "sockudo"
+
+[clients.okx_data]
+venue = "OKX"
+
+[clients.okx_data.data]
+instrument_types = ["SPOT", "MARGIN", "SWAP", "FUTURES", "EVENTS"]
+contract_types = ["linear", "inverse"]
+load_spreads = true
+environment = "demo"
+transport_backend = "sockudo"

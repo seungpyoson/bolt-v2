@@ -51,9 +51,11 @@ use ahash::AHashMap;
 use anyhow::Result;
 use log::LevelFilter;
 use nautilus_common::{
-    actor::{DataActor, DataActorConfig, DataActorCore},
+    actor::{DataActor, DataActorConfig, DataActorCore, registry::try_get_actor_unchecked},
     enums::Environment,
     logging::logger::LoggerConfig,
+    messages::data::InstrumentsResponse,
+    msgbus::ShareableMessageHandler,
     nautilus_actor,
 };
 use nautilus_live::{
@@ -64,7 +66,8 @@ use nautilus_live::{
 use nautilus_model::{
     data::QuoteTick,
     enums::BarIntervalType,
-    identifiers::{ActorId, ClientId, InstrumentId, StrategyId},
+    identifiers::{ActorId, ClientId, InstrumentId, StrategyId, Venue},
+    instruments::Instrument,
 };
 use ustr::Ustr;
 use zeroize::Zeroizing;
@@ -125,11 +128,40 @@ pub struct BoltV3NoSubmitReferenceQuoteEvidence {
     pub quotes: Vec<BoltV3NoSubmitReferenceQuote>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3NoSubmitDataClientMetadata {
+    pub data_client_id: String,
+    pub venue: String,
+    pub instrument_ids: Vec<String>,
+    pub ts_init_unix_nanos: u64,
+    pub captured_at_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3NoSubmitDataClientMetadataEvidence {
+    pub responses: Vec<BoltV3NoSubmitDataClientMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoltV3NoSubmitDataClientReadinessEvidence {
+    pub metadata: BoltV3NoSubmitDataClientMetadataEvidence,
+    pub quotes: BoltV3NoSubmitReferenceQuoteEvidence,
+}
+
 impl BoltV3NoSubmitReferenceQuoteEvidence {
     pub fn observed_at_unix_nanos(&self) -> Option<u64> {
         self.quotes
             .iter()
             .map(|quote| quote.captured_at_unix_nanos)
+            .max()
+    }
+}
+
+impl BoltV3NoSubmitDataClientMetadataEvidence {
+    pub fn observed_at_unix_nanos(&self) -> Option<u64> {
+        self.responses
+            .iter()
+            .map(|response| response.captured_at_unix_nanos)
             .max()
     }
 }
@@ -230,6 +262,76 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
     }
 }
 
+#[derive(Debug, Clone)]
+struct BoltV3NoSubmitDataClientMetadataProbeHandle {
+    data_client_id: ClientId,
+    venue: Venue,
+    responses: Rc<RefCell<Vec<BoltV3NoSubmitDataClientMetadata>>>,
+    metadata_notify: Rc<tokio::sync::Notify>,
+}
+
+impl BoltV3NoSubmitDataClientMetadataProbeHandle {
+    fn new(loaded: &LoadedBoltV3Config, client_key: &str) -> Result<Self, BoltV3LiveNodeError> {
+        let client = loaded.root.clients.get(client_key).ok_or_else(|| {
+            BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+                "data-client metadata probe client_key is not configured"
+            ))
+        })?;
+        if client.data.is_none() {
+            return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                anyhow::anyhow!(
+                    "data-client metadata probe requires the selected client to declare [data]"
+                ),
+            ));
+        }
+
+        Ok(Self {
+            data_client_id: ClientId::from(client_key),
+            venue: client.venue,
+            responses: Rc::new(RefCell::new(Vec::new())),
+            metadata_notify: Rc::new(tokio::sync::Notify::new()),
+        })
+    }
+
+    fn has_metadata_response(&self) -> bool {
+        !self.responses.borrow().is_empty()
+    }
+
+    fn evidence(&self) -> BoltV3NoSubmitDataClientMetadataEvidence {
+        BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: self.responses.borrow().clone(),
+        }
+    }
+
+    fn record_response(&self, response: &InstrumentsResponse, captured_at_unix_nanos: u64) {
+        if response.client_id != self.data_client_id || response.venue != self.venue {
+            return;
+        }
+        let mut instrument_ids: Vec<String> = response
+            .data
+            .iter()
+            .map(|instrument| instrument.id().to_string())
+            .collect();
+        instrument_ids.sort();
+        self.responses
+            .borrow_mut()
+            .push(BoltV3NoSubmitDataClientMetadata {
+                data_client_id: response.client_id.to_string(),
+                venue: response.venue.to_string(),
+                instrument_ids,
+                ts_init_unix_nanos: response.ts_init.as_u64(),
+                captured_at_unix_nanos,
+            });
+        self.metadata_notify.notify_one();
+    }
+
+    async fn wait_for_metadata_response(&self) {
+        while !self.has_metadata_response() {
+            self.metadata_notify.notified().await;
+        }
+    }
+}
+
 #[derive(Debug)]
 struct BoltV3NoSubmitReferenceQuoteProbe {
     core: DataActorCore,
@@ -264,6 +366,74 @@ impl DataActor for BoltV3NoSubmitReferenceQuoteProbe {
 
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
         self.handle
+            .record_quote(quote, self.timestamp_ns().as_u64());
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct BoltV3NoSubmitDataClientReadinessProbe {
+    core: DataActorCore,
+    metadata_handle: BoltV3NoSubmitDataClientMetadataProbeHandle,
+    quote_handle: BoltV3NoSubmitReferenceQuoteProbeHandle,
+}
+
+nautilus_actor!(BoltV3NoSubmitDataClientReadinessProbe);
+
+impl BoltV3NoSubmitDataClientReadinessProbe {
+    fn new(
+        metadata_handle: BoltV3NoSubmitDataClientMetadataProbeHandle,
+        quote_handle: BoltV3NoSubmitReferenceQuoteProbeHandle,
+        config: DataActorConfig,
+    ) -> Self {
+        Self {
+            core: DataActorCore::new(config),
+            metadata_handle,
+            quote_handle,
+        }
+    }
+
+    fn handle_instruments_metadata_response(&mut self, response: &InstrumentsResponse) {
+        self.metadata_handle
+            .record_response(response, self.timestamp_ns().as_u64());
+    }
+}
+
+impl DataActor for BoltV3NoSubmitDataClientReadinessProbe {
+    fn on_start(&mut self) -> anyhow::Result<()> {
+        let actor_id = self.actor_id().inner();
+        let handler = ShareableMessageHandler::from_typed(move |response: &InstrumentsResponse| {
+            if let Some(mut actor) =
+                try_get_actor_unchecked::<BoltV3NoSubmitDataClientReadinessProbe>(&actor_id)
+            {
+                actor.handle_instruments_metadata_response(response);
+            } else {
+                log::error!("Actor {actor_id} not found for data-client metadata handling");
+            }
+        });
+        self.core.request_instruments(
+            Some(self.metadata_handle.venue),
+            None,
+            None,
+            Some(self.metadata_handle.data_client_id),
+            None,
+            handler,
+        )?;
+        for required in self.quote_handle.required.clone() {
+            self.subscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+        }
+        Ok(())
+    }
+
+    fn on_stop(&mut self) -> anyhow::Result<()> {
+        for required in self.quote_handle.required.clone() {
+            self.unsubscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+        }
+        Ok(())
+    }
+
+    fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
+        self.quote_handle
             .record_quote(quote, self.timestamp_ns().as_u64());
         Ok(())
     }
@@ -305,6 +475,45 @@ fn no_submit_data_client_readiness_quote_subscription_plan(
             "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
         ))
     })?;
+    if readiness_probe.quote_targets.is_empty() {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
+            ),
+        ));
+    }
+    let subscriptions = readiness_probe
+        .quote_targets
+        .values()
+        .map(|target| NoSubmitReferenceQuoteSubscription {
+            data_client_id: ClientId::from(client_key),
+            instrument_id: target.instrument_id,
+        })
+        .collect();
+    Ok(dedupe_no_submit_reference_quote_subscriptions(
+        subscriptions,
+    ))
+}
+
+fn optional_no_submit_data_client_readiness_quote_subscription_plan(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<(Vec<NoSubmitReferenceQuoteSubscription>, BTreeSet<String>), BoltV3LiveNodeError> {
+    let client = loaded.root.clients.get(client_key).ok_or_else(|| {
+        BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+            "data-client readiness probe client_key is not configured"
+        ))
+    })?;
+    if client.data.is_none() {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "data-client readiness probe requires the selected client to declare [data]"
+            ),
+        ));
+    }
+    let Some(readiness_probe) = &client.readiness_probe else {
+        return Ok((Vec::new(), BTreeSet::new()));
+    };
     if readiness_probe.quote_targets.is_empty() {
         return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
             anyhow::anyhow!(
@@ -578,6 +787,9 @@ pub enum BoltV3LiveNodeError {
     NoSubmitReferenceProbeFailed {
         reason: String,
     },
+    NoSubmitDataClientProbeFailed {
+        reason: String,
+    },
     NoSubmitStartFailed(anyhow::Error),
     NoSubmitStopTimeout {
         timeout_secs: u64,
@@ -693,6 +905,10 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 f,
                 "bolt-v3 no-submit controlled-run reached NT Running but live reference quote evidence was not observed; engine connectivity cannot be treated as proven: {reason}"
             ),
+            BoltV3LiveNodeError::NoSubmitDataClientProbeFailed { reason } => write!(
+                f,
+                "bolt-v3 no-submit controlled-run reached NT Running but data-client readiness evidence was not observed; data-client production readiness cannot be treated as proven: {reason}"
+            ),
             BoltV3LiveNodeError::NoSubmitStartFailed(error) => {
                 write!(f, "bolt-v3 no-submit controlled-start failed: {error}")
             }
@@ -741,6 +957,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::NoSubmitStartIncomplete
             | BoltV3LiveNodeError::NoSubmitExecutionAccountsMissing { .. }
             | BoltV3LiveNodeError::NoSubmitReferenceProbeFailed { .. }
+            | BoltV3LiveNodeError::NoSubmitDataClientProbeFailed { .. }
             | BoltV3LiveNodeError::NoSubmitStopTimeout { .. }
             | BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow => None,
             BoltV3LiveNodeError::DisconnectFailed(error)
@@ -969,6 +1186,33 @@ pub async fn collect_no_submit_data_client_readiness_quote_evidence(
     Ok(reference_quote_evidence)
 }
 
+pub async fn collect_no_submit_data_client_readiness_evidence(
+    runtime: &mut BoltV3LiveNodeRuntime,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<BoltV3NoSubmitDataClientReadinessEvidence, BoltV3LiveNodeError> {
+    let (run, metadata_evidence, quote_evidence, metadata_probe, reference_quote_probe, stop) =
+        run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
+            &mut runtime.node,
+            loaded,
+            client_key,
+        )
+        .await;
+    run?;
+    no_submit_required_execution_accounts_registered(runtime, loaded)?;
+    if let Err(reason) = metadata_probe {
+        return Err(BoltV3LiveNodeError::NoSubmitDataClientProbeFailed { reason });
+    }
+    if let Err(reason) = reference_quote_probe {
+        return Err(BoltV3LiveNodeError::NoSubmitDataClientProbeFailed { reason });
+    }
+    stop?;
+    Ok(BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: metadata_evidence,
+        quotes: quote_evidence,
+    })
+}
+
 fn no_submit_controlled_connect_result(
     execution_accounts: Result<(), BoltV3LiveNodeError>,
     reference_quote_probe: &Result<(), String>,
@@ -1020,6 +1264,178 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_probe_observed(
         "configured client readiness_probe.quote_targets quotes",
     )
     .await
+}
+
+async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> (
+    Result<(), BoltV3LiveNodeError>,
+    BoltV3NoSubmitDataClientMetadataEvidence,
+    BoltV3NoSubmitReferenceQuoteEvidence,
+    Result<(), String>,
+    Result<(), String>,
+    Result<(), BoltV3LiveNodeError>,
+) {
+    let probe = install_no_submit_data_client_readiness_probe(node, loaded, client_key);
+    let (metadata_probe, reference_quote_probe) = match probe {
+        Ok(probe) => probe,
+        Err(error) => {
+            return (
+                Err(error),
+                BoltV3NoSubmitDataClientMetadataEvidence {
+                    responses: Vec::new(),
+                },
+                BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+                Err("data-client metadata probe setup failed".to_string()),
+                Err("data-client quote probe setup failed".to_string()),
+                Err(BoltV3LiveNodeError::NoSubmitStopFailed(anyhow::anyhow!(
+                    "no-submit runner was not started because data-client readiness probe setup failed"
+                ))),
+            );
+        }
+    };
+    let timeout_secs = match no_submit_start_timeout_secs(loaded) {
+        Ok(timeout_secs) => timeout_secs,
+        Err(error) => {
+            return (
+                Err(error),
+                metadata_probe.evidence(),
+                reference_quote_probe.evidence(),
+                Err(
+                    "data-client metadata probe was not observed because start timeout overflowed"
+                        .to_string(),
+                ),
+                Err(
+                    "data-client quote probe was not observed because start timeout overflowed"
+                        .to_string(),
+                ),
+                Err(BoltV3LiveNodeError::NoSubmitStopFailed(anyhow::anyhow!(
+                    "no-submit runner was not started because the configured start timeout overflowed"
+                ))),
+            );
+        }
+    };
+    let stop_timeout_secs = match no_submit_stop_timeout_secs(loaded) {
+        Ok(timeout_secs) => timeout_secs,
+        Err(_) => {
+            return (
+                Err(BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow),
+                metadata_probe.evidence(),
+                reference_quote_probe.evidence(),
+                Err(
+                    "data-client metadata probe was not observed because stop timeout overflowed"
+                        .to_string(),
+                ),
+                Err(
+                    "data-client quote probe was not observed because stop timeout overflowed"
+                        .to_string(),
+                ),
+                Err(BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow),
+            );
+        }
+    };
+    let node_handle = node.handle();
+    let run_future = node.run();
+    tokio::pin!(run_future);
+
+    let connect = tokio::select! {
+        result = &mut run_future => {
+            let connect = match result {
+                Ok(()) => Err(BoltV3LiveNodeError::NoSubmitStartIncomplete),
+                Err(error) => Err(BoltV3LiveNodeError::NoSubmitStartFailed(error)),
+            };
+            return (
+                connect,
+                metadata_probe.evidence(),
+                reference_quote_probe.evidence(),
+                Err("data-client metadata probe was not observed before runner exit".to_string()),
+                Err("data-client quote probe was not observed before runner exit".to_string()),
+                Ok(()),
+            );
+        }
+        result = tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            await_no_submit_running(&node_handle, loaded),
+        ) => {
+            match result {
+                Ok(()) => Ok(()),
+                Err(_) => {
+                    return (
+                        Err(BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_secs }),
+                        metadata_probe.evidence(),
+                        reference_quote_probe.evidence(),
+                        Err("data-client metadata probe was not observed because no-submit runner did not reach Running".to_string()),
+                        Err("data-client quote probe was not observed because no-submit runner did not reach Running".to_string()),
+                        Err(BoltV3LiveNodeError::NoSubmitStopFailed(anyhow::anyhow!(
+                            "no-submit runner did not reach Running before the configured start timeout; NT does not observe stop signals during startup"
+                        ))),
+                    );
+                }
+            }
+        }
+    };
+
+    let mut metadata_probe_result = None;
+    let mut reference_probe_result = None;
+    let metadata_future = await_no_submit_data_client_metadata_probe(&metadata_probe, loaded);
+    let reference_future = await_no_submit_reference_quote_probe(
+        &reference_quote_probe,
+        loaded,
+        "configured client readiness_probe.quote_targets quotes",
+    );
+    tokio::pin!(metadata_future);
+    tokio::pin!(reference_future);
+    while metadata_probe_result.is_none() || reference_probe_result.is_none() {
+        tokio::select! {
+            result = &mut run_future => {
+                let stop = match result {
+                    Ok(()) => Ok(()),
+                    Err(error) => Err(BoltV3LiveNodeError::NoSubmitStopFailed(error)),
+                };
+                return (
+                    connect,
+                    metadata_probe.evidence(),
+                    reference_quote_probe.evidence(),
+                    metadata_probe_result.unwrap_or_else(|| {
+                        Err("data-client metadata probe was not observed before runner exit".to_string())
+                    }),
+                    reference_probe_result.unwrap_or_else(|| {
+                        Err("data-client quote probe was not observed before runner exit".to_string())
+                    }),
+                    stop,
+                );
+            }
+            result = &mut metadata_future, if metadata_probe_result.is_none() => {
+                metadata_probe_result = Some(result);
+            }
+            result = &mut reference_future, if reference_probe_result.is_none() => {
+                reference_probe_result = Some(result);
+            }
+        }
+    }
+    let metadata_evidence = metadata_probe.evidence();
+    let reference_quote_evidence = reference_quote_probe.evidence();
+    node_handle.stop();
+    let stop =
+        match tokio::time::timeout(Duration::from_secs(stop_timeout_secs), &mut run_future).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(BoltV3LiveNodeError::NoSubmitStopFailed(error)),
+            Err(_) => Err(BoltV3LiveNodeError::NoSubmitStopTimeout {
+                timeout_secs: stop_timeout_secs,
+            }),
+        };
+    (
+        connect,
+        metadata_evidence,
+        reference_quote_evidence,
+        metadata_probe_result
+            .unwrap_or_else(|| Err("data-client metadata probe was not observed".to_string())),
+        reference_probe_result
+            .unwrap_or_else(|| Err("data-client quote probe was not observed".to_string())),
+        stop,
+    )
 }
 
 async fn run_bolt_v3_no_submit_readiness_with_reference_quote_probe(
@@ -1165,6 +1581,37 @@ fn install_no_submit_data_client_readiness_quote_probe(
     install_no_submit_reference_quote_probe_handle(node, loaded, handle)
 }
 
+fn install_no_submit_data_client_readiness_probe(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<
+    (
+        BoltV3NoSubmitDataClientMetadataProbeHandle,
+        BoltV3NoSubmitReferenceQuoteProbeHandle,
+    ),
+    BoltV3LiveNodeError,
+> {
+    let metadata_handle = BoltV3NoSubmitDataClientMetadataProbeHandle::new(loaded, client_key)?;
+    let (required, ambiguous_instrument_ids) =
+        optional_no_submit_data_client_readiness_quote_subscription_plan(loaded, client_key)?;
+    let quote_handle =
+        BoltV3NoSubmitReferenceQuoteProbeHandle::from_plan(required, ambiguous_instrument_ids);
+    if let Some(message) = quote_handle.ambiguity_error() {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(message),
+        ));
+    }
+    let config = no_submit_reference_quote_probe_config(loaded)?;
+    node.add_actor(BoltV3NoSubmitDataClientReadinessProbe::new(
+        metadata_handle.clone(),
+        quote_handle.clone(),
+        config,
+    ))
+    .map_err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup)?;
+    Ok((metadata_handle, quote_handle))
+}
+
 fn install_no_submit_reference_quote_probe_handle(
     node: &mut LiveNode,
     loaded: &LoadedBoltV3Config,
@@ -1210,6 +1657,33 @@ fn no_submit_reference_quote_probe_config(
         actor_id: Some(actor_id),
         log_events: live_canary.reference_quote_probe_log_events,
         log_commands: live_canary.reference_quote_probe_log_commands,
+    })
+}
+
+async fn await_no_submit_data_client_metadata_probe(
+    probe: &BoltV3NoSubmitDataClientMetadataProbeHandle,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), String> {
+    let timeout_secs = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or_else(|| "data-client metadata probe wait requires `[live_canary]`".to_string())?
+        .reference_quote_wait_timeout_seconds;
+    if timeout_secs == 0 {
+        return Err(
+            "[live_canary].reference_quote_wait_timeout_seconds must be a positive integer"
+                .to_string(),
+        );
+    }
+    tokio::time::timeout(Duration::from_secs(timeout_secs), async {
+        probe.wait_for_metadata_response().await;
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "data-client metadata probe did not observe request_instruments response within [live_canary].reference_quote_wait_timeout_seconds={timeout_secs}"
+        )
     })
 }
 

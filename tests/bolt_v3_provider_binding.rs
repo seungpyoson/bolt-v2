@@ -29,7 +29,7 @@
 mod support;
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         Arc,
         atomic::{AtomicI64, Ordering},
@@ -43,7 +43,8 @@ use bolt_v2::{
     bolt_v3_config::{ClientBlock, LoadedStrategy, load_bolt_v3_config},
     bolt_v3_market_families::{MarketIdentityPlan, updown::plan_market_identity},
     bolt_v3_providers::{
-        binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
+        binance::ResolvedBoltV3BinanceSecrets, binding_for_provider_key,
+        polymarket::ResolvedBoltV3PolymarketSecrets,
     },
     bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
 };
@@ -82,6 +83,19 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
             api_secret: "binding-binance-api-secret".to_string(),
         }),
     );
+    for client_key in [
+        "binance_spot_data",
+        "binance_usdm_data",
+        "binance_coinm_data",
+    ] {
+        clients.insert(
+            client_key.to_string(),
+            Arc::new(ResolvedBoltV3BinanceSecrets {
+                api_key: "binding-binance-api-key".to_string(),
+                api_secret: "binding-binance-api-secret".to_string(),
+            }),
+        );
+    }
     ResolvedBoltV3Secrets { clients }
 }
 
@@ -95,6 +109,71 @@ fn data_only_client_from_toml(value: &str) -> ClientBlock {
 
 fn add_requested_market_data_clients(loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config) {
     let clients: &[(&str, &str)] = &[
+        (
+            "binance_spot_data",
+            r#"
+venue = "BINANCE"
+
+[data]
+product_types = ["spot"]
+environment = "mainnet"
+base_url_http = "https://api.binance.com"
+base_url_ws = "wss://stream-sbe.binance.com/ws"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[secrets]
+api_key_ssm_path = "/bolt/binance_reference/api_key"
+api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+"#,
+        ),
+        (
+            "binance_usdm_data",
+            r#"
+venue = "BINANCE"
+
+[data]
+product_types = ["usd_m"]
+environment = "testnet"
+base_url_http = "https://demo-fapi.binance.com"
+base_url_ws = "wss://fstream.binancefuture.com/ws"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[secrets]
+api_key_ssm_path = "/bolt/binance_reference/api_key"
+api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+"#,
+        ),
+        (
+            "binance_coinm_data",
+            r#"
+venue = "BINANCE"
+
+[data]
+product_types = ["coin_m"]
+environment = "testnet"
+base_url_http = "https://testnet.binancefuture.com"
+base_url_ws = "wss://dstream.binancefuture.com/ws"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[secrets]
+api_key_ssm_path = "/bolt/binance_reference/api_key"
+api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+"#,
+        ),
+        (
+            "bitmex_data",
+            r#"
+venue = "BITMEX"
+
+[data]
+environment = "testnet"
+active_only = false
+transport_backend = "sockudo"
+"#,
+        ),
         (
             "bybit_data",
             r#"
@@ -133,19 +212,32 @@ transport_backend = "sockudo"
 venue = "OKX"
 
 [data]
-instrument_types = ["ANY"]
+instrument_types = ["SPOT", "MARGIN", "SWAP", "FUTURES", "EVENTS"]
+contract_types = ["linear", "inverse"]
+load_spreads = true
 environment = "demo"
 transport_backend = "sockudo"
 "#,
         ),
         (
-            "kraken_data",
+            "kraken_spot_data",
             r#"
 venue = "KRAKEN"
 
 [data]
 product_type = "spot"
 environment = "live"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "kraken_futures_data",
+            r#"
+venue = "KRAKEN"
+
+[data]
+product_type = "futures"
+environment = "demo"
 transport_backend = "sockudo"
 "#,
         ),
@@ -160,7 +252,42 @@ transport_backend = "sockudo"
 }
 
 #[test]
-fn requested_market_data_clients_map_as_data_only_and_polymarket_remains_data_execution() {
+fn nt_source_supported_rust_data_client_provider_bindings_are_registered() {
+    for provider_key in [
+        "BINANCE",
+        "BITMEX",
+        "BYBIT",
+        "COINBASE",
+        "DERIBIT",
+        "KRAKEN",
+        "OKX",
+        "POLYMARKET",
+    ] {
+        assert!(
+            binding_for_provider_key(provider_key).is_some(),
+            "{provider_key} is in the requested production-readiness data-client scope and must have a bolt-v3 provider binding"
+        );
+    }
+    for provider_key in [
+        "AX",
+        "BETFAIR",
+        "BLOCKCHAIN",
+        "DATABENTO",
+        "DYDX",
+        "HYPERLIQUID",
+        "IB",
+        "SANDBOX",
+        "TARDIS",
+    ] {
+        assert!(
+            binding_for_provider_key(provider_key).is_none(),
+            "{provider_key} is outside today's requested active data-client binding scope"
+        );
+    }
+}
+
+#[test]
+fn requested_market_data_clients_map_as_data_only_and_execution_stays_config_owned() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     add_requested_market_data_clients(&mut loaded);
@@ -172,11 +299,16 @@ fn requested_market_data_clients_map_as_data_only_and_polymarket_remains_data_ex
         .expect("requested market data clients should map cleanly");
 
     for client_key in [
+        "binance_spot_data",
+        "binance_usdm_data",
+        "binance_coinm_data",
+        "bitmex_data",
         "bybit_data",
         "coinbase_data",
         "deribit_data",
         "okx_data",
-        "kraken_data",
+        "kraken_spot_data",
+        "kraken_futures_data",
     ] {
         let mapped = configs
             .clients
@@ -192,17 +324,20 @@ fn requested_market_data_clients_map_as_data_only_and_polymarket_remains_data_ex
         );
     }
 
-    let polymarket = configs
+    let expected_execution_clients: BTreeSet<&str> = loaded
+        .root
         .clients
-        .get("polymarket_main")
-        .expect("polymarket_main must remain present");
-    assert!(
-        polymarket.data.is_some(),
-        "polymarket_main must remain a data client"
-    );
-    assert!(
-        polymarket.execution.is_some(),
-        "polymarket_main must remain an execution client because the fixture config has [execution]"
+        .iter()
+        .filter_map(|(client_key, client)| client.execution.as_ref().map(|_| client_key.as_str()))
+        .collect();
+    let mapped_execution_clients: BTreeSet<&str> = configs
+        .clients
+        .iter()
+        .filter_map(|(client_key, client)| client.execution.as_ref().map(|_| client_key.as_str()))
+        .collect();
+    assert_eq!(
+        mapped_execution_clients, expected_execution_clients,
+        "adapter mapping must preserve exactly the execution clients declared by TOML [execution] blocks"
     );
 }
 

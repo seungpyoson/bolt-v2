@@ -1937,7 +1937,6 @@ environment = "testnet"
 http_timeout_secs = 10
 max_retries = 2
 instrument_status_poll_secs = 60
-ws_reconnect_delay_secs = 5
 transport_backend = "sockudo"
 "#
         ),
@@ -2058,8 +2057,8 @@ transport_backend = "sockudo"
         bybit["reconnect_policy_field_names"]
             .as_array()
             .expect("reconnect policy fields should be an array")
-            .contains(&serde_json::json!("ws_reconnect_delay_secs")),
-        "reconnect policy field names should be classified from TOML"
+            .is_empty(),
+        "reconnect behavior must come from source-owned observation, not invented TOML fields"
     );
     let missing_behavior_proofs = bybit["missing_behavior_proofs"]
         .as_array()

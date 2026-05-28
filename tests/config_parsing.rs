@@ -4108,6 +4108,7 @@ venue = "BYBIT"
 product_types = ["spot", "linear"]
 environment = "testnet"
 transport_backend = "sockudo"
+ws_reconnect_delay_secs = 5
 api_key = "not-from-ssm"
 
 [clients.bybit_data.execution]
@@ -4139,6 +4140,13 @@ api_key_ssm_path = "/bolt/bybit/api_key"
             .any(|message| message.contains("bybit_data.data.api_key")
                 && message.contains("SSM-backed [secrets] binding")),
         "expected direct credential-field rejection, got: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(
+            |message| message.contains("bybit_data.data.ws_reconnect_delay_secs")
+                && message.contains("not an NT BYBIT data-client config field")
+        ),
+        "expected unknown NT data-field rejection, got: {messages:#?}"
     );
     assert!(rendered.contains("(provider=BYBIT)"));
     assert!(!rendered.contains("(venue="));

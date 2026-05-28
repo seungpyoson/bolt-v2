@@ -207,6 +207,46 @@ fn requested_market_data_clients_map_as_data_only_and_polymarket_remains_data_ex
 }
 
 #[test]
+fn requested_market_data_clients_reject_nt_ignored_fields_at_mapper_boundary() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    add_requested_market_data_clients(&mut loaded);
+    loaded
+        .root
+        .clients
+        .get_mut("bybit_data")
+        .expect("bybit_data should be configured")
+        .data
+        .as_mut()
+        .expect("bybit_data should include [data]")
+        .as_table_mut()
+        .expect("bybit_data [data] should be a table")
+        .insert(
+            "ws_reconnect_delay_secs".to_string(),
+            toml::Value::Integer(5),
+        );
+    let resolved = fixture_resolved_secrets();
+    let plan = plan_market_identity(&loaded).expect("plan should derive cleanly");
+    let clock = fixed_clock(601);
+
+    let error = map_bolt_v3_adapters_with_market_identity(&loaded, &resolved, &plan, clock)
+        .expect_err("unknown NT data fields must not be ignored by the mapper");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("bybit_data.data"),
+        "expected error to cite the client data block, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("ws_reconnect_delay_secs"),
+        "expected error to cite the unknown field, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("unknown NT field"),
+        "expected NT-field vocabulary, got: {rendered}"
+    );
+}
+
+#[test]
 fn provider_binding_installs_polymarket_filter_for_updown_target_at_fixed_time() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

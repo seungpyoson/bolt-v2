@@ -207,7 +207,8 @@ fn latest_entry_decision_evidence_chain_rejects_cross_record_field_mismatches() 
 
 #[test]
 fn latest_entry_decision_evidence_chain_rejects_missing_readiness_gate_identity() {
-    let cases: [(&str, fn(&mut [serde_json::Value; 3])); 6] = [
+    type DecisionEvidenceMutation = fn(&mut [serde_json::Value; 3]);
+    let cases: [(&str, DecisionEvidenceMutation); 6] = [
         ("gate_session_hash", |lines| {
             lines[0]["snapshot"]["gate_session_hash"] = serde_json::json!("");
         }),

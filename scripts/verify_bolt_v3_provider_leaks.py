@@ -83,9 +83,28 @@ def discovered_binding_names(root: Path, directory: str) -> tuple[str, ...]:
     if not binding_dir.exists():
         return ()
 
-    names = {path.stem for path in binding_dir.glob("*.rs") if path.name != "mod.rs"}
+    names: set[str] = set()
+    for path in binding_dir.glob("*.rs"):
+        if path.name == "mod.rs":
+            continue
+        names.update(discovered_binding_key_names(path))
     names.update(path.name for path in binding_dir.iterdir() if path.is_dir())
     return tuple(sorted(names))
+
+
+def discovered_binding_key_names(path: Path) -> set[str]:
+    text = path.read_text(encoding="utf-8")
+    names: set[str] = set()
+    if re.search(r"\bpub\s+const\s+KEY\s*:\s*&str\s*=", text):
+        names.add(path.stem)
+    for match in re.finditer(
+        r'\bpub\s+const\s+(?:KEY|[A-Z][A-Z0-9_]*_KEY)\s*:\s*&str\s*=\s*"([^"]+)"',
+        text,
+    ):
+        key = match.group(1).strip().lower()
+        if key:
+            names.add(key)
+    return names
 
 
 def snake_to_pascal(name: str) -> str:

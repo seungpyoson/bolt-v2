@@ -944,13 +944,17 @@ fn configure_data_client_readiness_quote_probe(loaded: &mut LoadedBoltV3Config) 
     reference_client.execution = None;
     reference_client.secrets = None;
     reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
-        quote_targets: BTreeMap::from([(
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::Configured,
+        max_metadata_quote_targets: None,
+        allow_metadata_target_sampling: None,
+        quote_targets: Some(BTreeMap::from([(
             TEST_DATA_CLIENT_PROBE_TARGET_ID.to_string(),
             DataClientReadinessProbeQuoteTargetBlock {
                 instrument_id: InstrumentId::from(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID),
             },
-        )]),
-        ..DataClientReadinessProbeBlock::default()
+        )])),
     });
     loaded
         .root
@@ -1853,8 +1857,8 @@ fn data_client_behavior_probe_events_source_accepts_metadata_response_quote_targ
         book_type: None,
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
-        allow_metadata_target_sampling: false,
-        quote_targets: BTreeMap::new(),
+        allow_metadata_target_sampling: Some(false),
+        quote_targets: None,
     });
     loaded
         .root
@@ -1932,8 +1936,8 @@ fn data_client_behavior_probe_events_source_accepts_metadata_response_book_targe
         book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
-        allow_metadata_target_sampling: false,
-        quote_targets: BTreeMap::new(),
+        allow_metadata_target_sampling: Some(false),
+        quote_targets: None,
     });
     loaded
         .root
@@ -2009,8 +2013,8 @@ fn data_client_behavior_probe_events_source_accepts_explicit_metadata_response_s
         book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
-        allow_metadata_target_sampling: true,
-        quote_targets: BTreeMap::new(),
+        allow_metadata_target_sampling: Some(true),
+        quote_targets: None,
     });
     loaded
         .root
@@ -2225,8 +2229,8 @@ fn data_client_behavior_probe_events_source_rejects_metadata_response_target_tru
         book_type: None,
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
-        allow_metadata_target_sampling: false,
-        quote_targets: BTreeMap::new(),
+        allow_metadata_target_sampling: Some(false),
+        quote_targets: None,
     });
     loaded
         .root
@@ -2290,8 +2294,8 @@ fn data_client_behavior_probe_events_source_requires_quotes_for_all_metadata_res
         book_type: None,
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
-        allow_metadata_target_sampling: false,
-        quote_targets: BTreeMap::new(),
+        allow_metadata_target_sampling: Some(false),
+        quote_targets: None,
     });
     loaded
         .root
@@ -5016,14 +5020,13 @@ const DOMAIN_VERSION: &str = "2";
     std::fs::write(
         &clob_v2_fee_behavior_source_path,
         clob_v2_fee_behavior_source_fixture(
-            true,
-            true,
-            true,
-            true,
+            (true, true, true, true),
             "0.55",
             "0.01",
-            &sha256_text("clob-fee-account"),
-            &sha256_text("clob-fee-assumptions"),
+            (
+                &sha256_text("clob-fee-account"),
+                &sha256_text("clob-fee-assumptions"),
+            ),
         ),
     )
     .expect("CLOB V2 fee source fixture should write");
@@ -5256,14 +5259,13 @@ const DOMAIN_VERSION: &str = "2";
     std::fs::write(
         &clob_v2_fee_behavior_source_path,
         clob_v2_fee_behavior_source_fixture(
-            true,
-            true,
-            true,
-            true,
+            (true, true, true, true),
             "0.55",
             "0.01",
-            &sha256_text("clob-fee-account"),
-            &sha256_text("clob-fee-assumptions"),
+            (
+                &sha256_text("clob-fee-account"),
+                &sha256_text("clob-fee-assumptions"),
+            ),
         ),
     )
     .expect("CLOB V2 fee source fixture should write");
@@ -7429,9 +7431,7 @@ fn operator_evidence_toml_patcher_updates_only_operator_evidence_block_from_json
         .expect("root TOML fixture should write");
 
     let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
-    operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
-        .expect("build head should be available")
-        .to_string();
+    operator_evidence.head_sha = env!("BOLT_V3_BUILD_HEAD_SHA").to_string();
     write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
     operator_evidence.approval_envelope_sha256 = sha256_text("approval-envelope");
     operator_evidence.strategy_cancel_path = None;
@@ -7479,9 +7479,7 @@ fn operator_evidence_toml_patcher_rejects_unmaterialized_static_artifact_binding
         .expect("root TOML fixture should write");
 
     let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
-    operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
-        .expect("build head should be available")
-        .to_string();
+    operator_evidence.head_sha = env!("BOLT_V3_BUILD_HEAD_SHA").to_string();
     operator_evidence.ssm_manifest_sha256 = sha256_text("missing-ssm-manifest");
     operator_evidence.strategy_input_evidence_sha256 = sha256_text("missing-strategy-input");
     operator_evidence.financial_envelope_sha256 = sha256_text("missing-financial-envelope");
@@ -10338,11 +10336,13 @@ fn entry_decision_source_input_collector_uses_selected_market_price_precision() 
     instruments.insert(
         0,
         updown_binary_option_with_price_precision(
-            "unrelated-up.POLYMARKET",
-            "unrelated-market-slug",
-            "unrelated-market",
-            "unrelated-condition",
-            "unrelated-question",
+            UpdownBinaryOptionIdentity {
+                instrument_id: "unrelated-up.POLYMARKET",
+                market_slug: "unrelated-market-slug",
+                market_id: "unrelated-market",
+                condition_id: "unrelated-condition",
+                question_id: "unrelated-question",
+            },
             TEST_UP_OUTCOME,
             TEST_MARKET_SELECTION_START_MS,
             TEST_MARKET_SELECTION_END_MS,
@@ -10394,22 +10394,26 @@ fn entry_decision_source_input_collector_rejects_selected_price_precision_mismat
     );
     let instruments = vec![
         updown_binary_option_with_price_precision(
-            TEST_UP_INSTRUMENT_ID,
-            &market_slug,
-            TEST_MARKET_ID,
-            TEST_CONDITION_ID,
-            TEST_QUESTION_ID,
+            UpdownBinaryOptionIdentity {
+                instrument_id: TEST_UP_INSTRUMENT_ID,
+                market_slug: &market_slug,
+                market_id: TEST_MARKET_ID,
+                condition_id: TEST_CONDITION_ID,
+                question_id: TEST_QUESTION_ID,
+            },
             TEST_UP_OUTCOME,
             TEST_MARKET_SELECTION_START_MS,
             TEST_MARKET_SELECTION_END_MS,
             3,
         ),
         updown_binary_option_with_price_precision(
-            TEST_DOWN_INSTRUMENT_ID,
-            &market_slug,
-            TEST_MARKET_ID,
-            TEST_CONDITION_ID,
-            TEST_QUESTION_ID,
+            UpdownBinaryOptionIdentity {
+                instrument_id: TEST_DOWN_INSTRUMENT_ID,
+                market_slug: &market_slug,
+                market_id: TEST_MARKET_ID,
+                condition_id: TEST_CONDITION_ID,
+                question_id: TEST_QUESTION_ID,
+            },
             TEST_DOWN_OUTCOME,
             TEST_MARKET_SELECTION_START_MS,
             TEST_MARKET_SELECTION_END_MS,
@@ -11236,15 +11240,18 @@ fn clob_v2_collateral_accounting_source_fixture(
 }
 
 fn clob_v2_fee_behavior_source_fixture(
-    fee_behavior_verified: bool,
-    maker_zero_fee_verified: bool,
-    taker_fee_schedule_verified: bool,
-    market_buy_fee_adjustment_verified: bool,
+    verification_flags: (bool, bool, bool, bool),
     price: &str,
     fee_rate: &str,
-    fee_behavior_source_sha256: &str,
-    fee_assumptions_sha256: &str,
+    source_hashes: (&str, &str),
 ) -> String {
+    let (
+        fee_behavior_verified,
+        maker_zero_fee_verified,
+        taker_fee_schedule_verified,
+        market_buy_fee_adjustment_verified,
+    ) = verification_flags;
+    let (fee_behavior_source_sha256, fee_assumptions_sha256) = source_hashes;
     format!(
         r#"{{
   "schema_version": 1,
@@ -11966,14 +11973,10 @@ fn pre_run_clob_v2_fee_behavior_source_proof_derives_source_owned_values() {
     std::fs::write(
         &fee_source_path,
         clob_v2_fee_behavior_source_fixture(
-            true,
-            true,
-            true,
-            true,
+            (true, true, true, true),
             "0.55",
             "0.01",
-            &fee_source_sha256,
-            &fee_assumptions_sha256,
+            (&fee_source_sha256, &fee_assumptions_sha256),
         ),
     )
     .expect("CLOB V2 fee fixture should write");
@@ -12273,14 +12276,15 @@ fn pre_run_clob_v2_fee_behavior_source_proof_rejects_invalid_fee_behavior() {
         std::fs::write(
             &fee_source_path,
             clob_v2_fee_behavior_source_fixture(
-                verified,
-                maker_verified,
-                taker_verified,
-                market_buy_verified,
+                (
+                    verified,
+                    maker_verified,
+                    taker_verified,
+                    market_buy_verified,
+                ),
                 price,
                 fee_rate,
-                source_hash,
-                assumptions_hash,
+                (source_hash, assumptions_hash),
             ),
         )
         .expect("CLOB V2 fee fixture should write");
@@ -12334,14 +12338,10 @@ fn pre_run_clob_v2_source_proofs_reject_invalid_shape_or_oversize() {
     std::fs::write(
         &fee_source_path,
         clob_v2_fee_behavior_source_fixture(
-            true,
-            true,
-            true,
-            true,
+            (true, true, true, true),
             "0.55",
             "0.01",
-            &fee_source_sha256,
-            &fee_assumptions_sha256,
+            (&fee_source_sha256, &fee_assumptions_sha256),
         ),
     )
     .expect("CLOB V2 fee fixture should write");
@@ -13407,7 +13407,7 @@ fn write_entry_decision_evidence_chain_at(
         );
         decision_evidence.push('\n');
     }
-    std::fs::write(&decision_evidence_path, decision_evidence)
+    std::fs::write(decision_evidence_path, decision_evidence)
         .expect("decision evidence should write");
 }
 
@@ -14056,11 +14056,13 @@ fn updown_binary_option(
     expiration_ms: u64,
 ) -> InstrumentAny {
     updown_binary_option_with_price_precision(
-        instrument_id,
-        market_slug,
-        market_id,
-        condition_id,
-        question_id,
+        UpdownBinaryOptionIdentity {
+            instrument_id,
+            market_slug,
+            market_id,
+            condition_id,
+            question_id,
+        },
         outcome,
         activation_ms,
         expiration_ms,
@@ -14068,17 +14070,28 @@ fn updown_binary_option(
     )
 }
 
+struct UpdownBinaryOptionIdentity<'a> {
+    instrument_id: &'a str,
+    market_slug: &'a str,
+    market_id: &'a str,
+    condition_id: &'a str,
+    question_id: &'a str,
+}
+
 fn updown_binary_option_with_price_precision(
-    instrument_id: &str,
-    market_slug: &str,
-    market_id: &str,
-    condition_id: &str,
-    question_id: &str,
+    identity: UpdownBinaryOptionIdentity<'_>,
     outcome: &str,
     activation_ms: u64,
     expiration_ms: u64,
     price_precision: u8,
 ) -> InstrumentAny {
+    let UpdownBinaryOptionIdentity {
+        instrument_id,
+        market_slug,
+        market_id,
+        condition_id,
+        question_id,
+    } = identity;
     let price_increment = binary_option_price_increment_for_precision(price_precision);
     let mut info = Params::new();
     info.insert(

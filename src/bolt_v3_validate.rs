@@ -876,7 +876,11 @@ fn validate_client_readiness_probe(key: &str, client: &ClientBlock) -> Vec<Strin
     }
     match readiness_probe.quote_target_source {
         DataClientReadinessProbeQuoteTargetSource::Configured => {
-            if readiness_probe.quote_targets.is_empty() {
+            if readiness_probe
+                .quote_targets
+                .as_ref()
+                .is_none_or(|quote_targets| quote_targets.is_empty())
+            {
                 errors.push(format!(
                     "clients.{key}.readiness_probe.quote_targets must define at least one configured quote target when quote_target_source = \"configured\""
                 ));
@@ -886,14 +890,14 @@ fn validate_client_readiness_probe(key: &str, client: &ClientBlock) -> Vec<Strin
                     "clients.{key}.readiness_probe.max_metadata_quote_targets is only valid when quote_target_source = \"metadata_response\""
                 ));
             }
-            if readiness_probe.allow_metadata_target_sampling {
+            if readiness_probe.allow_metadata_target_sampling.is_some() {
                 errors.push(format!(
                     "clients.{key}.readiness_probe.allow_metadata_target_sampling is only valid when quote_target_source = \"metadata_response\""
                 ));
             }
         }
         DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
-            if !readiness_probe.quote_targets.is_empty() {
+            if readiness_probe.quote_targets.is_some() {
                 errors.push(format!(
                     "clients.{key}.readiness_probe cannot combine quote_target_source = \"metadata_response\" with readiness_probe.quote_targets"
                 ));
@@ -906,20 +910,27 @@ fn validate_client_readiness_probe(key: &str, client: &ClientBlock) -> Vec<Strin
                     ));
                 }
             };
+            if readiness_probe.allow_metadata_target_sampling.is_none() {
+                errors.push(format!(
+                    "clients.{key}.readiness_probe.allow_metadata_target_sampling must be explicitly configured when quote_target_source = \"metadata_response\""
+                ));
+            }
         }
     }
-    for (target_id, target) in &readiness_probe.quote_targets {
-        if target_id.trim().is_empty() || target_id.trim() != target_id {
-            errors.push(format!(
-                "clients.{key}.readiness_probe.quote_targets target id must be non-empty without surrounding whitespace"
-            ));
-        }
-        if target.instrument_id.venue.as_str() != client.venue.as_str() {
-            errors.push(format!(
-                "clients.{key}.readiness_probe.quote_targets.{target_id}.instrument_id venue `{}` must match clients.{key}.venue `{}`",
-                target.instrument_id.venue,
-                client.venue
-            ));
+    if let Some(quote_targets) = &readiness_probe.quote_targets {
+        for (target_id, target) in quote_targets {
+            if target_id.trim().is_empty() || target_id.trim() != target_id {
+                errors.push(format!(
+                    "clients.{key}.readiness_probe.quote_targets target id must be non-empty without surrounding whitespace"
+                ));
+            }
+            if target.instrument_id.venue.as_str() != client.venue.as_str() {
+                errors.push(format!(
+                    "clients.{key}.readiness_probe.quote_targets.{target_id}.instrument_id venue `{}` must match clients.{key}.venue `{}`",
+                    target.instrument_id.venue,
+                    client.venue
+                ));
+            }
         }
     }
     errors
@@ -934,20 +945,23 @@ fn validate_unique_client_readiness_probe_instruments(
         let Some(readiness_probe) = &client.readiness_probe else {
             continue;
         };
-        for (target_id, target) in &readiness_probe.quote_targets {
-            let instrument_id = target.instrument_id.to_string();
-            match by_instrument.get(instrument_id.as_str()) {
-                Some((existing_client_key, existing_target_id))
-                    if existing_client_key != client_key =>
-                {
-                    errors.push(format!(
-                        "clients.{client_key}.readiness_probe.quote_targets.{target_id}.instrument_id `{instrument_id}` is also used by clients.{existing_client_key}.readiness_probe.quote_targets.{existing_target_id}.instrument_id; QuoteTick does not carry data_client_id, so no-submit data-client quote probe evidence cannot distinguish data clients for the same instrument"
-                    ));
+        if let Some(quote_targets) = &readiness_probe.quote_targets {
+            for (target_id, target) in quote_targets {
+                let instrument_id = target.instrument_id.to_string();
+                match by_instrument.get(instrument_id.as_str()) {
+                    Some((existing_client_key, existing_target_id))
+                        if existing_client_key != client_key =>
+                    {
+                        errors.push(format!(
+                            "clients.{client_key}.readiness_probe.quote_targets.{target_id}.instrument_id `{instrument_id}` is also used by clients.{existing_client_key}.readiness_probe.quote_targets.{existing_target_id}.instrument_id; QuoteTick does not carry data_client_id, so no-submit data-client quote probe evidence cannot distinguish data clients for the same instrument"
+                        ));
+                    }
+                    None => {
+                        by_instrument
+                            .insert(instrument_id, (client_key.as_str(), target_id.as_str()));
+                    }
+                    _ => {}
                 }
-                None => {
-                    by_instrument.insert(instrument_id, (client_key.as_str(), target_id.as_str()));
-                }
-                _ => {}
             }
         }
     }

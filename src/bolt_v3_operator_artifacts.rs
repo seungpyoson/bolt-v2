@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, btree_map::Entry},
     error::Error,
     fmt, fs,
     io::{self, Read, Write},
@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{SystemTime, SystemTimeError, UNIX_EPOCH},
 };
 
 use anyhow::anyhow;
@@ -930,7 +930,7 @@ struct DataClientBehaviorObservationSourceFile {
     record_kind: String,
     client_key_hash: String,
     provider_key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     policy_source_sha256: Option<String>,
     observed_at_unix_millis: u64,
     observation_window_millis: u64,
@@ -981,7 +981,7 @@ struct DataClientBehaviorProbeEvent {
     observed_through_live_node: bool,
     age_millis: Option<u64>,
     latency_millis: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     event_clock_skew_millis: Option<u64>,
     recovered: Option<bool>,
     fail_closed: Option<bool>,
@@ -1165,6 +1165,9 @@ pub enum BoltV3OperatorArtifactError {
     UnsupportedProvider {
         client_key: String,
         provider_key: String,
+    },
+    SystemTimeBeforeUnixEpoch {
+        source: SystemTimeError,
     },
     DataClientNtSourceRead {
         path: PathBuf,
@@ -1541,6 +1544,9 @@ impl fmt::Display for BoltV3OperatorArtifactError {
                 f,
                 "clients.{client_key}.venue `{provider_key}` is not supported by this build"
             ),
+            Self::SystemTimeBeforeUnixEpoch { source } => {
+                write!(f, "system time is before Unix epoch: {source}")
+            }
             Self::DataClientNtSourceRead { source, .. } => {
                 write!(f, "failed to read NT data-client source input: {source}")
             }
@@ -1988,6 +1994,7 @@ impl fmt::Debug for BoltV3OperatorArtifactError {
 impl Error for BoltV3OperatorArtifactError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::SystemTimeBeforeUnixEpoch { source } => Some(source),
             Self::SecretInventory(error) => Some(error),
             Self::FinancialEnvelope(error) => Some(error.as_ref()),
             Self::MarketSelection(error) => Some(error.as_ref()),
@@ -3651,7 +3658,12 @@ fn data_client_readiness_quote_target_instruments_for_evidence(
                 );
             }
             if metadata_instruments.len() > max_quote_targets {
-                if readiness_probe.allow_metadata_target_sampling {
+                let allow_target_sampling = readiness_probe.allow_metadata_target_sampling.ok_or(
+                    BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                        field: "clients.<id>.readiness_probe.allow_metadata_target_sampling",
+                    },
+                )?;
+                if allow_target_sampling {
                     metadata_instruments = metadata_instruments
                         .into_iter()
                         .take(max_quote_targets)
@@ -3679,15 +3691,21 @@ fn data_client_readiness_quote_target_instruments(
             },
         );
     };
-    if readiness_probe.quote_targets.is_empty() {
+    let Some(quote_targets) = &readiness_probe.quote_targets else {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "clients.<id>.readiness_probe.quote_targets",
+            },
+        );
+    };
+    if quote_targets.is_empty() {
         return Err(
             BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
                 field: "clients.<id>.readiness_probe.quote_targets",
             },
         );
     }
-    Ok(readiness_probe
-        .quote_targets
+    Ok(quote_targets
         .values()
         .map(|target| target.instrument_id.to_string())
         .collect())
@@ -3780,10 +3798,7 @@ fn build_data_client_readiness_target_candidates_from_no_submit_readiness_eviden
     Ok(DataClientReadinessTargetCandidatesArtifact {
         schema_version: DATA_CLIENT_READINESS_SOURCE_SCHEMA_VERSION,
         record_kind: DATA_CLIENT_READINESS_TARGET_CANDIDATES_RECORD_KIND,
-        generated_at_unix_seconds: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        generated_at_unix_seconds: generated_at_unix_seconds()?,
         config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         client_key_hash: sha256_text(client_key),
         provider_key: provider_key.to_string(),
@@ -3804,6 +3819,13 @@ fn data_client_readiness_target_candidates_hash(instrument_ids: &[String]) -> St
         hasher.update(instrument_id.as_bytes());
     }
     hex::encode(hasher.finalize())
+}
+
+fn generated_at_unix_seconds() -> Result<u64, BoltV3OperatorArtifactError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|source| BoltV3OperatorArtifactError::SystemTimeBeforeUnixEpoch { source })
 }
 
 fn build_data_client_policy_behavior_source_artifact_from_nt_sources(
@@ -3896,10 +3918,7 @@ fn build_data_client_policy_behavior_source_artifact_from_nt_sources(
     Ok(DataClientPolicyBehaviorSourceArtifact {
         schema_version: DATA_CLIENT_BEHAVIOR_OBSERVATION_SCHEMA_VERSION,
         record_kind: DATA_CLIENT_POLICY_BEHAVIOR_SOURCE_RECORD_KIND.to_string(),
-        generated_at_unix_seconds: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        generated_at_unix_seconds: generated_at_unix_seconds()?,
         config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         client_key_hash: sha256_text(client_key),
         provider_key: provider_key.to_string(),
@@ -4400,12 +4419,10 @@ fn validate_data_client_behavior_surface_probe_event(
         || event.recovered.is_some()
         || event.fail_closed.is_some()
         || event.evidence_sha256.is_some()
-        || event
-            .unsupported_disposition
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or_default()
-            .is_empty()
+        || match event.unsupported_disposition.as_deref() {
+            Some(disposition) => disposition.trim().is_empty(),
+            None => true,
+        }
     {
         return Err(
             BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
@@ -4514,8 +4531,14 @@ fn data_client_surface_observation_from_probe_events(
     }
     let evidence_hashes: Vec<&str> = surface_events
         .iter()
-        .map(|event| event.evidence_sha256.as_deref().unwrap_or_default())
-        .collect();
+        .map(|event| {
+            event.evidence_sha256.as_deref().ok_or(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "probe_event.evidence_sha256",
+                },
+            )
+        })
+        .collect::<Result<_, _>>()?;
     Ok(DataClientBehaviorSurfaceObservation {
         supported_by_nt_source: true,
         observed_through_live_node: true,
@@ -4555,7 +4578,11 @@ fn data_client_freshness_observation_from_probe_events(
                 field: "probe_event.latency_millis",
             },
         )?);
-        evidence_hashes.push(event.evidence_sha256.as_deref().unwrap_or_default());
+        evidence_hashes.push(event.evidence_sha256.as_deref().ok_or(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "probe_event.evidence_sha256",
+            },
+        )?);
     }
     if age_millis.is_empty() || latency_millis.is_empty() {
         return Err(
@@ -4566,14 +4593,22 @@ fn data_client_freshness_observation_from_probe_events(
     }
     latency_millis.sort_unstable();
     let latency_p95_index = (latency_millis.len() * 95).div_ceil(100).saturating_sub(1);
-    let max_observed_age_millis = age_millis.into_iter().max().unwrap_or_default();
+    let max_observed_age_millis = age_millis.into_iter().max().ok_or(
+        BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+            field: "freshness.age_millis",
+        },
+    )?;
     let within_configured_bound = max_observed_age_millis <= configured_max_age_millis;
     Ok(DataClientFreshnessObservation {
         configured_max_age_millis,
         max_observed_age_millis,
         latency_sample_count: latency_millis.len() as u64,
         latency_p95_millis: latency_millis[latency_p95_index],
-        latency_max_millis: *latency_millis.last().unwrap_or(&0),
+        latency_max_millis: latency_millis.last().copied().ok_or(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "freshness.latency_millis",
+            },
+        )?,
         within_configured_bound,
         evidence_sha256: data_client_aggregate_evidence_hash(&evidence_hashes),
     })
@@ -4787,10 +4822,7 @@ fn build_data_client_production_readiness_matrix_artifact_from_source_files(
     Ok(DataClientProductionReadinessMatrixArtifact {
         schema_version: DATA_CLIENT_PRODUCTION_READINESS_MATRIX_SCHEMA_VERSION,
         record_kind: DATA_CLIENT_PRODUCTION_READINESS_MATRIX_RECORD_KIND,
-        generated_at_unix_seconds: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        generated_at_unix_seconds: generated_at_unix_seconds()?,
         config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         readiness_source_sha256,
         live_node_mapping_source_sha256,
@@ -4888,9 +4920,11 @@ fn data_client_matrix_source_owned_target_binding_present(
             let Some(candidates) = target_candidates.get(key) else {
                 return false;
             };
-            !readiness_probe.quote_targets.is_empty()
-                && readiness_probe
-                    .quote_targets
+            let Some(quote_targets) = &readiness_probe.quote_targets else {
+                return false;
+            };
+            !quote_targets.is_empty()
+                && quote_targets
                     .values()
                     .all(|target| candidates.contains(&target.instrument_id.to_string()))
         }
@@ -5073,10 +5107,7 @@ fn build_data_client_behavior_observation_artifact_from_source_file(
     Ok(DataClientBehaviorObservationArtifact {
         schema_version: DATA_CLIENT_BEHAVIOR_OBSERVATION_SCHEMA_VERSION,
         record_kind: DATA_CLIENT_BEHAVIOR_OBSERVATION_RECORD_KIND,
-        generated_at_unix_seconds: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        generated_at_unix_seconds: generated_at_unix_seconds()?,
         config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         client_key_hash: sha256_text(client_key),
         provider_key: provider_key.to_string(),
@@ -5223,13 +5254,10 @@ fn validate_data_client_behavior_surface_observation(
                 BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field },
             );
         }
-        if observation
-            .unsupported_disposition
-            .as_deref()
-            .map(str::trim)
-            .unwrap_or_default()
-            .is_empty()
-        {
+        if match observation.unsupported_disposition.as_deref() {
+            Some(disposition) => disposition.trim().is_empty(),
+            None => true,
+        } {
             return Err(
                 BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid { field },
             );
@@ -5427,10 +5455,7 @@ fn build_data_client_live_node_mapping_source_artifact(
     Ok(DataClientLiveNodeMappingSourceArtifact {
         schema_version: DATA_CLIENT_LIVE_NODE_MAPPING_SOURCE_SCHEMA_VERSION,
         record_kind: DATA_CLIENT_LIVE_NODE_MAPPING_SOURCE_RECORD_KIND,
-        generated_at_unix_seconds: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        generated_at_unix_seconds: generated_at_unix_seconds()?,
         config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         live_node_source_path_hash: source_path_hash(live_node_source_path),
         live_node_source_sha256: hex::encode(Sha256::digest(&live_node_source_bytes)),
@@ -5524,10 +5549,7 @@ fn build_data_client_nt_source_capability_artifact(
     Ok(DataClientNtSourceCapabilityArtifact {
         schema_version: DATA_CLIENT_NT_SOURCE_CAPABILITY_SCHEMA_VERSION,
         record_kind: DATA_CLIENT_NT_SOURCE_CAPABILITY_RECORD_KIND,
-        generated_at_unix_seconds: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        generated_at_unix_seconds: generated_at_unix_seconds()?,
         config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         client_key_hash: sha256_text(client_key),
         provider_key: provider_key.to_string(),
@@ -5589,13 +5611,16 @@ fn build_data_client_readiness_source_artifact(
     let mut targets_by_client: BTreeMap<String, Vec<DataClientReadinessTargetSource>> =
         BTreeMap::new();
     for target in plan.execution_client_target_refs() {
-        targets_by_client
-            .entry(target.execution_client_id.to_string())
-            .or_default()
-            .push(DataClientReadinessTargetSource {
-                configured_target_id_hash: sha256_text(target.configured_target_id),
-                family_key: target.family_key,
-            });
+        let target_source = DataClientReadinessTargetSource {
+            configured_target_id_hash: sha256_text(target.configured_target_id),
+            family_key: target.family_key,
+        };
+        match targets_by_client.entry(target.execution_client_id.to_string()) {
+            Entry::Occupied(mut entry) => entry.get_mut().push(target_source),
+            Entry::Vacant(entry) => {
+                entry.insert(vec![target_source]);
+            }
+        }
     }
 
     let mut clients = Vec::new();
@@ -5607,11 +5632,14 @@ fn build_data_client_readiness_source_artifact(
                 provider_key: provider_key.to_string(),
             }
         })?;
-        let market_identity_targets = targets_by_client.remove(client_key).unwrap_or_default();
+        let mut market_identity_targets = Vec::new();
+        if let Some(targets) = targets_by_client.remove(client_key) {
+            market_identity_targets = targets;
+        }
         let has_data = client.data.is_some();
         let has_execution = client.execution.is_some();
         let has_secrets = client.secrets.is_some();
-        let readiness_probe_targets = data_client_readiness_probe_targets(client);
+        let readiness_probe_targets = data_client_readiness_probe_targets(client)?;
         let data_config_field_names = toml_table_field_names(client.data.as_ref());
         let data_config_field_fingerprints = toml_table_field_fingerprints(client.data.as_ref())?;
         let market_coverage_config_values =
@@ -5689,10 +5717,7 @@ fn build_data_client_readiness_source_artifact(
     Ok(DataClientReadinessSourceArtifact {
         schema_version: DATA_CLIENT_READINESS_SOURCE_SCHEMA_VERSION,
         record_kind: DATA_CLIENT_READINESS_SOURCE_RECORD_KIND,
-        generated_at_unix_seconds: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        generated_at_unix_seconds: generated_at_unix_seconds()?,
         config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         clients,
     })
@@ -5700,30 +5725,41 @@ fn build_data_client_readiness_source_artifact(
 
 fn data_client_readiness_probe_targets(
     client: &crate::bolt_v3_config::ClientBlock,
-) -> Vec<DataClientReadinessProbeTargetSource> {
+) -> Result<Vec<DataClientReadinessProbeTargetSource>, BoltV3OperatorArtifactError> {
     let Some(readiness_probe) = &client.readiness_probe else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     match readiness_probe.quote_target_source {
-        DataClientReadinessProbeQuoteTargetSource::Configured => readiness_probe
-            .quote_targets
-            .iter()
-            .map(|(target_id, target)| DataClientReadinessProbeTargetSource {
-                quote_target_source: "configured",
-                configured_target_id_hash: Some(sha256_text(target_id)),
-                event_kind: data_client_readiness_probe_event_kind(
-                    readiness_probe.market_data_kind,
-                ),
-                book_type: readiness_probe
-                    .book_type
-                    .map(data_client_readiness_probe_book_type_name),
-                instrument_id_hash: Some(sha256_text(&target.instrument_id.to_string())),
-                max_metadata_quote_targets: None,
-                allow_metadata_target_sampling: false,
-            })
-            .collect(),
+        DataClientReadinessProbeQuoteTargetSource::Configured => {
+            let Some(quote_targets) = &readiness_probe.quote_targets else {
+                return Err(BoltV3OperatorArtifactError::DataClientNtSourceInvalid {
+                    field: "clients.<id>.readiness_probe.quote_targets",
+                });
+            };
+            Ok(quote_targets
+                .iter()
+                .map(|(target_id, target)| DataClientReadinessProbeTargetSource {
+                    quote_target_source: "configured",
+                    configured_target_id_hash: Some(sha256_text(target_id)),
+                    event_kind: data_client_readiness_probe_event_kind(
+                        readiness_probe.market_data_kind,
+                    ),
+                    book_type: readiness_probe
+                        .book_type
+                        .map(data_client_readiness_probe_book_type_name),
+                    instrument_id_hash: Some(sha256_text(&target.instrument_id.to_string())),
+                    max_metadata_quote_targets: None,
+                    allow_metadata_target_sampling: false,
+                })
+                .collect())
+        }
         DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
-            vec![DataClientReadinessProbeTargetSource {
+            let allow_metadata_target_sampling = readiness_probe
+                .allow_metadata_target_sampling
+                .ok_or(BoltV3OperatorArtifactError::DataClientNtSourceInvalid {
+                    field: "clients.<id>.readiness_probe.allow_metadata_target_sampling",
+                })?;
+            Ok(vec![DataClientReadinessProbeTargetSource {
                 quote_target_source: "metadata_response",
                 configured_target_id_hash: None,
                 event_kind: data_client_readiness_probe_event_kind(
@@ -5734,8 +5770,8 @@ fn data_client_readiness_probe_targets(
                     .map(data_client_readiness_probe_book_type_name),
                 instrument_id_hash: None,
                 max_metadata_quote_targets: readiness_probe.max_metadata_quote_targets,
-                allow_metadata_target_sampling: readiness_probe.allow_metadata_target_sampling,
-            }]
+                allow_metadata_target_sampling,
+            }])
         }
     }
 }
@@ -5767,10 +5803,10 @@ fn provider_credentialed_block_name(block: ProviderCredentialedBlock) -> &'stati
 }
 
 fn toml_table_field_names(value: Option<&toml::Value>) -> Vec<String> {
-    let mut names: Vec<String> = value
-        .and_then(toml::Value::as_table)
-        .map(|table| table.keys().cloned().collect())
-        .unwrap_or_default();
+    let mut names: Vec<String> = match value.and_then(toml::Value::as_table) {
+        Some(table) => table.keys().cloned().collect(),
+        None => Vec::new(),
+    };
     names.sort();
     names
 }

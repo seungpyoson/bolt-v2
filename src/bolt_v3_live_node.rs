@@ -347,7 +347,12 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         }
         instrument_ids.sort_by_key(|instrument_id| instrument_id.to_string());
         instrument_ids.dedup();
-        let max_quote_targets = self.metadata_response_max_quote_targets.unwrap_or(0);
+        let Some(max_quote_targets) = self.metadata_response_max_quote_targets else {
+            self.fail_metadata_response_probe(
+                "clients.<id>.readiness_probe.max_metadata_quote_targets is missing for metadata_response readiness probing".to_string(),
+            );
+            return Vec::new();
+        };
         let metadata_quote_targets = instrument_ids.len();
         if metadata_quote_targets > max_quote_targets {
             if self.metadata_response_allow_target_sampling {
@@ -831,15 +836,21 @@ fn no_submit_data_client_readiness_quote_subscription_plan(
             ),
         ));
     }
-    if readiness_probe.quote_targets.is_empty() {
+    let Some(quote_targets) = &readiness_probe.quote_targets else {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
+            ),
+        ));
+    };
+    if quote_targets.is_empty() {
         return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
             anyhow::anyhow!(
                 "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
             ),
         ));
     }
-    let subscriptions = readiness_probe
-        .quote_targets
+    let subscriptions = quote_targets
         .values()
         .map(|target| NoSubmitReferenceQuoteSubscription {
             data_client_id: ClientId::from(client_key),
@@ -877,15 +888,21 @@ fn no_submit_data_client_readiness_quote_probe_handle(
     };
     match readiness_probe.quote_target_source {
         DataClientReadinessProbeQuoteTargetSource::Configured => {
-            if readiness_probe.quote_targets.is_empty() {
+            let Some(quote_targets) = &readiness_probe.quote_targets else {
+                return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                    anyhow::anyhow!(
+                        "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
+                    ),
+                ));
+            };
+            if quote_targets.is_empty() {
                 return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
                     anyhow::anyhow!(
                         "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
                     ),
                 ));
             }
-            let subscriptions = readiness_probe
-                .quote_targets
+            let subscriptions = quote_targets
                 .values()
                 .map(|target| NoSubmitReferenceQuoteSubscription {
                     data_client_id: ClientId::from(client_key),
@@ -914,11 +931,18 @@ fn no_submit_data_client_readiness_quote_probe_handle(
                     ),
                 ));
             }
+            let allow_target_sampling = readiness_probe
+                .allow_metadata_target_sampling
+                .ok_or_else(|| {
+                    BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+                        "data-client readiness quote probe requires clients.<id>.readiness_probe.allow_metadata_target_sampling when quote_target_source = \"metadata_response\""
+                    ))
+                })?;
             Ok(
                 BoltV3NoSubmitReferenceQuoteProbeHandle::from_metadata_response_plan(
                     ClientId::from(client_key),
                     max_quote_targets,
-                    readiness_probe.allow_metadata_target_sampling,
+                    allow_target_sampling,
                     readiness_probe.market_data_kind,
                     readiness_probe.book_type,
                 ),
@@ -2767,13 +2791,17 @@ mod tests {
             .get_mut("polymarket_main")
             .expect("fixture should include polymarket client");
         client.readiness_probe = Some(DataClientReadinessProbeBlock {
-            quote_targets: BTreeMap::from([(
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+            book_type: None,
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::Configured,
+            max_metadata_quote_targets: None,
+            allow_metadata_target_sampling: None,
+            quote_targets: Some(BTreeMap::from([(
                 "configured_quote_probe".to_string(),
                 DataClientReadinessProbeQuoteTargetBlock {
                     instrument_id: InstrumentId::from("REFERENCE.POLYMARKET"),
                 },
-            )]),
-            ..DataClientReadinessProbeBlock::default()
+            )])),
         });
 
         let (required, ambiguous) =
@@ -2805,8 +2833,8 @@ mod tests {
             book_type: None,
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(2),
-            allow_metadata_target_sampling: false,
-            quote_targets: BTreeMap::new(),
+            allow_metadata_target_sampling: Some(false),
+            quote_targets: None,
         });
 
         let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
@@ -2860,8 +2888,8 @@ mod tests {
             book_type: None,
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(2),
-            allow_metadata_target_sampling: false,
-            quote_targets: BTreeMap::new(),
+            allow_metadata_target_sampling: Some(false),
+            quote_targets: None,
         });
 
         let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
@@ -2898,8 +2926,8 @@ mod tests {
             book_type: None,
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(2),
-            allow_metadata_target_sampling: true,
-            quote_targets: BTreeMap::new(),
+            allow_metadata_target_sampling: Some(true),
+            quote_targets: None,
         });
 
         let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
@@ -2935,8 +2963,8 @@ mod tests {
             book_type: None,
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(3),
-            allow_metadata_target_sampling: false,
-            quote_targets: BTreeMap::new(),
+            allow_metadata_target_sampling: Some(false),
+            quote_targets: None,
         });
 
         let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
@@ -3022,8 +3050,8 @@ mod tests {
             book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(1),
-            allow_metadata_target_sampling: false,
-            quote_targets: BTreeMap::new(),
+            allow_metadata_target_sampling: Some(false),
+            quote_targets: None,
         });
 
         let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
@@ -3067,7 +3095,7 @@ mod tests {
     fn no_submit_quote_probe_captures_quotes_with_wall_clock_time() {
         let source = include_str!("bolt_v3_live_node.rs");
         let runtime_source = source
-            .split("#[cfg(test)]")
+            .split("\n#[cfg(test)]\nmod tests")
             .next()
             .expect("runtime source should precede tests");
 

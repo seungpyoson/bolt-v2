@@ -3665,12 +3665,11 @@ fn shipped_binary_oracle_examples_do_not_canonicalize_one_reference_market_or_ve
     ] {
         let source =
             std::fs::read_to_string(support::repo_path(relative_path)).expect("source should read");
-        for forbidden in ["binance_reference"] {
-            assert!(
-                !source.contains(forbidden),
-                "{relative_path} must not make `{forbidden}` a canonical strategy example"
-            );
-        }
+        let forbidden = "binance_reference";
+        assert!(
+            !source.contains(forbidden),
+            "{relative_path} must not make `{forbidden}` a canonical strategy example"
+        );
     }
 
     for relative_path in [
@@ -5424,6 +5423,7 @@ fn allows_metadata_response_readiness_probe_without_static_quote_targets() {
 market_data_kind = "quote"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 4
+allow_metadata_target_sampling = false
 "#
     ))
     .expect("metadata-response readiness probe should parse");
@@ -5475,6 +5475,7 @@ fn rejects_book_readiness_probe_without_book_type() {
 market_data_kind = "book"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 4
+allow_metadata_target_sampling = false
 "#
     ))
     .expect("book readiness probe should parse so validation can reject missing book type");
@@ -5504,6 +5505,7 @@ market_data_kind = "quote"
 book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 4
+allow_metadata_target_sampling = false
 "#
     ))
     .expect("quote readiness probe should parse so validation can reject book type");
@@ -5532,6 +5534,7 @@ fn rejects_metadata_response_readiness_probe_with_min_quote_targets() {
 market_data_kind = "quote"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 4
+allow_metadata_target_sampling = false
 min_metadata_quote_targets = 2
 "#
     ))
@@ -5583,6 +5586,7 @@ fn rejects_readiness_probe_with_both_metadata_response_and_static_targets() {
 market_data_kind = "quote"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 4
+allow_metadata_target_sampling = false
 
 [clients.polymarket_main.readiness_probe.quote_targets.configured_quote_probe]
 instrument_id = "CONFIGURED-PROBE.POLYMARKET"
@@ -5635,8 +5639,9 @@ fn root_example_declares_requested_nt_data_clients_for_registration() {
             .readiness_probe
             .as_ref()
             .unwrap_or_else(|| panic!("{client_key} must declare a readiness_probe block"));
-        assert!(
+        assert_eq!(
             readiness_probe.allow_metadata_target_sampling,
+            Some(true),
             "{client_key} must explicitly opt into source-owned metadata sampling"
         );
     }

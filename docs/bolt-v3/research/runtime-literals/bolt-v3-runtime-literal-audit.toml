@@ -3401,14 +3401,6 @@ classification = "rate_limit_parser_clock_bound"
 reason = "The Bolt-v3 rate-limit parser enforces conventional HH:MM:SS second bounds before NT config build validation."
 
 [[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "string"
-literal = "\", \""
-context = "keys.join(\", \")"
-classification = "diagnostic_separator"
-reason = "This separator is used only to format duplicate NT Venue validation diagnostics, not as an operator runtime value."
-
-[[allowed]]
 path = "src/bounded_config_read.rs"
 kind = "number"
 literal = '''1'''
@@ -10591,3 +10583,3043 @@ literal = "4"
 context = '''hex::encode(&keccak256(signature.as_bytes())[..4])'''
 classification = "evm_abi_selector_encoding"
 reason = "EVM function selectors are the first four bytes of the keccak256 hash of the ABI signature."
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''string'''
+literal = '''"metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters or set clients.<id>.readiness_probe.allow_metadata_target_sampling=true before using this client for production readiness"'''
+context = '''"metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters or set clients.<id>.readiness_probe.allow_metadata_target_sampling=true before using this client for production readiness"'''
+classification = '''data_client_readiness_fail_closed_diagnostic'''
+reason = '''This is the fail-closed diagnostic for metadata-response readiness probing; limits and sampling remain TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''string'''
+literal = '''"configured reference_data quotes"'''
+context = '''"configured reference_data quotes",'''
+classification = '''no_submit_readiness_probe_label'''
+reason = '''This labels a no-submit readiness probe source in diagnostics/evidence after TOML has selected the probe path.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''string'''
+literal = '''"configured client readiness_probe.quote_targets quotes"'''
+context = '''"configured client readiness_probe.quote_targets quotes",'''
+classification = '''no_submit_readiness_probe_label'''
+reason = '''This labels a no-submit readiness probe source in diagnostics/evidence after TOML has selected the probe path.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''string'''
+literal = '''"configured client readiness_probe.quote_targets quotes"'''
+context = '''"configured client readiness_probe.quote_targets quotes",'''
+classification = '''no_submit_readiness_probe_label'''
+reason = '''This labels a no-submit readiness probe source in diagnostics/evidence after TOML has selected the probe path.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const DATA_CLIENT_READINESS_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = '''operator_artifact_schema_version'''
+reason = '''This is a stable operator-artifact schema version for generated evidence files, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.data_client_readiness_source.v1"'''
+context = '''const DATA_CLIENT_READINESS_SOURCE_RECORD_KIND: &str = "bolt_v3.data_client_readiness_source.v1";'''
+classification = '''operator_artifact_schema_record_kind'''
+reason = '''This is a stable operator-artifact record-kind discriminator for evidence parsing/hashing, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.data_client_readiness_target_candidates.v1"'''
+context = '''"bolt_v3.data_client_readiness_target_candidates.v1";'''
+classification = '''operator_artifact_schema_record_kind'''
+reason = '''This is a stable operator-artifact record-kind discriminator for evidence parsing/hashing, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"target_candidates_only_probe_targets_unbound"'''
+context = '''"target_candidates_only_probe_targets_unbound";'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"not_production_usable_metadata_or_config_only"'''
+context = '''"not_production_usable_metadata_or_config_only";'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const DATA_CLIENT_NT_SOURCE_CAPABILITY_SCHEMA_VERSION: u32 = 1;'''
+classification = '''operator_artifact_schema_version'''
+reason = '''This is a stable operator-artifact schema version for generated evidence files, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.data_client_nt_source_capability.v1"'''
+context = '''"bolt_v3.data_client_nt_source_capability.v1";'''
+classification = '''operator_artifact_schema_record_kind'''
+reason = '''This is a stable operator-artifact record-kind discriminator for evidence parsing/hashing, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"nt_source_capability_only_behavior_probe_missing"'''
+context = '''"nt_source_capability_only_behavior_probe_missing";'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const DATA_CLIENT_LIVE_NODE_MAPPING_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = '''operator_artifact_schema_version'''
+reason = '''This is a stable operator-artifact schema version for generated evidence files, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.data_client_live_node_mapping_source.v1"'''
+context = '''"bolt_v3.data_client_live_node_mapping_source.v1";'''
+classification = '''operator_artifact_schema_record_kind'''
+reason = '''This is a stable operator-artifact record-kind discriminator for evidence parsing/hashing, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"live_node_mapping_source_only_behavior_probe_missing"'''
+context = '''"live_node_mapping_source_only_behavior_probe_missing";'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const DATA_CLIENT_BEHAVIOR_OBSERVATION_SCHEMA_VERSION: u32 = 1;'''
+classification = '''operator_artifact_schema_version'''
+reason = '''This is a stable operator-artifact schema version for generated evidence files, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.data_client_behavior_observation.v1"'''
+context = '''"bolt_v3.data_client_behavior_observation.v1";'''
+classification = '''operator_artifact_schema_record_kind'''
+reason = '''This is a stable operator-artifact record-kind discriminator for evidence parsing/hashing, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.data_client_behavior_observation_source.v1"'''
+context = '''"bolt_v3.data_client_behavior_observation_source.v1";'''
+classification = '''operator_artifact_schema_record_kind'''
+reason = '''This is a stable operator-artifact record-kind discriminator for evidence parsing/hashing, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.data_client_behavior_probe_event.v1"'''
+context = '''"bolt_v3.data_client_behavior_probe_event.v1";'''
+classification = '''operator_artifact_schema_record_kind'''
+reason = '''This is a stable operator-artifact record-kind discriminator for evidence parsing/hashing, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.data_client_policy_behavior_source.v1"'''
+context = '''"bolt_v3.data_client_policy_behavior_source.v1";'''
+classification = '''operator_artifact_schema_record_kind'''
+reason = '''This is a stable operator-artifact record-kind discriminator for evidence parsing/hashing, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"behavior_observation_final_matrix_missing"'''
+context = '''"behavior_observation_final_matrix_missing";'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"data_client_policy_behavior_source_complete"'''
+context = '''"data_client_policy_behavior_source_complete";'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"data_client_policy_behavior_source_missing_markers"'''
+context = '''"data_client_policy_behavior_source_missing_markers";'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const DATA_CLIENT_PRODUCTION_READINESS_MATRIX_SCHEMA_VERSION: u32 = 1;'''
+classification = '''operator_artifact_schema_version'''
+reason = '''This is a stable operator-artifact schema version for generated evidence files, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.data_client_production_readiness_matrix.v1"'''
+context = '''"bolt_v3.data_client_production_readiness_matrix.v1";'''
+classification = '''operator_artifact_schema_record_kind'''
+reason = '''This is a stable operator-artifact record-kind discriminator for evidence parsing/hashing, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"metadata_behavior"'''
+context = '''"metadata_behavior",'''
+classification = '''data_client_required_behavior_proof_label'''
+reason = '''This names a required data-client behavior proof in the readiness matrix, not a runtime configuration value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"quote_or_book_behavior"'''
+context = '''"quote_or_book_behavior",'''
+classification = '''data_client_required_behavior_proof_label'''
+reason = '''This names a required data-client behavior proof in the readiness matrix, not a runtime configuration value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"freshness_latency"'''
+context = '''"freshness_latency",'''
+classification = '''data_client_required_behavior_proof_label'''
+reason = '''This names a required data-client behavior proof in the readiness matrix, not a runtime configuration value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"reconnect_rate_limit_error"'''
+context = '''"reconnect_rate_limit_error",'''
+classification = '''data_client_required_behavior_proof_label'''
+reason = '''This names a required data-client behavior proof in the readiness matrix, not a runtime configuration value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"metadata.captured_at_unix_nanos"'''
+context = '''"metadata.captured_at_unix_nanos",'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"metadata.ts_init_unix_nanos"'''
+context = '''"metadata.ts_init_unix_nanos",'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"metadata"'''
+context = '''event_kind: "metadata".to_string(),'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"quote.captured_at_unix_nanos"'''
+context = '''nanos_to_millis_checked(quote.captured_at_unix_nanos, "quote.captured_at_unix_nanos")?;'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"quote.ts_init_unix_nanos"'''
+context = '''"quote.ts_init_unix_nanos",'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"quote"'''
+context = '''event_kind: "quote".to_string(),'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"book.captured_at_unix_nanos"'''
+context = '''nanos_to_millis_checked(deltas.captured_at_unix_nanos, "book.captured_at_unix_nanos")?;'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"book.ts_init_unix_nanos"'''
+context = '''"book.ts_init_unix_nanos",'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"book"'''
+context = '''event_kind: "book".to_string(),'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0_u64'''
+context = '''let mut observed_at_unix_millis = 0_u64;'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0_usize'''
+context = '''let mut metadata_response_count = 0_usize;'''
+classification = '''data_client_artifact_counter_or_index'''
+reason = '''This is local counting/index math for generated data-client evidence, not a trading runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''metadata_response_count += 1;'''
+classification = '''data_client_artifact_counter_or_index'''
+reason = '''This is local counting/index math for generated data-client evidence, not a trading runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"metadata.captured_at_unix_nanos"'''
+context = '''"metadata.captured_at_unix_nanos",'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0_usize'''
+context = '''let mut source_byte_len = 0_usize;'''
+classification = '''data_client_artifact_counter_or_index'''
+reason = '''This is local counting/index math for generated data-client evidence, not a trading runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"\n"'''
+context = '''let source_text = source_texts.join("\n");'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"reconnect"'''
+context = '''"reconnect",'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"rate_limit"'''
+context = '''"rate_limit",'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"parse_error"'''
+context = '''"parse_error",'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''|| source.nt_policy_source_byte_len == 0'''
+classification = '''data_client_artifact_counter_or_index'''
+reason = '''This is local counting/index math for generated data-client evidence, not a trading runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"policy_source.reconnect"'''
+context = '''validate_data_client_policy_observation("policy_source.reconnect", &source.reconnect)?;'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"policy_source.rate_limit"'''
+context = '''validate_data_client_policy_observation("policy_source.rate_limit", &source.rate_limit)?;'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"policy_source.parse_error"'''
+context = '''validate_data_client_policy_observation("policy_source.parse_error", &source.parse_error)?;'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"reconnect"'''
+context = '''behavior_observed: normalized.contains("reconnect"),'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"resubscribe"'''
+context = '''recovered: normalized.contains("resubscribe")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"restore_subscriptions"'''
+context = '''|| normalized.contains("restore_subscriptions")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"subscriptions"'''
+context = '''|| normalized.contains("subscriptions"),'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"disconnect"'''
+context = '''fail_closed: normalized.contains("disconnect")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"map_err"'''
+context = '''|| normalized.contains("map_err")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"rate_limit"'''
+context = '''behavior_observed: normalized.contains("rate_limit")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"rate limit"'''
+context = '''|| normalized.contains("rate limit")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"throttle"'''
+context = '''|| normalized.contains("throttle")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"429"'''
+context = '''|| normalized.contains("429"),'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"retry"'''
+context = '''recovered: normalized.contains("retry") || normalized.contains("backoff"),'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"backoff"'''
+context = '''recovered: normalized.contains("retry") || normalized.contains("backoff"),'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"is_retryable"'''
+context = '''fail_closed: normalized.contains("is_retryable")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"map_err"'''
+context = '''|| normalized.contains("map_err")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"429"'''
+context = '''|| normalized.contains("429"),'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"parse"'''
+context = '''let parses_with_error = normalized.contains("parse")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"map_err"'''
+context = '''&& (normalized.contains("map_err")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"result"'''
+context = '''|| normalized.contains("result")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"fail_closed"'''
+context = '''|| normalized.contains("fail_closed"));'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1_000_000'''
+context = '''let millis = nanos / 1_000_000;'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1_000_000'''
+context = '''.map(|nanos| nanos / 1_000_000)'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1_000_000'''
+context = '''((end_nanos - start_nanos) / 1_000_000, None)'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''(0, Some((start_nanos - end_nanos) / 1_000_000))'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1_000_000'''
+context = '''(0, Some((start_nanos - end_nanos) / 1_000_000))'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"source"'''
+context = '''"source": "no_submit_reference_quote_probe",'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"no_submit_reference_quote_probe"'''
+context = '''"source": "no_submit_reference_quote_probe",'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"data_client_id_hash"'''
+context = '''"data_client_id_hash": sha256_text(&quote.data_client_id),'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"instrument_id_hash"'''
+context = '''"instrument_id_hash": sha256_text(&quote.instrument_id),'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"bid_price"'''
+context = '''"bid_price": quote.bid_price,'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"ask_price"'''
+context = '''"ask_price": quote.ask_price,'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"ts_event_unix_nanos"'''
+context = '''"ts_event_unix_nanos": quote.ts_event_unix_nanos,'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"ts_init_unix_nanos"'''
+context = '''"ts_init_unix_nanos": quote.ts_init_unix_nanos,'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"captured_at_unix_nanos"'''
+context = '''"captured_at_unix_nanos": quote.captured_at_unix_nanos,'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"source"'''
+context = '''"source": "no_submit_book_deltas_probe",'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"no_submit_book_deltas_probe"'''
+context = '''"source": "no_submit_book_deltas_probe",'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"data_client_id_hash"'''
+context = '''"data_client_id_hash": sha256_text(&deltas.data_client_id),'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"instrument_id_hash"'''
+context = '''"instrument_id_hash": sha256_text(&deltas.instrument_id),'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"delta_count"'''
+context = '''"delta_count": deltas.delta_count,'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"ts_event_unix_nanos"'''
+context = '''"ts_event_unix_nanos": deltas.ts_event_unix_nanos,'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"ts_init_unix_nanos"'''
+context = '''"ts_init_unix_nanos": deltas.ts_init_unix_nanos,'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"captured_at_unix_nanos"'''
+context = '''"captured_at_unix_nanos": deltas.captured_at_unix_nanos,'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"source"'''
+context = '''"source": "no_submit_data_client_metadata_probe",'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"no_submit_data_client_metadata_probe"'''
+context = '''"source": "no_submit_data_client_metadata_probe",'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"data_client_id_hash"'''
+context = '''"data_client_id_hash": sha256_text(&response.data_client_id),'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"venue"'''
+context = '''"venue": response.venue,'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"instrument_count"'''
+context = '''"instrument_count": response.instrument_ids.len(),'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"instrument_id_hashes"'''
+context = '''"instrument_id_hashes": instrument_id_hashes,'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"ts_init_unix_nanos"'''
+context = '''"ts_init_unix_nanos": response.ts_init_unix_nanos,'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"captured_at_unix_nanos"'''
+context = '''"captured_at_unix_nanos": response.captured_at_unix_nanos,'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1_000'''
+context = '''.checked_mul(1_000)'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''.max(1);'''
+classification = '''data_client_observation_window_math_constant'''
+reason = '''This is the minimum nonzero observation-window denominator for evidence reporting, not a trading runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"metadata"'''
+context = '''metadata_behavior: data_client_surface_observation_from_probe_events(events, "metadata")?,'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"quote"'''
+context = '''quote_behavior: data_client_surface_observation_from_probe_events(events, "quote")?,'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"book"'''
+context = '''book_behavior: data_client_surface_observation_from_probe_events(events, "book")?,'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"ticker"'''
+context = '''ticker_behavior: data_client_surface_observation_from_probe_events(events, "ticker")?,'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"reconnect"'''
+context = '''.unwrap_or_else(|| missing_data_client_policy_observation("reconnect")),'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"rate_limit"'''
+context = '''.unwrap_or_else(|| missing_data_client_policy_observation("rate_limit")),'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"parse_error"'''
+context = '''.unwrap_or_else(|| missing_data_client_policy_observation("parse_error")),'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''sample_count: 0,'''
+classification = '''data_client_artifact_counter_or_index'''
+reason = '''This is local counting/index math for generated data-client evidence, not a trading runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''sample_count: 0,'''
+classification = '''data_client_artifact_counter_or_index'''
+reason = '''This is local counting/index math for generated data-client evidence, not a trading runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''95'''
+context = '''let latency_p95_index = (latency_millis.len() * 95).div_ceil(100).saturating_sub(1);'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''100'''
+context = '''let latency_p95_index = (latency_millis.len() * 95).div_ceil(100).saturating_sub(1);'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''let latency_p95_index = (latency_millis.len() * 95).div_ceil(100).saturating_sub(1);'''
+classification = '''time_unit_conversion_or_timestamp_field'''
+reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"metadata"'''
+context = '''matches!(event_kind, "metadata" | "quote" | "book" | "ticker")'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"quote"'''
+context = '''matches!(event_kind, "metadata" | "quote" | "book" | "ticker")'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"book"'''
+context = '''matches!(event_kind, "metadata" | "quote" | "book" | "ticker")'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"ticker"'''
+context = '''matches!(event_kind, "metadata" | "quote" | "book" | "ticker")'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"readiness_source"'''
+context = '''"readiness_source",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"live_node_mapping_source"'''
+context = '''"live_node_mapping_source",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"readiness_source.clients"'''
+context = '''"readiness_source.clients",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"strategy_routed"'''
+context = '''"strategy_routed",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"live_node_mapping_source.clients"'''
+context = '''"live_node_mapping_source.clients",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"data_client_registered_through_live_node"'''
+context = '''"data_client_registered_through_live_node",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"nt_source_capability"'''
+context = '''"nt_source_capability",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"nt_source_capability"'''
+context = '''"nt_source_capability",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"target_candidate"'''
+context = '''"target_candidate",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"behavior_observation"'''
+context = '''"behavior_observation",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"behavior_observation_complete"'''
+context = '''"behavior_observation_complete",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"behavior_observation.behavior_observation_complete"'''
+context = '''"behavior_observation.behavior_observation_complete",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"behavior_observation"'''
+context = '''"behavior_observation",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"config_inventory"'''
+context = '''missing_proofs.push("config_inventory");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"live_node_mapping"'''
+context = '''missing_proofs.push("live_node_mapping");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"nt_source_capability"'''
+context = '''missing_proofs.push("nt_source_capability");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"behavior_observation"'''
+context = '''missing_proofs.push("behavior_observation");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"source_owned_target_binding"'''
+context = '''missing_proofs.push("source_owned_target_binding");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"not_a_configured_data_client"'''
+context = '''"not_a_configured_data_client"'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"data_client_t043a_matrix_complete"'''
+context = '''"data_client_t043a_matrix_complete"'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"data_client_t043a_matrix_missing_proofs"'''
+context = '''"data_client_t043a_matrix_missing_proofs"'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''client_key_hash: key.0,'''
+classification = '''data_client_artifact_counter_or_index'''
+reason = '''This is local counting/index math for generated data-client evidence, not a trading runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''provider_key: key.1,'''
+classification = '''data_client_artifact_counter_or_index'''
+reason = '''This is local counting/index math for generated data-client evidence, not a trading runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"target_candidate"'''
+context = '''let key = data_client_matrix_top_level_client_key(source, "target_candidate")?;'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''let provider_key = key.1.as_str();'''
+classification = '''data_client_artifact_counter_or_index'''
+reason = '''This is local counting/index math for generated data-client evidence, not a trading runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"instrument_count"'''
+context = '''data_client_matrix_json_u64(source, "instrument_count", "target_candidate")? as usize;'''
+classification = '''data_client_behavior_evidence_hash_field'''
+reason = '''This names canonical JSON fields used only to hash data-client behavior evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"target_candidate"'''
+context = '''data_client_matrix_json_u64(source, "instrument_count", "target_candidate")? as usize;'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"instrument_ids"'''
+context = '''.get("instrument_ids")'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"instrument_ids_sha256"'''
+context = '''"instrument_ids_sha256",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"target_candidate.instrument_ids_sha256"'''
+context = '''"target_candidate.instrument_ids_sha256",'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"schema_version"'''
+context = '''if data_client_matrix_json_u64(source, "schema_version", field)? != 1 {'''
+classification = '''operator_artifact_schema_version'''
+reason = '''This is a stable operator-artifact schema version for generated evidence files, not a trading runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"record_kind"'''
+context = '''if data_client_matrix_json_string(source, "record_kind", field)? != expected_record_kind {'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"config_bundle_checksum"'''
+context = '''if data_client_matrix_json_string(source, "config_bundle_checksum", field)?'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"clients"'''
+context = '''.get("clients")'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"client_key_hash"'''
+context = '''data_client_matrix_json_string(client, "client_key_hash", field)?.to_string();'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"provider_key"'''
+context = '''data_client_matrix_json_string(client, "provider_key", field)?.to_string();'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"strategy_routed"'''
+context = '''let proof_present = proof_field == "strategy_routed"'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"client_key_hash"'''
+context = '''data_client_matrix_json_string(source, "client_key_hash", field)?.to_string(),'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"provider_key"'''
+context = '''data_client_matrix_json_string(source, "provider_key", field)?.to_string(),'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"metadata_behavior"'''
+context = '''"metadata_behavior",'''
+classification = '''data_client_required_behavior_proof_label'''
+reason = '''This names a required data-client behavior proof in the readiness matrix, not a runtime configuration value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"quote_behavior"'''
+context = '''validate_data_client_behavior_surface_observation("quote_behavior", &source.quote_behavior)?;'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"book_behavior"'''
+context = '''validate_data_client_behavior_surface_observation("book_behavior", &source.book_behavior)?;'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"ticker_behavior"'''
+context = '''validate_data_client_behavior_surface_observation("ticker_behavior", &source.ticker_behavior)?;'''
+classification = '''data_client_artifact_validation_field'''
+reason = '''This names a field while validating generated data-client readiness artifacts; source values remain config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"reconnect"'''
+context = '''validate_data_client_policy_observation("reconnect", &source.reconnect)?;'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"rate_limit"'''
+context = '''validate_data_client_policy_observation("rate_limit", &source.rate_limit)?;'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"parse_error"'''
+context = '''validate_data_client_policy_observation("parse_error", &source.parse_error)?;'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''|| observation.sample_count != 0'''
+classification = '''data_client_artifact_counter_or_index'''
+reason = '''This is local counting/index math for generated data-client evidence, not a trading runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''|| observation.latency_sample_count == 0'''
+classification = '''data_client_artifact_counter_or_index'''
+reason = '''This is local counting/index math for generated data-client evidence, not a trading runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"metadata_behavior"'''
+context = '''missing.push("metadata_behavior");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"quote_or_book_or_ticker_behavior"'''
+context = '''missing.push("quote_or_book_or_ticker_behavior");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"freshness_latency"'''
+context = '''missing.push("freshness_latency");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"reconnect_behavior"'''
+context = '''missing.push("reconnect_behavior");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"rate_limit_behavior"'''
+context = '''missing.push("rate_limit_behavior");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"parse_error_behavior"'''
+context = '''missing.push("parse_error_behavior");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"map_bolt_v3_adapters"'''
+context = '''source_contains_any_symbol(&live_node_source_text, &["map_bolt_v3_adapters"]);'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"register_bolt_v3_clients"'''
+context = '''source_contains_any_symbol(&live_node_source_text, &["register_bolt_v3_clients"]);'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"loaded.root.clients"'''
+context = '''source_contains_any_symbol(&adapter_mapping_source_text, &["loaded.root.clients"]);'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"map_adapters"'''
+context = '''source_contains_any_symbol(&adapter_mapping_source_text, &["map_adapters"]);'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"binding_for_provider_key"'''
+context = '''source_contains_any_symbol(&adapter_mapping_source_text, &["binding_for_provider_key"]);'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"binding_for_provider_key"'''
+context = '''&["binding_for_provider_key"],'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"live_node_adapter_mapping_marker_missing"'''
+context = '''unsupported_dispositions.push("live_node_adapter_mapping_marker_missing");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"live_node_client_registration_marker_missing"'''
+context = '''unsupported_dispositions.push("live_node_client_registration_marker_missing");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"adapter_mapping_loaded_clients_marker_missing"'''
+context = '''unsupported_dispositions.push("adapter_mapping_loaded_clients_marker_missing");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"adapter_mapping_provider_dispatch_marker_missing"'''
+context = '''unsupported_dispositions.push("adapter_mapping_provider_dispatch_marker_missing");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"adapter_mapping_provider_lookup_marker_missing"'''
+context = '''unsupported_dispositions.push("adapter_mapping_provider_lookup_marker_missing");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"provider_registry_lookup_marker_missing"'''
+context = '''unsupported_dispositions.push("provider_registry_lookup_marker_missing");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"request_instruments"'''
+context = '''nt_source_contains_any(&source_text, &["request_instruments"]);'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"request_instrument"'''
+context = '''nt_source_contains_any(&source_text, &["request_instrument"]);'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"subscribe_quote"'''
+context = '''nt_source_contains_any(&source_text, &["subscribe_quote", "SubscribeQuote"]);'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"SubscribeQuote"'''
+context = '''nt_source_contains_any(&source_text, &["subscribe_quote", "SubscribeQuote"]);'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"subscribe_book"'''
+context = '''"subscribe_book",'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"subscribe_order_book"'''
+context = '''"subscribe_order_book",'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"SubscribeBook"'''
+context = '''"SubscribeBook",'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"SubscribeOrderBook"'''
+context = '''"SubscribeOrderBook",'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"subscribe_ticker"'''
+context = '''nt_source_contains_any(&source_text, &["subscribe_ticker", "SubscribeTicker"]);'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"SubscribeTicker"'''
+context = '''nt_source_contains_any(&source_text, &["subscribe_ticker", "SubscribeTicker"]);'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"metadata_request_source_marker_missing"'''
+context = '''unsupported_dispositions.push("metadata_request_source_marker_missing");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"quote_subscription_source_marker_missing"'''
+context = '''unsupported_dispositions.push("quote_subscription_source_marker_missing");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"book_subscription_source_marker_missing"'''
+context = '''unsupported_dispositions.push("book_subscription_source_marker_missing");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"ticker_subscription_source_marker_missing"'''
+context = '''unsupported_dispositions.push("ticker_subscription_source_marker_missing");'''
+classification = '''data_client_readiness_status_label'''
+reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''let mut offset = 0;'''
+classification = '''data_client_artifact_counter_or_index'''
+reason = '''This is local counting/index math for generated data-client evidence, not a trading runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"{}:{}"'''
+context = '''"{}:{}",'''
+classification = '''provider_requirement_fingerprint_template'''
+reason = '''This formats provider requirement evidence keys from configured provider metadata.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"configured"'''
+context = '''quote_target_source: "configured",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"metadata_response"'''
+context = '''quote_target_source: "metadata_response",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"quote"'''
+context = '''DataClientReadinessProbeMarketDataKind::Quote => "quote",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"book"'''
+context = '''DataClientReadinessProbeMarketDataKind::Book => "book",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"l1_mbp"'''
+context = '''DataClientReadinessProbeBookType::L1Mbp => "l1_mbp",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"l2_mbp"'''
+context = '''DataClientReadinessProbeBookType::L2Mbp => "l2_mbp",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"l3_mbo"'''
+context = '''DataClientReadinessProbeBookType::L3Mbo => "l3_mbo",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"data"'''
+context = '''ProviderCredentialedBlock::Data => "data",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"execution"'''
+context = '''ProviderCredentialedBlock::Execution => "execution",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"string"'''
+context = '''toml::Value::String(_) => "string",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"integer"'''
+context = '''toml::Value::Integer(_) => "integer",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"float"'''
+context = '''toml::Value::Float(_) => "float",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"boolean"'''
+context = '''toml::Value::Boolean(_) => "boolean",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"datetime"'''
+context = '''toml::Value::Datetime(_) => "datetime",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"array"'''
+context = '''toml::Value::Array(_) => "array",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"table"'''
+context = '''toml::Value::Table(_) => "table",'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"timeout"'''
+context = '''field.contains("timeout")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"retry"'''
+context = '''field.contains("retry") || field.contains("retries")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"retries"'''
+context = '''field.contains("retry") || field.contains("retries")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"freshness"'''
+context = '''field.contains("freshness")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"interval"'''
+context = '''|| field.contains("interval")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"poll"'''
+context = '''|| field.contains("poll")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"debounce"'''
+context = '''|| field.contains("debounce")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"reconnect"'''
+context = '''field.contains("reconnect")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"rate_limit"'''
+context = '''field.contains("rate_limit") || field.contains("throttle")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"throttle"'''
+context = '''field.contains("rate_limit") || field.contains("throttle")'''
+classification = '''nt_source_policy_or_capability_marker'''
+reason = '''This is a source-inspection marker used to prove NT adapter capability or policy behavior from pinned source, not runtime behavior configuration.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"product_type"'''
+context = '''"product_type"'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"product_types"'''
+context = '''| "product_types"'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"instrument_type"'''
+context = '''| "instrument_type"'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"instrument_types"'''
+context = '''| "instrument_types"'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"contract_type"'''
+context = '''| "contract_type"'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"contract_types"'''
+context = '''| "contract_types"'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"instrument_family"'''
+context = '''| "instrument_family"'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"instrument_families"'''
+context = '''| "instrument_families"'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"load_spreads"'''
+context = '''| "load_spreads"'''
+classification = '''data_client_config_inventory_enum_label'''
+reason = '''This serializes configured data-client inventory metadata or TOML value kinds into evidence artifacts.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/binance.rs'''
+kind = '''string'''
+literal = '''"Binance Spot WebSocket URL for NT subscribe_quotes"'''
+context = '''"Binance Spot WebSocket URL for NT subscribe_quotes"'''
+classification = '''binance_data_client_validation_label'''
+reason = '''This is a provider-local validation label for Binance data-client URL diagnostics; the URL value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/binance.rs'''
+kind = '''string'''
+literal = '''"Binance WebSocket URL"'''
+context = '''"Binance WebSocket URL"'''
+classification = '''binance_data_client_validation_label'''
+reason = '''This is a provider-local validation label for Binance data-client URL diagnostics; the URL value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"BITMEX"'''
+context = '''pub const BITMEX_KEY: &str = "BITMEX";'''
+classification = '''provider_adapter_registry_key'''
+reason = '''This is the provider adapter registry key used to dispatch configured clients to NT-backed adapters; it does not select a market or runtime target.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"BYBIT"'''
+context = '''pub const BYBIT_KEY: &str = "BYBIT";'''
+classification = '''provider_adapter_registry_key'''
+reason = '''This is the provider adapter registry key used to dispatch configured clients to NT-backed adapters; it does not select a market or runtime target.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"COINBASE"'''
+context = '''pub const COINBASE_KEY: &str = "COINBASE";'''
+classification = '''provider_adapter_registry_key'''
+reason = '''This is the provider adapter registry key used to dispatch configured clients to NT-backed adapters; it does not select a market or runtime target.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"DERIBIT"'''
+context = '''pub const DERIBIT_KEY: &str = "DERIBIT";'''
+classification = '''provider_adapter_registry_key'''
+reason = '''This is the provider adapter registry key used to dispatch configured clients to NT-backed adapters; it does not select a market or runtime target.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"OKX"'''
+context = '''pub const OKX_KEY: &str = "OKX";'''
+classification = '''provider_adapter_registry_key'''
+reason = '''This is the provider adapter registry key used to dispatch configured clients to NT-backed adapters; it does not select a market or runtime target.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"KRAKEN"'''
+context = '''pub const KRAKEN_KEY: &str = "KRAKEN";'''
+classification = '''provider_adapter_registry_key'''
+reason = '''This is the provider adapter registry key used to dispatch configured clients to NT-backed adapters; it does not select a market or runtime target.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"nautilus_bitmex::common::credential"'''
+context = '''pub const BITMEX_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_bitmex::common::credential"];'''
+classification = '''provider_credential_log_module'''
+reason = '''This is a fixed NT credential log module path used to prove credential redaction coverage; no credential value is logged or configured here.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"nautilus_bybit::common::credential"'''
+context = '''pub const BYBIT_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_bybit::common::credential"];'''
+classification = '''provider_credential_log_module'''
+reason = '''This is a fixed NT credential log module path used to prove credential redaction coverage; no credential value is logged or configured here.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"nautilus_coinbase::common::credential"'''
+context = '''pub const COINBASE_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_coinbase::common::credential"];'''
+classification = '''provider_credential_log_module'''
+reason = '''This is a fixed NT credential log module path used to prove credential redaction coverage; no credential value is logged or configured here.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"nautilus_deribit::common::credential"'''
+context = '''pub const DERIBIT_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_deribit::common::credential"];'''
+classification = '''provider_credential_log_module'''
+reason = '''This is a fixed NT credential log module path used to prove credential redaction coverage; no credential value is logged or configured here.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"nautilus_okx::common::credential"'''
+context = '''pub const OKX_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_okx::common::credential"];'''
+classification = '''provider_credential_log_module'''
+reason = '''This is a fixed NT credential log module path used to prove credential redaction coverage; no credential value is logged or configured here.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"nautilus_kraken::common::credential"'''
+context = '''pub const KRAKEN_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_kraken::common::credential"];'''
+classification = '''provider_credential_log_module'''
+reason = '''This is a fixed NT credential log module path used to prove credential redaction coverage; no credential value is logged or configured here.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"BITMEX_TESTNET_API_KEY"'''
+context = '''"BITMEX_TESTNET_API_KEY",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"BITMEX_TESTNET_API_SECRET"'''
+context = '''"BITMEX_TESTNET_API_SECRET",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"BITMEX_API_KEY"'''
+context = '''"BITMEX_API_KEY",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"BITMEX_API_SECRET"'''
+context = '''"BITMEX_API_SECRET",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"BYBIT_DEMO_API_KEY"'''
+context = '''"BYBIT_DEMO_API_KEY",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"BYBIT_DEMO_API_SECRET"'''
+context = '''"BYBIT_DEMO_API_SECRET",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"BYBIT_TESTNET_API_KEY"'''
+context = '''"BYBIT_TESTNET_API_KEY",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"BYBIT_TESTNET_API_SECRET"'''
+context = '''"BYBIT_TESTNET_API_SECRET",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"BYBIT_API_KEY"'''
+context = '''"BYBIT_API_KEY",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"BYBIT_API_SECRET"'''
+context = '''"BYBIT_API_SECRET",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"COINBASE_API_KEY"'''
+context = '''pub const COINBASE_FORBIDDEN_ENV_VARS: &[&str] = &["COINBASE_API_KEY", "COINBASE_API_SECRET"];'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"COINBASE_API_SECRET"'''
+context = '''pub const COINBASE_FORBIDDEN_ENV_VARS: &[&str] = &["COINBASE_API_KEY", "COINBASE_API_SECRET"];'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"DERIBIT_TESTNET_API_KEY"'''
+context = '''"DERIBIT_TESTNET_API_KEY",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"DERIBIT_TESTNET_API_SECRET"'''
+context = '''"DERIBIT_TESTNET_API_SECRET",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"DERIBIT_API_KEY"'''
+context = '''"DERIBIT_API_KEY",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"DERIBIT_API_SECRET"'''
+context = '''"DERIBIT_API_SECRET",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"OKX_API_KEY"'''
+context = '''&["OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE"];'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"OKX_API_SECRET"'''
+context = '''&["OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE"];'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"OKX_API_PASSPHRASE"'''
+context = '''&["OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE"];'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"KRAKEN_SPOT_API_KEY"'''
+context = '''"KRAKEN_SPOT_API_KEY",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"KRAKEN_SPOT_API_SECRET"'''
+context = '''"KRAKEN_SPOT_API_SECRET",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"KRAKEN_FUTURES_DEMO_API_KEY"'''
+context = '''"KRAKEN_FUTURES_DEMO_API_KEY",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"KRAKEN_FUTURES_DEMO_API_SECRET"'''
+context = '''"KRAKEN_FUTURES_DEMO_API_SECRET",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"KRAKEN_FUTURES_API_KEY"'''
+context = '''"KRAKEN_FUTURES_API_KEY",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"KRAKEN_FUTURES_API_SECRET"'''
+context = '''"KRAKEN_FUTURES_API_SECRET",'''
+classification = '''provider_forbidden_env_var_name'''
+reason = '''This names a provider environment variable that Bolt-v3 rejects to enforce SSM-only secrets.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_key"'''
+context = '''"api_key",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_secret"'''
+context = '''"api_secret",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_passphrase"'''
+context = '''"api_passphrase",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"private_key"'''
+context = '''"private_key",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"username"'''
+context = '''"username",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"password"'''
+context = '''"password",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"app_key"'''
+context = '''"app_key",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"wallet_address"'''
+context = '''"wallet_address",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_key"'''
+context = '''"api_key",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_secret"'''
+context = '''"api_secret",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"base_url_http"'''
+context = '''"base_url_http",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"base_url_ws"'''
+context = '''"base_url_ws",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"proxy_url"'''
+context = '''"proxy_url",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"http_timeout_secs"'''
+context = '''"http_timeout_secs",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"max_retries"'''
+context = '''"max_retries",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"retry_delay_initial_ms"'''
+context = '''"retry_delay_initial_ms",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"retry_delay_max_ms"'''
+context = '''"retry_delay_max_ms",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"heartbeat_interval_secs"'''
+context = '''"heartbeat_interval_secs",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"recv_window_ms"'''
+context = '''"recv_window_ms",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"active_only"'''
+context = '''"active_only",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"update_instruments_interval_mins"'''
+context = '''"update_instruments_interval_mins",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"environment"'''
+context = '''"environment",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"max_requests_per_second"'''
+context = '''"max_requests_per_second",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"max_requests_per_minute"'''
+context = '''"max_requests_per_minute",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"transport_backend"'''
+context = '''"transport_backend",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_key"'''
+context = '''"api_key",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_secret"'''
+context = '''"api_secret",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"product_types"'''
+context = '''"product_types",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"environment"'''
+context = '''"environment",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"base_url_http"'''
+context = '''"base_url_http",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"base_url_ws_public"'''
+context = '''"base_url_ws_public",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"base_url_ws_private"'''
+context = '''"base_url_ws_private",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"proxy_url"'''
+context = '''"proxy_url",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"http_timeout_secs"'''
+context = '''"http_timeout_secs",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"max_retries"'''
+context = '''"max_retries",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"retry_delay_initial_ms"'''
+context = '''"retry_delay_initial_ms",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"retry_delay_max_ms"'''
+context = '''"retry_delay_max_ms",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"heartbeat_interval_secs"'''
+context = '''"heartbeat_interval_secs",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"recv_window_ms"'''
+context = '''"recv_window_ms",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"update_instruments_interval_mins"'''
+context = '''"update_instruments_interval_mins",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"instrument_status_poll_secs"'''
+context = '''"instrument_status_poll_secs",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"transport_backend"'''
+context = '''"transport_backend",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_key"'''
+context = '''"api_key",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_secret"'''
+context = '''"api_secret",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"base_url_rest"'''
+context = '''"base_url_rest",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"base_url_ws"'''
+context = '''"base_url_ws",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"proxy_url"'''
+context = '''"proxy_url",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"environment"'''
+context = '''"environment",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"http_timeout_secs"'''
+context = '''"http_timeout_secs",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"ws_timeout_secs"'''
+context = '''"ws_timeout_secs",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"update_instruments_interval_mins"'''
+context = '''"update_instruments_interval_mins",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"derivatives_poll_interval_secs"'''
+context = '''"derivatives_poll_interval_secs",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"transport_backend"'''
+context = '''"transport_backend",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_key"'''
+context = '''"api_key",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_secret"'''
+context = '''"api_secret",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"product_types"'''
+context = '''"product_types",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"base_url_http"'''
+context = '''"base_url_http",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"base_url_ws"'''
+context = '''"base_url_ws",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"proxy_url"'''
+context = '''"proxy_url",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"environment"'''
+context = '''"environment",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"http_timeout_secs"'''
+context = '''"http_timeout_secs",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"max_retries"'''
+context = '''"max_retries",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"retry_delay_initial_ms"'''
+context = '''"retry_delay_initial_ms",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"retry_delay_max_ms"'''
+context = '''"retry_delay_max_ms",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"heartbeat_interval_secs"'''
+context = '''"heartbeat_interval_secs",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"update_instruments_interval_mins"'''
+context = '''"update_instruments_interval_mins",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"auto_load_missing_instruments"'''
+context = '''"auto_load_missing_instruments",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"transport_backend"'''
+context = '''"transport_backend",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_key"'''
+context = '''"api_key",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_secret"'''
+context = '''"api_secret",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_passphrase"'''
+context = '''"api_passphrase",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"instrument_types"'''
+context = '''"instrument_types",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"contract_types"'''
+context = '''"contract_types",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"load_spreads"'''
+context = '''"load_spreads",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"instrument_families"'''
+context = '''"instrument_families",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"base_url_http"'''
+context = '''"base_url_http",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"base_url_ws_public"'''
+context = '''"base_url_ws_public",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"base_url_ws_business"'''
+context = '''"base_url_ws_business",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"proxy_url"'''
+context = '''"proxy_url",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"environment"'''
+context = '''"environment",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"http_timeout_secs"'''
+context = '''"http_timeout_secs",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"max_retries"'''
+context = '''"max_retries",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"retry_delay_initial_ms"'''
+context = '''"retry_delay_initial_ms",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"retry_delay_max_ms"'''
+context = '''"retry_delay_max_ms",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"update_instruments_interval_mins"'''
+context = '''"update_instruments_interval_mins",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"vip_level"'''
+context = '''"vip_level",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"transport_backend"'''
+context = '''"transport_backend",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_key"'''
+context = '''"api_key",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"api_secret"'''
+context = '''"api_secret",'''
+classification = '''provider_private_config_field_name'''
+reason = '''This is a private credential field-name marker for provider config validation; credential values remain SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"product_type"'''
+context = '''"product_type",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"environment"'''
+context = '''"environment",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"base_url"'''
+context = '''"base_url",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"ws_public_url"'''
+context = '''"ws_public_url",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"ws_private_url"'''
+context = '''"ws_private_url",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"ws_l3_url"'''
+context = '''"ws_l3_url",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"validate_l3_checksum"'''
+context = '''"validate_l3_checksum",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"proxy_url"'''
+context = '''"proxy_url",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"timeout_secs"'''
+context = '''"timeout_secs",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"heartbeat_interval_secs"'''
+context = '''"heartbeat_interval_secs",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"max_requests_per_second"'''
+context = '''"max_requests_per_second",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''"transport_backend"'''
+context = '''"transport_backend",'''
+classification = '''provider_data_config_toml_field'''
+reason = '''This is a provider data-client TOML field-name allowlist entry; the runtime value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/market_data.rs'''
+kind = '''string'''
+literal = '''", "'''
+context = '''unknown_fields.join(", ")'''
+classification = '''diagnostic_separator'''
+reason = '''This separator formats validation diagnostics only and is not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"clients.{key}.readiness_probe.book_type is only valid when market_data_kind = \"book\""'''
+context = '''"clients.{key}.readiness_probe.book_type is only valid when market_data_kind = \"book\""'''
+classification = '''readiness_probe_validation_diagnostic'''
+reason = '''This is a TOML validation diagnostic for readiness_probe configuration, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"clients.{key}.readiness_probe.max_metadata_quote_targets is only valid when quote_target_source = \"metadata_response\""'''
+context = '''"clients.{key}.readiness_probe.max_metadata_quote_targets is only valid when quote_target_source = \"metadata_response\""'''
+classification = '''readiness_probe_validation_diagnostic'''
+reason = '''This is a TOML validation diagnostic for readiness_probe configuration, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"clients.{key}.readiness_probe.allow_metadata_target_sampling is only valid when quote_target_source = \"metadata_response\""'''
+context = '''"clients.{key}.readiness_probe.allow_metadata_target_sampling is only valid when quote_target_source = \"metadata_response\""'''
+classification = '''readiness_probe_validation_diagnostic'''
+reason = '''This is a TOML validation diagnostic for readiness_probe configuration, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"clients.{key}.readiness_probe cannot combine quote_target_source = \"metadata_response\" with readiness_probe.quote_targets"'''
+context = '''"clients.{key}.readiness_probe cannot combine quote_target_source = \"metadata_response\" with readiness_probe.quote_targets"'''
+classification = '''readiness_probe_validation_diagnostic'''
+reason = '''This is a TOML validation diagnostic for readiness_probe configuration, not a runtime value.'''

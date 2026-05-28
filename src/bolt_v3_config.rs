@@ -323,29 +323,13 @@ pub struct DataClientReadinessProbeBlock {
     pub book_type: Option<DataClientReadinessProbeBookType>,
     pub quote_target_source: DataClientReadinessProbeQuoteTargetSource,
     pub max_metadata_quote_targets: Option<usize>,
-    #[serde(default)]
-    pub allow_metadata_target_sampling: bool,
-    #[serde(default)]
-    pub quote_targets: BTreeMap<String, DataClientReadinessProbeQuoteTargetBlock>,
+    pub allow_metadata_target_sampling: Option<bool>,
+    pub quote_targets: Option<BTreeMap<String, DataClientReadinessProbeQuoteTargetBlock>>,
 }
 
-impl Default for DataClientReadinessProbeBlock {
-    fn default() -> Self {
-        Self {
-            market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
-            book_type: None,
-            quote_target_source: DataClientReadinessProbeQuoteTargetSource::Configured,
-            max_metadata_quote_targets: None,
-            allow_metadata_target_sampling: false,
-            quote_targets: BTreeMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DataClientReadinessProbeMarketDataKind {
-    #[default]
     Quote,
     Book,
 }
@@ -358,10 +342,9 @@ pub enum DataClientReadinessProbeBookType {
     L3Mbo,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DataClientReadinessProbeQuoteTargetSource {
-    #[default]
     Configured,
     MetadataResponse,
 }

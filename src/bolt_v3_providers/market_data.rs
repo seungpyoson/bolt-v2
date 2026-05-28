@@ -318,16 +318,14 @@ fn validate_known_data_fields(
 }
 
 fn unknown_data_fields(data: &toml::Value, allowed_fields: &[&str]) -> Vec<String> {
-    let mut fields: Vec<String> = data
-        .as_table()
-        .map(|table| {
-            table
-                .keys()
-                .filter(|field| !allowed_fields.contains(&field.as_str()))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut fields: Vec<String> = match data.as_table() {
+        Some(table) => table
+            .keys()
+            .filter(|field| !allowed_fields.contains(&field.as_str()))
+            .cloned()
+            .collect(),
+        None => Vec::new(),
+    };
     fields.sort();
     fields
 }

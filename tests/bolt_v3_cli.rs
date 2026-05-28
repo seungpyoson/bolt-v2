@@ -474,10 +474,7 @@ fn bolt_v3_cli_generates_operator_evidence_json_without_printing_values() {
         &fs::read(&output_path).expect("operator evidence JSON should read"),
     )
     .expect("operator evidence JSON should parse");
-    assert_eq!(
-        operator_evidence.head_sha,
-        option_env!("BOLT_V3_BUILD_HEAD_SHA").expect("build head should be available")
-    );
+    assert_eq!(operator_evidence.head_sha, env!("BOLT_V3_BUILD_HEAD_SHA"));
     assert_eq!(operator_evidence.max_operator_evidence_file_bytes, 4096);
     assert_eq!(operator_evidence.approval_consumption_max_age_seconds, 300);
     assert_eq!(

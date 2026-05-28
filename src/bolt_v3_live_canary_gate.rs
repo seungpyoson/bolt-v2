@@ -2170,21 +2170,30 @@ const REQUIRED_NO_SUBMIT_READINESS_STAGES: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
         fs,
         path::{Path, PathBuf},
     };
 
     use crate::{
         bolt_v3_config::{
-            LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config,
-            load_bolt_v3_config,
+            DECISION_REFERENCE_GATE_ROLE, LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock,
+            LoadedBoltV3Config, load_bolt_v3_config,
+        },
+        bolt_v3_decision_evidence::{
+            BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
+            BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID, BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+            BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3GateEvidenceIdentity,
+            BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields,
+            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
         },
         bolt_v3_live_canary_gate::{
             APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
             APPROVAL_ENVELOPE_RECORD_KIND, APPROVAL_ENVELOPE_SCHEMA_VERSION, APPROVAL_ID_HASH_KEY,
             ApprovalConsumptionExpectation, BoltV3LiveCanaryGateError, CONFIG_BUNDLE_CHECKSUM_KEY,
             CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY,
-            GENERATED_AT_UNIX_SECONDS_KEY, LIVE_NODE_BUILD_STAGE,
+            GENERATED_AT_UNIX_SECONDS_KEY, LIVE_NODE_BUILD_STAGE, MILLIS_PER_SECOND_U64,
             NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
             REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
             STATUS_KEY, STATUS_SATISFIED, check_bolt_v3_live_canary_gate_with_clock,
@@ -2407,15 +2416,17 @@ mod tests {
         let initial_unix_seconds = 1_000_u64;
         let late_unix_seconds = 1_200_u64;
         let report_path = tempdir.path().join("no-submit-readiness.json");
-        let operator_evidence = live_canary_operator_evidence_for_test(
-            tempdir.path(),
-            &fixture_root_path,
-            approval_id,
-            900,
-            1_100,
-            initial_unix_seconds as i64,
-            500,
-        );
+        let operator_evidence =
+            live_canary_operator_evidence_for_test(LiveCanaryOperatorEvidenceFixture {
+                dir: tempdir.path(),
+                root_path: &fixture_root_path,
+                approval_id,
+                approval_not_before_unix_seconds: 900,
+                approval_not_after_unix_seconds: 1_100,
+                reference_quote_unix_seconds: initial_unix_seconds,
+                consumed_unix_secs: initial_unix_seconds as i64,
+                approval_consumption_max_age_seconds: 500,
+            });
         write_no_submit_readiness_report_for_test(
             &report_path,
             approval_id,
@@ -2476,15 +2487,30 @@ mod tests {
         LoadedBoltV3Config { root, ..loaded }
     }
 
-    fn live_canary_operator_evidence_for_test(
-        dir: &Path,
-        root_path: &Path,
-        approval_id: &str,
+    struct LiveCanaryOperatorEvidenceFixture<'a> {
+        dir: &'a Path,
+        root_path: &'a Path,
+        approval_id: &'a str,
         approval_not_before_unix_seconds: i64,
         approval_not_after_unix_seconds: i64,
+        reference_quote_unix_seconds: u64,
         consumed_unix_secs: i64,
         approval_consumption_max_age_seconds: u64,
+    }
+
+    fn live_canary_operator_evidence_for_test(
+        fixture: LiveCanaryOperatorEvidenceFixture<'_>,
     ) -> LiveCanaryOperatorEvidenceBlock {
+        let LiveCanaryOperatorEvidenceFixture {
+            dir,
+            root_path,
+            approval_id,
+            approval_not_before_unix_seconds,
+            approval_not_after_unix_seconds,
+            reference_quote_unix_seconds,
+            consumed_unix_secs,
+            approval_consumption_max_age_seconds,
+        } = fixture;
         let approval_envelope_path = dir
             .join("approval-envelope.json")
             .to_string_lossy()
@@ -2492,7 +2518,7 @@ mod tests {
         let (ssm_manifest_path, ssm_manifest_sha256) =
             write_json_file_with_sha256(dir, "ssm-manifest.json", "ssm_manifest");
         let (strategy_input_evidence_path, strategy_input_evidence_sha256) =
-            write_json_file_with_sha256(dir, "strategy-input.json", "strategy_input");
+            write_strategy_input_file_with_sha256(dir, reference_quote_unix_seconds);
         let (gate_session_path, expected_gate_session_sha256) =
             write_gate_session_file_with_sha256(dir);
         let (financial_envelope_path, financial_envelope_sha256) =
@@ -2508,6 +2534,8 @@ mod tests {
             .join("canary-evidence.json")
             .to_string_lossy()
             .to_string();
+        let decision_evidence_path =
+            write_entry_decision_evidence_file_for_test(dir, reference_quote_unix_seconds);
         let mut evidence = LiveCanaryOperatorEvidenceBlock {
             head_sha: current_build_head_sha()
                 .expect("build head sha should be compiled for gate tests")
@@ -2534,10 +2562,7 @@ mod tests {
             approval_nonce_path,
             approval_nonce_sha256,
             approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-            decision_evidence_path: dir
-                .join("decision-evidence.jsonl")
-                .to_string_lossy()
-                .to_string(),
+            decision_evidence_path,
             nt_submit_event_path: dir
                 .join("nt-submit-event.json")
                 .to_string_lossy()
@@ -2628,6 +2653,169 @@ mod tests {
         let bytes = serde_json::to_vec(&value).expect("test evidence should serialize");
         fs::write(&path, &bytes).expect("test evidence should be written");
         (path.to_string_lossy().to_string(), sha256_hex(&bytes))
+    }
+
+    fn write_strategy_input_file_with_sha256(
+        dir: &Path,
+        reference_quote_unix_seconds: u64,
+    ) -> (String, String) {
+        let path = dir.join("strategy-input.json");
+        let reference_quote_ts_event = reference_quote_unix_seconds
+            .checked_mul(MILLIS_PER_SECOND_U64)
+            .expect("test reference quote timestamp should fit in milliseconds");
+        let value = serde_json::json!({
+            "record_kind": "strategy_input",
+            "reference_quote_ts_event": reference_quote_ts_event,
+        });
+        let bytes = serde_json::to_vec(&value).expect("test evidence should serialize");
+        fs::write(&path, &bytes).expect("test evidence should be written");
+        (path.to_string_lossy().to_string(), sha256_hex(&bytes))
+    }
+
+    fn write_entry_decision_evidence_file_for_test(
+        dir: &Path,
+        reference_quote_unix_seconds: u64,
+    ) -> String {
+        let path = dir.join("decision-evidence.jsonl");
+        let reference_quote_ts_event = reference_quote_unix_seconds
+            .checked_mul(MILLIS_PER_SECOND_U64)
+            .expect("test reference quote timestamp should fit in milliseconds");
+        let snapshot_recorded_at_utc_ns = i64::try_from(reference_quote_ts_event)
+            .expect("test reference quote timestamp should fit in i64 nanosecond field");
+        let intent_recorded_at_utc_ns = snapshot_recorded_at_utc_ns
+            .checked_add(1)
+            .expect("test order intent timestamp should fit in i64");
+        let admission_recorded_at_utc_ns = intent_recorded_at_utc_ns
+            .checked_add(1)
+            .expect("test admission timestamp should fit in i64");
+        let strategy_id = "operator-canary-strategy".to_string();
+        let client_order_id = "operator-canary-entry-001".to_string();
+        let instrument_id = "operator-canary-instrument".to_string();
+        let selected_market_key = "operator-canary-market-key".to_string();
+        let submission_order_side = "BUY".to_string();
+        let submission_price = "0.50".to_string();
+        let submission_quantity = "1".to_string();
+        let mut gate_evidence = BTreeMap::new();
+        gate_evidence.insert(
+            DECISION_REFERENCE_GATE_ROLE.to_string(),
+            BoltV3GateEvidenceIdentity {
+                satisfaction_kind: "no_resolution".to_string(),
+                selected_market_key: selected_market_key.clone(),
+                provider_id: None,
+                provider_kind: None,
+                value_kind: None,
+                normalized_value_sha256: None,
+                provider_provenance_sha256: None,
+                artifact_sha256s: Vec::new(),
+                resolution_identity: Some("operator-canary-resolution".to_string()),
+            },
+        );
+        let snapshot = BoltV3StrategyInputEvidenceSnapshot {
+            strategy_id: strategy_id.clone(),
+            configured_target_id: "operator-canary-target".to_string(),
+            market_selection_ruleset_id: "operator-canary-ruleset".to_string(),
+            gate_session_hash: "operator-canary-gate-session".to_string(),
+            selected_market_key: selected_market_key.clone(),
+            gate_evidence,
+            market_selection_outcome: BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT
+                .to_string(),
+            market_id: None,
+            polymarket_condition_id: None,
+            polymarket_market_slug: None,
+            polymarket_question_id: None,
+            up_instrument_id: None,
+            down_instrument_id: None,
+            market_selection_timestamp_ms: Some(reference_quote_ts_event),
+            selected_market_observed_timestamp_ms: Some(reference_quote_ts_event),
+            polymarket_market_start_timestamp_ms: None,
+            polymarket_market_end_timestamp_ms: None,
+            price_to_beat_source: "operator-canary-reference".to_string(),
+            price_to_beat_value: submission_price.clone(),
+            reference_quote_ts_event,
+            spot_price: submission_price.clone(),
+            reference_fair_value: None,
+            realized_volatility: "0".to_string(),
+            seconds_to_market_end: 1,
+            pricing_kurtosis: "0".to_string(),
+            theta_decay_factor: "1".to_string(),
+            theta_scaled_min_edge_bps: "1".to_string(),
+            fair_probability_up: "0.50".to_string(),
+            uncertainty_band_probability: "0.01".to_string(),
+            expected_edge_basis_points: "1".to_string(),
+            worst_case_edge_basis_points: "1".to_string(),
+            fee_rate_basis_points: "0".to_string(),
+            selected_side: Some(submission_order_side.clone()),
+            submission_instrument_id: instrument_id.clone(),
+            submission_order_side: submission_order_side.clone(),
+            submission_price: submission_price.clone(),
+            submission_quantity: submission_quantity.clone(),
+            client_order_id: client_order_id.clone(),
+        };
+        let intent = BoltV3OrderIntentEvidence {
+            strategy_id: strategy_id.clone(),
+            intent_kind: BoltV3OrderIntentKind::Entry,
+            instrument_id: instrument_id.clone(),
+            client_order_id: client_order_id.clone(),
+            order_side: submission_order_side,
+            price: submission_price.clone(),
+            quantity: submission_quantity,
+            order_fields: BoltV3OrderIntentOrderFields {
+                order_type: "LIMIT".to_string(),
+                time_in_force: "GTC".to_string(),
+                price: Some(submission_price.clone()),
+                trigger_price: None,
+                activation_price: None,
+                trigger_type: None,
+                trigger_instrument_id: None,
+                trailing_offset: None,
+                trailing_offset_type: None,
+                expire_time_unix_nanos: None,
+                is_post_only: true,
+                is_reduce_only: false,
+                is_quote_quantity: false,
+            },
+        };
+        let admission = BoltV3AdmissionDecisionEvidence {
+            strategy_id,
+            client_order_id,
+            instrument_id,
+            notional: "0.50".to_string(),
+            intent_kind: BoltV3SubmitIntentKind::Entry,
+            outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+        };
+        let lines = [
+            serde_json::json!({
+                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "recorded_at_utc_ns": snapshot_recorded_at_utc_ns,
+                "gate_id": BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+                "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+                "kind": "strategy_input_snapshot",
+                "snapshot": snapshot,
+            }),
+            serde_json::json!({
+                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "recorded_at_utc_ns": intent_recorded_at_utc_ns,
+                "gate_id": BOLT_V3_ORDER_INTENT_GATE_ID,
+                "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+                "kind": "order_intent",
+                "intent": intent,
+            }),
+            serde_json::json!({
+                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "recorded_at_utc_ns": admission_recorded_at_utc_ns,
+                "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+                "kind": "admission_decision",
+                "decision": admission,
+            }),
+        ];
+        let mut jsonl = String::new();
+        for line in lines {
+            jsonl.push_str(&serde_json::to_string(&line).expect("decision evidence should encode"));
+            jsonl.push('\n');
+        }
+        fs::write(&path, jsonl).expect("decision evidence should write");
+        path.to_string_lossy().to_string()
     }
 
     fn write_gate_session_file_with_sha256(dir: &Path) -> (String, String) {

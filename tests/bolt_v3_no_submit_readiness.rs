@@ -834,22 +834,36 @@ fn no_submit_readiness_run_helper_polls_runner_while_waiting_for_reference_quote
 #[test]
 fn no_submit_reference_quote_probe_source_is_subscription_only() {
     let source = support::repo_text("src/bolt_v3_live_node.rs");
+    let reference_handle_source = source
+        .split("fn new(loaded: &LoadedBoltV3Config) -> Self {")
+        .nth(1)
+        .and_then(|tail| tail.split("fn from_plan(").next())
+        .expect("reference quote probe handle constructor should be present");
+    assert!(
+        reference_handle_source.contains("DataClientReadinessProbeMarketDataKind::Quote"),
+        "live-canary reference probe handle must stay quote-only"
+    );
+    assert!(
+        reference_handle_source.contains("None,"),
+        "live-canary reference probe handle must not configure a book type"
+    );
+
     let probe_source = source
         .split("struct BoltV3NoSubmitReferenceQuoteProbe {")
         .nth(1)
         .and_then(|tail| {
-            tail.split("impl BoltV3NoSubmitReferenceCacheEvidence")
+            tail.split("struct BoltV3NoSubmitDataClientReadinessProbe {")
                 .next()
         })
         .expect("reference quote probe source should be present");
 
     assert!(
-        probe_source.contains("subscribe_quotes"),
-        "reference probe must use NT quote subscription API"
+        probe_source.contains("subscribe_no_submit_required_market_data"),
+        "reference probe must subscribe through the no-submit market-data helper"
     );
     assert!(
-        probe_source.contains("unsubscribe_quotes"),
-        "reference probe must unsubscribe its quote subscriptions on stop"
+        probe_source.contains("unsubscribe_no_submit_required_market_data"),
+        "reference probe must unsubscribe on stop"
     );
     for forbidden in [
         "submit_order",

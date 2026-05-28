@@ -28,7 +28,7 @@ The first T043A source-owned proof primitive has been added but not yet run thro
 - The collector loads the root TOML and provider registry, derives a market-identity plan, and writes a bounded JSON artifact with:
   - `record_kind = "bolt_v3.data_client_readiness_source.v1"`.
   - `config_bundle_checksum`.
-  - per-client `client_key_hash`, `provider_key`, data/execution/secrets capability booleans, data-only scope, strategy-routed flag, supported market families, required secret-block classes, hashed data/execution config, field-name inventories, and hashed routed target ids.
+  - per-client `client_key_hash`, `provider_key`, data/execution/secrets capability booleans, data-only scope, strategy-routed flag, supported market families, required secret-block classes, hashed data/execution config, field-name inventories, field-level value-kind/item-count/hash fingerprints, and hashed routed target ids.
   - classified TOML-owned timeout, retry, freshness, reconnect, and rate-limit policy field names.
   - explicit missing behavior proof rows for metadata behavior, quote/book behavior, freshness/latency, and reconnect/rate-limit/error handling.
 - The artifact marks every row `production_usable = false` with status `not_production_usable_metadata_or_config_only`; later T043A slices must add behavior/freshness/reconnect/rate-limit proof before any row can become production-usable.

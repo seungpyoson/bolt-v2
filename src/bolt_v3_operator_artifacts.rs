@@ -749,6 +749,7 @@ struct DataClientReadinessClientSource {
     required_secret_blocks: Vec<String>,
     data_config_sha256: Option<String>,
     data_config_field_names: Vec<String>,
+    data_config_field_fingerprints: Vec<DataClientReadinessConfigFieldFingerprint>,
     timeout_policy_field_names: Vec<String>,
     retry_policy_field_names: Vec<String>,
     freshness_policy_field_names: Vec<String>,
@@ -757,7 +758,16 @@ struct DataClientReadinessClientSource {
     missing_behavior_proofs: Vec<&'static str>,
     execution_config_sha256: Option<String>,
     execution_config_field_names: Vec<String>,
+    execution_config_field_fingerprints: Vec<DataClientReadinessConfigFieldFingerprint>,
     market_identity_targets: Vec<DataClientReadinessTargetSource>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DataClientReadinessConfigFieldFingerprint {
+    field_name: String,
+    value_kind: &'static str,
+    value_item_count: Option<usize>,
+    value_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3055,6 +3065,7 @@ fn build_data_client_readiness_source_artifact(
         let has_execution = client.execution.is_some();
         let has_secrets = client.secrets.is_some();
         let data_config_field_names = toml_table_field_names(client.data.as_ref());
+        let data_config_field_fingerprints = toml_table_field_fingerprints(client.data.as_ref())?;
         clients.push(DataClientReadinessClientSource {
             client_key_hash: sha256_text(client_key),
             provider_key: provider_key.to_string(),
@@ -3078,6 +3089,7 @@ fn build_data_client_readiness_source_artifact(
                 })
                 .collect(),
             data_config_sha256: client.data.as_ref().map(sha256_toml_value).transpose()?,
+            data_config_field_fingerprints,
             timeout_policy_field_names: classified_policy_field_names(
                 &data_config_field_names,
                 data_client_timeout_policy_field,
@@ -3106,6 +3118,9 @@ fn build_data_client_readiness_source_artifact(
                 .map(sha256_toml_value)
                 .transpose()?,
             execution_config_field_names: toml_table_field_names(client.execution.as_ref()),
+            execution_config_field_fingerprints: toml_table_field_fingerprints(
+                client.execution.as_ref(),
+            )?,
             market_identity_targets,
         });
     }
@@ -3140,6 +3155,44 @@ fn toml_table_field_names(value: Option<&toml::Value>) -> Vec<String> {
         .unwrap_or_default();
     names.sort();
     names
+}
+
+fn toml_table_field_fingerprints(
+    value: Option<&toml::Value>,
+) -> Result<Vec<DataClientReadinessConfigFieldFingerprint>, BoltV3OperatorArtifactError> {
+    let mut fingerprints = Vec::new();
+    if let Some(table) = value.and_then(toml::Value::as_table) {
+        for (field_name, value) in table {
+            fingerprints.push(DataClientReadinessConfigFieldFingerprint {
+                field_name: field_name.clone(),
+                value_kind: toml_value_kind(value),
+                value_item_count: toml_value_item_count(value),
+                value_sha256: sha256_toml_value(value)?,
+            });
+        }
+    }
+    fingerprints.sort_by(|left, right| left.field_name.cmp(&right.field_name));
+    Ok(fingerprints)
+}
+
+fn toml_value_kind(value: &toml::Value) -> &'static str {
+    match value {
+        toml::Value::String(_) => "string",
+        toml::Value::Integer(_) => "integer",
+        toml::Value::Float(_) => "float",
+        toml::Value::Boolean(_) => "boolean",
+        toml::Value::Datetime(_) => "datetime",
+        toml::Value::Array(_) => "array",
+        toml::Value::Table(_) => "table",
+    }
+}
+
+fn toml_value_item_count(value: &toml::Value) -> Option<usize> {
+    match value {
+        toml::Value::Array(values) => Some(values.len()),
+        toml::Value::Table(values) => Some(values.len()),
+        _ => None,
+    }
 }
 
 fn classified_policy_field_names(

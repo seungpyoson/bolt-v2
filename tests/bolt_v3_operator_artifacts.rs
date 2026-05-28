@@ -1472,6 +1472,40 @@ transport_backend = "sockudo"
             .contains(&serde_json::json!("product_types")),
         "Bybit data config fields should be captured without treating product values as canonical"
     );
+    let data_config_field_fingerprints = bybit["data_config_field_fingerprints"]
+        .as_array()
+        .expect("data config field fingerprints should be an array");
+    let product_types_fingerprint = data_config_field_fingerprints
+        .iter()
+        .find(|fingerprint| fingerprint["field_name"] == "product_types")
+        .expect("product_types fingerprint should be recorded");
+    assert_eq!(
+        product_types_fingerprint["value_kind"].as_str(),
+        Some("array")
+    );
+    assert_eq!(
+        product_types_fingerprint["value_item_count"].as_u64(),
+        Some(2)
+    );
+    assert!(is_lowercase_sha256(
+        product_types_fingerprint["value_sha256"]
+            .as_str()
+            .expect("value hash should be a string")
+    ));
+    let environment_fingerprint = data_config_field_fingerprints
+        .iter()
+        .find(|fingerprint| fingerprint["field_name"] == "environment")
+        .expect("environment fingerprint should be recorded");
+    assert_eq!(
+        environment_fingerprint["value_kind"].as_str(),
+        Some("string")
+    );
+    for raw_config_value in ["spot", "linear", "testnet", "sockudo"] {
+        assert!(
+            !rendered.contains(raw_config_value),
+            "readiness artifact should fingerprint configured values instead of printing `{raw_config_value}`: {rendered}"
+        );
+    }
     assert!(
         bybit["timeout_policy_field_names"]
             .as_array()

@@ -1057,7 +1057,6 @@ fn data_client_probe_loaded_config(
         .root
         .clients
         .retain(|configured_key, _| configured_key == client_key);
-    probe_loaded.strategies.clear();
     Ok(probe_loaded)
 }
 
@@ -2421,8 +2420,8 @@ mod tests {
             .expect("selected data client should produce a scoped probe config");
 
         assert!(
-            probe_loaded.strategies.is_empty(),
-            "client-owned readiness probes must not retain unrelated strategy references"
+            !probe_loaded.strategies.is_empty(),
+            "adapter mapping must retain loaded strategy targets so NT Polymarket filters remain config-owned"
         );
         assert_eq!(probe_loaded.root_path, loaded.root_path);
         assert_eq!(
@@ -2435,6 +2434,29 @@ mod tests {
             loaded.root.clients.contains_key("polymarket_main"),
             "helper must not mutate the caller's full client bundle"
         );
+    }
+
+    #[test]
+    fn data_client_probe_runtime_clears_strategies_after_adapter_mapping() {
+        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+
+        let probe_loaded = data_client_probe_loaded_config(&loaded, "polymarket_main")
+            .expect("selected data client should produce a scoped probe config");
+        let runtime_loaded = no_submit_transport_loaded_config(&probe_loaded);
+
+        assert!(
+            !probe_loaded.strategies.is_empty(),
+            "probe adapter mapping input must keep strategies for provider-owned data filters"
+        );
+        assert!(
+            runtime_loaded.strategies.is_empty(),
+            "no-submit data-client probes must not register strategy actors"
+        );
+        assert_eq!(runtime_loaded.root.clients.len(), 1);
+        assert!(runtime_loaded.root.clients.contains_key("polymarket_main"));
     }
 
     #[test]

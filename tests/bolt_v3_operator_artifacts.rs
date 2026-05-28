@@ -49,6 +49,7 @@ use bolt_v2::{
         write_data_client_policy_behavior_source_artifact_from_nt_sources,
         write_data_client_production_readiness_matrix_artifact_from_source_files,
         write_data_client_readiness_source_artifact_from_config,
+        write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence,
         write_entry_readiness_gate_session_artifact_from_decision_source_file,
         write_reference_quote_observations_source_from_no_submit_evidence,
     },
@@ -1790,6 +1791,120 @@ fn data_client_behavior_probe_events_source_records_metadata_without_raw_instrum
     assert!(missing.contains(&serde_json::json!("reconnect_behavior")));
     assert!(missing.contains(&serde_json::json!("rate_limit_behavior")));
     assert!(missing.contains(&serde_json::json!("parse_error_behavior")));
+}
+
+#[test]
+fn data_client_readiness_target_candidates_source_records_nt_metadata_instruments() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str();
+    let temp = support::TempCaseDir::new("data-client-readiness-target-candidates");
+    let first_instrument = format!("CONFIGURED-FIRST.{provider_key}");
+    let second_instrument = format!("CONFIGURED-SECOND.{provider_key}");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![
+                BoltV3NoSubmitDataClientMetadata {
+                    data_client_id: client_key.to_string(),
+                    venue: provider_key.to_string(),
+                    instrument_ids: vec![
+                        second_instrument.clone(),
+                        first_instrument.clone(),
+                        second_instrument.clone(),
+                    ],
+                    ts_init_unix_nanos: 1_777_000_000_000_000_000,
+                    captured_at_unix_nanos: 1_777_000_000_100_000_000,
+                },
+                BoltV3NoSubmitDataClientMetadata {
+                    data_client_id: "other_data_client".to_string(),
+                    venue: provider_key.to_string(),
+                    instrument_ids: vec![format!("OTHER.{provider_key}")],
+                    ts_init_unix_nanos: 1_777_000_000_000_000_000,
+                    captured_at_unix_nanos: 1_777_000_000_100_000_000,
+                },
+            ],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+    };
+    let output_path = temp.path().join("target-candidates.json");
+    let written = write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(
+        &loaded,
+        client_key,
+        &evidence,
+        &output_path,
+    )
+    .expect("target candidates should write");
+    let artifact: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&written.path).expect("artifact should read"))
+            .expect("artifact should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.data_client_readiness_target_candidates.v1"
+    );
+    assert_eq!(artifact["client_key_hash"], sha256_text(client_key));
+    assert_eq!(artifact["provider_key"], provider_key);
+    assert_eq!(artifact["metadata_response_count"], 1);
+    assert_eq!(artifact["instrument_count"], 2);
+    assert_eq!(
+        artifact["instrument_ids"],
+        serde_json::json!([first_instrument, second_instrument])
+    );
+    assert!(
+        artifact["instrument_ids_sha256"]
+            .as_str()
+            .is_some_and(|hash| hash.len() == 64)
+    );
+}
+
+#[test]
+fn data_client_readiness_target_candidates_source_rejects_selected_client_wrong_venue() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str();
+    let temp = support::TempCaseDir::new("data-client-readiness-target-candidates-wrong-venue");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![
+                BoltV3NoSubmitDataClientMetadata {
+                    data_client_id: client_key.to_string(),
+                    venue: provider_key.to_string(),
+                    instrument_ids: vec![format!("CONFIGURED.{provider_key}")],
+                    ts_init_unix_nanos: 1_777_000_000_000_000_000,
+                    captured_at_unix_nanos: 1_777_000_000_100_000_000,
+                },
+                BoltV3NoSubmitDataClientMetadata {
+                    data_client_id: client_key.to_string(),
+                    venue: "OTHER_VENUE".to_string(),
+                    instrument_ids: vec!["CONFIGURED.OTHER_VENUE".to_string()],
+                    ts_init_unix_nanos: 1_777_000_000_000_000_000,
+                    captured_at_unix_nanos: 1_777_000_000_100_000_000,
+                },
+            ],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+    };
+    let output_path = temp.path().join("target-candidates.json");
+    let error = write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(
+        &loaded,
+        client_key,
+        &evidence,
+        &output_path,
+    )
+    .expect_err("selected-client metadata from another venue must fail closed");
+    assert!(
+        error.to_string().contains("metadata.responses.venue"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]

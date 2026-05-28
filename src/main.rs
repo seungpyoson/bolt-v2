@@ -34,6 +34,7 @@ use bolt_v2::{
         write_data_client_policy_behavior_source_artifact_from_nt_sources,
         write_data_client_production_readiness_matrix_artifact_from_source_files,
         write_data_client_readiness_source_artifact_from_config,
+        write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence,
         write_entry_decision_evidence_from_source_file, write_entry_decision_proof_source_files,
         write_entry_readiness_gate_session_artifact_from_decision_source_file,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
@@ -342,6 +343,14 @@ enum OperatorArtifactsCommand {
         output: PathBuf,
     },
     CollectDataClientBehaviorProbeEventsSource {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        client_key: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    CollectDataClientReadinessTargetCandidates {
         #[arg(short, long)]
         config: PathBuf,
         #[arg(long)]
@@ -1032,6 +1041,34 @@ fn run_operator_artifacts_command(
             ))?;
             let written =
                 write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+                    &probe_loaded,
+                    &client_key,
+                    &evidence,
+                    &output,
+                )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectDataClientReadinessTargetCandidates {
+            config,
+            client_key,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let (mut live_node, probe_loaded) =
+                build_bolt_v3_no_submit_data_client_probe_live_node(&loaded, &client_key)?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let local = tokio::task::LocalSet::new();
+            let evidence = runtime.block_on(local.run_until(
+                collect_no_submit_data_client_readiness_evidence(
+                    &mut live_node,
+                    &probe_loaded,
+                    &client_key,
+                ),
+            ))?;
+            let written =
+                write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(
                     &probe_loaded,
                     &client_key,
                     &evidence,

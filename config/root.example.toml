@@ -288,7 +288,7 @@ transport_backend = "sockudo"
 venue = "COINBASE"
 
 [clients.coinbase_data.data]
-environment = "Sandbox"
+environment = "Live"
 transport_backend = "sockudo"
 
 [clients.deribit_data]

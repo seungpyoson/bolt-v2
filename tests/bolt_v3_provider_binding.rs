@@ -191,7 +191,7 @@ transport_backend = "sockudo"
 venue = "COINBASE"
 
 [data]
-environment = "Sandbox"
+environment = "Live"
 transport_backend = "sockudo"
 "#,
         ),

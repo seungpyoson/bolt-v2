@@ -6,13 +6,17 @@ use std::{
     io::{self, Read, Write},
     ops::Range,
     path::{Path, PathBuf},
+    str::FromStr,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::anyhow;
 use nautilus_core::consts::NAUTILUS_USER_AGENT;
-use nautilus_model::instruments::{Instrument, InstrumentAny};
+use nautilus_model::{
+    identifiers::InstrumentId,
+    instruments::{Instrument, InstrumentAny},
+};
 use nautilus_network::http::{HttpClient, USER_AGENT};
 use rust_decimal::{Decimal, prelude::FromPrimitive};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -81,6 +85,10 @@ const REDACTED_SSM_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const REDACTED_SSM_MANIFEST_RECORD_KIND: &str = "bolt_v3.redacted_ssm_manifest.v1";
 const DATA_CLIENT_READINESS_SOURCE_SCHEMA_VERSION: u32 = 1;
 const DATA_CLIENT_READINESS_SOURCE_RECORD_KIND: &str = "bolt_v3.data_client_readiness_source.v1";
+const DATA_CLIENT_READINESS_TARGET_CANDIDATES_RECORD_KIND: &str =
+    "bolt_v3.data_client_readiness_target_candidates.v1";
+const DATA_CLIENT_READINESS_TARGET_CANDIDATES_STATUS_TARGETS_UNBOUND: &str =
+    "target_candidates_only_probe_targets_unbound";
 const DATA_CLIENT_READINESS_STATUS_NOT_PRODUCTION_USABLE: &str =
     "not_production_usable_metadata_or_config_only";
 const DATA_CLIENT_NT_SOURCE_CAPABILITY_SCHEMA_VERSION: u32 = 1;
@@ -805,6 +813,23 @@ struct DataClientReadinessProbeTargetSource {
     configured_target_id_hash: String,
     event_kind: &'static str,
     instrument_id_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DataClientReadinessTargetCandidatesArtifact {
+    schema_version: u32,
+    record_kind: &'static str,
+    generated_at_unix_seconds: u64,
+    config_bundle_checksum: String,
+    client_key_hash: String,
+    provider_key: String,
+    observed_at_unix_millis: u64,
+    metadata_response_count: usize,
+    instrument_count: usize,
+    instrument_ids: Vec<String>,
+    instrument_ids_sha256: String,
+    production_usable: bool,
+    readiness_status: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3138,6 +3163,18 @@ pub fn write_data_client_behavior_probe_events_from_no_submit_readiness_evidence
     write_json_artifact_create_new_from_bytes(output_path, &bytes)
 }
 
+pub fn write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    evidence: &BoltV3NoSubmitDataClientReadinessEvidence,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let artifact = build_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(
+        loaded, client_key, evidence,
+    )?;
+    write_json_artifact_create_new(output_path, &artifact)
+}
+
 fn data_client_behavior_probe_events_from_no_submit_evidence(
     loaded: &LoadedBoltV3Config,
     client_key: &str,
@@ -3424,6 +3461,119 @@ fn data_client_readiness_quote_target_instruments(
         .values()
         .map(|target| target.instrument_id.to_string())
         .collect())
+}
+
+fn build_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    evidence: &BoltV3NoSubmitDataClientReadinessEvidence,
+) -> Result<DataClientReadinessTargetCandidatesArtifact, BoltV3OperatorArtifactError> {
+    if client_key.trim().is_empty() {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "client_key",
+            },
+        );
+    }
+    let client = loaded.root.clients.get(client_key).ok_or(
+        BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+            field: "client_key",
+        },
+    )?;
+    if client.data.is_none() {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "client_key.data",
+            },
+        );
+    }
+    let provider_key = client.venue.as_str();
+    binding_for_provider_key(provider_key).ok_or_else(|| {
+        BoltV3OperatorArtifactError::UnsupportedProvider {
+            client_key: client_key.to_string(),
+            provider_key: provider_key.to_string(),
+        }
+    })?;
+
+    let mut observed_at_unix_millis = 0_u64;
+    let mut metadata_response_count = 0_usize;
+    let mut instrument_ids = BTreeSet::new();
+    for response in &evidence.metadata.responses {
+        if response.data_client_id != client_key {
+            continue;
+        }
+        if response.venue != provider_key {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "metadata.responses.venue",
+                },
+            );
+        }
+        metadata_response_count += 1;
+        let captured_at_unix_millis = nanos_to_millis_checked(
+            response.captured_at_unix_nanos,
+            "metadata.captured_at_unix_nanos",
+        )?;
+        observed_at_unix_millis = observed_at_unix_millis.max(captured_at_unix_millis);
+        for instrument_id in &response.instrument_ids {
+            let parsed = InstrumentId::from_str(instrument_id).map_err(|_| {
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "metadata.instrument_ids",
+                }
+            })?;
+            if parsed.venue.as_str() != provider_key {
+                return Err(
+                    BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                        field: "metadata.instrument_ids.venue",
+                    },
+                );
+            }
+            instrument_ids.insert(instrument_id.to_string());
+        }
+    }
+    if metadata_response_count == 0 {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "metadata.responses",
+            },
+        );
+    }
+    if instrument_ids.is_empty() || observed_at_unix_millis == 0 {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "metadata.instrument_ids",
+            },
+        );
+    }
+    let instrument_ids: Vec<String> = instrument_ids.into_iter().collect();
+    let instrument_ids_sha256 = data_client_readiness_target_candidates_hash(&instrument_ids);
+    Ok(DataClientReadinessTargetCandidatesArtifact {
+        schema_version: DATA_CLIENT_READINESS_SOURCE_SCHEMA_VERSION,
+        record_kind: DATA_CLIENT_READINESS_TARGET_CANDIDATES_RECORD_KIND,
+        generated_at_unix_seconds: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
+        client_key_hash: sha256_text(client_key),
+        provider_key: provider_key.to_string(),
+        observed_at_unix_millis,
+        metadata_response_count,
+        instrument_count: instrument_ids.len(),
+        instrument_ids,
+        instrument_ids_sha256,
+        production_usable: false,
+        readiness_status: DATA_CLIENT_READINESS_TARGET_CANDIDATES_STATUS_TARGETS_UNBOUND,
+    })
+}
+
+fn data_client_readiness_target_candidates_hash(instrument_ids: &[String]) -> String {
+    let mut hasher = Sha256::new();
+    for instrument_id in instrument_ids {
+        hasher.update((instrument_id.len() as u64).to_le_bytes());
+        hasher.update(instrument_id.as_bytes());
+    }
+    hex::encode(hasher.finalize())
 }
 
 fn build_data_client_policy_behavior_source_artifact_from_nt_sources(

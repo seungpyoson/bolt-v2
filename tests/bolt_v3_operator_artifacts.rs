@@ -7,6 +7,7 @@ use bolt_v2::{
     bolt_v3_archetypes::{
         ArchetypeGateRequirement, GateRole, GateValueKind, binary_oracle_edge_taker,
     },
+    bolt_v3_client_registration::{BoltV3RegisteredClient, BoltV3RegistrationSummary},
     bolt_v3_config::{
         BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
         DataClientReadinessProbeBlock, DataClientReadinessProbeQuoteTargetBlock, GateProviderBlock,
@@ -949,6 +950,25 @@ fn configure_data_client_readiness_quote_probe(loaded: &mut LoadedBoltV3Config) 
         .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
 }
 
+fn registration_summary_for_loaded(loaded: &LoadedBoltV3Config) -> BoltV3RegistrationSummary {
+    BoltV3RegistrationSummary {
+        clients: loaded
+            .root
+            .clients
+            .iter()
+            .map(|(client_key, client)| {
+                (
+                    client_key.clone(),
+                    BoltV3RegisteredClient {
+                        data: client.data.is_some(),
+                        execution: client.execution.is_some(),
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
 fn add_metadata_gate_provider(
     loaded: &mut LoadedBoltV3Config,
     provider_id: &str,
@@ -1253,30 +1273,6 @@ fn data_client_behavior_observation_source_materializes_probe_events_without_raw
         event("quote", 1_777_000_000_100, Some(450), Some(90), None, None),
         event("book", 1_777_000_000_200, Some(500), Some(100), None, None),
         unsupported_ticker,
-        event(
-            "reconnect",
-            1_777_000_000_300,
-            None,
-            None,
-            Some(true),
-            Some(true),
-        ),
-        event(
-            "rate_limit",
-            1_777_000_000_400,
-            None,
-            None,
-            Some(false),
-            Some(true),
-        ),
-        event(
-            "parse_error",
-            1_777_000_000_500,
-            None,
-            None,
-            Some(false),
-            Some(true),
-        ),
     ]
     .into_iter()
     .map(|value| serde_json::to_string(&value).expect("event should serialize"))
@@ -1334,12 +1330,94 @@ fn data_client_behavior_observation_source_materializes_probe_events_without_raw
         Some(100)
     );
     assert_eq!(source["freshness"]["within_configured_bound"], true);
-    assert_eq!(source["reconnect"]["behavior_observed"], true);
-    assert_eq!(source["rate_limit"]["fail_closed"], true);
-    assert_eq!(source["parse_error"]["fail_closed"], true);
+    assert_eq!(source["reconnect"]["behavior_observed"], false);
+    assert_eq!(source["rate_limit"]["behavior_observed"], false);
+    assert_eq!(source["parse_error"]["behavior_observed"], false);
     assert!(!rendered_source.contains(client_key));
     assert!(!rendered_source.contains("probe-events.jsonl"));
     assert!(!rendered_source.contains(&temp.path().display().to_string()));
+}
+
+#[test]
+fn data_client_behavior_observation_source_rejects_unowned_policy_probe_events() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str();
+    let temp = support::TempCaseDir::new("data-client-behavior-unowned-policy-events");
+    let client_key_hash = sha256_text(client_key);
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let output_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+    let surface_event = |event_kind: &str, observed_at_unix_millis: u64| {
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.data_client_behavior_probe_event.v1",
+            "client_key_hash": client_key_hash,
+            "provider_key": provider_key,
+            "observed_at_unix_millis": observed_at_unix_millis,
+            "event_kind": event_kind,
+            "supported_by_nt_source": true,
+            "observed_through_live_node": true,
+            "age_millis": 100,
+            "latency_millis": 50,
+            "recovered": null,
+            "fail_closed": null,
+            "evidence_sha256": sha256_text(event_kind),
+            "unsupported_disposition": null
+        })
+    };
+    let policy_event = |event_kind: &str, observed_at_unix_millis: u64| {
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.data_client_behavior_probe_event.v1",
+            "client_key_hash": client_key_hash,
+            "provider_key": provider_key,
+            "observed_at_unix_millis": observed_at_unix_millis,
+            "event_kind": event_kind,
+            "supported_by_nt_source": true,
+            "observed_through_live_node": true,
+            "age_millis": null,
+            "latency_millis": null,
+            "recovered": true,
+            "fail_closed": true,
+            "evidence_sha256": sha256_text(event_kind),
+            "unsupported_disposition": null
+        })
+    };
+    let lines = [
+        surface_event("metadata", 1_777_000_000_100),
+        surface_event("quote", 1_777_000_000_200),
+        policy_event("reconnect", 1_777_000_000_300),
+        policy_event("rate_limit", 1_777_000_000_400),
+        policy_event("parse_error", 1_777_000_000_500),
+    ]
+    .into_iter()
+    .map(|value| serde_json::to_string(&value).expect("event should serialize"))
+    .collect::<Vec<_>>()
+    .join("\n");
+    std::fs::write(&probe_events_path, format!("{lines}\n")).expect("probe events should write");
+
+    let error = write_data_client_behavior_observation_source_from_probe_events(
+        &loaded,
+        client_key,
+        &probe_events_path,
+        16_384,
+        &output_path,
+    )
+    .expect_err(
+        "policy events must require a source-owned policy collector, not hand-authored JSONL",
+    );
+
+    assert!(
+        error.to_string().contains("probe_event.event_kind"),
+        "error should name the rejected policy event kind: {error}"
+    );
 }
 
 #[test]
@@ -1616,7 +1694,7 @@ fn data_client_behavior_probe_events_source_requires_client_owned_probe_targets(
 }
 
 #[test]
-fn data_client_production_readiness_matrix_combines_config_source_mapping_and_behavior_proofs() {
+fn data_client_production_readiness_matrix_fails_closed_without_source_owned_policy_proofs() {
     let loaded = load_fixture_with_live_canary();
     let (client_key, client) = loaded
         .root
@@ -1653,8 +1731,10 @@ fn data_client_production_readiness_matrix_combines_config_source_mapping_and_be
     let live_node_mapping_source_path = temp
         .path()
         .join("data-client-live-node-mapping-source.json");
+    let registration_summary = registration_summary_for_loaded(&loaded);
     write_data_client_live_node_mapping_source_artifact_from_config(
         &loaded,
+        &registration_summary,
         &live_node_source_path,
         &adapter_mapping_source_path,
         &provider_registry_source_path,
@@ -1809,17 +1889,17 @@ fn data_client_production_readiness_matrix_combines_config_source_mapping_and_be
     assert_eq!(row["config_inventory_present"], true);
     assert_eq!(row["live_node_mapping_present"], true);
     assert_eq!(row["nt_source_capability_present"], true);
-    assert_eq!(row["behavior_observation_complete"], true);
-    assert_eq!(row["production_usable"], true);
+    assert_eq!(row["behavior_observation_complete"], false);
+    assert_eq!(row["production_usable"], false);
     assert_eq!(
         row["readiness_status"].as_str(),
-        Some("data_client_t043a_matrix_complete")
+        Some("data_client_t043a_matrix_missing_proofs")
     );
     assert!(
         row["missing_proofs"]
             .as_array()
             .expect("missing proofs should be an array")
-            .is_empty()
+            .contains(&serde_json::json!("behavior_observation"))
     );
 }
 
@@ -1942,13 +2022,13 @@ fn data_client_behavior_observation_source_records_observed_data_path_as_unprove
             .as_str()
             .expect("source path hash should be a string")
     ));
-    assert_eq!(artifact["behavior_observation_complete"], true);
-    assert!(
-        artifact["missing_behavior_proofs"]
-            .as_array()
-            .expect("missing behavior proofs should be an array")
-            .is_empty()
-    );
+    assert_eq!(artifact["behavior_observation_complete"], false);
+    let missing = artifact["missing_behavior_proofs"]
+        .as_array()
+        .expect("missing behavior proofs should be an array");
+    assert!(missing.contains(&serde_json::json!("reconnect_behavior")));
+    assert!(missing.contains(&serde_json::json!("rate_limit_behavior")));
+    assert!(missing.contains(&serde_json::json!("parse_error_behavior")));
     assert_eq!(
         artifact["metadata_behavior"]["observed_through_live_node"],
         true
@@ -2020,9 +2100,11 @@ pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
     let output_path = temp
         .path()
         .join("data-client-live-node-mapping-source.json");
+    let registration_summary = registration_summary_for_loaded(&loaded);
 
     let written = write_data_client_live_node_mapping_source_artifact_from_config(
         &loaded,
+        &registration_summary,
         &live_node_source_path,
         &adapter_mapping_source_path,
         &provider_registry_source_path,
@@ -2093,7 +2175,15 @@ pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
         client.data.is_some()
     );
     assert_eq!(
+        recorded["data_client_registered_through_live_node"],
+        client.data.is_some()
+    );
+    assert_eq!(
         recorded["execution_block_flows_through_mapping_source"],
+        client.execution.is_some()
+    );
+    assert_eq!(
+        recorded["execution_client_registered_through_live_node"],
         client.execution.is_some()
     );
     assert_eq!(recorded["production_usable"], false);

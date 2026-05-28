@@ -911,8 +911,10 @@ fn run_operator_artifacts_command(
             output,
         } => {
             let loaded = load_bolt_v3_config(&config)?;
+            let live_node = build_bolt_v3_no_submit_live_node(&loaded)?;
             let written = write_data_client_live_node_mapping_source_artifact_from_config(
                 &loaded,
+                live_node.registration_summary(),
                 &live_node_source,
                 &adapter_mapping_source,
                 &provider_registry_source,

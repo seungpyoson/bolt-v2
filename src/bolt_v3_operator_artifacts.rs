@@ -24,6 +24,7 @@ use crate::{
         ArchetypeGateRequirement, GateRole, GateValueKind,
         binary_oracle_edge_taker::raw_taker_config,
     },
+    bolt_v3_client_registration::BoltV3RegistrationSummary,
     bolt_v3_config::{
         BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
         LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, NO_RESOLUTION_KIND,
@@ -851,7 +852,9 @@ struct DataClientLiveNodeMappingClientSource {
     has_execution: bool,
     provider_binding_registered: bool,
     data_block_flows_through_mapping_source: bool,
+    data_client_registered_through_live_node: bool,
     execution_block_flows_through_mapping_source: bool,
+    execution_client_registered_through_live_node: bool,
     production_usable: bool,
     readiness_status: &'static str,
 }
@@ -2953,6 +2956,7 @@ pub fn write_data_client_nt_source_capability_artifact_from_config(
 
 pub fn write_data_client_live_node_mapping_source_artifact_from_config(
     loaded: &LoadedBoltV3Config,
+    registration_summary: &BoltV3RegistrationSummary,
     live_node_source_path: &Path,
     adapter_mapping_source_path: &Path,
     provider_registry_source_path: &Path,
@@ -2961,6 +2965,7 @@ pub fn write_data_client_live_node_mapping_source_artifact_from_config(
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
     let artifact = build_data_client_live_node_mapping_source_artifact(
         loaded,
+        registration_summary,
         live_node_source_path,
         adapter_mapping_source_path,
         provider_registry_source_path,
@@ -3554,8 +3559,6 @@ fn validate_data_client_behavior_probe_event(
     }
     if data_client_probe_event_surface_kind(event.event_kind.as_str()) {
         validate_data_client_behavior_surface_probe_event(event)
-    } else if data_client_probe_event_policy_kind(event.event_kind.as_str()) {
-        validate_data_client_behavior_policy_probe_event(event)
     } else {
         Err(
             BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
@@ -3602,29 +3605,6 @@ fn validate_data_client_behavior_surface_probe_event(
         return Err(
             BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
                 field: "probe_event.surface",
-            },
-        );
-    }
-    Ok(())
-}
-
-fn validate_data_client_behavior_policy_probe_event(
-    event: &DataClientBehaviorProbeEvent,
-) -> Result<(), BoltV3OperatorArtifactError> {
-    if !event.supported_by_nt_source
-        || !event.observed_through_live_node
-        || event.age_millis.is_some()
-        || event.latency_millis.is_some()
-        || (!event.recovered.unwrap_or(false) && !event.fail_closed.unwrap_or(false))
-        || !event
-            .evidence_sha256
-            .as_deref()
-            .is_some_and(is_lowercase_sha256)
-        || event.unsupported_disposition.is_some()
-    {
-        return Err(
-            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
-                field: "probe_event.policy",
             },
         );
     }
@@ -3829,10 +3809,6 @@ fn data_client_probe_event_surface_kind(event_kind: &str) -> bool {
     matches!(event_kind, "metadata" | "quote" | "book" | "ticker")
 }
 
-fn data_client_probe_event_policy_kind(event_kind: &str) -> bool {
-    matches!(event_kind, "reconnect" | "rate_limit" | "parse_error")
-}
-
 fn build_data_client_production_readiness_matrix_artifact_from_source_files(
     loaded: &LoadedBoltV3Config,
     readiness_source_path: &Path,
@@ -3873,7 +3849,7 @@ fn build_data_client_production_readiness_matrix_artifact_from_source_files(
     let live_node_mapping = data_client_matrix_client_keys(
         &live_node_mapping_source,
         "live_node_mapping_source.clients",
-        "data_block_flows_through_mapping_source",
+        "data_client_registered_through_live_node",
     )?;
 
     let mut nt_source_capabilities = BTreeSet::new();
@@ -4382,20 +4358,18 @@ fn data_client_behavior_observation_missing_proofs(
     if !source.freshness.within_configured_bound {
         missing.push("freshness_latency");
     }
-    if !source.reconnect.behavior_observed {
-        missing.push("reconnect_behavior");
-    }
-    if !source.rate_limit.behavior_observed {
-        missing.push("rate_limit_behavior");
-    }
-    if !source.parse_error.behavior_observed {
-        missing.push("parse_error_behavior");
-    }
+    // The current source-owned LiveNode probe collector emits metadata and market-data
+    // surface observations only. Policy behavior remains unproven until a collector
+    // can produce those observations from NT/LiveNode instead of operator-supplied JSON.
+    missing.push("reconnect_behavior");
+    missing.push("rate_limit_behavior");
+    missing.push("parse_error_behavior");
     missing
 }
 
 fn build_data_client_live_node_mapping_source_artifact(
     loaded: &LoadedBoltV3Config,
+    registration_summary: &BoltV3RegistrationSummary,
     live_node_source_path: &Path,
     adapter_mapping_source_path: &Path,
     provider_registry_source_path: &Path,
@@ -4481,6 +4455,11 @@ fn build_data_client_live_node_mapping_source_artifact(
         })?;
         let has_data = client.data.is_some();
         let has_execution = client.execution.is_some();
+        let registered = registration_summary.clients.get(client_key);
+        let data_client_registered_through_live_node =
+            registered.is_some_and(|summary| summary.data);
+        let execution_client_registered_through_live_node =
+            registered.is_some_and(|summary| summary.execution);
         clients.push(DataClientLiveNodeMappingClientSource {
             client_key_hash: sha256_text(client_key),
             provider_key: provider_key.to_string(),
@@ -4488,7 +4467,9 @@ fn build_data_client_live_node_mapping_source_artifact(
             has_execution,
             provider_binding_registered: true,
             data_block_flows_through_mapping_source: has_data && source_path_proven,
+            data_client_registered_through_live_node,
             execution_block_flows_through_mapping_source: has_execution && source_path_proven,
+            execution_client_registered_through_live_node,
             production_usable: false,
             readiness_status: DATA_CLIENT_LIVE_NODE_MAPPING_SOURCE_STATUS_NOT_PRODUCTION_USABLE,
         });

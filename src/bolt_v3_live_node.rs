@@ -103,6 +103,7 @@ use crate::{
 
 pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
+    registration_summary: BoltV3RegistrationSummary,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     redaction_values: Vec<Zeroizing<String>>,
 }
@@ -590,11 +591,13 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
 impl BoltV3LiveNodeRuntime {
     fn new(
         node: LiveNode,
+        registration_summary: BoltV3RegistrationSummary,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
         redaction_values: Vec<Zeroizing<String>>,
     ) -> Self {
         Self {
             node,
+            registration_summary,
             submit_admission,
             redaction_values,
         }
@@ -614,6 +617,10 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn registered_data_client_ids(&self) -> Vec<ClientId> {
         self.node.kernel().data_engine.borrow().registered_clients()
+    }
+
+    pub fn registration_summary(&self) -> &BoltV3RegistrationSummary {
+        &self.registration_summary
     }
 
     pub fn registered_exec_client_ids(&self) -> Vec<ClientId> {
@@ -1876,7 +1883,12 @@ fn build_live_node_with_clients(
         );
     }
     Ok((
-        BoltV3LiveNodeRuntime::new(node, submit_admission, resolved.redaction_values()),
+        BoltV3LiveNodeRuntime::new(
+            node,
+            summary.clone(),
+            submit_admission,
+            resolved.redaction_values(),
+        ),
         summary,
     ))
 }

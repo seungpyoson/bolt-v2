@@ -74,6 +74,7 @@ As operator, I need T128/T130/T131/T122 and T116/T046 to run only after real art
 - **FR-015**: Decision evidence, tiny-canary evidence, CLI artifact commands, strategy registration, runtime strategy logic, and source replay must consume readiness-created gate sessions or normalized evidence identities; a provider-specific source string alone must not satisfy readiness.
 - **FR-016**: T036H implementation must follow the boundary contract in `specs/024-production-trade-readiness/gate-dataflow-contract.md`; any deviation requires a recorded disposition before code changes.
 - **FR-017**: Live-canary and final-packet readiness must bind the readiness gate session path and sha256 for every strategy instance with required gate roles; absence, hash mismatch, selected-market mismatch, stale evidence, or role mismatch must fail closed.
+- **FR-018**: Every data-client adapter added or enabled by this PR must have a recorded production-readiness matrix before it is described as production-usable. Metadata-only REST smoke evidence is insufficient; the matrix must prove config-owned LiveNode wiring, data freshness/subscription behavior or a fail-closed unsupported-path disposition, reconnect/rate-limit/error behavior, credential/no-execution boundaries for data-only clients, and no venue or market hardcodes.
 
 ## Success Criteria
 
@@ -87,3 +88,4 @@ As operator, I need T128/T130/T131/T122 and T116/T046 to run only after real art
 - **SC-008**: T036H RED/GREEN coverage proves the runtime strategy receives only a readiness-created gate session or normalized evidence object and cannot open a second unchecked provider path.
 - **SC-009**: T036H RED/GREEN coverage proves old `price_to_beat_source` string comparisons cannot satisfy decision evidence, tiny-canary evidence, or CLI final-packet readiness without the matching readiness session/evidence identity.
 - **SC-010**: T036H RED/GREEN coverage proves live-canary and final-packet verification reject required-role strategy instances unless the operator packet binds the matching gate session path and sha256.
+- **SC-011**: The data-client production-readiness matrix passes for every PR-enabled data client before final readiness closeout or any production-usable multi-venue data-client claim.

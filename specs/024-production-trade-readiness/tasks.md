@@ -161,6 +161,7 @@
 **Independent Test**: final-packet no-submit passes before tiny-capital canary; both are bound to exact head, root TOML, final packet, and retained evidence hashes.
 
 - [x] T043 [US5] Execute T131/T122 final-packet EC2/EIP no-submit rerun with the verified root TOML and final operator packet; record evidence in `specs/024-production-trade-readiness/final-no-submit.md`.
+- [ ] T043A [US5] Validate the PR-enabled data-client adapters before treating them as production-usable: record a venue-neutral matrix in `specs/024-production-trade-readiness/data-adapter-production-readiness.md` proving config-owned LiveNode wiring, NT data-path behavior beyond metadata-only smoke, freshness/reconnect/rate-limit/error handling, credential/no-execution boundaries for data-only clients, and no venue/market hardcodes.
 - [ ] T044 [US5] Execute T116/T046 tiny-capital canary with the verified root TOML and final operator packet; record evidence in `specs/024-production-trade-readiness/tiny-canary.md`.
 - [ ] T045 [US5] Run post-run artifact/log secret scan and record retention/purge decision in `specs/024-production-trade-readiness/post-run-hygiene.md`.
 - [ ] T046 [US5] Update #369, #385, #409, #360, and PR #480 with exact final readiness status and record links in `specs/024-production-trade-readiness/readiness-ledger.md`.
@@ -179,9 +180,10 @@
 - T036-T038 require T036H1-T036H19 and T036I.
 - T039-T042 require T035-T038.
 - T043 requires T042.
-- T044 requires T043.
+- T043A requires T043.
+- T044 requires T043 and T043A.
 - T045-T046 require T044.
 
 ## MVP
 
-The current next slice is T044 tiny-capital canary after renewed explicit operator approval, then T045 post-run hygiene and T046 issue/PR/readiness-ledger updates. T047 local cleanup is complete; no hardcoded runtime values remains a cross-cutting invariant for every later slice. Final GitHub CI should be checked once at the end after remaining implementation/evidence commits, not after every docs-only update.
+The current next slice is T043A data-client production-readiness validation, because the current public metadata smoke evidence is not enough to claim the added data clients are production-usable. After T043A, the next live step is T044 tiny-capital canary after renewed explicit operator approval, then T045 post-run hygiene and T046 issue/PR/readiness-ledger updates. T047 local cleanup is complete; no hardcoded runtime values remains a cross-cutting invariant for every later slice. Final GitHub CI should be checked once at the end after remaining implementation/evidence commits, not after every docs-only update.

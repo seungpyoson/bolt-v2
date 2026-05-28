@@ -9451,6 +9451,134 @@ reason = "This names the operator-evidence gate-session checksum field consumed 
 [[allowed]]
 path = "src/bolt_v3_strategy_registration.rs"
 kind = "string"
+literal = '''"strategy_input_evidence_path"'''
+context = '''const OPERATOR_EVIDENCE_STRATEGY_INPUT_EVIDENCE_PATH_FIELD: &str = "strategy_input_evidence_path";'''
+classification = "operator_evidence_schema_field"
+reason = "This names the operator-evidence strategy-input path field consumed during strategy registration; the path value remains evidence-owned and hash-bound."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"strategy_input_evidence_sha256"'''
+context = '''"strategy_input_evidence_sha256";'''
+classification = "operator_evidence_schema_field"
+reason = "This names the operator-evidence strategy-input checksum field consumed during strategy registration; the checksum value is computed from the evidence artifact."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"strategy_instance_id"'''
+context = '''"strategy_instance_id",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names the strategy-input evidence field bound back to the readiness gate session; the field value is evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"gate_session_hash"'''
+context = '''"gate_session_hash",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names the strategy-input evidence field bound to the readiness gate session hash; the hash value is evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"selected_market_key"'''
+context = '''"selected_market_key",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names the strategy-input evidence field bound to the selected market key; the key value is evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"price_to_beat_value"'''
+context = '''positive_seed_number("price_to_beat_value", input.price_to_beat_value.as_str())?;'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names the strategy-input evidence price-to-beat field read from verified source-owned evidence, not a configured runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"spot_price"'''
+context = '''let reference_price = positive_seed_number("spot_price", input.spot_price.as_str())?;'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names the strategy-input evidence source reference price field; the price value is evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"realized_volatility"'''
+context = '''positive_seed_number("realized_volatility", input.realized_volatility.as_str())?;'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names the strategy-input evidence realized-volatility field; the volatility value is evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"strategy_input_evidence reference_quote_ts_event precedes selected market start"'''
+context = '''"strategy_input_evidence reference_quote_ts_event precedes selected market start",'''
+classification = "operator_artifact_validation_diagnostic"
+reason = "This is a fail-closed diagnostic for an invalid source-owned strategy-input timestamp ordering."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"polymarket_condition_id"'''
+context = '''"polymarket_condition_id",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names the strategy-input selected-market identity field; the rotating market identity value is evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"polymarket_market_slug"'''
+context = '''"polymarket_market_slug",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names the strategy-input selected-market identity field; the rotating market identity value is evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"polymarket_question_id"'''
+context = '''"polymarket_question_id",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names the strategy-input selected-market identity field; the rotating market identity value is evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"up_instrument_id"'''
+context = '''up_instrument_id: required_owned_seed_string("up_instrument_id", input.up_instrument_id)?,'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names the strategy-input selected-market instrument field; the rotating instrument id value is evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"down_instrument_id"'''
+context = '''"down_instrument_id",'''
+classification = "phase8_strategy_input_schema_field"
+reason = "This names the strategy-input selected-market instrument field; the rotating instrument id value is evidence-owned."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
+literal = '''"gate_subscriptions"'''
+context = '''.and_then(|target| target.get("gate_subscriptions"))'''
+classification = "target_gate_schema_field"
+reason = "This names the target gate-subscriptions TOML table used to detect whether runtime source-owned readiness seeding applies."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "number"
+literal = "0.0"
+context = '''if !parsed.is_finite() || parsed <= 0.0 {'''
+classification = "operator_artifact_validation_threshold"
+reason = "This is the positive-number validation boundary for source-owned strategy-input numeric evidence."
+
+[[allowed]]
+path = "src/bolt_v3_strategy_registration.rs"
+kind = "string"
 literal = '''"configured_target_id"'''
 context = '''.get("configured_target_id")'''
 classification = "entry_readiness_gate_schema_field"

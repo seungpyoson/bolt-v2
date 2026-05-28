@@ -40,7 +40,7 @@ use crate::{
     bolt_v3_decision_evidence::{
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3ReadinessGateEvidenceSnapshot,
+        BoltV3OrderIntentKind, BoltV3ReadinessGateEvidenceSnapshot, BoltV3RuntimeReadinessSeed,
         BoltV3StrategyInputEvidenceSnapshot, compiled_order_price_source,
         validate_readiness_gate_evidence_snapshot,
     },
@@ -1927,6 +1927,7 @@ impl BinaryOracleEdgeTaker {
         self.active.books.up.instrument_id = next_selection_books.up_instrument_id;
         self.active.books.down.instrument_id = next_selection_books.down_instrument_id;
         self.active.apply_selection_timing(&snapshot);
+        self.apply_source_owned_readiness_seed();
         let reactivated_into_active =
             previous_phase != SelectionPhase::Active && self.active.phase == SelectionPhase::Active;
         let same_market_interval_rollover =
@@ -1953,6 +1954,70 @@ impl BinaryOracleEdgeTaker {
                 error,
             );
         }
+    }
+
+    fn apply_source_owned_readiness_seed(&mut self) {
+        let Some(seed) = self.context.runtime_readiness_seed().cloned() else {
+            return;
+        };
+        if !self.source_owned_readiness_seed_matches_active(&seed) {
+            return;
+        }
+        if !is_positive_finite(seed.price_to_beat_value)
+            || !is_positive_finite(seed.reference_price)
+            || !is_positive_finite(seed.realized_volatility)
+        {
+            return;
+        }
+
+        self.active.price_to_beat = Some(seed.price_to_beat_value);
+        self.observe_reference_quote(&FastSpotObservation {
+            venue_name: seed.reference_venue.clone(),
+            price: seed.reference_price,
+            observed_ts_ms: seed.reference_quote_ts_event,
+        });
+        self.active.warmup_count = self.active.warmup_count.max(self.active.warmup_target);
+        if self
+            .pricing
+            .realized_vol
+            .last_ready_ts_ms
+            .is_none_or(|ready_ts_ms| ready_ts_ms <= seed.reference_quote_ts_event)
+        {
+            self.pricing.realized_vol.last_ready_vol = Some(seed.realized_volatility);
+            self.pricing.realized_vol.last_ready_ts_ms = Some(seed.reference_quote_ts_event);
+            self.pricing.realized_vol_source_venue = Some(seed.reference_venue);
+        }
+    }
+
+    fn source_owned_readiness_seed_matches_active(
+        &self,
+        seed: &BoltV3RuntimeReadinessSeed,
+    ) -> bool {
+        if self.active.phase != SelectionPhase::Active {
+            return false;
+        }
+        let Some(identity) = self.active.source_identity.as_ref() else {
+            return false;
+        };
+        if identity.condition_id != seed.polymarket_condition_id
+            || identity.market_slug != seed.polymarket_market_slug
+            || identity.question_id != seed.polymarket_question_id
+        {
+            return false;
+        }
+        if self.active.interval_start_ms != Some(seed.market_start_timestamp_ms)
+            || self.active.interval_end_ms != Some(seed.market_end_timestamp_ms)
+        {
+            return false;
+        }
+        let Some(up_instrument_id) = self.active.books.up.instrument_id else {
+            return false;
+        };
+        let Some(down_instrument_id) = self.active.books.down.instrument_id else {
+            return false;
+        };
+        up_instrument_id.to_string() == seed.up_instrument_id
+            && down_instrument_id.to_string() == seed.down_instrument_id
     }
 
     fn observe_reference_quote(&mut self, quote: &FastSpotObservation) {
@@ -2109,7 +2174,7 @@ impl BinaryOracleEdgeTaker {
         self.config
             .reference_instrument_id
             .as_deref()
-            .map(InstrumentId::from)
+            .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
     }
 
     fn subscribe_reference_quotes(&mut self) {
@@ -7279,6 +7344,14 @@ mod tests {
         test_strategy_with_fee_provider(RecordingFeeProvider::cold())
     }
 
+    fn test_strategy_with_runtime_readiness_seed(
+        seed: BoltV3RuntimeReadinessSeed,
+    ) -> BinaryOracleEdgeTaker {
+        let mut strategy = test_strategy();
+        strategy.context = strategy.context.clone().with_runtime_readiness_seed(seed);
+        strategy
+    }
+
     fn register_test_strategy(strategy: &mut BinaryOracleEdgeTaker) -> Rc<RefCell<Cache>> {
         let clock = Rc::new(RefCell::new(TestClock::new()));
         clock
@@ -7645,6 +7718,40 @@ mod tests {
 
         assert_eq!(strategy.pricing.last_reference_fair_value, None);
         assert_eq!(strategy.pricing.fast_spot, None);
+    }
+
+    #[test]
+    fn source_owned_reference_identity_does_not_panic_nt_quote_filter() {
+        let mut strategy = test_strategy();
+        strategy.config.reference_venue = Some("resolution_oracle_primary".to_string());
+        strategy.config.reference_instrument_id = Some("configured-reference-price".to_string());
+
+        strategy
+            .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_200))
+            .expect("source-owned reference identity should not be parsed as an NT instrument");
+
+        assert_eq!(strategy.pricing.last_reference_fair_value, None);
+        assert_eq!(strategy.pricing.fast_spot, None);
+    }
+
+    #[test]
+    fn source_owned_readiness_seed_warms_matching_runtime_market() {
+        let market = candidate_market("market-1", 1_000);
+        let seed = runtime_readiness_seed_for_market(&market, 3_100.0, 3_101.0, 1_200, 1.5);
+        let mut strategy = test_strategy_with_runtime_readiness_seed(seed);
+
+        strategy
+            .apply_selection_snapshot(selection_snapshot(1_200, SelectionState::Active { market }));
+
+        assert_eq!(strategy.active.price_to_beat, Some(3_100.0));
+        assert_eq!(strategy.active.interval_open, Some(3_100.0));
+        assert_eq!(strategy.active.last_reference_ts_ms, Some(1_200));
+        assert_eq!(strategy.pricing.last_reference_fair_value, Some(3_101.0));
+        assert_eq!(
+            strategy.pricing.fast_spot,
+            Some(fast_spot("reference_data_client", 3_101.0, 1_200))
+        );
+        assert_eq!(strategy.current_realized_vol_at(1_200), Some(1.5));
     }
 
     fn live_canary_gate_report(
@@ -9123,6 +9230,32 @@ mod tests {
             start_ts_ms: interval_start_ms,
             expiration_ts_ms: interval_start_ms.saturating_add(300 * MILLIS_PER_SECOND_U64),
             seconds_to_end: 300,
+        }
+    }
+
+    fn runtime_readiness_seed_for_market(
+        market: &CandidateMarket,
+        price_to_beat_value: f64,
+        reference_price: f64,
+        reference_quote_ts_event: u64,
+        realized_volatility: f64,
+    ) -> BoltV3RuntimeReadinessSeed {
+        BoltV3RuntimeReadinessSeed {
+            strategy_instance_id: "configured_updown_main".to_string(),
+            gate_session_hash: "gate-session-hash-one".to_string(),
+            selected_market_key: "selected-market-key-one".to_string(),
+            polymarket_condition_id: market.source_identity.condition_id.clone(),
+            polymarket_market_slug: market.source_identity.market_slug.clone(),
+            polymarket_question_id: market.source_identity.question_id.clone(),
+            up_instrument_id: market.up.instrument_id.clone(),
+            down_instrument_id: market.down.instrument_id.clone(),
+            market_start_timestamp_ms: market.start_ts_ms,
+            market_end_timestamp_ms: market.expiration_ts_ms,
+            price_to_beat_value,
+            reference_venue: "reference_data_client".to_string(),
+            reference_price,
+            reference_quote_ts_event,
+            realized_volatility,
         }
     }
 

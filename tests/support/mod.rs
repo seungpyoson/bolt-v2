@@ -194,7 +194,41 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
     let strategy_input_evidence_path = write_dummy_json(
         &case_dir,
         "strategy-input.json",
-        serde_json::json!({"record_kind": "test_strategy_input"}),
+        serde_json::json!({
+            "record_kind": "test_strategy_input",
+            "strategy_instance_id": "configured_updown_main",
+            "gate_session_hash": "a".repeat(64),
+            "selected_market_key": "b".repeat(64),
+            "gate_evidence": {
+                "decision_reference": {
+                    "satisfaction_kind": "evidence",
+                    "selected_market_key": "b".repeat(64),
+                    "provider_id": "resolution_oracle_primary",
+                    "provider_kind": "chainlink_data_streams",
+                    "value_kind": "price",
+                    "normalized_value_sha256": "c".repeat(64),
+                    "provider_provenance_sha256": "d".repeat(64),
+                    "artifact_sha256s": ["e".repeat(64)]
+                },
+                "resolution": {
+                    "satisfaction_kind": "no_resolution",
+                    "selected_market_key": "b".repeat(64),
+                    "resolution_identity": "configured-reference-price",
+                    "artifact_sha256s": []
+                }
+            },
+            "realized_volatility": "1.5",
+            "spot_price": "3101",
+            "price_to_beat_value": "3100",
+            "reference_quote_ts_event": 1234567900_u64,
+            "polymarket_condition_id": "configured-condition",
+            "polymarket_market_slug": "configured-market",
+            "polymarket_question_id": "configured-question",
+            "up_instrument_id": "configured-condition-UP.POLYMARKET",
+            "down_instrument_id": "configured-condition-DOWN.POLYMARKET",
+            "polymarket_market_start_timestamp_ms": 1234567890_u64,
+            "polymarket_market_end_timestamp_ms": 1234568190_u64
+        }),
     );
     let gate_session_path = write_dummy_json(
         &case_dir,
@@ -360,6 +394,26 @@ pub fn valid_entry_readiness_gate_session_json() -> serde_json::Value {
         },
         "created_at_ms": 1234567890_u64,
         "satisfied_roles": {
+            "decision_reference": {
+                "satisfaction_kind": "evidence",
+                "evidence": {
+                    "schema_version": 1,
+                    "record_kind": "bolt_v3.gate_evidence.v1",
+                    "role": "decision_reference",
+                    "provider_id": "resolution_oracle_primary",
+                    "provider_kind": "chainlink_data_streams",
+                    "selected_market_key": selected_market_key,
+                    "collector_observed_at_ms": 1234567890_u64,
+                    "source_observed_at_ms": 1234567890_u64,
+                    "fresh_until_ms": 1234568490_u64,
+                    "value_kind": "price",
+                    "normalized_value": {"price": "3101"},
+                    "normalized_value_sha256": "c".repeat(64),
+                    "provider_provenance": {"source": "test"},
+                    "provider_provenance_sha256": "d".repeat(64),
+                    "artifact_refs": [{"path": "reference-source.json", "sha256": "e".repeat(64)}]
+                }
+            },
             "resolution": {
                 "satisfaction_kind": "no_resolution",
                 "selected_market_key": selected_market_key,

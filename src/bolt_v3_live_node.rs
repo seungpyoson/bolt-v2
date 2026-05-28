@@ -32,10 +32,11 @@
 //! trading runner entrypoint is [`run_bolt_v3_live_node`], which first
 //! applies the bolt-v3 live canary gate. The no-submit readiness path
 //! builds a strategy-free node before using NT's supported runner loop
-//! with handle-driven stop; its dedicated reference quote probe calls
-//! only NT quote subscribe/unsubscribe APIs for configured
-//! `[reference_data]` instruments. This module still never constructs an
-//! order or enables any submit path from its own boundary code.
+//! with handle-driven stop; its dedicated quote probes call only NT
+//! quote subscribe/unsubscribe APIs for configured strategy
+//! `[reference_data]` or client-owned readiness-probe instruments. This
+//! module still never constructs an order or enables any submit path
+//! from its own boundary code.
 
 use std::{
     cell::RefCell,
@@ -151,6 +152,13 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
     fn new(loaded: &LoadedBoltV3Config) -> Self {
         let (required, ambiguous_instrument_ids) =
             no_submit_reference_quote_subscription_plan(loaded);
+        Self::from_plan(required, ambiguous_instrument_ids)
+    }
+
+    fn from_plan(
+        required: Vec<NoSubmitReferenceQuoteSubscription>,
+        ambiguous_instrument_ids: BTreeSet<String>,
+    ) -> Self {
         Self {
             required,
             ambiguous_instrument_ids,
@@ -264,33 +272,84 @@ impl DataActor for BoltV3NoSubmitReferenceQuoteProbe {
 fn no_submit_reference_quote_subscription_plan(
     loaded: &LoadedBoltV3Config,
 ) -> (Vec<NoSubmitReferenceQuoteSubscription>, BTreeSet<String>) {
-    let mut seen = BTreeSet::new();
-    let mut by_instrument: BTreeMap<String, String> = BTreeMap::new();
-    let mut ambiguous_instrument_ids = BTreeSet::new();
     let mut subscriptions = Vec::new();
     for strategy in &loaded.strategies {
         for reference in strategy.config.reference_data.values() {
-            let data_client_id = reference.data_client_id.to_string();
-            let instrument_id = reference.instrument_id.to_string();
-            match by_instrument.get(&instrument_id) {
-                Some(existing_data_client_id) if existing_data_client_id != &data_client_id => {
-                    ambiguous_instrument_ids.insert(instrument_id.clone());
-                }
-                None => {
-                    by_instrument.insert(instrument_id.clone(), data_client_id.clone());
-                }
-                _ => {}
-            }
-            let key = (data_client_id, instrument_id);
-            if seen.insert(key) {
-                subscriptions.push(NoSubmitReferenceQuoteSubscription {
-                    data_client_id: reference.data_client_id,
-                    instrument_id: reference.instrument_id,
-                });
-            }
+            subscriptions.push(NoSubmitReferenceQuoteSubscription {
+                data_client_id: reference.data_client_id,
+                instrument_id: reference.instrument_id,
+            });
         }
     }
-    (subscriptions, ambiguous_instrument_ids)
+    dedupe_no_submit_reference_quote_subscriptions(subscriptions)
+}
+
+fn no_submit_data_client_readiness_quote_subscription_plan(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<(Vec<NoSubmitReferenceQuoteSubscription>, BTreeSet<String>), BoltV3LiveNodeError> {
+    let client = loaded.root.clients.get(client_key).ok_or_else(|| {
+        BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+            "data-client readiness quote probe client_key is not configured"
+        ))
+    })?;
+    if client.data.is_none() {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "data-client readiness quote probe requires the selected client to declare [data]"
+            ),
+        ));
+    }
+    let readiness_probe = client.readiness_probe.as_ref().ok_or_else(|| {
+        BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+            "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
+        ))
+    })?;
+    if readiness_probe.quote_targets.is_empty() {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
+            ),
+        ));
+    }
+    let subscriptions = readiness_probe
+        .quote_targets
+        .values()
+        .map(|target| NoSubmitReferenceQuoteSubscription {
+            data_client_id: ClientId::from(client_key),
+            instrument_id: target.instrument_id,
+        })
+        .collect();
+    Ok(dedupe_no_submit_reference_quote_subscriptions(
+        subscriptions,
+    ))
+}
+
+fn dedupe_no_submit_reference_quote_subscriptions(
+    subscriptions: Vec<NoSubmitReferenceQuoteSubscription>,
+) -> (Vec<NoSubmitReferenceQuoteSubscription>, BTreeSet<String>) {
+    let mut seen = BTreeSet::new();
+    let mut by_instrument: BTreeMap<String, String> = BTreeMap::new();
+    let mut ambiguous_instrument_ids = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for subscription in subscriptions {
+        let data_client_id = subscription.data_client_id.to_string();
+        let instrument_id = subscription.instrument_id.to_string();
+        match by_instrument.get(&instrument_id) {
+            Some(existing_data_client_id) if existing_data_client_id != &data_client_id => {
+                ambiguous_instrument_ids.insert(instrument_id.clone());
+            }
+            None => {
+                by_instrument.insert(instrument_id.clone(), data_client_id.clone());
+            }
+            _ => {}
+        }
+        let key = (data_client_id, instrument_id);
+        if seen.insert(key) {
+            deduped.push(subscription);
+        }
+    }
+    (deduped, ambiguous_instrument_ids)
 }
 
 impl BoltV3NoSubmitReferenceCacheEvidence {
@@ -889,6 +948,27 @@ pub async fn collect_no_submit_reference_quote_evidence(
     Ok(reference_quote_evidence)
 }
 
+pub async fn collect_no_submit_data_client_readiness_quote_evidence(
+    runtime: &mut BoltV3LiveNodeRuntime,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<BoltV3NoSubmitReferenceQuoteEvidence, BoltV3LiveNodeError> {
+    let (run, reference_quote_evidence, reference_quote_probe, stop) =
+        run_bolt_v3_no_submit_readiness_until_data_client_probe_observed(
+            &mut runtime.node,
+            loaded,
+            client_key,
+        )
+        .await;
+    run?;
+    no_submit_required_execution_accounts_registered(runtime, loaded)?;
+    if let Err(reason) = reference_quote_probe {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeFailed { reason });
+    }
+    stop?;
+    Ok(reference_quote_evidence)
+}
+
 fn no_submit_controlled_connect_result(
     execution_accounts: Result<(), BoltV3LiveNodeError>,
     reference_quote_probe: &Result<(), String>,
@@ -911,7 +991,49 @@ async fn run_bolt_v3_no_submit_readiness_until_observed(
     Result<(), String>,
     Result<(), BoltV3LiveNodeError>,
 ) {
-    let reference_quote_probe = match install_no_submit_reference_quote_probe(node, loaded) {
+    let reference_quote_probe = install_no_submit_reference_quote_probe(node, loaded);
+    run_bolt_v3_no_submit_readiness_with_reference_quote_probe(
+        node,
+        loaded,
+        reference_quote_probe,
+        "configured reference_data quotes",
+    )
+    .await
+}
+
+async fn run_bolt_v3_no_submit_readiness_until_data_client_probe_observed(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> (
+    Result<(), BoltV3LiveNodeError>,
+    BoltV3NoSubmitReferenceQuoteEvidence,
+    Result<(), String>,
+    Result<(), BoltV3LiveNodeError>,
+) {
+    let reference_quote_probe =
+        install_no_submit_data_client_readiness_quote_probe(node, loaded, client_key);
+    run_bolt_v3_no_submit_readiness_with_reference_quote_probe(
+        node,
+        loaded,
+        reference_quote_probe,
+        "configured client readiness_probe.quote_targets quotes",
+    )
+    .await
+}
+
+async fn run_bolt_v3_no_submit_readiness_with_reference_quote_probe(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    reference_quote_probe: Result<BoltV3NoSubmitReferenceQuoteProbeHandle, BoltV3LiveNodeError>,
+    configured_targets_label: &'static str,
+) -> (
+    Result<(), BoltV3LiveNodeError>,
+    BoltV3NoSubmitReferenceQuoteEvidence,
+    Result<(), String>,
+    Result<(), BoltV3LiveNodeError>,
+) {
+    let reference_quote_probe = match reference_quote_probe {
         Ok(probe) => probe,
         Err(error) => {
             return (
@@ -1004,7 +1126,11 @@ async fn run_bolt_v3_no_submit_readiness_until_observed(
                 stop,
             );
         }
-        result = await_no_submit_reference_quote_probe(&reference_quote_probe, loaded) => result,
+        result = await_no_submit_reference_quote_probe(
+            &reference_quote_probe,
+            loaded,
+            configured_targets_label,
+        ) => result,
     };
     let reference_quote_evidence = reference_quote_probe.evidence();
     node_handle.stop();
@@ -1024,6 +1150,26 @@ fn install_no_submit_reference_quote_probe(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3NoSubmitReferenceQuoteProbeHandle, BoltV3LiveNodeError> {
     let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::new(loaded);
+    install_no_submit_reference_quote_probe_handle(node, loaded, handle)
+}
+
+fn install_no_submit_data_client_readiness_quote_probe(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<BoltV3NoSubmitReferenceQuoteProbeHandle, BoltV3LiveNodeError> {
+    let (required, ambiguous_instrument_ids) =
+        no_submit_data_client_readiness_quote_subscription_plan(loaded, client_key)?;
+    let handle =
+        BoltV3NoSubmitReferenceQuoteProbeHandle::from_plan(required, ambiguous_instrument_ids);
+    install_no_submit_reference_quote_probe_handle(node, loaded, handle)
+}
+
+fn install_no_submit_reference_quote_probe_handle(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    handle: BoltV3NoSubmitReferenceQuoteProbeHandle,
+) -> Result<BoltV3NoSubmitReferenceQuoteProbeHandle, BoltV3LiveNodeError> {
     if let Some(message) = handle.ambiguity_error() {
         return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
             anyhow::anyhow!(message),
@@ -1070,6 +1216,7 @@ fn no_submit_reference_quote_probe_config(
 async fn await_no_submit_reference_quote_probe(
     probe: &BoltV3NoSubmitReferenceQuoteProbeHandle,
     loaded: &LoadedBoltV3Config,
+    configured_targets_label: &'static str,
 ) -> Result<(), String> {
     let timeout_secs = loaded
         .root
@@ -1089,7 +1236,7 @@ async fn await_no_submit_reference_quote_probe(
     .await
     .map_err(|_| {
         format!(
-            "reference quote probe did not observe all configured reference_data quotes within [live_canary].reference_quote_wait_timeout_seconds={timeout_secs}"
+            "reference quote probe did not observe all {configured_targets_label} within [live_canary].reference_quote_wait_timeout_seconds={timeout_secs}"
         )
     })
 }
@@ -1593,7 +1740,10 @@ pub async fn disconnect_bolt_v3_clients(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bolt_v3_config::{BoltV3RootConfig, ReferenceDataBlock};
+    use crate::bolt_v3_config::{
+        BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeQuoteTargetBlock,
+        ReferenceDataBlock,
+    };
     use nautilus_model::identifiers::TraderId;
     use nautilus_model::types::{Price, Quantity};
 
@@ -1625,6 +1775,39 @@ mod tests {
             },
         );
         loaded
+    }
+
+    #[test]
+    fn data_client_readiness_quote_plan_uses_client_owned_probe_targets() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include polymarket client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            quote_targets: BTreeMap::from([(
+                "configured_quote_probe".to_string(),
+                DataClientReadinessProbeQuoteTargetBlock {
+                    instrument_id: InstrumentId::from("REFERENCE.POLYMARKET"),
+                },
+            )]),
+        });
+
+        let (required, ambiguous) =
+            no_submit_data_client_readiness_quote_subscription_plan(&loaded, "polymarket_main")
+                .expect("client-owned readiness quote plan should build");
+
+        assert!(ambiguous.is_empty());
+        assert_eq!(required.len(), 1);
+        assert_eq!(
+            required[0].data_client_id,
+            ClientId::from("polymarket_main")
+        );
+        assert_eq!(
+            required[0].instrument_id,
+            InstrumentId::from("REFERENCE.POLYMARKET")
+        );
     }
 
     #[test]

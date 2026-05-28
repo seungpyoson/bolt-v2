@@ -5,6 +5,7 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::{
         build_bolt_v3_live_node, build_bolt_v3_no_submit_live_node,
+        collect_no_submit_data_client_readiness_quote_evidence,
         collect_no_submit_reference_quote_evidence, run_bolt_v3_live_node,
     },
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
@@ -966,7 +967,11 @@ fn run_operator_artifacts_command(
                 .build()?;
             let local = tokio::task::LocalSet::new();
             let evidence = runtime.block_on(local.run_until(
-                collect_no_submit_reference_quote_evidence(&mut live_node, &loaded),
+                collect_no_submit_data_client_readiness_quote_evidence(
+                    &mut live_node,
+                    &loaded,
+                    &client_key,
+                ),
             ))?;
             let written = write_data_client_behavior_probe_events_from_no_submit_evidence(
                 &loaded,

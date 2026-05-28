@@ -9,10 +9,10 @@ use bolt_v2::{
     },
     bolt_v3_config::{
         BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
-        GateProviderBlock, GateProviderFreshnessBlock, LiveCanaryBlock,
-        LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, NO_RESOLUTION_KIND,
-        NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE, ReferenceDataBlock,
-        load_bolt_v3_config,
+        DataClientReadinessProbeBlock, DataClientReadinessProbeQuoteTargetBlock, GateProviderBlock,
+        GateProviderFreshnessBlock, LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock,
+        LoadedBoltV3Config, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND,
+        RESOLUTION_GATE_ROLE, ReferenceDataBlock, load_bolt_v3_config,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3GateEvidenceIdentity,
@@ -80,6 +80,8 @@ const TEST_BINARY_OPTION_SIZE_INCREMENT: &str = "0.01";
 const TEST_EXECUTION_CLIENT_ID: &str = "polymarket_main";
 const TEST_REFERENCE_DATA_CLIENT_ID: &str = "reference_data_client";
 const TEST_REFERENCE_INSTRUMENT_ID: &str = "REFERENCE.SOURCE";
+const TEST_DATA_CLIENT_PROBE_TARGET_ID: &str = "configured_quote_probe";
+const TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID: &str = "REFERENCE.POLYMARKET";
 const TEST_STRATEGY_INSTANCE_ID: &str = "configured_updown_main";
 const TEST_CONFIGURED_TARGET_ID: &str = "configured_updown_target";
 const TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.configured-reference-price";
@@ -919,6 +921,29 @@ fn configure_reference_data(loaded: &mut LoadedBoltV3Config) {
     );
 }
 
+fn configure_data_client_readiness_quote_probe(loaded: &mut LoadedBoltV3Config) {
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        quote_targets: BTreeMap::from([(
+            TEST_DATA_CLIENT_PROBE_TARGET_ID.to_string(),
+            DataClientReadinessProbeQuoteTargetBlock {
+                instrument_id: InstrumentId::from(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID),
+            },
+        )]),
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+}
+
 fn add_metadata_gate_provider(
     loaded: &mut LoadedBoltV3Config,
     provider_id: &str,
@@ -1315,7 +1340,7 @@ fn data_client_behavior_observation_source_materializes_probe_events_without_raw
 #[test]
 fn data_client_behavior_probe_events_source_uses_no_submit_reference_quotes_without_raw_values() {
     let mut loaded = load_fixture_with_live_canary();
-    configure_reference_data(&mut loaded);
+    configure_data_client_readiness_quote_probe(&mut loaded);
     let temp = support::TempCaseDir::new("data-client-behavior-probe-events-source");
     let probe_events_path = temp.path().join("probe-events.jsonl");
     let behavior_source_path = temp
@@ -1325,7 +1350,7 @@ fn data_client_behavior_probe_events_source_uses_no_submit_reference_quotes_with
     let evidence = BoltV3NoSubmitReferenceQuoteEvidence {
         quotes: vec![BoltV3NoSubmitReferenceQuote {
             data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
-            instrument_id: TEST_REFERENCE_INSTRUMENT_ID.to_string(),
+            instrument_id: TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string(),
             bid_price: 3299.0,
             ask_price: 3301.0,
             ts_event_unix_nanos: 600_000_000_000,
@@ -1368,7 +1393,8 @@ fn data_client_behavior_probe_events_source_uses_no_submit_reference_quotes_with
             .expect("event should include evidence hash")
     ));
     assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
-    assert!(!rendered_events.contains(TEST_REFERENCE_INSTRUMENT_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_TARGET_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID));
     assert!(!rendered_events.contains("3299"));
     assert!(!rendered_events.contains("3301"));
 
@@ -1412,6 +1438,40 @@ fn data_client_behavior_probe_events_source_uses_no_submit_reference_quotes_with
     assert!(missing.contains(&serde_json::json!("reconnect_behavior")));
     assert!(missing.contains(&serde_json::json!("rate_limit_behavior")));
     assert!(missing.contains(&serde_json::json!("parse_error_behavior")));
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_requires_client_owned_probe_targets() {
+    let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
+    let temp = support::TempCaseDir::new("data-client-behavior-probe-target-required");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitReferenceQuoteEvidence {
+        quotes: vec![BoltV3NoSubmitReferenceQuote {
+            data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+            instrument_id: TEST_REFERENCE_INSTRUMENT_ID.to_string(),
+            bid_price: 3299.0,
+            ask_price: 3301.0,
+            ts_event_unix_nanos: 600_000_000_000,
+            ts_init_unix_nanos: 600_100_000_000,
+            captured_at_unix_nanos: 600_500_000_000,
+        }],
+    };
+
+    let error = write_data_client_behavior_probe_events_from_no_submit_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect_err("strategy reference_data must not be a second data-client behavior probe path");
+
+    assert!(
+        error
+            .to_string()
+            .contains("clients.<id>.readiness_probe.quote_targets"),
+        "error should name the missing client-owned probe target config: {error}"
+    );
 }
 
 #[test]
@@ -2207,6 +2267,78 @@ transport_backend = "sockudo"
             .is_empty(),
         "Polymarket should be marked as strategy-routed through the configured target"
     );
+}
+
+#[test]
+fn data_client_readiness_source_records_client_owned_quote_probe_targets() {
+    let temp = support::TempCaseDir::new("data-client-readiness-probe-targets");
+    let strategy_dir = temp.path().join("strategies");
+    std::fs::create_dir_all(&strategy_dir).expect("strategy dir should create");
+    std::fs::copy(
+        repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        strategy_dir.join("binary_oracle.toml"),
+    )
+    .expect("strategy fixture should copy");
+
+    let root_fixture = std::fs::read_to_string(repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("root fixture should read");
+    let root_path = temp.path().join("root.toml");
+    std::fs::write(
+        &root_path,
+        format!(
+            r#"{root_fixture}
+
+[clients.bybit_data]
+venue = "BYBIT"
+
+[clients.bybit_data.data]
+product_types = ["spot", "linear"]
+environment = "testnet"
+http_timeout_secs = 10
+max_retries = 2
+instrument_status_poll_secs = 60
+transport_backend = "sockudo"
+
+[clients.bybit_data.readiness_probe.quote_targets.configured_quote_probe]
+instrument_id = "CONFIGURED-PROBE.BYBIT"
+"#
+        ),
+    )
+    .expect("root fixture with data-only probe target should write");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture config should load");
+    let output_path = temp.path().join("data-client-readiness-source.json");
+
+    let written = write_data_client_readiness_source_artifact_from_config(&loaded, &output_path)
+        .expect("readiness source should write");
+
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.path).expect("readiness artifact should read"),
+    )
+    .expect("readiness artifact should parse");
+    let rendered =
+        serde_json::to_string(&artifact).expect("readiness artifact should render to string");
+    let clients = artifact["clients"]
+        .as_array()
+        .expect("clients should be an array");
+    let bybit = clients
+        .iter()
+        .find(|client| client["provider_key"] == "BYBIT")
+        .expect("Bybit data client should be recorded");
+    let targets = bybit["readiness_probe_targets"]
+        .as_array()
+        .expect("readiness probe targets should be an array");
+    assert_eq!(targets.len(), 1);
+    assert_eq!(
+        targets[0]["configured_target_id_hash"].as_str(),
+        Some(sha256_text("configured_quote_probe").as_str())
+    );
+    assert_eq!(targets[0]["event_kind"].as_str(), Some("quote"));
+    assert_eq!(
+        targets[0]["instrument_id_hash"].as_str(),
+        Some(sha256_text("CONFIGURED-PROBE.BYBIT").as_str())
+    );
+    assert!(!rendered.contains("configured_quote_probe"));
+    assert!(!rendered.contains("CONFIGURED-PROBE.BYBIT"));
 }
 
 #[test]

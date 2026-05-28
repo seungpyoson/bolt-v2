@@ -28,7 +28,7 @@ The first T043A source-owned proof primitive has been added but not yet run thro
 - The collector loads the root TOML and provider registry, derives a market-identity plan, and writes a bounded JSON artifact with:
   - `record_kind = "bolt_v3.data_client_readiness_source.v1"`.
   - `config_bundle_checksum`.
-  - per-client `client_key_hash`, `provider_key`, data/execution/secrets capability booleans, data-only scope, strategy-routed flag, supported market families, required secret-block classes, hashed data/execution config, field-name inventories, field-level value-kind/item-count/hash fingerprints, and hashed routed target ids.
+  - per-client `client_key_hash`, `provider_key`, data/execution/secrets capability booleans, data-only scope, strategy-routed flag, supported market families, required secret-block classes, hashed data/execution config, field-name inventories, field-level value-kind/item-count/hash fingerprints, hashed routed target ids, and hashed client-owned readiness probe quote targets.
   - classified TOML-owned timeout, retry, freshness, reconnect, and rate-limit policy field names.
   - explicit missing behavior proof rows for metadata behavior, quote/book behavior, freshness/latency, and reconnect/rate-limit/error handling.
 - The artifact marks every row `production_usable = false` with status `not_production_usable_metadata_or_config_only`; later T043A slices must add behavior/freshness/reconnect/rate-limit proof before any row can become production-usable.
@@ -75,7 +75,9 @@ The fifth T043A source-owned proof primitive has been added but not yet run thro
 The sixth T043A source-owned proof primitive has been added but not yet run through final cargo/CI verification:
 
 - New read-only CLI: `operator-artifacts collect-data-client-behavior-probe-events-source --config <root.toml> --client-key <configured-client> --output <probe-events.jsonl>`.
-- The collector runs the existing no-submit LiveNode reference-quote probe, which uses NT actor subscription APIs and configured `reference_data`, then writes bounded `bolt_v3.data_client_behavior_probe_event.v1` JSONL for the selected configured client.
+- New root TOML schema under each client: `[clients.<id>.readiness_probe.quote_targets.<target_id>] instrument_id = "<instrument.venue>"`.
+- The collector runs a no-submit LiveNode quote probe for the selected configured client's `readiness_probe.quote_targets`, using NT actor subscription APIs, then writes bounded `bolt_v3.data_client_behavior_probe_event.v1` JSONL for the selected configured client.
+- Strategy `reference_data` is no longer accepted as a fallback data-client behavior probe path; probe targets are client-owned so adding/removing a data-only client and its proof target happens in the same client section.
 - The JSONL records hashed client identity, provider key, quote-surface observation, freshness age, latency, and an evidence hash. It does not print raw client ids, instrument ids, prices, paths, or credentials.
 - The behavior source materializer now accepts partial source-owned probe sets and records missing reconnect, rate-limit, and parse-error proofs as non-observed policy rows instead of pretending they are proven. Final behavior/matrix artifacts still mark those rows non-production-usable until all required proofs are present.
 - This closes the gap that probe events were previously an external input, but it does not close T043A: the current source-owned collector covers configured quote evidence only.
@@ -87,7 +89,7 @@ T043A remains open until a venue-neutral matrix proves the following for every P
 - The client is selected from TOML/provider registry data, with no venue, asset, market, token, symbol, cadence, endpoint, or product hardcode treated as canonical.
 - The Bolt `LiveNode` build path includes the data client through the normal adapter mapping path.
 - Data-only clients reject `[execution]`, `[secrets]`, and direct credential fields unless a future explicit SSM-backed provider binding is added.
-- NT data behavior is proven beyond metadata-only smoke: quote/book/ticker/subscription behavior is verified where upstream supports it, and unsupported paths have a recorded fail-closed disposition. The current source-owned probe-event collector proves only configured quote observations.
+- NT data behavior is proven beyond metadata-only smoke: quote/book/ticker/subscription behavior is verified where upstream supports it, and unsupported paths have a recorded fail-closed disposition. The current source-owned probe-event collector proves only client-owned configured quote observations.
 - Freshness, latency bound, reconnect, rate-limit, and parse/error behavior are verified under configured values. Current partial probe sources intentionally mark missing policy/error proofs as missing, not production-usable.
 - The matrix records which markets/product types each client can actually cover, without implying a global Binance, BTC, 5-minute, or Polymarket-only default.
 - Focused tests and source-fence/hardcode checks pass after the matrix implementation.
@@ -109,7 +111,7 @@ T043A remains open until a venue-neutral matrix proves the following for every P
 T043A should be closed by a source-owned proof path, not by prose or a transient smoke script:
 
 - Add a read-only operator-artifact collector or equivalent checked artifact that enumerates configured data clients from the loaded root TOML and provider registry.
-- For each configured client, record provider key, client key hash, data/execution/secrets capability classification, configured product/market coverage summary, and whether the client is strategy-routed or reference-data-only.
+- For each configured client, record provider key, client key hash, data/execution/secrets capability classification, configured product/market coverage summary, and whether the client is strategy-routed or has client-owned readiness probe targets.
 - Prove the normal `build_bolt_v3_live_node` or no-submit LiveNode build path includes each configured data client through `map_bolt_v3_adapters`; do not instantiate a second raw-adapter path as production evidence.
 - For public market-data behavior, collect bounded evidence through the pinned NT client surface for supported metadata and quote/book/ticker/subscription behavior; for unsupported surfaces, write an explicit fail-closed unsupported-path disposition.
 - Record freshness, timeout, retry, reconnect, rate-limit, and parse/error behavior from TOML-owned config and observed bounded read-only probes.

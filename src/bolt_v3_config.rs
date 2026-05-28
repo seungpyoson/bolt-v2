@@ -313,6 +313,19 @@ pub struct ClientBlock {
     pub data: Option<toml::Value>,
     pub execution: Option<toml::Value>,
     pub secrets: Option<toml::Value>,
+    pub readiness_probe: Option<DataClientReadinessProbeBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DataClientReadinessProbeBlock {
+    pub quote_targets: BTreeMap<String, DataClientReadinessProbeQuoteTargetBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DataClientReadinessProbeQuoteTargetBlock {
+    pub instrument_id: InstrumentId,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

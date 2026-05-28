@@ -774,6 +774,7 @@ struct DataClientReadinessClientSource {
     execution_config_field_names: Vec<String>,
     execution_config_field_fingerprints: Vec<DataClientReadinessConfigFieldFingerprint>,
     market_identity_targets: Vec<DataClientReadinessTargetSource>,
+    readiness_probe_targets: Vec<DataClientReadinessProbeTargetSource>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -788,6 +789,13 @@ struct DataClientReadinessConfigFieldFingerprint {
 struct DataClientReadinessTargetSource {
     configured_target_id_hash: String,
     family_key: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DataClientReadinessProbeTargetSource {
+    configured_target_id_hash: String,
+    event_kind: &'static str,
+    instrument_id_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3059,25 +3067,12 @@ fn data_client_behavior_probe_events_from_no_submit_evidence(
             provider_key: provider_key.to_string(),
         }
     })?;
-    let reference_targets = loaded
-        .strategies
-        .iter()
-        .flat_map(|strategy| strategy.config.reference_data.values())
-        .filter(|reference| reference.data_client_id.to_string() == client_key)
-        .map(|reference| reference.instrument_id.to_string())
-        .collect::<BTreeSet<_>>();
-    if reference_targets.is_empty() {
-        return Err(
-            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
-                field: "reference_data",
-            },
-        );
-    }
+    let quote_targets = data_client_readiness_quote_target_instruments(client)?;
 
     let client_key_hash = sha256_text(client_key);
     let mut events = Vec::new();
     for quote in &evidence.quotes {
-        if quote.data_client_id != client_key || !reference_targets.contains(&quote.instrument_id) {
+        if quote.data_client_id != client_key || !quote_targets.contains(&quote.instrument_id) {
             continue;
         }
         let observed_at_unix_millis =
@@ -3139,6 +3134,30 @@ fn data_client_behavior_probe_events_from_no_submit_evidence(
         validate_data_client_behavior_probe_event(event, client_key, provider_key)?;
     }
     Ok(events)
+}
+
+fn data_client_readiness_quote_target_instruments(
+    client: &crate::bolt_v3_config::ClientBlock,
+) -> Result<BTreeSet<String>, BoltV3OperatorArtifactError> {
+    let Some(readiness_probe) = &client.readiness_probe else {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "clients.<id>.readiness_probe.quote_targets",
+            },
+        );
+    };
+    if readiness_probe.quote_targets.is_empty() {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                field: "clients.<id>.readiness_probe.quote_targets",
+            },
+        );
+    }
+    Ok(readiness_probe
+        .quote_targets
+        .values()
+        .map(|target| target.instrument_id.to_string())
+        .collect())
 }
 
 fn nanos_to_millis_checked(
@@ -4463,6 +4482,7 @@ fn build_data_client_readiness_source_artifact(
         let has_data = client.data.is_some();
         let has_execution = client.execution.is_some();
         let has_secrets = client.secrets.is_some();
+        let readiness_probe_targets = data_client_readiness_probe_targets(client);
         let data_config_field_names = toml_table_field_names(client.data.as_ref());
         let data_config_field_fingerprints = toml_table_field_fingerprints(client.data.as_ref())?;
         let market_coverage_config_values =
@@ -4529,6 +4549,7 @@ fn build_data_client_readiness_source_artifact(
                 client.execution.as_ref(),
             )?,
             market_identity_targets,
+            readiness_probe_targets,
         });
     }
     clients.sort_by(|left, right| {
@@ -4546,6 +4567,23 @@ fn build_data_client_readiness_source_artifact(
         config_bundle_checksum: loaded.config_bundle_checksum.clone(),
         clients,
     })
+}
+
+fn data_client_readiness_probe_targets(
+    client: &crate::bolt_v3_config::ClientBlock,
+) -> Vec<DataClientReadinessProbeTargetSource> {
+    let Some(readiness_probe) = &client.readiness_probe else {
+        return Vec::new();
+    };
+    readiness_probe
+        .quote_targets
+        .iter()
+        .map(|(target_id, target)| DataClientReadinessProbeTargetSource {
+            configured_target_id_hash: sha256_text(target_id),
+            event_kind: "quote",
+            instrument_id_hash: sha256_text(&target.instrument_id.to_string()),
+        })
+        .collect()
 }
 
 fn provider_credentialed_block_name(block: ProviderCredentialedBlock) -> &'static str {

@@ -570,6 +570,7 @@ fn provider_binding_rejects_updown_target_bound_to_non_polymarket_client() {
             data: None,
             execution: None,
             secrets: None,
+            readiness_probe: None,
         },
     );
     loaded.strategies[0].config.execution_client_id =

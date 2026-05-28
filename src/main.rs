@@ -27,6 +27,7 @@ use bolt_v2::{
         write_data_client_behavior_observation_artifact_from_source_file,
         write_data_client_live_node_mapping_source_artifact_from_config,
         write_data_client_nt_source_capability_artifact_from_config,
+        write_data_client_production_readiness_matrix_artifact_from_source_files,
         write_data_client_readiness_source_artifact_from_config,
         write_entry_decision_evidence_from_source_file, write_entry_decision_proof_source_files,
         write_entry_readiness_gate_session_artifact_from_decision_source_file,
@@ -304,6 +305,22 @@ enum OperatorArtifactsCommand {
         behavior_source: PathBuf,
         #[arg(long)]
         max_behavior_source_bytes: u64,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    CollectDataClientProductionReadinessMatrix {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        readiness_source: PathBuf,
+        #[arg(long)]
+        live_node_mapping_source: PathBuf,
+        #[arg(long)]
+        nt_source_capability: Vec<PathBuf>,
+        #[arg(long)]
+        behavior_observation: Vec<PathBuf>,
+        #[arg(long)]
+        max_source_bytes: u64,
         #[arg(long)]
         output: PathBuf,
     },
@@ -894,6 +911,27 @@ fn run_operator_artifacts_command(
                 &client_key,
                 &behavior_source,
                 max_behavior_source_bytes,
+                &output,
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::CollectDataClientProductionReadinessMatrix {
+            config,
+            readiness_source,
+            live_node_mapping_source,
+            nt_source_capability,
+            behavior_observation,
+            max_source_bytes,
+            output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let written = write_data_client_production_readiness_matrix_artifact_from_source_files(
+                &loaded,
+                &readiness_source,
+                &live_node_mapping_source,
+                &nt_source_capability,
+                &behavior_observation,
+                max_source_bytes,
                 &output,
             )?;
             print_written_operator_artifact(&written)

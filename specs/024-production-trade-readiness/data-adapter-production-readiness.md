@@ -61,6 +61,13 @@ The fourth T043A source-owned proof primitive has been added but not yet run thr
 - The artifact marks `production_usable = false` with status `behavior_observation_final_matrix_missing`; behavior observations are a necessary T043A input, but the final matrix and final verification pass still decide readiness.
 - A contract test was added for configured-client binding, behavior validation, complete-observation classification, fail-closed unsupported ticker disposition, source/path hashing, and non-leakage of raw source paths. Cargo execution remains deferred to the final verification pass per operator direction.
 
+The fifth T043A source-owned proof primitive has been added but not yet run through final cargo/CI verification:
+
+- New read-only CLI: `operator-artifacts collect-data-client-production-readiness-matrix --config <root.toml> --readiness-source <data-client-readiness-source.json> --live-node-mapping-source <data-client-live-node-mapping-source.json> --nt-source-capability <data-client-nt-source-capability.json> --behavior-observation <data-client-behavior-observation.json> --max-source-bytes <bytes> --output <data-client-production-readiness-matrix.json>`.
+- The collector binds all input artifacts to the current config bundle, hashes the input artifact files, and writes one row per configured client with config inventory, normal LiveNode mapping, NT source capability, behavior observation, and missing-proof status.
+- Matrix rows only mark `production_usable = true` when the configured data client has every required T043A proof present. Missing source artifacts or incomplete behavior observations produce explicit `missing_proofs` entries.
+- A contract test was added for combining the source artifacts into a per-client matrix row without introducing venue, market, token, symbol, or cadence defaults. Cargo execution remains deferred to the final verification pass per operator direction.
+
 ## Missing Production Proof
 
 T043A remains open until a venue-neutral matrix proves the following for every PR-enabled data client, including Polymarket and each data-only NT venue binding:

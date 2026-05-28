@@ -97,6 +97,9 @@ const DATA_CLIENT_BEHAVIOR_OBSERVATION_SOURCE_RECORD_KIND: &str =
     "bolt_v3.data_client_behavior_observation_source.v1";
 const DATA_CLIENT_BEHAVIOR_OBSERVATION_STATUS_NOT_PRODUCTION_USABLE: &str =
     "behavior_observation_final_matrix_missing";
+const DATA_CLIENT_PRODUCTION_READINESS_MATRIX_SCHEMA_VERSION: u32 = 1;
+const DATA_CLIENT_PRODUCTION_READINESS_MATRIX_RECORD_KIND: &str =
+    "bolt_v3.data_client_production_readiness_matrix.v1";
 const DATA_CLIENT_MISSING_BEHAVIOR_PROOFS: &[&str] = &[
     "metadata_behavior",
     "quote_or_book_behavior",
@@ -913,6 +916,35 @@ struct DataClientPolicyObservation {
     evidence_sha256: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct DataClientProductionReadinessMatrixArtifact {
+    schema_version: u32,
+    record_kind: &'static str,
+    generated_at_unix_seconds: u64,
+    config_bundle_checksum: String,
+    readiness_source_sha256: String,
+    live_node_mapping_source_sha256: String,
+    nt_source_capability_sha256s: Vec<String>,
+    behavior_observation_sha256s: Vec<String>,
+    clients: Vec<DataClientProductionReadinessMatrixClient>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DataClientProductionReadinessMatrixClient {
+    client_key_hash: String,
+    provider_key: String,
+    has_data: bool,
+    has_execution: bool,
+    readiness_required: bool,
+    config_inventory_present: bool,
+    live_node_mapping_present: bool,
+    nt_source_capability_present: bool,
+    behavior_observation_complete: bool,
+    production_usable: bool,
+    readiness_status: &'static str,
+    missing_proofs: Vec<&'static str>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Phase8PreRunReleaseManifestSourceProof {
     pub nt_revision: String,
@@ -1051,6 +1083,17 @@ pub enum BoltV3OperatorArtifactError {
         source: serde_json::Error,
     },
     DataClientBehaviorObservationSourceInvalid {
+        field: &'static str,
+    },
+    DataClientProductionReadinessMatrixSourceRead {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    DataClientProductionReadinessMatrixSourceParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    DataClientProductionReadinessMatrixSourceInvalid {
         field: &'static str,
     },
     SecretInventory(BoltV3SecretError),
@@ -1418,6 +1461,18 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::DataClientBehaviorObservationSourceInvalid { field } => write!(
                 f,
                 "data-client behavior observation source field `{field}` is invalid or unproven"
+            ),
+            Self::DataClientProductionReadinessMatrixSourceRead { source, .. } => write!(
+                f,
+                "failed to read data-client production-readiness matrix source input: {source}"
+            ),
+            Self::DataClientProductionReadinessMatrixSourceParse { source, .. } => write!(
+                f,
+                "failed to parse data-client production-readiness matrix source input: {source}"
+            ),
+            Self::DataClientProductionReadinessMatrixSourceInvalid { field } => write!(
+                f,
+                "data-client production-readiness matrix source field `{field}` is invalid or unproven"
             ),
             Self::SecretInventory(error) => write!(f, "{error}"),
             Self::FinancialEnvelope(error) => write!(f, "{error}"),
@@ -1834,6 +1889,8 @@ impl Error for BoltV3OperatorArtifactError {
             Self::DataClientLiveNodeMappingSourceRead { source, .. } => Some(source),
             Self::DataClientBehaviorObservationSourceRead { source, .. } => Some(source),
             Self::DataClientBehaviorObservationSourceParse { source, .. } => Some(source),
+            Self::DataClientProductionReadinessMatrixSourceRead { source, .. } => Some(source),
+            Self::DataClientProductionReadinessMatrixSourceParse { source, .. } => Some(source),
             Self::DecisionEvidenceSourceRead { source, .. } => Some(source),
             Self::DecisionEvidenceSourceParse { source, .. } => Some(source),
             Self::DecisionEvidenceFileRead { source, .. } => Some(source),
@@ -2893,6 +2950,299 @@ pub fn write_data_client_behavior_observation_artifact_from_source_file(
         max_behavior_source_bytes,
     )?;
     write_json_artifact_create_new(output_path, &artifact)
+}
+
+pub fn write_data_client_production_readiness_matrix_artifact_from_source_files(
+    loaded: &LoadedBoltV3Config,
+    readiness_source_path: &Path,
+    live_node_mapping_source_path: &Path,
+    nt_source_capability_paths: &[PathBuf],
+    behavior_observation_paths: &[PathBuf],
+    max_source_bytes: u64,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let artifact = build_data_client_production_readiness_matrix_artifact_from_source_files(
+        loaded,
+        readiness_source_path,
+        live_node_mapping_source_path,
+        nt_source_capability_paths,
+        behavior_observation_paths,
+        max_source_bytes,
+    )?;
+    write_json_artifact_create_new(output_path, &artifact)
+}
+
+fn build_data_client_production_readiness_matrix_artifact_from_source_files(
+    loaded: &LoadedBoltV3Config,
+    readiness_source_path: &Path,
+    live_node_mapping_source_path: &Path,
+    nt_source_capability_paths: &[PathBuf],
+    behavior_observation_paths: &[PathBuf],
+    max_source_bytes: u64,
+) -> Result<DataClientProductionReadinessMatrixArtifact, BoltV3OperatorArtifactError> {
+    if max_source_bytes == 0 {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid {
+                field: "max_source_bytes",
+            },
+        );
+    }
+    let (readiness_source, readiness_source_sha256) =
+        read_data_client_matrix_source_json(readiness_source_path, max_source_bytes)?;
+    let (live_node_mapping_source, live_node_mapping_source_sha256) =
+        read_data_client_matrix_source_json(live_node_mapping_source_path, max_source_bytes)?;
+    validate_data_client_matrix_source_header(
+        &readiness_source,
+        DATA_CLIENT_READINESS_SOURCE_RECORD_KIND,
+        "readiness_source",
+        loaded,
+    )?;
+    validate_data_client_matrix_source_header(
+        &live_node_mapping_source,
+        DATA_CLIENT_LIVE_NODE_MAPPING_SOURCE_RECORD_KIND,
+        "live_node_mapping_source",
+        loaded,
+    )?;
+
+    let config_inventory = data_client_matrix_client_keys(
+        &readiness_source,
+        "readiness_source.clients",
+        "strategy_routed",
+    )?;
+    let live_node_mapping = data_client_matrix_client_keys(
+        &live_node_mapping_source,
+        "live_node_mapping_source.clients",
+        "data_block_flows_through_mapping_source",
+    )?;
+
+    let mut nt_source_capabilities = BTreeSet::new();
+    let mut nt_source_capability_sha256s = Vec::new();
+    for path in nt_source_capability_paths {
+        let (source, sha256) = read_data_client_matrix_source_json(path, max_source_bytes)?;
+        validate_data_client_matrix_source_header(
+            &source,
+            DATA_CLIENT_NT_SOURCE_CAPABILITY_RECORD_KIND,
+            "nt_source_capability",
+            loaded,
+        )?;
+        nt_source_capabilities.insert(data_client_matrix_top_level_client_key(
+            &source,
+            "nt_source_capability",
+        )?);
+        nt_source_capability_sha256s.push(sha256);
+    }
+    nt_source_capability_sha256s.sort();
+
+    let mut behavior_observations = BTreeSet::new();
+    let mut behavior_observation_sha256s = Vec::new();
+    for path in behavior_observation_paths {
+        let (source, sha256) = read_data_client_matrix_source_json(path, max_source_bytes)?;
+        validate_data_client_matrix_source_header(
+            &source,
+            DATA_CLIENT_BEHAVIOR_OBSERVATION_RECORD_KIND,
+            "behavior_observation",
+            loaded,
+        )?;
+        if data_client_matrix_json_bool(
+            &source,
+            "behavior_observation_complete",
+            "behavior_observation.behavior_observation_complete",
+        )? {
+            behavior_observations.insert(data_client_matrix_top_level_client_key(
+                &source,
+                "behavior_observation",
+            )?);
+        }
+        behavior_observation_sha256s.push(sha256);
+    }
+    behavior_observation_sha256s.sort();
+
+    let mut clients = Vec::new();
+    for (client_key, client) in &loaded.root.clients {
+        let provider_key = client.venue.as_str();
+        binding_for_provider_key(provider_key).ok_or_else(|| {
+            BoltV3OperatorArtifactError::UnsupportedProvider {
+                client_key: client_key.clone(),
+                provider_key: provider_key.to_string(),
+            }
+        })?;
+        let key = (sha256_text(client_key), provider_key.to_string());
+        let has_data = client.data.is_some();
+        let has_execution = client.execution.is_some();
+        let config_inventory_present = config_inventory.contains(&key);
+        let live_node_mapping_present = live_node_mapping.contains(&key);
+        let nt_source_capability_present = nt_source_capabilities.contains(&key);
+        let behavior_observation_complete = behavior_observations.contains(&key);
+        let readiness_required = has_data;
+        let mut missing_proofs = Vec::new();
+        if readiness_required && !config_inventory_present {
+            missing_proofs.push("config_inventory");
+        }
+        if readiness_required && !live_node_mapping_present {
+            missing_proofs.push("live_node_mapping");
+        }
+        if readiness_required && !nt_source_capability_present {
+            missing_proofs.push("nt_source_capability");
+        }
+        if readiness_required && !behavior_observation_complete {
+            missing_proofs.push("behavior_observation");
+        }
+        let production_usable = readiness_required && missing_proofs.is_empty();
+        let readiness_status = if !readiness_required {
+            "not_a_configured_data_client"
+        } else if production_usable {
+            "data_client_t043a_matrix_complete"
+        } else {
+            "data_client_t043a_matrix_missing_proofs"
+        };
+        clients.push(DataClientProductionReadinessMatrixClient {
+            client_key_hash: key.0,
+            provider_key: key.1,
+            has_data,
+            has_execution,
+            readiness_required,
+            config_inventory_present,
+            live_node_mapping_present,
+            nt_source_capability_present,
+            behavior_observation_complete,
+            production_usable,
+            readiness_status,
+            missing_proofs,
+        });
+    }
+    clients.sort_by(|left, right| {
+        (left.provider_key.as_str(), left.client_key_hash.as_str())
+            .cmp(&(right.provider_key.as_str(), right.client_key_hash.as_str()))
+    });
+
+    Ok(DataClientProductionReadinessMatrixArtifact {
+        schema_version: DATA_CLIENT_PRODUCTION_READINESS_MATRIX_SCHEMA_VERSION,
+        record_kind: DATA_CLIENT_PRODUCTION_READINESS_MATRIX_RECORD_KIND,
+        generated_at_unix_seconds: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        config_bundle_checksum: loaded.config_bundle_checksum.clone(),
+        readiness_source_sha256,
+        live_node_mapping_source_sha256,
+        nt_source_capability_sha256s,
+        behavior_observation_sha256s,
+        clients,
+    })
+}
+
+fn read_data_client_matrix_source_json(
+    path: &Path,
+    max_source_bytes: u64,
+) -> Result<(serde_json::Value, String), BoltV3OperatorArtifactError> {
+    let bytes = read_file_bounded(path, max_source_bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceRead {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    let sha256 = hex::encode(Sha256::digest(&bytes));
+    let value = serde_json::from_slice(&bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceParse {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    Ok((value, sha256))
+}
+
+fn validate_data_client_matrix_source_header(
+    source: &serde_json::Value,
+    expected_record_kind: &'static str,
+    field: &'static str,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if data_client_matrix_json_u64(source, "schema_version", field)? != 1 {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid { field },
+        );
+    }
+    if data_client_matrix_json_string(source, "record_kind", field)? != expected_record_kind {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid { field },
+        );
+    }
+    if data_client_matrix_json_string(source, "config_bundle_checksum", field)?
+        != loaded.config_bundle_checksum.as_str()
+    {
+        return Err(
+            BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid {
+                field: "config_bundle_checksum",
+            },
+        );
+    }
+    Ok(())
+}
+
+fn data_client_matrix_client_keys(
+    source: &serde_json::Value,
+    field: &'static str,
+    proof_field: &'static str,
+) -> Result<BTreeSet<(String, String)>, BoltV3OperatorArtifactError> {
+    let clients = source
+        .get("clients")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(
+            BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid { field },
+        )?;
+    let mut keys = BTreeSet::new();
+    for client in clients {
+        let client_key_hash =
+            data_client_matrix_json_string(client, "client_key_hash", field)?.to_string();
+        let provider_key =
+            data_client_matrix_json_string(client, "provider_key", field)?.to_string();
+        let proof_present = proof_field == "strategy_routed"
+            || data_client_matrix_json_bool(client, proof_field, field)?;
+        if proof_present {
+            keys.insert((client_key_hash, provider_key));
+        }
+    }
+    Ok(keys)
+}
+
+fn data_client_matrix_top_level_client_key(
+    source: &serde_json::Value,
+    field: &'static str,
+) -> Result<(String, String), BoltV3OperatorArtifactError> {
+    Ok((
+        data_client_matrix_json_string(source, "client_key_hash", field)?.to_string(),
+        data_client_matrix_json_string(source, "provider_key", field)?.to_string(),
+    ))
+}
+
+fn data_client_matrix_json_string<'a>(
+    value: &'a serde_json::Value,
+    key: &'static str,
+    field: &'static str,
+) -> Result<&'a str, BoltV3OperatorArtifactError> {
+    value.get(key).and_then(serde_json::Value::as_str).ok_or(
+        BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid { field },
+    )
+}
+
+fn data_client_matrix_json_bool(
+    value: &serde_json::Value,
+    key: &'static str,
+    field: &'static str,
+) -> Result<bool, BoltV3OperatorArtifactError> {
+    value.get(key).and_then(serde_json::Value::as_bool).ok_or(
+        BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid { field },
+    )
+}
+
+fn data_client_matrix_json_u64(
+    value: &serde_json::Value,
+    key: &'static str,
+    field: &'static str,
+) -> Result<u64, BoltV3OperatorArtifactError> {
+    value.get(key).and_then(serde_json::Value::as_u64).ok_or(
+        BoltV3OperatorArtifactError::DataClientProductionReadinessMatrixSourceInvalid { field },
+    )
 }
 
 fn build_data_client_behavior_observation_artifact_from_source_file(

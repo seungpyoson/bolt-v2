@@ -137,6 +137,8 @@ After commit `1b17ed66`, the non-live source artifacts were refreshed against ig
 - `nt-source-*.json`: source-capability artifacts were regenerated for Binance spot/USD-M/COIN-M, BitMEX, Bybit, Coinbase, Deribit, Kraken spot/futures, OKX, and Polymarket against pinned NT revision `6e059dcbb59ac1e582132fc431a581936c216c3c`.
 - `data-client-production-readiness-matrix.json`: sha256 `4bafd0be38433b437a6d784934cd113f52dcbe617e4c8666e9e800ab594d9b70`; every row remains `production_usable = false` with `missing_proofs = ["behavior_observation"]`.
 
+A follow-up Polymarket quote-probe attempt used the four instrument IDs from `/private/tmp/bolt-v2-t043a-polymarket-filter-fix/polymarket-target-candidates.json` as ignored local `readiness_probe.quote_targets`; it failed closed with `reference quote probe did not observe all configured client readiness_probe.quote_targets quotes within [live_canary].reference_quote_wait_timeout_seconds=20`. The NT logs showed the target IDs were no longer in the current filtered instrument cache, then a fresh metadata request loaded a new four-instrument current/next slug set. The ignored TOML probe targets were removed. This proves static Polymarket probe target IDs are not production-safe for rotating markets; the remaining target-binding work must derive probe targets from same-run source metadata or another current source-owned readiness session, not from stale copied IDs.
+
 ## Missing Production Proof
 
 T043A remains open until a venue-neutral matrix proves the following for every PR-enabled data client, including Polymarket and each data-only NT venue binding:

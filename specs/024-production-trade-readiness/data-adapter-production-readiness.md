@@ -224,6 +224,16 @@ New TOML-owned `clients.<id>.readiness_probe.min_observed_targets`. The live pro
 
 This matrix run is scoped to the resolved rows: it supplies per-client artifacts only for bitmex/coinbase/okx, so the 7 baseline-usable rows and Binance spot appear as missing in this run. The 7 baseline rows are unaffected by this PR's config diff (only bitmex/coinbase/okx sections changed) and remain usable per the baseline matrix sha256 `47d5dff20365da70e3d2c429251263478997f223e3ea010401eae4a62c9dda0`; a consolidated 11-client matrix requires re-running their behavior observations against the new config-bundle checksum. Current disposition: 10 of 11 configured data rows production-usable (7 baseline + BitMEX + Coinbase + OKX); Binance spot pending EC2/EIP verification — not an NT structural blocker: the SBE-entitled Ed25519 key is now provisioned in SSM and spot book/quote streamed this session from an operator-allowlisted IP, so the only remaining gate is running from the allowlisted production EIP (deferred to the parent session).
 
+## Trade surface (core-3) — live evidence
+
+The readiness gate now certifies `market_data_kind = "trade"` alongside `quote` and `book` (see Implementation Progress). Live read-only/no-submit trade probes were run at HEAD against the production public feeds using a metadata-response config derived from `config/root.example.toml` (the three resolved venues flipped to `market_data_kind = "trade"`, `book_type` removed, `max_metadata_quote_targets = 20`, `allow_metadata_target_sampling = true`):
+
+- **BitMEX** (`min_observed_targets = 10`, `reference_quote_wait_timeout_seconds = 20`): passed — `1` metadata + `20` trade events, probe-events sha256 `bb2d575ccb162ecd630bf4568b558a4ed764c7cdd907ba1db60250ae3da0895d`.
+- **Coinbase** (`min_observed_targets = 10`, wait `20`): passed — `1` metadata + `906` trade events, sha256 `7ad2c771b7bde893cb3d1cc660a8c12d6d2d237a1f441687b497afdfdca9d376`.
+- **OKX** (`min_observed_targets = 10`, wait `20`): failed closed — fewer than `10` distinct sampled instruments traded within the wait. Re-run with `min_observed_targets = 3` and `reference_quote_wait_timeout_seconds = 45` passed — `1` metadata + `34` trade events, sha256 `623cafabbba4c97b951eb2af4ee93c28ab6e7b262ffa89e5208d171495997242`.
+
+Finding: trades are inherently sparser than book deltas. Book deltas fire on any order-book change (even illiquid instruments tick), but a trade event requires an actual execution, so a broad spread-sampled universe yields fewer *distinct* trading instruments per wait window. A `trade` probe therefore needs a lower `min_observed_targets` and/or a longer `reference_quote_wait_timeout_seconds` than a `book` probe on the same venue. Both are TOML-owned, venue-agnostic levers (no hardcoded symbol selection) — the same `min_observed_targets` class fix that resolved the book rows applies per-surface. The trade surface itself is confirmed working on all three venues; per-venue trade thresholds are a config-tuning matter for whichever strategy consumes trade ticks.
+
 ## Gate Granularity
 
 The 2026-05-29 Claude adversarial review of this plan, job `d731d42d-31ad-4caf-9902-a3c76ff67a76`, requested changes on gate granularity. The accepted disposition is:

@@ -462,6 +462,7 @@ mod tests {
         map_adapters: map_fake_provider_adapters,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     };
 
     static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
@@ -477,6 +478,7 @@ mod tests {
         map_adapters: map_fake_provider_adapters,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     };
 
     static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
@@ -492,6 +494,7 @@ mod tests {
         map_adapters: map_fake_no_target_provider_adapters,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     };
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {

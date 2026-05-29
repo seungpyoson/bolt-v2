@@ -2567,12 +2567,7 @@ fn build_live_node_with_clients(
     resolved: &ResolvedBoltV3Secrets,
     adapters: BoltV3AdapterConfigs,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
-    let proof_executor_enabled = loaded
-        .root
-        .live_canary
-        .as_ref()
-        .and_then(|live_canary| live_canary.proof_policy.as_ref())
-        .is_some_and(|proof_policy| proof_policy.enabled);
+    let proof_executor_enabled = canary_proof_executor_enabled(loaded);
     let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> =
         if loaded.strategies.is_empty() && !proof_executor_enabled {
             Arc::new(NoStrategyDecisionEvidenceWriter)
@@ -2604,17 +2599,19 @@ fn build_live_node_with_clients(
         decision_evidence.clone(),
     )
     .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
-    register_canary_proof_executor_on_node(
-        &mut node,
-        loaded,
-        decision_evidence,
-        submit_admission.clone(),
-    )
-    .map_err(|error| {
-        BoltV3LiveNodeError::StrategyRegistration(BoltV3StrategyRegistrationError::Evidence {
-            message: error.to_string(),
-        })
-    })?;
+    if proof_executor_enabled {
+        register_canary_proof_executor_on_node(
+            &mut node,
+            loaded,
+            decision_evidence,
+            submit_admission.clone(),
+        )
+        .map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(BoltV3StrategyRegistrationError::Evidence {
+                message: error.to_string(),
+            })
+        })?;
+    }
     for strategy in &strategy_summary.registered {
         log::info!(
             "bolt-v3 registered strategy: strategy_instance_id={} strategy_archetype={} nt_strategy_id={}",
@@ -2964,13 +2961,24 @@ pub async fn disconnect_bolt_v3_clients(
     }
 }
 
+fn canary_proof_executor_enabled(loaded: &LoadedBoltV3Config) -> bool {
+    !loaded.strategies.is_empty()
+        && loaded
+            .root
+            .live_canary
+            .as_ref()
+            .and_then(|live_canary| live_canary.proof_policy.as_ref())
+            .is_some_and(|proof_policy| proof_policy.enabled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::bolt_v3_config::{
         BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeBookType,
         DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetBlock,
-        DataClientReadinessProbeQuoteTargetSource, ReferenceDataBlock,
+        DataClientReadinessProbeQuoteTargetSource, LiveCanaryProofPolicyBlock,
+        LiveCanaryProofTimeInForce, ReferenceDataBlock,
     };
     use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
     use nautilus_model::enums::{BookAction, OrderSide};
@@ -3396,6 +3404,59 @@ mod tests {
         assert!(
             !loaded.strategies.is_empty(),
             "helper must not mutate the caller's loaded config"
+        );
+    }
+
+    #[test]
+    fn no_submit_transport_disables_canary_proof_executor_after_strategy_strip() {
+        let mut loaded =
+            crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
+                .expect("fixture config should load");
+        let live_canary = loaded
+            .root
+            .live_canary
+            .as_mut()
+            .expect("fixture should include live canary config");
+        live_canary.proof_policy = Some(LiveCanaryProofPolicyBlock {
+            enabled: true,
+            policy_kind: "least_bad_strategy_candidate".to_string(),
+            proof_claim: "proof_only".to_string(),
+            executor_strategy_id: "canary-proof-executor-proof".to_string(),
+            strategy_instance_id: "configured_updown_main".to_string(),
+            execution_client_id: "polymarket_main".to_string(),
+            book_type: DataClientReadinessProbeBookType::L2Mbp,
+            time_in_force: LiveCanaryProofTimeInForce::Fok,
+            post_only: false,
+            reduce_only: false,
+            quote_quantity: false,
+            notional_mode: "fixed".to_string(),
+            proof_notional: "5.00".to_string(),
+            candidate_score_source: "proof_source".to_string(),
+            allow_negative_expected_ev: true,
+            rotation_observation_enabled: true,
+            rotation_min_distinct_markets: 1,
+            rotation_max_attempts: 1,
+        });
+
+        assert!(
+            canary_proof_executor_enabled(&loaded),
+            "trade transport should enable the proof executor when strategies remain registered"
+        );
+
+        let no_submit_loaded = no_submit_transport_loaded_config(&loaded);
+
+        assert!(
+            no_submit_loaded
+                .root
+                .live_canary
+                .as_ref()
+                .and_then(|live_canary| live_canary.proof_policy.as_ref())
+                .is_some_and(|proof_policy| proof_policy.enabled),
+            "no-submit keeps proof policy config available for readiness verification"
+        );
+        assert!(
+            !canary_proof_executor_enabled(&no_submit_loaded),
+            "no-submit transport must not register a submitting proof executor"
         );
     }
 

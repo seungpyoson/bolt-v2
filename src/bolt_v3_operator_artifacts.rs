@@ -13811,7 +13811,11 @@ pub fn verify_source_owned_reference_readiness_from_operator_evidence(
     validate_operator_evidence_build_head(operator_evidence)?;
     validate_operator_evidence_gate_session_file(&loaded.root_path, operator_evidence)?;
     verify_source_owned_static_readiness_artifacts(loaded, operator_evidence)?;
-    verify_strategy_input_replay_binding(loaded, operator_evidence)
+    if live_canary_proof_policy_enabled(loaded) {
+        verify_canary_proof_operator_evidence(loaded, operator_evidence)
+    } else {
+        verify_strategy_input_replay_binding(loaded, operator_evidence)
+    }
 }
 
 pub fn verify_final_operator_packet(

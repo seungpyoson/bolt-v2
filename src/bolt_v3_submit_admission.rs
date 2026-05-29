@@ -5,6 +5,7 @@ use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
 use rust_decimal::Decimal;
 use std::sync::{Arc, Mutex};
 
+use crate::bolt_v3_canary_proof_policy::CANARY_PROOF_CLAIM;
 pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
 
 #[derive(Debug)]
@@ -100,6 +101,9 @@ impl BoltV3SubmitAdmissionState {
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => {
                 Err(BoltV3SubmitAdmissionError::NotionalCapExceeded)
             }
+            BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim => {
+                Err(BoltV3SubmitAdmissionError::InvalidCanaryProofClaim)
+            }
             BoltV3AdmissionOutcome::RejectedCountCapExhausted => {
                 Err(BoltV3SubmitAdmissionError::CountCapExhausted)
             }
@@ -121,6 +125,13 @@ impl BoltV3SubmitAdmissionState {
         }
         if request.notional > report.max_notional_per_order() {
             return BoltV3AdmissionOutcome::RejectedNotionalCapExceeded;
+        }
+        if request
+            .canary_proof_claim
+            .as_deref()
+            .is_some_and(|claim| claim != CANARY_PROOF_CLAIM)
+        {
+            return BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim;
         }
         if inner.admitted_order_count >= report.max_live_order_count() {
             return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
@@ -190,6 +201,7 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub notional: Decimal,
     pub intent_kind: BoltV3SubmitIntentKind,
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+    pub canary_proof_claim: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -242,6 +254,7 @@ pub enum BoltV3SubmitAdmissionError {
     CountCapExhausted,
     NonPositiveNotional,
     NotionalCapExceeded,
+    InvalidCanaryProofClaim,
     EvidenceWriteFailed { reason: String },
 }
 
@@ -263,6 +276,10 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             Self::NotionalCapExceeded => {
                 write!(f, "bolt-v3 submit admission notional cap is exceeded")
             }
+            Self::InvalidCanaryProofClaim => write!(
+                f,
+                "bolt-v3 submit admission canary proof claim must be proof_only"
+            ),
             Self::EvidenceWriteFailed { reason } => {
                 write!(
                     f,

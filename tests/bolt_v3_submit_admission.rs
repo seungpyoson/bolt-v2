@@ -123,6 +123,30 @@ fn armed_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
 }
 
 #[test]
+fn submit_admission_rejects_non_proof_only_canary_proof_claim() {
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    ));
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(5, 0),
+        ))
+        .expect("valid gate report should arm admission");
+    let mut request = submit_request(Decimal::new(1, 0));
+    request.canary_proof_claim = Some("alpha_ready".to_string());
+
+    let error = admission
+        .admit(&request)
+        .expect_err("non-proof-only claim must fail before submit");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::InvalidCanaryProofClaim
+    ));
+}
+
+#[test]
 fn over_notional_cap_rejects_before_nt_submit_without_consuming_count() {
     let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
@@ -426,6 +450,7 @@ fn submit_request_with_kind_and_policy(
         notional,
         intent_kind,
         lifecycle_policy,
+        canary_proof_claim: None,
     }
 }
 

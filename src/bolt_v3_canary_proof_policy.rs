@@ -2,7 +2,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 const CANARY_PROOF_CANDIDATE_SOURCE_RECORD_KIND: &str = "bolt_v3_canary_proof_candidate_source";
-const CANARY_PROOF_CLAIM: &str = "proof_only";
+pub const CANARY_PROOF_CLAIM: &str = "proof_only";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CanaryProofOrderSide {

@@ -303,6 +303,7 @@ pub enum BoltV3AdmissionOutcome {
     RejectedSubmitLifecycleDisallowed,
     RejectedNonPositiveNotional,
     RejectedNotionalCapExceeded,
+    RejectedInvalidCanaryProofClaim,
     RejectedCountCapExhausted,
 }
 

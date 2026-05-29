@@ -3930,6 +3930,7 @@ impl BinaryOracleEdgeTaker {
                 BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
             },
             lifecycle_policy: self.submit_lifecycle_policy(),
+            canary_proof_claim: None,
         })
     }
 
@@ -7047,6 +7048,7 @@ fn submit_admission_request_from_order(
             BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
         },
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+        canary_proof_claim: None,
     })
 }
 
@@ -8724,6 +8726,7 @@ mod tests {
                     intent_kind: crate::bolt_v3_submit_admission::BoltV3SubmitIntentKind::Entry,
                     lifecycle_policy:
                         crate::bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy::new(true),
+                    canary_proof_claim: None,
                 },
             )
             .expect("first admission should consume the only slot");

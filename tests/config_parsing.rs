@@ -6113,7 +6113,10 @@ instrument_id = "CONFIGURED-PROBE.POLYMARKET"
 
 #[test]
 fn root_config_declares_requested_nt_data_clients_for_registration() {
-    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use bolt_v2::bolt_v3_config::{
+        DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetSource,
+        load_bolt_v3_config,
+    };
 
     let loaded = load_bolt_v3_config(&support::repo_path("config/root.toml"))
         .expect("root.toml should load with requested data clients");
@@ -6144,10 +6147,22 @@ fn root_config_declares_requested_nt_data_clients_for_registration() {
             .readiness_probe
             .as_ref()
             .unwrap_or_else(|| panic!("{client_key} must declare a readiness_probe block"));
-        assert_eq!(
-            readiness_probe.allow_metadata_target_sampling,
-            Some(true),
-            "{client_key} must explicitly opt into source-owned metadata sampling"
-        );
+        if readiness_probe.market_data_kind == DataClientReadinessProbeMarketDataKind::Trade
+            && readiness_probe.quote_target_source
+                == DataClientReadinessProbeQuoteTargetSource::MetadataResponse
+            && readiness_probe.chunk_size.is_some()
+        {
+            assert!(
+                readiness_probe.chunk_observation_window_seconds.is_some()
+                    && readiness_probe.min_observed_targets.is_some(),
+                "{client_key} trade chunk-count probe must declare chunk_size, chunk_observation_window_seconds, and min_observed_targets"
+            );
+        } else {
+            assert_eq!(
+                readiness_probe.allow_metadata_target_sampling,
+                Some(true),
+                "{client_key} must explicitly opt into source-owned metadata sampling"
+            );
+        }
     }
 }

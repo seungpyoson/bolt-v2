@@ -410,9 +410,17 @@ environment = "live"
 transport_backend = "sockudo"
 
 [clients.okx_data.readiness_probe]
-market_data_kind = "book"
-book_type = "l2_mbp"
+# Trade chunk-count probe (#490): walk OKX's full instrument universe in chunks
+# of `chunk_size`, kept below the venue's silent delivery ceiling (200 channels
+# deliver; the full ~1900 are suppressed), watching each chunk
+# `chunk_observation_window_seconds` for trades. Pass once `min_observed_targets`
+# (m) distinct markets trade; fail closed if the whole universe is walked without
+# reaching m. Liveness-driven selection avoids certifying on the illiquid
+# alphabetical long tail that a fixed metadata sample lands on. The other venues
+# above keep book probes (book deltas flow even for illiquid instruments, so they
+# do not exhibit the false-negative trade exposed).
+market_data_kind = "trade"
 quote_target_source = "metadata_response"
-max_metadata_quote_targets = 20
-allow_metadata_target_sampling = true
+chunk_size = 200
+chunk_observation_window_seconds = 45
 min_observed_targets = 10

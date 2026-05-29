@@ -234,6 +234,43 @@ The readiness gate now certifies `market_data_kind = "trade"` alongside `quote` 
 
 Finding: trades are inherently sparser than book deltas. Book deltas fire on any order-book change (even illiquid instruments tick), but a trade event requires an actual execution, so a broad spread-sampled universe yields fewer *distinct* trading instruments per wait window. A `trade` probe therefore needs a lower `min_observed_targets` and/or a longer `reference_quote_wait_timeout_seconds` than a `book` probe on the same venue. Both are TOML-owned, venue-agnostic levers (no hardcoded symbol selection) — the same `min_observed_targets` class fix that resolved the book rows applies per-surface. The trade surface itself is confirmed working on all three venues; per-venue trade thresholds are a config-tuning matter for whichever strategy consumes trade ticks.
 
+### Trade chunk-count selection (#490)
+
+The OKX result above (and the per-venue threshold tuning it implied) had a deeper cause than
+"trades are sparse." For `metadata_response` probes the target set was sampled by **alphabetical
+spread** — sort the instrument universe by id string and take evenly-spaced names — which is
+liquidity-blind. On a large heterogeneous venue that sample lands on the dead long tail (the OKX
+20-target sample landed entirely on `0G-USDT-SWAP`, `API3-EUR`, `BABYDOGE-USDT`, dated futures, and
+`*-ABOVE-DAILY-*` prediction-market events — not one BTC/ETH flagship), so the probe certified (or,
+for trade, failed) on markets that are not representative of feed health. Book masked this (illiquid
+instruments still emit deltas); trade exposed it (illiquid instruments do not execute). Lowering
+`min_observed_targets` papered over the symptom rather than fixing the sample.
+
+The fix, for `market_data_kind = "trade"` + `quote_target_source = "metadata_response"`, replaces
+the fixed alphabetical sample with a **chunk-and-count walk**:
+
+- `chunk_size` (`n`): the probe subscribes at most `n` instruments at once and walks the venue's
+  full universe one chunk at a time. Chunking is required because the venue silently suppresses
+  delivery above a few hundred concurrent channels — verified on OKX: `200` channels deliver, the
+  full `1919` are suppressed with no error returned. The universe therefore cannot be subscribed in
+  one pass; it is walked in chunks, never exceeding `n` concurrent subscriptions.
+- `chunk_observation_window_seconds`: how long each chunk is watched for trades before advancing.
+- `min_observed_targets` (`m`): the probe passes as soon as `m` *distinct* markets have traded
+  across the walk, and fails closed once the whole universe is walked without reaching `m`. Dead
+  markets self-eliminate by never firing; liquid markets surface regardless of alphabetical
+  position.
+
+This is liveness selection, not curation: there is no volume ranking and no pinned-symbol anchor
+list — the probe only answers "did enough distinct markets produce data?" Because selection is now
+live, the operator-artifacts materializer no longer re-derives a deterministic sample for this mode;
+it derives the target set from the recorded trades and re-applies the same pass rule
+(`trade_chunk_count_probe_passed`) so the artifact and the live gate agree. The knobs are
+venue-agnostic with no symbol literals. `config/root.example.toml` flips `okx_data` to this mode
+(`chunk_size = 200`, `chunk_observation_window_seconds = 45`, `min_observed_targets = 10`); the other
+venues keep book probes (book deltas flow even for illiquid instruments, so they do not exhibit the
+false-negative). This supersedes the "trades are inherently sparser" framing above: the OKX failure
+was a liquidity-blind sample, not inherent sparsity.
+
 ## Gate Granularity
 
 The 2026-05-29 Claude adversarial review of this plan, job `d731d42d-31ad-4caf-9902-a3c76ff67a76`, requested changes on gate granularity. The accepted disposition is:

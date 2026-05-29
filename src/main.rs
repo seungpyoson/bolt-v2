@@ -19,8 +19,8 @@ use bolt_v2::{
         ChainlinkReferenceQuoteObservationsSourceMaterializationRequest,
         DataClientProductionReadinessMatrixSourceFileRequest,
         EntryDecisionProofSourceMaterializationRequest, EntryDecisionSourceCollectionRequest,
-        FinalOperatorPacketVerificationScope, OperatorEvidenceJsonBuildInputs,
-        PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
+        FinalOperatorPacketVerificationScope, LiveCanaryPostRunProofInputs,
+        OperatorEvidenceJsonBuildInputs, PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
         assemble_operator_packet_from_static_manifest,
         chainlink_data_streams_ssm_credential_parameters,
         collect_canary_proof_artifacts_from_configured_provider,
@@ -44,6 +44,7 @@ use bolt_v2::{
         write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence,
         write_entry_decision_evidence_from_source_file, write_entry_decision_proof_source_files,
         write_entry_readiness_gate_session_artifact_from_decision_source_file,
+        write_live_canary_post_run_proof_artifacts_from_config,
         write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file,
         write_operator_evidence_json_from_artifact_paths,
         write_pre_run_clob_v2_adapter_signing_source_artifact_from_nt_signing_source,
@@ -599,6 +600,26 @@ enum OperatorArtifactsCommand {
         candidate_source_output: PathBuf,
         #[arg(long)]
         order_intent_output: PathBuf,
+    },
+    WriteLiveCanaryPostRunProofArtifacts {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        runtime_capture_spool_root: PathBuf,
+        #[arg(long)]
+        client_order_id: String,
+        #[arg(long)]
+        venue_order_id: String,
+        #[arg(long)]
+        venue_order_outcome: String,
+        #[arg(long, default_value_t = false)]
+        order_remains_open: bool,
+        #[arg(long)]
+        scanned_artifact: Vec<PathBuf>,
+        #[arg(long)]
+        retention_purge_path: PathBuf,
     },
     CollectChainlinkEntryDecisionProofSources {
         #[arg(short, long)]
@@ -1591,6 +1612,43 @@ fn run_operator_artifacts_command(
                     CANARY_PROOF_GATE_SESSION_OUTPUT_FIELD: written_operator_artifact_json(&written.gate_session),
                     CANARY_PROOF_CANDIDATE_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.candidate_source),
                     CANARY_PROOF_ORDER_INTENT_OUTPUT_FIELD: written_operator_artifact_json(&written.order_intent),
+                }))?
+            );
+            Ok(())
+        }
+        OperatorArtifactsCommand::WriteLiveCanaryPostRunProofArtifacts {
+            config,
+            run_id,
+            runtime_capture_spool_root,
+            client_order_id,
+            venue_order_id,
+            venue_order_outcome,
+            order_remains_open,
+            scanned_artifact,
+            retention_purge_path,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let written = write_live_canary_post_run_proof_artifacts_from_config(
+                &loaded,
+                &LiveCanaryPostRunProofInputs {
+                    run_id: &run_id,
+                    runtime_capture_spool_root: &runtime_capture_spool_root,
+                    client_order_id: &client_order_id,
+                    venue_order_id: &venue_order_id,
+                    venue_order_outcome: &venue_order_outcome,
+                    order_remains_open,
+                    scanned_artifact_paths: &scanned_artifact,
+                    retention_purge_path: &retention_purge_path,
+                },
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "canary_evidence": written_operator_artifact_json(&written.canary_evidence),
+                    "nt_submit_event": written_operator_artifact_json(&written.nt_submit_event),
+                    "venue_order_state": written_operator_artifact_json(&written.venue_order_state),
+                    "restart_reconciliation": written_operator_artifact_json(&written.restart_reconciliation),
+                    "post_run_hygiene": written_operator_artifact_json(&written.post_run_hygiene),
                 }))?
             );
             Ok(())

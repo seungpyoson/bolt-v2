@@ -14087,3 +14087,155 @@ literal = '''"canary proof max notional per order"'''
 context = '''"canary proof max notional per order",'''
 classification = '''canary_proof_decimal_diagnostic_field'''
 reason = '''This is a decimal parse diagnostic label for TOML-owned max notional, not a hardcoded amount.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"nt_submit_event"'''
+context = '''const LIVE_CANARY_NT_SUBMIT_EVENT_RECORD_KIND: &str = "nt_submit_event";'''
+classification = '''live_canary_result_artifact_schema_value'''
+reason = '''This is a post-run proof artifact record_kind value, not a runtime trading venue, market, size, or timeout.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"venue_order_state"'''
+context = '''const LIVE_CANARY_VENUE_ORDER_STATE_RECORD_KIND: &str = "venue_order_state";'''
+classification = '''live_canary_result_artifact_schema_value'''
+reason = '''This is a post-run proof artifact record_kind value, not a runtime trading venue, market, size, or timeout.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"restart_reconciliation"'''
+context = '''const LIVE_CANARY_RESTART_RECONCILIATION_RECORD_KIND: &str = "restart_reconciliation";'''
+classification = '''live_canary_result_artifact_schema_value'''
+reason = '''This is a post-run proof artifact record_kind value, not a runtime trading venue, market, size, or timeout.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"post_run_hygiene"'''
+context = '''const LIVE_CANARY_POST_RUN_HYGIENE_RECORD_KIND: &str = "post_run_hygiene";'''
+classification = '''live_canary_result_artifact_schema_value'''
+reason = '''This is a post-run proof artifact record_kind value, not a runtime trading venue, market, size, or timeout.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"filled"'''
+context = '''const LIVE_CANARY_TERMINAL_OUTCOME_FILLED: &str = "filled";'''
+classification = '''live_canary_terminal_outcome_schema_value'''
+reason = '''This is a venue-order terminal outcome vocabulary value used to decide whether cancel evidence is required, not a runtime order parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"venue_order_outcome"'''
+context = '''"venue_order_outcome",'''
+classification = '''live_canary_result_artifact_schema_field'''
+reason = '''This is a JSON field name read from the source-owned venue order-state proof artifact, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"strategy_cancel_ref.venue_order_outcome"'''
+context = '''"strategy_cancel_ref.venue_order_outcome",'''
+classification = '''live_canary_result_artifact_schema_field'''
+reason = '''This is a verifier error-field label for venue order-state proof validation, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_remains_open"'''
+context = '''.get("order_remains_open")'''
+classification = '''live_canary_result_artifact_schema_field'''
+reason = '''This is a JSON field name read from the source-owned venue order-state proof artifact, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"live canary terminal result run_id is empty"'''
+context = '''return Err(anyhow!("live canary terminal result run_id is empty"));'''
+classification = '''live_canary_result_fail_closed_diagnostic'''
+reason = '''This is a fail-closed post-run proof diagnostic, not a venue, market, size, timeout, or execution assumption.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"live canary terminal result strategy_instance_id_hash is empty"'''
+context = '''"live canary terminal result strategy_instance_id_hash is empty"'''
+classification = '''live_canary_result_fail_closed_diagnostic'''
+reason = '''This is a fail-closed post-run proof diagnostic, not a venue, market, size, timeout, or execution assumption.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"live canary terminal result client_order_id is empty"'''
+context = '''"live canary terminal result client_order_id is empty"'''
+classification = '''live_canary_result_fail_closed_diagnostic'''
+reason = '''This is a fail-closed post-run proof diagnostic, not a venue, market, size, timeout, or execution assumption.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"live canary terminal result venue_order_id is empty"'''
+context = '''"live canary terminal result venue_order_id is empty"'''
+classification = '''live_canary_result_fail_closed_diagnostic'''
+reason = '''This is a fail-closed post-run proof diagnostic, not a venue, market, size, timeout, or execution assumption.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"live canary terminal result scanned_artifact_paths is empty"'''
+context = '''"live canary terminal result scanned_artifact_paths is empty"'''
+classification = '''live_canary_result_fail_closed_diagnostic'''
+reason = '''This is a fail-closed post-run proof diagnostic, not a venue, market, size, timeout, or execution assumption.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"existing live canary evidence file `{}` differs from requested proof"'''
+context = '''"existing live canary evidence file `{}` differs from requested proof",'''
+classification = '''live_canary_result_fail_closed_diagnostic'''
+reason = '''This is an idempotent post-run proof mismatch diagnostic, not a venue, market, size, timeout, or execution assumption.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"canary_evidence"'''
+context = '''"canary_evidence": written_operator_artifact_json(&written.canary_evidence),'''
+classification = '''live_canary_post_run_cli_output_schema_field'''
+reason = '''This is a CLI JSON output field name for a written proof artifact, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"nt_submit_event"'''
+context = '''"nt_submit_event": written_operator_artifact_json(&written.nt_submit_event),'''
+classification = '''live_canary_post_run_cli_output_schema_field'''
+reason = '''This is a CLI JSON output field name for a written proof artifact, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"venue_order_state"'''
+context = '''"venue_order_state": written_operator_artifact_json(&written.venue_order_state),'''
+classification = '''live_canary_post_run_cli_output_schema_field'''
+reason = '''This is a CLI JSON output field name for a written proof artifact, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"restart_reconciliation"'''
+context = '''"restart_reconciliation": written_operator_artifact_json(&written.restart_reconciliation),'''
+classification = '''live_canary_post_run_cli_output_schema_field'''
+reason = '''This is a CLI JSON output field name for a written proof artifact, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"post_run_hygiene"'''
+context = '''"post_run_hygiene": written_operator_artifact_json(&written.post_run_hygiene),'''
+classification = '''live_canary_post_run_cli_output_schema_field'''
+reason = '''This is a CLI JSON output field name for a written proof artifact, not a runtime trading value.'''

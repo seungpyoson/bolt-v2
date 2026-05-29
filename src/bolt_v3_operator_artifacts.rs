@@ -71,10 +71,11 @@ use crate::{
     },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     bolt_v3_tiny_canary_evidence::{
-        Phase8AbortPlanEvidenceFile, Phase8AbortPlanSourceProofs,
-        Phase8FinancialEnvelopeEvidenceFile, Phase8MarketSelectionRuntimeProvenance,
+        Phase8AbortPlanEvidenceFile, Phase8AbortPlanSourceProofs, Phase8CanaryEvidence,
+        Phase8CanaryEvidenceInput, Phase8EvidenceRef, Phase8FinancialEnvelopeEvidenceFile,
+        Phase8LiveCanaryResultRefs, Phase8LiveOrderRef, Phase8MarketSelectionRuntimeProvenance,
         Phase8MarketSelectionSourceEvidenceFile, Phase8PreRunStateEvidenceFile,
-        Phase8PreRunStateSourceProofs, Phase8StrategyInputEvidenceFile,
+        Phase8PreRunStateSourceProofs, Phase8RuntimeCaptureRef, Phase8StrategyInputEvidenceFile,
         Phase8StrategyInputSafetyAudit,
     },
     strategies::binary_oracle_edge_taker::{
@@ -135,6 +136,12 @@ const DATA_CLIENT_MISSING_BEHAVIOR_PROOFS: &[&str] = &[
 const APPROVAL_NONCE_SCHEMA_VERSION: u32 = 1;
 const APPROVAL_NONCE_RECORD_KIND: &str = "bolt_v3.operator_approval_nonce.v1";
 const APPROVAL_NONCE_BYTES: usize = 32;
+const LIVE_CANARY_NT_SUBMIT_EVENT_RECORD_KIND: &str = "nt_submit_event";
+const LIVE_CANARY_VENUE_ORDER_STATE_RECORD_KIND: &str = "venue_order_state";
+const LIVE_CANARY_RESTART_RECONCILIATION_RECORD_KIND: &str = "restart_reconciliation";
+const LIVE_CANARY_POST_RUN_HYGIENE_RECORD_KIND: &str = "post_run_hygiene";
+const LIVE_CANARY_TERMINAL_OUTCOME_FILLED: &str = "filled";
+const LIVE_CANARY_TERMINAL_OUTCOME_REJECTED: &str = "rejected";
 const STATIC_ARTIFACTS_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const STATIC_ARTIFACTS_MANIFEST_RECORD_KIND: &str = "bolt_v3.static_operator_artifacts_manifest.v1";
 const PRE_RUN_STATE_SOURCE_PROOF_BUNDLE_SCHEMA_VERSION: u32 = 1;
@@ -15173,6 +15180,9 @@ fn verify_optional_strategy_cancel_ref(
         canary.get("strategy_cancel_ref"),
     ) {
         (None, None) | (None, Some(serde_json::Value::Null)) => Ok(()),
+        (Some(_), None) | (Some(_), Some(serde_json::Value::Null)) => {
+            verify_strategy_cancel_absent_for_terminal_closed_order(loaded, operator_evidence)
+        }
         (Some(configured), Some(value)) if !value.is_null() => {
             expect_final_string_equals(
                 value,
@@ -15194,7 +15204,46 @@ fn verify_optional_strategy_cancel_ref(
             }
             Ok(())
         }
-        (Some(_), _) | (None, Some(_)) => Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
+        (Some(_), Some(_)) | (None, Some(_)) => {
+            Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
+                field: "strategy_cancel_ref",
+            })
+        }
+    }
+}
+
+fn verify_strategy_cancel_absent_for_terminal_closed_order(
+    loaded: &LoadedBoltV3Config,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let (venue_order_state, _) = read_final_json_evidence(
+        loaded,
+        operator_evidence,
+        "venue_order_state_path",
+        &operator_evidence.venue_order_state_path,
+    )?;
+    verify_strategy_cancel_absent_for_terminal_closed_order_value(&venue_order_state)
+}
+
+fn verify_strategy_cancel_absent_for_terminal_closed_order_value(
+    venue_order_state: &serde_json::Value,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let outcome = expect_final_string(
+        venue_order_state,
+        "venue_order_outcome",
+        "strategy_cancel_ref.venue_order_outcome",
+    )?;
+    let order_remains_open = venue_order_state
+        .get("order_remains_open")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or(BoltV3OperatorArtifactError::FinalEvidenceSchema {
+            field: "strategy_cancel_ref.order_remains_open",
+        })?;
+    match (outcome, order_remains_open) {
+        (LIVE_CANARY_TERMINAL_OUTCOME_FILLED | LIVE_CANARY_TERMINAL_OUTCOME_REJECTED, false) => {
+            Ok(())
+        }
+        _ => Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
             field: "strategy_cancel_ref",
         }),
     }
@@ -15546,6 +15595,425 @@ fn build_approval_nonce_artifact()
         record_kind: APPROVAL_NONCE_RECORD_KIND,
         nonce_sha256,
     })
+}
+
+pub struct LiveCanaryTerminalResultProofInputs<'a> {
+    pub run_id: &'a str,
+    pub strategy_instance_id_hash: &'a str,
+    pub client_order_id: &'a str,
+    pub venue_order_id: &'a str,
+    pub venue_order_outcome: &'a str,
+    pub order_remains_open: bool,
+    pub max_operator_evidence_file_bytes: u64,
+    pub scanned_artifact_paths: &'a [PathBuf],
+    pub retention_purge_path: &'a Path,
+    pub nt_submit_event_path: &'a Path,
+    pub venue_order_state_path: &'a Path,
+    pub restart_reconciliation_path: &'a Path,
+    pub post_run_hygiene_path: &'a Path,
+}
+
+pub struct LiveCanaryPostRunProofInputs<'a> {
+    pub run_id: &'a str,
+    pub runtime_capture_spool_root: &'a Path,
+    pub client_order_id: &'a str,
+    pub venue_order_id: &'a str,
+    pub venue_order_outcome: &'a str,
+    pub order_remains_open: bool,
+    pub scanned_artifact_paths: &'a [PathBuf],
+    pub retention_purge_path: &'a Path,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveCanaryPostRunProofArtifacts {
+    pub canary_evidence: WrittenOperatorArtifact,
+    pub nt_submit_event: WrittenOperatorArtifact,
+    pub venue_order_state: WrittenOperatorArtifact,
+    pub restart_reconciliation: WrittenOperatorArtifact,
+    pub post_run_hygiene: WrittenOperatorArtifact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LiveCanaryTerminalResultArtifacts {
+    nt_submit_event: WrittenOperatorArtifact,
+    venue_order_state: WrittenOperatorArtifact,
+    restart_reconciliation: WrittenOperatorArtifact,
+    post_run_hygiene: WrittenOperatorArtifact,
+}
+
+impl LiveCanaryTerminalResultArtifacts {
+    fn into_vec(self) -> Vec<WrittenOperatorArtifact> {
+        vec![
+            self.nt_submit_event,
+            self.venue_order_state,
+            self.restart_reconciliation,
+            self.post_run_hygiene,
+        ]
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct LiveCanarySubmitEventProof<'a> {
+    record_kind: &'static str,
+    run_id: &'a str,
+    strategy_instance_id_hash: &'a str,
+    client_order_id_hash: String,
+    venue_order_id_hash: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LiveCanaryVenueOrderStateProof<'a> {
+    record_kind: &'static str,
+    run_id: &'a str,
+    strategy_instance_id_hash: &'a str,
+    client_order_id_hash: String,
+    venue_order_id_hash: String,
+    venue_order_outcome: &'a str,
+    order_remains_open: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct LiveCanaryRestartReconciliationProof<'a> {
+    record_kind: &'static str,
+    source_run_id: &'a str,
+    strategy_instance_id_hash: &'a str,
+    client_order_id_hash: String,
+    venue_order_id_hash: String,
+    venue_order_outcome: &'a str,
+    order_remains_open: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct LiveCanaryPostRunHygieneProof<'a> {
+    record_kind: &'static str,
+    run_id: &'a str,
+    strategy_instance_id_hash: &'a str,
+    client_order_id_hash: String,
+    venue_order_id_hash: String,
+    raw_secret_residue_absent: bool,
+    scanned_artifact_hashes: Vec<String>,
+    retention_purge_path_hash: String,
+}
+
+pub fn write_live_canary_terminal_result_artifacts(
+    inputs: &LiveCanaryTerminalResultProofInputs<'_>,
+) -> anyhow::Result<Vec<WrittenOperatorArtifact>> {
+    Ok(write_live_canary_terminal_result_artifact_refs(inputs)?.into_vec())
+}
+
+pub fn write_live_canary_post_run_proof_artifacts_from_config(
+    loaded: &LoadedBoltV3Config,
+    inputs: &LiveCanaryPostRunProofInputs<'_>,
+) -> anyhow::Result<LiveCanaryPostRunProofArtifacts> {
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or_else(|| anyhow!("live canary post-run proof requires `[live_canary]`"))?;
+    let operator_evidence = live_canary.operator_evidence.as_ref().ok_or_else(|| {
+        anyhow!("live canary post-run proof requires `[live_canary.operator_evidence]`")
+    })?;
+    let financial_envelope: Phase8FinancialEnvelopeEvidenceFile =
+        read_operator_evidence_json_artifact(
+            loaded,
+            operator_evidence,
+            "financial_envelope_path",
+            "financial_envelope_sha256",
+            &operator_evidence.financial_envelope_path,
+            &operator_evidence.financial_envelope_sha256,
+        )?;
+    let approved_strategy_instance_id_hash = sha256_text(financial_envelope.strategy_instance_id());
+    let nt_submit_event_path =
+        resolve_loaded_config_path(loaded, &operator_evidence.nt_submit_event_path);
+    let venue_order_state_path =
+        resolve_loaded_config_path(loaded, &operator_evidence.venue_order_state_path);
+    let restart_reconciliation_path =
+        resolve_loaded_config_path(loaded, &operator_evidence.restart_reconciliation_path);
+    let post_run_hygiene_path =
+        resolve_loaded_config_path(loaded, &operator_evidence.post_run_hygiene_path);
+    let terminal_artifacts =
+        write_live_canary_terminal_result_artifact_refs(&LiveCanaryTerminalResultProofInputs {
+            run_id: inputs.run_id,
+            strategy_instance_id_hash: &approved_strategy_instance_id_hash,
+            client_order_id: inputs.client_order_id,
+            venue_order_id: inputs.venue_order_id,
+            venue_order_outcome: inputs.venue_order_outcome,
+            order_remains_open: inputs.order_remains_open,
+            max_operator_evidence_file_bytes: operator_evidence.max_operator_evidence_file_bytes,
+            scanned_artifact_paths: inputs.scanned_artifact_paths,
+            retention_purge_path: inputs.retention_purge_path,
+            nt_submit_event_path: &nt_submit_event_path,
+            venue_order_state_path: &venue_order_state_path,
+            restart_reconciliation_path: &restart_reconciliation_path,
+            post_run_hygiene_path: &post_run_hygiene_path,
+        })?;
+    let evidence_input = Phase8CanaryEvidenceInput {
+        head_sha: operator_evidence.head_sha.clone(),
+        root_config_sha256: root_toml_sha256_for_final_evidence(loaded)?,
+        ssm_manifest_sha256: operator_evidence.ssm_manifest_sha256.clone(),
+        ssm_manifest_ref: Phase8EvidenceRef {
+            path_hash: sha256_text(&operator_evidence.ssm_manifest_path),
+            record_hash: operator_evidence.ssm_manifest_sha256.clone(),
+        },
+        strategy_input_evidence_ref: Phase8EvidenceRef {
+            path_hash: sha256_text(&operator_evidence.strategy_input_evidence_path),
+            record_hash: operator_evidence.strategy_input_evidence_sha256.clone(),
+        },
+        approved_strategy_instance_id_hash: approved_strategy_instance_id_hash.clone(),
+        approval_id: live_canary.approval_id.clone(),
+        max_live_order_count: live_canary.max_live_order_count,
+        max_notional_per_order: Decimal::from_str_exact(&live_canary.max_notional_per_order)?,
+        runtime_capture_ref: Phase8RuntimeCaptureRef {
+            spool_root_hash: sha256_text(&inputs.runtime_capture_spool_root.to_string_lossy()),
+            run_id: inputs.run_id.to_string(),
+        },
+    };
+    let decision_evidence_ref = configured_evidence_ref(
+        loaded,
+        operator_evidence,
+        "decision_evidence_path",
+        &operator_evidence.decision_evidence_path,
+    )?;
+    let strategy_cancel_ref = if inputs.order_remains_open {
+        operator_evidence
+            .strategy_cancel_path
+            .as_deref()
+            .map(|configured| {
+                configured_evidence_ref(
+                    loaded,
+                    operator_evidence,
+                    "strategy_cancel_path",
+                    configured,
+                )
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let live_order_ref = Phase8LiveOrderRef {
+        strategy_instance_id_hash: approved_strategy_instance_id_hash,
+        client_order_id_hash: sha256_text(inputs.client_order_id),
+        venue_order_id_hash: sha256_text(inputs.venue_order_id),
+    };
+    let result_refs = Phase8LiveCanaryResultRefs {
+        nt_submit_event_ref: Phase8EvidenceRef {
+            path_hash: sha256_text(&operator_evidence.nt_submit_event_path),
+            record_hash: terminal_artifacts.nt_submit_event.sha256.clone(),
+        },
+        venue_order_state_ref: Phase8EvidenceRef {
+            path_hash: sha256_text(&operator_evidence.venue_order_state_path),
+            record_hash: terminal_artifacts.venue_order_state.sha256.clone(),
+        },
+        strategy_cancel_ref,
+        restart_reconciliation_ref: Phase8EvidenceRef {
+            path_hash: sha256_text(&operator_evidence.restart_reconciliation_path),
+            record_hash: terminal_artifacts.restart_reconciliation.sha256.clone(),
+        },
+        post_run_hygiene_ref: Phase8EvidenceRef {
+            path_hash: sha256_text(&operator_evidence.post_run_hygiene_path),
+            record_hash: terminal_artifacts.post_run_hygiene.sha256.clone(),
+        },
+    };
+    let canary_evidence = Phase8CanaryEvidence::live_canary_proof(
+        evidence_input,
+        decision_evidence_ref,
+        live_order_ref,
+        result_refs,
+        live_canary.max_live_order_count,
+    )?;
+    let canary_evidence_path =
+        resolve_loaded_config_path(loaded, &operator_evidence.canary_evidence_path);
+    canary_evidence.write_json_file(&canary_evidence_path)?;
+    let canary_evidence_sha256 = sha256_file_bounded(
+        &canary_evidence_path,
+        operator_evidence.max_operator_evidence_file_bytes,
+    )?;
+    Ok(LiveCanaryPostRunProofArtifacts {
+        canary_evidence: WrittenOperatorArtifact {
+            path: canary_evidence_path,
+            sha256: canary_evidence_sha256,
+        },
+        nt_submit_event: terminal_artifacts.nt_submit_event,
+        venue_order_state: terminal_artifacts.venue_order_state,
+        restart_reconciliation: terminal_artifacts.restart_reconciliation,
+        post_run_hygiene: terminal_artifacts.post_run_hygiene,
+    })
+}
+
+fn write_live_canary_terminal_result_artifact_refs(
+    inputs: &LiveCanaryTerminalResultProofInputs<'_>,
+) -> anyhow::Result<LiveCanaryTerminalResultArtifacts> {
+    validate_live_canary_terminal_result_inputs(inputs)?;
+    let client_order_id_hash = sha256_text(inputs.client_order_id);
+    let venue_order_id_hash = sha256_text(inputs.venue_order_id);
+    let scanned_artifact_hashes = inputs
+        .scanned_artifact_paths
+        .iter()
+        .map(|path| sha256_file_bounded(path, inputs.max_operator_evidence_file_bytes))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let nt_submit_event = write_json_artifact_create_new_or_read_existing(
+        inputs.nt_submit_event_path,
+        &LiveCanarySubmitEventProof {
+            record_kind: LIVE_CANARY_NT_SUBMIT_EVENT_RECORD_KIND,
+            run_id: inputs.run_id,
+            strategy_instance_id_hash: inputs.strategy_instance_id_hash,
+            client_order_id_hash: client_order_id_hash.clone(),
+            venue_order_id_hash: venue_order_id_hash.clone(),
+        },
+        inputs.max_operator_evidence_file_bytes,
+    )?;
+    let venue_order_state = write_json_artifact_create_new_or_read_existing(
+        inputs.venue_order_state_path,
+        &LiveCanaryVenueOrderStateProof {
+            record_kind: LIVE_CANARY_VENUE_ORDER_STATE_RECORD_KIND,
+            run_id: inputs.run_id,
+            strategy_instance_id_hash: inputs.strategy_instance_id_hash,
+            client_order_id_hash: client_order_id_hash.clone(),
+            venue_order_id_hash: venue_order_id_hash.clone(),
+            venue_order_outcome: inputs.venue_order_outcome,
+            order_remains_open: inputs.order_remains_open,
+        },
+        inputs.max_operator_evidence_file_bytes,
+    )?;
+    let restart_reconciliation = write_json_artifact_create_new_or_read_existing(
+        inputs.restart_reconciliation_path,
+        &LiveCanaryRestartReconciliationProof {
+            record_kind: LIVE_CANARY_RESTART_RECONCILIATION_RECORD_KIND,
+            source_run_id: inputs.run_id,
+            strategy_instance_id_hash: inputs.strategy_instance_id_hash,
+            client_order_id_hash: client_order_id_hash.clone(),
+            venue_order_id_hash: venue_order_id_hash.clone(),
+            venue_order_outcome: inputs.venue_order_outcome,
+            order_remains_open: inputs.order_remains_open,
+        },
+        inputs.max_operator_evidence_file_bytes,
+    )?;
+    let post_run_hygiene = write_json_artifact_create_new_or_read_existing(
+        inputs.post_run_hygiene_path,
+        &LiveCanaryPostRunHygieneProof {
+            record_kind: LIVE_CANARY_POST_RUN_HYGIENE_RECORD_KIND,
+            run_id: inputs.run_id,
+            strategy_instance_id_hash: inputs.strategy_instance_id_hash,
+            client_order_id_hash,
+            venue_order_id_hash,
+            raw_secret_residue_absent: true,
+            scanned_artifact_hashes,
+            retention_purge_path_hash: sha256_text(&inputs.retention_purge_path.to_string_lossy()),
+        },
+        inputs.max_operator_evidence_file_bytes,
+    )?;
+    Ok(LiveCanaryTerminalResultArtifacts {
+        nt_submit_event,
+        venue_order_state,
+        restart_reconciliation,
+        post_run_hygiene,
+    })
+}
+
+fn validate_live_canary_terminal_result_inputs(
+    inputs: &LiveCanaryTerminalResultProofInputs<'_>,
+) -> anyhow::Result<()> {
+    if inputs.run_id.trim().is_empty() {
+        return Err(anyhow!("live canary terminal result run_id is empty"));
+    }
+    if inputs.strategy_instance_id_hash.trim().is_empty() {
+        return Err(anyhow!(
+            "live canary terminal result strategy_instance_id_hash is empty"
+        ));
+    }
+    if inputs.client_order_id.trim().is_empty() {
+        return Err(anyhow!(
+            "live canary terminal result client_order_id is empty"
+        ));
+    }
+    if inputs.venue_order_id.trim().is_empty() {
+        return Err(anyhow!(
+            "live canary terminal result venue_order_id is empty"
+        ));
+    }
+    match inputs.venue_order_outcome {
+        LIVE_CANARY_TERMINAL_OUTCOME_FILLED | LIVE_CANARY_TERMINAL_OUTCOME_REJECTED => {}
+        _ => {
+            return Err(anyhow!(
+                "live canary terminal result venue_order_outcome must be terminal"
+            ));
+        }
+    }
+    if inputs.order_remains_open {
+        return Err(anyhow!(
+            "live canary terminal result order_remains_open must be false"
+        ));
+    }
+    if inputs.max_operator_evidence_file_bytes == 0 {
+        return Err(anyhow!(
+            "live canary terminal result max_operator_evidence_file_bytes must be positive"
+        ));
+    }
+    if inputs.scanned_artifact_paths.is_empty() {
+        return Err(anyhow!(
+            "live canary terminal result scanned_artifact_paths is empty"
+        ));
+    }
+    Ok(())
+}
+
+fn configured_evidence_ref(
+    loaded: &LoadedBoltV3Config,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+    path_field: &'static str,
+    configured_path: &str,
+) -> anyhow::Result<Phase8EvidenceRef> {
+    Ok(Phase8EvidenceRef {
+        path_hash: sha256_text(configured_path),
+        record_hash: read_final_evidence_sha256(
+            loaded,
+            operator_evidence,
+            path_field,
+            configured_path,
+        )?,
+    })
+}
+
+fn sha256_file_bounded(path: &Path, max_bytes: u64) -> anyhow::Result<String> {
+    let bytes = read_file_bounded(path, max_bytes).map_err(|source| {
+        anyhow!(
+            "failed to hash bounded live canary evidence file `{}`: {source}",
+            path.display()
+        )
+    })?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn write_json_artifact_create_new_or_read_existing<T: Serialize>(
+    path: &Path,
+    value: &T,
+    max_existing_bytes: u64,
+) -> anyhow::Result<WrittenOperatorArtifact> {
+    match write_json_artifact_create_new(path, value) {
+        Ok(written) => Ok(written),
+        Err(BoltV3OperatorArtifactError::Write { source, .. })
+            if source.kind() == std::io::ErrorKind::AlreadyExists =>
+        {
+            let expected_bytes = serde_json::to_vec_pretty(value)?;
+            let actual_bytes = read_file_bounded(path, max_existing_bytes).map_err(|source| {
+                anyhow!(
+                    "failed to read existing live canary evidence file `{}`: {source}",
+                    path.display()
+                )
+            })?;
+            if actual_bytes != expected_bytes {
+                return Err(anyhow!(
+                    "existing live canary evidence file `{}` differs from requested proof",
+                    path.display()
+                ));
+            }
+            Ok(WrittenOperatorArtifact {
+                path: path.to_path_buf(),
+                sha256: hex::encode(Sha256::digest(actual_bytes)),
+            })
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 pub(crate) fn write_json_artifact_create_new<T: Serialize>(
@@ -16239,5 +16707,85 @@ mod tests {
             !path.exists(),
             "sync failure must remove the partially-written final artifact path"
         );
+    }
+
+    #[test]
+    fn live_canary_terminal_result_writer_hashes_ids_and_writes_receipt_artifacts() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let scanned_artifact = temp.path().join("order-events.jsonl");
+        fs::write(&scanned_artifact, b"accepted order event\n").expect("scan input should write");
+        let retention_path = temp.path().join("retention-purge.txt");
+
+        let written = write_live_canary_terminal_result_artifacts(
+            &LiveCanaryTerminalResultProofInputs {
+                run_id: "live-run-001",
+                strategy_instance_id_hash: &sha256_text("canary-proof-executor-proof"),
+                client_order_id: "O-20260529-153130-001-proof-1",
+                venue_order_id: "0x31c0fd542faa4a9af561602ee8f302a4aaf838a04ea87068d2cfa048e2be60f5",
+                venue_order_outcome: "filled",
+                order_remains_open: false,
+                max_operator_evidence_file_bytes: 1024,
+                scanned_artifact_paths: &[scanned_artifact.clone()],
+                retention_purge_path: &retention_path,
+                nt_submit_event_path: &temp.path().join("nt-submit-event.json"),
+                venue_order_state_path: &temp.path().join("venue-order-state.json"),
+                restart_reconciliation_path: &temp.path().join("restart-reconciliation.json"),
+                post_run_hygiene_path: &temp.path().join("post-run-hygiene.json"),
+            },
+        )
+        .expect("terminal result artifacts should write");
+
+        assert_eq!(written.len(), 4);
+        let client_hash = sha256_text("O-20260529-153130-001-proof-1");
+        let venue_hash =
+            sha256_text("0x31c0fd542faa4a9af561602ee8f302a4aaf838a04ea87068d2cfa048e2be60f5");
+        let venue_state: serde_json::Value = serde_json::from_slice(
+            &fs::read(temp.path().join("venue-order-state.json")).expect("venue state should read"),
+        )
+        .expect("venue state should parse");
+        assert_eq!(venue_state["client_order_id_hash"], client_hash);
+        assert_eq!(venue_state["venue_order_id_hash"], venue_hash);
+        assert_eq!(venue_state["venue_order_outcome"], "filled");
+        assert_eq!(venue_state["order_remains_open"], false);
+
+        let post_hygiene: serde_json::Value = serde_json::from_slice(
+            &fs::read(temp.path().join("post-run-hygiene.json")).expect("post hygiene should read"),
+        )
+        .expect("post hygiene should parse");
+        assert_eq!(post_hygiene["raw_secret_residue_absent"], true);
+        let expected_scan_hash = hex::encode(Sha256::digest(
+            &fs::read(&scanned_artifact).expect("scan input should read"),
+        ));
+        assert_eq!(
+            post_hygiene["scanned_artifact_hashes"][0],
+            expected_scan_hash
+        );
+        assert_eq!(
+            post_hygiene["retention_purge_path_hash"],
+            sha256_text(&retention_path.to_string_lossy())
+        );
+    }
+
+    #[test]
+    fn strategy_cancel_ref_can_be_absent_when_venue_order_is_terminal_closed() {
+        let terminal_closed = serde_json::json!({
+            "venue_order_outcome": "filled",
+            "order_remains_open": false
+        });
+        verify_strategy_cancel_absent_for_terminal_closed_order_value(&terminal_closed)
+            .expect("closed terminal order should not need a cancel proof");
+
+        let still_open = serde_json::json!({
+            "venue_order_outcome": "accepted",
+            "order_remains_open": true
+        });
+        let error = verify_strategy_cancel_absent_for_terminal_closed_order_value(&still_open)
+            .expect_err("open order should still require cancel proof");
+        assert!(matches!(
+            error,
+            BoltV3OperatorArtifactError::FinalEvidenceMismatch {
+                field: "strategy_cancel_ref"
+            }
+        ));
     }
 }

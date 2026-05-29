@@ -57,7 +57,9 @@ use nautilus_common::{
     messages::data::InstrumentsResponse,
     msgbus::ShareableMessageHandler,
     nautilus_actor,
+    timer::TimeEvent,
 };
+use nautilus_core::UnixNanos;
 use nautilus_live::{
     builder::LiveNodeBuilder,
     config::LiveNodeConfig,
@@ -217,6 +219,36 @@ struct NoSubmitReferenceQuoteSubscription {
     instrument_id: InstrumentId,
 }
 
+/// Name of the actor time-alert that drives a trade chunk-count walk from one
+/// chunk to the next.
+const CHUNK_ADVANCE_TIMER: &str = "bolt-v3-readiness-chunk-advance";
+
+/// Live state for a trade chunk-count readiness walk. The probe subscribes one
+/// chunk of the instrument universe at a time (so it never holds more than
+/// `chunk_size` channels at once, staying below the venue's silent delivery
+/// ceiling), watches it for `chunk_observation_window_seconds`, then advances.
+/// It passes as soon as `required_live_markets` (`m`) distinct markets have
+/// traded, and fails closed once the whole universe has been walked without
+/// reaching `m`. Interior mutability mirrors the surrounding handle: the actor
+/// is single-threaded (`!Send`), so `Cell`/`RefCell` is sufficient.
+#[derive(Debug)]
+struct ChunkCountWalk {
+    data_client_id: ClientId,
+    chunk_size: usize,
+    chunk_observation_window_seconds: u64,
+    required_live_markets: usize,
+    /// Universe pre-split into consecutive chunks of at most `chunk_size`,
+    /// populated when the metadata response arrives.
+    chunks: RefCell<Vec<Vec<InstrumentId>>>,
+    /// Index of the next chunk to subscribe.
+    cursor: Cell<usize>,
+    /// Set once the universe has been captured and chunking has begun.
+    started: Cell<bool>,
+    /// Set once the walk has finished, whether by reaching `m` (pass) or by
+    /// exhausting the universe (fail closed).
+    complete: Cell<bool>,
+}
+
 #[derive(Debug, Clone)]
 struct BoltV3NoSubmitReferenceQuoteProbeHandle {
     required: Rc<RefCell<Vec<NoSubmitReferenceQuoteSubscription>>>,
@@ -233,6 +265,10 @@ struct BoltV3NoSubmitReferenceQuoteProbeHandle {
     book_deltas: Rc<RefCell<Vec<BoltV3NoSubmitBookDeltas>>>,
     trades: Rc<RefCell<Vec<BoltV3NoSubmitTrade>>>,
     quote_notify: Rc<tokio::sync::Notify>,
+    /// Present only for a trade chunk-count probe (`market_data_kind = "trade"`
+    /// with `quote_target_source = "metadata_response"`); drives the chunked
+    /// walk over the instrument universe instead of a fixed sampled target set.
+    chunk_walk: Option<Rc<ChunkCountWalk>>,
 }
 
 impl BoltV3NoSubmitReferenceQuoteProbeHandle {
@@ -270,6 +306,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             book_deltas: Rc::new(RefCell::new(Vec::new())),
             trades: Rc::new(RefCell::new(Vec::new())),
             quote_notify: Rc::new(tokio::sync::Notify::new()),
+            chunk_walk: None,
         }
     }
 
@@ -296,6 +333,192 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             book_deltas: Rc::new(RefCell::new(Vec::new())),
             trades: Rc::new(RefCell::new(Vec::new())),
             quote_notify: Rc::new(tokio::sync::Notify::new()),
+            chunk_walk: None,
+        }
+    }
+
+    fn from_metadata_response_chunk_count_plan(
+        data_client_id: ClientId,
+        chunk_size: usize,
+        chunk_observation_window_seconds: u64,
+        required_live_markets: usize,
+        market_data_kind: DataClientReadinessProbeMarketDataKind,
+    ) -> Self {
+        Self {
+            required: Rc::new(RefCell::new(Vec::new())),
+            ambiguous_instrument_ids: Rc::new(RefCell::new(BTreeSet::new())),
+            market_data_kind,
+            book_type: None,
+            metadata_response_data_client_id: Some(data_client_id),
+            metadata_response_max_quote_targets: None,
+            metadata_response_allow_target_sampling: false,
+            min_observed_targets: Some(required_live_markets),
+            quote_targets_initialized: Rc::new(Cell::new(false)),
+            failure_reason: Rc::new(RefCell::new(None)),
+            quotes: Rc::new(RefCell::new(Vec::new())),
+            book_deltas: Rc::new(RefCell::new(Vec::new())),
+            trades: Rc::new(RefCell::new(Vec::new())),
+            quote_notify: Rc::new(tokio::sync::Notify::new()),
+            chunk_walk: Some(Rc::new(ChunkCountWalk {
+                data_client_id,
+                chunk_size,
+                chunk_observation_window_seconds,
+                required_live_markets,
+                chunks: RefCell::new(Vec::new()),
+                cursor: Cell::new(0),
+                started: Cell::new(false),
+                complete: Cell::new(false),
+            })),
+        }
+    }
+
+    fn is_chunk_count_mode(&self) -> bool {
+        self.chunk_walk.is_some()
+    }
+
+    /// Capture the metadata-response universe and split it into chunks. The
+    /// universe is sorted and de-duplicated so chunk membership is
+    /// deterministic; which markets ultimately certify the feed is still
+    /// liveness-driven (a chunk's markets only count once they actually trade).
+    fn chunk_count_capture_universe(&self, mut instrument_ids: Vec<InstrumentId>) {
+        let Some(walk) = &self.chunk_walk else {
+            return;
+        };
+        if walk.started.get() {
+            return;
+        }
+        instrument_ids.sort_by_key(|instrument_id| instrument_id.to_string());
+        instrument_ids.dedup();
+        *walk.chunks.borrow_mut() = chunk_universe(&instrument_ids, walk.chunk_size);
+        walk.cursor.set(0);
+        walk.started.set(true);
+        self.quote_notify.notify_one();
+    }
+
+    /// Take the next chunk to subscribe, installing it as the probe's current
+    /// `required` set so recorded trades match against it. Returns `None` once
+    /// the universe is exhausted.
+    fn chunk_count_next_chunk(&self) -> Option<Vec<NoSubmitReferenceQuoteSubscription>> {
+        let walk = self.chunk_walk.as_ref()?;
+        let cursor = walk.cursor.get();
+        let chunk = walk.chunks.borrow().get(cursor).cloned()?;
+        walk.cursor.set(cursor + 1);
+        let subscriptions: Vec<NoSubmitReferenceQuoteSubscription> = chunk
+            .into_iter()
+            .map(|instrument_id| NoSubmitReferenceQuoteSubscription {
+                data_client_id: walk.data_client_id,
+                instrument_id,
+            })
+            .collect();
+        *self.required.borrow_mut() = subscriptions.clone();
+        Some(subscriptions)
+    }
+
+    /// The chunk currently subscribed, returned so the actor can unsubscribe it
+    /// before advancing to the next chunk.
+    fn chunk_count_current_chunk(&self) -> Vec<NoSubmitReferenceQuoteSubscription> {
+        self.required.borrow().clone()
+    }
+
+    /// Per-chunk observation window in nanoseconds, or `None` on overflow.
+    fn chunk_count_window_ns(&self) -> Option<u64> {
+        self.chunk_walk.as_ref().and_then(|walk| {
+            walk.chunk_observation_window_seconds
+                .checked_mul(1_000_000_000)
+        })
+    }
+
+    /// Distinct instruments that produced at least one trade for this data
+    /// client across the whole walk so far.
+    fn distinct_traded_instrument_count(&self) -> usize {
+        let Some(walk) = &self.chunk_walk else {
+            return 0;
+        };
+        let data_client_id = walk.data_client_id.to_string();
+        self.trades
+            .borrow()
+            .iter()
+            .filter(|trade| trade.data_client_id == data_client_id)
+            .map(|trade| trade.instrument_id.clone())
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
+    fn chunk_count_passed(&self) -> bool {
+        match &self.chunk_walk {
+            Some(walk) => trade_chunk_count_probe_passed(
+                self.distinct_traded_instrument_count(),
+                walk.required_live_markets,
+            ),
+            None => false,
+        }
+    }
+
+    fn complete_chunk_count_walk_passed(&self) {
+        if let Some(walk) = &self.chunk_walk {
+            walk.complete.set(true);
+        }
+        self.quote_notify.notify_one();
+    }
+
+    fn complete_chunk_count_walk_failed(&self, reason: String) {
+        if self.failure_reason.borrow().is_none() {
+            *self.failure_reason.borrow_mut() = Some(reason);
+        }
+        if let Some(walk) = &self.chunk_walk {
+            walk.complete.set(true);
+        }
+        self.quote_notify.notify_one();
+    }
+
+    /// Fail-closed message naming how much of the universe was walked and how
+    /// many distinct markets actually traded versus the required `m`.
+    fn chunk_count_exhausted_reason(&self) -> String {
+        let (universe, chunks, chunk_size, required_live_markets) = match &self.chunk_walk {
+            Some(walk) => (
+                walk.chunks.borrow().iter().map(Vec::len).sum::<usize>(),
+                walk.chunks.borrow().len(),
+                walk.chunk_size,
+                walk.required_live_markets,
+            ),
+            None => (0, 0, 0, 0),
+        };
+        format!(
+            "trade chunk-count readiness probe walked the entire {universe}-instrument universe in {chunks} chunk(s) of up to {chunk_size}; only {} distinct market(s) traded within the per-chunk window, fewer than the required {required_live_markets}",
+            self.distinct_traded_instrument_count()
+        )
+    }
+
+    fn chunk_walk_started(&self) -> bool {
+        self.chunk_walk
+            .as_ref()
+            .is_some_and(|walk| walk.started.get())
+    }
+
+    fn chunk_walk_complete_flag(&self) -> bool {
+        self.chunk_walk
+            .as_ref()
+            .is_some_and(|walk| walk.complete.get())
+    }
+
+    /// `(number_of_chunks, per_chunk_window_seconds)` for sizing the overall
+    /// walk timeout once the universe is known.
+    fn chunk_walk_dims(&self) -> (usize, u64) {
+        match &self.chunk_walk {
+            Some(walk) => (
+                walk.chunks.borrow().len(),
+                walk.chunk_observation_window_seconds,
+            ),
+            None => (0, 0),
+        }
+    }
+
+    async fn wait_for_chunk_walk_started(&self) {
+        loop {
+            if self.failure_error().is_some() || self.chunk_walk_started() {
+                return;
+            }
+            self.quote_notify.notified().await;
         }
     }
 
@@ -310,6 +533,13 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
     fn has_all_required_market_data(&self) -> bool {
         if self.failure_error().is_some() {
             return false;
+        }
+        if let Some(walk) = &self.chunk_walk {
+            // Chunk-count probe: satisfied once the walk has concluded by
+            // reaching `m` distinct firing markets. Fail-closed exhaustion sets
+            // `failure_error` (handled above), so reaching here with
+            // `complete` set and the pass rule unmet cannot happen.
+            return walk.complete.get() && self.chunk_count_passed();
         }
         if !self.ambiguous_instrument_ids.borrow().is_empty() {
             return false;
@@ -577,6 +807,33 @@ pub(crate) fn sample_metadata_response_targets<T: Clone>(
         .collect()
 }
 
+/// Split a deterministically-ordered instrument universe into consecutive
+/// chunks of at most `chunk_size`, preserving order. Returns no chunks when
+/// `chunk_size == 0` so a misconfigured probe observes nothing and fails
+/// closed rather than panicking. The trade chunk-count readiness probe walks
+/// the universe one chunk at a time so it never subscribes to more than
+/// `chunk_size` channels at once, staying below the venue's silent delivery
+/// ceiling.
+pub(crate) fn chunk_universe<T: Clone>(universe: &[T], chunk_size: usize) -> Vec<Vec<T>> {
+    if chunk_size == 0 {
+        return Vec::new();
+    }
+    universe.chunks(chunk_size).map(<[T]>::to_vec).collect()
+}
+
+/// Pass rule for a trade chunk-count readiness probe: at least
+/// `required_live_markets` (`m`) distinct markets must have produced a trade
+/// across the chunk walk, and `m` itself must be >= 1 (a probe that requires
+/// nothing proves nothing, so it fails closed). Single source of truth for
+/// the pass decision, shared by the live probe orchestration and the
+/// operator-artifacts materializer so both agree on what "healthy" means.
+pub(crate) fn trade_chunk_count_probe_passed(
+    distinct_fired: usize,
+    required_live_markets: usize,
+) -> bool {
+    required_live_markets >= 1 && distinct_fired >= required_live_markets
+}
+
 fn observed_required_book_delta_count(
     required: &[NoSubmitReferenceQuoteSubscription],
     book_deltas: &[BoltV3NoSubmitBookDeltas],
@@ -792,27 +1049,106 @@ impl BoltV3NoSubmitDataClientReadinessProbe {
         if response.client_id == self.metadata_handle.data_client_id
             && response.venue == self.metadata_handle.venue
         {
-            let instrument_ids = response
+            let instrument_ids: Vec<InstrumentId> = response
                 .data
                 .iter()
                 .map(|instrument| instrument.id())
                 .collect();
-            for required in self
-                .quote_handle
-                .install_metadata_response_instrument_ids(instrument_ids)
-            {
-                if let Err(error) = subscribe_no_submit_required_market_data(
-                    self,
-                    self.quote_handle.market_data_kind,
-                    self.quote_handle.book_type,
-                    required,
-                ) {
-                    self.quote_handle
-                        .fail_metadata_response_probe(error.to_string());
-                    break;
+            if self.quote_handle.is_chunk_count_mode() {
+                self.quote_handle
+                    .chunk_count_capture_universe(instrument_ids);
+                self.subscribe_next_chunk_and_arm();
+            } else {
+                for required in self
+                    .quote_handle
+                    .install_metadata_response_instrument_ids(instrument_ids)
+                {
+                    if let Err(error) = subscribe_no_submit_required_market_data(
+                        self,
+                        self.quote_handle.market_data_kind,
+                        self.quote_handle.book_type,
+                        required,
+                    ) {
+                        self.quote_handle
+                            .fail_metadata_response_probe(error.to_string());
+                        break;
+                    }
                 }
             }
         }
+    }
+
+    /// Subscribe the next universe chunk for trades and arm the chunk-advance
+    /// time alert. Fails the walk closed if the universe is exhausted, a
+    /// subscription errors, or the timer cannot be armed.
+    fn subscribe_next_chunk_and_arm(&mut self) {
+        let Some(chunk) = self.quote_handle.chunk_count_next_chunk() else {
+            self.quote_handle
+                .complete_chunk_count_walk_failed(self.quote_handle.chunk_count_exhausted_reason());
+            return;
+        };
+        for required in chunk {
+            if let Err(error) = subscribe_no_submit_required_market_data(
+                self,
+                DataClientReadinessProbeMarketDataKind::Trade,
+                None,
+                required,
+            ) {
+                self.quote_handle
+                    .complete_chunk_count_walk_failed(error.to_string());
+                return;
+            }
+        }
+        let Some(window_ns) = self.quote_handle.chunk_count_window_ns() else {
+            self.quote_handle.complete_chunk_count_walk_failed(
+                "trade chunk-count readiness probe per-chunk window overflowed".to_string(),
+            );
+            return;
+        };
+        let Some(alert_ns) = self.timestamp_ns().as_u64().checked_add(window_ns) else {
+            self.quote_handle.complete_chunk_count_walk_failed(
+                "trade chunk-count readiness probe chunk-advance time overflowed".to_string(),
+            );
+            return;
+        };
+        // Bind the result so the `self.clock()` borrow is released before the
+        // failure path re-borrows `self.quote_handle`.
+        let alert_result = self.clock().set_time_alert_ns(
+            CHUNK_ADVANCE_TIMER,
+            UnixNanos::from(alert_ns),
+            None,
+            None,
+        );
+        if let Err(error) = alert_result {
+            self.quote_handle.complete_chunk_count_walk_failed(format!(
+                "trade chunk-count readiness probe failed to arm its chunk-advance timer: {error}"
+            ));
+        }
+    }
+
+    /// Fired at each chunk boundary: unsubscribe the watched chunk, pass if `m`
+    /// distinct markets have now traded, otherwise advance to the next chunk.
+    fn advance_chunk_count_walk(&mut self) {
+        if self.quote_handle.chunk_walk_complete_flag() {
+            return;
+        }
+        for required in self.quote_handle.chunk_count_current_chunk() {
+            if let Err(error) = unsubscribe_no_submit_required_market_data(
+                self,
+                DataClientReadinessProbeMarketDataKind::Trade,
+                None,
+                required,
+            ) {
+                self.quote_handle
+                    .complete_chunk_count_walk_failed(error.to_string());
+                return;
+            }
+        }
+        if self.quote_handle.chunk_count_passed() {
+            self.quote_handle.complete_chunk_count_walk_passed();
+            return;
+        }
+        self.subscribe_next_chunk_and_arm();
     }
 }
 
@@ -873,6 +1209,13 @@ impl DataActor for BoltV3NoSubmitDataClientReadinessProbe {
 
     fn on_trade(&mut self, trade: &TradeTick) -> anyhow::Result<()> {
         self.quote_handle.record_trade(trade, current_unix_nanos()?);
+        Ok(())
+    }
+
+    fn on_time_event(&mut self, event: &TimeEvent) -> anyhow::Result<()> {
+        if event.name.as_str() == CHUNK_ADVANCE_TIMER {
+            self.advance_chunk_count_walk();
+        }
         Ok(())
     }
 }
@@ -1110,6 +1453,53 @@ fn no_submit_data_client_readiness_quote_probe_handle(
             ))
         }
         DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
+            if readiness_probe.market_data_kind == DataClientReadinessProbeMarketDataKind::Trade
+                && readiness_probe.chunk_size.is_some()
+            {
+                let chunk_size = match readiness_probe.chunk_size {
+                    Some(chunk_size) if chunk_size > 0 => chunk_size,
+                    _ => {
+                        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                            anyhow::anyhow!(
+                                "trade chunk-count readiness probe requires positive clients.<id>.readiness_probe.chunk_size"
+                            ),
+                        ));
+                    }
+                };
+                let chunk_observation_window_seconds = match readiness_probe
+                    .chunk_observation_window_seconds
+                {
+                    Some(window) if window > 0 => window,
+                    _ => {
+                        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                            anyhow::anyhow!(
+                                "trade chunk-count readiness probe requires positive clients.<id>.readiness_probe.chunk_observation_window_seconds"
+                            ),
+                        ));
+                    }
+                };
+                let required_live_markets = match min_observed_targets {
+                    Some(required_live_markets) if required_live_markets > 0 => {
+                        required_live_markets
+                    }
+                    _ => {
+                        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                            anyhow::anyhow!(
+                                "trade chunk-count readiness probe requires positive clients.<id>.readiness_probe.min_observed_targets (m)"
+                            ),
+                        ));
+                    }
+                };
+                return Ok(
+                    BoltV3NoSubmitReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
+                        ClientId::from(client_key),
+                        chunk_size,
+                        chunk_observation_window_seconds,
+                        required_live_markets,
+                        readiness_probe.market_data_kind,
+                    ),
+                );
+            }
             let max_quote_targets = readiness_probe.max_metadata_quote_targets.ok_or_else(|| {
                 BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
                     "data-client readiness quote probe requires clients.<id>.readiness_probe.max_metadata_quote_targets when quote_target_source = \"metadata_response\""
@@ -2261,11 +2651,8 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
     let mut metadata_probe_result = None;
     let mut reference_probe_result = None;
     let metadata_future = await_no_submit_data_client_metadata_probe(&metadata_probe, loaded);
-    let reference_future = await_no_submit_reference_quote_probe(
-        &reference_quote_probe,
-        loaded,
-        "configured client readiness_probe.quote_targets quotes",
-    );
+    let reference_future =
+        await_no_submit_data_client_readiness_quote_probe(&reference_quote_probe, loaded);
     tokio::pin!(metadata_future);
     tokio::pin!(reference_future);
     while metadata_probe_result.is_none() || reference_probe_result.is_none() {
@@ -2602,6 +2989,77 @@ async fn await_no_submit_reference_quote_probe(
             "reference quote probe did not observe all {configured_targets_label} within [live_canary].reference_quote_wait_timeout_seconds={timeout_secs}"
         )
     })?
+}
+
+/// Await the data-client readiness quote probe, dispatching on probe mode: a
+/// trade chunk-count probe walks the universe in chunks (its own dynamic
+/// timeout), every other probe waits for the fixed sampled/configured targets.
+async fn await_no_submit_data_client_readiness_quote_probe(
+    probe: &BoltV3NoSubmitReferenceQuoteProbeHandle,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), String> {
+    if probe.is_chunk_count_mode() {
+        await_no_submit_chunk_count_probe(probe, loaded).await
+    } else {
+        await_no_submit_reference_quote_probe(
+            probe,
+            loaded,
+            "client readiness_probe metadata_response targets",
+        )
+        .await
+    }
+}
+
+/// Await a trade chunk-count walk. First bound the wait for the metadata
+/// response (and thus walk start) by `reference_quote_wait_timeout_seconds`;
+/// then size the overall walk timeout from the now-known universe
+/// (`chunks * window`, plus one window of slack) and wait for the walk to pass
+/// (`m` distinct markets traded) or fail closed (universe exhausted).
+async fn await_no_submit_chunk_count_probe(
+    probe: &BoltV3NoSubmitReferenceQuoteProbeHandle,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), String> {
+    let start_timeout_secs = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or_else(|| "trade chunk-count probe wait requires `[live_canary]`".to_string())?
+        .reference_quote_wait_timeout_seconds;
+    if start_timeout_secs == 0 {
+        return Err(
+            "[live_canary].reference_quote_wait_timeout_seconds must be a positive integer"
+                .to_string(),
+        );
+    }
+    tokio::time::timeout(
+        Duration::from_secs(start_timeout_secs),
+        probe.wait_for_chunk_walk_started(),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "trade chunk-count probe did not observe a request_instruments response within [live_canary].reference_quote_wait_timeout_seconds={start_timeout_secs}"
+        )
+    })?;
+    if let Some(reason) = probe.failure_error() {
+        return Err(reason);
+    }
+    let (num_chunks, window_secs) = probe.chunk_walk_dims();
+    let walk_timeout_secs = (num_chunks as u64)
+        .saturating_mul(window_secs)
+        .saturating_add(window_secs)
+        .max(window_secs);
+    match tokio::time::timeout(
+        Duration::from_secs(walk_timeout_secs),
+        probe.wait_for_all_required_quotes(),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "trade chunk-count probe did not finish walking the instrument universe within {walk_timeout_secs}s ({num_chunks} chunk(s) x {window_secs}s window)"
+        )),
+    }
 }
 
 async fn await_no_submit_running(node_handle: &LiveNodeHandle, loaded: &LoadedBoltV3Config) {
@@ -3178,6 +3636,102 @@ mod tests {
     use nautilus_model::enums::{BookAction, OrderSide};
     use nautilus_model::identifiers::TraderId;
     use nautilus_model::types::{Price, Quantity};
+
+    #[test]
+    fn chunk_universe_splits_into_consecutive_chunks_of_at_most_n() {
+        let universe: Vec<u32> = (0..10).collect();
+        assert_eq!(
+            chunk_universe(&universe, 3),
+            vec![vec![0, 1, 2], vec![3, 4, 5], vec![6, 7, 8], vec![9]],
+            "chunks must be consecutive, in order, and at most chunk_size"
+        );
+    }
+
+    #[test]
+    fn chunk_universe_returns_single_chunk_when_universe_fits() {
+        assert_eq!(chunk_universe(&["a", "b"], 5), vec![vec!["a", "b"]]);
+    }
+
+    #[test]
+    fn chunk_universe_is_empty_for_empty_universe_or_zero_chunk_size() {
+        assert!(chunk_universe::<u32>(&[], 4).is_empty());
+        assert!(
+            chunk_universe(&[1, 2, 3], 0).is_empty(),
+            "chunk_size 0 must yield no chunks so the probe fails closed rather than panicking"
+        );
+    }
+
+    #[test]
+    fn trade_chunk_count_probe_passes_only_at_or_above_m_with_positive_m() {
+        assert!(
+            !trade_chunk_count_probe_passed(0, 0),
+            "m=0 must fail closed: requiring nothing proves nothing"
+        );
+        assert!(
+            !trade_chunk_count_probe_passed(5, 0),
+            "m=0 must fail closed even with fires"
+        );
+        assert!(!trade_chunk_count_probe_passed(9, 10), "below m must fail");
+        assert!(
+            trade_chunk_count_probe_passed(10, 10),
+            "exactly m must pass"
+        );
+        assert!(trade_chunk_count_probe_passed(11, 10), "above m must pass");
+    }
+
+    #[test]
+    fn chunk_count_handle_chunks_universe_and_walks_in_sorted_order() {
+        let handle =
+            BoltV3NoSubmitReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
+                ClientId::from("okx_data"),
+                2,
+                45,
+                3,
+                DataClientReadinessProbeMarketDataKind::Trade,
+            );
+        assert!(handle.is_chunk_count_mode());
+        assert!(!handle.chunk_walk_started());
+
+        handle.chunk_count_capture_universe(vec![
+            InstrumentId::from("C-3.OKX"),
+            InstrumentId::from("A-1.OKX"),
+            InstrumentId::from("B-2.OKX"),
+        ]);
+        assert!(handle.chunk_walk_started());
+        // 3 instruments at chunk_size 2 => 2 chunks; window threads through.
+        assert_eq!(handle.chunk_walk_dims(), (2, 45));
+
+        let first: Vec<String> = handle
+            .chunk_count_next_chunk()
+            .expect("first chunk")
+            .iter()
+            .map(|subscription| subscription.instrument_id.to_string())
+            .collect();
+        assert_eq!(
+            first,
+            vec!["A-1.OKX".to_string(), "B-2.OKX".to_string()],
+            "the universe is walked in deterministic sorted order"
+        );
+        assert_eq!(
+            handle.chunk_count_current_chunk().len(),
+            2,
+            "the current chunk tracks what is subscribed, for unsubscribe on advance"
+        );
+
+        assert_eq!(
+            handle.chunk_count_next_chunk().expect("second chunk").len(),
+            1,
+            "the trailing chunk holds the remainder"
+        );
+        assert!(
+            handle.chunk_count_next_chunk().is_none(),
+            "the walk is exhausted after the last chunk"
+        );
+        assert!(
+            !handle.chunk_count_passed(),
+            "with no trades recorded the pass rule fails closed"
+        );
+    }
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
         let root_text = include_str!("../tests/fixtures/bolt_v3/root.toml");

@@ -69,6 +69,7 @@ use nautilus_model::{
     identifiers::{ActorId, ClientId, InstrumentId, StrategyId, Venue},
     instruments::Instrument,
 };
+use rust_decimal::Decimal;
 use ustr::Ustr;
 use zeroize::Zeroizing;
 
@@ -99,7 +100,11 @@ use crate::{
         BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
     },
     bolt_v3_submit_admission::{BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState},
-    bolt_v3_tiny_canary_evidence::Phase8OperatorApprovalEnvelope,
+    bolt_v3_tiny_canary_evidence::{
+        Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
+        Phase8EvidenceRef, Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef,
+        phase8_sha256_text,
+    },
     nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
     secrets::SsmResolverSession,
 };
@@ -1171,6 +1176,16 @@ pub enum BoltV3LiveNodeError {
     /// NT runtime capture failed during shutdown after the runner loop
     /// exited or after the capture worker asked the LiveNode to stop.
     RuntimeCaptureShutdown(anyhow::Error),
+    /// The live runner exited without admitting a live order after the
+    /// one-time approval had already been consumed. A blocked canary
+    /// evidence artifact was written so the consumed approval has a
+    /// source-owned terminal record instead of disappearing into logs.
+    BlockedBeforeSubmit {
+        canary_evidence_path: String,
+    },
+    /// The live runner exited without admitting a live order, but the
+    /// terminal blocked canary evidence artifact could not be written.
+    CanaryEvidenceWrite(anyhow::Error),
     /// NT's runner loop and runtime-capture shutdown both failed. This
     /// preserves both failure categories instead of reporting the
     /// compound case as only a capture-shutdown error.
@@ -1301,6 +1316,15 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::RuntimeCaptureShutdown(error) => {
                 write!(f, "NT runtime capture shutdown failed: {error}")
             }
+            BoltV3LiveNodeError::BlockedBeforeSubmit {
+                canary_evidence_path,
+            } => write!(
+                f,
+                "bolt-v3 live canary blocked before submit; canary evidence written to {canary_evidence_path}"
+            ),
+            BoltV3LiveNodeError::CanaryEvidenceWrite(error) => {
+                write!(f, "bolt-v3 live canary evidence write failed: {error}")
+            }
             BoltV3LiveNodeError::RunAndRuntimeCaptureShutdown {
                 run_error,
                 shutdown_error,
@@ -1401,6 +1425,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::Run(error) => error.source(),
             BoltV3LiveNodeError::RuntimeCaptureWire(error)
             | BoltV3LiveNodeError::RuntimeCaptureShutdown(error) => error.source(),
+            BoltV3LiveNodeError::CanaryEvidenceWrite(error) => Some(error.as_ref()),
             BoltV3LiveNodeError::RunAndRuntimeCaptureShutdown { run_error, .. } => {
                 Some(run_error.as_ref())
             }
@@ -1408,6 +1433,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::ConnectIncomplete
             | BoltV3LiveNodeError::DisconnectTimeout { .. }
             | BoltV3LiveNodeError::LiveTransportScope { .. }
+            | BoltV3LiveNodeError::BlockedBeforeSubmit { .. }
             | BoltV3LiveNodeError::NoSubmitStartTimeout { .. }
             | BoltV3LiveNodeError::NoSubmitStartTimeoutOverflow
             | BoltV3LiveNodeError::NoSubmitStartIncomplete
@@ -1616,12 +1642,87 @@ pub async fn run_bolt_v3_live_node(
     };
     let shutdown_result = capture_guards.shutdown().await;
 
-    classify_live_node_run_and_capture_shutdown(run_result, shutdown_result)
+    let run_classification =
+        classify_live_node_run_and_capture_shutdown(run_result, shutdown_result);
+    if run_classification.is_ok() && runtime.admitted_order_count() == 0 {
+        let canary_evidence_path =
+            write_bolt_v3_blocked_before_submit_canary_evidence(loaded, &runtime.instance_id())
+                .map_err(BoltV3LiveNodeError::CanaryEvidenceWrite)?;
+        return Err(BoltV3LiveNodeError::BlockedBeforeSubmit {
+            canary_evidence_path,
+        });
+    }
+    run_classification
 }
 
 pub fn consume_bolt_v3_live_runner_approval(
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), anyhow::Error> {
+    let current_head_sha = current_build_head_sha()
+        .ok_or_else(|| anyhow::anyhow!("bolt-v3 build head_sha is unavailable or invalid"))?;
+    let (envelope, current_root_toml_sha256) = phase8_live_runner_approval_envelope(loaded)?;
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing `[live_canary]` config"))?;
+    let current_unix_secs = current_unix_seconds_i64()?;
+
+    envelope.validate_and_consume_against(
+        current_head_sha,
+        &current_root_toml_sha256,
+        &live_canary.approval_id,
+        loaded,
+        current_unix_secs,
+    )
+}
+
+fn write_bolt_v3_blocked_before_submit_canary_evidence(
+    loaded: &LoadedBoltV3Config,
+    run_id: &str,
+) -> Result<String, anyhow::Error> {
+    let (envelope, current_root_toml_sha256) = phase8_live_runner_approval_envelope(loaded)?;
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing `[live_canary]` config"))?;
+    let max_notional_per_order = Decimal::from_str_exact(live_canary.max_notional_per_order.trim())
+        .map_err(|source| {
+            anyhow::anyhow!("[live_canary].max_notional_per_order is not a valid decimal: {source}")
+        })?;
+    let input = Phase8CanaryEvidenceInput {
+        head_sha: envelope.head_sha.clone(),
+        root_config_sha256: current_root_toml_sha256,
+        ssm_manifest_sha256: envelope.ssm_manifest_sha256.clone(),
+        ssm_manifest_ref: Phase8EvidenceRef {
+            path_hash: phase8_sha256_text(&envelope.ssm_manifest_path),
+            record_hash: envelope.ssm_manifest_sha256.clone(),
+        },
+        strategy_input_evidence_ref: Phase8EvidenceRef {
+            path_hash: phase8_sha256_text(&envelope.strategy_input_evidence_path),
+            record_hash: envelope.strategy_input_evidence_sha256.clone(),
+        },
+        approved_strategy_instance_id_hash: envelope.approved_strategy_instance_id_hash()?,
+        approval_id: live_canary.approval_id.clone(),
+        max_live_order_count: live_canary.max_live_order_count,
+        max_notional_per_order,
+        runtime_capture_ref: Phase8RuntimeCaptureRef {
+            spool_root_hash: phase8_sha256_text(&loaded.root.persistence.catalog_directory),
+            run_id: run_id.to_string(),
+        },
+    };
+    let evidence = Phase8CanaryEvidence::blocked_before_submit(
+        input,
+        vec![Phase8CanaryBlockReason::RuntimeNoAdmittedOrder],
+    );
+    evidence.write_json_file(&envelope.canary_evidence_path)?;
+    Ok(envelope.canary_evidence_path)
+}
+
+fn phase8_live_runner_approval_envelope(
+    loaded: &LoadedBoltV3Config,
+) -> Result<(Phase8OperatorApprovalEnvelope, String), anyhow::Error> {
     let live_canary = loaded
         .root
         .live_canary
@@ -1631,10 +1732,7 @@ pub fn consume_bolt_v3_live_runner_approval(
         .operator_evidence
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("missing `[live_canary.operator_evidence]` config"))?;
-    let current_head_sha = current_build_head_sha()
-        .ok_or_else(|| anyhow::anyhow!("bolt-v3 build head_sha is unavailable or invalid"))?;
     let current_root_toml_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(&loaded.root_path)?;
-    let current_unix_secs = current_unix_seconds_i64()?;
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: operator_evidence.head_sha.clone(),
         root_toml_path: loaded.root_path.to_string_lossy().to_string(),
@@ -1659,14 +1757,7 @@ pub fn consume_bolt_v3_live_runner_approval(
         canary_evidence_path: operator_evidence.canary_evidence_path.clone(),
         strategy_cancel_path: operator_evidence.strategy_cancel_path.clone(),
     };
-
-    envelope.validate_and_consume_against(
-        current_head_sha,
-        &current_root_toml_sha256,
-        &live_canary.approval_id,
-        loaded,
-        current_unix_secs,
-    )
+    Ok((envelope, current_root_toml_sha256))
 }
 
 fn current_unix_seconds_i64() -> Result<i64, anyhow::Error> {
@@ -3681,6 +3772,156 @@ mod tests {
                  error categories, got {other:?}"
             ),
         }
+    }
+
+    #[test]
+    fn live_runner_zero_admission_writer_outputs_blocked_canary_evidence() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "config/root.example.toml",
+        ))
+        .expect("root config should load");
+        loaded.root.persistence.catalog_directory =
+            temp.path().join("catalog").to_string_lossy().to_string();
+        let canary_evidence_path = {
+            let live_canary = loaded
+                .root
+                .live_canary
+                .as_mut()
+                .expect("root config should include live canary");
+            live_canary.approval_id = "phase8-zero-admission-test".to_string();
+            live_canary.max_live_order_count = 1;
+            live_canary.max_notional_per_order = "1.00".to_string();
+            let operator_evidence = live_canary
+                .operator_evidence
+                .as_mut()
+                .expect("root config should include operator evidence");
+            operator_evidence.head_sha = "1".repeat(40);
+            operator_evidence.ssm_manifest_path = temp
+                .path()
+                .join("ssm-manifest.json")
+                .to_string_lossy()
+                .to_string();
+            operator_evidence.ssm_manifest_sha256 =
+                write_phase8_live_node_test_file(&operator_evidence.ssm_manifest_path, "{}");
+            operator_evidence.strategy_input_evidence_path = temp
+                .path()
+                .join("strategy-input.json")
+                .to_string_lossy()
+                .to_string();
+            operator_evidence.strategy_input_evidence_sha256 = write_phase8_live_node_test_file(
+                &operator_evidence.strategy_input_evidence_path,
+                "{}",
+            );
+            operator_evidence.financial_envelope_path = temp
+                .path()
+                .join("financial-envelope.json")
+                .to_string_lossy()
+                .to_string();
+            operator_evidence.financial_envelope_sha256 = write_phase8_live_node_test_file(
+                &operator_evidence.financial_envelope_path,
+                r#"{
+  "max_live_order_count": 1,
+  "max_notional_per_order": "1.00",
+  "strategy_instance_id": "bitcoin_updown_main",
+  "oms_type": "netting",
+  "execution_client_id": "polymarket_main",
+  "configured_target_id": "btc_updown_5m",
+  "target_kind": "rotating",
+  "rotating_market_family": "updown",
+  "underlying_asset": "BTC",
+  "cadence_secs": 300,
+  "cadence_slug_token": "5m",
+  "market_selection_rule": "current",
+  "retry_interval_secs": 1,
+  "blocked_after_secs": 1,
+  "price_to_beat_source": "gate_session:decision_reference",
+  "edge_threshold_basis_points": 100,
+  "order_notional_target": "1.00",
+  "maximum_position_notional": "10.00",
+  "book_impact_cap_bps": 50,
+  "entry_side": "buy",
+  "entry_position_side": "long",
+  "entry_order_type": "limit",
+  "entry_time_in_force": "fok",
+  "entry_expire_time_unix_nanos": null,
+  "entry_trigger_price": null,
+  "entry_activation_price": null,
+  "entry_trigger_type": null,
+  "entry_trigger_instrument_id": null,
+  "entry_trailing_offset": null,
+  "entry_trailing_offset_type": null,
+  "entry_is_post_only": false,
+  "entry_is_reduce_only": false,
+  "entry_is_quote_quantity": false,
+  "exit_side": "sell",
+  "exit_position_side": "long",
+  "exit_order_type": "market",
+  "exit_time_in_force": "ioc",
+  "exit_expire_time_unix_nanos": null,
+  "exit_trigger_price": null,
+  "exit_activation_price": null,
+  "exit_trigger_type": null,
+  "exit_trigger_instrument_id": null,
+  "exit_trailing_offset": null,
+  "exit_trailing_offset_type": null,
+  "exit_is_post_only": false,
+  "exit_is_reduce_only": true,
+  "exit_is_quote_quantity": false,
+  "forced_exit_side": "sell",
+  "forced_exit_position_side": "long",
+  "forced_exit_order_type": "market",
+  "forced_exit_time_in_force": "ioc",
+  "forced_exit_expire_time_unix_nanos": null,
+  "forced_exit_trigger_price": null,
+  "forced_exit_activation_price": null,
+  "forced_exit_trigger_type": null,
+  "forced_exit_trigger_instrument_id": null,
+  "forced_exit_trailing_offset": null,
+  "forced_exit_trailing_offset_type": null,
+  "forced_exit_is_post_only": false,
+  "forced_exit_is_reduce_only": true,
+  "forced_exit_is_quote_quantity": false
+}"#,
+            );
+            operator_evidence.canary_evidence_path = temp
+                .path()
+                .join("phase8-canary-evidence.json")
+                .to_string_lossy()
+                .to_string();
+            operator_evidence.canary_evidence_path.clone()
+        };
+
+        let written_path =
+            write_bolt_v3_blocked_before_submit_canary_evidence(&loaded, "phase8-test-run")
+                .expect("zero-admission writer should write blocked evidence");
+
+        assert_eq!(written_path, canary_evidence_path);
+        let evidence: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&canary_evidence_path).expect("canary evidence should be readable"),
+        )
+        .expect("canary evidence should parse");
+        assert_eq!(evidence["outcome"], "blocked_before_submit");
+        assert_eq!(
+            evidence["block_reasons"],
+            serde_json::json!(["runtime_no_admitted_order"])
+        );
+        assert_eq!(
+            evidence["submit_admission_ref"]["reason"],
+            "blocked_before_submit"
+        );
+        assert_eq!(evidence["submit_admission_ref"]["admitted_order_count"], 0);
+        assert_eq!(evidence["runtime_capture_ref"]["run_id"], "phase8-test-run");
+    }
+
+    fn write_phase8_live_node_test_file(path: &str, contents: &str) -> String {
+        write_phase8_live_node_test_bytes(path, contents.as_bytes())
+    }
+
+    fn write_phase8_live_node_test_bytes(path: &str, bytes: &[u8]) -> String {
+        std::fs::write(path, bytes).expect("test evidence file should write");
+        Phase8OperatorApprovalEnvelope::sha256_file(std::path::Path::new(path))
+            .expect("test evidence sha256 should compute")
     }
 
     #[test]

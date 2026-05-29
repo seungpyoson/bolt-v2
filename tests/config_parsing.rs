@@ -3648,19 +3648,44 @@ fn binary_oracle_fixture_uses_gate_subscription_without_provider_specific_runtim
 }
 
 #[test]
-fn binary_oracle_example_uses_gate_subscription_without_provider_specific_runtime_fields() {
-    let source = std::fs::read_to_string(support::repo_path(
-        "config/strategies/binary_oracle.example.toml",
-    ))
-    .expect("strategy example should be readable");
+fn canonical_binary_oracle_config_uses_gate_subscription_without_provider_specific_runtime_fields()
+{
+    let source =
+        std::fs::read_to_string(support::repo_path("config/strategies/binary_oracle.toml"))
+            .expect("canonical strategy config should be readable");
 
-    assert_binary_oracle_strategy_source_uses_gate_schema("example", &source);
+    assert_binary_oracle_strategy_source_uses_gate_schema("canonical config", &source);
 }
 
 #[test]
-fn shipped_binary_oracle_examples_do_not_canonicalize_one_reference_market_or_venue() {
+fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
+    let canonical_strategy = support::repo_path("config/strategies/binary_oracle.toml");
+    let example_strategy = support::repo_path("config/strategies/binary_oracle.example.toml");
+    assert!(
+        canonical_strategy.exists(),
+        "tracked strategy config should live at config/strategies/binary_oracle.toml"
+    );
+    assert!(
+        !example_strategy.exists(),
+        "tracked strategy config should not keep an .example.toml twin"
+    );
+
+    let root = std::fs::read_to_string(support::repo_path("config/root.example.toml"))
+        .expect("root config should be readable");
+    assert!(
+        root.contains("\"strategies/binary_oracle.toml\""),
+        "root config should load the canonical strategy path"
+    );
+    assert!(
+        !root.contains("binary_oracle.example.toml"),
+        "root config should not reference the legacy .example strategy path"
+    );
+}
+
+#[test]
+fn shipped_binary_oracle_configs_do_not_canonicalize_one_reference_market_or_venue() {
     for relative_path in [
-        "config/strategies/binary_oracle.example.toml",
+        "config/strategies/binary_oracle.toml",
         "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
     ] {
         let source =
@@ -3668,7 +3693,7 @@ fn shipped_binary_oracle_examples_do_not_canonicalize_one_reference_market_or_ve
         let forbidden = "binance_reference";
         assert!(
             !source.contains(forbidden),
-            "{relative_path} must not make `{forbidden}` a canonical strategy example"
+            "{relative_path} must not make `{forbidden}` a canonical strategy config"
         );
     }
 
@@ -4440,24 +4465,22 @@ fn rejects_previous_strategy_schema_version_after_forced_exit_order_schema_updat
 }
 
 #[test]
-fn shipped_binary_oracle_example_uses_supported_strategy_schema_version() {
+fn shipped_binary_oracle_config_uses_supported_strategy_schema_version() {
     use bolt_v2::{
         bolt_v3_config::BoltV3StrategyConfig, bolt_v3_validate::SUPPORTED_STRATEGY_SCHEMA_VERSION,
     };
 
     let strategy: BoltV3StrategyConfig = toml::from_str(
-        &std::fs::read_to_string(support::repo_path(
-            "config/strategies/binary_oracle.example.toml",
-        ))
-        .expect("example strategy should be readable"),
+        &std::fs::read_to_string(support::repo_path("config/strategies/binary_oracle.toml"))
+            .expect("canonical strategy config should be readable"),
     )
-    .expect("example strategy should parse");
+    .expect("canonical strategy config should parse");
 
     assert_eq!(strategy.schema_version, SUPPORTED_STRATEGY_SCHEMA_VERSION);
 }
 
 #[test]
-fn shipped_binary_oracle_example_rejects_legacy_price_to_beat_feed_id_under_runtime() {
+fn shipped_binary_oracle_config_rejects_legacy_price_to_beat_feed_id_under_runtime() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -4470,17 +4493,17 @@ fn shipped_binary_oracle_example_rejects_legacy_price_to_beat_feed_id_under_runt
     .expect("stable root should parse");
     let strategy_toml =
         binary_oracle_strategy_source_without_legacy_gate_runtime_fields_from_path(
-            "config/strategies/binary_oracle.example.toml",
+            "config/strategies/binary_oracle.toml",
         )
         .replace(
             "[parameters.runtime]\n",
             "[parameters.runtime]\nprice_to_beat_feed_id = \"0x1111111111111111111111111111111111111111111111111111111111111111\"\n",
         );
     let strategy: BoltV3StrategyConfig =
-        toml::from_str(&strategy_toml).expect("example strategy should parse");
+        toml::from_str(&strategy_toml).expect("canonical strategy config should parse");
     let loaded = vec![LoadedStrategy {
-        config_path: support::repo_path("config/strategies/binary_oracle.example.toml"),
-        relative_path: "strategies/binary_oracle.example.toml".to_string(),
+        config_path: support::repo_path("config/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
         config: strategy,
     }];
 

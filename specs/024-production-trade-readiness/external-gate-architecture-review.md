@@ -13,7 +13,7 @@
 - `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`
 - `src/bolt_v3_providers/mod.rs`
 - `src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs`
-- `config/strategies/binary_oracle.example.toml`
+- `config/strategies/binary_oracle.toml`
 - `specs/024-production-trade-readiness/tasks.md`
 
 ## Reviewer Verdicts
@@ -78,7 +78,7 @@ Accepted plan-review findings:
 - The plan must include explicit RED coverage for config-owned provider mapping mismatches.
 - The implementation task must be split into reviewable sub-slices instead of one broad T036H4 task.
 - The implementation scope must include the strategy registration and strategy consumption path, not only config, market-family, provider, and operator-artifact files.
-- The example strategy TOML and related fixtures must be migrated with the schema change; otherwise the shipped example will keep the old Chainlink-shaped runtime fields.
+- The canonical shipped strategy TOML and related fixtures must be migrated with the schema change; otherwise the shipped config will keep the old Chainlink-shaped runtime fields.
 
 ## Contract Review Round 3
 

@@ -2,7 +2,7 @@ schema_version = 1
 trader_id = "BOLT-001"
 
 strategy_files = [
-  "strategies/binary_oracle.example.toml",
+  "strategies/binary_oracle.toml",
 ]
 
 [runtime]

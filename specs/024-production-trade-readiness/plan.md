@@ -8,7 +8,7 @@
 ## Technical Context
 
 **Language**: Rust
-**Primary implementation files**: `src/bolt_v3_config.rs`, `src/bolt_v3_validate.rs`, `src/bolt_v3_market_families/mod.rs`, `src/bolt_v3_market_families/updown.rs`, `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`, `src/bolt_v3_providers/mod.rs`, `src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs`, `src/bolt_v3_operator_artifacts.rs`, `src/bolt_v3_decision_evidence.rs`, `src/bolt_v3_tiny_canary_evidence.rs`, `src/bolt_v3_live_node.rs`, `src/bolt_v3_strategy_registration.rs`, `src/strategies/binary_oracle_edge_taker.rs`, `src/main.rs`, `config/strategies/binary_oracle.example.toml`
+**Primary implementation files**: `src/bolt_v3_config.rs`, `src/bolt_v3_validate.rs`, `src/bolt_v3_market_families/mod.rs`, `src/bolt_v3_market_families/updown.rs`, `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`, `src/bolt_v3_providers/mod.rs`, `src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs`, `src/bolt_v3_operator_artifacts.rs`, `src/bolt_v3_decision_evidence.rs`, `src/bolt_v3_tiny_canary_evidence.rs`, `src/bolt_v3_live_node.rs`, `src/bolt_v3_strategy_registration.rs`, `src/strategies/binary_oracle_edge_taker.rs`, `src/main.rs`, `config/strategies/binary_oracle.toml`
 **Primary tests**: `tests/config_parsing.rs`, `tests/bolt_v3_operator_artifacts.rs`, `tests/bolt_v3_strategy_registration.rs`, `tests/bolt_v3_tiny_canary_preconditions.rs`, `tests/bolt_v3_tiny_canary_operator.rs`, `tests/bolt_v3_live_canary_gate.rs`, `tests/bolt_v3_cli.rs`
 **Verification**: focused Rust tests, `cargo fmt --check`, `git diff --check`, runtime-literal verifier, source/slop/hardcode/secret scans, GitHub CI, external model review.
 

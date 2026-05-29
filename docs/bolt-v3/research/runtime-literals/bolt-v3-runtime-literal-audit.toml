@@ -1739,6 +1739,14 @@ reason = "This is fail-closed diagnostic text emitted when config-owned no-submi
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
+literal = '''"bolt-v3 live canary blocked before submit; canary evidence written to {canary_evidence_path}"'''
+context = '''"bolt-v3 live canary blocked before submit; canary evidence written to {canary_evidence_path}"'''
+classification = "live_node_fail_closed_diagnostic_template"
+reason = "This is fail-closed diagnostic text emitted after a consumed live-canary approval exits with zero admitted orders and a source-owned blocked canary evidence artifact is written."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
 literal = '''", "'''
 context = '''client_venues.join(", ")'''
 classification = "diagnostic_separator"

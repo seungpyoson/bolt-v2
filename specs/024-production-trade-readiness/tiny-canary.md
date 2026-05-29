@@ -207,3 +207,28 @@ Result: not T044 completion evidence.
 - The runner was stopped with SIGINT after no admitted order or submit artifact existed. NT disconnected the configured clients cleanly and returned exit code 0.
 
 Scope and side effects: this live attempt connected the configured selected data/execution clients and consumed the one-time operator approval proof. It did not produce a submitted-order artifact, venue order-state artifact, canary evidence, cancel proof, transfer proof, on-chain mutation proof, CLOB allowance/cache mutation proof, post-run hygiene proof, or completed trade. T044 remains open and requires a fresh packet plus renewed exact-head approval before any retry that can consume approval.
+
+## Current-Head Repair: Runtime Blocked Evidence Writer
+
+Root cause evidence from the `78a03da5` live attempt:
+
+- The production live runner returned cleanly with `admitted_order_count = 0`.
+- The Phase 8 operator harness then expected live proof refs and had no branch for a zero-admission runtime exit.
+- That left the attempt with `approval-consumed.json` but without a canary result file classifying the runtime block.
+
+Repair:
+
+- The production live runner now checks `runtime.admitted_order_count()` after NT run/capture shutdown returns.
+- If the count is zero, it writes `Phase8CanaryEvidence::blocked_before_submit` to the approved `canary_evidence_path` with `RuntimeNoAdmittedOrder`, then returns fail-closed instead of reporting runtime success.
+- The Phase 8 operator harness now checks `node.admitted_order_count()` immediately after `run_bolt_v3_live_node` returns.
+- If the count is zero, it writes `Phase8CanaryEvidence::blocked_before_submit` to the approved `canary_evidence_path` with `RuntimeNoAdmittedOrder` and no live order refs, then exits fail-closed before waiting for submit/order/post-run proof refs.
+- The successful live proof path is unchanged: only a run with the configured admitted-order count can proceed to `live_canary_proof`.
+
+Verification:
+
+- `cargo test --locked live_runner_zero_admission_writer_outputs_blocked_canary_evidence -- --nocapture`: failed before the production writer existed, then passed after the repair.
+- `cargo test --locked --test bolt_v3_tiny_canary_operator phase8_operator_harness_writes_blocked_result_before_waiting_for_live_refs -- --nocapture`: failed before the harness branch existed, then passed after the repair.
+- `cargo test --locked --test bolt_v3_tiny_canary_operator -- --nocapture --test-threads=1`: passed with `33` passed, `1` ignored.
+- `python3 scripts/verify_bolt_v3_runtime_literals.py`: passed after classifying the new fail-closed diagnostic.
+
+Scope and side effects: this was local code/test work only. It did not connect to a venue, read SSM secrets, run no-submit, enter the live runner, consume approval, submit/cancel orders, transfer funds, mutate on-chain state, mutate CLOB allowance/cache state, or execute a trade. T044 remains open and still requires fresh exact-head source/no-submit evidence plus renewed approval before another live attempt.

@@ -88,6 +88,7 @@ pub enum Phase8CanaryBlockReason {
     InvalidMarketSelectionBinding,
     InvalidSelectedMarketWindow,
     DecisionEvidenceUnavailable,
+    RuntimeNoAdmittedOrder,
     BlockedBeforeLiveOrder,
     RootConfigHashUnavailable,
 }

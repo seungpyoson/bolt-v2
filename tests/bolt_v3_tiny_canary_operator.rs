@@ -4,10 +4,10 @@ use bolt_v2::{
     bolt_v3_config::{LiveCanaryBlock, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{build_bolt_v3_live_node, run_bolt_v3_live_node},
     bolt_v3_tiny_canary_evidence::{
-        PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
-        Phase8EvidenceRef, Phase8FinancialEnvelopeEvidenceFile, Phase8LiveCanaryResultRefs,
-        Phase8LiveOrderRef, Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef,
-        Phase8StrategyInputSafetyAudit, Phase8StrategyInputSafetyInputs,
+        PHASE8_BLOCKED_BEFORE_LIVE_RUNNER_RUN_ID, Phase8CanaryBlockReason, Phase8CanaryEvidence,
+        Phase8CanaryEvidenceInput, Phase8EvidenceRef, Phase8FinancialEnvelopeEvidenceFile,
+        Phase8LiveCanaryResultRefs, Phase8LiveOrderRef, Phase8OperatorApprovalEnvelope,
+        Phase8RuntimeCaptureRef, Phase8StrategyInputSafetyAudit, Phase8StrategyInputSafetyInputs,
         evaluate_phase8_canary_preflight, phase8_required_env, phase8_sha256_text,
     },
     nt_runtime_capture::spool_root_for_instance,
@@ -199,6 +199,48 @@ fn phase8_operator_harness_waits_for_post_run_proofs_after_runner() {
     assert!(runner_index < wait_index);
     assert!(source.contains("observed_errors"));
     assert!(source.contains("observed errors"));
+}
+
+#[test]
+fn phase8_operator_harness_writes_blocked_result_before_waiting_for_live_refs() {
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
+    let start = source
+        .rfind("async fn phase8_operator_harness_requires_exact_approval_before_live_runner")
+        .expect("operator harness start should exist");
+    let end = source[start..]
+        .find("\nfn phase8_current_checkout_head_sha")
+        .map(|offset| start + offset)
+        .expect("operator harness end should exist");
+    let harness = &source[start..end];
+
+    let admitted_count_index = harness
+        .find("let admitted_order_count = node.admitted_order_count()")
+        .expect("operator harness should inspect submit admission result");
+    let blocked_result_index = harness
+        .find("phase8_write_blocked_after_live_runner_if_no_admitted_orders")
+        .expect("operator harness should write blocked-before-submit evidence");
+    let live_refs_index = harness
+        .find("to_refs_after_operator_post_run_proofs")
+        .expect("operator harness should wait for live proof refs after blocked handling");
+
+    assert!(admitted_count_index < blocked_result_index);
+    assert!(blocked_result_index < live_refs_index);
+}
+
+#[test]
+fn phase8_operator_zero_admission_block_reason_is_runtime_specific() {
+    let source = support::repo_text("tests/bolt_v3_tiny_canary_operator.rs");
+    let helper_start = source
+        .rfind("fn phase8_write_blocked_after_live_runner_if_no_admitted_orders")
+        .expect("zero-admission helper should exist");
+    let helper_end = source[helper_start..]
+        .find("\nfn phase8_current_checkout_head_sha")
+        .map(|offset| helper_start + offset)
+        .expect("zero-admission helper end should exist");
+    let helper = &source[helper_start..helper_end];
+
+    assert!(helper.contains("Phase8CanaryBlockReason::RuntimeNoAdmittedOrder"));
+    assert!(!helper.contains("Phase8CanaryBlockReason::DecisionEvidenceUnavailable"));
 }
 
 #[test]
@@ -1764,6 +1806,11 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
                 .await
                 .map_err(anyhow::Error::from)?;
             let admitted_order_count = node.admitted_order_count();
+            phase8_write_blocked_after_live_runner_if_no_admitted_orders(
+                admitted_order_count,
+                &evidence_input,
+                &envelope.canary_evidence_path,
+            )?;
             let (decision_evidence_ref, live_order_ref, result_refs) = result_paths
                 .to_refs_after_operator_post_run_proofs(
                     &pre_run_snapshot,
@@ -1784,6 +1831,24 @@ async fn phase8_operator_harness_requires_exact_approval_before_live_runner() ->
         })
         .await?;
     Ok(())
+}
+
+fn phase8_write_blocked_after_live_runner_if_no_admitted_orders(
+    admitted_order_count: u32,
+    evidence_input: &Phase8CanaryEvidenceInput,
+    canary_evidence_path: &str,
+) -> anyhow::Result<()> {
+    if admitted_order_count != 0 {
+        return Ok(());
+    }
+    let evidence = Phase8CanaryEvidence::blocked_before_submit(
+        evidence_input.clone(),
+        vec![Phase8CanaryBlockReason::RuntimeNoAdmittedOrder],
+    );
+    evidence.write_json_file(canary_evidence_path)?;
+    anyhow::bail!(
+        "phase8 live runner exited without admitted orders; blocked-before-submit evidence written"
+    );
 }
 
 fn phase8_current_checkout_head_sha() -> anyhow::Result<String> {

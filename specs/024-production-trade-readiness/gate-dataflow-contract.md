@@ -12,7 +12,7 @@ The root problem is not only config validation. The current provider-specific va
 - `src/bolt_v3_market_families/updown.rs:72-83` has no `target.gate_subscriptions`; `deny_unknown_fields` means `[target.gate_subscriptions.*]` cannot parse today.
 - `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs:94-113` deserializes `price_to_beat_source`, `price_to_beat_feed_id`, `price_to_beat_report_schema_version`, `price_to_beat_report_decimal_scale`, and `forced_flat_stale_chainlink_ms` as archetype runtime parameters.
 - `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs:903-933` validates Chainlink feed id, schema version, and decimal scale inside the archetype path.
-- `config/strategies/binary_oracle.example.toml:44-50` and `tests/fixtures/bolt_v3/strategies/binary_oracle.toml:44-50` store Chainlink-shaped fields under `[parameters.runtime]`.
+- `config/strategies/binary_oracle.toml:44-50` and `tests/fixtures/bolt_v3/strategies/binary_oracle.toml:44-50` store Chainlink-shaped fields under `[parameters.runtime]`.
 - `src/bolt_v3_market_families/mod.rs:48-54`, `src/bolt_v3_market_families/mod.rs:179-186`, and `src/bolt_v3_market_families/mod.rs:277-288` keep the family dispatch provider-neutral but do not expose resolution requirement metadata in the selected-market result.
 - `src/bolt_v3_operator_artifacts.rs:1545-1608` promotes decision evidence by matching `price_to_beat_source` against the financial envelope instead of a readiness gate session.
 - `src/bolt_v3_operator_artifacts.rs:2407-2416`, `src/bolt_v3_operator_artifacts.rs:2450-2486`, and `src/bolt_v3_operator_artifacts.rs:2774-2911` materialize Chainlink report provenance through `ChainlinkDataStreamsReportSource`, `SourceBoundPriceToBeatSource`, and price-to-beat report binding.

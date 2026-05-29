@@ -193,6 +193,10 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         abort_plan: PathBuf,
         #[arg(long)]
+        canary_proof_candidate_source: Option<PathBuf>,
+        #[arg(long)]
+        canary_proof_order_intent: Option<PathBuf>,
+        #[arg(long)]
         canary_evidence: PathBuf,
         #[arg(long)]
         approval_not_before_unix_seconds: i64,
@@ -782,6 +786,8 @@ fn run_operator_artifacts_command(
             financial_envelope,
             pre_run_state,
             abort_plan,
+            canary_proof_candidate_source,
+            canary_proof_order_intent,
             canary_evidence,
             approval_not_before_unix_seconds,
             approval_not_after_unix_seconds,
@@ -808,6 +814,8 @@ fn run_operator_artifacts_command(
                     financial_envelope_path: &financial_envelope,
                     pre_run_state_path: &pre_run_state,
                     abort_plan_path: &abort_plan,
+                    canary_proof_candidate_source_path: canary_proof_candidate_source.as_deref(),
+                    canary_proof_order_intent_path: canary_proof_order_intent.as_deref(),
                     canary_evidence_path: &canary_evidence,
                     approval_not_before_unix_seconds,
                     approval_not_after_unix_seconds,

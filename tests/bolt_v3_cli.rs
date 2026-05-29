@@ -345,6 +345,16 @@ fn bolt_v3_cli_generates_operator_evidence_json_without_printing_values() {
         "abort-plan.json",
         serde_json::json!({"record_kind": "test_abort_plan"}),
     );
+    let canary_proof_candidate_source_path = write_cli_json_artifact(
+        &evidence_dir,
+        "canary-proof-candidate-source.json",
+        serde_json::json!({"record_kind": "bolt_v3_canary_proof_candidate_source"}),
+    );
+    let canary_proof_order_intent_path = write_cli_json_artifact(
+        &evidence_dir,
+        "canary-proof-order-intent.json",
+        serde_json::json!({"record_kind": "bolt_v3_canary_proof_order_intent"}),
+    );
     let approval_nonce_path = write_cli_json_artifact(
         &evidence_dir,
         "approval-nonce.json",
@@ -403,6 +413,14 @@ fn bolt_v3_cli_generates_operator_evidence_json_without_printing_values() {
             abort_plan_path
                 .to_str()
                 .expect("abort plan path should be utf-8"),
+            "--canary-proof-candidate-source",
+            canary_proof_candidate_source_path
+                .to_str()
+                .expect("proof candidate source path should be utf-8"),
+            "--canary-proof-order-intent",
+            canary_proof_order_intent_path
+                .to_str()
+                .expect("proof order intent path should be utf-8"),
             "--canary-evidence",
             canary_evidence_path
                 .to_str()
@@ -506,6 +524,36 @@ fn bolt_v3_cli_generates_operator_evidence_json_without_printing_values() {
         sha256_file_for_cli_test(&abort_plan_path)
     );
     assert_eq!(
+        operator_evidence
+            .canary_proof_candidate_source_path
+            .as_deref(),
+        Some(
+            canary_proof_candidate_source_path
+                .to_str()
+                .expect("proof candidate source path")
+        )
+    );
+    assert_eq!(
+        operator_evidence
+            .canary_proof_candidate_source_sha256
+            .as_deref(),
+        Some(sha256_file_for_cli_test(&canary_proof_candidate_source_path).as_str())
+    );
+    assert_eq!(
+        operator_evidence.canary_proof_order_intent_path.as_deref(),
+        Some(
+            canary_proof_order_intent_path
+                .to_str()
+                .expect("proof order intent path")
+        )
+    );
+    assert_eq!(
+        operator_evidence
+            .canary_proof_order_intent_sha256
+            .as_deref(),
+        Some(sha256_file_for_cli_test(&canary_proof_order_intent_path).as_str())
+    );
+    assert_eq!(
         operator_evidence.approval_nonce_sha256,
         sha256_file_for_cli_test(&approval_nonce_path)
     );
@@ -539,6 +587,14 @@ fn bolt_v3_cli_generates_operator_evidence_json_without_printing_values() {
         operator_evidence.financial_envelope_path.as_str(),
         operator_evidence.pre_run_state_path.as_str(),
         operator_evidence.abort_plan_path.as_str(),
+        operator_evidence
+            .canary_proof_candidate_source_path
+            .as_deref()
+            .expect("operator evidence should bind proof candidate source path"),
+        operator_evidence
+            .canary_proof_order_intent_path
+            .as_deref()
+            .expect("operator evidence should bind proof order intent path"),
         operator_evidence.approval_nonce_path.as_str(),
         "operator-approved-canary-001",
     ] {

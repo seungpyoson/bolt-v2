@@ -6856,6 +6856,8 @@ pub struct OperatorEvidenceJsonBuildInputs<'a> {
     pub financial_envelope_path: &'a Path,
     pub pre_run_state_path: &'a Path,
     pub abort_plan_path: &'a Path,
+    pub canary_proof_candidate_source_path: Option<&'a Path>,
+    pub canary_proof_order_intent_path: Option<&'a Path>,
     pub canary_evidence_path: &'a Path,
     pub approval_not_before_unix_seconds: i64,
     pub approval_not_after_unix_seconds: i64,
@@ -13160,10 +13162,24 @@ pub fn write_operator_evidence_json_from_artifact_paths(
             inputs.abort_plan_path,
             max_bytes,
         )?,
-        canary_proof_candidate_source_path: None,
-        canary_proof_candidate_source_sha256: None,
-        canary_proof_order_intent_path: None,
-        canary_proof_order_intent_sha256: None,
+        canary_proof_candidate_source_path: inputs
+            .canary_proof_candidate_source_path
+            .map(operator_evidence_path_string),
+        canary_proof_candidate_source_sha256: optional_operator_evidence_file_sha256(
+            loaded,
+            "canary_proof_candidate_source_path",
+            inputs.canary_proof_candidate_source_path,
+            max_bytes,
+        )?,
+        canary_proof_order_intent_path: inputs
+            .canary_proof_order_intent_path
+            .map(operator_evidence_path_string),
+        canary_proof_order_intent_sha256: optional_operator_evidence_file_sha256(
+            loaded,
+            "canary_proof_order_intent_path",
+            inputs.canary_proof_order_intent_path,
+            max_bytes,
+        )?,
         canary_evidence_path: operator_evidence_path_string(inputs.canary_evidence_path),
         approval_not_before_unix_seconds: inputs.approval_not_before_unix_seconds,
         approval_not_after_unix_seconds: inputs.approval_not_after_unix_seconds,
@@ -13211,6 +13227,28 @@ fn operator_evidence_artifact_sha256(
     validate_operator_evidence_toml_path(field, &configured_path_string)?;
     let resolved_path = resolve_loaded_config_path_from_path(loaded, configured_path);
     sha256_file_for_static_manifest(name, &resolved_path, max_bytes)
+}
+
+fn optional_operator_evidence_file_sha256(
+    loaded: &LoadedBoltV3Config,
+    field: &'static str,
+    configured_path: Option<&Path>,
+    max_bytes: u64,
+) -> Result<Option<String>, BoltV3OperatorArtifactError> {
+    let Some(configured_path) = configured_path else {
+        return Ok(None);
+    };
+    let configured_path_string = operator_evidence_path_string(configured_path);
+    validate_operator_evidence_toml_path(field, &configured_path_string)?;
+    let resolved_path = resolve_loaded_config_path_from_path(loaded, configured_path);
+    let bytes = read_file_bounded(&resolved_path, max_bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::FinalEvidenceRead {
+            field,
+            path: resolved_path,
+            source,
+        }
+    })?;
+    Ok(Some(hex::encode(Sha256::digest(&bytes))))
 }
 
 fn operator_evidence_path_string(path: &Path) -> String {

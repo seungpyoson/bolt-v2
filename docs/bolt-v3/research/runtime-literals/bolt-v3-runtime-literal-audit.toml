@@ -1745,6 +1745,54 @@ classification = "diagnostic_separator"
 reason = "This joins configured client venues for a fail-closed setup diagnostic; the venue values themselves come from TOML config."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''0'''
+context = '''(0..max_targets)'''
+classification = '''data_client_readiness_sampling_index_math'''
+reason = '''This is local spread-sampling range math over a TOML-bounded metadata-response target count, not a venue, market, cadence, or trading runtime value.'''
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''1'''
+context = '''let last_index = targets.len() - 1;'''
+classification = '''data_client_readiness_sampling_index_math'''
+reason = '''This is local zero-based index math for deterministic metadata-response spread sampling, not a venue, market, cadence, or trading runtime value.'''
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''1'''
+context = '''let last_sample = max_targets - 1;'''
+classification = '''data_client_readiness_sampling_index_math'''
+reason = '''This is local zero-based sample-index math for deterministic metadata-response spread sampling over TOML-bounded targets, not a trading runtime value.'''
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''2'''
+context = '''return vec![targets[targets.len() / 2].clone()];'''
+classification = '''data_client_readiness_sampling_index_math'''
+reason = '''This computes the middle element for a single deterministic metadata-response spread sample; it is not a market, cadence, quantity, timeout, or venue default.'''
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''", "'''
+context = '''missing_clients.join(", ")'''
+classification = '''diagnostic_separator'''
+reason = '''This separator joins configured client identifiers in a fail-closed setup diagnostic; the client values themselves come from TOML.'''
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"strategy references unconfigured client(s): {}"'''
+context = '''"strategy references unconfigured client(s): {}",'''
+classification = '''live_node_fail_closed_diagnostic_template'''
+reason = '''This is fail-closed diagnostic text for a strategy referencing client ids absent from the loaded TOML; it does not configure runtime behavior.'''
+
+[[allowed]]
 path = "src/bolt_v3_market_families/mod.rs"
 kind = "string"
 literal = "\"strategy `{}`\""

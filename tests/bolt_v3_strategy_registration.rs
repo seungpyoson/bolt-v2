@@ -1365,21 +1365,18 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
 }
 
 #[test]
-fn bolt_v3_live_node_build_registers_generic_canary_proof_executor_when_enabled() {
+fn bolt_v3_live_node_build_registers_only_generic_canary_proof_executor_when_enabled() {
     let mut loaded =
         support::loaded_bolt_v3_live_canary_with_satisfied_report(1, Decimal::new(5, 0));
     configure_canary_proof_policy_and_artifacts(&mut loaded);
 
     let (node, _summary) =
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
-            .expect("v3 LiveNode build should register configured strategies and proof executor");
+            .expect("v3 LiveNode build should register the proof executor");
 
     assert_eq!(
         node.registered_strategy_ids(),
-        vec![
-            StrategyId::from("binary_oracle_edge_taker-001"),
-            StrategyId::from("canary-proof-executor-proof")
-        ]
+        vec![StrategyId::from("canary-proof-executor-proof")]
     );
 }
 

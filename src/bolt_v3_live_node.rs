@@ -98,7 +98,8 @@ use crate::{
         resolve_bolt_v3_secrets, resolve_bolt_v3_secrets_with,
     },
     bolt_v3_strategy_registration::{
-        BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
+        BoltV3StrategyRegistrationError, BoltV3StrategyRegistrationSummary,
+        register_bolt_v3_strategies_on_node_with_bindings,
     },
     bolt_v3_submit_admission::{BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState},
     bolt_v3_tiny_canary_evidence::{
@@ -1557,6 +1558,15 @@ fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> 
             client_keys.insert(reference.data_client_id.to_string());
         }
     }
+    if let Some(proof_policy) = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.proof_policy.as_ref())
+        .filter(|proof_policy| proof_policy.enabled)
+    {
+        client_keys.insert(proof_policy.execution_client_id.clone());
+    }
     client_keys
 }
 
@@ -2590,15 +2600,21 @@ fn build_live_node_with_clients(
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
-    let strategy_summary = register_bolt_v3_strategies_on_node_with_bindings(
-        &mut node,
-        loaded,
-        resolved,
-        crate::bolt_v3_archetypes::runtime_bindings(),
-        submit_admission.clone(),
-        decision_evidence.clone(),
-    )
-    .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
+    let strategy_summary = if proof_executor_enabled {
+        BoltV3StrategyRegistrationSummary {
+            registered: Vec::new(),
+        }
+    } else {
+        register_bolt_v3_strategies_on_node_with_bindings(
+            &mut node,
+            loaded,
+            resolved,
+            crate::bolt_v3_archetypes::runtime_bindings(),
+            submit_admission.clone(),
+            decision_evidence.clone(),
+        )
+        .map_err(BoltV3LiveNodeError::StrategyRegistration)?
+    };
     if proof_executor_enabled {
         register_canary_proof_executor_on_node(
             &mut node,

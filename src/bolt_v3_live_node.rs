@@ -3224,6 +3224,8 @@ mod tests {
             max_metadata_quote_targets: None,
             allow_metadata_target_sampling: None,
             min_observed_targets: None,
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
             quote_targets: Some(BTreeMap::from([(
                 "configured_quote_probe".to_string(),
                 DataClientReadinessProbeQuoteTargetBlock {
@@ -3263,6 +3265,8 @@ mod tests {
             max_metadata_quote_targets: Some(2),
             allow_metadata_target_sampling: Some(false),
             min_observed_targets: None,
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
             quote_targets: None,
         });
 
@@ -3319,6 +3323,8 @@ mod tests {
             max_metadata_quote_targets: Some(2),
             allow_metadata_target_sampling: Some(false),
             min_observed_targets: None,
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
             quote_targets: None,
         });
 
@@ -3358,6 +3364,8 @@ mod tests {
             max_metadata_quote_targets: Some(3),
             allow_metadata_target_sampling: Some(true),
             min_observed_targets: None,
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
             quote_targets: None,
         });
 
@@ -3402,6 +3410,8 @@ mod tests {
             max_metadata_quote_targets: Some(3),
             allow_metadata_target_sampling: Some(false),
             min_observed_targets: None,
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
             quote_targets: None,
         });
 
@@ -3490,6 +3500,8 @@ mod tests {
             max_metadata_quote_targets: Some(1),
             allow_metadata_target_sampling: Some(false),
             min_observed_targets: None,
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
             quote_targets: None,
         });
 
@@ -3545,6 +3557,8 @@ mod tests {
             max_metadata_quote_targets: Some(5),
             allow_metadata_target_sampling: Some(true),
             min_observed_targets: Some(2),
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
             quote_targets: None,
         });
 
@@ -3611,6 +3625,8 @@ mod tests {
             max_metadata_quote_targets: Some(5),
             allow_metadata_target_sampling: Some(true),
             min_observed_targets: Some(0),
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
             quote_targets: None,
         });
 
@@ -3635,6 +3651,8 @@ mod tests {
             max_metadata_quote_targets: Some(5),
             allow_metadata_target_sampling: Some(true),
             min_observed_targets: Some(4),
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
             quote_targets: None,
         });
 

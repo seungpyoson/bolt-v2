@@ -363,7 +363,24 @@ pub struct DataClientReadinessProbeBlock {
     /// a value lets broad metadata universes prove adapter data-path behaviour
     /// without requiring every illiquid or un-streamable sampled instrument to
     /// tick within the configured wait. Must be >= 1 and <= the sampled count.
+    /// For a trade chunk-count probe (`market_data_kind = "trade"` with
+    /// `quote_target_source = "metadata_response"`) this is `m`: the number of
+    /// distinct markets that must produce a trade across the chunk walk for the
+    /// probe to pass, and it is required (there is no fixed sample to fall back
+    /// on).
     pub min_observed_targets: Option<usize>,
+    /// Maximum number of instruments a trade chunk-count probe subscribes to at
+    /// once (`n`). The probe walks the venue's full instrument universe in
+    /// chunks of this size — never subscribing to more than `chunk_size`
+    /// channels concurrently — to stay below the venue's silent delivery
+    /// ceiling. Required (and only valid) when `market_data_kind = "trade"`
+    /// and `quote_target_source = "metadata_response"`; must be >= 1.
+    pub chunk_size: Option<usize>,
+    /// How long a trade chunk-count probe watches each chunk for trades before
+    /// moving to the next chunk, in seconds. Required (and only valid) when
+    /// `market_data_kind = "trade"` and `quote_target_source =
+    /// "metadata_response"`; must be >= 1.
+    pub chunk_observation_window_seconds: Option<u64>,
     pub quote_targets: Option<BTreeMap<String, DataClientReadinessProbeQuoteTargetBlock>>,
 }
 

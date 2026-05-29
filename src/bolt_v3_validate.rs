@@ -975,6 +975,16 @@ fn validate_client_readiness_probe(key: &str, client: &ClientBlock) -> Vec<Strin
             "clients.{key}.readiness_probe requires the same client to declare a [data] block"
         ));
     }
+    // A trade chunk-count probe walks the venue's full instrument universe in
+    // chunks until `m` distinct markets trade; it has no fixed sample, so it
+    // owns a distinct config surface (chunk_size + window, no sampling knobs).
+    let is_trade_volume_probe = matches!(
+        readiness_probe.market_data_kind,
+        crate::bolt_v3_config::DataClientReadinessProbeMarketDataKind::Trade
+    ) && matches!(
+        readiness_probe.quote_target_source,
+        DataClientReadinessProbeQuoteTargetSource::MetadataResponse
+    );
     match readiness_probe.market_data_kind {
         crate::bolt_v3_config::DataClientReadinessProbeMarketDataKind::Quote => {
             if readiness_probe.book_type.is_some() {
@@ -1026,19 +1036,72 @@ fn validate_client_readiness_probe(key: &str, client: &ClientBlock) -> Vec<Strin
                     "clients.{key}.readiness_probe cannot combine quote_target_source = \"metadata_response\" with readiness_probe.quote_targets"
                 ));
             }
-            match readiness_probe.max_metadata_quote_targets {
-                Some(max_metadata_quote_targets) if max_metadata_quote_targets > 0 => {}
-                _ => {
+            if is_trade_volume_probe {
+                // Chunk-count mode subscribes the whole universe in chunks of
+                // chunk_size until `m` (min_observed_targets) distinct markets
+                // trade. There is no fixed sample, so the sampling knobs are
+                // rejected and the chunk knobs are required instead.
+                if readiness_probe.max_metadata_quote_targets.is_some() {
                     errors.push(format!(
-                        "clients.{key}.readiness_probe.max_metadata_quote_targets must be a positive integer when quote_target_source = \"metadata_response\""
+                        "clients.{key}.readiness_probe.max_metadata_quote_targets is not valid for a trade chunk-count probe; configure chunk_size instead"
                     ));
                 }
-            };
-            if readiness_probe.allow_metadata_target_sampling.is_none() {
-                errors.push(format!(
-                    "clients.{key}.readiness_probe.allow_metadata_target_sampling must be explicitly configured when quote_target_source = \"metadata_response\""
-                ));
+                if readiness_probe.allow_metadata_target_sampling.is_some() {
+                    errors.push(format!(
+                        "clients.{key}.readiness_probe.allow_metadata_target_sampling is not valid for a trade chunk-count probe"
+                    ));
+                }
+                match readiness_probe.chunk_size {
+                    Some(chunk_size) if chunk_size > 0 => {}
+                    _ => {
+                        errors.push(format!(
+                            "clients.{key}.readiness_probe.chunk_size must be a positive integer when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""
+                        ));
+                    }
+                };
+                match readiness_probe.chunk_observation_window_seconds {
+                    Some(window) if window > 0 => {}
+                    _ => {
+                        errors.push(format!(
+                            "clients.{key}.readiness_probe.chunk_observation_window_seconds must be a positive integer when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""
+                        ));
+                    }
+                };
+                match readiness_probe.min_observed_targets {
+                    Some(min_observed_targets) if min_observed_targets > 0 => {}
+                    _ => {
+                        errors.push(format!(
+                            "clients.{key}.readiness_probe.min_observed_targets must be a positive integer when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""
+                        ));
+                    }
+                };
+            } else {
+                match readiness_probe.max_metadata_quote_targets {
+                    Some(max_metadata_quote_targets) if max_metadata_quote_targets > 0 => {}
+                    _ => {
+                        errors.push(format!(
+                            "clients.{key}.readiness_probe.max_metadata_quote_targets must be a positive integer when quote_target_source = \"metadata_response\""
+                        ));
+                    }
+                };
+                if readiness_probe.allow_metadata_target_sampling.is_none() {
+                    errors.push(format!(
+                        "clients.{key}.readiness_probe.allow_metadata_target_sampling must be explicitly configured when quote_target_source = \"metadata_response\""
+                    ));
+                }
             }
+        }
+    }
+    if !is_trade_volume_probe {
+        if readiness_probe.chunk_size.is_some() {
+            errors.push(format!(
+                "clients.{key}.readiness_probe.chunk_size is only valid when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""
+            ));
+        }
+        if readiness_probe.chunk_observation_window_seconds.is_some() {
+            errors.push(format!(
+                "clients.{key}.readiness_probe.chunk_observation_window_seconds is only valid when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""
+            ));
         }
     }
     if let Some(quote_targets) = &readiness_probe.quote_targets {

@@ -5789,17 +5789,18 @@ fn allows_trade_readiness_probe() {
 [clients.polymarket_main.readiness_probe]
 market_data_kind = "trade"
 quote_target_source = "metadata_response"
-max_metadata_quote_targets = 4
-allow_metadata_target_sampling = true
+chunk_size = 200
+chunk_observation_window_seconds = 45
+min_observed_targets = 10
 "#
     ))
-    .expect("trade readiness probe should parse");
+    .expect("trade chunk-count readiness probe should parse");
 
     let messages = validate_root_only(&root);
 
     assert!(
         messages.is_empty(),
-        "a trade readiness probe with no book type must validate cleanly: {messages:#?}"
+        "a trade chunk-count readiness probe must validate cleanly: {messages:#?}"
     );
 }
 
@@ -5816,8 +5817,9 @@ fn rejects_trade_readiness_probe_with_book_type() {
 market_data_kind = "trade"
 book_type = "l2_mbp"
 quote_target_source = "metadata_response"
-max_metadata_quote_targets = 4
-allow_metadata_target_sampling = false
+chunk_size = 200
+chunk_observation_window_seconds = 45
+min_observed_targets = 10
 "#
     ))
     .expect("trade readiness probe should parse so validation can reject book type");
@@ -5830,6 +5832,197 @@ allow_metadata_target_sampling = false
                 && message.contains("market_data_kind = \"book\"")
         }),
         "trade probes must not carry a book subscription type: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_trade_chunk_count_probe_without_chunk_size() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+quote_target_source = "metadata_response"
+chunk_observation_window_seconds = 45
+min_observed_targets = 10
+"#
+    ))
+    .expect("trade chunk-count probe should parse so validation can reject the missing chunk size");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.chunk_size")
+                && message.contains("positive integer")
+        }),
+        "trade chunk-count probes must declare a config-owned chunk size: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_trade_chunk_count_probe_without_observation_window() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+quote_target_source = "metadata_response"
+chunk_size = 200
+min_observed_targets = 10
+"#
+    ))
+    .expect("trade chunk-count probe should parse so validation can reject the missing window");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains(
+                "clients.polymarket_main.readiness_probe.chunk_observation_window_seconds",
+            ) && message.contains("positive integer")
+        }),
+        "trade chunk-count probes must declare a config-owned per-chunk window: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_trade_chunk_count_probe_without_min_observed_targets() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+quote_target_source = "metadata_response"
+chunk_size = 200
+chunk_observation_window_seconds = 45
+"#
+    ))
+    .expect("trade chunk-count probe should parse so validation can reject the missing live bar");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.min_observed_targets")
+                && message.contains("positive integer")
+        }),
+        "trade chunk-count probes must declare a config-owned required-live-markets count: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_trade_chunk_count_probe_with_max_metadata_quote_targets() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+quote_target_source = "metadata_response"
+chunk_size = 200
+chunk_observation_window_seconds = 45
+min_observed_targets = 10
+max_metadata_quote_targets = 20
+"#
+    ))
+    .expect("trade chunk-count probe should parse so validation can reject the fixed-sample bound");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.max_metadata_quote_targets")
+                && message.contains("trade chunk-count")
+        }),
+        "a trade chunk-count probe has no fixed sample, so max_metadata_quote_targets must be rejected: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_trade_chunk_count_probe_with_allow_metadata_target_sampling() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+quote_target_source = "metadata_response"
+chunk_size = 200
+chunk_observation_window_seconds = 45
+min_observed_targets = 10
+allow_metadata_target_sampling = true
+"#
+    ))
+    .expect("trade chunk-count probe should parse so validation can reject the sampling opt-in");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message
+                .contains("clients.polymarket_main.readiness_probe.allow_metadata_target_sampling")
+                && message.contains("trade chunk-count")
+        }),
+        "a trade chunk-count probe does not sample, so allow_metadata_target_sampling must be rejected: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_chunk_count_fields_on_book_probe() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+chunk_size = 200
+chunk_observation_window_seconds = 45
+"#
+    ))
+    .expect("book probe should parse so validation can reject chunk-count fields");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.chunk_size")
+                && message.contains("market_data_kind = \"trade\"")
+        }),
+        "chunk_size is only valid for a trade chunk-count probe: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.contains(
+                "clients.polymarket_main.readiness_probe.chunk_observation_window_seconds",
+            ) && message.contains("market_data_kind = \"trade\"")
+        }),
+        "chunk_observation_window_seconds is only valid for a trade chunk-count probe: {messages:#?}"
     );
 }
 

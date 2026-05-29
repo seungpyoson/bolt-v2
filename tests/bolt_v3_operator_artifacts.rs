@@ -952,6 +952,8 @@ fn configure_data_client_readiness_quote_probe(loaded: &mut LoadedBoltV3Config) 
         max_metadata_quote_targets: None,
         allow_metadata_target_sampling: None,
         min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
         quote_targets: Some(BTreeMap::from([(
             TEST_DATA_CLIENT_PROBE_TARGET_ID.to_string(),
             DataClientReadinessProbeQuoteTargetBlock {
@@ -1863,6 +1865,8 @@ fn data_client_behavior_probe_events_source_accepts_metadata_response_quote_targ
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: Some(false),
         min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
         quote_targets: None,
     });
     loaded
@@ -1944,6 +1948,8 @@ fn data_client_behavior_probe_events_source_accepts_metadata_response_book_targe
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: Some(false),
         min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
         quote_targets: None,
     });
     loaded
@@ -2023,6 +2029,8 @@ fn data_client_behavior_probe_events_source_accepts_metadata_response_trade_targ
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: Some(false),
         min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
         quote_targets: None,
     });
     loaded
@@ -2104,6 +2112,8 @@ fn data_client_behavior_probe_events_source_requires_trades_for_all_metadata_res
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: Some(false),
         min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
         quote_targets: None,
     });
     loaded
@@ -2178,6 +2188,8 @@ fn data_client_behavior_probe_events_source_accepts_explicit_metadata_response_s
         max_metadata_quote_targets: Some(3),
         allow_metadata_target_sampling: Some(true),
         min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
         quote_targets: None,
     });
     loaded
@@ -2412,6 +2424,8 @@ fn data_client_behavior_probe_events_source_rejects_metadata_response_target_tru
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: Some(false),
         min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
         quote_targets: None,
     });
     loaded
@@ -2479,6 +2493,8 @@ fn data_client_behavior_probe_events_source_requires_quotes_for_all_metadata_res
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: Some(false),
         min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
         quote_targets: None,
     });
     loaded

@@ -1454,3 +1454,13 @@ Verification:
 - `git diff --check`: passed.
 
 Scope and side effects: this was source collection plus local code/test verification only. No live runner, approval consumption, no-submit run, venue submit/cancel, transfer, on-chain mutation, CLOB allowance/cache mutation, secret display, or trade operation was performed after the new approval. T044 remains open and requires an exact-head source packet, final-packet pre-run verification, no-submit readiness, and renewed explicit approval at the current head before live approval consumption.
+
+## T044 Current-Head Source Chain Result
+
+At head `7efad2cb7`, the current-window source collection root `/private/tmp/bolt-v2-t044-preflight-7efad2cb-current-1780021563` proved the source path past the prior boundary-report bug:
+
+- Chainlink boundary/reference/volatility source proofs were collected for configured market window `1780021500`.
+- Polymarket instrument, book, and fee-rate source proofs were collected.
+- `generate-entry-decision-evidence-from-source` then failed closed with `blocked_reason = "no_side_selected"` because both configured outcome sides had negative worst-case EV at the observed prices.
+
+No decision-evidence JSONL, strategy-input artifact, gate session, final packet, no-submit report, approval-consumption proof, canary evidence, order-submit artifact, venue-order artifact, transfer, on-chain mutation, CLOB allowance/cache mutation, secret display, or trade was produced by this attempt. T044 remains open. The exact current blocker is the configured strategy gate refusing to create an entry order for the observed market.

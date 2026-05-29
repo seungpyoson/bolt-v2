@@ -168,3 +168,18 @@ Verification:
 Committed repair head: `b9a15da363e1cb09750e254d77c5370d6a42e154`.
 
 Scope and side effects: the approved head `9fa15005` did not consume approval or run live mutation. The repair was local code/test work only; it did not connect to a venue, read SSM secrets, run no-submit, submit/cancel orders, transfer funds, mutate on-chain state, mutate CLOB allowance/cache state, or execute a trade. Because the repair commit changes `HEAD`, T044 now requires a fresh source packet, final-packet pre-run verification, no-submit readiness, and renewed explicit operator approval at the new exact head before live approval consumption.
+
+## Current-Head Source Chain: Strategy Gate Declined Entry
+
+Source attempt head: `7efad2cb55cc6a4e99c5c00428888fefe26061a5`
+
+Artifact root: `/private/tmp/bolt-v2-t044-preflight-7efad2cb-current-1780021563`
+
+Result: not T044 completion evidence.
+
+- Source-owned Chainlink boundary, reference, and realized-volatility proofs were collected for configured market window `1780021500`.
+- Source-owned Polymarket instruments, two-sided books, and fee-rate proof were collected.
+- `generate-entry-decision-evidence-from-source` failed before writing decision evidence because the strategy produced no entry order: `blocked_reason = "no_side_selected"`.
+- The command reported both UP and DOWN worst-case EV as negative, while the configured `edge_threshold_basis_points` remained positive and config-owned.
+
+Scope and side effects: this was source collection only. It did not run final-packet no-submit, enter the live runner, consume approval, submit/cancel orders, transfer funds, mutate on-chain state, mutate CLOB allowance/cache state, display secrets, or execute a trade. T044 remains open. The remaining blocker is no longer source-proof materialization; it is that the configured strategy will not trade the currently observed market without a qualifying edge.

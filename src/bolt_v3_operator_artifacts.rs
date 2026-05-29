@@ -7791,6 +7791,7 @@ fn validate_price_to_beat_report_provenance(
         || (benchmark_price - source.price_to_beat_value).abs() > f64::EPSILON
         || valid_from_timestamp_ms == ENTRY_DECISION_ZERO_TIMESTAMP_MS
         || observations_timestamp_ms == ENTRY_DECISION_ZERO_TIMESTAMP_MS
+        || valid_from_timestamp_ms != market_selection_timestamp_ms
         || valid_from_timestamp_ms > observations_timestamp_ms
         || observations_timestamp_ms < market_selection_timestamp_ms
         || observations_timestamp_ms > decision_timestamp_ms

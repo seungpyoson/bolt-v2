@@ -9450,6 +9450,71 @@ fn entry_decision_proof_source_materializer_derives_reference_quote_and_volatili
 }
 
 #[test]
+fn entry_decision_proof_source_materializer_rejects_non_boundary_price_to_beat_report() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    add_decision_reference_subscription(&mut loaded);
+    add_reference_value_capability(&mut loaded, "resolution_oracle_primary");
+    loaded.strategies[0].config.reference_data.clear();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let reports = write_chainlink_reference_report_sequence(temp.path());
+    let report_refs = reports
+        .iter()
+        .map(|(path, sha256)| ChainlinkReferencePriceReportSourceFile {
+            path,
+            expected_sha256: sha256,
+        })
+        .collect::<Vec<_>>();
+    let reference_quote_observations_source_path = temp
+        .path()
+        .join("chainlink-reference-observations-source.json");
+    write_chainlink_reference_quote_observations_source_from_report_files(
+        &loaded,
+        &strategy_instance_id,
+        ChainlinkReferenceQuoteObservationsSourceMaterializationRequest {
+            price_reports: &report_refs,
+            max_price_report_bytes: 100_000,
+            output_path: &reference_quote_observations_source_path,
+        },
+    )
+    .expect("Chainlink reports should write reference observations");
+
+    let late_report = reports
+        .last()
+        .expect("test report sequence should include a late report");
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &late_report.0,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &late_report.1,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 5_000,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &temp.path().join("source-bound-price.json"),
+            reference_quote_source_output_path: &temp.path().join("reference-quote.json"),
+            realized_volatility_source_output_path: &temp.path().join("realized-volatility.json"),
+        },
+    )
+    .expect_err("price-to-beat report must be the first source-owned boundary observation");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source-bound price_to_beat report provenance"),
+        "error should mention price-to-beat provenance, got: {error}"
+    );
+}
+
+#[test]
 fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let mut loaded = load_fixture_with_live_canary();

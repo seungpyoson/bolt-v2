@@ -627,6 +627,7 @@ pub fn loaded_bolt_v3_live_canary_with_satisfied_report(
         egress_identity_observed_path: None,
         egress_identity_observed_max_bytes: None,
         approved_egress_identity_sha256: None,
+        proof_policy: None,
         operator_evidence: Some(valid_live_canary_operator_evidence()),
     });
     loaded

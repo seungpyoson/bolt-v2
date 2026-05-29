@@ -223,7 +223,25 @@ pub struct LiveCanaryBlock {
     pub egress_identity_observed_path: Option<String>,
     pub egress_identity_observed_max_bytes: Option<u64>,
     pub approved_egress_identity_sha256: Option<String>,
+    pub proof_policy: Option<LiveCanaryProofPolicyBlock>,
     pub operator_evidence: Option<LiveCanaryOperatorEvidenceBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LiveCanaryProofPolicyBlock {
+    pub enabled: bool,
+    pub policy_kind: String,
+    pub proof_claim: String,
+    pub strategy_instance_id: String,
+    pub execution_client_id: String,
+    pub notional_mode: String,
+    pub proof_notional: String,
+    pub candidate_score_source: String,
+    pub allow_negative_expected_ev: bool,
+    pub rotation_observation_enabled: bool,
+    pub rotation_min_distinct_markets: u32,
+    pub rotation_max_attempts: u32,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

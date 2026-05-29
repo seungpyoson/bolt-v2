@@ -49,8 +49,8 @@ use rust_decimal::Decimal;
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
     ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
-    GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, LoadedStrategy,
-    NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock, RiskBlock,
+    GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, LiveCanaryProofPolicyBlock,
+    LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock, RiskBlock,
     SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 
@@ -122,6 +122,10 @@ const TARGET_RESOLUTION_KIND_FIELD: &str = "resolution_kind";
 const TARGET_PROVIDER_ID_FIELD: &str = "provider_id";
 const TARGET_PROVIDER_PREFERENCE_FIELD: &str = "provider_preference";
 const TARGET_ALLOWED_PROVIDER_IDS_FIELD: &str = "allowed_provider_ids";
+const LIVE_CANARY_PROOF_POLICY_KIND: &str = "least_bad_strategy_candidate";
+const LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE: &str = "strategy_evidence";
+const LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE: &str = "fixed";
+const LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM: &str = "proof_only";
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct ChainlinkFeedBindingKey {
@@ -164,6 +168,101 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     errors.extend(validate_clients_block(&root.clients));
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
+    }
+    if let Some(live_canary) = root.live_canary.as_ref() {
+        if let Some(proof_policy) = live_canary.proof_policy.as_ref() {
+            errors.extend(validate_live_canary_proof_policy(
+                proof_policy,
+                &live_canary.max_notional_per_order,
+            ));
+        }
+    }
+
+    errors
+}
+
+fn validate_live_canary_proof_policy(
+    policy: &LiveCanaryProofPolicyBlock,
+    max_notional_per_order: &str,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    if policy.enabled && policy.proof_claim.trim() != LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM
+    {
+        errors.push(format!(
+            "live_canary.proof_policy.proof_claim must be `{}` when enabled",
+            LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM
+        ));
+    }
+    if policy.enabled && policy.policy_kind.trim() != LIVE_CANARY_PROOF_POLICY_KIND {
+        errors.push(format!(
+            "live_canary.proof_policy.policy_kind must be `{}` when enabled",
+            LIVE_CANARY_PROOF_POLICY_KIND
+        ));
+    }
+    if policy.enabled && policy.notional_mode.trim() != LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE {
+        errors.push(format!(
+            "live_canary.proof_policy.notional_mode must be `{}` when enabled",
+            LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE
+        ));
+    }
+    if policy.enabled
+        && policy.candidate_score_source.trim() != LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE
+    {
+        errors.push(format!(
+            "live_canary.proof_policy.candidate_score_source must be `{}` when enabled",
+            LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE
+        ));
+    }
+    if policy.enabled && policy.strategy_instance_id.trim().is_empty() {
+        errors.push(
+            "live_canary.proof_policy.strategy_instance_id must not be blank when enabled"
+                .to_string(),
+        );
+    }
+    if policy.enabled && policy.execution_client_id.trim().is_empty() {
+        errors.push(
+            "live_canary.proof_policy.execution_client_id must not be blank when enabled"
+                .to_string(),
+        );
+    }
+
+    match (
+        parse_decimal_string(&policy.proof_notional),
+        parse_decimal_string(max_notional_per_order),
+    ) {
+        (Ok(proof_notional), Ok(max_notional)) => {
+            if proof_notional <= Decimal::ZERO {
+                errors.push("live_canary.proof_policy.proof_notional must be positive".to_string());
+            }
+            if proof_notional > max_notional {
+                errors.push(
+                    "live_canary.proof_policy.proof_notional must be <= live_canary.max_notional_per_order"
+                        .to_string(),
+                );
+            }
+        }
+        (Err(reason), _) => errors.push(format!(
+            "live_canary.proof_policy.proof_notional is invalid: {reason}"
+        )),
+        (_, Err(reason)) => errors.push(format!(
+            "live_canary.max_notional_per_order is invalid: {reason}"
+        )),
+    }
+
+    if policy.enabled && policy.rotation_min_distinct_markets == 0 {
+        errors.push(
+            "live_canary.proof_policy.rotation_min_distinct_markets must be positive".to_string(),
+        );
+    }
+    if policy.enabled && policy.rotation_max_attempts == 0 {
+        errors.push("live_canary.proof_policy.rotation_max_attempts must be positive".to_string());
+    }
+    if policy.enabled && policy.rotation_min_distinct_markets > policy.rotation_max_attempts {
+        errors.push(
+            "live_canary.proof_policy.rotation_min_distinct_markets must be <= rotation_max_attempts"
+                .to_string(),
+        );
     }
 
     errors

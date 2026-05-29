@@ -47,6 +47,11 @@ pub struct CanaryProofPolicyInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanaryProofSourcePacket {
+    pub current_source_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanaryProofSelection {
     pub instrument_id: String,
     pub order_side: CanaryProofOrderSide,

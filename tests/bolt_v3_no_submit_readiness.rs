@@ -781,24 +781,35 @@ fn no_submit_readiness_live_node_source_uses_strategy_free_run_stop_boundary() {
 #[test]
 fn no_submit_readiness_run_helper_waits_for_reference_quote_probe_before_stop() {
     let source = support::repo_text("src/bolt_v3_live_node.rs");
+    // Anchor on the reference-quote run helper specifically, bounded to its own
+    // function body (up to the next `async fn`), so sibling run helpers such as
+    // the data-client readiness walk — which dispatches through
+    // `await_no_submit_data_client_readiness_quote_probe` — cannot hijack the
+    // first-occurrence scans below.
     let run_helper_body = source
-        .split("async fn run_bolt_v3_no_submit_readiness_until_observed")
+        .split("async fn run_bolt_v3_no_submit_readiness_with_reference_quote_probe")
         .nth(1)
-        .and_then(|tail| tail.split("async fn await_no_submit_running").next())
-        .expect("no-submit run helper should be present");
+        .and_then(|tail| tail.split("\nasync fn ").next())
+        .expect("reference-quote no-submit run helper should be present");
     let reference_probe_pos = run_helper_body
         .find("await_no_submit_reference_quote_probe")
-        .expect("no-submit run helper must wait for reference quote probe completion or timeout before stopping");
+        .expect("reference-quote run helper must wait for reference quote probe completion or timeout before stopping");
     let stop_pos = run_helper_body
         .find("node_handle.stop();")
-        .expect("no-submit run helper must stop through LiveNodeHandle");
+        .expect("reference-quote run helper must stop through LiveNodeHandle");
 
     assert!(
         reference_probe_pos < stop_pos,
         "reference quote evidence must be observed while NT runner remains alive"
     );
+    // The probe wait timeout is config/TOML owned inside the awaited probe helper.
+    let reference_probe_body = source
+        .split("async fn await_no_submit_reference_quote_probe")
+        .nth(1)
+        .and_then(|tail| tail.split("\nasync fn ").next())
+        .expect("await_no_submit_reference_quote_probe should be present");
     assert!(
-        run_helper_body.contains("reference_quote_wait_timeout_seconds"),
+        reference_probe_body.contains("reference_quote_wait_timeout_seconds"),
         "reference quote probe wait timeout must be TOML/config owned"
     );
 }
@@ -806,16 +817,19 @@ fn no_submit_readiness_run_helper_waits_for_reference_quote_probe_before_stop() 
 #[test]
 fn no_submit_readiness_run_helper_polls_runner_while_waiting_for_reference_quotes() {
     let source = support::repo_text("src/bolt_v3_live_node.rs");
+    // Anchor on the reference-quote run helper specifically, bounded to its own
+    // function body, so sibling run helpers cannot hijack the first-occurrence
+    // scans below (see waits_for_reference_quote_probe_before_stop).
     let run_helper_body = source
-        .split("async fn run_bolt_v3_no_submit_readiness_until_observed")
+        .split("async fn run_bolt_v3_no_submit_readiness_with_reference_quote_probe")
         .nth(1)
-        .and_then(|tail| tail.split("async fn await_no_submit_running").next())
-        .expect("no-submit run helper should be present");
+        .and_then(|tail| tail.split("\nasync fn ").next())
+        .expect("reference-quote no-submit run helper should be present");
     let after_running = run_helper_body
         .split("let connect = tokio::select!")
         .nth(1)
         .and_then(|tail| tail.split("let reference_quote_evidence").next())
-        .expect("no-submit run helper should keep a post-running observation phase");
+        .expect("reference-quote run helper should keep a post-running observation phase");
 
     assert!(
         after_running.contains("tokio::select!"),

@@ -64,7 +64,7 @@ use nautilus_live::{
     node::{LiveNode, LiveNodeHandle, NodeState},
 };
 use nautilus_model::{
-    data::{OrderBookDeltas, QuoteTick},
+    data::{OrderBookDeltas, QuoteTick, TradeTick},
     enums::{BarIntervalType, BookType},
     identifiers::{ActorId, ClientId, InstrumentId, StrategyId, Venue},
     instruments::Instrument,
@@ -155,6 +155,22 @@ pub struct BoltV3NoSubmitBookDeltasEvidence {
     pub deltas: Vec<BoltV3NoSubmitBookDeltas>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoltV3NoSubmitTrade {
+    pub data_client_id: String,
+    pub instrument_id: String,
+    pub price: f64,
+    pub size: f64,
+    pub ts_event_unix_nanos: u64,
+    pub ts_init_unix_nanos: u64,
+    pub captured_at_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoltV3NoSubmitTradeEvidence {
+    pub trades: Vec<BoltV3NoSubmitTrade>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3NoSubmitDataClientMetadata {
     pub data_client_id: String,
@@ -174,6 +190,7 @@ pub struct BoltV3NoSubmitDataClientReadinessEvidence {
     pub metadata: BoltV3NoSubmitDataClientMetadataEvidence,
     pub quotes: BoltV3NoSubmitReferenceQuoteEvidence,
     pub books: BoltV3NoSubmitBookDeltasEvidence,
+    pub trades: BoltV3NoSubmitTradeEvidence,
 }
 
 impl BoltV3NoSubmitReferenceQuoteEvidence {
@@ -214,6 +231,7 @@ struct BoltV3NoSubmitReferenceQuoteProbeHandle {
     failure_reason: Rc<RefCell<Option<String>>>,
     quotes: Rc<RefCell<Vec<BoltV3NoSubmitReferenceQuote>>>,
     book_deltas: Rc<RefCell<Vec<BoltV3NoSubmitBookDeltas>>>,
+    trades: Rc<RefCell<Vec<BoltV3NoSubmitTrade>>>,
     quote_notify: Rc<tokio::sync::Notify>,
 }
 
@@ -250,6 +268,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             failure_reason: Rc::new(RefCell::new(None)),
             quotes: Rc::new(RefCell::new(Vec::new())),
             book_deltas: Rc::new(RefCell::new(Vec::new())),
+            trades: Rc::new(RefCell::new(Vec::new())),
             quote_notify: Rc::new(tokio::sync::Notify::new()),
         }
     }
@@ -275,6 +294,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             failure_reason: Rc::new(RefCell::new(None)),
             quotes: Rc::new(RefCell::new(Vec::new())),
             book_deltas: Rc::new(RefCell::new(Vec::new())),
+            trades: Rc::new(RefCell::new(Vec::new())),
             quote_notify: Rc::new(tokio::sync::Notify::new()),
         }
     }
@@ -310,6 +330,10 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             DataClientReadinessProbeMarketDataKind::Book => {
                 let book_deltas = self.book_deltas.borrow();
                 observed_required_book_delta_count(&required, &book_deltas) >= required_observations
+            }
+            DataClientReadinessProbeMarketDataKind::Trade => {
+                let trades = self.trades.borrow();
+                observed_required_trade_count(&required, &trades) >= required_observations
             }
         }
     }
@@ -361,6 +385,12 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
     fn book_evidence(&self) -> BoltV3NoSubmitBookDeltasEvidence {
         BoltV3NoSubmitBookDeltasEvidence {
             deltas: self.book_deltas.borrow().clone(),
+        }
+    }
+
+    fn trade_evidence(&self) -> BoltV3NoSubmitTradeEvidence {
+        BoltV3NoSubmitTradeEvidence {
+            trades: self.trades.borrow().clone(),
         }
     }
 
@@ -482,6 +512,38 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         }
     }
 
+    fn record_trade(&self, trade: &TradeTick, captured_at_unix_nanos: u64) {
+        let trade_instrument_id = trade.instrument_id.to_string();
+        if self
+            .ambiguous_instrument_ids
+            .borrow()
+            .contains(&trade_instrument_id)
+        {
+            return;
+        }
+        let required = self.required.borrow().clone();
+        let mut matched_required = false;
+        let mut trades = self.trades.borrow_mut();
+        for required in &required {
+            if trade.instrument_id == required.instrument_id {
+                matched_required = true;
+                trades.push(BoltV3NoSubmitTrade {
+                    data_client_id: required.data_client_id.to_string(),
+                    instrument_id: required.instrument_id.to_string(),
+                    price: trade.price.as_f64(),
+                    size: trade.size.as_f64(),
+                    ts_event_unix_nanos: trade.ts_event.as_u64(),
+                    ts_init_unix_nanos: trade.ts_init.as_u64(),
+                    captured_at_unix_nanos,
+                });
+            }
+        }
+        drop(trades);
+        if matched_required && self.has_all_required_market_data() {
+            self.quote_notify.notify_one();
+        }
+    }
+
     async fn wait_for_all_required_quotes(&self) -> Result<(), String> {
         loop {
             if let Some(reason) = self.failure_error() {
@@ -524,6 +586,25 @@ fn observed_required_book_delta_count(
         if book_deltas.iter().any(|deltas| {
             deltas.data_client_id == required.data_client_id.to_string()
                 && deltas.instrument_id == required.instrument_id.to_string()
+        }) {
+            observed.insert((
+                required.data_client_id.to_string(),
+                required.instrument_id.to_string(),
+            ));
+        }
+    }
+    observed.len()
+}
+
+fn observed_required_trade_count(
+    required: &[NoSubmitReferenceQuoteSubscription],
+    trades: &[BoltV3NoSubmitTrade],
+) -> usize {
+    let mut observed = BTreeSet::new();
+    for required in required {
+        if trades.iter().any(|trade| {
+            trade.data_client_id == required.data_client_id.to_string()
+                && trade.instrument_id == required.instrument_id.to_string()
         }) {
             observed.insert((
                 required.data_client_id.to_string(),
@@ -676,6 +757,11 @@ impl DataActor for BoltV3NoSubmitReferenceQuoteProbe {
             .record_book_deltas(deltas, current_unix_nanos()?);
         Ok(())
     }
+
+    fn on_trade(&mut self, trade: &TradeTick) -> anyhow::Result<()> {
+        self.handle.record_trade(trade, current_unix_nanos()?);
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -784,6 +870,11 @@ impl DataActor for BoltV3NoSubmitDataClientReadinessProbe {
             .record_book_deltas(deltas, current_unix_nanos()?);
         Ok(())
     }
+
+    fn on_trade(&mut self, trade: &TradeTick) -> anyhow::Result<()> {
+        self.quote_handle.record_trade(trade, current_unix_nanos()?);
+        Ok(())
+    }
 }
 
 fn subscribe_no_submit_required_market_data<A: DataActor + std::fmt::Debug + 'static>(
@@ -811,6 +902,9 @@ fn subscribe_no_submit_required_market_data<A: DataActor + std::fmt::Debug + 'st
                 None,
             );
         }
+        DataClientReadinessProbeMarketDataKind::Trade => {
+            actor.subscribe_trades(required.instrument_id, Some(required.data_client_id), None);
+        }
     }
     Ok(())
 }
@@ -836,6 +930,9 @@ fn unsubscribe_no_submit_required_market_data<A: DataActor + std::fmt::Debug + '
                 Some(required.data_client_id),
                 None,
             );
+        }
+        DataClientReadinessProbeMarketDataKind::Trade => {
+            actor.unsubscribe_trades(required.instrument_id, Some(required.data_client_id), None);
         }
     }
     Ok(())
@@ -1929,6 +2026,7 @@ pub async fn collect_no_submit_data_client_readiness_evidence(
         metadata_evidence,
         quote_evidence,
         book_evidence,
+        trade_evidence,
         metadata_probe,
         reference_quote_probe,
         stop,
@@ -1951,6 +2049,7 @@ pub async fn collect_no_submit_data_client_readiness_evidence(
         metadata: metadata_evidence,
         quotes: quote_evidence,
         books: book_evidence,
+        trades: trade_evidence,
     })
 }
 
@@ -1964,6 +2063,7 @@ pub async fn collect_no_submit_data_client_metadata_evidence(
         metadata_evidence,
         _quote_evidence,
         _book_evidence,
+        _trade_evidence,
         metadata_probe,
         _reference_quote_probe,
         stop,
@@ -2044,6 +2144,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
     BoltV3NoSubmitDataClientMetadataEvidence,
     BoltV3NoSubmitReferenceQuoteEvidence,
     BoltV3NoSubmitBookDeltasEvidence,
+    BoltV3NoSubmitTradeEvidence,
     Result<(), String>,
     Result<(), String>,
     Result<(), BoltV3LiveNodeError>,
@@ -2059,6 +2160,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
                 },
                 BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
                 BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+                BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
                 Err("data-client metadata probe setup failed".to_string()),
                 Err("data-client quote probe setup failed".to_string()),
                 Err(BoltV3LiveNodeError::NoSubmitStopFailed(anyhow::anyhow!(
@@ -2075,6 +2177,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
                 metadata_probe.evidence(),
                 reference_quote_probe.evidence(),
                 reference_quote_probe.book_evidence(),
+                reference_quote_probe.trade_evidence(),
                 Err(
                     "data-client metadata probe was not observed because start timeout overflowed"
                         .to_string(),
@@ -2097,6 +2200,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
                 metadata_probe.evidence(),
                 reference_quote_probe.evidence(),
                 reference_quote_probe.book_evidence(),
+                reference_quote_probe.trade_evidence(),
                 Err(
                     "data-client metadata probe was not observed because stop timeout overflowed"
                         .to_string(),
@@ -2124,6 +2228,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
                 metadata_probe.evidence(),
                 reference_quote_probe.evidence(),
                 reference_quote_probe.book_evidence(),
+                reference_quote_probe.trade_evidence(),
                 Err("data-client metadata probe was not observed before runner exit".to_string()),
                 Err("data-client quote probe was not observed before runner exit".to_string()),
                 Ok(()),
@@ -2141,6 +2246,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
                         metadata_probe.evidence(),
                         reference_quote_probe.evidence(),
                         reference_quote_probe.book_evidence(),
+                reference_quote_probe.trade_evidence(),
                         Err("data-client metadata probe was not observed because no-submit runner did not reach Running".to_string()),
                         Err("data-client quote probe was not observed because no-submit runner did not reach Running".to_string()),
                         Err(BoltV3LiveNodeError::NoSubmitStopFailed(anyhow::anyhow!(
@@ -2174,6 +2280,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
                     metadata_probe.evidence(),
                     reference_quote_probe.evidence(),
                     reference_quote_probe.book_evidence(),
+                reference_quote_probe.trade_evidence(),
                     metadata_probe_result.unwrap_or_else(|| {
                         Err("data-client metadata probe was not observed before runner exit".to_string())
                     }),
@@ -2194,6 +2301,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
     let metadata_evidence = metadata_probe.evidence();
     let reference_quote_evidence = reference_quote_probe.evidence();
     let book_delta_evidence = reference_quote_probe.book_evidence();
+    let trade_evidence = reference_quote_probe.trade_evidence();
     node_handle.stop();
     let stop =
         match tokio::time::timeout(Duration::from_secs(stop_timeout_secs), &mut run_future).await {
@@ -2208,6 +2316,7 @@ async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
         metadata_evidence,
         reference_quote_evidence,
         book_delta_evidence,
+        trade_evidence,
         metadata_probe_result
             .unwrap_or_else(|| Err("data-client metadata probe was not observed".to_string())),
         reference_probe_result

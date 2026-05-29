@@ -990,6 +990,13 @@ fn validate_client_readiness_probe(key: &str, client: &ClientBlock) -> Vec<Strin
                 ));
             }
         }
+        crate::bolt_v3_config::DataClientReadinessProbeMarketDataKind::Trade => {
+            if readiness_probe.book_type.is_some() {
+                errors.push(format!(
+                    "clients.{key}.readiness_probe.book_type is only valid when market_data_kind = \"book\""
+                ));
+            }
+        }
     }
     match readiness_probe.quote_target_source {
         DataClientReadinessProbeQuoteTargetSource::Configured => {

@@ -5,7 +5,7 @@ use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_live_node::{
         BoltV3NoSubmitBookDeltasEvidence, BoltV3NoSubmitDataClientReadinessEvidence,
-        BoltV3NoSubmitReferenceQuoteEvidence,
+        BoltV3NoSubmitReferenceQuoteEvidence, BoltV3NoSubmitTradeEvidence,
         build_bolt_v3_all_configured_client_mapping_live_node, build_bolt_v3_live_node,
         build_bolt_v3_no_submit_data_client_probe_live_node, build_bolt_v3_no_submit_live_node,
         collect_no_submit_data_client_metadata_evidence,
@@ -1136,6 +1136,7 @@ fn run_operator_artifacts_command(
                 metadata,
                 quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
                 books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+                trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
             };
             let written =
                 write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(

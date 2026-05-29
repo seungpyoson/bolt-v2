@@ -358,7 +358,7 @@ pub struct DataClientReadinessProbeBlock {
     pub max_metadata_quote_targets: Option<usize>,
     pub allow_metadata_target_sampling: Option<bool>,
     /// Minimum number of sampled readiness-probe targets that must produce a
-    /// fresh quote/book observation for the probe to pass. When unset the probe
+    /// fresh quote/book/trade observation for the probe to pass. When unset the probe
     /// requires every sampled target (strict, fail-closed default). Configuring
     /// a value lets broad metadata universes prove adapter data-path behaviour
     /// without requiring every illiquid or un-streamable sampled instrument to
@@ -372,6 +372,7 @@ pub struct DataClientReadinessProbeBlock {
 pub enum DataClientReadinessProbeMarketDataKind {
     Quote,
     Book,
+    Trade,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]

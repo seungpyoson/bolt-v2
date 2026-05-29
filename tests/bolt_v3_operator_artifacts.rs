@@ -27,7 +27,7 @@ use bolt_v2::{
         BoltV3NoSubmitBookDeltas, BoltV3NoSubmitBookDeltasEvidence,
         BoltV3NoSubmitDataClientMetadata, BoltV3NoSubmitDataClientMetadataEvidence,
         BoltV3NoSubmitDataClientReadinessEvidence, BoltV3NoSubmitReferenceQuote,
-        BoltV3NoSubmitReferenceQuoteEvidence,
+        BoltV3NoSubmitReferenceQuoteEvidence, BoltV3NoSubmitTrade, BoltV3NoSubmitTradeEvidence,
     },
     bolt_v3_market_families::{SelectedMarketRequirement, updown::updown_market_slug},
     bolt_v3_operator_artifacts::{
@@ -1749,6 +1749,7 @@ fn data_client_behavior_probe_events_source_records_metadata_without_raw_instrum
             }],
         },
         books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
     };
 
     let written_probe_events =
@@ -1898,6 +1899,7 @@ fn data_client_behavior_probe_events_source_accepts_metadata_response_quote_targ
             }],
         },
         books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
     };
 
     let written_probe_events =
@@ -1977,6 +1979,7 @@ fn data_client_behavior_probe_events_source_accepts_metadata_response_book_targe
                 captured_at_unix_nanos: 600_500_000_000,
             }],
         },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
     };
 
     let written_probe_events =
@@ -2000,6 +2003,161 @@ fn data_client_behavior_probe_events_source_accepts_metadata_response_book_targe
     assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
     assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID));
     assert!(!rendered_events.contains("600000000000"));
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_accepts_metadata_response_trade_targets() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Trade,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: Some(2),
+        allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
+        quote_targets: None,
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let temp = support::TempCaseDir::new("data-client-behavior-metadata-response-trades");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string()],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence {
+            trades: vec![BoltV3NoSubmitTrade {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                instrument_id: TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string(),
+                price: 101.5,
+                size: 3.0,
+                ts_event_unix_nanos: 600_000_000_000,
+                ts_init_unix_nanos: 600_100_000_000,
+                captured_at_unix_nanos: 600_500_000_000,
+            }],
+        },
+    };
+
+    let written_probe_events =
+        write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+            &loaded,
+            TEST_REFERENCE_DATA_CLIENT_ID,
+            &evidence,
+            &probe_events_path,
+        )
+        .expect("metadata-response trade targets should write source-owned probe events");
+
+    let rendered_events =
+        std::fs::read_to_string(&written_probe_events.path).expect("probe events should read");
+    let events = rendered_events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().any(|event| event["event_kind"] == "metadata"));
+    assert!(events.iter().any(|event| event["event_kind"] == "trade"));
+    assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID));
+    assert!(!rendered_events.contains("101.5"));
+    assert!(!rendered_events.contains("600000000000"));
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_requires_trades_for_all_metadata_response_targets() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Trade,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: Some(2),
+        allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
+        quote_targets: None,
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let observed_instrument = format!("CONFIGURED-FIRST.{provider_key}");
+    let unobserved_instrument = format!("CONFIGURED-SECOND.{provider_key}");
+    let temp = support::TempCaseDir::new("data-client-behavior-metadata-response-trades-strict");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![observed_instrument.clone(), unobserved_instrument.clone()],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence {
+            trades: vec![BoltV3NoSubmitTrade {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                instrument_id: observed_instrument.clone(),
+                price: 101.5,
+                size: 3.0,
+                ts_event_unix_nanos: 600_000_000_000,
+                ts_init_unix_nanos: 600_100_000_000,
+                captured_at_unix_nanos: 600_500_000_000,
+            }],
+        },
+    };
+
+    let error = write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect_err(
+        "strict default must reject a metadata-response trade probe missing a sampled target",
+    );
+    assert!(
+        format!("{error}").contains("metadata.instrument_ids.trades"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
@@ -2084,6 +2242,7 @@ fn data_client_behavior_probe_events_source_accepts_explicit_metadata_response_s
                 },
             ],
         },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
     };
 
     let written_probe_events =
@@ -2155,6 +2314,7 @@ fn data_client_readiness_target_candidates_source_records_nt_metadata_instrument
         },
         quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
         books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
     };
     let output_path = temp.path().join("target-candidates.json");
     let written = write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(
@@ -2218,6 +2378,7 @@ fn data_client_readiness_target_candidates_source_rejects_selected_client_wrong_
         },
         quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
         books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
     };
     let output_path = temp.path().join("target-candidates.json");
     let error = write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(
@@ -2281,6 +2442,7 @@ fn data_client_behavior_probe_events_source_rejects_metadata_response_target_tru
         },
         quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
         books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
     };
 
     let error = write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
@@ -2355,6 +2517,7 @@ fn data_client_behavior_probe_events_source_requires_quotes_for_all_metadata_res
             }],
         },
         books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
     };
 
     let error = write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
@@ -2509,6 +2672,7 @@ fn data_client_production_readiness_matrix_fails_closed_without_source_owned_pol
         "quote_behavior": surface("quote-observation"),
         "book_behavior": surface("book-observation"),
         "ticker_behavior": surface("ticker-observation"),
+        "trade_behavior": surface("trade-observation"),
         "freshness": {
             "configured_max_age_millis": configured_max_age_millis,
             "max_observed_age_millis": 1_000,
@@ -2725,6 +2889,7 @@ fn data_client_production_readiness_matrix_requires_source_owned_quote_target_bi
         "quote_behavior": surface("quote-observation"),
         "book_behavior": surface("book-observation"),
         "ticker_behavior": surface("ticker-observation"),
+        "trade_behavior": surface("trade-observation"),
         "freshness": {
             "configured_max_age_millis": configured_max_age_millis,
             "max_observed_age_millis": 1_000,
@@ -2811,6 +2976,7 @@ fn data_client_production_readiness_matrix_requires_source_owned_quote_target_bi
             },
             quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
             books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+            trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
         },
         &target_candidates_path,
     )
@@ -2917,7 +3083,8 @@ fn data_client_behavior_observation_source_records_observed_data_path_as_unprove
         "metadata_behavior": surface("metadata-observation"),
         "quote_behavior": surface("quote-observation"),
         "book_behavior": surface("book-observation"),
-        "ticker_behavior": unsupported_surface,
+        "ticker_behavior": unsupported_surface.clone(),
+        "trade_behavior": unsupported_surface,
         "freshness": {
             "configured_max_age_millis": configured_max_age_millis,
             "max_observed_age_millis": 1_500,

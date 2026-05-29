@@ -5778,6 +5778,62 @@ allow_metadata_target_sampling = false
 }
 
 #[test]
+fn allows_trade_readiness_probe() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+allow_metadata_target_sampling = true
+"#
+    ))
+    .expect("trade readiness probe should parse");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.is_empty(),
+        "a trade readiness probe with no book type must validate cleanly: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_trade_readiness_probe_with_book_type() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+allow_metadata_target_sampling = false
+"#
+    ))
+    .expect("trade readiness probe should parse so validation can reject book type");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.book_type")
+                && message.contains("market_data_kind = \"book\"")
+        }),
+        "trade probes must not carry a book subscription type: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_metadata_response_readiness_probe_with_min_quote_targets() {
     use bolt_v2::bolt_v3_config::BoltV3RootConfig;
 

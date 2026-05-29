@@ -935,6 +935,7 @@ struct DataClientBehaviorObservationArtifact {
     quote_behavior: DataClientBehaviorSurfaceObservation,
     book_behavior: DataClientBehaviorSurfaceObservation,
     ticker_behavior: DataClientBehaviorSurfaceObservation,
+    trade_behavior: DataClientBehaviorSurfaceObservation,
     freshness: DataClientFreshnessObservation,
     reconnect: DataClientPolicyObservation,
     rate_limit: DataClientPolicyObservation,
@@ -959,6 +960,7 @@ struct DataClientBehaviorObservationSourceFile {
     quote_behavior: DataClientBehaviorSurfaceObservation,
     book_behavior: DataClientBehaviorSurfaceObservation,
     ticker_behavior: DataClientBehaviorSurfaceObservation,
+    trade_behavior: DataClientBehaviorSurfaceObservation,
     freshness: DataClientFreshnessObservation,
     reconnect: DataClientPolicyObservation,
     rate_limit: DataClientPolicyObservation,
@@ -3328,6 +3330,17 @@ fn data_client_behavior_probe_events_from_no_submit_readiness_evidence(
                     )?,
                 );
             }
+            DataClientReadinessProbeMarketDataKind::Trade => {
+                events.extend(
+                    data_client_trade_probe_events_from_no_submit_readiness_evidence(
+                        client_key,
+                        provider_key,
+                        client,
+                        &evidence.metadata,
+                        &evidence.trades,
+                    )?,
+                );
+            }
         }
     } else if !evidence.quotes.quotes.is_empty() {
         events.extend(data_client_quote_probe_events_from_no_submit_evidence(
@@ -3511,6 +3524,56 @@ fn data_client_book_probe_events_from_no_submit_readiness_evidence(
     Ok(events)
 }
 
+fn data_client_trade_probe_events_from_no_submit_readiness_evidence(
+    client_key: &str,
+    provider_key: &str,
+    client: &crate::bolt_v3_config::ClientBlock,
+    metadata: &crate::bolt_v3_live_node::BoltV3NoSubmitDataClientMetadataEvidence,
+    evidence: &crate::bolt_v3_live_node::BoltV3NoSubmitTradeEvidence,
+) -> Result<Vec<DataClientBehaviorProbeEvent>, BoltV3OperatorArtifactError> {
+    let trade_targets = data_client_readiness_quote_target_instruments_for_evidence(
+        client_key,
+        provider_key,
+        client,
+        metadata,
+    )?;
+    let events = data_client_trade_probe_events_for_targets(
+        client_key,
+        provider_key,
+        evidence,
+        &trade_targets,
+    )?;
+    if let Some(readiness_probe) = client.readiness_probe.as_ref()
+        && readiness_probe.quote_target_source
+            == DataClientReadinessProbeQuoteTargetSource::MetadataResponse
+    {
+        let observed_targets: BTreeSet<&str> = evidence
+            .trades
+            .iter()
+            .filter(|trade| trade.data_client_id == client_key)
+            .filter(|trade| trade_targets.contains(&trade.instrument_id))
+            .map(|trade| trade.instrument_id.as_str())
+            .collect();
+        // Mirror the live probe's success criterion: every sampled target must
+        // stream a trade unless `min_observed_targets` lowers the bar, in which
+        // case observing at least that many distinct sampled targets is the
+        // proof. Keeps the artifact materializer consistent with
+        // `BoltV3NoSubmitReferenceQuoteProbeHandle::required_observation_count`.
+        let required_observations = readiness_probe
+            .min_observed_targets
+            .map(|min_observed| min_observed.clamp(1, trade_targets.len().max(1)))
+            .unwrap_or(trade_targets.len());
+        if observed_targets.len() < required_observations {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "metadata.instrument_ids.trades",
+                },
+            );
+        }
+    }
+    Ok(events)
+}
+
 fn data_client_quote_probe_events_for_targets(
     client_key: &str,
     provider_key: &str,
@@ -3614,6 +3677,64 @@ fn data_client_book_probe_events_for_targets(
             recovered: None,
             fail_closed: None,
             evidence_sha256: Some(data_client_book_probe_evidence_hash(deltas)?),
+            unsupported_disposition: None,
+        });
+    }
+    Ok(events)
+}
+
+fn data_client_trade_probe_events_for_targets(
+    client_key: &str,
+    provider_key: &str,
+    evidence: &crate::bolt_v3_live_node::BoltV3NoSubmitTradeEvidence,
+    trade_targets: &BTreeSet<String>,
+) -> Result<Vec<DataClientBehaviorProbeEvent>, BoltV3OperatorArtifactError> {
+    let client_key_hash = sha256_text(client_key);
+    let mut events = Vec::new();
+    for trade in &evidence.trades {
+        if trade.data_client_id != client_key || !trade_targets.contains(&trade.instrument_id) {
+            continue;
+        }
+        if trade.size <= 0.0 || !trade.size.is_finite() {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "trade.size",
+                },
+            );
+        }
+        let observed_at_unix_millis =
+            nanos_to_millis_checked(trade.captured_at_unix_nanos, "trade.captured_at_unix_nanos")?;
+        if observed_at_unix_millis == 0 {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "trade.captured_at_unix_nanos",
+                },
+            );
+        }
+        let (age_millis, event_clock_skew_millis) = nanos_age_and_clock_skew_millis(
+            trade.captured_at_unix_nanos,
+            trade.ts_event_unix_nanos,
+        );
+        let latency_millis = nanos_delta_to_millis_checked(
+            trade.captured_at_unix_nanos,
+            trade.ts_init_unix_nanos,
+            "trade.ts_init_unix_nanos",
+        )?;
+        events.push(DataClientBehaviorProbeEvent {
+            schema_version: DATA_CLIENT_BEHAVIOR_OBSERVATION_SCHEMA_VERSION,
+            record_kind: DATA_CLIENT_BEHAVIOR_PROBE_EVENT_RECORD_KIND.to_string(),
+            client_key_hash: client_key_hash.clone(),
+            provider_key: provider_key.to_string(),
+            observed_at_unix_millis,
+            event_kind: "trade".to_string(),
+            supported_by_nt_source: true,
+            observed_through_live_node: true,
+            age_millis: Some(age_millis),
+            latency_millis: Some(latency_millis),
+            event_clock_skew_millis,
+            recovered: None,
+            fail_closed: None,
+            evidence_sha256: Some(data_client_trade_probe_evidence_hash(trade)?),
             unsupported_disposition: None,
         });
     }
@@ -4241,6 +4362,21 @@ fn data_client_book_probe_evidence_hash(
     }))
 }
 
+fn data_client_trade_probe_evidence_hash(
+    trade: &crate::bolt_v3_live_node::BoltV3NoSubmitTrade,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    canonical_json_sha256_value(&serde_json::json!({
+        "source": "no_submit_trade_probe",
+        "data_client_id_hash": sha256_text(&trade.data_client_id),
+        "instrument_id_hash": sha256_text(&trade.instrument_id),
+        "price": trade.price,
+        "size": trade.size,
+        "ts_event_unix_nanos": trade.ts_event_unix_nanos,
+        "ts_init_unix_nanos": trade.ts_init_unix_nanos,
+        "captured_at_unix_nanos": trade.captured_at_unix_nanos,
+    }))
+}
+
 fn data_client_metadata_probe_evidence_hash(
     response: &crate::bolt_v3_live_node::BoltV3NoSubmitDataClientMetadata,
 ) -> Result<String, BoltV3OperatorArtifactError> {
@@ -4505,6 +4641,7 @@ fn materialize_data_client_behavior_observation_source_from_probe_events(
         quote_behavior: data_client_surface_observation_from_probe_events(events, "quote")?,
         book_behavior: data_client_surface_observation_from_probe_events(events, "book")?,
         ticker_behavior: data_client_surface_observation_from_probe_events(events, "ticker")?,
+        trade_behavior: data_client_surface_observation_from_probe_events(events, "trade")?,
         freshness,
         reconnect: policy_source
             .map(|source| source.artifact.reconnect.clone())
@@ -4665,7 +4802,10 @@ fn data_client_aggregate_evidence_hash(evidence_hashes: &[&str]) -> String {
 }
 
 fn data_client_probe_event_surface_kind(event_kind: &str) -> bool {
-    matches!(event_kind, "metadata" | "quote" | "book" | "ticker")
+    matches!(
+        event_kind,
+        "metadata" | "quote" | "book" | "ticker" | "trade"
+    )
 }
 
 fn build_data_client_production_readiness_matrix_artifact_from_source_files(
@@ -5153,6 +5293,7 @@ fn build_data_client_behavior_observation_artifact_from_source_file(
         quote_behavior: source.quote_behavior,
         book_behavior: source.book_behavior,
         ticker_behavior: source.ticker_behavior,
+        trade_behavior: source.trade_behavior,
         freshness: source.freshness,
         reconnect: source.reconnect,
         rate_limit: source.rate_limit,
@@ -5229,6 +5370,7 @@ fn validate_data_client_behavior_observation_source(
     validate_data_client_behavior_surface_observation("quote_behavior", &source.quote_behavior)?;
     validate_data_client_behavior_surface_observation("book_behavior", &source.book_behavior)?;
     validate_data_client_behavior_surface_observation("ticker_behavior", &source.ticker_behavior)?;
+    validate_data_client_behavior_surface_observation("trade_behavior", &source.trade_behavior)?;
     validate_data_client_freshness_observation(&source.freshness)?;
     validate_data_client_policy_observation("reconnect", &source.reconnect)?;
     validate_data_client_policy_observation("rate_limit", &source.rate_limit)?;
@@ -5346,13 +5488,14 @@ fn data_client_behavior_observation_missing_proofs(
         &source.quote_behavior,
         &source.book_behavior,
         &source.ticker_behavior,
+        &source.trade_behavior,
     ]
     .iter()
     .any(|observation| {
         observation.supported_by_nt_source && observation.observed_through_live_node
     });
     if !market_data_observed {
-        missing.push("quote_or_book_or_ticker_behavior");
+        missing.push("quote_or_book_or_ticker_or_trade_behavior");
     }
     if !source.freshness.within_configured_bound {
         missing.push("freshness_latency");
@@ -5817,6 +5960,7 @@ fn data_client_readiness_probe_event_kind(
     match market_data_kind {
         DataClientReadinessProbeMarketDataKind::Quote => "quote",
         DataClientReadinessProbeMarketDataKind::Book => "book",
+        DataClientReadinessProbeMarketDataKind::Trade => "trade",
     }
 }
 

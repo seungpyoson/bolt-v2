@@ -1430,3 +1430,27 @@ Post-doc checkpoint rerun for head `6a28cc7f1a42e8f9b580a8033038f4defe8c7597`:
 - No-submit report schema `bolt-v3.no-submit-readiness.v2`, generated at Unix seconds `1780016379`, executable identity `f26954b50091d534ef04ad37efc34c760f5733d5a8bf21f9c30aa4d9a08e7c02`, config bundle checksum `d4c5067aed49e95186b1f9a0b7276b58ef4eb67666a01273b83fea78f2c72414`, with all seven stages satisfied.
 
 Scope and side effects: the post-doc checkpoint rerun was final-packet pre-run verification plus no-submit readiness. It did not run the live runner, consume live approval, submit/cancel orders, transfer funds, mutate on-chain state, mutate CLOB allowance/cache state, print secrets, or execute a trade. This record is historical evidence for `6a28cc7f`; any later commit still requires another exact-head rerun before T044 live approval consumption.
+
+## T044 Source-Only Retry and Boundary Price Repair
+
+The operator approved a T044 tiny-capital canary at head `9fa1500535e7c02a2df061938d695f1a6741d903`, with max 1 live order and `max_notional_per_order = 1.00`.
+
+Two approved source-collection attempts failed before live approval consumption:
+
+- `/private/tmp/bolt-v2-t044-approved-9fa15005-1780019700`
+- `/private/tmp/bolt-v2-t044-approved-9fa15005-1780020300`
+
+Both attempts failed during source-owned entry-decision evidence generation with `blocked_reason = "no_side_selected"`. The live runner was not entered, no approval-consumption proof was written, no order was submitted, and no trade occurred.
+
+Root cause: the source collection path allowed a non-boundary Chainlink report to be used as source-owned `price_to_beat`, so the market boundary price and current decision reference could both come from the same latest report. The fix requires the `price_to_beat` report's `validFromTimestamp` to equal the selected market boundary timestamp while leaving the current reference path free to use later observations.
+
+Repair commit: `b9a15da363e1cb09750e254d77c5370d6a42e154`.
+
+Verification:
+
+- `cargo test --locked --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer_rejects_non_boundary_price_to_beat_report -- --nocapture`: passed.
+- `cargo test --locked --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer -- --nocapture`: 11 passed.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+
+Scope and side effects: this was source collection plus local code/test verification only. No live runner, approval consumption, no-submit run, venue submit/cancel, transfer, on-chain mutation, CLOB allowance/cache mutation, secret display, or trade operation was performed after the new approval. T044 remains open and requires an exact-head source packet, final-packet pre-run verification, no-submit readiness, and renewed explicit approval at the current head before live approval consumption.

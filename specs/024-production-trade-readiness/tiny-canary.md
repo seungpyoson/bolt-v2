@@ -133,3 +133,38 @@ Verification:
 - `cargo test --test bolt_v3_strategy_registration bolt_v3_registration_context_includes_operator_readiness_gate_session -- --nocapture`: passed.
 
 Scope and side effects: this was local code/test verification only. It did not connect to a venue, read SSM secrets, run no-submit, submit/cancel orders, transfer funds, mutate on-chain state, or consume another live approval. T044 remains open and needs a fresh source packet, pre-run verification, no-submit readiness, and tiny-capital canary retry from the new head.
+
+## Approved Source-Only Retry: Failed Closed Before Approval Consumption
+
+Approved head: `9fa1500535e7c02a2df061938d695f1a6741d903`
+
+Operator approval: T044 tiny-capital canary at head `9fa15005`, max 1 live order, `max_notional_per_order = 1.00`.
+
+Artifact roots:
+
+- `/private/tmp/bolt-v2-t044-approved-9fa15005-1780019700`
+- `/private/tmp/bolt-v2-t044-approved-9fa15005-1780020300`
+
+Result: not T044 completion evidence.
+
+- Both retries failed during source-owned entry-decision evidence generation with `blocked_reason = "no_side_selected"`.
+- No live runner was entered, no approval-consumption artifact was written, and no live order path was reached.
+- Root cause: the source collection path allowed a non-boundary Chainlink report to be used as source-owned `price_to_beat`. That made the market boundary price and current decision reference come from the same latest report, so the entry decision correctly had no viable side.
+- The correct source contract is provider-neutral: `price_to_beat` must be the source-owned boundary observation for the selected market window, while current decision reference evidence can come from later observations.
+
+Repair:
+
+- `validate_price_to_beat_report_provenance` now rejects a `price_to_beat` report unless its source `validFromTimestamp` exactly matches `market_selection_timestamp_ms`.
+- The check still allows the report observation timestamp to be later than the boundary when the signed source report itself proves the boundary validity window.
+- Regression coverage proves the materializer rejects a later report as `price_to_beat` while preserving the existing accepted materializer path.
+
+Verification:
+
+- `cargo test --locked --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer_rejects_non_boundary_price_to_beat_report -- --nocapture`: passed.
+- `cargo test --locked --test bolt_v3_operator_artifacts entry_decision_proof_source_materializer -- --nocapture`: 11 passed.
+- `cargo fmt --check`: passed.
+- `git diff --check`: passed.
+
+Committed repair head: `b9a15da363e1cb09750e254d77c5370d6a42e154`.
+
+Scope and side effects: the approved head `9fa15005` did not consume approval or run live mutation. The repair was local code/test work only; it did not connect to a venue, read SSM secrets, run no-submit, submit/cancel orders, transfer funds, mutate on-chain state, mutate CLOB allowance/cache state, or execute a trade. Because the repair commit changes `HEAD`, T044 now requires a fresh source packet, final-packet pre-run verification, no-submit readiness, and renewed explicit operator approval at the new exact head before live approval consumption.

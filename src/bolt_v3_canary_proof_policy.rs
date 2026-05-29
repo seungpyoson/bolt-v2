@@ -32,6 +32,8 @@ pub enum CanaryProofSizingMode {
 pub struct CanaryProofInstrumentConstraints {
     pub sizing_mode: CanaryProofSizingMode,
     pub quantity_step: Decimal,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notional_step: Option<Decimal>,
     pub min_quantity: Option<Decimal>,
     pub min_notional: Option<Decimal>,
 }
@@ -116,6 +118,7 @@ pub enum CanaryProofPolicyRejection {
     InstrumentConstraintsBelowMinQuantity,
     InstrumentConstraintsBelowMinNotional,
     InstrumentConstraintsInvalidQuantityStep,
+    InstrumentConstraintsInvalidNotionalStep,
     InstrumentConstraintsInvalidSizingPrice,
     NoProofCandidate,
 }
@@ -251,7 +254,15 @@ fn normalize_order_sizing(
             }
             let raw_quantity = proof_notional / selected.sizing_price;
             let quantity_units = (raw_quantity / selected.constraints.quantity_step).floor();
-            let rounded_quantity = quantity_units * selected.constraints.quantity_step;
+            let mut rounded_quantity = quantity_units * selected.constraints.quantity_step;
+            if let Some(notional_step) = selected.constraints.notional_step {
+                rounded_quantity = align_quantity_to_notional_step(
+                    rounded_quantity,
+                    selected.constraints.quantity_step,
+                    selected.sizing_price,
+                    notional_step,
+                )?;
+            }
             if selected
                 .constraints
                 .min_quantity
@@ -273,4 +284,56 @@ fn normalize_order_sizing(
             })
         }
     }
+}
+
+fn align_quantity_to_notional_step(
+    rounded_quantity: Decimal,
+    quantity_step: Decimal,
+    sizing_price: Decimal,
+    notional_step: Decimal,
+) -> Result<Decimal, CanaryProofPolicyRejection> {
+    if notional_step <= Decimal::ZERO {
+        return Err(CanaryProofPolicyRejection::InstrumentConstraintsInvalidNotionalStep);
+    }
+    let unit_multiple =
+        notional_alignment_unit_multiple(quantity_step, sizing_price, notional_step)?;
+    let quantity_units = (rounded_quantity / quantity_step).floor();
+    let unit_multiple_decimal = Decimal::from(unit_multiple);
+    let aligned_units = (quantity_units / unit_multiple_decimal).floor() * unit_multiple_decimal;
+    Ok(aligned_units * quantity_step)
+}
+
+fn notional_alignment_unit_multiple(
+    quantity_step: Decimal,
+    sizing_price: Decimal,
+    notional_step: Decimal,
+) -> Result<u64, CanaryProofPolicyRejection> {
+    let ratio = (quantity_step * sizing_price / notional_step).normalize();
+    if ratio <= Decimal::ZERO {
+        return Err(CanaryProofPolicyRejection::InstrumentConstraintsInvalidNotionalStep);
+    }
+    let numerator = u128::try_from(ratio.mantissa())
+        .map_err(|_| CanaryProofPolicyRejection::InstrumentConstraintsInvalidNotionalStep)?;
+    let denominator = decimal_scale_denominator(ratio.scale())
+        .ok_or(CanaryProofPolicyRejection::InstrumentConstraintsInvalidNotionalStep)?;
+    let divisor = gcd_u128(numerator, denominator);
+    u64::try_from(denominator / divisor)
+        .map_err(|_| CanaryProofPolicyRejection::InstrumentConstraintsInvalidNotionalStep)
+}
+
+fn decimal_scale_denominator(scale: u32) -> Option<u128> {
+    let mut denominator = 1u128;
+    for _ in 0..scale {
+        denominator = denominator.checked_mul(10)?;
+    }
+    Some(denominator)
+}
+
+fn gcd_u128(mut left: u128, mut right: u128) -> u128 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
 }

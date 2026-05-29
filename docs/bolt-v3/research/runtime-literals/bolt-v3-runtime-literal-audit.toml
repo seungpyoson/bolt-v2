@@ -8793,6 +8793,46 @@ classification = "entry_decision_source_input_diagnostic"
 reason = "This is a validation diagnostic for inconsistent selected-market instrument metadata, not a runtime operator value."
 
 [[allowed]]
+path = "src/bolt_v3_canary_proof_policy.rs"
+kind = "number"
+literal = "1u128"
+context = '''let mut denominator = 1u128;'''
+classification = "decimal_scale_integer_math"
+reason = "This is the multiplicative identity for exact Decimal scale-denominator derivation; the scale comes from source-owned Decimal metadata."
+
+[[allowed]]
+path = "src/bolt_v3_canary_proof_policy.rs"
+kind = "number"
+literal = "0"
+context = '''for _ in 0..scale {'''
+classification = "decimal_scale_integer_math"
+reason = "This is the lower bound for iterating a Decimal scale count; the scale comes from source-owned Decimal metadata."
+
+[[allowed]]
+path = "src/bolt_v3_canary_proof_policy.rs"
+kind = "number"
+literal = "10"
+context = '''denominator = denominator.checked_mul(10)?;'''
+classification = "decimal_scale_integer_math"
+reason = "This is the base-10 radix used by Decimal scale-denominator derivation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_canary_proof_policy.rs"
+kind = "number"
+literal = "0"
+context = '''while right != 0 {'''
+classification = "decimal_scale_integer_math"
+reason = "This is the Euclidean-algorithm zero sentinel for exact integer GCD derivation, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs"
+kind = "number"
+literal = "1"
+context = '''Decimal::new(1, LOT_SIZE_SCALE)'''
+classification = "polymarket_clob_lot_size_scale"
+reason = "This is the unit numerator for NT's Polymarket LOT_SIZE_SCALE-derived CLOB amount step; the scale is owned by the NT adapter constant."
+
+[[allowed]]
 path = "src/main.rs"
 kind = "string"
 literal = '''"decision_source"'''

@@ -7,6 +7,7 @@ use nautilus_model::{
 };
 use nautilus_network::retry::RetryConfig;
 use nautilus_polymarket::{
+    common::consts::LOT_SIZE_SCALE,
     execution::parse::{compute_commission, instrument_taker_fee},
     http::{clob::PolymarketClobPublicClient, gamma::PolymarketGammaHttpClient},
     providers::PolymarketInstrumentProvider,
@@ -521,8 +522,14 @@ fn canary_proof_candidate_from_best_ask(
     if sizing_price <= Decimal::ZERO || available_quantity <= Decimal::ZERO {
         return Ok(None);
     }
-    let quantity_step =
+    let instrument_quantity_step =
         decimal_from_display(instrument.size_increment(), "canary proof quantity step")?;
+    let clob_amount_step = polymarket_clob_lot_size_step();
+    let quantity_step = if instrument_quantity_step > clob_amount_step {
+        instrument_quantity_step
+    } else {
+        clob_amount_step
+    };
     let min_quantity = instrument
         .min_quantity()
         .map(|quantity| decimal_from_display(quantity, "canary proof minimum quantity"))
@@ -538,10 +545,15 @@ fn canary_proof_candidate_from_best_ask(
         constraints: CanaryProofInstrumentConstraints {
             sizing_mode: CanaryProofSizingMode::BaseQuantity,
             quantity_step,
+            notional_step: Some(clob_amount_step),
             min_quantity,
             min_notional: None,
         },
     }))
+}
+
+fn polymarket_clob_lot_size_step() -> Decimal {
+    Decimal::new(1, LOT_SIZE_SCALE)
 }
 
 fn live_canary_proof_policy_input(

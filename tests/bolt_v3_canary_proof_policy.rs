@@ -135,6 +135,7 @@ fn proof_policy_rejects_rounded_quantity_below_adapter_minimum() {
             constraints: CanaryProofInstrumentConstraints {
                 sizing_mode: CanaryProofSizingMode::BaseQuantity,
                 quantity_step: dec("0.01"),
+                notional_step: None,
                 min_quantity: Some(dec("1.00")),
                 min_notional: None,
             },
@@ -171,6 +172,7 @@ fn proof_policy_rejects_rounded_notional_below_adapter_minimum() {
             constraints: CanaryProofInstrumentConstraints {
                 sizing_mode: CanaryProofSizingMode::BaseQuantity,
                 quantity_step: dec("0.01"),
+                notional_step: None,
                 min_quantity: None,
                 min_notional: Some(dec("1.00")),
             },
@@ -182,6 +184,44 @@ fn proof_policy_rejects_rounded_notional_below_adapter_minimum() {
     assert_eq!(
         err,
         CanaryProofPolicyRejection::InstrumentConstraintsBelowMinNotional
+    );
+}
+
+#[test]
+fn proof_policy_rounds_quantity_down_to_adapter_notional_step() {
+    let input = CanaryProofPolicyInput {
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
+        proof_claim: "proof_only".to_string(),
+        proof_notional: dec("5.00"),
+        max_notional_per_order: dec("5.00"),
+        allow_negative_expected_ev: true,
+        source_ready: true,
+        current_source_ref: "source-hash-a".to_string(),
+        candidates: vec![CanaryProofCandidate {
+            strategy_instance_id: "configured_strategy".to_string(),
+            execution_client_id: "configured_execution_client".to_string(),
+            instrument_id: "instrument-a".to_string(),
+            order_side: CanaryProofOrderSide::Buy,
+            candidate_score: dec("0.01"),
+            source_refs: vec!["source-hash-a".to_string()],
+            sizing_price: dec("0.47"),
+            constraints: CanaryProofInstrumentConstraints {
+                sizing_mode: CanaryProofSizingMode::BaseQuantity,
+                quantity_step: dec("0.01"),
+                notional_step: Some(dec("0.01")),
+                min_quantity: None,
+                min_notional: None,
+            },
+        }],
+    };
+
+    let selected = select_canary_proof_candidate(&input).expect("candidate selected");
+
+    assert_eq!(selected.sizing.quantity_for_submit(), dec("10.00"));
+    assert_eq!(
+        selected.sizing.notional_for_submit_admission(),
+        dec("4.7000")
     );
 }
 
@@ -207,6 +247,7 @@ fn proof_policy_rejects_non_positive_quantity_step() {
             constraints: CanaryProofInstrumentConstraints {
                 sizing_mode: CanaryProofSizingMode::BaseQuantity,
                 quantity_step: Decimal::ZERO,
+                notional_step: None,
                 min_quantity: None,
                 min_notional: None,
             },
@@ -218,6 +259,43 @@ fn proof_policy_rejects_non_positive_quantity_step() {
     assert_eq!(
         err,
         CanaryProofPolicyRejection::InstrumentConstraintsInvalidQuantityStep
+    );
+}
+
+#[test]
+fn proof_policy_rejects_non_positive_notional_step() {
+    let input = CanaryProofPolicyInput {
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
+        proof_claim: "proof_only".to_string(),
+        proof_notional: dec("1.00"),
+        max_notional_per_order: dec("5.00"),
+        allow_negative_expected_ev: true,
+        source_ready: true,
+        current_source_ref: "source-hash-a".to_string(),
+        candidates: vec![CanaryProofCandidate {
+            strategy_instance_id: "configured_strategy".to_string(),
+            execution_client_id: "configured_execution_client".to_string(),
+            instrument_id: "instrument-a".to_string(),
+            order_side: CanaryProofOrderSide::Buy,
+            candidate_score: dec("0.01"),
+            source_refs: vec!["source-hash-a".to_string()],
+            sizing_price: dec("0.50"),
+            constraints: CanaryProofInstrumentConstraints {
+                sizing_mode: CanaryProofSizingMode::BaseQuantity,
+                quantity_step: dec("0.01"),
+                notional_step: Some(Decimal::ZERO),
+                min_quantity: None,
+                min_notional: None,
+            },
+        }],
+    };
+
+    let err = select_canary_proof_candidate(&input).expect_err("invalid notional step rejected");
+
+    assert_eq!(
+        err,
+        CanaryProofPolicyRejection::InstrumentConstraintsInvalidNotionalStep
     );
 }
 
@@ -457,6 +535,7 @@ fn unconstrained_base_quantity_constraints() -> CanaryProofInstrumentConstraints
     CanaryProofInstrumentConstraints {
         sizing_mode: CanaryProofSizingMode::BaseQuantity,
         quantity_step: dec("0.01"),
+        notional_step: None,
         min_quantity: None,
         min_notional: None,
     }

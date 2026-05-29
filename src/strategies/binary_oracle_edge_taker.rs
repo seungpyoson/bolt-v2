@@ -3930,7 +3930,7 @@ impl BinaryOracleEdgeTaker {
                 BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
             },
             lifecycle_policy: self.submit_lifecycle_policy(),
-            canary_proof_claim: None,
+            canary_proof_claim: intent.canary_proof_claim.clone(),
         })
     }
 
@@ -7048,7 +7048,7 @@ fn submit_admission_request_from_order(
             BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
         },
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
-        canary_proof_claim: None,
+        canary_proof_claim: intent.canary_proof_claim.clone(),
     })
 }
 
@@ -11170,6 +11170,40 @@ mod tests {
         assert_eq!(
             admission.notional,
             Decimal::from_str("1.040").expect("expected decimal should parse")
+        );
+    }
+
+    #[test]
+    fn submit_admission_request_preserves_proof_only_order_intent_claim() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(2.0, 2);
+        let price = Price::new(0.50, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-PROOF-1"),
+            )
+            .expect("configured entry order should build");
+        let mut intent = BoltV3OrderIntentEvidence::from_compiled_order(
+            strategy.config.strategy_id.clone(),
+            BoltV3OrderIntentKind::Entry,
+            price.to_string(),
+            &order,
+        );
+        intent.canary_proof_claim =
+            Some(crate::bolt_v3_canary_proof_policy::CANARY_PROOF_CLAIM.to_string());
+
+        let admission = submit_admission_request_from_order(&intent, &order)
+            .expect("proof-only intent should map into submit admission");
+
+        assert_eq!(
+            admission.canary_proof_claim.as_deref(),
+            Some(crate::bolt_v3_canary_proof_policy::CANARY_PROOF_CLAIM)
         );
     }
 

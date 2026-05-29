@@ -466,6 +466,7 @@ fn write_valid_decision_evidence_chain(path: &Path, now_ms: u64, notional: &str)
         order_side: snapshot.submission_order_side.clone(),
         price: snapshot.submission_price.clone(),
         quantity: snapshot.submission_quantity.clone(),
+        canary_proof_claim: None,
         order_fields: BoltV3OrderIntentOrderFields {
             order_type: "LIMIT".to_string(),
             time_in_force: "FOK".to_string(),

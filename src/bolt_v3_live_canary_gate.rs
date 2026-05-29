@@ -2770,6 +2770,7 @@ mod tests {
             order_side: submission_order_side,
             price: submission_price.clone(),
             quantity: submission_quantity,
+            canary_proof_claim: None,
             order_fields: BoltV3OrderIntentOrderFields {
                 order_type: "LIMIT".to_string(),
                 time_in_force: "GTC".to_string(),

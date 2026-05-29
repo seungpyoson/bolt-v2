@@ -11055,6 +11055,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
         order_side: snapshot.submission_order_side.clone(),
         price: snapshot.submission_price.clone(),
         quantity: snapshot.submission_quantity.clone(),
+        canary_proof_claim: None,
         order_fields: BoltV3OrderIntentOrderFields {
             order_type: "Limit".to_string(),
             time_in_force: "Gtc".to_string(),
@@ -13525,6 +13526,7 @@ fn write_entry_decision_evidence_chain_at(
         order_side: snapshot.submission_order_side.clone(),
         price: snapshot.submission_price.clone(),
         quantity: snapshot.submission_quantity.clone(),
+        canary_proof_claim: None,
         order_fields: BoltV3OrderIntentOrderFields {
             order_type: "Limit".to_string(),
             time_in_force: "Gtc".to_string(),

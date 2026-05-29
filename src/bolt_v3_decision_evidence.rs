@@ -162,6 +162,8 @@ pub struct BoltV3OrderIntentEvidence {
     pub order_side: String,
     pub price: String,
     pub quantity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canary_proof_claim: Option<String>,
     pub order_fields: BoltV3OrderIntentOrderFields,
 }
 
@@ -201,6 +203,7 @@ impl BoltV3OrderIntentEvidence {
             order_side: order.order_side().to_string(),
             price: compiled_order_price_source(fallback_price, order),
             quantity: order.quantity().to_string(),
+            canary_proof_claim: None,
             order_fields: BoltV3OrderIntentOrderFields::from_order(order),
         }
     }
@@ -945,6 +948,7 @@ mod tests {
             order_side: OrderSide::Buy.to_string(),
             price: "0.42".to_string(),
             quantity: "1".to_string(),
+            canary_proof_claim: None,
             order_fields: BoltV3OrderIntentOrderFields {
                 order_type: OrderType::Limit.to_string(),
                 time_in_force: TimeInForce::Gtc.to_string(),

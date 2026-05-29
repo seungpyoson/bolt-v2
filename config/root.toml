@@ -300,8 +300,12 @@ allow_metadata_target_sampling = true
 venue = "BITMEX"
 
 [clients.bitmex_data.data]
-environment = "testnet"
-active_only = false
+# Data-only readiness uses BitMEX production (mainnet) public data: pinned NT's
+# strict BitmexInstrumentType enum cannot deserialize the testnet-only `FFMCSX`
+# typ, and active_only=true avoids the historical `/instrument` dump whose
+# settled instruments break NT's whole-array deserialize. See T043A docs.
+environment = "mainnet"
+active_only = true
 transport_backend = "sockudo"
 
 [clients.bitmex_data.readiness_probe]
@@ -310,6 +314,10 @@ book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
+# Pass once >= this many sampled targets stream fresh book deltas. Proves the
+# adapter data path without requiring every illiquid sampled instrument to tick
+# within the wait. Unset = strict (all sampled targets). See T043A docs.
+min_observed_targets = 10
 
 [clients.bybit_data]
 venue = "BYBIT"
@@ -339,6 +347,7 @@ book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
+min_observed_targets = 10
 
 [clients.deribit_data]
 venue = "DERIBIT"
@@ -391,8 +400,13 @@ venue = "OKX"
 [clients.okx_data.data]
 instrument_types = ["SPOT", "MARGIN", "SWAP", "FUTURES", "EVENTS"]
 contract_types = ["linear", "inverse"]
-load_spreads = true
-environment = "demo"
+# load_spreads=false: pinned NT has no books websocket channel for spread
+# instruments, so the venue rejects spread instId subscriptions (error 60018).
+load_spreads = false
+# Data-only readiness uses OKX production (live) public data: the demo
+# paper-trading websocket serves empty/thin books for production instruments,
+# producing `deltas cannot be empty` parse errors. See T043A docs.
+environment = "live"
 transport_backend = "sockudo"
 
 [clients.okx_data.readiness_probe]
@@ -401,3 +415,4 @@ book_type = "l2_mbp"
 quote_target_source = "metadata_response"
 max_metadata_quote_targets = 20
 allow_metadata_target_sampling = true
+min_observed_targets = 10

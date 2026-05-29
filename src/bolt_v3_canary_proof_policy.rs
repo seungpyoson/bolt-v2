@@ -2,6 +2,7 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 const CANARY_PROOF_CANDIDATE_SOURCE_RECORD_KIND: &str = "bolt_v3_canary_proof_candidate_source";
+const CANARY_PROOF_ORDER_INTENT_RECORD_KIND: &str = "bolt_v3_canary_proof_order_intent";
 pub const CANARY_PROOF_CLAIM: &str = "proof_only";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,10 +65,26 @@ pub struct CanaryProofCandidateSourceArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanaryProofSelection {
+    pub strategy_instance_id: String,
+    pub execution_client_id: String,
     pub instrument_id: String,
     pub order_side: CanaryProofOrderSide,
     pub proof_claim: String,
+    pub source_refs: Vec<String>,
     pub sizing: CanaryProofOrderSizing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanaryProofOrderIntentArtifact {
+    pub record_kind: &'static str,
+    pub proof_claim: &'static str,
+    pub strategy_instance_id: String,
+    pub execution_client_id: String,
+    pub instrument_id: String,
+    pub order_side: CanaryProofOrderSide,
+    pub notional: Decimal,
+    pub quantity: Decimal,
+    pub source_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +138,35 @@ pub fn build_canary_proof_candidate_source_artifact(
         current_source_ref: source_packet.current_source_ref.clone(),
         candidate_count: candidates.len() as u32,
         candidates,
+    })
+}
+
+pub fn build_canary_proof_order_intent_artifact(
+    candidate_source: &CanaryProofCandidateSourceArtifact,
+    input: &CanaryProofPolicyInput,
+) -> Result<CanaryProofOrderIntentArtifact, CanaryProofPolicyRejection> {
+    if candidate_source.current_source_ref != input.current_source_ref
+        || candidate_source.candidate_count as usize != candidate_source.candidates.len()
+    {
+        return Err(CanaryProofPolicyRejection::ProofCandidateSourceMismatch);
+    }
+
+    let source_bound_input = CanaryProofPolicyInput {
+        candidates: candidate_source.candidates.clone(),
+        ..input.clone()
+    };
+    let selected = select_canary_proof_candidate(&source_bound_input)?;
+
+    Ok(CanaryProofOrderIntentArtifact {
+        record_kind: CANARY_PROOF_ORDER_INTENT_RECORD_KIND,
+        proof_claim: CANARY_PROOF_CLAIM,
+        strategy_instance_id: selected.strategy_instance_id,
+        execution_client_id: selected.execution_client_id,
+        instrument_id: selected.instrument_id,
+        order_side: selected.order_side,
+        notional: selected.sizing.notional_for_submit_admission(),
+        quantity: selected.sizing.quantity_for_submit(),
+        source_refs: selected.source_refs,
     })
 }
 
@@ -181,9 +227,12 @@ pub fn select_canary_proof_candidate(
         .ok_or(CanaryProofPolicyRejection::ProofPolicyNegativeEvDisallowed)?;
 
     Ok(CanaryProofSelection {
+        strategy_instance_id: selected.strategy_instance_id.clone(),
+        execution_client_id: selected.execution_client_id.clone(),
         instrument_id: selected.instrument_id.clone(),
         order_side: selected.order_side,
         proof_claim: input.proof_claim.clone(),
+        source_refs: selected.source_refs.clone(),
         sizing: normalize_order_sizing(input.proof_notional, selected)?,
     })
 }

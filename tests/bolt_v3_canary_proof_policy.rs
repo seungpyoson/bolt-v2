@@ -3,7 +3,7 @@ use bolt_v2::bolt_v3_canary_proof_policy::{
     CanaryProofCandidate, CanaryProofInstrumentConstraints, CanaryProofOrderSide,
     CanaryProofPolicyInput, CanaryProofPolicyRejection, CanaryProofSizingMode,
     CanaryProofSourcePacket, build_canary_proof_candidate_source_artifact,
-    select_canary_proof_candidate,
+    build_canary_proof_order_intent_artifact, select_canary_proof_candidate,
 };
 use bolt_v2::strategies::CanaryProofCandidateProvider;
 use rust_decimal::Decimal;
@@ -358,6 +358,55 @@ fn candidate_source_artifact_binds_candidates_to_current_source_ref() {
     assert_eq!(artifact.current_source_ref, "source-hash-a");
     assert_eq!(artifact.candidate_count, 1);
     assert_eq!(artifact.candidates[0].instrument_id, "instrument-a");
+}
+
+#[test]
+fn proof_order_intent_artifact_uses_selected_source_bound_candidate() {
+    let source_packet = CanaryProofSourcePacket {
+        current_source_ref: "source-hash-a".to_string(),
+    };
+    let candidate_source = build_canary_proof_candidate_source_artifact(
+        &source_packet,
+        vec![
+            configured_candidate(
+                "instrument-a",
+                CanaryProofOrderSide::Buy,
+                "-12.5",
+                "source-hash-a",
+            ),
+            configured_candidate(
+                "instrument-b",
+                CanaryProofOrderSide::Sell,
+                "-7.5",
+                "source-hash-a",
+            ),
+        ],
+    )
+    .expect("candidate source artifact should build");
+    let input = CanaryProofPolicyInput {
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
+        proof_claim: "proof_only".to_string(),
+        proof_notional: dec("1.00"),
+        max_notional_per_order: dec("5.00"),
+        allow_negative_expected_ev: true,
+        source_ready: true,
+        current_source_ref: "source-hash-a".to_string(),
+        candidates: Vec::new(),
+    };
+
+    let artifact = build_canary_proof_order_intent_artifact(&candidate_source, &input)
+        .expect("proof order-intent artifact should build");
+
+    assert_eq!(artifact.record_kind, "bolt_v3_canary_proof_order_intent");
+    assert_eq!(artifact.proof_claim, "proof_only");
+    assert_eq!(artifact.strategy_instance_id, "configured_strategy");
+    assert_eq!(artifact.execution_client_id, "configured_execution_client");
+    assert_eq!(artifact.instrument_id, "instrument-b");
+    assert_eq!(artifact.order_side, CanaryProofOrderSide::Sell);
+    assert_eq!(artifact.notional, dec("1.00"));
+    assert_eq!(artifact.quantity, dec("2.00"));
+    assert_eq!(artifact.source_refs, vec!["source-hash-a".to_string()]);
 }
 
 struct TestCanaryProofCandidateProvider {

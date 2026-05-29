@@ -9,9 +9,9 @@ T044 remains gated on renewed explicit operator approval because it is a live ti
 
 ## T043B Selected Trade-Path Gate
 
-Status: open.
+Status: complete locally; T044 still requires renewed explicit approval.
 
-The selected tiny-capital path is gated separately from the all-venue T043A matrix. The current T043A matrix records the configured Polymarket data row as production-usable for same-run metadata-selected targets, while six unrelated data-only venue rows remain fail-closed. Those unrelated rows gate the PR's broad multi-venue data-client production-usability claim; they do not by themselves block a Polymarket-only tiny-capital canary.
+The selected tiny-capital path is gated separately from the all-venue T043A matrix. The current T043A matrix records the configured selected-path data row as production-usable for same-run metadata-selected targets. The broader matrix is 7/11 usable with 4 unrelated data-only rows still fail-closed. Those unrelated rows gate the PR's broad multi-venue data-client production-usability claim; they do not by themselves block the currently configured tiny-capital canary path.
 
 T043B must be recorded against the current head before T044 can run:
 
@@ -24,24 +24,26 @@ T043B must be recorded against the current head before T044 can run:
 
 T043B is not live execution. It is the last non-live selected-path proof before requesting renewed T044 approval.
 
-Current-head local T043B verification at `e20e0274a94dac954aa4b36c316170d793963f65`:
+Current-head local T043B verification at `978618f85e12b81ea56dab2f2e11aa6156d022e0`:
 
+- `cargo fmt --check`: passed.
+- `cargo test --locked --lib trade_transport_config_keeps_only_strategy_bound_clients -- --nocapture`: passed.
+- `cargo test --locked --lib no_submit_transport -- --nocapture`: passed.
+- `cargo test --locked --test bolt_v3_no_submit_readiness -- --nocapture`: passed, 34 passed.
 - `cargo test --locked --test bolt_v3_live_canary_gate pre_consumption_gate_rejects_stale_source_owned_strategy_input_before_approval -- --nocapture`: passed, 1 passed, 0 failed.
 - `cargo test --locked --test bolt_v3_tiny_canary_operator phase8_operator_harness -- --nocapture`: passed, 7 passed, 0 failed, 1 ignored. The ignored test is the live operator harness entrypoint and remains excluded from normal local test runs; the passing sibling tests verify its source shape, approval-consumption order, runtime spool binding, submit-admission/live-proof binding, and post-run proof wait contract.
 
-T043B remains open because the selected-path topology fix below must be committed before the final current-head operator packet can be regenerated and verified. Any commit after packet generation changes `HEAD` and intentionally makes the packet stale.
+T043B packet/no-submit refresh:
 
-Current-head packet refresh attempt after the local gate checks:
+- Temp root: `/private/tmp/bolt-v2-t043b-978618f8/live.local.toml`.
+- Source-bound decision window: market `1780015500`, decision timestamp `1780015510`.
+- `operator-artifacts generate-base-static` passed and wrote `ssm-manifest.json` sha256 `501002f491b4aad097cad6524a439ae6968d751e822d278cdb5e0816f7597c22`, `financial-envelope.json` sha256 `076b7ce1374abf89ed553adef9064f7c6c410f485484dcfcf6624d6b776afd33`, and `approval-nonce.json` sha256 `193069be3ed1483dd33215ad9b2e65977cc61a90cde1a5a2dab4ac46f9771849`.
+- Source-owned `pre-run-state.json` sha256 `f25f1b0efcb640fdb3edaebbd66a9e443133d9d1a330bef72b7245160ba63bed`; `abort-plan.json` sha256 `8bca1bddfc927973a3819dfc5bb211795034fdf560b9ce1561a93c28aae69182`.
+- `operator-artifacts verify-final --config /private/tmp/bolt-v2-t043b-978618f8/live.local.toml --operator-packet /private/tmp/bolt-v2-t043b-978618f8/operator-evidence-packet-1780015500-plus10.json --verification-stage pre-run`: passed. Verified approval envelope `8a175d6e9ec26293eb69454d9db7c15efcbd47e54ebaac335d593b0d83cfded8`, operator packet `d3e7bc375054cf4c7197f3b8ba1e902060f109bc3d40370b7908b215f83e593d`, and static manifest `33e2389848f6f5db52f3fca74ff50342c77e44dcd98be9eb226c686d358c10d8`.
+- `no-submit-readiness --config /private/tmp/bolt-v2-t043b-978618f8/live.local.toml`: exited 0 and wrote `var/bolt-v3-live/reports/no-submit-readiness.json` sha256 `b89fbaef4d73d8e4e50a80afcd830ae414d2a9e0eddb62064cfe34a91f7308d7`.
+- No-submit report `bolt-v3.no-submit-readiness.v2` was generated at Unix seconds `1780015972`, config bundle checksum `e745353fe5883eb49900591b4a0d3e7a313e5dc625e9e7f7d707024c80856f36`, and all seven stages were satisfied: `operator_approval`, `secret_resolution`, `live_node_build`, `controlled_connect`, `reference_readiness`, `controlled_disconnect`, and `report_write`.
 
-- Temp root: `/private/tmp/bolt-v2-t043b-e20e0274/live.local.toml`.
-- The ignored live TOML copy was stale for the current readiness-probe schema; the temp copy required explicit `market_data_kind`, `book_type`, and `allow_metadata_target_sampling` fields before it could pass config validation. The real ignored live TOML must be refreshed before any live canary attempt.
-- `operator-artifacts generate-base-static` passed and wrote `ssm-manifest.json` sha256 `501002f491b4aad097cad6524a439ae6968d751e822d278cdb5e0816f7597c22`, `financial-envelope.json` sha256 `076b7ce1374abf89ed553adef9064f7c6c410f485484dcfcf6624d6b776afd33`, and `approval-nonce.json` sha256 `b9aa4bd1b6df6d91266b96916ebe989475310ce90bba5dc13131f010784da773`.
-- `operator-artifacts generate-abort-plan-from-source-collectors` passed with current source files and wrote `/private/tmp/bolt-v2-t043b-e20e0274/abort-plan.json`, sha256 `8bca1bddfc927973a3819dfc5bb211795034fdf560b9ce1561a93c28aae69182`.
-- The refreshed packet assembled: operator-evidence JSON sha256 `dc3f5d8f6f5ca9083724eed3759184c5b0d4f1a91bf587cdc6b8024e9e073923`, temp root TOML sha256 `5728517f39bc232de9a5f28571376c00c521cfb697fee108a4569c1afab0f1f6`, static manifest sha256 `7476748fda6086587319c28f14116e66a4854ac84e82d9155779cf0be6bd8309`, approval envelope sha256 `39735123203cc6b88d17154ae7924315140ca0729f0115095bbebee8fa57bc90`, and operator packet sha256 `a29d6f1716c4bcabe1aeed4e0bc5142a0265a13b124142b97664032fa345a727`.
-- `operator-artifacts verify-final --verification-stage pre-run` failed closed with `strategy_input_replay.market_selection_source.decision_evidence_path is invalid or not bound to decision evidence`.
-- Attempting to regenerate `market-selection-source.json` from the current worktree decision-evidence JSONL failed closed with `missing source-bound market selection from NT instrument facts`.
-
-No no-submit run, live runner, approval consumption, order submit/cancel, transfer, on-chain mutation, or trade was executed in this refresh attempt. T043B now requires a fresh source-bound decision chain for the current root before the packet/no-submit refresh can pass.
+Scope and side effects: this was final-packet pre-run verification plus no-submit readiness only. It connected and disconnected the currently configured selected data/execution clients, reconciled account state, and wrote the readiness report. It did not run the live runner, consume live approval, submit/cancel orders, transfer funds, mutate on-chain state, mutate CLOB allowance/cache state, print secrets, or execute a trade. A docs commit after this evidence changes `HEAD`; before T044, rerun final-packet verification and no-submit once more at the post-docs exact head.
 
 Selected-path topology repair:
 
@@ -51,7 +53,7 @@ Selected-path topology repair:
 - Report evidence: `var/bolt-v3-live/reports/no-submit-readiness.json` schema `bolt-v3.no-submit-readiness.v2`, executable identity `d40c097290e9620a90632532842569eaab645a555db1c41e0bb9a82d5cb71dc9`, config bundle checksum `2ea35975a274f175a5bc17d4c6d7f8811b18b950ef385ba97cb788effed06978`, generated at Unix seconds `1780009626`, with all seven stages satisfied: `operator_approval`, `secret_resolution`, `live_node_build`, `controlled_connect`, `reference_readiness`, `controlled_disconnect`, and `report_write`.
 - Regression evidence: `cargo test --locked --lib trade_transport_config_keeps_only_strategy_bound_clients -- --nocapture` passed; `cargo test --locked --lib no_submit_transport -- --nocapture` passed; `cargo test --locked --test bolt_v3_no_submit_readiness -- --nocapture` passed, 34 passed; `cargo test --locked --test bolt_v3_live_canary_gate pre_consumption_gate_rejects_stale_source_owned_strategy_input_before_approval -- --nocapture` passed.
 
-No live runner, approval consumption, order submit/cancel, transfer, on-chain mutation, or trade was executed in the topology repair. The next T043B step after committing the repair is to regenerate the final operator packet at the new head and rerun no-submit against that exact head.
+No live runner, approval consumption, order submit/cancel, transfer, on-chain mutation, or trade was executed in the topology repair.
 
 ## Latest Non-Live Preflight
 

@@ -1390,3 +1390,31 @@ T042 is complete for PR #480 reviewed code head `8b95eca9c2f410ff462954cff90c473
 - Failed/superseded review attempts are recorded in `specs/024-production-trade-readiness/external-final-review.md` and are not counted as approvals.
 
 Scope and side effects: final review transmitted selected source packets to the configured reviewer routes only. No no-submit, tiny-capital canary, submit, cancel, transfer, on-chain mutation, secret display, GitHub CI rerun, or trade operation was performed while closing T042.
+
+## T043B Selected Trade-Path Readiness
+
+T043B is locally complete for build head `978618f85e12b81ea56dab2f2e11aa6156d022e0` using temp root `/private/tmp/bolt-v2-t043b-978618f8/live.local.toml`.
+
+- Source-bound decision chain:
+  - Market window: `1780015500`; decision timestamp: `1780015510`.
+  - Last Chainlink report: `/private/tmp/bolt-v2-t043b-978618f8/reports/chainlink-price-report-1780015510.json`, sha256 `4bcca226dda6c939321158324424f24a2a23afd04807020f75d337bedaca8ed1`.
+  - Strategy input: `/private/tmp/bolt-v2-t043b-978618f8/strategy-input-1780015500-plus10.json`, sha256 `cbfbffdb560fea83521b2e8480e2303e8f022150548bdda1a72debf93c624ada`.
+  - Entry readiness gate session: `/private/tmp/bolt-v2-t043b-978618f8/entry-readiness-gate-session-1780015500-plus10.json`, sha256 `d106bca26d7bd347d05313102ed1e470ab051cd1aacae5b996acd4541f9b1ad1`.
+- Static/pre-run artifacts:
+  - `ssm-manifest.json`: `501002f491b4aad097cad6524a439ae6968d751e822d278cdb5e0816f7597c22`.
+  - `financial-envelope.json`: `076b7ce1374abf89ed553adef9064f7c6c410f485484dcfcf6624d6b776afd33`.
+  - `approval-nonce.json`: `193069be3ed1483dd33215ad9b2e65977cc61a90cde1a5a2dab4ac46f9771849`.
+  - `pre-run-state-1780015500-plus10.json`: `f25f1b0efcb640fdb3edaebbd66a9e443133d9d1a330bef72b7245160ba63bed`.
+  - `abort-plan-1780015500-plus10.json`: `8bca1bddfc927973a3819dfc5bb211795034fdf560b9ce1561a93c28aae69182`.
+- Final-packet verification:
+  - `operator-artifacts generate-operator-evidence-json` wrote `/private/tmp/bolt-v2-t043b-978618f8/operator-evidence-1780015500-plus10.json`, sha256 `69838a049e3ad8de272ec3fcafea5f43a31e330204992b4f5256e0f9d9827398`.
+  - `operator-artifacts update-operator-evidence-toml` patched only the temp root and produced root TOML sha256 `aee5efa9f2fa27752e3f22b5a6c14ce194865dedc75869126a0528ceb849227b`.
+  - `operator-artifacts write-manifest-from-operator-evidence` wrote static manifest sha256 `33e2389848f6f5db52f3fca74ff50342c77e44dcd98be9eb226c686d358c10d8`.
+  - `operator-artifacts assemble-final` wrote approval envelope sha256 `8a175d6e9ec26293eb69454d9db7c15efcbd47e54ebaac335d593b0d83cfded8` and operator packet sha256 `d3e7bc375054cf4c7197f3b8ba1e902060f109bc3d40370b7908b215f83e593d`.
+  - `operator-artifacts verify-final --config /private/tmp/bolt-v2-t043b-978618f8/live.local.toml --operator-packet /private/tmp/bolt-v2-t043b-978618f8/operator-evidence-packet-1780015500-plus10.json --verification-stage pre-run`: passed.
+- No-submit readiness:
+  - `/Users/spson/.cache/rust-verification/bolt-v2/target/debug/bolt-v2 no-submit-readiness --config /private/tmp/bolt-v2-t043b-978618f8/live.local.toml`: exited 0.
+  - Report path: `var/bolt-v3-live/reports/no-submit-readiness.json`, sha256 `b89fbaef4d73d8e4e50a80afcd830ae414d2a9e0eddb62064cfe34a91f7308d7`.
+  - Report schema `bolt-v3.no-submit-readiness.v2`, generated at Unix seconds `1780015972`, config bundle checksum `e745353fe5883eb49900591b4a0d3e7a313e5dc625e9e7f7d707024c80856f36`, with all seven stages satisfied: `operator_approval`, `secret_resolution`, `live_node_build`, `controlled_connect`, `reference_readiness`, `controlled_disconnect`, and `report_write`.
+
+Scope and side effects: this was final-packet pre-run verification plus no-submit readiness. It connected and disconnected the configured selected data/execution clients, reconciled account state, and wrote the readiness report. It did not run the live runner, consume live approval, submit/cancel orders, transfer funds, mutate on-chain state, mutate CLOB allowance/cache state, print secrets, or execute a trade. Because committing this evidence changes `HEAD`, rerun final-packet verification and no-submit once more at the post-docs exact head before T044 approval consumption.

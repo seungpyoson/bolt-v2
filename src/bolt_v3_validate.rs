@@ -169,13 +169,13 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
-    if let Some(live_canary) = root.live_canary.as_ref() {
-        if let Some(proof_policy) = live_canary.proof_policy.as_ref() {
-            errors.extend(validate_live_canary_proof_policy(
-                proof_policy,
-                &live_canary.max_notional_per_order,
-            ));
-        }
+    if let Some(live_canary) = root.live_canary.as_ref()
+        && let Some(proof_policy) = live_canary.proof_policy.as_ref()
+    {
+        errors.extend(validate_live_canary_proof_policy(
+            proof_policy,
+            &live_canary.max_notional_per_order,
+        ));
     }
 
     errors

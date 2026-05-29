@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
-    time::{SystemTime, SystemTimeError, UNIX_EPOCH},
+    time::{Duration, SystemTime, SystemTimeError, UNIX_EPOCH},
 };
 
 use anyhow::anyhow;
@@ -8905,6 +8905,83 @@ pub(crate) fn selected_entry_decision_market(
             prerequisite: "entry decision source requires a selectable two-sided configured market",
         },
     )
+}
+
+pub fn selected_entry_decision_market_attempts(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    instruments: &[InstrumentAny],
+    now_milliseconds: u64,
+    max_attempts: u32,
+) -> Result<Vec<bolt_v3_market_families::SelectedBinaryOptionMarket>, BoltV3OperatorArtifactError> {
+    if max_attempts == 0 {
+        return Err(BoltV3OperatorArtifactError::MarketSelection(anyhow!(
+            "entry decision source rotation attempts must be positive"
+        )));
+    }
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .ok_or_else(
+            || BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+                message: format!("strategy instance `{strategy_instance_id}` is not loaded"),
+            },
+        )?;
+    let target =
+        bolt_v3_market_families::target_runtime_fields_from_target(&strategy.config.target)
+            .map_err(|error| BoltV3OperatorArtifactError::MarketSelection(anyhow!(error)))?;
+    let cadence_seconds = u64::try_from(target.cadence_seconds).map_err(|source| {
+        BoltV3OperatorArtifactError::MarketSelection(anyhow!(
+            "entry decision source cadence_seconds is invalid: {source}"
+        ))
+    })?;
+    let cadence_milliseconds = u64::try_from(Duration::from_secs(cadence_seconds).as_millis())
+        .map_err(|source| {
+            BoltV3OperatorArtifactError::MarketSelection(anyhow!(
+                "entry decision source cadence_milliseconds is invalid: {source}"
+            ))
+        })?;
+    let selection_target = MarketSelectionTarget {
+        family_key: &target.rotating_market_family,
+        underlying_asset: &target.underlying_asset,
+        cadence_seconds: target.cadence_seconds,
+        cadence_slug_token: &target.cadence_slug_token,
+    };
+    let mut attempts = Vec::new();
+    let mut seen_market_slugs = BTreeSet::new();
+    for attempt_index in 0..max_attempts {
+        let offset_milliseconds = cadence_milliseconds
+            .checked_mul(u64::from(attempt_index))
+            .ok_or_else(|| {
+                BoltV3OperatorArtifactError::MarketSelection(anyhow!(
+                    "entry decision source rotation attempt offset overflows"
+                ))
+            })?;
+        let attempt_now_milliseconds = now_milliseconds
+            .checked_add(offset_milliseconds)
+            .ok_or_else(|| {
+                BoltV3OperatorArtifactError::MarketSelection(anyhow!(
+                    "entry decision source rotation attempt timestamp overflows"
+                ))
+            })?;
+        if let Some(selected) = bolt_v3_market_families::select_binary_option_market_from_target(
+            selection_target,
+            instruments,
+            attempt_now_milliseconds,
+        ) && seen_market_slugs.insert(selected.source_identity.market_slug.clone())
+        {
+            attempts.push(selected);
+        }
+    }
+    if attempts.is_empty() {
+        return Err(
+            BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
+                prerequisite: "entry decision source requires a selectable two-sided configured market",
+            },
+        );
+    }
+    Ok(attempts)
 }
 
 fn require_entry_decision_fee_source(

@@ -26,8 +26,8 @@ use crate::{
         BoltV3OperatorArtifactError, CanaryProofArtifactsWritten, EntryDecisionSourceBookSideInput,
         EntryDecisionSourceInputRequest, EntryDecisionSourceInputsWritten,
         EntryDecisionSourceMarketInputs, EntryDecisionSourceProofFileRequest,
-        build_entry_readiness_gate_session_from_source_proof_files, selected_entry_decision_market,
-        validate_entry_decision_source_proof_files,
+        build_entry_readiness_gate_session_from_source_proof_files,
+        selected_entry_decision_market_attempts, validate_entry_decision_source_proof_files,
         write_entry_decision_source_inputs_from_source_files, write_json_artifact_create_new,
     },
     bolt_v3_providers::{CanaryProofArtifactsProviderContext, EntryDecisionSourceProviderContext},
@@ -103,19 +103,22 @@ async fn collect_entry_decision_source_inputs_inner(
     )?;
     let source_config =
         polymarket_source_config_for_strategy(context.loaded, context.strategy_instance_id)?;
+    let rotation_max_attempts = entry_decision_source_rotation_max_attempts(context.loaded);
     let mut instruments = load_polymarket_instruments_for_entry_decision_source(
         context.loaded,
         context.strategy_instance_id,
         &source_config,
         proof_validation.market_selection_timestamp_ms,
+        rotation_max_attempts,
     )
     .await?;
     instruments.sort_by_key(|instrument| instrument.id().to_string());
-    let selected = selected_entry_decision_market(
+    let selected_attempts = selected_entry_decision_market_attempts(
         context.loaded,
         context.strategy_instance_id,
         &instruments,
         proof_validation.market_selection_timestamp_ms,
+        rotation_max_attempts,
     )?;
     let clob_client = PolymarketClobPublicClient::new(
         Some(source_config.data.base_url_http.clone()),
@@ -126,45 +129,17 @@ async fn collect_entry_decision_source_inputs_inner(
             message: format!("failed to create CLOB public client: {source}"),
         },
     )?;
-    let up_instrument = instrument_for_id(&instruments, &selected.up_instrument_id.to_string())?;
-    let down_instrument =
-        instrument_for_id(&instruments, &selected.down_instrument_id.to_string())?;
-    let up_token_id = up_instrument.raw_symbol().to_string();
-    let down_token_id = down_instrument.raw_symbol().to_string();
-    let up_book = clob_client
-        .request_book_snapshot(
-            selected.up_instrument_id,
-            up_token_id.as_str(),
-            up_instrument.price_precision(),
-            up_instrument.size_precision(),
-        )
-        .await
-        .map_err(
-            |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
-                message: format!("failed to fetch up book snapshot: {source}"),
-            },
-        )?;
-    let down_book = clob_client
-        .request_book_snapshot(
-            selected.down_instrument_id,
-            down_token_id.as_str(),
-            down_instrument.price_precision(),
-            down_instrument.size_precision(),
-        )
-        .await
-        .map_err(
-            |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
-                message: format!("failed to fetch down book snapshot: {source}"),
-            },
-        )?;
-    let up_book_input = book_side_input_from_order_book(&up_book, ENTRY_DECISION_UP_BOOK_LABEL)?;
-    let down_book_input =
-        book_side_input_from_order_book(&down_book, ENTRY_DECISION_DOWN_BOOK_LABEL)?;
+    let selected_books = select_entry_decision_market_with_two_sided_books(
+        &selected_attempts,
+        &instruments,
+        &clob_client,
+    )
+    .await?;
     let fee_bps_by_instrument_id = entry_decision_fee_bps_by_instrument_id(
-        up_instrument,
-        down_instrument,
-        up_book_input.best_ask,
-        down_book_input.best_ask,
+        selected_books.up_instrument,
+        selected_books.down_instrument,
+        selected_books.up_book_input.best_ask,
+        selected_books.down_book_input.best_ask,
     )?;
 
     write_entry_decision_source_inputs_from_source_files(
@@ -181,8 +156,8 @@ async fn collect_entry_decision_source_inputs_inner(
                 .max_realized_volatility_source_bytes,
             market_inputs: EntryDecisionSourceMarketInputs {
                 instruments: &instruments,
-                up_book: up_book_input,
-                down_book: down_book_input,
+                up_book: selected_books.up_book_input,
+                down_book: selected_books.down_book_input,
                 fee_bps_by_instrument_id,
             },
             decision_source_output_path: context.request.decision_source_output_path,
@@ -218,29 +193,23 @@ async fn collect_canary_proof_artifacts_inner(
     )?;
     let source_config =
         polymarket_source_config_for_strategy(context.loaded, context.strategy_instance_id)?;
+    let rotation_max_attempts = entry_decision_source_rotation_max_attempts(context.loaded);
     let mut instruments = load_polymarket_instruments_for_entry_decision_source(
         context.loaded,
         context.strategy_instance_id,
         &source_config,
         proof_validation.market_selection_timestamp_ms,
+        rotation_max_attempts,
     )
     .await?;
     instruments.sort_by_key(|instrument| instrument.id().to_string());
-    let selected = selected_entry_decision_market(
+    let selected_attempts = selected_entry_decision_market_attempts(
         context.loaded,
         context.strategy_instance_id,
         &instruments,
         proof_validation.market_selection_timestamp_ms,
+        rotation_max_attempts,
     )?;
-    let gate_session = build_entry_readiness_gate_session_from_source_proof_files(
-        context.loaded,
-        context.strategy_instance_id,
-        &selected,
-        proof_request,
-    )?;
-    let gate_session_written =
-        write_json_artifact_create_new(context.request.gate_session_output_path, &gate_session)?;
-
     let clob_client = PolymarketClobPublicClient::new(
         Some(source_config.data.base_url_http.clone()),
         source_config.data.http_timeout_secs,
@@ -250,37 +219,20 @@ async fn collect_canary_proof_artifacts_inner(
             message: format!("failed to create CLOB public client: {source}"),
         },
     )?;
-    let up_instrument = instrument_for_id(&instruments, &selected.up_instrument_id.to_string())?;
-    let down_instrument =
-        instrument_for_id(&instruments, &selected.down_instrument_id.to_string())?;
-    let up_token_id = up_instrument.raw_symbol().to_string();
-    let down_token_id = down_instrument.raw_symbol().to_string();
-    let up_book = clob_client
-        .request_book_snapshot(
-            selected.up_instrument_id,
-            up_token_id.as_str(),
-            up_instrument.price_precision(),
-            up_instrument.size_precision(),
-        )
-        .await
-        .map_err(
-            |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
-                message: format!("failed to fetch up book snapshot: {source}"),
-            },
-        )?;
-    let down_book = clob_client
-        .request_book_snapshot(
-            selected.down_instrument_id,
-            down_token_id.as_str(),
-            down_instrument.price_precision(),
-            down_instrument.size_precision(),
-        )
-        .await
-        .map_err(
-            |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
-                message: format!("failed to fetch down book snapshot: {source}"),
-            },
-        )?;
+    let selected_books = select_entry_decision_market_with_two_sided_books(
+        &selected_attempts,
+        &instruments,
+        &clob_client,
+    )
+    .await?;
+    let gate_session = build_entry_readiness_gate_session_from_source_proof_files(
+        context.loaded,
+        context.strategy_instance_id,
+        &selected_books.selected,
+        proof_request,
+    )?;
+    let gate_session_written =
+        write_json_artifact_create_new(context.request.gate_session_output_path, &gate_session)?;
     let proof_policy = live_canary_proof_policy_input(
         context.loaded,
         context.strategy_instance_id,
@@ -288,13 +240,13 @@ async fn collect_canary_proof_artifacts_inner(
     )?;
     let mut candidates = Vec::new();
     candidates.extend(canary_proof_candidate_from_best_ask(
-        up_instrument,
-        &up_book,
+        selected_books.up_instrument,
+        &selected_books.up_book,
         &proof_policy,
     )?);
     candidates.extend(canary_proof_candidate_from_best_ask(
-        down_instrument,
-        &down_book,
+        selected_books.down_instrument,
+        &selected_books.down_book,
         &proof_policy,
     )?);
     if candidates.is_empty() {
@@ -387,6 +339,7 @@ async fn load_polymarket_instruments_for_entry_decision_source(
     strategy_instance_id: &str,
     source_config: &PolymarketSourceConfig,
     now_milliseconds: u64,
+    max_attempts: u32,
 ) -> Result<Vec<InstrumentAny>, BoltV3OperatorArtifactError> {
     let strategy = loaded
         .strategies
@@ -408,16 +361,12 @@ async fn load_polymarket_instruments_for_entry_decision_source(
         cadence_seconds: target.cadence_seconds,
         cadence_slug_token: &target.cadence_slug_token,
     };
-    let candidate_windows =
-        bolt_v3_market_families::market_selection_candidate_windows_from_target(
-            selection_target,
-            now_milliseconds,
-        )
-        .map_err(|error| BoltV3OperatorArtifactError::MarketSelection(anyhow::anyhow!(error)))?;
-    let slugs: Vec<String> = candidate_windows
-        .into_iter()
-        .map(|candidate| candidate.market_slug)
-        .collect();
+    let slugs = entry_decision_market_slugs_for_rotation_attempts(
+        selection_target,
+        now_milliseconds,
+        target.cadence_seconds,
+        max_attempts,
+    )?;
     if slugs.is_empty() {
         return Err(
             BoltV3OperatorArtifactError::MarketSelectionPrerequisiteUnproven {
@@ -444,6 +393,151 @@ async fn load_polymarket_instruments_for_entry_decision_source(
     let mut instruments: Vec<InstrumentAny> = provider.build_token_map().into_values().collect();
     instruments.sort_by_key(|instrument| instrument.id().to_string());
     Ok(instruments)
+}
+
+fn entry_decision_source_rotation_max_attempts(
+    loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
+) -> u32 {
+    loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.proof_policy.as_ref())
+        .filter(|proof_policy| proof_policy.enabled && proof_policy.rotation_observation_enabled)
+        .map(|proof_policy| proof_policy.rotation_max_attempts)
+        .unwrap_or(1)
+}
+
+fn entry_decision_market_slugs_for_rotation_attempts(
+    selection_target: MarketSelectionTarget<'_>,
+    now_milliseconds: u64,
+    cadence_seconds: i64,
+    max_attempts: u32,
+) -> Result<Vec<String>, BoltV3OperatorArtifactError> {
+    let cadence_seconds = u64::try_from(cadence_seconds).map_err(|source| {
+        BoltV3OperatorArtifactError::MarketSelection(anyhow::anyhow!(
+            "entry decision source cadence_seconds is invalid: {source}"
+        ))
+    })?;
+    let cadence_milliseconds = u64::try_from(
+        std::time::Duration::from_secs(cadence_seconds).as_millis(),
+    )
+    .map_err(|source| {
+        BoltV3OperatorArtifactError::MarketSelection(anyhow::anyhow!(
+            "entry decision source cadence_milliseconds is invalid: {source}"
+        ))
+    })?;
+    let mut slugs = Vec::new();
+    let mut seen_slugs = std::collections::BTreeSet::new();
+    for attempt_index in 0..max_attempts {
+        let offset_milliseconds = cadence_milliseconds
+            .checked_mul(u64::from(attempt_index))
+            .ok_or_else(|| {
+                BoltV3OperatorArtifactError::MarketSelection(anyhow::anyhow!(
+                    "entry decision source rotation attempt offset overflows"
+                ))
+            })?;
+        let attempt_now_milliseconds = now_milliseconds
+            .checked_add(offset_milliseconds)
+            .ok_or_else(|| {
+                BoltV3OperatorArtifactError::MarketSelection(anyhow::anyhow!(
+                    "entry decision source rotation attempt timestamp overflows"
+                ))
+            })?;
+        let candidate_windows =
+            bolt_v3_market_families::market_selection_candidate_windows_from_target(
+                selection_target,
+                attempt_now_milliseconds,
+            )
+            .map_err(|error| {
+                BoltV3OperatorArtifactError::MarketSelection(anyhow::anyhow!(error))
+            })?;
+        for candidate in candidate_windows {
+            if seen_slugs.insert(candidate.market_slug.clone()) {
+                slugs.push(candidate.market_slug);
+            }
+        }
+    }
+    Ok(slugs)
+}
+
+struct EntryDecisionSelectedMarketBooks<'a> {
+    selected: bolt_v3_market_families::SelectedBinaryOptionMarket,
+    up_instrument: &'a InstrumentAny,
+    down_instrument: &'a InstrumentAny,
+    up_book: OrderBook,
+    down_book: OrderBook,
+    up_book_input: EntryDecisionSourceBookSideInput,
+    down_book_input: EntryDecisionSourceBookSideInput,
+}
+
+async fn select_entry_decision_market_with_two_sided_books<'a>(
+    selected_attempts: &[bolt_v3_market_families::SelectedBinaryOptionMarket],
+    instruments: &'a [InstrumentAny],
+    clob_client: &PolymarketClobPublicClient,
+) -> Result<EntryDecisionSelectedMarketBooks<'a>, BoltV3OperatorArtifactError> {
+    let mut rejected_attempts = Vec::new();
+    for selected in selected_attempts {
+        match fetch_entry_decision_market_books(selected, instruments, clob_client).await {
+            Ok(selected_books) => return Ok(selected_books),
+            Err(error) => {
+                rejected_attempts.push(format!("{}: {error}", selected.source_identity.market_slug))
+            }
+        }
+    }
+    Err(entry_decision_source_invalid(format!(
+        "entry decision source found no configured market with two-sided CLOB books after rotation attempts: {}",
+        rejected_attempts.join("; ")
+    )))
+}
+
+async fn fetch_entry_decision_market_books<'a>(
+    selected: &bolt_v3_market_families::SelectedBinaryOptionMarket,
+    instruments: &'a [InstrumentAny],
+    clob_client: &PolymarketClobPublicClient,
+) -> Result<EntryDecisionSelectedMarketBooks<'a>, BoltV3OperatorArtifactError> {
+    let up_instrument = instrument_for_id(instruments, &selected.up_instrument_id.to_string())?;
+    let down_instrument = instrument_for_id(instruments, &selected.down_instrument_id.to_string())?;
+    let up_token_id = up_instrument.raw_symbol().to_string();
+    let down_token_id = down_instrument.raw_symbol().to_string();
+    let up_book = clob_client
+        .request_book_snapshot(
+            selected.up_instrument_id,
+            up_token_id.as_str(),
+            up_instrument.price_precision(),
+            up_instrument.size_precision(),
+        )
+        .await
+        .map_err(
+            |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+                message: format!("failed to fetch up book snapshot: {source}"),
+            },
+        )?;
+    let down_book = clob_client
+        .request_book_snapshot(
+            selected.down_instrument_id,
+            down_token_id.as_str(),
+            down_instrument.price_precision(),
+            down_instrument.size_precision(),
+        )
+        .await
+        .map_err(
+            |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+                message: format!("failed to fetch down book snapshot: {source}"),
+            },
+        )?;
+    let up_book_input = book_side_input_from_order_book(&up_book, ENTRY_DECISION_UP_BOOK_LABEL)?;
+    let down_book_input =
+        book_side_input_from_order_book(&down_book, ENTRY_DECISION_DOWN_BOOK_LABEL)?;
+    Ok(EntryDecisionSelectedMarketBooks {
+        selected: selected.clone(),
+        up_instrument,
+        down_instrument,
+        up_book,
+        down_book,
+        up_book_input,
+        down_book_input,
+    })
 }
 
 fn retry_config_from_execution_config(

@@ -42,6 +42,7 @@ use bolt_v2::{
         build_entry_readiness_gate_session, build_redacted_ssm_manifest,
         collect_entry_decision_source_inputs_from_configured_provider,
         collect_entry_readiness_gate_evidence_from_source_file, normalize_gate_evidence,
+        selected_entry_decision_market_attempts,
         write_chainlink_reference_quote_observations_source_from_report_files,
         write_data_client_behavior_observation_artifact_from_source_file,
         write_data_client_behavior_observation_source_from_probe_events,
@@ -10403,6 +10404,87 @@ fn entry_decision_source_input_collector_rejects_unselectable_or_incomplete_inst
     assert!(!paths.decision_source_output.exists());
     assert!(!paths.instrument_source_output.exists());
     assert!(!paths.fee_rate_source_output.exists());
+}
+
+#[test]
+fn entry_decision_source_market_attempts_follow_configured_rotation_limit() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let current_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let next_start_seconds = TEST_MARKET_SELECTION_CURRENT_START_SECONDS + 300;
+    let next_start_ms = TEST_MARKET_SELECTION_END_MS;
+    let next_end_ms =
+        next_start_ms + (TEST_MARKET_SELECTION_END_MS - TEST_MARKET_SELECTION_START_MS);
+    let next_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        next_start_seconds,
+    );
+    let instruments = vec![
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            &current_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            &current_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            "condition-next-up.POLYMARKET",
+            &next_slug,
+            "market-next",
+            "condition-next",
+            "question-next",
+            TEST_UP_OUTCOME,
+            next_start_ms,
+            next_end_ms,
+        ),
+        updown_binary_option(
+            "condition-next-down.POLYMARKET",
+            &next_slug,
+            "market-next",
+            "condition-next",
+            "question-next",
+            TEST_DOWN_OUTCOME,
+            next_start_ms,
+            next_end_ms,
+        ),
+    ];
+
+    let attempts = selected_entry_decision_market_attempts(
+        &loaded,
+        &strategy_instance_id,
+        &instruments,
+        TEST_MARKET_SELECTION_NOW_MS,
+        2,
+    )
+    .expect("two configured source-proof attempts should resolve");
+
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0].source_identity.market_slug, current_slug);
+    assert_eq!(attempts[1].source_identity.market_slug, next_slug);
 }
 
 #[test]

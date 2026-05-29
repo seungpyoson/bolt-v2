@@ -1429,6 +1429,29 @@ fn canary_proof_executor_waits_for_submit_time_book_before_submit_attempt() {
 }
 
 #[test]
+fn polymarket_source_proof_collectors_use_configured_market_rotation_attempts() {
+    let source =
+        support::repo_text("src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs");
+
+    assert!(
+        source.contains("entry_decision_source_rotation_max_attempts"),
+        "source-proof collectors must derive attempt count from live_canary.proof_policy rotation config"
+    );
+    assert!(
+        source.contains("selected_entry_decision_market_attempts"),
+        "source-proof collectors must build configured market attempts instead of selecting one market"
+    );
+    assert!(
+        source.contains("select_entry_decision_market_with_two_sided_books"),
+        "source-proof collectors must skip no-book or one-sided markets before writing source artifacts"
+    );
+    assert!(
+        !source.contains("let selected = selected_entry_decision_market("),
+        "source-proof collectors must not fail closed on the first selected market before trying configured attempts"
+    );
+}
+
+#[test]
 fn binary_oracle_registration_resolves_fee_provider_through_provider_boundary() {
     let source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
     assert!(

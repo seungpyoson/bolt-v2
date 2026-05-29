@@ -14255,3 +14255,75 @@ literal = '''"post_run_hygiene"'''
 context = '''"post_run_hygiene": written_operator_artifact_json(&written.post_run_hygiene),'''
 classification = '''live_canary_post_run_cli_output_schema_field'''
 reason = '''This is a CLI JSON output field name for a written proof artifact, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''for attempt_index in 0..max_attempts {'''
+classification = '''source_proof_rotation_attempt_index_math'''
+reason = '''This is zero-based iteration over TOML-owned rotation_max_attempts for source-proof market attempts, not a venue, market, timeout, cadence, or trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"entry decision source rotation attempt offset overflows"'''
+context = '''"entry decision source rotation attempt offset overflows"'''
+classification = '''source_proof_rotation_diagnostic_template'''
+reason = '''This fail-closed diagnostic reports checked arithmetic overflow while applying TOML-owned rotation/cadence values; it does not configure runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"entry decision source rotation attempt timestamp overflows"'''
+context = '''"entry decision source rotation attempt timestamp overflows"'''
+classification = '''source_proof_rotation_diagnostic_template'''
+reason = '''This fail-closed diagnostic reports checked arithmetic overflow while applying TOML-owned rotation/cadence values; it does not configure runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''.unwrap_or(1)'''
+classification = '''source_proof_rotation_legacy_default_attempt_count'''
+reason = '''This preserves the pre-existing single-attempt source-proof behavior when no live_canary.proof_policy rotation config is present; configured live canary attempts remain TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''for attempt_index in 0..max_attempts {'''
+classification = '''source_proof_rotation_attempt_index_math'''
+reason = '''This is zero-based iteration over TOML-owned rotation_max_attempts for source-proof market slugs, not a venue, market, timeout, cadence, or trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+kind = '''string'''
+literal = '''"entry decision source rotation attempt offset overflows"'''
+context = '''"entry decision source rotation attempt offset overflows"'''
+classification = '''source_proof_rotation_diagnostic_template'''
+reason = '''This fail-closed diagnostic reports checked arithmetic overflow while applying TOML-owned rotation/cadence values; it does not configure runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+kind = '''string'''
+literal = '''"entry decision source rotation attempt timestamp overflows"'''
+context = '''"entry decision source rotation attempt timestamp overflows"'''
+classification = '''source_proof_rotation_diagnostic_template'''
+reason = '''This fail-closed diagnostic reports checked arithmetic overflow while applying TOML-owned rotation/cadence values; it does not configure runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+kind = '''string'''
+literal = '''"entry decision source found no configured market with two-sided CLOB books after rotation attempts: {}"'''
+context = '''"entry decision source found no configured market with two-sided CLOB books after rotation attempts: {}",'''
+classification = '''source_proof_rotation_diagnostic_template'''
+reason = '''This fail-closed diagnostic summarizes source-owned book rejection reasons after TOML-owned rotation attempts are exhausted; it does not configure runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+kind = '''string'''
+literal = '''"; "'''
+context = '''rejected_attempts.join("; ")'''
+classification = '''diagnostic_separator'''
+reason = '''This separator joins source-proof rotation rejection diagnostics for operator triage only; the attempted markets and limits remain TOML/source-owned.'''

@@ -3777,10 +3777,9 @@ mod tests {
     #[test]
     fn live_runner_zero_admission_writer_outputs_blocked_canary_evidence() {
         let temp = tempfile::tempdir().expect("tempdir should create");
-        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
-            "config/root.example.toml",
-        ))
-        .expect("root config should load");
+        let mut loaded =
+            crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
+                .expect("root config should load");
         loaded.root.persistence.catalog_directory =
             temp.path().join("catalog").to_string_lossy().to_string();
         let canary_evidence_path = {

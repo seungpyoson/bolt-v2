@@ -11,8 +11,7 @@ zig_version := "0.15.2"
 
 target := "aarch64-unknown-linux-gnu"
 worktree_root := env_var('HOME') + "/worktrees/bolt-v2"
-live_root := "config/root.toml"
-live_root_example := "config/root.example.toml"
+live_root := "config/live.local.toml"
 repo_root := justfile_directory()
 rust_verification_owner := repo_root + "/scripts/rust_verification.py"
 
@@ -164,7 +163,7 @@ require-live-root: check-workspace
     #!/usr/bin/env bash
     if [ ! -f "{{live_root}}" ]; then
         echo "Missing {{live_root}}"
-        echo "Create it from {{live_root_example}}, then rerun."
+        echo "Refresh the ignored operator root before running live commands."
         exit 1
     fi
 

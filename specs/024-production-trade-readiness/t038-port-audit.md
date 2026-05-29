@@ -16,14 +16,14 @@ No source or docs were edited during the investigation. No live, no-submit, AWS,
   - unique old commits: `bced44fe`, `48201c32`, `36a50aa1`, `b7c4d419`, `f6e3dcc8`, `33f6c738`, `2849fb73`, `53c43608`
 - `git cherry -v origin/main origin/t038-operator-config-snapshot`
   - all eight commits were patch-unique, so behavior-level comparison was required.
-- `git diff --quiet origin/main...HEAD -- src/bolt_v3_live_node.rs src/bolt_v3_no_submit_readiness.rs tests/bolt_v3_no_submit_readiness.rs tests/bolt_v3_controlled_connect.rs src/bolt_v3_providers/binance.rs Cargo.toml config/root.example.toml`
+- `git diff --quiet origin/main...HEAD -- src/bolt_v3_live_node.rs src/bolt_v3_no_submit_readiness.rs tests/bolt_v3_no_submit_readiness.rs tests/bolt_v3_controlled_connect.rs src/bolt_v3_providers/binance.rs Cargo.toml config/root.toml`
   - exit `0`, meaning PR #480 does not alter the relevant current no-submit/SBE code from `main`.
 - Targeted inspection covered:
   - `src/bolt_v3_live_node.rs`
   - `src/bolt_v3_no_submit_readiness.rs`
   - `tests/bolt_v3_no_submit_readiness.rs`
   - `tests/config_parsing.rs`
-  - `config/root.example.toml`
+  - `config/root.toml`
   - `specs/001-thin-live-canary-path/tasks.md`
 
 ## Commit-Level Disposition

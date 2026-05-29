@@ -207,12 +207,12 @@ fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
 fn bolt_v3_operator_evidence_allows_unassigned_order_ids() {
     use bolt_v2::bolt_v3_config::BoltV3RootConfig;
 
-    let example = std::fs::read_to_string(support::repo_path("config/root.example.toml"))
-        .expect("root example should be readable");
-    assert!(!example.contains("client_order_id_hash"));
-    assert!(!example.contains("venue_order_id_hash"));
+    let source = std::fs::read_to_string(support::repo_path("config/root.toml"))
+        .expect("root config should be readable");
+    assert!(!source.contains("client_order_id_hash"));
+    assert!(!source.contains("venue_order_id_hash"));
 
-    let parsed = toml::from_str::<BoltV3RootConfig>(&example)
+    let parsed = toml::from_str::<BoltV3RootConfig>(&source)
         .expect("operator evidence should not require order IDs before submit");
 
     assert!(
@@ -225,11 +225,8 @@ fn bolt_v3_operator_evidence_allows_unassigned_order_ids() {
 }
 
 #[test]
-fn shipped_chainlink_gate_provider_examples_keep_only_configured_feed_bindings() {
-    for relative_path in [
-        "config/root.example.toml",
-        "tests/fixtures/bolt_v3/root.toml",
-    ] {
+fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() {
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
         let source = std::fs::read_to_string(support::repo_path(relative_path))
             .expect("root config should be readable");
         assert!(
@@ -268,9 +265,9 @@ fn shipped_chainlink_gate_provider_examples_keep_only_configured_feed_bindings()
 fn bolt_v3_operator_evidence_rejects_pre_run_egress_probe_inputs() {
     use bolt_v2::bolt_v3_config::BoltV3RootConfig;
 
-    let example = std::fs::read_to_string(support::repo_path("config/root.example.toml"))
-        .expect("root example should be readable");
-    let with_operator_evidence_probe_inputs = example.replace(
+    let source = std::fs::read_to_string(support::repo_path("config/root.toml"))
+        .expect("root config should be readable");
+    let with_operator_evidence_probe_inputs = source.replace(
         "[live_canary.operator_evidence]\n",
         concat!(
             "[live_canary.operator_evidence]\n",
@@ -3659,19 +3656,28 @@ fn canonical_binary_oracle_config_uses_gate_subscription_without_provider_specif
 
 #[test]
 fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
+    let canonical_root = support::repo_path("config/root.toml");
+    let legacy_root = support::repo_path("config/root.example.toml");
     let canonical_strategy = support::repo_path("config/strategies/binary_oracle.toml");
-    let example_strategy = support::repo_path("config/strategies/binary_oracle.example.toml");
+    let legacy_strategy = support::repo_path("config/strategies/binary_oracle.example.toml");
+    assert!(
+        canonical_root.exists(),
+        "tracked root config should live at config/root.toml"
+    );
+    assert!(
+        !legacy_root.exists(),
+        "tracked root config should not keep an .example.toml twin"
+    );
     assert!(
         canonical_strategy.exists(),
         "tracked strategy config should live at config/strategies/binary_oracle.toml"
     );
     assert!(
-        !example_strategy.exists(),
+        !legacy_strategy.exists(),
         "tracked strategy config should not keep an .example.toml twin"
     );
 
-    let root = std::fs::read_to_string(support::repo_path("config/root.example.toml"))
-        .expect("root config should be readable");
+    let root = std::fs::read_to_string(&canonical_root).expect("root config should be readable");
     assert!(
         root.contains("\"strategies/binary_oracle.toml\""),
         "root config should load the canonical strategy path"
@@ -3679,6 +3685,17 @@ fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
     assert!(
         !root.contains("binary_oracle.example.toml"),
         "root config should not reference the legacy .example strategy path"
+    );
+
+    let justfile = std::fs::read_to_string(support::repo_path("justfile"))
+        .expect("justfile should be readable");
+    assert!(
+        justfile.contains("live_root := \"config/live.local.toml\""),
+        "live recipes should use the ignored operator root"
+    );
+    assert!(
+        !justfile.contains("live_root_example"),
+        "live recipes should not keep a second example-root path"
     );
 }
 
@@ -3697,10 +3714,7 @@ fn shipped_binary_oracle_configs_do_not_canonicalize_one_reference_market_or_ven
         );
     }
 
-    for relative_path in [
-        "config/root.example.toml",
-        "tests/fixtures/bolt_v3/root.toml",
-    ] {
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
         let source =
             std::fs::read_to_string(support::repo_path(relative_path)).expect("source should read");
         for forbidden in [
@@ -5630,11 +5644,11 @@ instrument_id = "CONFIGURED-PROBE.POLYMARKET"
 }
 
 #[test]
-fn root_example_declares_requested_nt_data_clients_for_registration() {
+fn root_config_declares_requested_nt_data_clients_for_registration() {
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 
-    let loaded = load_bolt_v3_config(&support::repo_path("config/root.example.toml"))
-        .expect("root.example.toml should load with requested data clients");
+    let loaded = load_bolt_v3_config(&support::repo_path("config/root.toml"))
+        .expect("root.toml should load with requested data clients");
 
     for client_key in [
         "binance_spot_data",
@@ -5653,7 +5667,7 @@ fn root_example_declares_requested_nt_data_clients_for_registration() {
             .root
             .clients
             .get(client_key)
-            .unwrap_or_else(|| panic!("{client_key} must be configured in root.example.toml"));
+            .unwrap_or_else(|| panic!("{client_key} must be configured in root.toml"));
         assert!(
             client.data.is_some(),
             "{client_key} must declare a [data] block"

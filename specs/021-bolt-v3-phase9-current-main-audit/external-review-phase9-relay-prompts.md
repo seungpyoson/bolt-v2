@@ -31,7 +31,7 @@ Before use:
 - `docs/bolt-v3/2026-04-28-source-grounded-status-map.md`
 - `docs/bolt-v3/2026-05-18-production-readiness-contract.md`
 - `specs/001-thin-live-canary-path/tasks.md`
-- `config/root.example.toml`
+- `config/root.toml`
 - `config/strategies/binary_oracle.example.toml`
 
 ## Relay Prompt

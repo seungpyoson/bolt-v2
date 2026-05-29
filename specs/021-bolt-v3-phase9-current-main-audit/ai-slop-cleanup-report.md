@@ -56,7 +56,7 @@ This committed report is a cleanup protocol snapshot. Post-commit CI, reviewer j
 - `specs/021-bolt-v3-phase9-current-main-audit/external-review-phase9-relay-prompts.md`
 - `specs/021-bolt-v3-phase9-current-main-audit/checklists/requirements.md`
 - `specs/001-thin-live-canary-path/tasks.md`
-- `config/root.example.toml`
+- `config/root.toml`
 - `config/strategies/binary_oracle.example.toml`
 
 ## Remaining Risks

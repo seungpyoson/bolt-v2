@@ -42,7 +42,7 @@ Post-run evidence must bind actual order ids:
 
 ## Local Implementation Candidate
 
-- `tests/config_parsing.rs::bolt_v3_operator_evidence_allows_unassigned_order_ids` proves `config/root.example.toml` omits pre-run order-id hashes while `[live_canary.operator_evidence]` still parses.
+- `tests/config_parsing.rs::bolt_v3_operator_evidence_allows_unassigned_order_ids` proves `config/root.toml` omits pre-run order-id hashes while `[live_canary.operator_evidence]` still parses.
 - `tests/bolt_v3_live_canary_gate.rs::live_canary_pre_consumption_gate_accepts_without_pre_run_order_id_hashes` proves the pre-consumption gate accepts a valid packet without approval consumption and without pre-run order-id hashes.
 - `tests/bolt_v3_tiny_canary_preconditions.rs::operator_approval_envelope_consumes_time_bound_nonce_once` proves approval consumption still writes and the live gate accepts the proof without order-id hashes.
 - `tests/bolt_v3_tiny_canary_operator.rs::phase8_operator_harness_binds_live_proof_to_runtime_admission_and_spool` proves the operator harness no longer references the pre-run order-id hash env vars and derives the final live-order refs from post-run proof files.

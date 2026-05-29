@@ -14,7 +14,8 @@ use bolt_v2::{
     },
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
     bolt_v3_operator_artifacts::{
-        ChainlinkPriceReportSourceMaterializationRequest, ChainlinkReferencePriceReportSourceFile,
+        CanaryProofArtifactsCollectionRequest, ChainlinkPriceReportSourceMaterializationRequest,
+        ChainlinkReferencePriceReportSourceFile,
         ChainlinkReferenceQuoteObservationsSourceMaterializationRequest,
         DataClientProductionReadinessMatrixSourceFileRequest,
         EntryDecisionProofSourceMaterializationRequest, EntryDecisionSourceCollectionRequest,
@@ -22,6 +23,7 @@ use bolt_v2::{
         PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
         assemble_operator_packet_from_static_manifest,
         chainlink_data_streams_ssm_credential_parameters,
+        collect_canary_proof_artifacts_from_configured_provider,
         collect_entry_decision_source_inputs_from_configured_provider,
         compute_operator_approval_envelope_sha256,
         pre_run_clob_v2_collateral_accounting_source_requires_resolved_secrets,
@@ -71,6 +73,9 @@ const ENTRY_DECISION_PRICE_SOURCE_OUTPUT_FIELD: &str = "price_to_beat_source";
 const ENTRY_DECISION_REFERENCE_QUOTE_SOURCE_OUTPUT_FIELD: &str = "reference_quote_source";
 const ENTRY_DECISION_REALIZED_VOLATILITY_SOURCE_OUTPUT_FIELD: &str = "realized_volatility_source";
 const ENTRY_DECISION_FEE_RATE_SOURCE_OUTPUT_FIELD: &str = "fee_rate_source";
+const CANARY_PROOF_GATE_SESSION_OUTPUT_FIELD: &str = "gate_session";
+const CANARY_PROOF_CANDIDATE_SOURCE_OUTPUT_FIELD: &str = "canary_proof_candidate_source";
+const CANARY_PROOF_ORDER_INTENT_OUTPUT_FIELD: &str = "canary_proof_order_intent";
 const OPERATOR_EVIDENCE_JSON_SHA256_OUTPUT_FIELD: &str = "operator_evidence_json_sha256";
 const CLOB_V2_CACHE_SYNC_COMPLETED_OUTPUT_FIELD: &str =
     "clob_v2_balance_allowance_cache_sync_completed";
@@ -570,6 +575,30 @@ enum OperatorArtifactsCommand {
         instrument_source_output: PathBuf,
         #[arg(long)]
         fee_rate_source_output: PathBuf,
+    },
+    CollectCanaryProofArtifacts {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        strategy_instance_id: String,
+        #[arg(long)]
+        price_to_beat_source: PathBuf,
+        #[arg(long)]
+        max_price_to_beat_source_bytes: u64,
+        #[arg(long)]
+        reference_quote_source: PathBuf,
+        #[arg(long)]
+        max_reference_quote_source_bytes: u64,
+        #[arg(long)]
+        realized_volatility_source: PathBuf,
+        #[arg(long)]
+        max_realized_volatility_source_bytes: u64,
+        #[arg(long)]
+        gate_session_output: PathBuf,
+        #[arg(long)]
+        candidate_source_output: PathBuf,
+        #[arg(long)]
+        order_intent_output: PathBuf,
     },
     CollectChainlinkEntryDecisionProofSources {
         #[arg(short, long)]
@@ -1519,6 +1548,49 @@ fn run_operator_artifacts_command(
                     ENTRY_DECISION_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.decision_source),
                     ENTRY_DECISION_INSTRUMENT_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.instrument_source),
                     ENTRY_DECISION_FEE_RATE_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.fee_rate_source),
+                }))?
+            );
+            Ok(())
+        }
+        OperatorArtifactsCommand::CollectCanaryProofArtifacts {
+            config,
+            strategy_instance_id,
+            price_to_beat_source,
+            max_price_to_beat_source_bytes,
+            reference_quote_source,
+            max_reference_quote_source_bytes,
+            realized_volatility_source,
+            max_realized_volatility_source_bytes,
+            gate_session_output,
+            candidate_source_output,
+            order_intent_output,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            let written =
+                runtime.block_on(collect_canary_proof_artifacts_from_configured_provider(
+                    &loaded,
+                    &strategy_instance_id,
+                    CanaryProofArtifactsCollectionRequest {
+                        price_to_beat_source_path: &price_to_beat_source,
+                        max_price_to_beat_source_bytes,
+                        reference_quote_source_path: &reference_quote_source,
+                        max_reference_quote_source_bytes,
+                        realized_volatility_source_path: &realized_volatility_source,
+                        max_realized_volatility_source_bytes,
+                        gate_session_output_path: &gate_session_output,
+                        candidate_source_output_path: &candidate_source_output,
+                        order_intent_output_path: &order_intent_output,
+                    },
+                ))?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    CANARY_PROOF_GATE_SESSION_OUTPUT_FIELD: written_operator_artifact_json(&written.gate_session),
+                    CANARY_PROOF_CANDIDATE_SOURCE_OUTPUT_FIELD: written_operator_artifact_json(&written.candidate_source),
+                    CANARY_PROOF_ORDER_INTENT_OUTPUT_FIELD: written_operator_artifact_json(&written.order_intent),
                 }))?
             );
             Ok(())

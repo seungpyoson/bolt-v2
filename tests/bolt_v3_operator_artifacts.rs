@@ -13651,7 +13651,7 @@ fn test_live_canary_proof_policy() -> LiveCanaryProofPolicyBlock {
         quote_quantity: false,
         notional_mode: "fixed".to_string(),
         proof_notional: "1.00".to_string(),
-        candidate_score_source: "strategy_evidence".to_string(),
+        candidate_score_source: "proof_source".to_string(),
         allow_negative_expected_ev: true,
         rotation_observation_enabled: false,
         rotation_min_distinct_markets: 1,

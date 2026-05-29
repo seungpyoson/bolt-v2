@@ -123,7 +123,7 @@ const TARGET_PROVIDER_ID_FIELD: &str = "provider_id";
 const TARGET_PROVIDER_PREFERENCE_FIELD: &str = "provider_preference";
 const TARGET_ALLOWED_PROVIDER_IDS_FIELD: &str = "allowed_provider_ids";
 const LIVE_CANARY_PROOF_POLICY_KIND: &str = "least_bad_strategy_candidate";
-const LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE: &str = "strategy_evidence";
+const LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE: &str = "proof_source";
 const LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE: &str = "fixed";
 const LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM: &str = "proof_only";
 

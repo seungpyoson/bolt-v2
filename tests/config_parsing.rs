@@ -179,7 +179,7 @@ fn bolt_v3_live_canary_proof_policy_rejects_unsupported_notional_mode() {
 fn bolt_v3_live_canary_proof_policy_rejects_unsupported_candidate_score_source() {
     let messages = validate_root_messages_with_live_canary_proof_policy(
         &valid_live_canary_proof_policy_block().replace(
-            "candidate_score_source = \"strategy_evidence\"",
+            "candidate_score_source = \"proof_source\"",
             "candidate_score_source = \"external_override\"",
         ),
     );
@@ -187,7 +187,7 @@ fn bolt_v3_live_canary_proof_policy_rejects_unsupported_candidate_score_source()
     assert!(
         messages.iter().any(|message| {
             message.contains("live_canary.proof_policy.candidate_score_source")
-                && message.contains("strategy_evidence")
+                && message.contains("proof_source")
         }),
         "unsupported proof policy candidate score source must fail closed: {messages:#?}"
     );
@@ -4735,7 +4735,7 @@ reduce_only = false
 quote_quantity = false
 notional_mode = "fixed"
 proof_notional = "1.00"
-candidate_score_source = "strategy_evidence"
+candidate_score_source = "proof_source"
 allow_negative_expected_ev = true
 rotation_observation_enabled = true
 rotation_min_distinct_markets = 1

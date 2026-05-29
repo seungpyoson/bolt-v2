@@ -37,7 +37,8 @@ pub use balance_allowance_cache::sync_clob_v2_balance_allowance_cache_from_confi
 pub use collateral_accounting_source::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance;
 pub(crate) use collateral_accounting_source::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once;
 pub use entry_decision_source_inputs::{
-    collect_entry_decision_source_inputs, polymarket_entry_decision_gate_provenance_payload,
+    collect_canary_proof_artifacts, collect_entry_decision_source_inputs,
+    polymarket_entry_decision_gate_provenance_payload,
 };
 pub use fee_behavior_source::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources;
 pub use venue_account_state_source::materialize_venue_account_state_source_from_configured_account_queries;

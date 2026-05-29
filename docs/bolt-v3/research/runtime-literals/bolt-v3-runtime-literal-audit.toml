@@ -13899,8 +13899,8 @@ reason = '''This is the stable proof-policy mode label selected explicitly in TO
 [[allowed]]
 path = '''src/bolt_v3_validate.rs'''
 kind = '''string'''
-literal = '''"strategy_evidence"'''
-context = '''const LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE: &str = "strategy_evidence";'''
+literal = '''"proof_source"'''
+context = '''const LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE: &str = "proof_source";'''
 classification = '''canary_proof_policy_protocol_value'''
 reason = '''This is the stable proof-policy candidate source label selected explicitly in TOML, not a runtime trading value.'''
 
@@ -13919,3 +13919,83 @@ literal = '''"proof_only"'''
 context = '''const LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM: &str = "proof_only";'''
 classification = '''canary_proof_policy_protocol_claim'''
 reason = '''This is the stable proof-only claim label required to distinguish canary plumbing proof orders from alpha strategy orders.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"gate_session"'''
+context = '''const CANARY_PROOF_GATE_SESSION_OUTPUT_FIELD: &str = "gate_session";'''
+classification = '''canary_proof_cli_output_schema_field'''
+reason = '''This is a CLI JSON output field name for a written artifact, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"canary_proof_candidate_source"'''
+context = '''const CANARY_PROOF_CANDIDATE_SOURCE_OUTPUT_FIELD: &str = "canary_proof_candidate_source";'''
+classification = '''canary_proof_cli_output_schema_field'''
+reason = '''This is a CLI JSON output field name for a written artifact, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/main.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent"'''
+context = '''const CANARY_PROOF_ORDER_INTENT_OUTPUT_FIELD: &str = "canary_proof_order_intent";'''
+classification = '''canary_proof_cli_output_schema_field'''
+reason = '''This is a CLI JSON output field name for a written artifact, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+kind = '''string'''
+literal = '''"canary proof source found no orderable ask candidate"'''
+context = '''"canary proof source found no orderable ask candidate",'''
+classification = '''canary_proof_fail_closed_diagnostic'''
+reason = '''This is a fail-closed diagnostic for missing proof-order source liquidity, not a configured venue, market, size, or timeout.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+kind = '''string'''
+literal = '''"canary proof best ask"'''
+context = '''let sizing_price = decimal_from_display(best_ask, "canary proof best ask")?;'''
+classification = '''canary_proof_decimal_diagnostic_field'''
+reason = '''This is a decimal parse diagnostic label for source-owned proof artifacts, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+kind = '''string'''
+literal = '''"canary proof ask quantity"'''
+context = '''let available_quantity = decimal_from_display(ask_quantity, "canary proof ask quantity")?;'''
+classification = '''canary_proof_decimal_diagnostic_field'''
+reason = '''This is a decimal parse diagnostic label for source-owned proof artifacts, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+kind = '''string'''
+literal = '''"canary proof quantity step"'''
+context = '''decimal_from_display(instrument.size_increment(), "canary proof quantity step")?;'''
+classification = '''canary_proof_decimal_diagnostic_field'''
+reason = '''This is a decimal parse diagnostic label for source-owned proof artifacts, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+kind = '''string'''
+literal = '''"canary proof minimum quantity"'''
+context = '''.map(|quantity| decimal_from_display(quantity, "canary proof minimum quantity"))'''
+classification = '''canary_proof_decimal_diagnostic_field'''
+reason = '''This is a decimal parse diagnostic label for source-owned proof artifacts, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+kind = '''string'''
+literal = '''"canary proof notional"'''
+context = '''proof_notional: decimal_from_str(policy.proof_notional.as_str(), "canary proof notional")?,'''
+classification = '''canary_proof_decimal_diagnostic_field'''
+reason = '''This is a decimal parse diagnostic label for TOML-owned proof notional, not a hardcoded amount.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+kind = '''string'''
+literal = '''"canary proof max notional per order"'''
+context = '''"canary proof max notional per order",'''
+classification = '''canary_proof_decimal_diagnostic_field'''
+reason = '''This is a decimal parse diagnostic label for TOML-owned max notional, not a hardcoded amount.'''

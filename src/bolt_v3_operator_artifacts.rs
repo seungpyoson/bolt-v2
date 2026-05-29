@@ -6824,6 +6824,24 @@ pub struct EntryDecisionSourceInputsWritten {
     pub fee_rate_source: WrittenOperatorArtifact,
 }
 
+pub struct CanaryProofArtifactsCollectionRequest<'a> {
+    pub price_to_beat_source_path: &'a Path,
+    pub max_price_to_beat_source_bytes: u64,
+    pub reference_quote_source_path: &'a Path,
+    pub max_reference_quote_source_bytes: u64,
+    pub realized_volatility_source_path: &'a Path,
+    pub max_realized_volatility_source_bytes: u64,
+    pub gate_session_output_path: &'a Path,
+    pub candidate_source_output_path: &'a Path,
+    pub order_intent_output_path: &'a Path,
+}
+
+pub struct CanaryProofArtifactsWritten {
+    pub gate_session: WrittenOperatorArtifact,
+    pub candidate_source: WrittenOperatorArtifact,
+    pub order_intent: WrittenOperatorArtifact,
+}
+
 #[derive(Debug, Clone)]
 pub struct EntryDecisionProofSourceMaterializationRequest<'a> {
     pub price_report_path: &'a Path,
@@ -7069,6 +7087,23 @@ pub(crate) fn validate_entry_decision_source_proof_files(
     Ok(EntryDecisionSourceProofValidation {
         market_selection_timestamp_ms: proofs.price_source.market_selection_timestamp_ms,
     })
+}
+
+pub(crate) fn build_entry_readiness_gate_session_from_source_proof_files(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    selected: &bolt_v3_market_families::SelectedBinaryOptionMarket,
+    request: EntryDecisionSourceProofFileRequest<'_>,
+) -> Result<EntryReadinessGateSession, BoltV3OperatorArtifactError> {
+    let proofs =
+        read_validated_entry_decision_source_proofs(loaded, strategy_instance_id, request)?;
+    readiness_session_from_entry_decision_price_source(
+        loaded,
+        strategy_instance_id,
+        selected,
+        &proofs.price_source,
+        &proofs.reference_quote,
+    )
 }
 
 pub fn chainlink_data_streams_ssm_credential_parameters(
@@ -7653,6 +7688,48 @@ pub async fn collect_entry_decision_source_inputs_from_configured_provider(
         strategy_instance_id,
         request,
     })
+    .await
+}
+
+pub async fn collect_canary_proof_artifacts_from_configured_provider(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    request: CanaryProofArtifactsCollectionRequest<'_>,
+) -> Result<CanaryProofArtifactsWritten, BoltV3OperatorArtifactError> {
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .ok_or_else(
+            || BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+                message: format!("strategy instance `{strategy_instance_id}` is not loaded"),
+            },
+        )?;
+    let client_key = strategy.config.execution_client_id.as_str();
+    let client = loaded.root.clients.get(client_key).ok_or_else(|| {
+        BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+            message: format!("execution client `{client_key}` is not loaded"),
+        }
+    })?;
+    let binding = binding_for_provider_key(client.venue.as_str()).ok_or_else(|| {
+        BoltV3OperatorArtifactError::UnsupportedProvider {
+            client_key: client_key.to_string(),
+            provider_key: client.venue.to_string(),
+        }
+    })?;
+    let collector = binding.collect_canary_proof_artifacts.ok_or_else(|| {
+        BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+            message: "configured provider does not expose canary proof artifact collection"
+                .to_string(),
+        }
+    })?;
+    collector(
+        crate::bolt_v3_providers::CanaryProofArtifactsProviderContext {
+            loaded,
+            strategy_instance_id,
+            request,
+        },
+    )
     .await
 }
 
@@ -15456,7 +15533,7 @@ fn build_approval_nonce_artifact()
     })
 }
 
-fn write_json_artifact_create_new<T: Serialize>(
+pub(crate) fn write_json_artifact_create_new<T: Serialize>(
     path: &Path,
     value: &T,
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {

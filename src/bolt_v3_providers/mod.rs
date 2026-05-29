@@ -29,7 +29,8 @@ use crate::{
     bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config},
     bolt_v3_market_families::MarketIdentityPlan,
     bolt_v3_operator_artifacts::{
-        BoltV3OperatorArtifactError, EntryDecisionSourceCollectionRequest,
+        BoltV3OperatorArtifactError, CanaryProofArtifactsCollectionRequest,
+        CanaryProofArtifactsWritten, EntryDecisionSourceCollectionRequest,
         EntryDecisionSourceInputsWritten,
     },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
@@ -151,6 +152,12 @@ pub struct EntryDecisionSourceProviderContext<'a> {
     pub request: EntryDecisionSourceCollectionRequest<'a>,
 }
 
+pub struct CanaryProofArtifactsProviderContext<'a> {
+    pub loaded: &'a LoadedBoltV3Config,
+    pub strategy_instance_id: &'a str,
+    pub request: CanaryProofArtifactsCollectionRequest<'a>,
+}
+
 pub type EntryDecisionSourceInputCollector = for<'a> fn(
     EntryDecisionSourceProviderContext<'a>,
 ) -> Pin<
@@ -158,6 +165,12 @@ pub type EntryDecisionSourceInputCollector = for<'a> fn(
         dyn Future<Output = Result<EntryDecisionSourceInputsWritten, BoltV3OperatorArtifactError>>
             + 'a,
     >,
+>;
+
+pub type CanaryProofArtifactsCollector = for<'a> fn(
+    CanaryProofArtifactsProviderContext<'a>,
+) -> Pin<
+    Box<dyn Future<Output = Result<CanaryProofArtifactsWritten, BoltV3OperatorArtifactError>> + 'a>,
 >;
 
 #[derive(Clone, Copy)]
@@ -364,6 +377,7 @@ pub struct ProviderBinding {
         -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError>,
     pub build_fee_provider: Option<FeeProviderBuilder>,
     pub collect_entry_decision_source_inputs: Option<EntryDecisionSourceInputCollector>,
+    pub collect_canary_proof_artifacts: Option<CanaryProofArtifactsCollector>,
 }
 
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
@@ -382,6 +396,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         collect_entry_decision_source_inputs: Some(
             polymarket::collect_entry_decision_source_inputs,
         ),
+        collect_canary_proof_artifacts: Some(polymarket::collect_canary_proof_artifacts),
     },
     ProviderBinding {
         key: binance::KEY,
@@ -396,6 +411,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: binance::map_adapters,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::BITMEX_KEY,
@@ -410,6 +426,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: market_data::map_bitmex_adapters,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::BYBIT_KEY,
@@ -424,6 +441,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: market_data::map_bybit_adapters,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::COINBASE_KEY,
@@ -438,6 +456,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: market_data::map_coinbase_adapters,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::DERIBIT_KEY,
@@ -452,6 +471,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: market_data::map_deribit_adapters,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::OKX_KEY,
@@ -466,6 +486,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: market_data::map_okx_adapters,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
         key: market_data::KRAKEN_KEY,
@@ -480,6 +501,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: market_data::map_kraken_adapters,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     },
 ];
 

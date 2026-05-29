@@ -1438,7 +1438,7 @@ fn configure_canary_proof_policy_and_artifacts(
         quote_quantity: false,
         notional_mode: "fixed".to_string(),
         proof_notional: "5.00".to_string(),
-        candidate_score_source: "strategy_evidence".to_string(),
+        candidate_score_source: "proof_source".to_string(),
         allow_negative_expected_ev: true,
         rotation_observation_enabled: true,
         rotation_min_distinct_markets: 1,

@@ -13705,6 +13705,54 @@ classification = '''canary_proof_fail_closed_diagnostic'''
 reason = '''This is a fail-closed diagnostic when the source-owned proof intent is outside the selected market, not a runtime market value.'''
 
 [[allowed]]
+path = '''src/bolt_v3_live_canary_gate.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent_path"'''
+context = '''"canary_proof_order_intent_path",'''
+classification = '''canary_proof_operator_evidence_field'''
+reason = '''This names a TOML-owned operator-evidence artifact path field consumed by the live gate; the value remains config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_canary_gate.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent_sha256"'''
+context = '''"canary_proof_order_intent_sha256",'''
+classification = '''canary_proof_operator_evidence_field'''
+reason = '''This names a TOML-owned operator-evidence artifact hash field consumed by the live gate; the value remains config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_canary_gate.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent_path"'''
+context = '''validate_configured_path_shape("canary_proof_order_intent_path", path_value)?;'''
+classification = '''canary_proof_operator_evidence_field'''
+reason = '''This labels validation for a TOML-owned proof artifact path; the path value remains config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_canary_gate.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent_path"'''
+context = '''let path = resolve_configured_path(root_path, "canary_proof_order_intent_path", path_value)?;'''
+classification = '''canary_proof_operator_evidence_field'''
+reason = '''This labels validation for a TOML-owned proof artifact path; the path value remains config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_canary_gate.rs'''
+kind = '''string'''
+literal = '''"canary proof order intent instrument_id is outside selected market"'''
+context = '''reason: "canary proof order intent instrument_id is outside selected market"'''
+classification = '''canary_proof_fail_closed_diagnostic'''
+reason = '''This is a fail-closed diagnostic when the source-owned proof intent is outside the selected market, not a runtime market value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_canary_gate.rs'''
+kind = '''string'''
+literal = '''"canary proof order intent notional {} exceeds [live_canary].max_notional_per_order={max_notional_per_order}"'''
+context = '''"canary proof order intent notional {} exceeds [live_canary].max_notional_per_order={max_notional_per_order}",'''
+classification = '''canary_proof_fail_closed_diagnostic'''
+reason = '''This is a fail-closed diagnostic comparing source-owned proof notional to TOML cap, not a hardcoded amount.'''
+
+[[allowed]]
 path = '''src/bolt_v3_canary_proof_policy.rs'''
 kind = '''string'''
 literal = '''"bolt_v3_canary_proof_candidate_source"'''

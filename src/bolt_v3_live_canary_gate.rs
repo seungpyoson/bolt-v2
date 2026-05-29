@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
+    bolt_v3_canary_proof_policy::{CANARY_PROOF_CLAIM, CanaryProofOrderIntentArtifact},
     bolt_v3_config::{
         DECISION_REFERENCE_GATE_ROLE, LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock,
         LoadedBoltV3Config,
@@ -936,15 +937,36 @@ async fn validate_operator_evidence(
     }
 
     validate_operator_evidence_file_hashes(root_path, evidence).await?;
-    validate_operator_gate_session_binding(loaded, root_path, evidence).await?;
-    validate_operator_strategy_input_freshness(
-        loaded,
-        root_path,
-        evidence,
-        block.reference_quote_max_age_seconds,
-        approval_window_unix_seconds,
-    )
-    .await?;
+    let gate_session = validate_operator_gate_session_binding(loaded, root_path, evidence).await?;
+    if live_canary_proof_policy_enabled(block) {
+        validate_operator_gate_session_freshness(
+            &gate_session,
+            block.reference_quote_max_age_seconds,
+            approval_window_unix_seconds,
+        )?;
+        validate_operator_canary_proof_order_intent(
+            root_path,
+            block,
+            evidence,
+            &gate_session,
+            max_notional_per_order,
+        )
+        .await?;
+    } else {
+        validate_operator_strategy_input_freshness(
+            loaded,
+            root_path,
+            evidence,
+            block.reference_quote_max_age_seconds,
+            approval_window_unix_seconds,
+        )
+        .await?;
+        validate_operator_decision_notional_within_canary_cap(
+            root_path,
+            evidence,
+            max_notional_per_order,
+        )?;
+    }
     validate_operator_approval_envelope(root_path, evidence, approval_id).await?;
     validate_operator_approval_consumption(
         root_path,
@@ -955,13 +977,14 @@ async fn validate_operator_evidence(
         approval_consumption_expectation,
     )
     .await?;
-    validate_operator_decision_notional_within_canary_cap(
-        root_path,
-        evidence,
-        max_notional_per_order,
-    )?;
-
     Ok(())
+}
+
+fn live_canary_proof_policy_enabled(block: &LiveCanaryBlock) -> bool {
+    block
+        .proof_policy
+        .as_ref()
+        .is_some_and(|proof_policy| proof_policy.enabled)
 }
 
 fn validate_operator_decision_notional_within_canary_cap(
@@ -1114,7 +1137,7 @@ async fn validate_operator_gate_session_binding(
     loaded: &LoadedBoltV3Config,
     root_path: &Path,
     evidence: &LiveCanaryOperatorEvidenceBlock,
-) -> Result<(), BoltV3LiveCanaryGateError> {
+) -> Result<EntryReadinessGateSession, BoltV3LiveCanaryGateError> {
     let gate_session_path = required_optional_operator_evidence_field(
         "gate_session_path",
         evidence.gate_session_path.as_deref(),
@@ -1151,8 +1174,187 @@ async fn validate_operator_gate_session_binding(
             source,
         }
     })?;
-    validate_live_canary_gate_session(loaded, &session)
-        .map_err(|reason| BoltV3LiveCanaryGateError::OperatorGateSessionInvalid { path, reason })
+    validate_live_canary_gate_session(loaded, &session).map_err(|reason| {
+        BoltV3LiveCanaryGateError::OperatorGateSessionInvalid {
+            path: path.clone(),
+            reason,
+        }
+    })?;
+    Ok(session)
+}
+
+fn validate_operator_gate_session_freshness(
+    session: &EntryReadinessGateSession,
+    reference_quote_max_age_seconds: u64,
+    current_unix_seconds: u64,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let Some(current_unix_ms) = current_unix_seconds.checked_mul(MILLIS_PER_SECOND_U64) else {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path: PathBuf::from("gate_session_path"),
+                reason: "current_unix_seconds is invalid: overflows milliseconds".to_string(),
+            },
+        );
+    };
+    if session.created_at_ms > current_unix_ms {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path: PathBuf::from("gate_session_path"),
+                reason: format!(
+                    "gate session created_at_ms is invalid: {} is in the future relative to current_unix_ms {current_unix_ms}",
+                    session.created_at_ms
+                ),
+            },
+        );
+    }
+    let Some(max_age_ms) = reference_quote_max_age_seconds.checked_mul(MILLIS_PER_SECOND_U64)
+    else {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path: PathBuf::from("gate_session_path"),
+                reason: format!(
+                    "reference_quote_max_age_seconds is invalid: {reference_quote_max_age_seconds} overflows milliseconds"
+                ),
+            },
+        );
+    };
+    let age_ms = current_unix_ms.saturating_sub(session.created_at_ms);
+    if age_ms > max_age_ms {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path: PathBuf::from("gate_session_path"),
+                reason: format!(
+                    "gate session created_at_ms is invalid: age_ms={age_ms} exceeds [live_canary].reference_quote_max_age_seconds={reference_quote_max_age_seconds}"
+                ),
+            },
+        );
+    }
+    Ok(())
+}
+
+async fn validate_operator_canary_proof_order_intent(
+    root_path: &Path,
+    block: &LiveCanaryBlock,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    gate_session: &EntryReadinessGateSession,
+    max_notional_per_order: Decimal,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let proof_policy = block.proof_policy.as_ref().ok_or(
+        BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
+            field: "live_canary.proof_policy",
+        },
+    )?;
+    let path_value = required_optional_operator_evidence_field(
+        "canary_proof_order_intent_path",
+        evidence.canary_proof_order_intent_path.as_deref(),
+    )?;
+    let expected_sha256 = required_optional_operator_evidence_field(
+        "canary_proof_order_intent_sha256",
+        evidence.canary_proof_order_intent_sha256.as_deref(),
+    )?;
+    validate_configured_path_shape("canary_proof_order_intent_path", path_value)?;
+    if !is_sha256_hex(expected_sha256) {
+        return Err(
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape {
+                field: "canary_proof_order_intent_sha256",
+            },
+        );
+    }
+    let path = resolve_configured_path(root_path, "canary_proof_order_intent_path", path_value)?;
+    let bytes = read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes)
+        .await
+        .map_err(|source| BoltV3LiveCanaryGateError::OperatorEvidenceRead {
+            field: "canary_proof_order_intent_sha256",
+            path: path.clone(),
+            source,
+        })?;
+    if sha256_hex(&bytes) != expected_sha256 {
+        return Err(BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch {
+            field: "canary_proof_order_intent_sha256",
+            path,
+        });
+    }
+    let order_intent: CanaryProofOrderIntentArtifact =
+        serde_json::from_slice(&bytes).map_err(|source| {
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceParse {
+                path: path.clone(),
+                source,
+            }
+        })?;
+    if order_intent.proof_claim != CANARY_PROOF_CLAIM
+        || order_intent.proof_claim != proof_policy.proof_claim
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "canary proof order intent proof_claim is invalid".to_string(),
+            },
+        );
+    }
+    if order_intent.strategy_instance_id != gate_session.strategy_instance_id
+        || order_intent.strategy_instance_id != proof_policy.strategy_instance_id
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "canary proof order intent strategy_instance_id is invalid".to_string(),
+            },
+        );
+    }
+    if order_intent.execution_client_id != proof_policy.execution_client_id {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "canary proof order intent execution_client_id is invalid".to_string(),
+            },
+        );
+    }
+    if !gate_session
+        .selected_market
+        .instrument_ids
+        .contains(&order_intent.instrument_id)
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "canary proof order intent instrument_id is outside selected market"
+                    .to_string(),
+            },
+        );
+    }
+    if !order_intent
+        .source_refs
+        .contains(&gate_session.session_hash)
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "canary proof order intent source_refs does not bind gate session"
+                    .to_string(),
+            },
+        );
+    }
+    if order_intent.notional <= Decimal::ZERO || order_intent.quantity <= Decimal::ZERO {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "canary proof order intent notional and quantity must be positive"
+                    .to_string(),
+            },
+        );
+    }
+    if order_intent.notional > max_notional_per_order {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: format!(
+                    "canary proof order intent notional {} exceeds [live_canary].max_notional_per_order={max_notional_per_order}",
+                    order_intent.notional
+                ),
+            },
+        );
+    }
+    Ok(())
 }
 
 fn required_optional_operator_evidence_field<'a>(

@@ -75,6 +75,7 @@ async fn live_canary_gate_rejects_empty_approval_id() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -110,6 +111,7 @@ async fn live_canary_gate_rejects_empty_readiness_report_path() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -145,6 +147,7 @@ async fn live_canary_gate_rejects_parent_dir_readiness_report_path() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -187,6 +190,7 @@ async fn live_canary_gate_rejects_missing_operator_evidence_before_reading_repor
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: None,
         },
     );
@@ -224,6 +228,7 @@ async fn live_canary_gate_rejects_missing_gate_session_binding_before_reading_re
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -279,6 +284,7 @@ async fn live_canary_gate_rejects_cross_market_gate_session_before_reading_repor
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -318,6 +324,7 @@ async fn live_canary_gate_rejects_parent_dir_operator_evidence_path() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -362,6 +369,7 @@ async fn live_canary_gate_rejects_parent_dir_strategy_cancel_path() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -406,6 +414,7 @@ async fn live_canary_gate_rejects_malformed_operator_evidence_hash_shape() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -449,6 +458,7 @@ async fn live_canary_gate_rejects_uppercase_operator_evidence_hash_shape() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -494,6 +504,7 @@ async fn live_canary_gate_rejects_operator_evidence_file_hash_mismatch() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -540,6 +551,7 @@ async fn live_canary_gate_rejects_approval_envelope_hash_mismatch() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -610,6 +622,7 @@ async fn live_canary_gate_rejects_approval_envelope_circular_fields() {
                 egress_identity_observed_path: None,
                 egress_identity_observed_max_bytes: None,
                 approved_egress_identity_sha256: None,
+                proof_policy: None,
                 operator_evidence: Some(operator_evidence),
             },
         );
@@ -663,6 +676,7 @@ async fn live_canary_gate_rejects_approval_envelope_toml_drift_after_hash_match(
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -705,6 +719,7 @@ async fn live_canary_gate_accepts_non_circular_approval_envelope_schema() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -746,6 +761,7 @@ async fn live_canary_gate_rejects_approval_consumption_hash_mismatch() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -800,6 +816,7 @@ async fn live_canary_gate_rejects_approval_consumption_strategy_cancel_path_hash
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -846,6 +863,7 @@ async fn live_canary_gate_rejects_approval_consumption_missing_head_sha() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -893,6 +911,7 @@ async fn live_canary_gate_rejects_approval_consumption_head_sha_mismatch() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -940,6 +959,7 @@ async fn live_canary_gate_rejects_stale_self_consistent_head_sha() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -987,6 +1007,7 @@ async fn live_canary_gate_rejects_malformed_operator_evidence_head_sha() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1053,6 +1074,7 @@ async fn live_canary_gate_rejects_approval_consumption_root_toml_sha256_mismatch
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1105,6 +1127,7 @@ async fn live_canary_gate_rejects_stale_approval_consumption_beyond_configured_m
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1420,6 +1443,7 @@ async fn live_canary_gate_rejects_symlinked_readiness_report_path() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1461,6 +1485,7 @@ async fn live_canary_gate_rejects_zero_order_count() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1499,6 +1524,7 @@ async fn live_canary_gate_rejects_zero_report_byte_cap() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1537,6 +1563,7 @@ async fn live_canary_gate_rejects_zero_readiness_report_max_age() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1576,6 +1603,7 @@ async fn live_canary_gate_rejects_zero_reference_quote_max_age() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1615,6 +1643,7 @@ async fn live_canary_gate_rejects_zero_reference_quote_wait_timeout() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1654,6 +1683,7 @@ async fn live_canary_gate_rejects_blank_reference_quote_probe_actor_id() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1698,6 +1728,7 @@ async fn live_canary_gate_rejects_malformed_reference_quote_probe_actor_id() {
                 egress_identity_observed_path: None,
                 egress_identity_observed_max_bytes: None,
                 approved_egress_identity_sha256: None,
+                proof_policy: None,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -1784,6 +1815,7 @@ async fn live_canary_gate_rejects_invalid_canary_notional_values() {
                 egress_identity_observed_path: None,
                 egress_identity_observed_max_bytes: None,
                 approved_egress_identity_sha256: None,
+                proof_policy: None,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -1827,6 +1859,7 @@ async fn live_canary_gate_rejects_invalid_root_notional_values() {
                 egress_identity_observed_path: None,
                 egress_identity_observed_max_bytes: None,
                 approved_egress_identity_sha256: None,
+                proof_policy: None,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -1871,6 +1904,7 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1918,6 +1952,7 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1956,6 +1991,7 @@ async fn live_canary_gate_rejects_report_expired_at_late_gate_timestamp() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence_for_window(
                 now as i64 - 10,
                 now as i64 + 3600,
@@ -2005,6 +2041,7 @@ async fn live_canary_gate_rejects_operator_window_expired_at_gate_timestamp() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence_for_window(
                 now as i64 - 120,
                 now as i64 - 60,
@@ -2141,6 +2178,7 @@ async fn live_canary_gate_rejects_operator_evidence_window_without_positive_dura
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -2189,6 +2227,7 @@ async fn live_canary_gate_rejects_operator_evidence_window_before_current_time()
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -2238,6 +2277,7 @@ async fn live_canary_gate_rejects_operator_evidence_window_after_current_time() 
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -2289,6 +2329,7 @@ async fn live_canary_gate_rejects_stale_no_submit_linkage_fields() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2343,6 +2384,7 @@ async fn live_canary_gate_rejects_no_submit_report_missing_generated_at() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2389,6 +2431,7 @@ async fn live_canary_gate_rejects_expired_no_submit_report() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2434,6 +2477,7 @@ async fn live_canary_gate_uses_toml_owned_readiness_report_max_age_seconds() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2498,6 +2542,7 @@ async fn live_canary_gate_rejects_missing_wrong_or_non_string_schema_version() {
                 egress_identity_observed_path: None,
                 egress_identity_observed_max_bytes: None,
                 approved_egress_identity_sha256: None,
+                proof_policy: None,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -2541,6 +2586,7 @@ async fn live_canary_gate_rejects_notional_above_root_risk_cap() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2582,6 +2628,7 @@ async fn live_canary_gate_rejects_empty_stage_report() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2625,6 +2672,7 @@ async fn live_canary_gate_rejects_report_missing_stages_key() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2670,6 +2718,7 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2715,6 +2764,7 @@ async fn live_canary_gate_reports_each_unsatisfied_required_stage_once() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2761,6 +2811,7 @@ async fn live_canary_gate_rejects_missing_no_submit_report() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2800,6 +2851,7 @@ async fn live_canary_gate_rejects_malformed_no_submit_report_json() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2844,6 +2896,7 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2877,6 +2930,7 @@ async fn live_canary_gate_rejects_no_submit_report_above_configured_byte_cap() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2919,6 +2973,7 @@ async fn live_canary_gate_distinguishes_non_object_report_from_missing_stages() 
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2970,6 +3025,7 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -3015,6 +3071,7 @@ async fn live_canary_gate_rejects_name_only_stage_field() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -3074,6 +3131,7 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -3140,6 +3198,7 @@ async fn check_operator_evidence_rejection(
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );

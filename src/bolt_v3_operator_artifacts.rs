@@ -13893,7 +13893,9 @@ pub fn verify_final_operator_packet_with_scope(
         operator_evidence,
     )?;
     verify_source_owned_static_readiness_artifacts(loaded, operator_evidence)?;
-    verify_strategy_input_replay_binding(loaded, operator_evidence)?;
+    if !live_canary_proof_policy_enabled(loaded) {
+        verify_strategy_input_replay_binding(loaded, operator_evidence)?;
+    }
     verify_canary_proof_operator_evidence(loaded, operator_evidence)?;
     let approval_envelope = verify_operator_approval_envelope(
         loaded,
@@ -13922,6 +13924,15 @@ pub fn verify_final_operator_packet_with_scope(
             sha256: parsed_static_manifest.sha256,
         },
     })
+}
+
+fn live_canary_proof_policy_enabled(loaded: &LoadedBoltV3Config) -> bool {
+    loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.proof_policy.as_ref())
+        .is_some_and(|proof_policy| proof_policy.enabled)
 }
 
 fn read_static_manifest(

@@ -171,6 +171,8 @@ When `rotation_observation_enabled = true`, the order-intent generator must requ
 
 Proof-only fills and positions must be tagged out of alpha PnL, alpha trade-count, strategy performance, and normal position-attribution summaries. They remain visible in canary/post-run evidence and accounting ledgers as `proof_only` operational events.
 
+This exclusion is an implementation requirement, not an operator checklist item. Any analytics, ledger, or strategy-performance surface that consumes fills or positions must either ignore `proof_only` records for alpha accounting or expose them in a separately labeled canary-operational bucket.
+
 ## Operator Evidence
 
 The final packet gains these proof-only bindings:
@@ -183,6 +185,19 @@ The final packet gains these proof-only bindings:
 - `canary_rotation_observation_sha256`
 - `canary_proof_order_intent_path`
 - `canary_proof_order_intent_sha256`
+
+`canary_proof_candidate_source` is a hash-bound artifact generated from the configured strategy instance after normal source evidence and strategy evaluation are available. It is not a hand-authored list. It must include:
+
+- `record_kind = "bolt_v3_canary_proof_candidate_source"`
+- `proof_claim = "proof_only"`
+- strategy instance hash
+- execution client hash
+- source evidence refs and hashes used by the strategy
+- candidate count
+- normalized candidates
+- candidate-generation rejection reason when the strategy exposes no supported candidates
+
+The artifact producer must call the selected configured strategy through the generic proof-candidate provider interface. If the configured strategy does not implement the interface, candidate-source generation fails closed before order-intent generation.
 
 Pre-run verification must reject:
 
@@ -221,6 +236,8 @@ Fail closed with specific reasons:
 - `instrument_constraints_reject_price_tick`
 - `instrument_constraints_reject_sizing_mode`
 - `instrument_constraints_round_to_zero`
+- `instrument_constraints_below_min_quantity`
+- `instrument_constraints_below_min_notional`
 - `proof_notional_exceeds_cap`
 - `proof_notional_exceeds_strategy_risk_cap`
 - `submit_admission_rejected`

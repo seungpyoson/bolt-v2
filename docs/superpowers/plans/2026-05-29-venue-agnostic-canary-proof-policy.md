@@ -322,6 +322,32 @@ fn proof_policy_rejects_source_not_ready_before_candidate_selection() {
 
     assert_eq!(err, CanaryProofPolicyRejection::ProofPolicySourceNotReady);
 }
+
+#[test]
+fn proof_policy_rejects_rounded_quantity_below_adapter_minimum() {
+    let input = CanaryProofPolicyInput::fixture()
+        .with_proof_notional("0.01")
+        .with_base_quantity_constraints(|constraints| {
+            constraints.min_quantity = dec("1.00");
+        });
+
+    let err = select_canary_proof_candidate(&input).expect_err("below minimum quantity rejected");
+
+    assert_eq!(err, CanaryProofPolicyRejection::InstrumentConstraintsBelowMinQuantity);
+}
+
+#[test]
+fn proof_policy_rejects_rounded_notional_below_adapter_minimum() {
+    let input = CanaryProofPolicyInput::fixture()
+        .with_proof_notional("0.50")
+        .with_base_quantity_constraints(|constraints| {
+            constraints.min_notional = Some(dec("1.00"));
+        });
+
+    let err = select_canary_proof_candidate(&input).expect_err("below minimum notional rejected");
+
+    assert_eq!(err, CanaryProofPolicyRejection::InstrumentConstraintsBelowMinNotional);
+}
 ```
 
 - [ ] **Step 2: Run tests to verify failure**
@@ -357,6 +383,8 @@ pub enum CanaryProofPolicyRejection {
     InstrumentConstraintsRejectPriceTick,
     InstrumentConstraintsRejectSizingMode,
     InstrumentConstraintsRoundToZero,
+    InstrumentConstraintsBelowMinQuantity,
+    InstrumentConstraintsBelowMinNotional,
     ProofNotionalExceedsCap,
     ProofNotionalExceedsStrategyRiskCap,
 }
@@ -631,6 +659,31 @@ Implement the helpers in the same module with focused tests:
 - `CanaryProofOrderSizing::notional_for_submit_admission()` returns rounded notional for base-quantity sizing and quote notional for quote-notional sizing, so the existing submit cap sees the correct bounded notional in both modes.
 - source refs are compared by artifact kind and hash against the hash-bound current source packet; no source path is read without its expected hash.
 
+`normalize_order_sizing` must enforce the adapter minimums after rounding:
+
+```rust
+fn enforce_instrument_minimums(
+    rounded_quantity: Decimal,
+    notional: Decimal,
+    constraints: &CanaryProofInstrumentConstraints,
+) -> Result<(), CanaryProofPolicyRejection> {
+    if rounded_quantity <= Decimal::ZERO {
+        return Err(CanaryProofPolicyRejection::InstrumentConstraintsRoundToZero);
+    }
+    if rounded_quantity < constraints.min_quantity {
+        return Err(CanaryProofPolicyRejection::InstrumentConstraintsBelowMinQuantity);
+    }
+    if let Some(min_notional) = constraints.min_notional {
+        if notional < min_notional {
+            return Err(CanaryProofPolicyRejection::InstrumentConstraintsBelowMinNotional);
+        }
+    }
+    Ok(())
+}
+```
+
+Both `BaseQuantityRequired` and `QuoteNotionalAccepted` sizing paths must call this helper when adapter metadata exposes `min_quantity`; quote-notional mode records `estimated_rounded_quantity` for the minimum-quantity check and fails closed if a required estimate cannot be computed.
+
 The implementation must use the repo's existing normalized order, price, and side types if equivalent types already exist. The local enum names above are the fallback shape for the new module, not a second production vocabulary.
 
 Export it from `src/lib.rs`:
@@ -652,10 +705,11 @@ git add src/bolt_v3_canary_proof_policy.rs src/lib.rs tests/bolt_v3_canary_proof
 git commit -m "feat(canary): add generic proof policy"
 ```
 
-## Task 3: Strategy Candidate Provider Boundary
+## Task 3: Strategy Candidate Provider Boundary And Source Artifact Producer
 
 **Files:**
 - Modify: `src/strategies/mod.rs`
+- Modify: `src/bolt_v3_operator_artifacts.rs`
 - Create: `tests/support/canary_proof_strategy.rs`
 - Test: `tests/bolt_v3_canary_proof_policy.rs`
 
@@ -671,12 +725,30 @@ fn configured_strategy_provider_exposes_candidates_even_when_alpha_selects_none(
         .with_execution_client_id(EXECUTION_CLIENT_FIXTURE_ID)
         .with_current_source_ref(SOURCE_FIXTURE_HASH)
         .with_negative_but_ranked_candidates();
-    let candidates = strategy.canary_proof_candidates().expect("candidate provider supported");
+    let source_packet = hash_bound_strategy_source_packet_fixture(SOURCE_FIXTURE_HASH);
+    let candidates = strategy
+        .canary_proof_candidates(&source_packet)
+        .expect("candidate provider supported");
 
     assert_eq!(candidates.len(), 2);
     assert!(candidates.iter().all(|candidate| candidate.strategy_instance_id == STRATEGY_FIXTURE_ID));
     assert!(candidates.iter().all(|candidate| candidate.execution_client_id == EXECUTION_CLIENT_FIXTURE_ID));
     assert!(candidates.iter().all(|candidate| !candidate.source_evidence_refs.is_empty()));
+}
+
+#[test]
+fn strategy_registry_materializes_hash_bound_candidate_source_for_configured_provider() {
+    let root = tempdir().expect("tempdir");
+    let config = write_config_with_enabled_proof_policy(root.path());
+    let source_packet = write_current_hash_bound_source_packet(root.path());
+
+    let artifact = generate_canary_proof_candidate_source(&config, &source_packet)
+        .expect("configured strategy provider should materialize candidate source");
+
+    assert_eq!(artifact.record_kind, "bolt_v3_canary_proof_candidate_source");
+    assert_eq!(artifact.proof_claim, "proof_only");
+    assert!(artifact.candidate_count > 0);
+    assert!(artifact.candidates.iter().all(|candidate| !candidate.source_evidence_refs.is_empty()));
 }
 ```
 
@@ -694,7 +766,10 @@ In `src/strategies/mod.rs`:
 use crate::bolt_v3_canary_proof_policy::CanaryProofCandidate;
 
 pub trait CanaryProofCandidateProvider {
-    fn canary_proof_candidates(&self) -> anyhow::Result<Vec<CanaryProofCandidate>>;
+    fn canary_proof_candidates(
+        &self,
+        source_packet: &HashBoundStrategySourcePacket,
+    ) -> anyhow::Result<Vec<CanaryProofCandidate>>;
 }
 ```
 
@@ -770,13 +845,34 @@ impl TestCanaryProofStrategy {
 }
 
 impl CanaryProofCandidateProvider for TestCanaryProofStrategy {
-    fn canary_proof_candidates(&self) -> anyhow::Result<Vec<CanaryProofCandidate>> {
+    fn canary_proof_candidates(
+        &self,
+        source_packet: &HashBoundStrategySourcePacket,
+    ) -> anyhow::Result<Vec<CanaryProofCandidate>> {
+        ensure_source_packet_matches_ref(source_packet, &self.source_ref)?;
         Ok(self.candidates.clone())
     }
 }
 ```
 
 Production strategies can then opt in by implementing the same trait in their own modules. That strategy-specific opt-in is intentionally outside the generic proof-policy core.
+
+The selected configured strategy used for the production-readiness packet must be reachable through this provider registry before proof mode can run. Do not hardcode that strategy in the proof-policy module. The registry should resolve the configured strategy instance id, ask that strategy for candidates from its existing source/evaluation state, and fail closed with `ProofCandidateMissing` or `ProofCandidateSourceMismatch` when no source-bound candidates are available.
+
+Add a materializer used by the CLI command in Task 4:
+
+```rust
+pub fn generate_canary_proof_candidate_source(
+    config: &BoltV3Config,
+    source_packet: &HashBoundStrategySourcePacket,
+) -> Result<CanaryProofCandidateSourceArtifact, CanaryProofPolicyRejection> {
+    let provider = resolve_canary_proof_candidate_provider(config.live_canary.proof_policy.strategy_instance_id)?;
+    let candidates = provider.canary_proof_candidates(source_packet)?;
+    CanaryProofCandidateSourceArtifact::from_source_bound_candidates(config, source_packet, candidates)
+}
+```
+
+This materializer is the only production path that writes `canary_proof_candidate_source`. Hand-authored candidate files are rejected by the final-packet verifier because their hash/provenance cannot match the source packet.
 
 - [ ] **Step 5: Verify and commit**
 
@@ -787,7 +883,7 @@ Expected: PASS.
 Commit:
 
 ```bash
-git add src/strategies/mod.rs tests/support/canary_proof_strategy.rs tests/bolt_v3_canary_proof_policy.rs
+git add src/strategies/mod.rs src/bolt_v3_operator_artifacts.rs tests/support/canary_proof_strategy.rs tests/bolt_v3_canary_proof_policy.rs
 git commit -m "feat(canary): expose strategy proof candidates"
 ```
 
@@ -853,6 +949,38 @@ pub struct CanaryProofPolicyArtifact {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanaryProofCandidateSourceArtifact {
+    pub schema_version: u32,
+    pub record_kind: String,
+    pub proof_claim: String,
+    pub strategy_instance_id_hash: String,
+    pub execution_client_id_hash: String,
+    pub source_evidence_refs: Vec<HashBoundSourceEvidenceRef>,
+    pub candidate_count: u32,
+    pub candidates: Vec<CanaryProofCandidateArtifact>,
+    pub generation_rejection_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanaryProofCandidateArtifact {
+    pub market_id_hash: String,
+    pub instrument_id_hash: String,
+    pub order_side: String,
+    pub position_side: Option<String>,
+    pub order_type: String,
+    pub time_in_force: String,
+    pub post_only: bool,
+    pub reduce_only: bool,
+    pub limit_price: Option<String>,
+    pub sizing_price: String,
+    pub notional_hint: String,
+    pub candidate_score: String,
+    pub score_kind: String,
+    pub candidate_priority: Option<u32>,
+    pub source_evidence_refs: Vec<HashBoundSourceEvidenceRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanaryProofOrderIntentArtifact {
     pub schema_version: u32,
     pub record_kind: String,
@@ -896,6 +1024,20 @@ GenerateCanaryProofPolicy {
     #[arg(long)]
     output: PathBuf,
 },
+GenerateCanaryProofCandidateSource {
+    #[arg(short, long)]
+    config: PathBuf,
+    #[arg(long)]
+    strategy_instance_id: String,
+    #[arg(long)]
+    strategy_source_packet: PathBuf,
+    #[arg(long)]
+    strategy_source_packet_sha256: String,
+    #[arg(long)]
+    max_strategy_source_packet_bytes: u64,
+    #[arg(long)]
+    output: PathBuf,
+},
 GenerateCanaryProofOrderIntent {
     #[arg(short, long)]
     config: PathBuf,
@@ -927,6 +1069,8 @@ GenerateCanaryRotationObservation {
 ```
 
 `GenerateCanaryProofOrderIntent` must load only hash-bound candidate and rotation artifacts, validate their source refs against the current source packet, enforce rotation count when configured, run the generic proof policy, and write an artifact whose source refs and rounded quantity match the selected intent.
+
+`GenerateCanaryProofCandidateSource` must be the only command that writes `CanaryProofCandidateSourceArtifact`. It must load the hash-bound strategy source packet, resolve the configured strategy provider from the strategy registry, materialize normalized candidates from that provider, and fail closed when the provider is absent or returns candidates without matching source refs.
 
 - [ ] **Step 5: Bind artifacts in operator evidence**
 
@@ -1044,7 +1188,69 @@ git add src/bolt_v3_submit_admission.rs src/bolt_v3_live_node.rs tests/bolt_v3_c
 git commit -m "feat(canary): route proof intents through submit admission"
 ```
 
-## Task 6: Rotation Observation Evidence
+## Task 6: Proof-Only Accounting Isolation
+
+**Files:**
+- Modify: `src/bolt_v3_tiny_canary_evidence.rs`
+- Modify: `src/bolt_v3_position_contract.rs` only if the existing position contract needs a proof-only classification field.
+- Test: `tests/bolt_v3_tiny_canary_operator.rs`
+- Test: `tests/bolt_v3_tiny_canary_preconditions.rs` only if the existing precondition tests own position-attribution behavior.
+
+- [ ] **Step 1: Write failing accounting-isolation tests**
+
+Add tests proving proof-only fills and positions cannot be counted as alpha performance:
+
+```rust
+#[test]
+fn proof_only_fill_is_recorded_as_operational_canary_not_alpha_trade() {
+    let fill = proof_only_canary_fill_fixture();
+
+    let record = classify_canary_fill_for_accounting(&fill).expect("fill classified");
+
+    assert_eq!(record.proof_claim.as_deref(), Some("proof_only"));
+    assert_eq!(record.accounting_bucket, AccountingBucket::OperationalCanary);
+    assert!(!record.counts_toward_alpha_trade_count);
+    assert!(!record.counts_toward_strategy_performance);
+}
+
+#[test]
+fn proof_only_position_is_excluded_from_alpha_position_attribution() {
+    let position = proof_only_canary_position_fixture();
+
+    let attribution = classify_position_for_strategy_attribution(&position).expect("position classified");
+
+    assert_eq!(attribution.proof_claim.as_deref(), Some("proof_only"));
+    assert!(!attribution.counts_toward_alpha_pnl);
+    assert!(!attribution.counts_toward_normal_position_attribution);
+}
+```
+
+- [ ] **Step 2: Run tests to verify failure**
+
+Run: `cargo test --test bolt_v3_tiny_canary_operator proof_only -- --nocapture`
+
+Expected: FAIL because proof-only accounting classification is not yet explicit.
+
+- [ ] **Step 3: Implement proof-only accounting classification**
+
+Carry `proof_claim = "proof_only"` from proof order intent into canary submit/fill/position evidence. Add a small classification helper that maps proof-only records to an operational canary bucket and marks alpha PnL, alpha trade count, strategy performance, and normal position attribution as false.
+
+Do not create a second portfolio or execution ledger. NT remains the account/position/fill source of truth. This task only prevents proof-only operational evidence from being summarized as alpha performance.
+
+- [ ] **Step 4: Verify and commit**
+
+Run: `cargo test --test bolt_v3_tiny_canary_operator proof_only -- --nocapture`
+
+Expected: PASS.
+
+Commit:
+
+```bash
+git add src/bolt_v3_tiny_canary_evidence.rs src/bolt_v3_position_contract.rs tests/bolt_v3_tiny_canary_operator.rs tests/bolt_v3_tiny_canary_preconditions.rs
+git commit -m "feat(canary): isolate proof-only accounting"
+```
+
+## Task 7: Rotation Observation Evidence
 
 **Files:**
 - Modify: `src/bolt_v3_operator_artifacts.rs`
@@ -1109,7 +1315,7 @@ git add src/bolt_v3_operator_artifacts.rs tests/bolt_v3_canary_proof_operator_ar
 git commit -m "feat(canary): prove market rotation observations"
 ```
 
-## Task 7: Docs, Runbook, And Final Verification
+## Task 8: Docs, Runbook, And Final Verification
 
 **Files:**
 - Modify: `specs/024-production-trade-readiness/tiny-canary.md`
@@ -1141,6 +1347,7 @@ cargo test --test config_parsing live_canary_proof_policy -- --nocapture
 cargo test --test bolt_v3_canary_proof_policy -- --nocapture
 cargo test --test bolt_v3_canary_proof_operator_artifacts -- --nocapture
 cargo test --test bolt_v3_canary_proof_live_gate -- --nocapture
+cargo test --test bolt_v3_tiny_canary_operator proof_only -- --nocapture
 ```
 
 Expected: all PASS.
@@ -1171,5 +1378,7 @@ git commit -m "docs(canary): document proof-only live canary path"
 - No task adds concrete venue names, asset symbols, outcome labels, or cadence values as proof-policy defaults.
 - Proof-only order intents still pass through submit admission.
 - Proof artifacts are hash-bound into final packet verification.
+- Candidate-source artifacts have a schema and exactly one source-owned producer.
+- Adapter minimum quantity and minimum notional are enforced after sizing normalization.
 - The runbook states that proof-only canary evidence is not alpha/profit evidence.
 - Proof-only fills and positions are accounted as operational canary evidence, not alpha PnL or strategy performance.

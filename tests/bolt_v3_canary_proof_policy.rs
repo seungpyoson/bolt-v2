@@ -2,7 +2,8 @@ use anyhow::Result;
 use bolt_v2::bolt_v3_canary_proof_policy::{
     CanaryProofCandidate, CanaryProofInstrumentConstraints, CanaryProofOrderSide,
     CanaryProofPolicyInput, CanaryProofPolicyRejection, CanaryProofSizingMode,
-    CanaryProofSourcePacket, select_canary_proof_candidate,
+    CanaryProofSourcePacket, build_canary_proof_candidate_source_artifact,
+    select_canary_proof_candidate,
 };
 use bolt_v2::strategies::CanaryProofCandidateProvider;
 use rust_decimal::Decimal;
@@ -331,6 +332,32 @@ fn strategy_provider_exposes_source_bound_canary_proof_candidates() {
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].instrument_id, "instrument-a");
     assert_eq!(candidates[0].source_refs, vec!["source-hash-a".to_string()]);
+}
+
+#[test]
+fn candidate_source_artifact_binds_candidates_to_current_source_ref() {
+    let source_packet = CanaryProofSourcePacket {
+        current_source_ref: "source-hash-a".to_string(),
+    };
+    let artifact = build_canary_proof_candidate_source_artifact(
+        &source_packet,
+        vec![configured_candidate(
+            "instrument-a",
+            CanaryProofOrderSide::Buy,
+            "0.01",
+            "source-hash-a",
+        )],
+    )
+    .expect("source-bound candidate artifact should build");
+
+    assert_eq!(
+        artifact.record_kind,
+        "bolt_v3_canary_proof_candidate_source"
+    );
+    assert_eq!(artifact.proof_claim, "proof_only");
+    assert_eq!(artifact.current_source_ref, "source-hash-a");
+    assert_eq!(artifact.candidate_count, 1);
+    assert_eq!(artifact.candidates[0].instrument_id, "instrument-a");
 }
 
 struct TestCanaryProofCandidateProvider {

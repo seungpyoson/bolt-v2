@@ -1,14 +1,16 @@
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 
+const CANARY_PROOF_CANDIDATE_SOURCE_RECORD_KIND: &str = "bolt_v3_canary_proof_candidate_source";
 const CANARY_PROOF_CLAIM: &str = "proof_only";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CanaryProofOrderSide {
     Buy,
     Sell,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanaryProofCandidate {
     pub strategy_instance_id: String,
     pub execution_client_id: String,
@@ -20,12 +22,12 @@ pub struct CanaryProofCandidate {
     pub constraints: CanaryProofInstrumentConstraints,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CanaryProofSizingMode {
     BaseQuantity,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanaryProofInstrumentConstraints {
     pub sizing_mode: CanaryProofSizingMode,
     pub quantity_step: Decimal,
@@ -33,7 +35,7 @@ pub struct CanaryProofInstrumentConstraints {
     pub min_notional: Option<Decimal>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanaryProofPolicyInput {
     pub strategy_instance_id: String,
     pub execution_client_id: String,
@@ -46,9 +48,18 @@ pub struct CanaryProofPolicyInput {
     pub candidates: Vec<CanaryProofCandidate>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanaryProofSourcePacket {
     pub current_source_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanaryProofCandidateSourceArtifact {
+    pub record_kind: &'static str,
+    pub proof_claim: &'static str,
+    pub current_source_ref: String,
+    pub candidate_count: u32,
+    pub candidates: Vec<CanaryProofCandidate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +101,27 @@ pub enum CanaryProofPolicyRejection {
     InstrumentConstraintsInvalidQuantityStep,
     InstrumentConstraintsInvalidSizingPrice,
     NoProofCandidate,
+}
+
+pub fn build_canary_proof_candidate_source_artifact(
+    source_packet: &CanaryProofSourcePacket,
+    candidates: Vec<CanaryProofCandidate>,
+) -> Result<CanaryProofCandidateSourceArtifact, CanaryProofPolicyRejection> {
+    if candidates.iter().any(|candidate| {
+        !candidate
+            .source_refs
+            .contains(&source_packet.current_source_ref)
+    }) {
+        return Err(CanaryProofPolicyRejection::ProofCandidateSourceMismatch);
+    }
+
+    Ok(CanaryProofCandidateSourceArtifact {
+        record_kind: CANARY_PROOF_CANDIDATE_SOURCE_RECORD_KIND,
+        proof_claim: CANARY_PROOF_CLAIM,
+        current_source_ref: source_packet.current_source_ref.clone(),
+        candidate_count: candidates.len() as u32,
+        candidates,
+    })
 }
 
 pub fn select_canary_proof_candidate(

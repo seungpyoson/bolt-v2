@@ -15,6 +15,8 @@ Status: complete locally; T044 still requires renewed explicit approval.
 
 The selected tiny-capital path is gated separately from the all-venue T043A matrix. The current T043A matrix records the configured selected-path data row as production-usable for same-run metadata-selected targets. The broader matrix is 7/11 usable with 4 unrelated data-only rows still fail-closed. Those unrelated rows gate the PR's broad multi-venue data-client production-usability claim; they do not by themselves block the currently configured tiny-capital canary path.
 
+Operator decision on 2026-05-29: freeze the broad T043A adapter remediation for today's T044 sequence, leave the 4 residual fail-closed data-only rows explicitly open, and proceed only with the configured selected tiny-capital canary path after exact-head preflight re-affirmation and renewed explicit approval.
+
 T043B must be recorded against the current head before T044 can run:
 
 - The selected data row in the T043A matrix is production-usable for the configured canary path.

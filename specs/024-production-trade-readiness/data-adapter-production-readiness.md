@@ -205,6 +205,16 @@ The 2026-05-29 Claude adversarial review of this plan, job `d731d42d-31ad-4caf-9
 
 This keeps the readiness claim scoped to the path actually carrying capital while preserving fail-closed evidence for the broader requested venue set.
 
+## Operator Freeze For T044
+
+On 2026-05-29 the operator chose to freeze the broad T043A adapter scope for today's canary sequence and defer the remaining adapter remediation to later work. This freeze does not close T043A and does not weaken the matrix threshold:
+
+- T043A remains open for the broad multi-venue data-client production-usability claim.
+- The current matrix records 7 production-usable configured data rows and 4 fail-closed configured data rows.
+- The fail-closed rows remain explicit residual scope and must not be described as production-usable in PR, issue, or readiness-ledger updates.
+- T044 may proceed only through the configured selected tiny-capital canary path after final-head packet/no-submit re-affirmation and renewed explicit operator approval.
+- Later adapter work must resume from source-owned behavior evidence and matrix regeneration, not from this freeze decision.
+
 ## Missing Production Proof
 
 T043A remains open until a venue-neutral matrix proves the following for every PR-enabled data client, including Polymarket and each data-only NT venue binding:

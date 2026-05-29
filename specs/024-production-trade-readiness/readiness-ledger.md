@@ -1,5 +1,7 @@
 # T046 Readiness Ledger
 
+> Closeout sequence and where T046 sits in it: see [`closeout-runbook.md`](closeout-runbook.md) Step 8.
+
 Status: pending T044 and T045.
 
 T046 requires updating GitHub issues #369, #385, #409, #360, and PR #480 with exact final readiness status and recording those links here. This file currently records the pre-closeout state and the required update plan.

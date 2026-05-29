@@ -1,5 +1,7 @@
 # T044 Tiny-Capital Canary
 
+> End-to-end closeout sequence (T043B -> T044 -> T045 -> T046): see [`closeout-runbook.md`](closeout-runbook.md).
+
 Status: not completed.
 
 T044 remains gated on renewed explicit operator approval because it is a live tiny-capital canary. The canary may submit at most one live order under the configured bounds:

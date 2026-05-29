@@ -1,5 +1,7 @@
 # T045 Post-Run Hygiene
 
+> Closeout sequence and where T045 sits in it: see [`closeout-runbook.md`](closeout-runbook.md) Step 7.
+
 Status: pending T044.
 
 T045 cannot be completed until the T044 tiny-capital canary runs and produces the post-run artifact paths bound in the verified operator packet. This file records the exact post-run hygiene contract that must be satisfied before T045 can be checked off.

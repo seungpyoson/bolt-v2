@@ -183,3 +183,27 @@ Result: not T044 completion evidence.
 - The command reported both UP and DOWN worst-case EV as negative, while the configured `edge_threshold_basis_points` remained positive and config-owned.
 
 Scope and side effects: this was source collection only. It did not run final-packet no-submit, enter the live runner, consume approval, submit/cancel orders, transfer funds, mutate on-chain state, mutate CLOB allowance/cache state, display secrets, or execute a trade. T044 remains open. The remaining blocker is no longer source-proof materialization; it is that the configured strategy will not trade the currently observed market without a qualifying edge.
+
+## Approved Live Attempt At 78a03da5: Failed Closed Before Submit
+
+Approved head: `78a03da5d7fdc7b66c2156709cf5bb3fa2a5e308`
+
+Operator approval: T044 tiny-capital canary at head `78a03da5d7fdc7b66c2156709cf5bb3fa2a5e308`, max 1 live order, `max_notional_per_order = 1.00`.
+
+Artifact root: `/private/tmp/bolt-v2-t044-live-approved-78a03da5-next-market-1780025216`
+
+Result: not T044 completion evidence.
+
+- Fresh source-owned packet and no-submit readiness were generated for the attempt root and verified before live runner entry.
+- Root TOML sha256: `ad94634bbc1704d216f23a8e0b64c42295463d95c6a36f4620d025c3559c8c34`.
+- Operator packet sha256: `254a329198b3fb066f18e2e91b612c9323c3e7f12c70e9f12875ab935d3e51b7`.
+- No-submit readiness report sha256: `79a121dca392a73b71758625278b918a7a852c6afbae4240035c0aeb62adb1c1`.
+- The live runner consumed the one-time approval and wrote `live-run/approval-consumed.json`, sha256 `bf9aba961a1ecb6c906dd1e449ff39caffff5f2bf519d63f2446674b86e9f067`.
+- The configured selected data/execution clients connected, the runtime capture spool was created under live instance `f297b56a-b753-4882-aa0d-60c0dc01437b`, and the strategy entered runtime evaluation.
+- The live run failed closed before submit: initial runtime evaluations were blocked by warmup/fee/book readiness; after those cleared, the strategy reported `no_side_selected` and skipped entry submit.
+- `live-run/` contains no `canary-evidence.json`, `nt-submit-event.json`, `venue-order-state.json`, `restart-reconciliation.json`, or `post-run-hygiene.json`.
+- The persisted decision-evidence JSONL remained at three pre-live records; its submit-admission record was `rejected_not_armed`, with no live admitted order record.
+- Post-live venue account-state collection wrote `post-live-venue-account-state-source.json`, sha256 `d99d615d7f33b31a3142b1798a90318c1321330aafe21b618c5b70fcc8bf4bf5`, matching the pre-run venue account-state source hash, with `open_order_count = 0` and `open_position_count = 0`.
+- The runner was stopped with SIGINT after no admitted order or submit artifact existed. NT disconnected the configured clients cleanly and returned exit code 0.
+
+Scope and side effects: this live attempt connected the configured selected data/execution clients and consumed the one-time operator approval proof. It did not produce a submitted-order artifact, venue order-state artifact, canary evidence, cancel proof, transfer proof, on-chain mutation proof, CLOB allowance/cache mutation proof, post-run hygiene proof, or completed trade. T044 remains open and requires a fresh packet plus renewed exact-head approval before any retry that can consume approval.

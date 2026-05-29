@@ -31,6 +31,6 @@ After T044 completes, run an artifact/log scan over the T044 output directory an
 - Retained artifacts are the minimum set needed for final-packet verification and issue/PR evidence.
 - Any purge decision is recorded by hash/path-hash, not by printing secret-bearing paths or contents.
 
-## Current Non-Live State
+## Current State
 
-No T045 scan has been run because T044 has not executed. No post-run hygiene proof exists yet, and T045 remains open.
+No T045 scan has been run because T044 has not completed and no successful canary post-run artifact set exists yet. Blocked-before-submit live attempts remain recorded in `tiny-canary.md`; they do not satisfy the T045 entry gate. No post-run hygiene proof exists yet, and T045 remains open.

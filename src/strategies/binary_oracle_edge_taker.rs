@@ -4893,6 +4893,7 @@ impl DataActor for BinaryOracleEdgeTaker {
             return Ok(());
         }
 
+        self.refresh_fee_readiness();
         let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
         if matches!(self.exposure, ExposureState::Managed(_))
             && let Err(error) = self.try_submit_exit_order(now_ms)
@@ -13903,6 +13904,50 @@ mod tests {
         strategy.refresh_fee_readiness();
         assert!(strategy.active.outcome_fees.up_ready);
         assert!(strategy.active.outcome_fees.down_ready);
+    }
+
+    #[test]
+    fn book_delta_refreshes_fee_readiness_after_warm_populates_provider() {
+        let fee_provider = RecordingFeeProvider::cold();
+        let mut strategy = ready_to_trade_strategy();
+        strategy.context = StrategyBuildContext::new(
+            fee_provider.clone(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                    RecordingDecisionEvidenceWriter,
+                )),
+            ),
+        )
+        .with_readiness_evidence(test_readiness_gate_evidence());
+        strategy.active.outcome_fees.up_ready = false;
+        strategy.active.outcome_fees.down_ready = false;
+        register_test_strategy_with_active_instruments(&mut strategy);
+
+        let up_instrument_id = strategy
+            .active
+            .outcome_fees
+            .up_instrument_id
+            .expect("test active market should have up outcome");
+        let down_instrument_id = strategy
+            .active
+            .outcome_fees
+            .down_instrument_id
+            .expect("test active market should have down outcome");
+        fee_provider.set_fee(up_instrument_id.to_string().as_str(), Decimal::new(100, 2));
+        fee_provider.set_fee(
+            down_instrument_id.to_string().as_str(),
+            Decimal::new(100, 2),
+        );
+
+        strategy
+            .on_book_deltas(&book_deltas(
+                up_instrument_id,
+                &[(BookAction::Update, OrderSide::Sell, 0.45, 500.0)],
+            ))
+            .expect("book delta should not escape actor loop");
+
+        assert!(strategy.active.outcome_fees.market_ready());
     }
 
     #[test]

@@ -951,6 +951,7 @@ fn configure_data_client_readiness_quote_probe(loaded: &mut LoadedBoltV3Config) 
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::Configured,
         max_metadata_quote_targets: None,
         allow_metadata_target_sampling: None,
+        min_observed_targets: None,
         quote_targets: Some(BTreeMap::from([(
             TEST_DATA_CLIENT_PROBE_TARGET_ID.to_string(),
             DataClientReadinessProbeQuoteTargetBlock {
@@ -1860,6 +1861,7 @@ fn data_client_behavior_probe_events_source_accepts_metadata_response_quote_targ
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
         quote_targets: None,
     });
     loaded
@@ -1939,6 +1941,7 @@ fn data_client_behavior_probe_events_source_accepts_metadata_response_book_targe
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
         quote_targets: None,
     });
     loaded
@@ -2016,6 +2019,7 @@ fn data_client_behavior_probe_events_source_accepts_explicit_metadata_response_s
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(3),
         allow_metadata_target_sampling: Some(true),
+        min_observed_targets: None,
         quote_targets: None,
     });
     loaded
@@ -2246,6 +2250,7 @@ fn data_client_behavior_probe_events_source_rejects_metadata_response_target_tru
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
         quote_targets: None,
     });
     loaded
@@ -2311,6 +2316,7 @@ fn data_client_behavior_probe_events_source_requires_quotes_for_all_metadata_res
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
         max_metadata_quote_targets: Some(2),
         allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
         quote_targets: None,
     });
     loaded

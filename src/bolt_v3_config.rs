@@ -357,6 +357,13 @@ pub struct DataClientReadinessProbeBlock {
     pub quote_target_source: DataClientReadinessProbeQuoteTargetSource,
     pub max_metadata_quote_targets: Option<usize>,
     pub allow_metadata_target_sampling: Option<bool>,
+    /// Minimum number of sampled readiness-probe targets that must produce a
+    /// fresh quote/book observation for the probe to pass. When unset the probe
+    /// requires every sampled target (strict, fail-closed default). Configuring
+    /// a value lets broad metadata universes prove adapter data-path behaviour
+    /// without requiring every illiquid or un-streamable sampled instrument to
+    /// tick within the configured wait. Must be >= 1 and <= the sampled count.
+    pub min_observed_targets: Option<usize>,
     pub quote_targets: Option<BTreeMap<String, DataClientReadinessProbeQuoteTargetBlock>>,
 }
 

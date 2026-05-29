@@ -839,6 +839,7 @@ struct DataClientReadinessProbeTargetSource {
     instrument_id_hash: Option<String>,
     max_metadata_quote_targets: Option<usize>,
     allow_metadata_target_sampling: bool,
+    min_observed_targets: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3431,13 +3432,9 @@ fn data_client_quote_probe_events_from_no_submit_readiness_evidence(
         evidence,
         &quote_targets,
     )?;
-    if client
-        .readiness_probe
-        .as_ref()
-        .is_some_and(|readiness_probe| {
-            readiness_probe.quote_target_source
-                == DataClientReadinessProbeQuoteTargetSource::MetadataResponse
-        })
+    if let Some(readiness_probe) = client.readiness_probe.as_ref()
+        && readiness_probe.quote_target_source
+            == DataClientReadinessProbeQuoteTargetSource::MetadataResponse
     {
         let observed_targets: BTreeSet<&str> = evidence
             .quotes
@@ -3446,7 +3443,14 @@ fn data_client_quote_probe_events_from_no_submit_readiness_evidence(
             .filter(|quote| quote_targets.contains(&quote.instrument_id))
             .map(|quote| quote.instrument_id.as_str())
             .collect();
-        if observed_targets.len() != quote_targets.len() {
+        // Mirror the live probe's success criterion: every sampled target must
+        // stream a quote unless `min_observed_targets` lowers the bar to that
+        // many distinct sampled targets (default unset = strict all).
+        let required_observations = readiness_probe
+            .min_observed_targets
+            .map(|min_observed| min_observed.clamp(1, quote_targets.len().max(1)))
+            .unwrap_or(quote_targets.len());
+        if observed_targets.len() < required_observations {
             return Err(
                 BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
                     field: "metadata.instrument_ids.quotes",
@@ -3476,13 +3480,9 @@ fn data_client_book_probe_events_from_no_submit_readiness_evidence(
         evidence,
         &book_targets,
     )?;
-    if client
-        .readiness_probe
-        .as_ref()
-        .is_some_and(|readiness_probe| {
-            readiness_probe.quote_target_source
-                == DataClientReadinessProbeQuoteTargetSource::MetadataResponse
-        })
+    if let Some(readiness_probe) = client.readiness_probe.as_ref()
+        && readiness_probe.quote_target_source
+            == DataClientReadinessProbeQuoteTargetSource::MetadataResponse
     {
         let observed_targets: BTreeSet<&str> = evidence
             .deltas
@@ -3491,7 +3491,16 @@ fn data_client_book_probe_events_from_no_submit_readiness_evidence(
             .filter(|deltas| book_targets.contains(&deltas.instrument_id))
             .map(|deltas| deltas.instrument_id.as_str())
             .collect();
-        if observed_targets.len() != book_targets.len() {
+        // Mirror the live probe's success criterion: every sampled target must
+        // stream a book delta unless `min_observed_targets` lowers the bar, in
+        // which case observing at least that many distinct sampled targets is
+        // the proof. Keeps the artifact materializer consistent with
+        // `BoltV3NoSubmitReferenceQuoteProbeHandle::required_observation_count`.
+        let required_observations = readiness_probe
+            .min_observed_targets
+            .map(|min_observed| min_observed.clamp(1, book_targets.len().max(1)))
+            .unwrap_or(book_targets.len());
+        if observed_targets.len() < required_observations {
             return Err(
                 BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
                     field: "metadata.instrument_ids.books",
@@ -5774,6 +5783,7 @@ fn data_client_readiness_probe_targets(
                     instrument_id_hash: Some(sha256_text(&target.instrument_id.to_string())),
                     max_metadata_quote_targets: None,
                     allow_metadata_target_sampling: false,
+                    min_observed_targets: readiness_probe.min_observed_targets,
                 })
                 .collect())
         }
@@ -5795,6 +5805,7 @@ fn data_client_readiness_probe_targets(
                 instrument_id_hash: None,
                 max_metadata_quote_targets: readiness_probe.max_metadata_quote_targets,
                 allow_metadata_target_sampling,
+                min_observed_targets: readiness_probe.min_observed_targets,
             }])
         }
     }

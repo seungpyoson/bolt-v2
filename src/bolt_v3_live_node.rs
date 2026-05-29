@@ -80,8 +80,9 @@ use crate::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
     bolt_v3_config::{
-        DataClientReadinessProbeBookType, DataClientReadinessProbeMarketDataKind,
-        DataClientReadinessProbeQuoteTargetSource, LoadedBoltV3Config,
+        DataClientReadinessProbeBlock, DataClientReadinessProbeBookType,
+        DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetSource,
+        LoadedBoltV3Config,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
@@ -208,6 +209,7 @@ struct BoltV3NoSubmitReferenceQuoteProbeHandle {
     metadata_response_data_client_id: Option<ClientId>,
     metadata_response_max_quote_targets: Option<usize>,
     metadata_response_allow_target_sampling: bool,
+    min_observed_targets: Option<usize>,
     quote_targets_initialized: Rc<Cell<bool>>,
     failure_reason: Rc<RefCell<Option<String>>>,
     quotes: Rc<RefCell<Vec<BoltV3NoSubmitReferenceQuote>>>,
@@ -224,6 +226,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             ambiguous_instrument_ids,
             DataClientReadinessProbeMarketDataKind::Quote,
             None,
+            None,
         )
     }
 
@@ -232,6 +235,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         ambiguous_instrument_ids: BTreeSet<String>,
         market_data_kind: DataClientReadinessProbeMarketDataKind,
         book_type: Option<DataClientReadinessProbeBookType>,
+        min_observed_targets: Option<usize>,
     ) -> Self {
         Self {
             required: Rc::new(RefCell::new(required)),
@@ -241,6 +245,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             metadata_response_data_client_id: None,
             metadata_response_max_quote_targets: None,
             metadata_response_allow_target_sampling: false,
+            min_observed_targets,
             quote_targets_initialized: Rc::new(Cell::new(true)),
             failure_reason: Rc::new(RefCell::new(None)),
             quotes: Rc::new(RefCell::new(Vec::new())),
@@ -255,6 +260,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         allow_target_sampling: bool,
         market_data_kind: DataClientReadinessProbeMarketDataKind,
         book_type: Option<DataClientReadinessProbeBookType>,
+        min_observed_targets: Option<usize>,
     ) -> Self {
         Self {
             required: Rc::new(RefCell::new(Vec::new())),
@@ -264,6 +270,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             metadata_response_data_client_id: Some(data_client_id),
             metadata_response_max_quote_targets: Some(max_quote_targets),
             metadata_response_allow_target_sampling: allow_target_sampling,
+            min_observed_targets,
             quote_targets_initialized: Rc::new(Cell::new(false)),
             failure_reason: Rc::new(RefCell::new(None)),
             quotes: Rc::new(RefCell::new(Vec::new())),
@@ -294,15 +301,30 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         if self.metadata_response_data_client_id.is_some() && required.is_empty() {
             return false;
         }
+        let required_observations = self.required_observation_count(required.len());
         match self.market_data_kind {
             DataClientReadinessProbeMarketDataKind::Quote => {
                 let quotes = self.quotes.borrow();
-                observed_required_quote_count(&required, &quotes) == required.len()
+                observed_required_quote_count(&required, &quotes) >= required_observations
             }
             DataClientReadinessProbeMarketDataKind::Book => {
                 let book_deltas = self.book_deltas.borrow();
-                observed_required_book_delta_count(&required, &book_deltas) == required.len()
+                observed_required_book_delta_count(&required, &book_deltas) >= required_observations
             }
+        }
+    }
+
+    /// Number of sampled targets that must be observed for the probe to pass.
+    ///
+    /// Defaults to every sampled target (strict, fail-closed). When
+    /// `readiness_probe.min_observed_targets` is configured it lowers the bar to
+    /// that value, clamped into `[1, sampled_len]` so a broad metadata universe
+    /// can prove adapter data-path behaviour without requiring every illiquid or
+    /// un-streamable sampled instrument to tick within the configured wait.
+    fn required_observation_count(&self, sampled_len: usize) -> usize {
+        match self.min_observed_targets {
+            Some(min_observed) => min_observed.clamp(1, sampled_len.max(1)),
+            None => sampled_len,
         }
     }
 
@@ -381,6 +403,15 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             .collect();
         let (required, ambiguous_instrument_ids) =
             dedupe_no_submit_reference_quote_subscriptions(subscriptions);
+        if let Some(min_observed) = self.min_observed_targets
+            && min_observed > required.len()
+        {
+            self.fail_metadata_response_probe(format!(
+                "clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} source-owned metadata_response target(s) sampled this run",
+                required.len()
+            ));
+            return Vec::new();
+        }
         *self.required.borrow_mut() = required.clone();
         *self.ambiguous_instrument_ids.borrow_mut() = ambiguous_instrument_ids;
         self.quote_targets_initialized.set(true);
@@ -890,6 +921,28 @@ fn no_submit_data_client_readiness_quote_subscription_plan(
     ))
 }
 
+/// Validates the TOML-owned `readiness_probe.min_observed_targets` lower bound.
+///
+/// `min_observed_targets` lets a broad metadata universe prove adapter data-path
+/// behaviour by observing fresh data for at least this many sampled targets,
+/// rather than requiring every sampled (and possibly illiquid or un-streamable)
+/// instrument to tick. A configured value of zero would let the probe pass with
+/// no observed data, so it is rejected here. The upper bound against the actual
+/// sampled target count is enforced where that count is known (at build time for
+/// configured targets, at metadata-response install time for sampled targets).
+fn validate_readiness_probe_min_observed_targets(
+    readiness_probe: &DataClientReadinessProbeBlock,
+) -> Result<Option<usize>, BoltV3LiveNodeError> {
+    match readiness_probe.min_observed_targets {
+        Some(0) => Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "clients.<id>.readiness_probe.min_observed_targets must be a positive integer when configured"
+            ),
+        )),
+        other => Ok(other),
+    }
+}
+
 fn no_submit_data_client_readiness_quote_probe_handle(
     loaded: &LoadedBoltV3Config,
     client_key: &str,
@@ -912,8 +965,10 @@ fn no_submit_data_client_readiness_quote_probe_handle(
             BTreeSet::new(),
             DataClientReadinessProbeMarketDataKind::Quote,
             None,
+            None,
         ));
     };
+    let min_observed_targets = validate_readiness_probe_min_observed_targets(readiness_probe)?;
     match readiness_probe.quote_target_source {
         DataClientReadinessProbeQuoteTargetSource::Configured => {
             let Some(quote_targets) = &readiness_probe.quote_targets else {
@@ -939,11 +994,22 @@ fn no_submit_data_client_readiness_quote_probe_handle(
                 .collect();
             let (required, ambiguous_instrument_ids) =
                 dedupe_no_submit_reference_quote_subscriptions(subscriptions);
+            if let Some(min_observed) = min_observed_targets
+                && min_observed > required.len()
+            {
+                return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                    anyhow::anyhow!(
+                        "clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} configured readiness_probe.quote_targets",
+                        required.len()
+                    ),
+                ));
+            }
             Ok(BoltV3NoSubmitReferenceQuoteProbeHandle::from_plan(
                 required,
                 ambiguous_instrument_ids,
                 readiness_probe.market_data_kind,
                 readiness_probe.book_type,
+                min_observed_targets,
             ))
         }
         DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
@@ -973,6 +1039,7 @@ fn no_submit_data_client_readiness_quote_probe_handle(
                     allow_target_sampling,
                     readiness_probe.market_data_kind,
                     readiness_probe.book_type,
+                    min_observed_targets,
                 ),
             )
         }
@@ -2292,6 +2359,7 @@ fn install_no_submit_data_client_readiness_quote_probe(
         ambiguous_instrument_ids,
         DataClientReadinessProbeMarketDataKind::Quote,
         None,
+        None,
     );
     install_no_submit_reference_quote_probe_handle(node, loaded, handle)
 }
@@ -3046,6 +3114,7 @@ mod tests {
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::Configured,
             max_metadata_quote_targets: None,
             allow_metadata_target_sampling: None,
+            min_observed_targets: None,
             quote_targets: Some(BTreeMap::from([(
                 "configured_quote_probe".to_string(),
                 DataClientReadinessProbeQuoteTargetBlock {
@@ -3084,6 +3153,7 @@ mod tests {
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(2),
             allow_metadata_target_sampling: Some(false),
+            min_observed_targets: None,
             quote_targets: None,
         });
 
@@ -3139,6 +3209,7 @@ mod tests {
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(2),
             allow_metadata_target_sampling: Some(false),
+            min_observed_targets: None,
             quote_targets: None,
         });
 
@@ -3177,6 +3248,7 @@ mod tests {
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(3),
             allow_metadata_target_sampling: Some(true),
+            min_observed_targets: None,
             quote_targets: None,
         });
 
@@ -3220,6 +3292,7 @@ mod tests {
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(3),
             allow_metadata_target_sampling: Some(false),
+            min_observed_targets: None,
             quote_targets: None,
         });
 
@@ -3307,6 +3380,7 @@ mod tests {
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
             max_metadata_quote_targets: Some(1),
             allow_metadata_target_sampling: Some(false),
+            min_observed_targets: None,
             quote_targets: None,
         });
 
@@ -3345,6 +3419,131 @@ mod tests {
             "metadata-response book probes should pass after every installed source-owned target has book deltas"
         );
         assert_eq!(handle.book_evidence().deltas.len(), 1);
+    }
+
+    #[test]
+    fn data_client_readiness_metadata_response_book_probe_passes_at_min_observed_targets() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
+            book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(5),
+            allow_metadata_target_sampling: Some(true),
+            min_observed_targets: Some(2),
+            quote_targets: None,
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness book handle should build");
+        let installed = handle.install_metadata_response_instrument_ids(vec![
+            InstrumentId::from("CONFIGURED-A.SOURCE"),
+            InstrumentId::from("CONFIGURED-B.SOURCE"),
+            InstrumentId::from("CONFIGURED-C.SOURCE"),
+            InstrumentId::from("CONFIGURED-D.SOURCE"),
+            InstrumentId::from("CONFIGURED-E.SOURCE"),
+        ]);
+        assert_eq!(installed.len(), 5);
+
+        let record_delta = |subscription: &NoSubmitReferenceQuoteSubscription| {
+            let delta = OrderBookDelta::new(
+                subscription.instrument_id,
+                BookAction::Add,
+                BookOrder::new(
+                    OrderSide::Buy,
+                    Price::from("1.00"),
+                    Quantity::from("2.00"),
+                    1,
+                ),
+                0,
+                0,
+                1_000.into(),
+                1_100.into(),
+            );
+            let deltas = OrderBookDeltas::new(subscription.instrument_id, vec![delta]);
+            handle.record_book_deltas(&deltas, 1_200);
+        };
+
+        assert!(
+            !handle.has_all_required_market_data(),
+            "book probe must not pass before any sampled target streams a delta"
+        );
+
+        record_delta(&installed[0]);
+        assert!(
+            !handle.has_all_required_market_data(),
+            "book probe must keep waiting below min_observed_targets (1 of required 2)"
+        );
+
+        record_delta(&installed[1]);
+        assert!(
+            handle.has_all_required_market_data(),
+            "book probe should pass once min_observed_targets sampled targets stream fresh deltas, without requiring every illiquid sampled instrument to tick"
+        );
+    }
+
+    #[test]
+    fn data_client_readiness_probe_rejects_zero_min_observed_targets() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
+            book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(5),
+            allow_metadata_target_sampling: Some(true),
+            min_observed_targets: Some(0),
+            quote_targets: None,
+        });
+
+        assert!(
+            no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main").is_err(),
+            "min_observed_targets=0 must fail closed: a probe that observes nothing proves nothing"
+        );
+    }
+
+    #[test]
+    fn data_client_readiness_probe_fails_closed_when_min_observed_exceeds_sampled() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
+            book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(5),
+            allow_metadata_target_sampling: Some(true),
+            min_observed_targets: Some(4),
+            quote_targets: None,
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness book handle should build");
+        let installed = handle.install_metadata_response_instrument_ids(vec![
+            InstrumentId::from("CONFIGURED-A.SOURCE"),
+            InstrumentId::from("CONFIGURED-B.SOURCE"),
+        ]);
+
+        assert!(
+            installed.is_empty(),
+            "install must fail closed when min_observed_targets exceeds the sampled target count"
+        );
+        assert!(
+            !handle.has_all_required_market_data(),
+            "probe must not pass after min_observed_targets exceeds the sampled targets"
+        );
     }
 
     #[test]

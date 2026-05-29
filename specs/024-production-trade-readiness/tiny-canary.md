@@ -45,6 +45,16 @@ T043B packet/no-submit refresh:
 
 Scope and side effects: this was final-packet pre-run verification plus no-submit readiness only. It connected and disconnected the currently configured selected data/execution clients, reconciled account state, and wrote the readiness report. It did not run the live runner, consume live approval, submit/cancel orders, transfer funds, mutate on-chain state, mutate CLOB allowance/cache state, print secrets, or execute a trade. A docs commit after this evidence changes `HEAD`; before T044, rerun final-packet verification and no-submit once more at the post-docs exact head.
 
+Post-doc checkpoint rerun:
+
+- Head: `6a28cc7f1a42e8f9b580a8033038f4defe8c7597`.
+- Temp root: `/private/tmp/bolt-v2-t043b-978618f8/live.local.toml`, sha256 `e7284aa9ef78aebc21d985d0bee2df5cff8c72e89dc34f4e7d237da1df50e9ac`.
+- `operator-artifacts verify-final --verification-stage pre-run`: passed for approval envelope `71d05b539a028bccf62fda555221713793a56b309e7275d4347498a43377e980`, operator packet `66342ac7efca3642bdc76e9c5f222d63718118bccee6ab4d9ad9eb0e281eb24e`, and static manifest `dd902343c29c71756c262edcb4b6e62dad5d427b3030c763629e6f71da6a6536`.
+- `no-submit-readiness --config /private/tmp/bolt-v2-t043b-978618f8/live.local.toml`: exited 0 and wrote `var/bolt-v3-live/reports/no-submit-readiness.json` sha256 `fca8919f24cb9c94ed42e3ff5a2e341af85fdc81716627eedb2e98d01a30f946`.
+- No-submit report generated at Unix seconds `1780016379`, executable identity `f26954b50091d534ef04ad37efc34c760f5733d5a8bf21f9c30aa4d9a08e7c02`, config bundle checksum `d4c5067aed49e95186b1f9a0b7276b58ef4eb67666a01273b83fea78f2c72414`, with all seven stages satisfied.
+
+This post-doc record is historical evidence for `6a28cc7f`; this documentation commit itself changes `HEAD`, so it does not remove the immediate exact-head rerun requirement before T044 live approval consumption.
+
 Selected-path topology repair:
 
 - Root cause: the no-submit and live build paths registered every client in the loaded root TOML. NT requires every registered client to connect before the node reaches `Running`, so unrelated data-only clients can mask or block the selected tiny-capital trade path.

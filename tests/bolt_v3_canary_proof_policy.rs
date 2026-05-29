@@ -9,6 +9,8 @@ use std::str::FromStr;
 #[test]
 fn proof_policy_selects_highest_scored_source_bound_candidate_without_venue_names() {
     let input = CanaryProofPolicyInput {
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
         proof_claim: "proof_only".to_string(),
         proof_notional: dec("1.00"),
         max_notional_per_order: dec("5.00"),
@@ -17,6 +19,8 @@ fn proof_policy_selects_highest_scored_source_bound_candidate_without_venue_name
         current_source_ref: "source-hash-a".to_string(),
         candidates: vec![
             CanaryProofCandidate {
+                strategy_instance_id: "configured_strategy".to_string(),
+                execution_client_id: "configured_execution_client".to_string(),
                 instrument_id: "instrument-a".to_string(),
                 order_side: CanaryProofOrderSide::Buy,
                 candidate_score: dec("-12.5"),
@@ -25,6 +29,8 @@ fn proof_policy_selects_highest_scored_source_bound_candidate_without_venue_name
                 constraints: unconstrained_base_quantity_constraints(),
             },
             CanaryProofCandidate {
+                strategy_instance_id: "configured_strategy".to_string(),
+                execution_client_id: "configured_execution_client".to_string(),
                 instrument_id: "instrument-b".to_string(),
                 order_side: CanaryProofOrderSide::Sell,
                 candidate_score: dec("-7.5"),
@@ -45,6 +51,8 @@ fn proof_policy_selects_highest_scored_source_bound_candidate_without_venue_name
 #[test]
 fn proof_policy_rejects_negative_ev_when_disallowed() {
     let input = CanaryProofPolicyInput {
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
         proof_claim: "proof_only".to_string(),
         proof_notional: dec("1.00"),
         max_notional_per_order: dec("5.00"),
@@ -52,6 +60,8 @@ fn proof_policy_rejects_negative_ev_when_disallowed() {
         source_ready: true,
         current_source_ref: "source-hash-a".to_string(),
         candidates: vec![CanaryProofCandidate {
+            strategy_instance_id: "configured_strategy".to_string(),
+            execution_client_id: "configured_execution_client".to_string(),
             instrument_id: "instrument-a".to_string(),
             order_side: CanaryProofOrderSide::Buy,
             candidate_score: dec("-0.01"),
@@ -72,6 +82,8 @@ fn proof_policy_rejects_negative_ev_when_disallowed() {
 #[test]
 fn proof_policy_rejects_candidate_without_current_source_ref_before_ev_filter() {
     let input = CanaryProofPolicyInput {
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
         proof_claim: "proof_only".to_string(),
         proof_notional: dec("1.00"),
         max_notional_per_order: dec("5.00"),
@@ -79,6 +91,8 @@ fn proof_policy_rejects_candidate_without_current_source_ref_before_ev_filter() 
         source_ready: true,
         current_source_ref: "source-hash-a".to_string(),
         candidates: vec![CanaryProofCandidate {
+            strategy_instance_id: "configured_strategy".to_string(),
+            execution_client_id: "configured_execution_client".to_string(),
             instrument_id: "instrument-a".to_string(),
             order_side: CanaryProofOrderSide::Buy,
             candidate_score: dec("-0.01"),
@@ -99,6 +113,8 @@ fn proof_policy_rejects_candidate_without_current_source_ref_before_ev_filter() 
 #[test]
 fn proof_policy_rejects_rounded_quantity_below_adapter_minimum() {
     let input = CanaryProofPolicyInput {
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
         proof_claim: "proof_only".to_string(),
         proof_notional: dec("0.01"),
         max_notional_per_order: dec("5.00"),
@@ -106,6 +122,8 @@ fn proof_policy_rejects_rounded_quantity_below_adapter_minimum() {
         source_ready: true,
         current_source_ref: "source-hash-a".to_string(),
         candidates: vec![CanaryProofCandidate {
+            strategy_instance_id: "configured_strategy".to_string(),
+            execution_client_id: "configured_execution_client".to_string(),
             instrument_id: "instrument-a".to_string(),
             order_side: CanaryProofOrderSide::Buy,
             candidate_score: dec("0.01"),
@@ -131,6 +149,8 @@ fn proof_policy_rejects_rounded_quantity_below_adapter_minimum() {
 #[test]
 fn proof_policy_rejects_rounded_notional_below_adapter_minimum() {
     let input = CanaryProofPolicyInput {
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
         proof_claim: "proof_only".to_string(),
         proof_notional: dec("0.50"),
         max_notional_per_order: dec("5.00"),
@@ -138,6 +158,8 @@ fn proof_policy_rejects_rounded_notional_below_adapter_minimum() {
         source_ready: true,
         current_source_ref: "source-hash-a".to_string(),
         candidates: vec![CanaryProofCandidate {
+            strategy_instance_id: "configured_strategy".to_string(),
+            execution_client_id: "configured_execution_client".to_string(),
             instrument_id: "instrument-a".to_string(),
             order_side: CanaryProofOrderSide::Buy,
             candidate_score: dec("0.01"),
@@ -163,6 +185,8 @@ fn proof_policy_rejects_rounded_notional_below_adapter_minimum() {
 #[test]
 fn proof_policy_rejects_non_positive_quantity_step() {
     let input = CanaryProofPolicyInput {
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
         proof_claim: "proof_only".to_string(),
         proof_notional: dec("1.00"),
         max_notional_per_order: dec("5.00"),
@@ -170,6 +194,8 @@ fn proof_policy_rejects_non_positive_quantity_step() {
         source_ready: true,
         current_source_ref: "source-hash-a".to_string(),
         candidates: vec![CanaryProofCandidate {
+            strategy_instance_id: "configured_strategy".to_string(),
+            execution_client_id: "configured_execution_client".to_string(),
             instrument_id: "instrument-a".to_string(),
             order_side: CanaryProofOrderSide::Buy,
             candidate_score: dec("0.01"),
@@ -195,6 +221,8 @@ fn proof_policy_rejects_non_positive_quantity_step() {
 #[test]
 fn proof_policy_rejects_non_positive_sizing_price() {
     let input = CanaryProofPolicyInput {
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
         proof_claim: "proof_only".to_string(),
         proof_notional: dec("1.00"),
         max_notional_per_order: dec("5.00"),
@@ -202,6 +230,8 @@ fn proof_policy_rejects_non_positive_sizing_price() {
         source_ready: true,
         current_source_ref: "source-hash-a".to_string(),
         candidates: vec![CanaryProofCandidate {
+            strategy_instance_id: "configured_strategy".to_string(),
+            execution_client_id: "configured_execution_client".to_string(),
             instrument_id: "instrument-a".to_string(),
             order_side: CanaryProofOrderSide::Buy,
             candidate_score: dec("0.01"),
@@ -222,6 +252,8 @@ fn proof_policy_rejects_non_positive_sizing_price() {
 #[test]
 fn proof_policy_rejects_non_positive_proof_notional() {
     let input = CanaryProofPolicyInput {
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
         proof_claim: "proof_only".to_string(),
         proof_notional: Decimal::ZERO,
         max_notional_per_order: dec("5.00"),
@@ -229,6 +261,8 @@ fn proof_policy_rejects_non_positive_proof_notional() {
         source_ready: true,
         current_source_ref: "source-hash-a".to_string(),
         candidates: vec![CanaryProofCandidate {
+            strategy_instance_id: "configured_strategy".to_string(),
+            execution_client_id: "configured_execution_client".to_string(),
             instrument_id: "instrument-a".to_string(),
             order_side: CanaryProofOrderSide::Buy,
             candidate_score: dec("0.01"),
@@ -241,6 +275,37 @@ fn proof_policy_rejects_non_positive_proof_notional() {
     let err = select_canary_proof_candidate(&input).expect_err("non-positive notional rejected");
 
     assert_eq!(err, CanaryProofPolicyRejection::ProofNotionalNonPositive);
+}
+
+#[test]
+fn proof_policy_rejects_candidate_for_different_execution_client() {
+    let input = CanaryProofPolicyInput {
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
+        proof_claim: "proof_only".to_string(),
+        proof_notional: dec("1.00"),
+        max_notional_per_order: dec("5.00"),
+        allow_negative_expected_ev: true,
+        source_ready: true,
+        current_source_ref: "source-hash-a".to_string(),
+        candidates: vec![CanaryProofCandidate {
+            strategy_instance_id: "configured_strategy".to_string(),
+            execution_client_id: "other_execution_client".to_string(),
+            instrument_id: "instrument-a".to_string(),
+            order_side: CanaryProofOrderSide::Buy,
+            candidate_score: dec("0.01"),
+            source_refs: vec!["source-hash-a".to_string()],
+            sizing_price: dec("0.50"),
+            constraints: unconstrained_base_quantity_constraints(),
+        }],
+    };
+
+    let err = select_canary_proof_candidate(&input).expect_err("execution mismatch rejected");
+
+    assert_eq!(
+        err,
+        CanaryProofPolicyRejection::ProofPolicyExecutionClientMismatch
+    );
 }
 
 fn dec(value: &str) -> Decimal {

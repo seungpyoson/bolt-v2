@@ -10,6 +10,8 @@ pub enum CanaryProofOrderSide {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanaryProofCandidate {
+    pub strategy_instance_id: String,
+    pub execution_client_id: String,
     pub instrument_id: String,
     pub order_side: CanaryProofOrderSide,
     pub candidate_score: Decimal,
@@ -33,6 +35,8 @@ pub struct CanaryProofInstrumentConstraints {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanaryProofPolicyInput {
+    pub strategy_instance_id: String,
+    pub execution_client_id: String,
     pub proof_claim: String,
     pub proof_notional: Decimal,
     pub max_notional_per_order: Decimal,
@@ -72,6 +76,8 @@ pub enum CanaryProofPolicyRejection {
     ProofNotionalNonPositive,
     ProofNotionalExceedsCap,
     ProofPolicySourceNotReady,
+    ProofPolicyStrategyMismatch,
+    ProofPolicyExecutionClientMismatch,
     ProofCandidateSourceMismatch,
     ProofPolicyNegativeEvDisallowed,
     InstrumentConstraintsBelowMinQuantity,
@@ -97,9 +103,27 @@ pub fn select_canary_proof_candidate(
         return Err(CanaryProofPolicyRejection::ProofPolicySourceNotReady);
     }
 
-    let source_bound_candidates = input
+    let strategy_bound_candidates = input
         .candidates
         .iter()
+        .filter(|candidate| candidate.strategy_instance_id == input.strategy_instance_id)
+        .collect::<Vec<_>>();
+
+    if strategy_bound_candidates.is_empty() && !input.candidates.is_empty() {
+        return Err(CanaryProofPolicyRejection::ProofPolicyStrategyMismatch);
+    }
+
+    let execution_bound_candidates = strategy_bound_candidates
+        .into_iter()
+        .filter(|candidate| candidate.execution_client_id == input.execution_client_id)
+        .collect::<Vec<_>>();
+
+    if execution_bound_candidates.is_empty() && !input.candidates.is_empty() {
+        return Err(CanaryProofPolicyRejection::ProofPolicyExecutionClientMismatch);
+    }
+
+    let source_bound_candidates = execution_bound_candidates
+        .into_iter()
         .filter(|candidate| candidate.source_refs.contains(&input.current_source_ref))
         .collect::<Vec<_>>();
 

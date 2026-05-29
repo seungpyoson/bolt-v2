@@ -3,7 +3,10 @@ mod support;
 use anyhow::Result;
 use bolt_v2::{
     bolt_v3_archetypes::binary_oracle_edge_taker,
-    bolt_v3_config::{DECISION_REFERENCE_GATE_ROLE, ReferenceDataBlock, load_bolt_v3_config},
+    bolt_v3_config::{
+        DECISION_REFERENCE_GATE_ROLE, DataClientReadinessProbeBookType, LiveCanaryProofPolicyBlock,
+        LiveCanaryProofTimeInForce, ReferenceDataBlock, load_bolt_v3_config,
+    },
     bolt_v3_live_node::{build_bolt_v3_live_node_with_summary, make_bolt_v3_live_node_builder},
     bolt_v3_secrets::resolve_bolt_v3_secrets_with,
     bolt_v3_submit_admission::{
@@ -19,7 +22,12 @@ use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_live::node::LiveNode;
 use nautilus_model::identifiers::{ClientId, InstrumentId, StrategyId};
 use rust_decimal::Decimal;
-use std::sync::Arc;
+use sha2::{Digest, Sha256};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 struct NoopFeeProvider;
 
@@ -1357,6 +1365,35 @@ fn bolt_v3_live_node_build_registers_configured_binary_oracle_strategy() {
 }
 
 #[test]
+fn bolt_v3_live_node_build_registers_generic_canary_proof_executor_when_enabled() {
+    let mut loaded =
+        support::loaded_bolt_v3_live_canary_with_satisfied_report(1, Decimal::new(5, 0));
+    configure_canary_proof_policy_and_artifacts(&mut loaded);
+
+    let (node, _summary) =
+        build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
+            .expect("v3 LiveNode build should register configured strategies and proof executor");
+
+    assert_eq!(
+        node.registered_strategy_ids(),
+        vec![
+            StrategyId::from("binary_oracle_edge_taker-001"),
+            StrategyId::from("canary-proof-executor-proof")
+        ]
+    );
+}
+
+#[test]
+fn binary_oracle_strategy_source_does_not_own_canary_proof_claim() {
+    let source = include_str!("../src/strategies/binary_oracle_edge_taker.rs");
+
+    assert!(
+        !source.contains("CANARY_PROOF_CLAIM"),
+        "proof-only live order claim must stay owned by the generic proof executor"
+    );
+}
+
+#[test]
 fn binary_oracle_registration_resolves_fee_provider_through_provider_boundary() {
     let source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
     assert!(
@@ -1377,6 +1414,105 @@ fn binary_oracle_registration_resolves_fee_provider_through_provider_boundary() 
         node.registered_strategy_ids(),
         vec![StrategyId::from("binary_oracle_edge_taker-001")]
     );
+}
+
+fn configure_canary_proof_policy_and_artifacts(
+    loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+) {
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("test live canary config should exist");
+    live_canary.proof_policy = Some(LiveCanaryProofPolicyBlock {
+        enabled: true,
+        policy_kind: "least_bad_strategy_candidate".to_string(),
+        proof_claim: "proof_only".to_string(),
+        executor_strategy_id: "canary-proof-executor-proof".to_string(),
+        strategy_instance_id: "configured_updown_main".to_string(),
+        execution_client_id: "polymarket_main".to_string(),
+        book_type: DataClientReadinessProbeBookType::L2Mbp,
+        time_in_force: LiveCanaryProofTimeInForce::Fok,
+        post_only: false,
+        reduce_only: false,
+        quote_quantity: false,
+        notional_mode: "fixed".to_string(),
+        proof_notional: "5.00".to_string(),
+        candidate_score_source: "strategy_evidence".to_string(),
+        allow_negative_expected_ev: true,
+        rotation_observation_enabled: true,
+        rotation_min_distinct_markets: 1,
+        rotation_max_attempts: 1,
+    });
+    let operator_evidence = live_canary
+        .operator_evidence
+        .as_mut()
+        .expect("test operator evidence should exist");
+    let evidence_dir = PathBuf::from(&operator_evidence.canary_evidence_path)
+        .parent()
+        .expect("canary evidence path should have a parent")
+        .to_path_buf();
+    let candidate_source_path = evidence_dir.join("canary-proof-candidate-source.json");
+    let order_intent_path = evidence_dir.join("canary-proof-order-intent.json");
+    write_json_artifact(
+        &candidate_source_path,
+        serde_json::json!({
+            "record_kind": "bolt_v3_canary_proof_candidate_source",
+            "proof_claim": "proof_only",
+            "current_source_ref": "a".repeat(64),
+            "candidate_count": 1,
+            "candidates": [{
+                "strategy_instance_id": "configured_updown_main",
+                "execution_client_id": "polymarket_main",
+                "instrument_id": "configured-condition-UP.POLYMARKET",
+                "order_side": "Buy",
+                "candidate_score": "-0.01",
+                "source_refs": ["a".repeat(64)],
+                "sizing_price": "0.50",
+                "constraints": {
+                    "sizing_mode": "BaseQuantity",
+                    "quantity_step": "0.01",
+                    "min_quantity": "1.00",
+                    "min_notional": "1.00"
+                }
+            }]
+        }),
+    );
+    write_json_artifact(
+        &order_intent_path,
+        serde_json::json!({
+            "record_kind": "bolt_v3_canary_proof_order_intent",
+            "proof_claim": "proof_only",
+            "strategy_instance_id": "configured_updown_main",
+            "execution_client_id": "polymarket_main",
+            "instrument_id": "configured-condition-UP.POLYMARKET",
+            "order_side": "Buy",
+            "notional": "5.00",
+            "quantity": "10.00",
+            "source_refs": ["a".repeat(64)]
+        }),
+    );
+    operator_evidence.canary_proof_candidate_source_path =
+        Some(candidate_source_path.to_string_lossy().to_string());
+    operator_evidence.canary_proof_candidate_source_sha256 =
+        Some(sha256_file(&candidate_source_path));
+    operator_evidence.canary_proof_order_intent_path =
+        Some(order_intent_path.to_string_lossy().to_string());
+    operator_evidence.canary_proof_order_intent_sha256 = Some(sha256_file(&order_intent_path));
+}
+
+fn write_json_artifact(path: &Path, value: serde_json::Value) {
+    fs::write(
+        path,
+        serde_json::to_vec(&value).expect("test JSON artifact should encode"),
+    )
+    .expect("test JSON artifact should write");
+}
+
+fn sha256_file(path: &Path) -> String {
+    hex::encode(Sha256::digest(
+        fs::read(path).expect("test artifact should read"),
+    ))
 }
 
 #[test]

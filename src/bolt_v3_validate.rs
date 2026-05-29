@@ -42,7 +42,7 @@ use std::{
 
 use nautilus_model::{
     enums::{BarAggregation, BarIntervalType},
-    identifiers::{ClientOrderId, InstrumentId},
+    identifiers::{ClientOrderId, InstrumentId, StrategyId},
 };
 use rust_decimal::Decimal;
 
@@ -219,6 +219,18 @@ fn validate_live_canary_proof_policy(
             "live_canary.proof_policy.strategy_instance_id must not be blank when enabled"
                 .to_string(),
         );
+    }
+    if policy.enabled && policy.executor_strategy_id.trim().is_empty() {
+        errors.push(
+            "live_canary.proof_policy.executor_strategy_id must not be blank when enabled"
+                .to_string(),
+        );
+    } else if policy.enabled
+        && let Err(reason) = StrategyId::new_checked(policy.executor_strategy_id.trim())
+    {
+        errors.push(format!(
+            "live_canary.proof_policy.executor_strategy_id is invalid: {reason}"
+        ));
     }
     if policy.enabled && policy.execution_client_id.trim().is_empty() {
         errors.push(

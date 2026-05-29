@@ -13679,3 +13679,243 @@ literal = '''"clients.{key}.readiness_probe cannot combine quote_target_source =
 context = '''"clients.{key}.readiness_probe cannot combine quote_target_source = \"metadata_response\" with readiness_probe.quote_targets"'''
 classification = '''readiness_probe_validation_diagnostic'''
 reason = '''This is a TOML validation diagnostic for readiness_probe configuration, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_canary_proof_executor.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent_path"'''
+context = '''"canary_proof_order_intent_path";'''
+classification = '''canary_proof_operator_evidence_field'''
+reason = '''This names a TOML-owned operator-evidence artifact path field consumed by the proof executor; the value remains config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_canary_proof_executor.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent_sha256"'''
+context = '''"canary_proof_order_intent_sha256";'''
+classification = '''canary_proof_operator_evidence_field'''
+reason = '''This names a TOML-owned operator-evidence artifact hash field consumed by the proof executor; the value remains config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_canary_proof_executor.rs'''
+kind = '''string'''
+literal = '''"canary proof order intent instrument_id is outside selected market"'''
+context = '''"canary proof order intent instrument_id is outside selected market"'''
+classification = '''canary_proof_fail_closed_diagnostic'''
+reason = '''This is a fail-closed diagnostic when the source-owned proof intent is outside the selected market, not a runtime market value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_canary_proof_policy.rs'''
+kind = '''string'''
+literal = '''"bolt_v3_canary_proof_candidate_source"'''
+context = '''pub const CANARY_PROOF_CANDIDATE_SOURCE_RECORD_KIND: &str = "bolt_v3_canary_proof_candidate_source";'''
+classification = '''canary_proof_record_kind'''
+reason = '''This is a stable proof artifact record_kind used for source-owned evidence validation, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_canary_proof_policy.rs'''
+kind = '''string'''
+literal = '''"bolt_v3_canary_proof_order_intent"'''
+context = '''pub const CANARY_PROOF_ORDER_INTENT_RECORD_KIND: &str = "bolt_v3_canary_proof_order_intent";'''
+classification = '''canary_proof_record_kind'''
+reason = '''This is a stable proof artifact record_kind used for source-owned evidence validation, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_canary_proof_policy.rs'''
+kind = '''string'''
+literal = '''"proof_only"'''
+context = '''pub const CANARY_PROOF_CLAIM: &str = "proof_only";'''
+classification = '''canary_proof_protocol_claim'''
+reason = '''This is the stable proof-only claim label required to distinguish canary plumbing proof orders from alpha strategy orders.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_candidate_source_path"'''
+context = '''"canary_proof_candidate_source_path",'''
+classification = '''canary_proof_operator_evidence_field'''
+reason = '''This names a TOML-owned operator-evidence artifact path field; the path value remains config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent_path"'''
+context = '''"canary_proof_order_intent_path",'''
+classification = '''canary_proof_operator_evidence_field'''
+reason = '''This names a TOML-owned operator-evidence artifact path field; the path value remains config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent_sha256"'''
+context = '''"canary_proof_order_intent_sha256",'''
+classification = '''canary_proof_operator_evidence_field'''
+reason = '''This names a TOML-owned operator-evidence artifact hash field; the hash value remains config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_candidate_source_sha256"'''
+context = '''"canary_proof_candidate_source_sha256",'''
+classification = '''canary_proof_operator_evidence_field'''
+reason = '''This names a TOML-owned operator-evidence artifact hash field; the hash value remains config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent_path"'''
+context = '''validate_operator_evidence_toml_path("canary_proof_order_intent_path", order_intent_path)?;'''
+classification = '''canary_proof_operator_evidence_field'''
+reason = '''This labels validation for a TOML-owned proof artifact path; the path value remains config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent_sha256"'''
+context = '''validate_operator_evidence_sha256("canary_proof_order_intent_sha256", order_intent_sha256)?;'''
+classification = '''canary_proof_operator_evidence_field'''
+reason = '''This labels validation for a TOML-owned proof artifact hash; the hash value remains config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_candidate_source.record_kind"'''
+context = '''"canary_proof_candidate_source.record_kind",'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof artifact schema error field name, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"proof_claim"'''
+context = '''"proof_claim",'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof artifact JSON field name validated against the proof-only protocol claim.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_candidate_source.proof_claim"'''
+context = '''"canary_proof_candidate_source.proof_claim",'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof artifact schema error field name, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent.record_kind"'''
+context = '''"canary_proof_order_intent.record_kind",'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof artifact schema error field name, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent.proof_claim"'''
+context = '''"canary_proof_order_intent.proof_claim",'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof artifact schema error field name, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"strategy_instance_id"'''
+context = '''"strategy_instance_id",'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof artifact JSON field name validated against TOML and gate-session identity.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent.strategy_instance_id"'''
+context = '''"canary_proof_order_intent.strategy_instance_id",'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof artifact schema error field name, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"execution_client_id"'''
+context = '''"execution_client_id",'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof artifact JSON field name validated against TOML-owned execution identity.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent.execution_client_id"'''
+context = '''"canary_proof_order_intent.execution_client_id",'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof artifact schema error field name, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"current_source_ref"'''
+context = '''"current_source_ref",'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof candidate-source artifact JSON field name linking source-owned evidence.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_candidate_source.current_source_ref"'''
+context = '''"canary_proof_candidate_source.current_source_ref",'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof artifact schema error field name, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"source_refs"'''
+context = '''.get("source_refs")'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof artifact JSON field name for source evidence hash binding.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"notional"'''
+context = '''"notional",'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof order-intent artifact JSON field name validated against TOML canary caps.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"canary_proof_order_intent.notional"'''
+context = '''"canary_proof_order_intent.notional",'''
+classification = '''canary_proof_artifact_schema_field'''
+reason = '''This is a proof artifact schema error field name, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"least_bad_strategy_candidate"'''
+context = '''const LIVE_CANARY_PROOF_POLICY_KIND: &str = "least_bad_strategy_candidate";'''
+classification = '''canary_proof_policy_protocol_value'''
+reason = '''This is the stable proof-policy mode label selected explicitly in TOML, not a venue, market, size, or timeout.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"strategy_evidence"'''
+context = '''const LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE: &str = "strategy_evidence";'''
+classification = '''canary_proof_policy_protocol_value'''
+reason = '''This is the stable proof-policy candidate source label selected explicitly in TOML, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"fixed"'''
+context = '''const LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE: &str = "fixed";'''
+classification = '''canary_proof_policy_protocol_value'''
+reason = '''This is the stable proof-policy notional mode label selected explicitly in TOML; the amount remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"proof_only"'''
+context = '''const LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM: &str = "proof_only";'''
+classification = '''canary_proof_policy_protocol_claim'''
+reason = '''This is the stable proof-only claim label required to distinguish canary plumbing proof orders from alpha strategy orders.'''

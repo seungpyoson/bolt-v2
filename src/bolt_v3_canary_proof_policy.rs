@@ -56,8 +56,8 @@ pub struct CanaryProofSourcePacket {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanaryProofCandidateSourceArtifact {
-    pub record_kind: &'static str,
-    pub proof_claim: &'static str,
+    pub record_kind: String,
+    pub proof_claim: String,
     pub current_source_ref: String,
     pub candidate_count: u32,
     pub candidates: Vec<CanaryProofCandidate>,
@@ -76,8 +76,8 @@ pub struct CanaryProofSelection {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanaryProofOrderIntentArtifact {
-    pub record_kind: &'static str,
-    pub proof_claim: &'static str,
+    pub record_kind: String,
+    pub proof_claim: String,
     pub strategy_instance_id: String,
     pub execution_client_id: String,
     pub instrument_id: String,
@@ -133,8 +133,8 @@ pub fn build_canary_proof_candidate_source_artifact(
     }
 
     Ok(CanaryProofCandidateSourceArtifact {
-        record_kind: CANARY_PROOF_CANDIDATE_SOURCE_RECORD_KIND,
-        proof_claim: CANARY_PROOF_CLAIM,
+        record_kind: CANARY_PROOF_CANDIDATE_SOURCE_RECORD_KIND.to_string(),
+        proof_claim: CANARY_PROOF_CLAIM.to_string(),
         current_source_ref: source_packet.current_source_ref.clone(),
         candidate_count: candidates.len() as u32,
         candidates,
@@ -158,8 +158,8 @@ pub fn build_canary_proof_order_intent_artifact(
     let selected = select_canary_proof_candidate(&source_bound_input)?;
 
     Ok(CanaryProofOrderIntentArtifact {
-        record_kind: CANARY_PROOF_ORDER_INTENT_RECORD_KIND,
-        proof_claim: CANARY_PROOF_CLAIM,
+        record_kind: CANARY_PROOF_ORDER_INTENT_RECORD_KIND.to_string(),
+        proof_claim: CANARY_PROOF_CLAIM.to_string(),
         strategy_instance_id: selected.strategy_instance_id,
         execution_client_id: selected.execution_client_id,
         instrument_id: selected.instrument_id,

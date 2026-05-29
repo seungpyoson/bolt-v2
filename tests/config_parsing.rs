@@ -4725,8 +4725,14 @@ fn valid_live_canary_proof_policy_block() -> &'static str {
 enabled = true
 policy_kind = "least_bad_strategy_candidate"
 proof_claim = "proof_only"
+executor_strategy_id = "canary-proof-executor-proof"
 strategy_instance_id = "configured_strategy"
 execution_client_id = "configured_execution_client"
+book_type = "l2_mbp"
+time_in_force = "fok"
+post_only = false
+reduce_only = false
+quote_quantity = false
 notional_mode = "fixed"
 proof_notional = "1.00"
 candidate_score_source = "strategy_evidence"

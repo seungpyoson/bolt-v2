@@ -3930,7 +3930,7 @@ impl BinaryOracleEdgeTaker {
                 BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
             },
             lifecycle_policy: self.submit_lifecycle_policy(),
-            canary_proof_claim: intent.canary_proof_claim.clone(),
+            canary_proof_claim: None,
         })
     }
 
@@ -7048,7 +7048,7 @@ fn submit_admission_request_from_order(
             BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
         },
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
-        canary_proof_claim: intent.canary_proof_claim.clone(),
+        canary_proof_claim: None,
     })
 }
 
@@ -11174,7 +11174,7 @@ mod tests {
     }
 
     #[test]
-    fn submit_admission_request_preserves_proof_only_order_intent_claim() {
+    fn submit_admission_request_drops_canary_proof_order_intent_claim() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let _cache = register_test_strategy(&mut strategy);
         let instrument_id = selected_entry_instrument(&strategy);
@@ -11195,16 +11195,12 @@ mod tests {
             price.to_string(),
             &order,
         );
-        intent.canary_proof_claim =
-            Some(crate::bolt_v3_canary_proof_policy::CANARY_PROOF_CLAIM.to_string());
+        intent.canary_proof_claim = Some("proof_only".to_string());
 
         let admission = submit_admission_request_from_order(&intent, &order)
-            .expect("proof-only intent should map into submit admission");
+            .expect("entry intent should map into submit admission");
 
-        assert_eq!(
-            admission.canary_proof_claim.as_deref(),
-            Some(crate::bolt_v3_canary_proof_policy::CANARY_PROOF_CLAIM)
-        );
+        assert_eq!(admission.canary_proof_claim, None);
     }
 
     #[test]

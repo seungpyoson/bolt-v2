@@ -75,6 +75,7 @@ use zeroize::Zeroizing;
 
 use crate::{
     bolt_v3_adapters::{BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters},
+    bolt_v3_canary_proof_executor::register_canary_proof_executor_on_node,
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
@@ -2566,19 +2567,26 @@ fn build_live_node_with_clients(
     resolved: &ResolvedBoltV3Secrets,
     adapters: BoltV3AdapterConfigs,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
-    let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = if loaded.strategies.is_empty() {
-        Arc::new(NoStrategyDecisionEvidenceWriter)
-    } else {
-        Arc::new(
-            JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
-                BoltV3LiveNodeError::StrategyRegistration(
-                    BoltV3StrategyRegistrationError::Evidence {
-                        message: error.to_string(),
-                    },
-                )
-            })?,
-        )
-    };
+    let proof_executor_enabled = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.proof_policy.as_ref())
+        .is_some_and(|proof_policy| proof_policy.enabled);
+    let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> =
+        if loaded.strategies.is_empty() && !proof_executor_enabled {
+            Arc::new(NoStrategyDecisionEvidenceWriter)
+        } else {
+            Arc::new(
+                JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
+                    BoltV3LiveNodeError::StrategyRegistration(
+                        BoltV3StrategyRegistrationError::Evidence {
+                            message: error.to_string(),
+                        },
+                    )
+                })?,
+            )
+        };
     let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(
         decision_evidence.clone(),
     ));
@@ -2593,9 +2601,20 @@ fn build_live_node_with_clients(
         resolved,
         crate::bolt_v3_archetypes::runtime_bindings(),
         submit_admission.clone(),
-        decision_evidence,
+        decision_evidence.clone(),
     )
     .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
+    register_canary_proof_executor_on_node(
+        &mut node,
+        loaded,
+        decision_evidence,
+        submit_admission.clone(),
+    )
+    .map_err(|error| {
+        BoltV3LiveNodeError::StrategyRegistration(BoltV3StrategyRegistrationError::Evidence {
+            message: error.to_string(),
+        })
+    })?;
     for strategy in &strategy_summary.registered {
         log::info!(
             "bolt-v3 registered strategy: strategy_instance_id={} strategy_archetype={} nt_strategy_id={}",

@@ -233,8 +233,14 @@ pub struct LiveCanaryProofPolicyBlock {
     pub enabled: bool,
     pub policy_kind: String,
     pub proof_claim: String,
+    pub executor_strategy_id: String,
     pub strategy_instance_id: String,
     pub execution_client_id: String,
+    pub book_type: DataClientReadinessProbeBookType,
+    pub time_in_force: LiveCanaryProofTimeInForce,
+    pub post_only: bool,
+    pub reduce_only: bool,
+    pub quote_quantity: bool,
     pub notional_mode: String,
     pub proof_notional: String,
     pub candidate_score_source: String,
@@ -360,12 +366,20 @@ pub enum DataClientReadinessProbeMarketDataKind {
     Book,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DataClientReadinessProbeBookType {
     L1Mbp,
     L2Mbp,
     L3Mbo,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveCanaryProofTimeInForce {
+    Fok,
+    Gtc,
+    Ioc,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

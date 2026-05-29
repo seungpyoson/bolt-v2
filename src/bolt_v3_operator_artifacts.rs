@@ -52,7 +52,7 @@ use crate::{
     },
     bolt_v3_live_node::{
         BoltV3NoSubmitDataClientReadinessEvidence, BoltV3NoSubmitReferenceQuoteEvidence,
-        sample_metadata_response_targets,
+        sample_metadata_response_targets, trade_chunk_count_probe_passed,
     },
     bolt_v3_market_families::{self, MarketSelectionTarget, SelectedMarketRequirement},
     bolt_v3_providers::{
@@ -3531,6 +3531,40 @@ fn data_client_trade_probe_events_from_no_submit_readiness_evidence(
     metadata: &crate::bolt_v3_live_node::BoltV3NoSubmitDataClientMetadataEvidence,
     evidence: &crate::bolt_v3_live_node::BoltV3NoSubmitTradeEvidence,
 ) -> Result<Vec<DataClientBehaviorProbeEvent>, BoltV3OperatorArtifactError> {
+    if let Some(readiness_probe) = client.readiness_probe.as_ref()
+        && readiness_probe.market_data_kind == DataClientReadinessProbeMarketDataKind::Trade
+        && readiness_probe.quote_target_source
+            == DataClientReadinessProbeQuoteTargetSource::MetadataResponse
+        && readiness_probe.chunk_size.is_some()
+    {
+        // Trade chunk-count probe: the certified set is the markets that
+        // actually traded during the walk, which is live (not a config-derivable
+        // sample), so the materializer cannot re-derive it. Derive the target
+        // set from the recorded trades instead and require >= m
+        // (min_observed_targets) distinct firing markets via the same pass rule
+        // the live probe applies (`trade_chunk_count_probe_passed`).
+        let trade_targets: BTreeSet<String> = evidence
+            .trades
+            .iter()
+            .filter(|trade| trade.data_client_id == client_key)
+            .map(|trade| trade.instrument_id.clone())
+            .collect();
+        let events = data_client_trade_probe_events_for_targets(
+            client_key,
+            provider_key,
+            evidence,
+            &trade_targets,
+        )?;
+        let required_live_markets = readiness_probe.min_observed_targets.unwrap_or(0);
+        if !trade_chunk_count_probe_passed(trade_targets.len(), required_live_markets) {
+            return Err(
+                BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {
+                    field: "metadata.instrument_ids.trades",
+                },
+            );
+        }
+        return Ok(events);
+    }
     let trade_targets = data_client_readiness_quote_target_instruments_for_evidence(
         client_key,
         provider_key,

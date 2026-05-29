@@ -2171,6 +2171,176 @@ fn data_client_behavior_probe_events_source_requires_trades_for_all_metadata_res
 }
 
 #[test]
+fn data_client_behavior_probe_events_source_accepts_trade_chunk_count_when_m_markets_trade() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Trade,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: None,
+        allow_metadata_target_sampling: None,
+        min_observed_targets: Some(2),
+        chunk_size: Some(200),
+        chunk_observation_window_seconds: Some(45),
+        quote_targets: None,
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let first = format!("AAA.{provider_key}");
+    let second = format!("BBB.{provider_key}");
+    let temp = support::TempCaseDir::new("data-client-behavior-trade-chunk-count");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![first.clone(), second.clone()],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence {
+            trades: vec![
+                BoltV3NoSubmitTrade {
+                    data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                    instrument_id: first.clone(),
+                    price: 101.5,
+                    size: 3.0,
+                    ts_event_unix_nanos: 600_000_000_000,
+                    ts_init_unix_nanos: 600_100_000_000,
+                    captured_at_unix_nanos: 600_500_000_000,
+                },
+                BoltV3NoSubmitTrade {
+                    data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                    instrument_id: second.clone(),
+                    price: 202.5,
+                    size: 4.0,
+                    ts_event_unix_nanos: 600_000_000_000,
+                    ts_init_unix_nanos: 600_100_000_000,
+                    captured_at_unix_nanos: 600_500_000_000,
+                },
+            ],
+        },
+    };
+
+    let written = write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect("trade chunk-count probe reaching m distinct firing markets should write probe events");
+
+    let rendered = std::fs::read_to_string(&written.path).expect("probe events should read");
+    let events = rendered
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["event_kind"] == "trade")
+            .count(),
+        2,
+        "each firing market is recorded as trade evidence: {rendered}"
+    );
+    assert!(events.iter().any(|event| event["event_kind"] == "metadata"));
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_fails_trade_chunk_count_below_m_markets() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Trade,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: None,
+        allow_metadata_target_sampling: None,
+        min_observed_targets: Some(2),
+        chunk_size: Some(200),
+        chunk_observation_window_seconds: Some(45),
+        quote_targets: None,
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let first = format!("AAA.{provider_key}");
+    let second = format!("BBB.{provider_key}");
+    let temp = support::TempCaseDir::new("data-client-behavior-trade-chunk-count-fail");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![first.clone(), second.clone()],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence {
+            trades: vec![BoltV3NoSubmitTrade {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                instrument_id: first.clone(),
+                price: 101.5,
+                size: 3.0,
+                ts_event_unix_nanos: 600_000_000_000,
+                ts_init_unix_nanos: 600_100_000_000,
+                captured_at_unix_nanos: 600_500_000_000,
+            }],
+        },
+    };
+
+    let error = write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect_err("a trade chunk-count probe below m distinct firing markets must fail closed");
+    assert!(
+        format!("{error}").contains("metadata.instrument_ids.trades"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
 fn data_client_behavior_probe_events_source_accepts_explicit_metadata_response_sampling() {
     let mut loaded = load_fixture_with_live_canary();
     let mut reference_client = loaded

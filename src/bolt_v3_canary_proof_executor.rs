@@ -7,6 +7,7 @@ use nautilus_model::{
     enums::{BookType, OrderSide, TimeInForce},
     identifiers::{ClientId, InstrumentId, StrategyId},
     instruments::Instrument,
+    orderbook::OrderBook,
     orders::Order,
     types::{Price, Quantity},
 };
@@ -85,7 +86,7 @@ impl CanaryProofExecutor {
         InstrumentId::from(self.config.order_intent.instrument_id.as_str())
     }
 
-    fn try_submit_proof_order(&mut self) -> Result<()> {
+    fn try_submit_proof_order(&mut self, observed_book: Option<&OrderBook>) -> Result<()> {
         if self.submitted {
             return Ok(());
         }
@@ -99,6 +100,22 @@ impl CanaryProofExecutor {
             CanaryProofOrderSide::Sell => OrderSide::Sell,
         };
         let price_decimal = self.config.order_intent.notional / self.config.order_intent.quantity;
+        let Some(top_of_book) = self.submit_time_top_of_book(
+            instrument_id,
+            self.config.order_intent.order_side,
+            observed_book,
+        )?
+        else {
+            return Ok(());
+        };
+        if !submit_time_book_supports_limit(
+            self.config.order_intent.order_side,
+            price_decimal,
+            self.config.order_intent.quantity,
+            top_of_book,
+        ) {
+            return Ok(());
+        }
         let price = Price::from_decimal_dp(price_decimal, instrument.price_precision())
             .context("canary proof order price does not fit selected instrument precision")?;
         let quantity = Quantity::from_decimal_dp(
@@ -153,6 +170,24 @@ impl CanaryProofExecutor {
         self.submitted = true;
         Ok(())
     }
+
+    fn submit_time_top_of_book(
+        &self,
+        instrument_id: InstrumentId,
+        order_side: CanaryProofOrderSide,
+        observed_book: Option<&OrderBook>,
+    ) -> Result<Option<SubmitTimeTopOfBook>> {
+        let cache = self.cache();
+        let book =
+            if let Some(book) = observed_book.filter(|book| book.instrument_id == instrument_id) {
+                book
+            } else if let Some(book) = cache.order_book(&instrument_id) {
+                book
+            } else {
+                return Ok(None);
+            };
+        submit_time_top_of_book(book, order_side)
+    }
 }
 
 impl DataActor for CanaryProofExecutor {
@@ -165,7 +200,7 @@ impl DataActor for CanaryProofExecutor {
             false,
             None,
         );
-        self.try_submit_proof_order()
+        Ok(())
     }
 
     fn on_stop(&mut self) -> Result<()> {
@@ -175,7 +210,14 @@ impl DataActor for CanaryProofExecutor {
 
     fn on_book_deltas(&mut self, deltas: &OrderBookDeltas) -> Result<()> {
         if deltas.instrument_id == self.proof_instrument_id() {
-            self.try_submit_proof_order()?;
+            self.try_submit_proof_order(None)?;
+        }
+        Ok(())
+    }
+
+    fn on_book(&mut self, order_book: &OrderBook) -> Result<()> {
+        if order_book.instrument_id == self.proof_instrument_id() {
+            self.try_submit_proof_order(Some(order_book))?;
         }
         Ok(())
     }
@@ -331,6 +373,55 @@ fn proof_policy_time_in_force_to_nt(time_in_force: LiveCanaryProofTimeInForce) -
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SubmitTimeTopOfBook {
+    price: Decimal,
+    available_quantity: Decimal,
+}
+
+fn submit_time_top_of_book(
+    book: &OrderBook,
+    order_side: CanaryProofOrderSide,
+) -> Result<Option<SubmitTimeTopOfBook>> {
+    let top = match order_side {
+        CanaryProofOrderSide::Buy => book.best_ask_price().zip(book.best_ask_size()),
+        CanaryProofOrderSide::Sell => book.best_bid_price().zip(book.best_bid_size()),
+    };
+    let Some((price, quantity)) = top else {
+        return Ok(None);
+    };
+    Ok(Some(SubmitTimeTopOfBook {
+        price: decimal_from_display(price, "canary proof submit-time book price")?,
+        available_quantity: decimal_from_display(
+            quantity,
+            "canary proof submit-time book quantity",
+        )?,
+    }))
+}
+
+fn submit_time_book_supports_limit(
+    order_side: CanaryProofOrderSide,
+    limit_price: Decimal,
+    quantity: Decimal,
+    top_of_book: SubmitTimeTopOfBook,
+) -> bool {
+    if top_of_book.available_quantity < quantity {
+        return false;
+    }
+    match order_side {
+        CanaryProofOrderSide::Buy => top_of_book.price <= limit_price,
+        CanaryProofOrderSide::Sell => top_of_book.price >= limit_price,
+    }
+}
+
+fn decimal_from_display<T>(value: T, label: &str) -> Result<Decimal>
+where
+    T: std::fmt::Display,
+{
+    Decimal::from_str_exact(value.to_string().as_str())
+        .with_context(|| format!("{label} is not a decimal"))
+}
+
 fn resolve_loaded_config_path(loaded: &LoadedBoltV3Config, configured_path: &str) -> PathBuf {
     let path = PathBuf::from(configured_path);
     if path.is_absolute() {
@@ -341,5 +432,79 @@ fn resolve_loaded_config_path(loaded: &LoadedBoltV3Config, configured_path: &str
             .parent()
             .unwrap_or(&loaded.root_path)
             .join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rust_decimal::Decimal;
+
+    use super::{SubmitTimeTopOfBook, submit_time_book_supports_limit};
+    use crate::bolt_v3_canary_proof_policy::CanaryProofOrderSide;
+
+    #[test]
+    fn submit_time_book_supports_buy_only_when_top_ask_can_fill_exact_order() {
+        assert!(submit_time_book_supports_limit(
+            CanaryProofOrderSide::Buy,
+            Decimal::new(25, 2),
+            Decimal::new(20, 0),
+            SubmitTimeTopOfBook {
+                price: Decimal::new(25, 2),
+                available_quantity: Decimal::new(20, 0),
+            },
+        ));
+
+        assert!(!submit_time_book_supports_limit(
+            CanaryProofOrderSide::Buy,
+            Decimal::new(25, 2),
+            Decimal::new(20, 0),
+            SubmitTimeTopOfBook {
+                price: Decimal::new(26, 2),
+                available_quantity: Decimal::new(20, 0),
+            },
+        ));
+
+        assert!(!submit_time_book_supports_limit(
+            CanaryProofOrderSide::Buy,
+            Decimal::new(25, 2),
+            Decimal::new(20, 0),
+            SubmitTimeTopOfBook {
+                price: Decimal::new(25, 2),
+                available_quantity: Decimal::new(1999, 2),
+            },
+        ));
+    }
+
+    #[test]
+    fn submit_time_book_supports_sell_only_when_top_bid_can_fill_exact_order() {
+        assert!(submit_time_book_supports_limit(
+            CanaryProofOrderSide::Sell,
+            Decimal::new(75, 2),
+            Decimal::new(10, 0),
+            SubmitTimeTopOfBook {
+                price: Decimal::new(75, 2),
+                available_quantity: Decimal::new(10, 0),
+            },
+        ));
+
+        assert!(!submit_time_book_supports_limit(
+            CanaryProofOrderSide::Sell,
+            Decimal::new(75, 2),
+            Decimal::new(10, 0),
+            SubmitTimeTopOfBook {
+                price: Decimal::new(74, 2),
+                available_quantity: Decimal::new(10, 0),
+            },
+        ));
+
+        assert!(!submit_time_book_supports_limit(
+            CanaryProofOrderSide::Sell,
+            Decimal::new(75, 2),
+            Decimal::new(10, 0),
+            SubmitTimeTopOfBook {
+                price: Decimal::new(75, 2),
+                available_quantity: Decimal::new(999, 2),
+            },
+        ));
     }
 }

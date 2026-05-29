@@ -1391,6 +1391,44 @@ fn binary_oracle_strategy_source_does_not_own_canary_proof_claim() {
 }
 
 #[test]
+fn canary_proof_executor_waits_for_submit_time_book_before_submit_attempt() {
+    let source = support::repo_text("src/bolt_v3_canary_proof_executor.rs");
+    let on_start_body = source
+        .split("fn on_start")
+        .nth(1)
+        .and_then(|tail| tail.split("fn on_stop").next())
+        .expect("canary proof executor on_start body should exist");
+    assert!(
+        on_start_body.contains("self.subscribe_book_deltas"),
+        "proof executor must subscribe to immediate book data"
+    );
+    assert!(
+        !on_start_body.contains("try_submit_proof_order"),
+        "proof executor must not submit from startup before a submit-time book is observed"
+    );
+
+    let deltas_body = source
+        .split("fn on_book_deltas")
+        .nth(1)
+        .and_then(|tail| tail.split("fn on_book").next())
+        .expect("canary proof executor on_book_deltas body should exist");
+    assert!(
+        deltas_body.contains("self.try_submit_proof_order(None)?"),
+        "book deltas must be the submit attempt boundary through the NT cache book"
+    );
+
+    let book_body = source
+        .split("fn on_book(")
+        .nth(1)
+        .and_then(|tail| tail.split("nautilus_strategy!").next())
+        .expect("canary proof executor on_book body should exist");
+    assert!(
+        book_body.contains("self.try_submit_proof_order(Some(order_book))?"),
+        "book snapshots must be a submit attempt boundary using the observed book"
+    );
+}
+
+#[test]
 fn binary_oracle_registration_resolves_fee_provider_through_provider_boundary() {
     let source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
     assert!(

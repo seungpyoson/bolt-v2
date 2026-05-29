@@ -14041,6 +14041,22 @@ classification = '''canary_proof_fail_closed_diagnostic'''
 reason = '''This is a fail-closed diagnostic for missing proof-order source liquidity, not a configured venue, market, size, or timeout.'''
 
 [[allowed]]
+path = '''src/bolt_v3_canary_proof_executor.rs'''
+kind = '''string'''
+literal = '''"canary proof submit-time book price"'''
+context = '''price: decimal_from_display(price, "canary proof submit-time book price")?,'''
+classification = '''canary_proof_decimal_diagnostic_field'''
+reason = '''This is a decimal parse diagnostic label for submit-time source-owned proof book data, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_canary_proof_executor.rs'''
+kind = '''string'''
+literal = '''"canary proof submit-time book quantity"'''
+context = '''"canary proof submit-time book quantity",'''
+classification = '''canary_proof_decimal_diagnostic_field'''
+reason = '''This is a decimal parse diagnostic label for submit-time source-owned proof book data, not a runtime trading value.'''
+
+[[allowed]]
 path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
 kind = '''string'''
 literal = '''"canary proof best ask"'''

@@ -75,6 +75,7 @@ As operator, I need T128/T130/T131/T122 and T116/T046 to run only after real art
 - **FR-016**: T036H implementation must follow the boundary contract in `specs/024-production-trade-readiness/gate-dataflow-contract.md`; any deviation requires a recorded disposition before code changes.
 - **FR-017**: Live-canary and final-packet readiness must bind the readiness gate session path and sha256 for every strategy instance with required gate roles; absence, hash mismatch, selected-market mismatch, stale evidence, or role mismatch must fail closed.
 - **FR-018**: Every data-client adapter added or enabled by this PR must have a recorded production-readiness matrix before it is described as production-usable. Metadata-only REST smoke evidence is insufficient; the matrix must prove config-owned LiveNode wiring, data freshness/subscription behavior or a fail-closed unsupported-path disposition, reconnect/rate-limit/error behavior, credential/no-execution boundaries for data-only clients, and no venue or market hardcodes.
+- **FR-019**: Strategy files may produce order intent and strategy-local signal state only. Execution admissibility, venue rules, fillability, rounding, minimum order size, fee-adjusted sizing, and submit gating must live in shared execution/admission modules built on NT APIs. Any change under `src/strategies/*` that handles submit mechanics requires an explicit recorded approval that the behavior is strategy-local signal logic.
 
 ## Success Criteria
 

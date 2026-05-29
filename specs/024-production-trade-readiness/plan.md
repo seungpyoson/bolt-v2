@@ -55,6 +55,7 @@ The authoritative T036H dataflow contract is `specs/024-production-trade-readine
 - Selected markets carry observed or config-resolved generic requirement metadata: target id, venue, family, market id, instrument/outcome ids, `market_class`, `resolution_kind`, `resolution_identity`, `value_kind`, and metadata provenance. Selected markets do not own gate roles or root provider ids.
 - Entry readiness performs the join across archetype role, target subscription, selected-market requirement, provider capability, and evidence. The join is keyed by selected-market identity and role, not by a single static target-to-gate id.
 - Entry readiness returns an opaque gate session or normalized evidence object. Decision evidence, tiny-canary evidence, live-canary gates, CLI artifact commands, strategy registration, runtime strategy logic, final-packet binding, and replay helpers must consume that object and must not construct or fetch provider evidence through an unchecked second path.
+- Strategy runtime files produce strategy-local signal state and order intent only. Execution admissibility, venue rules, fillability, rounding, minimum order size, fee-adjusted sizing, and submit gating belong in shared execution/admission modules that use NT APIs. A strategy-file submit-mechanics change is out of scope unless the operator explicitly records it as strategy-local signal logic.
 
 ## Strategy
 

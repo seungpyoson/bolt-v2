@@ -232,3 +232,15 @@ Verification:
 - `python3 scripts/verify_bolt_v3_runtime_literals.py`: passed after classifying the new fail-closed diagnostic.
 
 Scope and side effects: this was local code/test work only. It did not connect to a venue, read SSM secrets, run no-submit, enter the live runner, consume approval, submit/cancel orders, transfer funds, mutate on-chain state, mutate CLOB allowance/cache state, or execute a trade. T044 remains open and still requires fresh exact-head source/no-submit evidence plus renewed approval before another live attempt.
+
+## Current-Head Canary Proof Policy Adjustment
+
+The ignored operational root `config/live.local.toml` was adjusted for the next T044 attempt so `[live_canary.proof_policy].time_in_force = "ioc"` instead of `"fok"`.
+
+- Scope: canary proof policy only. The strategy template remains config-owned and unchanged.
+- Reason: avoid making the tiny-capital proof depend on venue all-or-nothing FOK behavior while the shared execution/admission fillability gate remains future hardening.
+- Safety boundary: submit admission still caps `max_live_order_count` and `max_notional_per_order`; exit behavior remains governed by the configured strategy exit order.
+- Evidence impact: this ignored root TOML change creates a new root TOML sha256 and invalidates any prior final-packet/no-submit/T044 approval bundle. The next live attempt must regenerate exact-head source evidence, final packet pre-run verification, no-submit readiness, and fresh operator approval before approval consumption.
+- Non-live config-load proof: `operator-artifacts generate-base-static --config config/live.local.toml --output-dir /private/tmp/bolt-v2-proof-policy-ioc-parse/base-static --strategy-instance-id bitcoin_updown_main` exited 0 and wrote local base-static artifacts.
+
+No live runner, no approval consumption, no no-submit run, no submit/cancel, no transfer, no on-chain mutation, and no CLOB cache mutation was performed by this config adjustment.

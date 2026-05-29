@@ -2219,6 +2219,7 @@ mod tests {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: None,
         };
 
@@ -2246,6 +2247,7 @@ mod tests {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: None,
         };
 
@@ -2332,6 +2334,10 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             abort_plan_sha256: "e".repeat(64),
+            canary_proof_candidate_source_path: None,
+            canary_proof_candidate_source_sha256: None,
+            canary_proof_order_intent_path: None,
+            canary_proof_order_intent_sha256: None,
             canary_evidence_path,
             approval_not_before_unix_seconds: 900,
             approval_not_after_unix_seconds: 1_300,
@@ -2453,6 +2459,7 @@ mod tests {
                 egress_identity_observed_path: None,
                 egress_identity_observed_max_bytes: None,
                 approved_egress_identity_sha256: None,
+                proof_policy: None,
                 operator_evidence: Some(operator_evidence),
             },
         );
@@ -2556,6 +2563,10 @@ mod tests {
             pre_run_state_sha256,
             abort_plan_path,
             abort_plan_sha256,
+            canary_proof_candidate_source_path: None,
+            canary_proof_candidate_source_sha256: None,
+            canary_proof_order_intent_path: None,
+            canary_proof_order_intent_sha256: None,
             canary_evidence_path: canary_evidence_path.clone(),
             approval_not_before_unix_seconds,
             approval_not_after_unix_seconds,

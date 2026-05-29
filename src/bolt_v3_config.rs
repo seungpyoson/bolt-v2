@@ -266,6 +266,14 @@ pub struct LiveCanaryOperatorEvidenceBlock {
     pub pre_run_state_sha256: String,
     pub abort_plan_path: String,
     pub abort_plan_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_candidate_source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_candidate_source_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_order_intent_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_order_intent_sha256: Option<String>,
     pub canary_evidence_path: String,
     pub approval_not_before_unix_seconds: i64,
     pub approval_not_after_unix_seconds: i64,

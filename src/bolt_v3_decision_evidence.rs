@@ -1248,6 +1248,9 @@ mod tests {
                 BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => {
                     "rejected_notional_cap_exceeded"
                 }
+                BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim => {
+                    "rejected_invalid_canary_proof_claim"
+                }
                 BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",
             };
             assert_eq!(decision_field["outcome"], expected_outcome);

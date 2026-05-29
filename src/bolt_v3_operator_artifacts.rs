@@ -28,6 +28,10 @@ use crate::{
         ArchetypeGateRequirement, GateRole, GateValueKind,
         binary_oracle_edge_taker::raw_taker_config,
     },
+    bolt_v3_canary_proof_policy::{
+        CANARY_PROOF_CANDIDATE_SOURCE_RECORD_KIND, CANARY_PROOF_CLAIM,
+        CANARY_PROOF_ORDER_INTENT_RECORD_KIND,
+    },
     bolt_v3_client_registration::BoltV3RegistrationSummary,
     bolt_v3_config::{
         BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
@@ -673,6 +677,14 @@ pub struct BoltV3OperatorEvidencePacketBlock {
     pub pre_run_state_sha256: String,
     pub abort_plan_path: String,
     pub abort_plan_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_candidate_source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_candidate_source_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_order_intent_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_order_intent_sha256: Option<String>,
     pub canary_evidence_path: String,
     pub approval_nonce_path: String,
     pub approval_nonce_sha256: String,
@@ -13148,6 +13160,10 @@ pub fn write_operator_evidence_json_from_artifact_paths(
             inputs.abort_plan_path,
             max_bytes,
         )?,
+        canary_proof_candidate_source_path: None,
+        canary_proof_candidate_source_sha256: None,
+        canary_proof_order_intent_path: None,
+        canary_proof_order_intent_sha256: None,
         canary_evidence_path: operator_evidence_path_string(inputs.canary_evidence_path),
         approval_not_before_unix_seconds: inputs.approval_not_before_unix_seconds,
         approval_not_after_unix_seconds: inputs.approval_not_after_unix_seconds,
@@ -13536,6 +13552,10 @@ struct BoltV3OperatorEvidencePacketBlockInput {
     pre_run_state_sha256: String,
     abort_plan_path: String,
     abort_plan_sha256: String,
+    canary_proof_candidate_source_path: Option<String>,
+    canary_proof_candidate_source_sha256: Option<String>,
+    canary_proof_order_intent_path: Option<String>,
+    canary_proof_order_intent_sha256: Option<String>,
     canary_evidence_path: String,
     approval_nonce_path: String,
     approval_nonce_sha256: String,
@@ -13759,6 +13779,7 @@ pub fn verify_final_operator_packet_with_scope(
     )?;
     verify_source_owned_static_readiness_artifacts(loaded, operator_evidence)?;
     verify_strategy_input_replay_binding(loaded, operator_evidence)?;
+    verify_canary_proof_operator_evidence(loaded, operator_evidence)?;
     let approval_envelope = verify_operator_approval_envelope(
         loaded,
         operator_evidence,
@@ -13935,6 +13956,199 @@ fn verify_source_owned_static_readiness_artifacts(
     abort_plan
         .validate_collector_derived_matches_loaded(&expected_financial_envelope)
         .map_err(BoltV3OperatorArtifactError::FinancialEnvelope)
+}
+
+fn verify_canary_proof_operator_evidence(
+    loaded: &LoadedBoltV3Config,
+    operator_evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let Some(live_canary) = loaded.root.live_canary.as_ref() else {
+        return Err(BoltV3OperatorArtifactError::MissingLiveCanary);
+    };
+    let Some(proof_policy) = live_canary.proof_policy.as_ref() else {
+        return Ok(());
+    };
+    let proof_policy_enabled = proof_policy.enabled;
+    if !proof_policy_enabled {
+        return Ok(());
+    }
+
+    let order_intent_path = required_operator_evidence_field(
+        "canary_proof_order_intent_path",
+        operator_evidence.canary_proof_order_intent_path.as_deref(),
+    )?;
+    let order_intent_sha256 = required_operator_evidence_field(
+        "canary_proof_order_intent_sha256",
+        operator_evidence
+            .canary_proof_order_intent_sha256
+            .as_deref(),
+    )?;
+    let candidate_source_path = required_operator_evidence_field(
+        "canary_proof_candidate_source_path",
+        operator_evidence
+            .canary_proof_candidate_source_path
+            .as_deref(),
+    )?;
+    let candidate_source_sha256 = required_operator_evidence_field(
+        "canary_proof_candidate_source_sha256",
+        operator_evidence
+            .canary_proof_candidate_source_sha256
+            .as_deref(),
+    )?;
+
+    validate_operator_evidence_toml_path("canary_proof_order_intent_path", order_intent_path)?;
+    validate_operator_evidence_sha256("canary_proof_order_intent_sha256", order_intent_sha256)?;
+    validate_operator_evidence_toml_path(
+        "canary_proof_candidate_source_path",
+        candidate_source_path,
+    )?;
+    validate_operator_evidence_sha256(
+        "canary_proof_candidate_source_sha256",
+        candidate_source_sha256,
+    )?;
+
+    let order_intent: serde_json::Value = read_operator_evidence_json_artifact(
+        loaded,
+        operator_evidence,
+        "canary_proof_order_intent_path",
+        "canary_proof_order_intent_sha256",
+        order_intent_path,
+        order_intent_sha256,
+    )?;
+    let candidate_source: serde_json::Value = read_operator_evidence_json_artifact(
+        loaded,
+        operator_evidence,
+        "canary_proof_candidate_source_path",
+        "canary_proof_candidate_source_sha256",
+        candidate_source_path,
+        candidate_source_sha256,
+    )?;
+
+    validate_canary_proof_artifact_content(
+        live_canary.max_notional_per_order.as_str(),
+        proof_policy.strategy_instance_id.as_str(),
+        proof_policy.execution_client_id.as_str(),
+        &candidate_source,
+        &order_intent,
+    )?;
+    Ok(())
+}
+
+fn validate_canary_proof_artifact_content(
+    max_notional_per_order: &str,
+    strategy_instance_id: &str,
+    execution_client_id: &str,
+    candidate_source: &serde_json::Value,
+    order_intent: &serde_json::Value,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    validate_canary_proof_string_field(
+        candidate_source,
+        "record_kind",
+        CANARY_PROOF_CANDIDATE_SOURCE_RECORD_KIND,
+        "canary_proof_candidate_source.record_kind",
+    )?;
+    validate_canary_proof_string_field(
+        candidate_source,
+        "proof_claim",
+        CANARY_PROOF_CLAIM,
+        "canary_proof_candidate_source.proof_claim",
+    )?;
+    validate_canary_proof_string_field(
+        order_intent,
+        "record_kind",
+        CANARY_PROOF_ORDER_INTENT_RECORD_KIND,
+        "canary_proof_order_intent.record_kind",
+    )?;
+    validate_canary_proof_string_field(
+        order_intent,
+        "proof_claim",
+        CANARY_PROOF_CLAIM,
+        "canary_proof_order_intent.proof_claim",
+    )?;
+    validate_canary_proof_string_field(
+        order_intent,
+        "strategy_instance_id",
+        strategy_instance_id,
+        "canary_proof_order_intent.strategy_instance_id",
+    )?;
+    validate_canary_proof_string_field(
+        order_intent,
+        "execution_client_id",
+        execution_client_id,
+        "canary_proof_order_intent.execution_client_id",
+    )?;
+
+    let current_source_ref = canary_proof_required_str(
+        candidate_source,
+        "current_source_ref",
+        "canary_proof_candidate_source.current_source_ref",
+    )?;
+    let source_refs = order_intent
+        .get("source_refs")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(BoltV3OperatorArtifactError::FinalEvidenceSchema {
+            field: "canary_proof_order_intent.source_refs",
+        })?;
+    if !source_refs
+        .iter()
+        .any(|source_ref| source_ref.as_str() == Some(current_source_ref))
+    {
+        return Err(BoltV3OperatorArtifactError::FinalEvidenceSchema {
+            field: "canary_proof_order_intent.source_refs",
+        });
+    }
+
+    let notional = canary_proof_required_decimal(
+        order_intent,
+        "notional",
+        "canary_proof_order_intent.notional",
+    )?;
+    let max_notional = Decimal::from_str(max_notional_per_order).map_err(|_| {
+        BoltV3OperatorArtifactError::FinalEvidenceSchema {
+            field: "canary_proof_order_intent.max_notional_per_order",
+        }
+    })?;
+    if notional <= Decimal::ZERO || notional > max_notional {
+        return Err(BoltV3OperatorArtifactError::FinalEvidenceSchema {
+            field: "canary_proof_order_intent.notional",
+        });
+    }
+    Ok(())
+}
+
+fn validate_canary_proof_string_field(
+    value: &serde_json::Value,
+    json_field: &'static str,
+    expected: &str,
+    error_field: &'static str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if value.get(json_field).and_then(serde_json::Value::as_str) == Some(expected) {
+        Ok(())
+    } else {
+        Err(BoltV3OperatorArtifactError::FinalEvidenceSchema { field: error_field })
+    }
+}
+
+fn canary_proof_required_str<'a>(
+    value: &'a serde_json::Value,
+    json_field: &'static str,
+    error_field: &'static str,
+) -> Result<&'a str, BoltV3OperatorArtifactError> {
+    value
+        .get(json_field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or(BoltV3OperatorArtifactError::FinalEvidenceSchema { field: error_field })
+}
+
+fn canary_proof_required_decimal(
+    value: &serde_json::Value,
+    json_field: &'static str,
+    error_field: &'static str,
+) -> Result<Decimal, BoltV3OperatorArtifactError> {
+    let source = canary_proof_required_str(value, json_field, error_field)?;
+    Decimal::from_str(source)
+        .map_err(|_| BoltV3OperatorArtifactError::FinalEvidenceSchema { field: error_field })
 }
 
 fn read_operator_evidence_json_artifact<T>(
@@ -14425,6 +14639,33 @@ fn validate_operator_packet_evidence_block(
             "post_run_hygiene_path",
             actual.post_run_hygiene_path.as_str(),
             expected.post_run_hygiene_path.as_str(),
+        ),
+    ] {
+        if actual != expected {
+            return Err(BoltV3OperatorArtifactError::OperatorPacketEvidenceMismatch { field });
+        }
+    }
+
+    for (field, actual, expected) in [
+        (
+            "canary_proof_candidate_source_path",
+            actual.canary_proof_candidate_source_path.as_deref(),
+            expected.canary_proof_candidate_source_path.as_deref(),
+        ),
+        (
+            "canary_proof_candidate_source_sha256",
+            actual.canary_proof_candidate_source_sha256.as_deref(),
+            expected.canary_proof_candidate_source_sha256.as_deref(),
+        ),
+        (
+            "canary_proof_order_intent_path",
+            actual.canary_proof_order_intent_path.as_deref(),
+            expected.canary_proof_order_intent_path.as_deref(),
+        ),
+        (
+            "canary_proof_order_intent_sha256",
+            actual.canary_proof_order_intent_sha256.as_deref(),
+            expected.canary_proof_order_intent_sha256.as_deref(),
         ),
     ] {
         if actual != expected {
@@ -15142,6 +15383,12 @@ fn operator_evidence_packet(
             pre_run_state_sha256: evidence.pre_run_state_sha256.clone(),
             abort_plan_path: evidence.abort_plan_path.clone(),
             abort_plan_sha256: evidence.abort_plan_sha256.clone(),
+            canary_proof_candidate_source_path: evidence.canary_proof_candidate_source_path.clone(),
+            canary_proof_candidate_source_sha256: evidence
+                .canary_proof_candidate_source_sha256
+                .clone(),
+            canary_proof_order_intent_path: evidence.canary_proof_order_intent_path.clone(),
+            canary_proof_order_intent_sha256: evidence.canary_proof_order_intent_sha256.clone(),
             canary_evidence_path: evidence.canary_evidence_path.clone(),
             approval_nonce_path: evidence.approval_nonce_path.clone(),
             approval_nonce_sha256: evidence.approval_nonce_sha256.clone(),
@@ -15507,6 +15754,20 @@ fn validate_live_canary_operator_evidence_toml_patch(
     }
     for (field, value) in [
         (
+            "canary_proof_candidate_source_sha256",
+            evidence.canary_proof_candidate_source_sha256.as_deref(),
+        ),
+        (
+            "canary_proof_order_intent_sha256",
+            evidence.canary_proof_order_intent_sha256.as_deref(),
+        ),
+    ] {
+        if let Some(value) = value {
+            validate_operator_evidence_sha256(field, value)?;
+        }
+    }
+    for (field, value) in [
+        (
             "approval_envelope_path",
             evidence.approval_envelope_path.as_str(),
         ),
@@ -15556,6 +15817,20 @@ fn validate_live_canary_operator_evidence_toml_patch(
     }
     if let Some(strategy_cancel_path) = evidence.strategy_cancel_path.as_deref() {
         validate_operator_evidence_toml_path("strategy_cancel_path", strategy_cancel_path)?;
+    }
+    for (field, value) in [
+        (
+            "canary_proof_candidate_source_path",
+            evidence.canary_proof_candidate_source_path.as_deref(),
+        ),
+        (
+            "canary_proof_order_intent_path",
+            evidence.canary_proof_order_intent_path.as_deref(),
+        ),
+    ] {
+        if let Some(value) = value {
+            validate_operator_evidence_toml_path(field, value)?;
+        }
     }
     Ok(())
 }

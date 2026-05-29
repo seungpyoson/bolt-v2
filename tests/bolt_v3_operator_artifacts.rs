@@ -13,9 +13,9 @@ use bolt_v2::{
         DataClientReadinessProbeBlock, DataClientReadinessProbeBookType,
         DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetBlock,
         DataClientReadinessProbeQuoteTargetSource, GateProviderBlock, GateProviderFreshnessBlock,
-        LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, NO_RESOLUTION_KIND,
-        NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE, ReferenceDataBlock,
-        load_bolt_v3_config,
+        LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LiveCanaryProofPolicyBlock,
+        LoadedBoltV3Config, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND,
+        RESOLUTION_GATE_ROLE, ReferenceDataBlock, load_bolt_v3_config,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3GateEvidenceIdentity,
@@ -7415,6 +7415,101 @@ fn final_packet_pre_run_verifier_accepts_packet_before_live_result_evidence_exis
 }
 
 #[test]
+fn final_packet_pre_run_verifier_rejects_enabled_proof_policy_without_order_intent_artifact() {
+    let mut fixture = assembled_final_packet_fixture();
+    fixture
+        .loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should exist")
+        .proof_policy = Some(test_live_canary_proof_policy());
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet_with_scope(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+        bolt_v2::bolt_v3_operator_artifacts::FinalOperatorPacketVerificationScope::PreRun,
+    )
+    .expect_err("enabled proof policy must require proof order-intent evidence");
+
+    assert!(
+        error.to_string().contains("canary_proof_order_intent_path"),
+        "error should name missing proof order-intent binding: {error}"
+    );
+}
+
+#[test]
+fn final_packet_pre_run_verifier_accepts_hash_bound_proof_artifacts() {
+    let fixture = assembled_final_packet_fixture_with_proof_artifacts();
+    let evidence = fixture.operator_evidence();
+    for path in [
+        &evidence.canary_evidence_path,
+        &evidence.nt_submit_event_path,
+        &evidence.venue_order_state_path,
+        &evidence.restart_reconciliation_path,
+        &evidence.post_run_hygiene_path,
+        &evidence.approval_consumption_path,
+    ] {
+        let _ = std::fs::remove_file(path);
+    }
+
+    let outcome = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet_with_scope(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+        bolt_v2::bolt_v3_operator_artifacts::FinalOperatorPacketVerificationScope::PreRun,
+    )
+    .expect("pre-run verifier should accept hash-bound proof artifacts");
+    let operator_packet = read_json_value(&fixture.operator_packet_path);
+
+    assert_eq!(outcome.operator_packet.path, fixture.operator_packet_path);
+    assert_eq!(
+        operator_packet["live_canary_operator_evidence"]["canary_proof_order_intent_sha256"]
+            .as_str(),
+        evidence.canary_proof_order_intent_sha256.as_deref()
+    );
+}
+
+#[test]
+fn final_packet_pre_run_verifier_rejects_hash_bound_non_proof_only_order_intent() {
+    let mut fixture = assembled_final_packet_fixture_with_proof_artifacts();
+    let operator_evidence = fixture
+        .loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("operator evidence should exist");
+    let order_intent_path = std::path::PathBuf::from(
+        operator_evidence
+            .canary_proof_order_intent_path
+            .as_ref()
+            .expect("proof order-intent path should be configured"),
+    );
+    let mut order_intent = read_json_value(&order_intent_path);
+    order_intent["proof_claim"] = serde_json::json!("alpha_ready");
+    let order_intent_sha256 = write_json_value_and_hash(&order_intent_path, &order_intent);
+    operator_evidence.canary_proof_order_intent_sha256 = Some(order_intent_sha256.clone());
+    let mut operator_packet = read_json_value(&fixture.operator_packet_path);
+    operator_packet["live_canary_operator_evidence"]["canary_proof_order_intent_sha256"] =
+        serde_json::json!(order_intent_sha256);
+    write_json_value_and_hash(&fixture.operator_packet_path, &operator_packet);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet_with_scope(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+        bolt_v2::bolt_v3_operator_artifacts::FinalOperatorPacketVerificationScope::PreRun,
+    )
+    .expect_err("hash-bound order intent must still be proof_only");
+
+    assert!(
+        error
+            .to_string()
+            .contains("canary_proof_order_intent.proof_claim"),
+        "error should name non-proof-only order intent claim: {error}"
+    );
+}
+
+#[test]
 fn source_owned_reference_readiness_accepts_replayable_operator_evidence_without_reference_data() {
     let fixture = assembled_final_packet_fixture();
     assert!(
@@ -13533,9 +13628,78 @@ fn load_fixture_with_live_canary() -> bolt_v2::bolt_v3_config::LoadedBoltV3Confi
         egress_identity_observed_path: None,
         egress_identity_observed_max_bytes: None,
         approved_egress_identity_sha256: None,
+        proof_policy: None,
         operator_evidence: None,
     });
     loaded
+}
+
+fn test_live_canary_proof_policy() -> LiveCanaryProofPolicyBlock {
+    LiveCanaryProofPolicyBlock {
+        enabled: true,
+        policy_kind: "least_bad_strategy_candidate".to_string(),
+        proof_claim: "proof_only".to_string(),
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
+        notional_mode: "fixed".to_string(),
+        proof_notional: "1.00".to_string(),
+        candidate_score_source: "strategy_evidence".to_string(),
+        allow_negative_expected_ev: true,
+        rotation_observation_enabled: false,
+        rotation_min_distinct_markets: 1,
+        rotation_max_attempts: 3,
+    }
+}
+
+fn write_hash_bound_canary_proof_artifacts_for_test(
+    dir: &std::path::Path,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+) {
+    let candidate_source_path = dir.join("canary-proof-candidate-source.json");
+    let candidate_source = serde_json::json!({
+        "record_kind": "bolt_v3_canary_proof_candidate_source",
+        "proof_claim": "proof_only",
+        "current_source_ref": "source-hash-a",
+        "candidate_count": 1,
+        "candidates": [{
+            "strategy_instance_id": "configured_strategy",
+            "execution_client_id": "configured_execution_client",
+            "instrument_id": "instrument-a",
+            "order_side": "Buy",
+            "candidate_score": "0.01",
+            "source_refs": ["source-hash-a"],
+            "sizing_price": "0.50",
+            "constraints": {
+                "sizing_mode": "BaseQuantity",
+                "quantity_step": "0.01",
+                "min_quantity": null,
+                "min_notional": null
+            }
+        }]
+    });
+    let candidate_source_sha256 =
+        write_json_value_and_hash(&candidate_source_path, &candidate_source);
+
+    let order_intent_path = dir.join("canary-proof-order-intent.json");
+    let order_intent = serde_json::json!({
+        "record_kind": "bolt_v3_canary_proof_order_intent",
+        "proof_claim": "proof_only",
+        "strategy_instance_id": "configured_strategy",
+        "execution_client_id": "configured_execution_client",
+        "instrument_id": "instrument-a",
+        "order_side": "Buy",
+        "notional": "1.00",
+        "quantity": "2.00",
+        "source_refs": ["source-hash-a"]
+    });
+    let order_intent_sha256 = write_json_value_and_hash(&order_intent_path, &order_intent);
+
+    operator_evidence.canary_proof_candidate_source_path =
+        Some(candidate_source_path.to_string_lossy().to_string());
+    operator_evidence.canary_proof_candidate_source_sha256 = Some(candidate_source_sha256);
+    operator_evidence.canary_proof_order_intent_path =
+        Some(order_intent_path.to_string_lossy().to_string());
+    operator_evidence.canary_proof_order_intent_sha256 = Some(order_intent_sha256);
 }
 
 struct FinalPacketFixture {
@@ -13575,8 +13739,24 @@ enum ReadinessStaticArtifactBinding {
     HashOnlyFixtureMarkers,
 }
 
+#[derive(Clone, Copy)]
+enum CanaryProofArtifactBinding {
+    Disabled,
+    EnabledWithHashBoundArtifacts,
+}
+
 fn assembled_final_packet_fixture() -> FinalPacketFixture {
     assembled_final_packet_fixture_with_strategy_input_mutation(|_| {})
+}
+
+fn assembled_final_packet_fixture_with_proof_artifacts() -> FinalPacketFixture {
+    assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding(
+        |_| {},
+        DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
+        MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
+        ReadinessStaticArtifactBinding::SourceOwnedT126T127,
+        CanaryProofArtifactBinding::EnabledWithHashBoundArtifacts,
+    )
 }
 
 fn assembled_final_packet_fixture_with_decision_evidence_path_binding(
@@ -13587,6 +13767,7 @@ fn assembled_final_packet_fixture_with_decision_evidence_path_binding(
         decision_evidence_binding,
         MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
         ReadinessStaticArtifactBinding::SourceOwnedT126T127,
+        CanaryProofArtifactBinding::Disabled,
     )
 }
 
@@ -13598,6 +13779,7 @@ fn assembled_final_packet_fixture_with_market_selection_source_binding(
         DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
         market_selection_source_binding,
         ReadinessStaticArtifactBinding::SourceOwnedT126T127,
+        CanaryProofArtifactBinding::Disabled,
     )
 }
 
@@ -13609,6 +13791,7 @@ fn assembled_final_packet_fixture_with_readiness_artifact_binding(
         DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
         MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
         readiness_artifact_binding,
+        CanaryProofArtifactBinding::Disabled,
     )
 }
 
@@ -13623,6 +13806,7 @@ where
         DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
         MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
         ReadinessStaticArtifactBinding::SourceOwnedT126T127,
+        CanaryProofArtifactBinding::Disabled,
     )
 }
 
@@ -13631,6 +13815,7 @@ fn assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evid
     decision_evidence_binding: DecisionEvidencePathBinding,
     market_selection_source_binding: MarketSelectionSourceBinding,
     readiness_artifact_binding: ReadinessStaticArtifactBinding,
+    canary_proof_artifact_binding: CanaryProofArtifactBinding,
 ) -> FinalPacketFixture
 where
     F: FnOnce(&mut serde_json::Value),
@@ -13681,6 +13866,18 @@ where
         &mut refs,
         market_selection_source_binding,
     );
+    if matches!(
+        canary_proof_artifact_binding,
+        CanaryProofArtifactBinding::EnabledWithHashBoundArtifacts
+    ) {
+        loaded
+            .root
+            .live_canary
+            .as_mut()
+            .expect("live canary should exist")
+            .proof_policy = Some(test_live_canary_proof_policy());
+        write_hash_bound_canary_proof_artifacts_for_test(temp.path(), &mut operator_evidence);
+    }
     let strategy_input_path =
         std::path::PathBuf::from(&operator_evidence.strategy_input_evidence_path);
     let mut strategy_input = read_json_value(&strategy_input_path);
@@ -14447,6 +14644,10 @@ fn test_operator_evidence_packet_bindings(
         pre_run_state_sha256: String::new(),
         abort_plan_path: dir.join("abort-plan.json").to_string_lossy().to_string(),
         abort_plan_sha256: String::new(),
+        canary_proof_candidate_source_path: None,
+        canary_proof_candidate_source_sha256: None,
+        canary_proof_order_intent_path: None,
+        canary_proof_order_intent_sha256: None,
         canary_evidence_path: dir
             .join("canary-evidence.json")
             .to_string_lossy()

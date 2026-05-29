@@ -2012,7 +2012,7 @@ fn data_client_behavior_probe_events_source_accepts_explicit_metadata_response_s
         market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
         book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
         quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
-        max_metadata_quote_targets: Some(2),
+        max_metadata_quote_targets: Some(3),
         allow_metadata_target_sampling: Some(true),
         quote_targets: None,
     });
@@ -2026,9 +2026,11 @@ fn data_client_behavior_probe_events_source_accepts_explicit_metadata_response_s
         .get(TEST_REFERENCE_DATA_CLIENT_ID)
         .expect("reference data client should be configured");
     let provider_key = client.venue.as_str().to_string();
-    let first_instrument = format!("CONFIGURED-FIRST.{provider_key}");
-    let second_instrument = format!("CONFIGURED-SECOND.{provider_key}");
-    let third_instrument = format!("CONFIGURED-THIRD.{provider_key}");
+    let a_instrument = format!("CONFIGURED-A.{provider_key}");
+    let b_instrument = format!("CONFIGURED-B.{provider_key}");
+    let c_instrument = format!("CONFIGURED-C.{provider_key}");
+    let d_instrument = format!("CONFIGURED-D.{provider_key}");
+    let e_instrument = format!("CONFIGURED-E.{provider_key}");
     let temp = support::TempCaseDir::new("data-client-behavior-metadata-response-sampling");
     let probe_events_path = temp.path().join("probe-events.jsonl");
     let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
@@ -2037,9 +2039,11 @@ fn data_client_behavior_probe_events_source_accepts_explicit_metadata_response_s
                 data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
                 venue: provider_key.clone(),
                 instrument_ids: vec![
-                    third_instrument.clone(),
-                    first_instrument.clone(),
-                    second_instrument.clone(),
+                    c_instrument.clone(),
+                    a_instrument.clone(),
+                    e_instrument.clone(),
+                    b_instrument.clone(),
+                    d_instrument.clone(),
                 ],
                 ts_init_unix_nanos: 700_100_000_000,
                 captured_at_unix_nanos: 700_500_000_000,
@@ -2050,7 +2054,7 @@ fn data_client_behavior_probe_events_source_accepts_explicit_metadata_response_s
             deltas: vec![
                 BoltV3NoSubmitBookDeltas {
                     data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
-                    instrument_id: first_instrument.clone(),
+                    instrument_id: a_instrument.clone(),
                     delta_count: 2,
                     ts_event_unix_nanos: 600_000_000_000,
                     ts_init_unix_nanos: 600_100_000_000,
@@ -2058,11 +2062,19 @@ fn data_client_behavior_probe_events_source_accepts_explicit_metadata_response_s
                 },
                 BoltV3NoSubmitBookDeltas {
                     data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
-                    instrument_id: second_instrument.clone(),
+                    instrument_id: c_instrument.clone(),
                     delta_count: 3,
                     ts_event_unix_nanos: 601_000_000_000,
                     ts_init_unix_nanos: 601_100_000_000,
                     captured_at_unix_nanos: 601_500_000_000,
+                },
+                BoltV3NoSubmitBookDeltas {
+                    data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                    instrument_id: e_instrument.clone(),
+                    delta_count: 4,
+                    ts_event_unix_nanos: 602_000_000_000,
+                    ts_init_unix_nanos: 602_100_000_000,
+                    captured_at_unix_nanos: 602_500_000_000,
                 },
             ],
         },
@@ -2083,18 +2095,20 @@ fn data_client_behavior_probe_events_source_accepts_explicit_metadata_response_s
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
         .collect::<Vec<_>>();
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 4);
     assert_eq!(
         events
             .iter()
             .filter(|event| event["event_kind"] == "book")
             .count(),
-        2
+        3
     );
     assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
-    assert!(!rendered_events.contains(&first_instrument));
-    assert!(!rendered_events.contains(&second_instrument));
-    assert!(!rendered_events.contains(&third_instrument));
+    assert!(!rendered_events.contains(&a_instrument));
+    assert!(!rendered_events.contains(&b_instrument));
+    assert!(!rendered_events.contains(&c_instrument));
+    assert!(!rendered_events.contains(&d_instrument));
+    assert!(!rendered_events.contains(&e_instrument));
 }
 
 #[test]

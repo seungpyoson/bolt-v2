@@ -356,7 +356,8 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         let metadata_quote_targets = instrument_ids.len();
         if metadata_quote_targets > max_quote_targets {
             if self.metadata_response_allow_target_sampling {
-                instrument_ids.truncate(max_quote_targets);
+                instrument_ids =
+                    sample_metadata_response_targets(&instrument_ids, max_quote_targets);
             } else {
                 self.fail_metadata_response_probe(format!(
                     "metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters or set clients.<id>.readiness_probe.allow_metadata_target_sampling=true before using this client for production readiness"
@@ -454,6 +455,26 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             self.quote_notify.notified().await;
         }
     }
+}
+
+pub(crate) fn sample_metadata_response_targets<T: Clone>(
+    targets: &[T],
+    max_targets: usize,
+) -> Vec<T> {
+    if max_targets == 0 {
+        return Vec::new();
+    }
+    if targets.len() <= max_targets {
+        return targets.to_vec();
+    }
+    if max_targets == 1 {
+        return vec![targets[targets.len() / 2].clone()];
+    }
+    let last_index = targets.len() - 1;
+    let last_sample = max_targets - 1;
+    (0..max_targets)
+        .map(|sample_index| targets[(sample_index * last_index) / last_sample].clone())
+        .collect()
 }
 
 fn observed_required_book_delta_count(
@@ -3019,7 +3040,7 @@ mod tests {
             market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
             book_type: None,
             quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
-            max_metadata_quote_targets: Some(2),
+            max_metadata_quote_targets: Some(3),
             allow_metadata_target_sampling: Some(true),
             quote_targets: None,
         });
@@ -3027,19 +3048,25 @@ mod tests {
         let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
             .expect("metadata-response readiness quote handle should build");
         let installed = handle.install_metadata_response_instrument_ids(vec![
-            InstrumentId::from("CONFIGURED-THIRD.SOURCE"),
-            InstrumentId::from("CONFIGURED-FIRST.SOURCE"),
-            InstrumentId::from("CONFIGURED-SECOND.SOURCE"),
+            InstrumentId::from("CONFIGURED-C.SOURCE"),
+            InstrumentId::from("CONFIGURED-A.SOURCE"),
+            InstrumentId::from("CONFIGURED-E.SOURCE"),
+            InstrumentId::from("CONFIGURED-B.SOURCE"),
+            InstrumentId::from("CONFIGURED-D.SOURCE"),
         ]);
 
-        assert_eq!(installed.len(), 2);
+        assert_eq!(installed.len(), 3);
         assert_eq!(
             installed[0].instrument_id,
-            InstrumentId::from("CONFIGURED-FIRST.SOURCE")
+            InstrumentId::from("CONFIGURED-A.SOURCE")
         );
         assert_eq!(
             installed[1].instrument_id,
-            InstrumentId::from("CONFIGURED-SECOND.SOURCE")
+            InstrumentId::from("CONFIGURED-C.SOURCE")
+        );
+        assert_eq!(
+            installed[2].instrument_id,
+            InstrumentId::from("CONFIGURED-E.SOURCE")
         );
         assert!(handle.failure_error().is_none());
     }

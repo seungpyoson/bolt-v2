@@ -48,6 +48,7 @@ use crate::{
     },
     bolt_v3_live_node::{
         BoltV3NoSubmitDataClientReadinessEvidence, BoltV3NoSubmitReferenceQuoteEvidence,
+        sample_metadata_response_targets,
     },
     bolt_v3_market_families::{self, MarketSelectionTarget, SelectedMarketRequirement},
     bolt_v3_providers::{
@@ -3664,10 +3665,14 @@ fn data_client_readiness_quote_target_instruments_for_evidence(
                     },
                 )?;
                 if allow_target_sampling {
-                    metadata_instruments = metadata_instruments
-                        .into_iter()
-                        .take(max_quote_targets)
-                        .collect();
+                    let metadata_instrument_ids =
+                        metadata_instruments.into_iter().collect::<Vec<_>>();
+                    metadata_instruments = sample_metadata_response_targets(
+                        &metadata_instrument_ids,
+                        max_quote_targets,
+                    )
+                    .into_iter()
+                    .collect();
                 } else {
                     return Err(
                         BoltV3OperatorArtifactError::DataClientBehaviorObservationSourceInvalid {

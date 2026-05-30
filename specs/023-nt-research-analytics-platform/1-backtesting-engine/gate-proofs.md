@@ -86,11 +86,15 @@ production `LiveNode` build.
   `query_typed_data::<TradeTick>`. Local filesystem needs **no** cargo features
   (DataFusion + `object_store` are unconditional deps).
 - **Gate 2 (BTE-007), S3 interface.** With the `cloud` feature on,
-  `ParquetDataCatalog::from_uri("s3://…")` dispatches to the real S3
-  `object_store` backend rather than the "Cloud storage support requires the
-  cloud feature" bail (`persistence/src/parquet.rs:539`). S3 is hard-gated behind
-  `cloud` (not in `default`); the `cloud` feature pulls **no** pyo3. The S3
-  builder is lazy, so this proves wiring without a network round-trip.
+  `ParquetDataCatalog::from_uri("s3://…", None, …)` returns `Ok` (asserted via
+  `is_ok()`), constructing the real S3 `object_store` backend instead of the
+  "Cloud storage support requires the cloud feature" bail
+  (`persistence/src/parquet.rs:539`). The builder is lazy — `object_store`'s
+  `AmazonS3Builder::build` defaults the region to `us-east-1` and resolves the
+  instance-credential provider at request time (`object_store-0.13.2`
+  `aws/builder.rs:1086,1164`), so the construct succeeds without a network
+  round-trip and the positive path is what the test asserts. S3 is hard-gated
+  behind `cloud` (not in `default`); the `cloud` feature pulls **no** pyo3.
 
 ## Build isolation
 
@@ -100,6 +104,24 @@ The feature is OFF by default, so the production binary never compiles
 `nautilus-backtest` or the persistence S3 backend. This honours the package's
 research-phase posture (live `LiveNode` untouched) while satisfying plan.md
 Gate 1's "prove … compile" requirement on an explicitly authorised proof.
+
+## Dependency footprint (proof-only)
+
+Enabling `bte-gate-proof` adds **5** entries to `Cargo.lock` (verified
+purely additive — `comm` against `main` shows zero removed/changed pins):
+
+| Package | Version | Why |
+|---------|---------|-----|
+| `nautilus-backtest` | 0.58.0 | the gated dep itself |
+| `md-5` | 0.10.6 | transitive (S3 request signing) |
+| `quick-xml` | 0.39.4 | transitive (S3 XML responses) |
+| `reqwest` | 0.12.28 | **second** `reqwest` — `object_store/cloud`'s HTTP client, alongside the existing `0.13.3` used by `alloy-transport-*`/`nautilus-network` |
+| `wasm-streams` | 0.4.2 | **second** `wasm-streams` — transitive of `reqwest 0.12.28`, alongside the existing `0.5.0` |
+
+The dual `reqwest`/`wasm-streams` versions are forced by upstream
+(`object_store 0.13.2` pins the older `reqwest` line) and have **no production
+impact**: `bte-gate-proof` is off by default, so the live `LiveNode` build links
+neither. No existing pin moved — the live dependency graph is unchanged.
 
 ## Deferred (tracked, not done here)
 

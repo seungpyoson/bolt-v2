@@ -359,19 +359,24 @@ fn perps_spot_perp_dex_hyperliquid() {
 
 /// Gate 2 (BTE-007) — the `s3://` object-store backend is compiled in.
 ///
-/// With the `cloud` feature on, `from_uri("s3://...")` must dispatch to the real
-/// S3 object-store backend rather than the "Cloud storage support requires the
-/// cloud feature" bail. object_store's S3 builder is lazy, so construction does
-/// not touch the network; a live-bucket round-trip is deferred per #438.
+/// With the `cloud` feature on, `from_uri("s3://...")` constructs the real S3
+/// object-store backend rather than hitting the "Cloud storage support requires
+/// the cloud feature" bail. The builder is lazy — `object_store`'s
+/// `AmazonS3Builder::build` defaults the region and resolves the
+/// instance-credential provider at request time (`object_store-0.13.2`
+/// `aws/builder.rs:1086,1164`), so construction returns `Ok` without touching
+/// the network. The positive `is_ok` path is therefore the primary assertion,
+/// and it also rules out the cloud-feature bail (which is an `Err`). A
+/// live-bucket round-trip is deferred per #438.
 #[test]
 fn gate2_s3_object_store_backend_is_wired() {
+    // Synthetic fixture bucket — never provisioned, never contacted.
     let result =
-        ParquetDataCatalog::from_uri("s3://bolt-v2-bte-proof/nt-catalog", None, None, None, None);
-    if let Err(e) = result {
-        let msg = e.to_string();
-        assert!(
-            !msg.to_lowercase().contains("cloud feature"),
-            "s3:// must reach the cloud object-store backend, not the cloud-feature bail; got: {msg}"
-        );
-    }
+        ParquetDataCatalog::from_uri("s3://example-bte-proof/nt-catalog", None, None, None, None);
+    assert!(
+        result.is_ok(),
+        "s3:// must construct the cloud object-store backend (lazy, no network) \
+         with the `cloud` feature on, not hit the cloud-feature bail; got: {:?}",
+        result.err()
+    );
 }

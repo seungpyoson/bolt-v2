@@ -53,6 +53,7 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         },
     );
@@ -653,6 +654,7 @@ fn no_submit_readiness_rejects_empty_configured_operator_approval_before_build()
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         },
     );
@@ -1086,6 +1088,7 @@ fn loaded_with_test_live_canary() -> LoadedBoltV3Config {
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         },
     )
@@ -1122,6 +1125,7 @@ async fn loaded_with_temp_live_canary() -> (
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         },
     );
@@ -1158,6 +1162,7 @@ async fn loaded_with_temp_live_canary_and_reference_data() -> (
             egress_identity_observed_path: None,
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         },
     ));

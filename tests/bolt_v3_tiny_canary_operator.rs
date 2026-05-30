@@ -507,6 +507,7 @@ fn phase8_loaded_with_operator_canary(report_path: &str) -> LoadedBoltV3Config {
         egress_identity_observed_path: None,
         egress_identity_observed_max_bytes: None,
         approved_egress_identity_sha256: None,
+        proof_policy: None,
         operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         max_live_order_count: 1,
         max_notional_per_order: "0.25".to_string(),

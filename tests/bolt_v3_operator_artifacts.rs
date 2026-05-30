@@ -55,6 +55,7 @@ use bolt_v2::{
         write_data_client_production_readiness_matrix_artifact_from_source_files,
         write_data_client_readiness_source_artifact_from_config,
         write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence,
+        write_entry_decision_source_inputs_from_selected_source_files,
         write_entry_readiness_gate_session_artifact_from_decision_source_file,
         write_reference_quote_observations_source_from_no_submit_evidence,
     },
@@ -10485,6 +10486,120 @@ fn entry_decision_source_market_attempts_follow_configured_rotation_limit() {
     assert_eq!(attempts.len(), 2);
     assert_eq!(attempts[0].source_identity.market_slug, current_slug);
     assert_eq!(attempts[1].source_identity.market_slug, next_slug);
+}
+
+#[test]
+fn entry_decision_source_input_collector_preserves_provider_selected_rotated_market() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let current_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let next_start_seconds = TEST_MARKET_SELECTION_CURRENT_START_SECONDS + 300;
+    let next_start_ms = TEST_MARKET_SELECTION_END_MS;
+    let next_end_ms =
+        next_start_ms + (TEST_MARKET_SELECTION_END_MS - TEST_MARKET_SELECTION_START_MS);
+    let next_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        next_start_seconds,
+    );
+    let instruments = vec![
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            &current_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            &current_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            "condition-next-up.POLYMARKET",
+            &next_slug,
+            "market-next",
+            "condition-next",
+            "question-next",
+            TEST_UP_OUTCOME,
+            next_start_ms,
+            next_end_ms,
+        ),
+        updown_binary_option(
+            "condition-next-down.POLYMARKET",
+            &next_slug,
+            "market-next",
+            "condition-next",
+            "question-next",
+            TEST_DOWN_OUTCOME,
+            next_start_ms,
+            next_end_ms,
+        ),
+    ];
+    let selected_attempts = selected_entry_decision_market_attempts(
+        &loaded,
+        &strategy_instance_id,
+        &instruments,
+        TEST_MARKET_SELECTION_NOW_MS,
+        2,
+    )
+    .expect("two configured source-proof attempts should resolve");
+    let selected = selected_attempts
+        .get(1)
+        .expect("rotated selected market should exist");
+    let mut market_inputs = entry_decision_source_market_inputs(&instruments);
+    market_inputs.fee_bps_by_instrument_id = BTreeMap::from([
+        (selected.up_instrument_id.to_string(), 0.0),
+        (selected.down_instrument_id.to_string(), 0.0),
+    ]);
+
+    write_entry_decision_source_inputs_from_selected_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionSourceInputRequest {
+            price_to_beat_source_path: &paths.price_source_path,
+            max_price_to_beat_source_bytes: 100_000,
+            reference_quote_source_path: &paths.reference_quote_source_path,
+            max_reference_quote_source_bytes: 100_000,
+            realized_volatility_source_path: &paths.realized_volatility_source_path,
+            max_realized_volatility_source_bytes: 100_000,
+            market_inputs,
+            decision_source_output_path: &paths.decision_source_output,
+            instrument_source_output_path: &paths.instrument_source_output,
+            fee_rate_source_output_path: &paths.fee_rate_source_output,
+        },
+        selected,
+    )
+    .expect("collector should preserve the provider-selected rotated market");
+
+    let decision_source: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&paths.decision_source_output).expect("decision source should read"),
+    )
+    .expect("decision source should parse");
+    assert_eq!(
+        decision_source["readiness_session"]["selected_market"]["market_id"],
+        serde_json::json!("market-next")
+    );
 }
 
 #[test]

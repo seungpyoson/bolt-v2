@@ -28,7 +28,8 @@ use crate::{
         EntryDecisionSourceMarketInputs, EntryDecisionSourceProofFileRequest,
         build_entry_readiness_gate_session_from_source_proof_files,
         selected_entry_decision_market_attempts, validate_entry_decision_source_proof_files,
-        write_entry_decision_source_inputs_from_source_files, write_json_artifact_create_new,
+        write_entry_decision_source_inputs_from_selected_source_files,
+        write_json_artifact_create_new,
     },
     bolt_v3_providers::{CanaryProofArtifactsProviderContext, EntryDecisionSourceProviderContext},
 };
@@ -142,7 +143,7 @@ async fn collect_entry_decision_source_inputs_inner(
         selected_books.down_book_input.best_ask,
     )?;
 
-    write_entry_decision_source_inputs_from_source_files(
+    write_entry_decision_source_inputs_from_selected_source_files(
         context.loaded,
         context.strategy_instance_id,
         EntryDecisionSourceInputRequest {
@@ -164,6 +165,7 @@ async fn collect_entry_decision_source_inputs_inner(
             instrument_source_output_path: context.request.instrument_source_output_path,
             fee_rate_source_output_path: context.request.fee_rate_source_output_path,
         },
+        &selected_books.selected,
     )
 }
 

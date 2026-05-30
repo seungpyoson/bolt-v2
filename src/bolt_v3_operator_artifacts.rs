@@ -7541,6 +7541,55 @@ pub fn write_entry_decision_source_inputs_from_source_files(
             max_realized_volatility_source_bytes: request.max_realized_volatility_source_bytes,
         },
     )?;
+    let selected = selected_entry_decision_market(
+        loaded,
+        strategy_instance_id,
+        request.market_inputs.instruments,
+        proofs.price_source.market_selection_timestamp_ms,
+    )?;
+    write_entry_decision_source_inputs_from_selected_source_files_inner(
+        loaded,
+        strategy_instance_id,
+        request,
+        proofs,
+        &selected,
+    )
+}
+
+pub fn write_entry_decision_source_inputs_from_selected_source_files(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    request: EntryDecisionSourceInputRequest<'_>,
+    selected: &bolt_v3_market_families::SelectedBinaryOptionMarket,
+) -> Result<EntryDecisionSourceInputsWritten, BoltV3OperatorArtifactError> {
+    let proofs = read_validated_entry_decision_source_proofs(
+        loaded,
+        strategy_instance_id,
+        EntryDecisionSourceProofFileRequest {
+            price_to_beat_source_path: request.price_to_beat_source_path,
+            max_price_to_beat_source_bytes: request.max_price_to_beat_source_bytes,
+            reference_quote_source_path: request.reference_quote_source_path,
+            max_reference_quote_source_bytes: request.max_reference_quote_source_bytes,
+            realized_volatility_source_path: request.realized_volatility_source_path,
+            max_realized_volatility_source_bytes: request.max_realized_volatility_source_bytes,
+        },
+    )?;
+    write_entry_decision_source_inputs_from_selected_source_files_inner(
+        loaded,
+        strategy_instance_id,
+        request,
+        proofs,
+        selected,
+    )
+}
+
+fn write_entry_decision_source_inputs_from_selected_source_files_inner(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    request: EntryDecisionSourceInputRequest<'_>,
+    proofs: EntryDecisionSourceProofs,
+    selected: &bolt_v3_market_families::SelectedBinaryOptionMarket,
+) -> Result<EntryDecisionSourceInputsWritten, BoltV3OperatorArtifactError> {
     validate_entry_decision_source_book(
         request.market_inputs.up_book,
         ENTRY_DECISION_UP_BOOK_LABEL,
@@ -7573,12 +7622,6 @@ pub fn write_entry_decision_source_inputs_from_source_files(
                 message: "entry decision source requires configured warmup_tick_count".to_string(),
             },
         )?;
-    let selected = selected_entry_decision_market(
-        loaded,
-        strategy_instance_id,
-        request.market_inputs.instruments,
-        proofs.price_source.market_selection_timestamp_ms,
-    )?;
     require_entry_decision_fee_source(
         &request.market_inputs.fee_bps_by_instrument_id,
         &selected.up_instrument_id.to_string(),

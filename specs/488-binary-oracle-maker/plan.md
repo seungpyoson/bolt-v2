@@ -10,7 +10,7 @@ A two-sided resting market-maker for Polymarket binary (YES/NO) markets, anchore
 ## Technical Context
 
 **Language/Version**: Rust (edition per workspace).
-**Primary Dependencies**: NautilusTrader Rust crates pinned in `Cargo.toml` at rev **`6e059dcbb59ac1e582132fc431a581936c216c3c`** (verified against `Cargo.lock`). NT owns execution, position/PnL, pre-trade limits, backtest engine + returns analytics (Sharpe/Sortino/Calmar), VPIN, greeks/implied-vol. *Doc-drift caveat:* ~20 tracked specs/docs cite a stale rev `7c2aafb…`; source-proofs MUST compare documented revs against `Cargo.toml`. The stale-rev cleanup is a **separate hygiene issue**, not in this scope.
+**Primary Dependencies**: NautilusTrader Rust crates, at the rev **pinned in `Cargo.toml`** (the single source of truth — this plan does not restate the SHA, so it cannot drift). NT owns execution, position/PnL, pre-trade limits, backtest engine + returns analytics (Sharpe/Sortino/Calmar), VPIN, greeks/implied-vol. Source-proofs MUST read the NT checkout at the rev `Cargo.toml` currently pins. A separate hygiene issue tracks ~20 specs/docs that hard-code a now-stale rev.
 **Storage**: Historical S3 parquet data lake (Polymarket book/trades/resolutions/new-market; ~3 weeks, sparse, thin books; **no underlying spot** — backfill externally). NT `ParquetDataCatalog` read from S3 is flagged UNPROVEN in the BTE spec (E-037) and must be proven for P0.
 **Testing**: `cargo test` (unit + property), NT backtest; `cargo fmt`/`clippy`/`deny` clean (CI on main).
 **Target Platform**: Linux (EC2 LiveNode); Polymarket binary first, perps/CEX later.
@@ -92,7 +92,7 @@ var/mm-research/ (offline)             # P0 edge-proof tooling (unbiased replay;
 - Subagent/review findings are drafts — re-verify each load-bearing claim at the pinned rev before it drives a change.
 - No dual paths: one fill truth (NT), one settlement module (P0↔live), one fair-value path (post-W8).
 - No hardcodes: venue facts → contract; model params/thresholds → TOML.
-- Cite NT rev `6e059dc`; never trust a doc's rev without checking `Cargo.toml`.
+- Never restate the NT rev SHA in docs; reference `Cargo.toml` and read the NT checkout at the rev it pins.
 
 ## Complexity Tracking
 

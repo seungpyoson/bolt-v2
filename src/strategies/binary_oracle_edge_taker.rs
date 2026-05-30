@@ -3982,7 +3982,24 @@ impl BinaryOracleEdgeTaker {
         // path checks fee-inclusive — admitting an order whose fee-inclusive
         // cost exceeds the intended per-order cap.
         let max_fee_bps = self.max_entry_fee_bps_for_admission(order.instrument_id(), price)?;
-        let notional = fee_inclusive_admission_notional(notional, max_fee_bps);
+        // An entry order with NO firm limit price (Market / StopMarket /
+        // MarketIfTouched / TrailingStopMarket) can fill PAST the reference price
+        // its notional is valued at, up to the strategy's own book-impact
+        // slippage budget. Fold that worst-case slippage into the admission
+        // scaling so the per-order cap is a hard ceiling on the cash a
+        // base-quantity entry can actually spend. Quote-quantity orders commit a
+        // fixed quote amount (already floored to it) and exits are risk-reducing,
+        // so neither is scaled; a firm-limit order can never fill past its own
+        // price, so it carries the fee budget alone.
+        let admission_adverse_bps = if matches!(intent.intent_kind, BoltV3OrderIntentKind::Entry)
+            && order.price().is_none()
+            && !order.is_quote_quantity()
+        {
+            max_fee_bps + Decimal::from(self.config.book_impact_cap_bps)
+        } else {
+            max_fee_bps
+        };
+        let notional = fee_inclusive_admission_notional(notional, admission_adverse_bps);
 
         Ok(BoltV3SubmitAdmissionRequest {
             strategy_id: intent.strategy_id.clone(),
@@ -8680,6 +8697,58 @@ mod tests {
             .expect("quote-quantity market admission should use NT cache quote price");
 
         assert_eq!(admission.notional, expected_notional);
+    }
+
+    #[test]
+    fn base_quantity_market_entry_admission_folds_in_worst_case_slippage() {
+        // A base-quantity Market entry has no firm limit price, so the venue fill
+        // can slip past the reference price the notional is valued at. The
+        // admission notional must fold in the strategy's own book-impact slippage
+        // budget so the per-order cap is a hard ceiling on the cash the entry can
+        // actually spend. A firm-limit entry (fill <= limit) needs no such
+        // adjustment; this test pins the worst-case scaling for the market-style
+        // shape that lacks one.
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        strategy.config.entry_order.order_type = OrderType::Market;
+        strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
+        strategy.config.entry_order.is_quote_quantity = false;
+        strategy.config.book_impact_cap_bps = 50;
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(100.0, 2);
+        let price = Price::new(0.33, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-MKT-1");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                client_order_id,
+            )
+            .expect("base-quantity market order should build through the strategy factory path");
+        assert!(matches!(order, OrderAny::Market(_)));
+        assert!(!order.is_quote_quantity());
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    price.to_string(),
+                    &order,
+                ),
+                &order,
+            )
+            .expect("base-quantity market admission should value worst-case slippage");
+
+        // base notional = 0.33 * 100 = 33.00; worst-case = 33.00 * (1 + 50bps) = 33.165
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("33.165").expect("expected decimal should parse"),
+            "base-quantity market entry admission must fold worst-case book-impact slippage into the cap valuation"
+        );
     }
 
     #[test]

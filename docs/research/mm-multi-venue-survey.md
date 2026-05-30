@@ -1,5 +1,13 @@
 # Multi-Venue Market-Making Strategy Survey
 
+> ⚠️ **Superseded for repo verdicts (2026-05-30):** the per-repo robustness grades, the "primary
+> candidate" call, and the port table in this survey were re-audited by a fresh **actual-source** read
+> of all 16 repos with adversarial verification — see
+> [`mm-code-audit-2026-05-30.md`](./mm-code-audit-2026-05-30.md), which is **authoritative**. Headline
+> changes: `market-maker-rs` → port-source (not base); GLFT → reimplement from paper (every port is
+> buggy); VPIN → NT-owned; `tikr` FillSim → highest-value port (was absent here). Treat the framing
+> below as the broader multi-venue direction; trust the audit doc for per-repo robustness + the plan.
+
 > **Status:** survey complete — 16/16 repos cloned + read + adversarially verified, 7 resource topics
 > scouted (ultracode, 2026-05-30). Evidence-backed; **not a build approval**.
 > **Scope declaration (rule #10):** this **broadens** issue #488's "External strategy assessment"

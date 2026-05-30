@@ -96,6 +96,21 @@ yet decided or verified — do not treat them as settled.
   edit. The alternative (build Python from the exact `6e059dc`) keeps Rust 0.58.0
   and is de-risked now that 3.14 is confirmed supported.
 
+### Build-from-rev — PROVEN (2026-05-31)
+
+**Decision: B** — keep Rust pinned at 0.58.0 (production untouched); build Python NT
+from the *same* rev. Done: `pip install "nautilus_trader @ git+…@6e059dc"` into an
+isolated research venv (outside the repo, Python 3.14) installs **`nautilus_trader
+1.228.0`** — same source as the Rust crates (0.58.0); `BacktestEngine` /
+`BacktestNode` / `ParquetDataCatalog` / `TradeTick` / `OrderBookDelta` all import.
+
+One environment fix was needed: NT's `build.py` forces the `stable` rustup channel,
+which was a stale **1.94.0** < the crates' **1.95.0** MSRV → `rustup update stable`
+(now 1.96.0). **Bolt's pinned `1.95.0` and the rustup default were untouched** — the
+production Rust build was not compromised. So **OPEN #2 is RESOLVED via B**: the two
+engines are now on identical source. (Implication for the sync script: ensure
+`stable` ≥ the pinned rev's required rustc before building.)
+
 ## Method
 
 Grounded by direct repo reads (2026-05-30) of `CLAUDE.md`, the `reference/` contracts,

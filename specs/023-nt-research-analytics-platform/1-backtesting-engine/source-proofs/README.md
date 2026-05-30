@@ -13,19 +13,27 @@ Tardis pricing personally re-verified, other pricing/license survey-sourced.
 
 | Fixture | Free history? | L2 history? | Recommended start | Pay later? |
 |---------|--------------|-------------|-------------------|-----------|
-| **binary option** | trades only (free) | **none anywhere** | free trades → `TRADE_BAR_REPLAY`; **forward-capture** for L2 | n/a — no vendor archives these |
+| **binary option** | **free bulk trades + free hourly L2 (pmxt)** | **YES, both venues** — free hourly snapshots; finer L2 paid | free pmxt L2 + bulk trades | **Telonex** (PM tick), **kalshi.com / kalshibacktest** (Kalshi) |
 | **perps/spot** | trades + futures snapshots (Binance, $0) | only paid / self-node | **free Binance/HL** for nimble research | **CoinAPI ~$1/GB** for targeted L2; Tardis only if breadth earns it |
 
-## Two gating facts
+## Key facts
 
-1. **No prediction-market L2 history exists** (Polymarket *or* Kalshi). L2
-   execution backtests there require forward-capturing the live feed — there is no
-   shortcut and no vendor sells it. Binary-option history tops out at
-   `TRADE_BAR_REPLAY`.
-2. **Commercial-use license is the real blocker, not data availability.**
-   Polymarket and Kalshi both restrict commercial data use; most crypto vendors
-   permit internal use but restrict redistribution. **Legal review gates any
-   real-money strategy** — verify the verbatim clause per source before commit.
+**Both prediction venues have L2 history** (survey corrected by operator):
+- **Free, hourly, both venues + Limitless/Opinion:** `archive.pmxt.dev` orderbook
+  snapshots (parquet) → `DEPTH_SNAPSHOT_REPLAY`. Good for feature/signal research.
+- **Polymarket tick L2:** **Telonex** (operator-validated; Enterprise = commercial).
+- **Kalshi L2:** **kalshi.com/market-data** (operator-pointed) + **kalshibacktest**
+  (100ms, crypto 15-min markets, $19.90/mo).
+- **Free bulk trades:** SII-WANGZJ (1.1B, MIT), jon-becker (Polymarket+Kalshi).
+- Forward-capture is now the free *tick-fidelity* / gap-fill option, not mandatory.
+
+The early "no prediction-market L2 exists" finding was a **web-survey miss** — it
+checked native APIs + on-chain only, not specialist vendors/archives the operator
+uses. Operator knowledge supersedes the survey.
+
+**Licensing — resolved for binary option.** The operator has direct BD agreements
+with Polymarket and Kalshi to use their data for trading. Crypto vendors permit
+internal use but restrict *redistribution* — fine for our own backtesting.
 
 ## Cost posture (decided)
 
@@ -52,11 +60,11 @@ Phase 2  Tardis ($350+/mo) — only if breadth justifies      → broad continuo
 
 ## Verify-before-commit (the weak layer)
 
-Fidelity/coverage findings are strong (doc fetches). Before spending money or
-trading commercially, re-verify: (1) Polymarket TOS + Kalshi API agreement
-(commercial use), (2) CoinAPI per-GB pricing (403'd on re-fetch), (3) Tardis ToS
-internal-use clause, (4) Binance-public data license, (5) Hyperliquid data
-license + true archive start date.
+Fidelity/coverage findings are strong (doc fetches); prediction-market licensing
+is BD-cleared and Telonex is operator-validated. The remaining unverified items,
+all on the crypto side: (1) CoinAPI per-GB pricing (403'd on re-fetch),
+(2) Tardis ToS internal-use clause, (3) Binance-public data license,
+(4) Hyperliquid data license + true archive start date.
 
 ## Method
 

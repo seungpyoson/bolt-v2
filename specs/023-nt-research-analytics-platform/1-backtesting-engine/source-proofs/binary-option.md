@@ -1,75 +1,78 @@
 # SourceProofReport — `binary option` fixture (BTE-016)
 
-Populated against the [schema](./schema.md). Surveyed 2026-05-30 (web-cited).
-Headline: **both prediction venues require forward-capture for L2, and both
-restrict commercial use of their data** — these are the two gating facts.
+Populated against the [schema](./schema.md). Surveyed 2026-05-30 (web), then
+**substantially corrected from operator knowledge** the same day.
 
-> **Confidence asymmetry (carry into every decision):** the *data-structure*
-> findings below are high-confidence (direct doc fetches). The *commercial-license*
-> findings are the weak layer — Polymarket's TOS clause came from a search excerpt
-> (JS-rendered page), and Kalshi's API developer agreement could not be fetched
-> (429). **Legal review required before any commercial use of either.**
+> **Commercial license — CLEARED.** The operator has direct BD agreements with
+> Polymarket and Kalshi permitting use of their data for trading.
 
-## Candidates (official/free first)
+> **Survey correction (operator-driven).** An early web-only draft concluded "no
+> historical L2 exists for either prediction venue." **That was wrong.** The web
+> survey checked native APIs + on-chain datasets and missed the specialist vendors
+> and free archives the operator already uses. **Both venues have L2 history** —
+> free hourly snapshots and finer paid/operator sources. Operator experience is
+> authoritative where it conflicts with the survey.
 
-### 1. Polymarket — `official_free`, `selection_status: candidate`
+## L2 availability — corrected
 
-| Field | Finding |
-|-------|---------|
-| Venues | Polymarket CTF / neg-risk CTF binary outcome-token markets (Polygon). |
-| Data classes | LIVE L2 (WS `book` snapshot + `price_change` deltas); historical **trades** (Data API `/trades`); 1-min price timeseries (`/prices-history`); on-chain fills/OI/volume (Goldsky/The Graph). |
-| **Highest historical fidelity** | **`TRADE_BAR_REPLAY`** — trades + 1-min price points. **No historical L2 store exists anywhere.** |
-| `forward_capture_status` | **`required`** for any L2_REPLAY (live WS `book`+`price_change` → `OrderBookDelta`). |
-| NT mapping | Historical `/trades` → `TradeTick` (NT `PolymarketDataLoader.load_trades()`); live WS → `OrderBookDelta`. NT loader exposes **no** order-book-history helper. |
-| License | **Restricted — commercial use prohibited without written consent** (TOS: *"Commercial use of any of the Content is prohibited"*, bars derivative indices from its prices). ⚠️ excerpt-sourced, confirm verbatim. |
-| Cost | Native CLOB/Data/Gamma APIs **free** (rate-limited). Goldsky (on-chain only, not L2) freemium. |
-| Evidence | docs.polymarket.com (CLOB/timeseries, get-prices-history, get-order-book, trades, WS market-channel); nautilustrader.io/docs/integrations/polymarket. |
+| Venue | Free L2 | Finer L2 | Net |
+|-------|---------|----------|-----|
+| **Polymarket** | **pmxt** hourly snapshots (free) | **Telonex** tick (operator-validated, paid) | `L2_REPLAY` (tick) available |
+| **Kalshi** | **pmxt** hourly snapshots (free) | **kalshi.com/market-data** (operator) + **kalshibacktest** 100ms (crypto markets) | `L2_REPLAY` available |
+| Limitless, Opinion | **pmxt** hourly snapshots (free) | — | newer venues; free L2 if ever in scope |
 
-### 2. Kalshi — `official_free`, `selection_status: candidate`
+## Candidates
 
-| Field | Finding |
-|-------|---------|
-| Venues | Kalshi (CFTC-regulated US event/prediction exchange), single venue. |
-| Data classes | Historical **candlesticks** (OHLC of yes_bid/yes_ask/price + vol + OI) and **trades** (`/historical/trades`); LIVE-only orderbook (REST snapshot + WS `orderbook_delta`). |
-| **Highest historical fidelity** | **`TRADE_BAR_REPLAY`** — candlesticks + trades. **No archived orderbook** (historical tier lists no orderbook). |
-| `forward_capture_status` | **`required`** for L2 (WS `orderbook_delta` is a true price-level book, live only). |
-| NT mapping | candlesticks → `Bar`; `/historical/trades` → `TradeTick`. |
-| License | **Restricted** — Data Terms: *"access content only for your personal use for non-commercial purposes."* ⚠️ API developer agreement not fetched (429) — confirm. |
-| Cost | Market data **free** with an account; advanced API access = application (not public). |
-| Evidence | docs.kalshi.com (historical_data, historical-cutoff, market-candlesticks, market-orderbook, quick_start_websockets). |
+### L2 order book
 
-> Kalshi orderbook history is exactly the open question in **BTE-023** — confirmed
-> here: **no archived orderbook snapshots/deltas exist**, so BTE-023 resolves to
-> "downgrade to `TRADE_BAR_REPLAY` / forward-capture for L2."
+| Source | Coverage | Cadence / fidelity | NT map | Cost |
+|--------|----------|--------------------|--------|------|
+| **pmxt archive** (`archive.pmxt.dev`) | **Polymarket, Kalshi, Limitless, Opinion** — hourly orderbook snapshots, parquet (`kalshi_orderbook_YYYY-MM-DDTHH.parquet`, ~39–157 MB/hr) + free JSON API. | **hourly** → `DEPTH_SNAPSHOT_REPLAY` (coarse; good for features/research, not execution-grade) | `OrderBookDepth10` | **Free** |
+| **Telonex** *(operator-validated)* | **Polymarket** (Binance on Plus; Kalshi not covered). "Full order book updates on every change — not interval-sampled," 3+ yrs, parquet via SDK/REST. | **tick** → `L2_REPLAY` | `OrderBookDelta`+`QuoteTick`+`TradeTick` | Free trial; Plus $79/mo personal; **Enterprise = commercial** |
+| **kalshi.com/market-data** *(operator-pointed)* | **Kalshi** own data offering; operator confirms historical L2 fetchable here (broader than the public API). | `L2_REPLAY` (pin cadence on ingest) | `OrderBookDelta` | operator-validated; confirm cost/format |
+| **kalshibacktest.com** | **Kalshi crypto 15-min** markets only (BTC/ETH/SOL/DOGE/XRP). Polls live book, persists depth, replay by timestamp. | **100ms** → `DEPTH_SNAPSHOT_REPLAY` (near-tick) | `OrderBookDelta`/`OrderBookDepth10` | $19.90/mo (Pro = 31 days history — likely operator's "cutoff") |
+| Forward-capture (Polymarket/Kalshi WS) | both venues, live `book`/`orderbook_delta`. | **tick** going forward → `L2_REPLAY` | `OrderBookDelta` | Free (self-run) |
+
+### Trades / prices — free, bulk
+
+| Source | Coverage | Fidelity | NT map | Cost |
+|--------|----------|----------|--------|------|
+| **SII-WANGZJ/Polymarket_data** | 1.1B trade records, 107GB parquet, Polymarket inception→2026 (Polygon `OrderFilled`). | `TRADE_BAR_REPLAY` | `TradeTick` | Free, MIT |
+| **jon-becker/prediction-market-analysis** | Polymarket **+ Kalshi** market+trade data, parquet on R2; academic. | `TRADE_BAR_REPLAY` | `TradeTick` | Free |
+| **pmxt** OHLCV (`pmxt.dev`) | 3+ yrs OHLCV across major prediction markets, API. | `TRADE_BAR_REPLAY` | `Bar` | check docs |
+| **Goldsky** Polymarket | on-chain Orders Matched/Filled, OI, positions, balances (operator-used). Good for **flow/OI features**. | metrics + trades | `TradeTick` + custom | Mirror pipelines (freemium) |
+| **Lychee** (`lycheedata.com`) | ~36GB every Kalshi trade + market since launch (full L2 not confirmed). | `TRADE_BAR_REPLAY` | `TradeTick` | check site |
+| Native APIs (Polymarket Data API; Kalshi `/historical/*`) | trades, prices, candlesticks (paginate-capped — bulk sets above avoid this). | `TRADE_BAR_REPLAY` | `TradeTick`/`Bar` | Free |
+| `manja316` ($9) | Polymarket 15-min top-10 depth — **superseded** by pmxt (free) / Telonex (tick). | — | — | ignore |
 
 ## Recommendation
 
-**Selection: both venues `accepted` at `TRADE_BAR_REPLAY` for history;
-`forward_capture_status: required` for any L2_REPLAY.** No paid candidate is
-admitted — paid vendors do **not** archive prediction-market order books either
-(checked; the free official APIs are the only realistic source, and they top out
-at trades).
+- **Free, now — research substrate:** **pmxt archive** (free hourly L2 snapshots,
+  both venues + Limitless/Opinion) for book/feature research, plus free bulk
+  **trades** (SII-WANGZJ, jon-becker). Covers the Phase-0 nimble Python lane at
+  **$0**. Forbidden claims at hourly L2: no execution-grade fills — feature/signal
+  research only.
+- **Execution-grade L2 when a strategy earns it:**
+  - **Polymarket → Telonex** (tick, Enterprise tier for the commercial license) —
+    operator-validated; wire Telonex parquet → `OrderBookDelta` → catalog.
+  - **Kalshi → `kalshi.com/market-data`** (operator-validated) for breadth, and
+    **kalshibacktest** (100ms) for crypto 15-min markets.
+  - **Gaps / latest tick:** free **forward-capture** of the live WS on both venues.
 
-Concretely:
-- **Now (free, $0):** load historical **trades** via NT's `PolymarketDataLoader`
-  → `TradeTick`. Fidelity `TRADE_BAR_REPLAY`. **Forbidden claims:** no order-book
-  or fill realism — trade-through / signal backtests only.
-- **For L2 execution realism:** stand up **forward capture** of the live WS book
-  feeds (`OrderBookDelta`) — there is no shortcut; L2 history does not exist. This
-  is the `FORWARD_CAPTURE_PENDING` state the project already anticipated for
-  Polymarket.
-- **Blocker — commercial license:** both venues restrict commercial use of their
-  data. This must clear **legal review** before a commercial (real-money) strategy
-  relies on it. Until then, treat binary-option backtests as research-only.
+No forward-capture is *mandatory* anymore — it's the free tick-fidelity option and
+gap-filler, not the only path.
 
 ## Required-check status
 
-| Check | Polymarket | Kalshi |
-|-------|-----------|--------|
-| schema | ✅ | ✅ |
-| sample pointer | ✅ (Data API /trades) | ✅ (/historical/trades) |
-| time coverage | ✅ to inception (paginate-capped) | ✅ rolling → historical tier |
-| fidelity (claimed = evidenced) | ✅ `TRADE_BAR_REPLAY` | ✅ `TRADE_BAR_REPLAY` |
-| NT mapping | ✅ TradeTick | ✅ Bar/TradeTick |
-| **license (commercial)** | ⚠️ **blocked — legal review** | ⚠️ **blocked — legal review** |
-| forbidden-claims recorded | ✅ | ✅ |
+| Check | pmxt free L2 | Telonex (PM) | kalshi.com/market-data | kalshibacktest |
+|-------|-------------|--------------|------------------------|----------------|
+| schema | ✅ parquet | ✅ operator-used | ✅ operator-pointed | ✅ doc'd |
+| sample pointer | ✅ archive.pmxt.dev | ✅ free trial | ✅ | ✅ free sample |
+| fidelity (claimed = evidenced) | ✅ `DEPTH_SNAPSHOT` hourly | ✅ `L2_REPLAY` tick | ✅ `L2_REPLAY` (pin cadence) | ✅ `DEPTH_SNAPSHOT` 100ms |
+| NT mapping | ✅ OrderBookDepth10 | ⚠️ wire-up pending | ⚠️ wire-up pending | ⚠️ wire-up pending |
+| license (commercial) | ✅ free | ✅ Enterprise | ✅ BD-cleared | ⚠️ confirm |
+| forbidden-claims recorded | ✅ (hourly ≠ execution) | ✅ | ✅ | ✅ (crypto-only) |
+
+> Resolves **BTE-023**: Kalshi L2 history **does** exist (`kalshi.com/market-data`,
+> kalshibacktest 100ms, pmxt free hourly) — the public API simply doesn't expose
+> archived books. No downgrade needed; pick the cadence the strategy requires.

@@ -46,8 +46,15 @@ data models are defined inside the numbered project specs/plans:
 
 ## DataFidelityClass
 
-- `class`: `L2_REPLAY`, `TRADE_BAR_REPLAY`, `SIGNAL_ONLY`, or
-  `FORWARD_CAPTURE_PENDING`.
+- `class`: `L2_REPLAY`, `DEPTH_SNAPSHOT_REPLAY`, `TRADE_BAR_REPLAY`, or
+  `SIGNAL_ONLY` — the four quality tiers, highest to lowest.
+  `DEPTH_SNAPSHOT_REPLAY` is periodic depth snapshots (e.g. 0.5s/1-min), distinct
+  from tick-level `L2_REPLAY`; a snapshot-derived "incremental" feed is
+  `DEPTH_SNAPSHOT_REPLAY`, not `L2_REPLAY`.
+- `forward_capture_status`: `not_needed`, `required`, or `in_progress` — set to
+  `required` when no usable history exists and the class must be captured going
+  forward. Replaces the former `FORWARD_CAPTURE_PENDING` class value, which
+  conflated capture status with a quality tier.
 - `allowed_claims`: What analysis/backtest result may claim.
 - `forbidden_claims`: Claims blocked by missing data.
 - `required_inputs`: Minimum source data required.
@@ -105,8 +112,10 @@ data models are defined inside the numbered project specs/plans:
 - `schema_sample`: Schema version, field list, sample URI, and sample hash.
 - `license_ref`: License/commercial-use proof and timestamp.
 - `nt_mapping_status`: accepted, rejected, signal-only, or pending.
-- `fidelity_class`: L2_REPLAY, TRADE_BAR_REPLAY, SIGNAL_ONLY, or
-  FORWARD_CAPTURE_PENDING.
+- `fidelity_class`: L2_REPLAY, DEPTH_SNAPSHOT_REPLAY, TRADE_BAR_REPLAY, or
+  SIGNAL_ONLY (see DataFidelityClass).
+- `forward_capture_status`: not_needed, required, or in_progress — required when
+  no usable history exists and the class must be captured going forward.
 - `forbidden_claims`: Claims this source must not support.
 - `warnings`: Gaps, missing fields, limits, or unsupported coverage.
 

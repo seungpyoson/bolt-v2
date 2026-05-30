@@ -68,9 +68,9 @@ gap-filler, not the only path.
 |-------|-------------|--------------|------------------------|----------------|
 | schema | ✅ parquet | ✅ operator-used | ✅ operator-pointed | ✅ doc'd |
 | sample pointer | ✅ archive.pmxt.dev | ✅ free trial | ✅ | ✅ free sample |
-| fidelity (claimed = evidenced) | ✅ `DEPTH_SNAPSHOT` hourly | ✅ `L2_REPLAY` tick | ✅ `L2_REPLAY` (pin cadence) | ✅ `DEPTH_SNAPSHOT` 100ms |
+| fidelity (claimed = evidenced) | ✅ `DEPTH_SNAPSHOT` hourly | ✅ `L2_REPLAY` tick (operator-attested) | ⚠️ `L2_REPLAY` pending (confirm format) | ✅ `DEPTH_SNAPSHOT` 100ms |
 | NT mapping | ✅ OrderBookDepth10 | ⚠️ wire-up pending | ⚠️ wire-up pending | ⚠️ wire-up pending |
-| license (commercial) | ✅ free | ✅ Enterprise | ✅ BD-cleared | ⚠️ confirm |
+| license (commercial) | ✅ free | ✅ Enterprise (operator-attested) | ✅ BD-cleared (operator-attested; no public clause on file) | ⚠️ confirm |
 | forbidden-claims recorded | ✅ (hourly ≠ execution) | ✅ | ✅ | ✅ (crypto-only) |
 
 > Resolves **BTE-023**: Kalshi L2 history **does** exist (`kalshi.com/market-data`,

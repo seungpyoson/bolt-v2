@@ -215,19 +215,11 @@ pub struct BoltV3SubmitAdmissionRequest {
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct BoltV3QuoteQuantityAdmissionInput {
-    pub order_kind: BoltV3QuoteQuantityOrderKind,
     pub order_side: BoltV3QuoteQuantityOrderSide,
     pub is_quote_quantity: bool,
     pub is_inverse: bool,
     pub submitted_quote_quantity: Decimal,
     pub calculated_notional: Decimal,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum BoltV3QuoteQuantityOrderKind {
-    Limit,
-    StopLimit,
-    Other,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -238,18 +230,21 @@ pub enum BoltV3QuoteQuantityOrderSide {
 }
 
 /// Floor a quote-quantity order's admission notional at the submitted quote
-/// quantity. For a non-inverse quote-quantity Limit/StopLimit order the order
-/// commits exactly its submitted quote quantity in settlement currency on BOTH
-/// sides, so the per-order cap must never be checked against a smaller value.
+/// quantity. A non-inverse quote-quantity order commits exactly its submitted
+/// quote quantity in settlement currency — on either side and for ANY order kind
+/// (Limit, StopLimit, Market, …) — so the per-order cap must never be checked
+/// against a smaller value.
 ///
-/// The conservative effective-price pull (`min(last, ask)` for a BUY,
-/// `max(last, bid)` for a SELL) overstates the notional in the typical case, but
-/// when the venue rounds the derived base quantity DOWN to size precision NT's
-/// effective notional can land a sub-tick BELOW the committed quote quantity.
-/// The floor is therefore applied to Buy and Sell alike — restricting it to one
-/// side leaves the other side's safety dependent on a precision coincidence
-/// rather than a structural guarantee. Inverse instruments do not denominate the
-/// quote quantity in settlement currency, so the floor is skipped for them.
+/// When the venue rounds the derived base quantity DOWN to size precision, NT's
+/// effective notional can land a sub-tick BELOW the committed quote quantity. The
+/// floor is therefore applied to every non-inverse quote-quantity Buy/Sell order
+/// regardless of kind — restricting it (to one side, or to Limit/StopLimit) would
+/// leave the excluded shapes' safety dependent on a precision coincidence rather
+/// than a structural guarantee. The conservative effective-price pull that feeds
+/// `calculated_notional` is a separate, Limit/StopLimit-only concern handled in
+/// [`quote_quantity_effective_price`]; this floor is the kind-independent
+/// backstop. Inverse instruments do not denominate the quote quantity in
+/// settlement currency, so the floor is skipped for them.
 pub fn conservative_quote_quantity_admission_notional(
     input: BoltV3QuoteQuantityAdmissionInput,
 ) -> Decimal {
@@ -258,10 +253,6 @@ pub fn conservative_quote_quantity_admission_notional(
         && matches!(
             input.order_side,
             BoltV3QuoteQuantityOrderSide::Buy | BoltV3QuoteQuantityOrderSide::Sell
-        )
-        && matches!(
-            input.order_kind,
-            BoltV3QuoteQuantityOrderKind::Limit | BoltV3QuoteQuantityOrderKind::StopLimit
         )
     {
         return input
@@ -339,11 +330,6 @@ pub fn admission_base_notional_from_order(
     let submitted_quote_quantity = Decimal::from_str(order.quantity().to_string().trim()).ok()?;
     Some(conservative_quote_quantity_admission_notional(
         BoltV3QuoteQuantityAdmissionInput {
-            order_kind: match order {
-                OrderAny::Limit(_) => BoltV3QuoteQuantityOrderKind::Limit,
-                OrderAny::StopLimit(_) => BoltV3QuoteQuantityOrderKind::StopLimit,
-                _ => BoltV3QuoteQuantityOrderKind::Other,
-            },
             order_side: match order.order_side() {
                 OrderSide::Buy => BoltV3QuoteQuantityOrderSide::Buy,
                 OrderSide::Sell => BoltV3QuoteQuantityOrderSide::Sell,

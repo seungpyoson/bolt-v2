@@ -7,9 +7,9 @@ use bolt_v2::bolt_v3_decision_evidence::{
 };
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_submit_admission::{
-    BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderKind,
-    BoltV3QuoteQuantityOrderSide, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
-    BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+    BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderSide,
+    BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
+    BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
     conservative_quote_quantity_admission_notional, rounded_order_admission_notional,
 };
 use bolt_v2::strategies::registry::FeeProvider;
@@ -331,7 +331,6 @@ fn non_positive_notional_rejects_before_nt_submit_without_consuming_count() {
 fn quote_quantity_sell_limit_helper_floors_to_submitted_quote_quantity() {
     let notional =
         conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
-            order_kind: BoltV3QuoteQuantityOrderKind::Limit,
             order_side: BoltV3QuoteQuantityOrderSide::Sell,
             is_quote_quantity: true,
             is_inverse: false,
@@ -350,7 +349,6 @@ fn quote_quantity_sell_limit_helper_floors_to_submitted_quote_quantity() {
 fn quote_quantity_sell_stop_limit_helper_floors_to_submitted_quote_quantity() {
     let notional =
         conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
-            order_kind: BoltV3QuoteQuantityOrderKind::StopLimit,
             order_side: BoltV3QuoteQuantityOrderSide::Sell,
             is_quote_quantity: true,
             is_inverse: false,
@@ -369,7 +367,6 @@ fn quote_quantity_sell_stop_limit_helper_floors_to_submitted_quote_quantity() {
 fn quote_quantity_sell_limit_helper_missing_quote_uses_submitted_quote_quantity() {
     let notional =
         conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
-            order_kind: BoltV3QuoteQuantityOrderKind::Limit,
             order_side: BoltV3QuoteQuantityOrderSide::Sell,
             is_quote_quantity: true,
             is_inverse: false,
@@ -384,7 +381,6 @@ fn quote_quantity_sell_limit_helper_missing_quote_uses_submitted_quote_quantity(
 fn quote_quantity_sell_stop_limit_helper_missing_quote_uses_submitted_quote_quantity() {
     let notional =
         conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
-            order_kind: BoltV3QuoteQuantityOrderKind::StopLimit,
             order_side: BoltV3QuoteQuantityOrderSide::Sell,
             is_quote_quantity: true,
             is_inverse: false,
@@ -399,7 +395,6 @@ fn quote_quantity_sell_stop_limit_helper_missing_quote_uses_submitted_quote_quan
 fn quote_quantity_inverse_sell_limit_preserves_nt_notional() {
     let notional =
         conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
-            order_kind: BoltV3QuoteQuantityOrderKind::Limit,
             order_side: BoltV3QuoteQuantityOrderSide::Sell,
             is_quote_quantity: true,
             is_inverse: true,
@@ -414,7 +409,6 @@ fn quote_quantity_inverse_sell_limit_preserves_nt_notional() {
 fn quote_quantity_inverse_sell_stop_limit_preserves_nt_notional() {
     let notional =
         conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
-            order_kind: BoltV3QuoteQuantityOrderKind::StopLimit,
             order_side: BoltV3QuoteQuantityOrderSide::Sell,
             is_quote_quantity: true,
             is_inverse: true,
@@ -436,7 +430,6 @@ fn quote_quantity_buy_limit_helper_floors_to_submitted_quote_quantity() {
     // understated notional.
     let notional =
         conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
-            order_kind: BoltV3QuoteQuantityOrderKind::Limit,
             order_side: BoltV3QuoteQuantityOrderSide::Buy,
             is_quote_quantity: true,
             is_inverse: false,
@@ -455,7 +448,6 @@ fn quote_quantity_buy_limit_helper_floors_to_submitted_quote_quantity() {
 fn quote_quantity_buy_stop_limit_helper_floors_to_submitted_quote_quantity() {
     let notional =
         conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
-            order_kind: BoltV3QuoteQuantityOrderKind::StopLimit,
             order_side: BoltV3QuoteQuantityOrderSide::Buy,
             is_quote_quantity: true,
             is_inverse: false,
@@ -477,7 +469,6 @@ fn quote_quantity_inverse_buy_limit_preserves_nt_notional() {
     // for an inverse SELL.
     let notional =
         conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
-            order_kind: BoltV3QuoteQuantityOrderKind::Limit,
             order_side: BoltV3QuoteQuantityOrderSide::Buy,
             is_quote_quantity: true,
             is_inverse: true,
@@ -486,6 +477,30 @@ fn quote_quantity_inverse_buy_limit_preserves_nt_notional() {
         });
 
     assert_eq!(notional, Decimal::new(1665, 2));
+}
+
+#[test]
+fn quote_quantity_buy_market_helper_floors_to_submitted_quote_quantity() {
+    // A non-inverse quote-quantity Market order commits the submitted quote
+    // quantity in settlement currency just like a Limit order. `entry_order` can
+    // be configured `is_quote_quantity = true` with `order_type = Market` (a
+    // buildable production shape, no config block), so the floor must NOT be
+    // restricted to Limit/StopLimit — otherwise a Market entry understates the
+    // cap by the same base-rounding sub-tick the SELL/BUY Limit cases did.
+    let notional =
+        conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
+            order_side: BoltV3QuoteQuantityOrderSide::Buy,
+            is_quote_quantity: true,
+            is_inverse: false,
+            submitted_quote_quantity: Decimal::new(2500, 2),
+            calculated_notional: Decimal::new(249995, 4),
+        });
+
+    assert_eq!(
+        notional,
+        Decimal::new(2500, 2),
+        "quote-quantity Market admission must floor to the committed quote quantity, not just Limit/StopLimit"
+    );
 }
 
 #[test]

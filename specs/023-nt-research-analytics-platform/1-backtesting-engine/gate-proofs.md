@@ -6,7 +6,8 @@ proof *results* against a concrete NautilusTrader revision; the cross-project
 [`reference/evidence.md`](../reference/evidence.md) stays NT-version-agnostic and
 **no evidence status is upgraded by this file**.
 
-- **Branch:** `feat/438-bte-gate1-backtest-proof`
+- **Branch:** `feat/438-bte-gate4-run-proof` (carries the Gate-1/2 proof scaffold
+  forward from `feat/438-bte-gate1-backtest-proof`, which was not merged standalone).
 - **Date:** 2026-05-30
 - **NT revision proven:** `6e059dcbb59ac1e582132fc431a581936c216c3c` (v0.58.0) —
   the rev resolved by the target `bolt-v2` branch's `Cargo.toml`/`Cargo.lock`.
@@ -18,22 +19,28 @@ proof *results* against a concrete NautilusTrader revision; the cross-project
 | Gate | Task | Result | Notes |
 |---|---|---|---|
 | Gate 1 | BTE-001 | **PROVEN** | `nautilus-backtest` (+`streaming`) compiles in bolt-v2, pure Rust; `BacktestNode` constructs from a catalog-backed run config. |
-| Gate 2 | BTE-007 | **PROVEN (local) + PROVEN (S3 interface); live-bucket round-trip deferred** | `ParquetDataCatalog` writes/reads instrument + trade fixtures on local fs; `s3://` dispatches to the `cloud` object-store backend. |
+| Gate 2 | BTE-007 | **PROVEN (local) + PROVEN (S3 interface); live-bucket round-trip deferred** | `ParquetDataCatalog` writes/reads instrument + trade + order-book-delta fixtures on local fs; `s3://` dispatches to the `cloud` object-store backend. |
+| Gate 4 | BTE-029 | **PROVEN (strategy-less pipeline)** | `BacktestNode::run()` executes end-to-end over the catalog and emits a `BacktestResult`; results are pipeline-proof only (synthetic data, no `SourceProofReport`). |
 
-Both gates are exercised across **both** spec market-structure fixtures (BTE-003)
+All gates are exercised across **both** spec market-structure fixtures (BTE-003)
 and four market families:
 
-| Family | Fixture | NT instrument | Venue (example) | Account |
-|--------|---------|---------------|-----------------|---------|
-| binary option | `binary option` | `BinaryOption` | POLYMARKET | Cash |
-| CEX spot | `perps/spot` | `CurrencyPair` | BINANCE | Cash |
-| CEX perp | `perps/spot` | `CryptoPerpetual` | BINANCE | Margin |
-| perp DEX | `perps/spot` | `CryptoPerpetual` | HYPERLIQUID | Margin |
+| Family | Fixture | NT instrument | Venue | Account |
+|--------|---------|---------------|-------|---------|
+| binary-option | `binary option` | `BinaryOption` | POLYMARKET | Cash |
+| cex-spot | `perps/spot` | `CurrencyPair` | BINANCE | Cash |
+| cex-perp | `perps/spot` | `CryptoPerpetual` | BINANCE | Margin |
+| perp-dex | `perps/spot` | `CryptoPerpetual` | HYPERLIQUID | Margin |
 
-Venue/currency are config/fixture parameters only — no hardcoded venue branch in
-engine logic. (BTE-003 defines these fixtures via TOML/registry bindings; that
-binding layer is the #438 contract slice — here the fixture *shapes* are proven
-to round-trip and drive the engine.)
+Every runtime value — venue, currencies, increments, balances, the synthetic
+data points — is bound through the TOML registry
+[`tests/fixtures/bte_market_families.toml`](../../../tests/fixtures/bte_market_families.toml),
+deserialized with `serde`/`toml`. The proof holds **no** venue/price/currency
+literals in Rust; the only structural choice it makes is which NT instrument
+constructor a fixture's `kind` maps to. This implements the BTE-003 "venue/
+provider selected only through TOML/registry bindings" requirement for the proof
+fixtures (the production manifest's registry binding remains the #438 contract
+slice).
 
 ## Reproduce
 
@@ -44,7 +51,7 @@ All commands run through the managed verifier (`scripts/rust_verification.py`):
 python3 scripts/rust_verification.py cargo --repo "$(git rev-parse --show-toplevel)" -- \
     clippy --features bte-gate-proof --test bte_gate1_backtest_proof -- -D warnings
 
-# run the three proofs (Gate 1 construct + Gate 2 local/S3)
+# run the proofs (Gate 1 construct + Gate 2 local/S3 + Gate 4 run)
 python3 scripts/rust_verification.py cargo --repo "$(git rev-parse --show-toplevel)" -- \
     test --features bte-gate-proof --test bte_gate1_backtest_proof -- --nocapture
 ```
@@ -82,9 +89,9 @@ production `LiveNode` build.
 - **Gate 2 (BTE-007), local.** For each family, `ParquetDataCatalog` writes the
   instrument (`BinaryOption` / `CurrencyPair` / `CryptoPerpetual`, via the
   dedicated `write_instruments`/`query_instruments` path that bypasses DataFusion)
-  plus three `TradeTick`s, and reads both back byte-identical via
-  `query_typed_data::<TradeTick>`. Local filesystem needs **no** cargo features
-  (DataFusion + `object_store` are unconditional deps).
+  plus three `TradeTick`s and two `OrderBookDelta`s, and reads all three classes
+  back byte-identical via `query_typed_data`. Local filesystem needs **no** cargo
+  features (DataFusion + `object_store` are unconditional deps).
 - **Gate 2 (BTE-007), S3 interface.** With the `cloud` feature on,
   `ParquetDataCatalog::from_uri("s3://…", None, …)` returns `Ok` (asserted via
   `is_ok()`), constructing the real S3 `object_store` backend instead of the
@@ -95,6 +102,25 @@ production `LiveNode` build.
   `aws/builder.rs:1086,1164`), so the construct succeeds without a network
   round-trip and the positive path is what the test asserts. S3 is hard-gated
   behind `cloud` (not in `default`); the `cloud` feature pulls **no** pyo3.
+- **Gate 4 (BTE-029).** `BacktestNode::run()` runs each family's engine over the
+  catalog and returns `Vec<BacktestResult>`. The Rust `BacktestEngineConfig`
+  carries **no** strategies/actors (unlike the Python config — strategies are
+  added imperatively via `engine.add_strategy`), so this is a strategy-less run:
+  the engine iterates every catalog data point and emits a result with zero
+  orders/positions. An `L2_MBP` venue enforces order-book data **at run time**
+  too (not only at construction) — `run()` errors "No order book data found …
+  when `book_type` is 'L2_MBP'" if the instrument has no deltas — which is why
+  the proof writes a real (minimal) book. Observed per family: `iterations == 5`
+  (3 trades + 2 deltas), `total_orders == 0`, `total_positions == 0`, populated
+  `run_id` and `backtest_start`/`backtest_end`, and a settlement-currency PnL map
+  at `0.0`. **Claim limit:** the data is synthetic with no `SourceProofReport`
+  (BTE-015), so these results prove the *pipeline executes*, never market
+  behaviour.
+- **BTE-003 fixture binding.** The four families are bound from the TOML registry
+  `tests/fixtures/bte_market_families.toml` (serde/`toml`), proving the
+  "venue/provider selected only through TOML/registry bindings" shape for the
+  proof fixtures. A `kind` discriminant selects the NT constructor; no
+  venue/price/currency literal lives in the Rust.
 
 ## Build isolation
 
@@ -129,16 +155,21 @@ neither. No existing pin moved — the live dependency graph is unchanged.
   config-owned `artifact_root`). plan.md Gate 2 explicitly permits documenting the
   staging path instead; the interface is proven, the live round-trip lands with
   the #438 contract slice (E-034 schema/validation).
-- **`BacktestNode::run()`** end-to-end over the catalog — Gate 4 / BTE-029.
+- **Strategy-driven run with fills** — the Gate-4 proof runs strategy-less (zero
+  orders by design). A run that adds a strategy via `engine.add_strategy`,
+  generates orders, and asserts fills/positions is later #438/#439 work, and
+  needs real sourced data (`SourceProofReport`) to carry any market claim.
 - **`SourceProofReport` and Artifact Index contracts** — BTE-005/015 (#438
   contract slice).
 
 ## Evidence rows advanced (no status change)
 
 - **E-001** (SOURCE_PROVEN) — its `next_proof` "compile the NT version resolved by
-  the target `bolt-v2` branch" is now empirically satisfied for the compile +
-  config-construction portion; "prove Bolt manifest maps to `BacktestRunConfig`/
-  `BacktestDataConfig`" (BTE-009) remains open.
+  the target `bolt-v2` branch" is now empirically satisfied for the compile,
+  config-construction, **and run-execution** portions (`BacktestNode::run()`
+  returns a `BacktestResult`); "prove Bolt manifest maps to `BacktestRunConfig`/
+  `BacktestDataConfig`" (BTE-009) remains open — the proof hand-builds the configs
+  rather than deriving them from a `BacktestingRunManifest`.
 - **E-034 / E-038** — `ParquetDataCatalog` storage feasibility on local fs and the
   S3 backend is confirmed; the `artifact_root` schema, typed-subpath rules, and
   Artifact Index commit semantics remain DECISION_NEEDED (#438 contract slice).

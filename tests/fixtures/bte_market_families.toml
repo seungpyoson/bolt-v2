@@ -1,0 +1,94 @@
+# Backtesting Engine proof fixtures (spec 023, BTE-003).
+#
+# Single source of truth for every runtime value the Gate proof feeds NautilusTrader:
+# the market-family instrument specs, venue/account selection, starting balances,
+# and the synthetic data points. The Rust proof only chooses which NT constructor
+# to call (by `kind`) and maps enum/currency codes to NT types — it holds no venue,
+# price, currency, or quantity literals. This realises the BTE-003 requirement:
+# "venue/provider selected only through TOML/registry bindings".
+
+# Gate-2 S3 interface target. Synthetic bucket — never provisioned, never contacted
+# (object_store's S3 builder is lazy; construction touches no network).
+s3_proof_uri = "s3://example-bte-proof/nt-catalog"
+
+[[family]]
+label = "binary-option"
+fixture = "binary option"
+kind = "binary_option"
+instrument_id = "0xPROOF-OUTCOME-YES.POLYMARKET"
+symbol = "0xPROOF-OUTCOME-YES"
+asset_class = "alternative"
+quote_currency = "USDC"
+activation_ns = 1699304047000000000
+expiration_ns = 1708729140000000000
+outcome = "YES"
+price_increment = "0.001"
+size_increment = "0.01"
+venue = "POLYMARKET"
+account_type = "cash"
+venue_base_currency = "USDC"
+starting_balance = "1000000 USDC"
+trade_price = "0.450"
+trade_size = "10.00"
+book_bid = "0.440"
+book_ask = "0.460"
+
+[[family]]
+label = "cex-spot"
+fixture = "perps/spot"
+kind = "currency_pair"
+instrument_id = "BTCUSDT.BINANCE"
+symbol = "BTCUSDT"
+base_currency = "BTC"
+quote_currency = "USDT"
+price_increment = "0.01"
+size_increment = "0.000001"
+venue = "BINANCE"
+account_type = "cash"
+starting_balance = "1000000 USDT"
+trade_price = "60000.00"
+trade_size = "0.000100"
+book_bid = "59999.00"
+book_ask = "60001.00"
+
+[[family]]
+label = "cex-perp"
+fixture = "perps/spot"
+kind = "crypto_perpetual"
+instrument_id = "BTCUSDT-PERP.BINANCE"
+symbol = "BTCUSDT-PERP"
+base_currency = "BTC"
+quote_currency = "USDT"
+settlement_currency = "USDT"
+is_inverse = false
+price_increment = "0.1"
+size_increment = "0.001"
+venue = "BINANCE"
+account_type = "margin"
+venue_base_currency = "USDT"
+starting_balance = "1000000 USDT"
+trade_price = "60000.0"
+trade_size = "0.001"
+book_bid = "59999.0"
+book_ask = "60001.0"
+
+[[family]]
+label = "perp-dex"
+fixture = "perps/spot"
+kind = "crypto_perpetual"
+instrument_id = "BTC-PERP.HYPERLIQUID"
+symbol = "BTC-PERP"
+base_currency = "BTC"
+quote_currency = "USDC"
+settlement_currency = "USDC"
+is_inverse = false
+price_increment = "0.1"
+size_increment = "0.001"
+venue = "HYPERLIQUID"
+account_type = "margin"
+venue_base_currency = "USDC"
+starting_balance = "1000000 USDC"
+trade_price = "60000.0"
+trade_size = "0.001"
+book_bid = "59999.0"
+book_ask = "60001.0"

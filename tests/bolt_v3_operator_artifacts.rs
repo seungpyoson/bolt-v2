@@ -8549,6 +8549,13 @@ fn entry_decision_evidence_source_fixture(
 
 fn entry_decision_readiness_session_fixture(loaded: &LoadedBoltV3Config) -> serde_json::Value {
     let selected_market = fixture_selected_market_requirement();
+    entry_decision_readiness_session_fixture_for_selected(loaded, &selected_market)
+}
+
+fn entry_decision_readiness_session_fixture_for_selected(
+    loaded: &LoadedBoltV3Config,
+    selected_market: &SelectedMarketRequirement,
+) -> serde_json::Value {
     let mut input = fixture_gate_evidence_input(&selected_market.selected_market_key);
     input.collector_observed_at_ms = TEST_MARKET_SELECTION_NOW_MS + 1_200;
     input.source_observed_at_ms = TEST_MARKET_SELECTION_NOW_MS + 1_000;
@@ -8573,7 +8580,7 @@ fn entry_decision_readiness_session_fixture(loaded: &LoadedBoltV3Config) -> serd
     let session = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
         loaded,
         strategy_instance_id: TEST_STRATEGY_INSTANCE_ID,
-        selected_market: &selected_market,
+        selected_market,
         requirements: &requirements,
         provider_evidence: &[evidence],
         created_at_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
@@ -8653,6 +8660,162 @@ fn entry_decision_evidence_replay_derives_price_from_readiness_session() {
     assert_eq!(
         chain.admission.outcome,
         BoltV3AdmissionOutcome::RejectedNotArmed
+    );
+}
+
+#[test]
+fn entry_decision_evidence_replay_uses_source_selected_rotated_market() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let current_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let next_start_seconds = TEST_MARKET_SELECTION_CURRENT_START_SECONDS + 300;
+    let next_start_ms = TEST_MARKET_SELECTION_END_MS;
+    let next_end_ms =
+        next_start_ms + (TEST_MARKET_SELECTION_END_MS - TEST_MARKET_SELECTION_START_MS);
+    let next_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        next_start_seconds,
+    );
+    let next_up_instrument_id = "condition-next-up.POLYMARKET";
+    let next_down_instrument_id = "condition-next-down.POLYMARKET";
+    let instruments = vec![
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            &current_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            &current_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            next_up_instrument_id,
+            &next_slug,
+            "market-next",
+            "condition-next",
+            "question-next",
+            TEST_UP_OUTCOME,
+            next_start_ms,
+            next_end_ms,
+        ),
+        updown_binary_option(
+            next_down_instrument_id,
+            &next_slug,
+            "market-next",
+            "condition-next",
+            "question-next",
+            TEST_DOWN_OUTCOME,
+            next_start_ms,
+            next_end_ms,
+        ),
+    ];
+    let instrument_source_path = temp.path().join("instruments.json");
+    std::fs::write(
+        &instrument_source_path,
+        serde_json::to_vec_pretty(&instruments).expect("instrument source should serialize"),
+    )
+    .expect("instrument source should write");
+    let selected_market = SelectedMarketRequirement {
+        market_id: "market-next".to_string(),
+        instrument_ids: vec![
+            next_down_instrument_id.to_string(),
+            next_up_instrument_id.to_string(),
+        ],
+        ..fixture_selected_market_requirement()
+    };
+    let readiness_session =
+        entry_decision_readiness_session_fixture_for_selected(&loaded, &selected_market);
+    let decision_source_path = temp.path().join("entry-decision-source.json");
+    std::fs::write(
+        &decision_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            "readiness_session": readiness_session,
+            "warmup_count": 20,
+            "reference_quote": {
+                "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "realized_volatility": {
+                "value": 1.5,
+                "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "fees": {
+                "fee_bps_by_instrument_id": {
+                    next_up_instrument_id: 0.0,
+                    next_down_instrument_id: 0.0
+                }
+            },
+            "books": {
+                "price_precision": 2,
+                "up": {
+                    "best_bid": 0.50,
+                    "bid_quantity": 500.0,
+                    "best_ask": 0.50,
+                    "ask_quantity": 500.0,
+                    "liquidity_available": 500.0
+                },
+                "down": {
+                    "best_bid": 0.48,
+                    "bid_quantity": 500.0,
+                    "best_ask": 0.49,
+                    "ask_quantity": 500.0,
+                    "liquidity_available": 500.0
+                }
+            }
+        }))
+        .expect("decision source should serialize"),
+    )
+    .expect("decision source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &loaded,
+            &strategy_instance_id,
+            &decision_source_path,
+            100_000,
+            &instrument_source_path,
+            100_000,
+            100_000,
+        )
+        .expect_err("future rotated market should not produce a normal strategy entry");
+    let message = error.to_string();
+    assert!(
+        message.contains("IntervalOpenMissing"),
+        "future selected market should block because the interval is not open, got: {message}"
+    );
+    assert!(
+        !message.contains("FeesNotReady"),
+        "source-selected rotated market fees must be used instead of recomputing current market fees: {message}"
     );
 }
 

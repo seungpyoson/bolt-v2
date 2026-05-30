@@ -5652,11 +5652,8 @@ pub fn record_entry_decision_evidence_from_source(
     );
     register_source_replay_strategy(&mut strategy, trader_id, source, instruments)?;
 
-    let mut selection = selection_snapshot_from_instruments(
-        &strategy.config,
-        instruments,
-        source.market_selection_timestamp_ms,
-    );
+    let mut selection =
+        selection_snapshot_from_entry_decision_source(&strategy.config, source, instruments);
     let SelectionState::Active { market } = &mut selection.decision.state else {
         anyhow::bail!("entry decision evidence source did not select an active configured market");
     };
@@ -5937,6 +5934,68 @@ fn selection_snapshot_from_instruments(
         return idle_selection_snapshot(config, now_ms, TARGET_MARKET_NOT_FOUND_REASON);
     };
     selection_snapshot_for_state(config, now_ms, SelectionState::Active { market })
+}
+
+fn selection_snapshot_from_entry_decision_source(
+    config: &BinaryOracleEdgeTakerConfig,
+    source: &BinaryOracleEntryDecisionEvidenceSource,
+    instruments: &[InstrumentAny],
+) -> RuntimeSelectionSnapshot {
+    let Some(market) = selected_source_market_from_instruments(config, source, instruments) else {
+        return idle_selection_snapshot(
+            config,
+            source.market_selection_timestamp_ms,
+            TARGET_MARKET_NOT_FOUND_REASON,
+        );
+    };
+    selection_snapshot_for_state(
+        config,
+        source.market_selection_timestamp_ms,
+        SelectionState::Active { market },
+    )
+}
+
+fn selected_source_market_from_instruments(
+    config: &BinaryOracleEdgeTakerConfig,
+    source: &BinaryOracleEntryDecisionEvidenceSource,
+    instruments: &[InstrumentAny],
+) -> Option<CandidateMarket> {
+    let selected = &source.readiness_session.selected_market;
+    let expected_instrument_ids = selected
+        .instrument_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if expected_instrument_ids.len() != selected.instrument_ids.len() {
+        return None;
+    }
+    let cadence_milliseconds = u64::try_from(config.cadence_seconds)
+        .ok()?
+        .checked_mul(MILLIS_PER_SECOND_U64)?;
+    let max_attempts = instruments.len().max(COUNTER_INCREMENT);
+    for attempt_index in INITIAL_COUNTER_USIZE..max_attempts {
+        let attempt_offset =
+            cadence_milliseconds.checked_mul(u64::try_from(attempt_index).ok()?)?;
+        let attempt_now_ms = source
+            .market_selection_timestamp_ms
+            .checked_add(attempt_offset)?;
+        let Some(market) =
+            select_configured_market_from_instruments(config, instruments, attempt_now_ms)
+        else {
+            continue;
+        };
+        if market.market_id != selected.market_id {
+            continue;
+        }
+        let market_instrument_ids = BTreeSet::from([
+            market.up.instrument_id.clone(),
+            market.down.instrument_id.clone(),
+        ]);
+        if market_instrument_ids == expected_instrument_ids {
+            return Some(market);
+        }
+    }
+    None
 }
 
 fn idle_selection_snapshot(

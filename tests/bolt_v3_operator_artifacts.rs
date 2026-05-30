@@ -13727,6 +13727,7 @@ fn test_live_canary_proof_policy() -> LiveCanaryProofPolicyBlock {
         strategy_instance_id: "configured_strategy".to_string(),
         execution_client_id: "configured_execution_client".to_string(),
         book_type: bolt_v2::bolt_v3_config::DataClientReadinessProbeBookType::L2Mbp,
+        book_snapshot_interval_millis: 1_000,
         time_in_force: bolt_v2::bolt_v3_config::LiveCanaryProofTimeInForce::Fok,
         post_only: false,
         reduce_only: false,

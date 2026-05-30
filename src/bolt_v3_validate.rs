@@ -238,6 +238,12 @@ fn validate_live_canary_proof_policy(
                 .to_string(),
         );
     }
+    if policy.enabled && policy.book_snapshot_interval_millis == 0 {
+        errors.push(
+            "live_canary.proof_policy.book_snapshot_interval_millis must be positive when enabled"
+                .to_string(),
+        );
+    }
 
     match (
         parse_decimal_string(&policy.proof_notional),

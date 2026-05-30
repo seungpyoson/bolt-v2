@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use nautilus_common::actor::DataActor;
@@ -44,6 +44,7 @@ struct CanaryProofExecutorConfig {
     executor_strategy_id: String,
     execution_client_id: String,
     book_type: BookType,
+    book_snapshot_interval_millis: NonZeroUsize,
     time_in_force: TimeInForce,
     post_only: bool,
     reduce_only: bool,
@@ -200,11 +201,25 @@ impl DataActor for CanaryProofExecutor {
             false,
             None,
         );
+        self.subscribe_book_at_interval(
+            self.proof_instrument_id(),
+            self.config.book_type,
+            None,
+            self.config.book_snapshot_interval_millis,
+            None,
+            None,
+        );
         Ok(())
     }
 
     fn on_stop(&mut self) -> Result<()> {
         self.unsubscribe_book_deltas(self.proof_instrument_id(), None, None);
+        self.unsubscribe_book_at_interval(
+            self.proof_instrument_id(),
+            self.config.book_snapshot_interval_millis,
+            None,
+            None,
+        );
         Ok(())
     }
 
@@ -253,6 +268,9 @@ pub fn register_canary_proof_executor_on_node(
         executor_strategy_id: proof_policy.executor_strategy_id.clone(),
         execution_client_id: proof_policy.execution_client_id.clone(),
         book_type: proof_policy_book_type_to_nt(proof_policy.book_type),
+        book_snapshot_interval_millis: proof_policy_book_snapshot_interval_to_nt(
+            proof_policy.book_snapshot_interval_millis,
+        )?,
         time_in_force: proof_policy_time_in_force_to_nt(proof_policy.time_in_force),
         post_only: proof_policy.post_only,
         reduce_only: proof_policy.reduce_only,
@@ -363,6 +381,13 @@ fn proof_policy_book_type_to_nt(book_type: DataClientReadinessProbeBookType) -> 
         DataClientReadinessProbeBookType::L2Mbp => BookType::L2_MBP,
         DataClientReadinessProbeBookType::L3Mbo => BookType::L3_MBO,
     }
+}
+
+fn proof_policy_book_snapshot_interval_to_nt(interval_millis: u64) -> Result<NonZeroUsize> {
+    let interval = usize::try_from(interval_millis)
+        .context("live canary proof policy book_snapshot_interval_millis does not fit usize")?;
+    NonZeroUsize::new(interval)
+        .context("live canary proof policy book_snapshot_interval_millis must be positive")
 }
 
 fn proof_policy_time_in_force_to_nt(time_in_force: LiveCanaryProofTimeInForce) -> TimeInForce {

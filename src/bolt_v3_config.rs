@@ -237,6 +237,7 @@ pub struct LiveCanaryProofPolicyBlock {
     pub strategy_instance_id: String,
     pub execution_client_id: String,
     pub book_type: DataClientReadinessProbeBookType,
+    pub book_snapshot_interval_millis: u64,
     pub time_in_force: LiveCanaryProofTimeInForce,
     pub post_only: bool,
     pub reduce_only: bool,

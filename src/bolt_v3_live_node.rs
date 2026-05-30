@@ -3441,6 +3441,7 @@ mod tests {
             strategy_instance_id: "configured_updown_main".to_string(),
             execution_client_id: "polymarket_main".to_string(),
             book_type: DataClientReadinessProbeBookType::L2Mbp,
+            book_snapshot_interval_millis: 1_000,
             time_in_force: LiveCanaryProofTimeInForce::Fok,
             post_only: false,
             reduce_only: false,

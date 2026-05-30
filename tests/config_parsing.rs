@@ -212,6 +212,23 @@ fn bolt_v3_live_canary_proof_policy_rejects_rotation_min_above_attempts() {
 }
 
 #[test]
+fn bolt_v3_live_canary_proof_policy_rejects_zero_book_snapshot_interval() {
+    let messages = validate_root_messages_with_live_canary_proof_policy(
+        &valid_live_canary_proof_policy_block().replace(
+            "book_snapshot_interval_millis = 1000",
+            "book_snapshot_interval_millis = 0",
+        ),
+    );
+
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("book_snapshot_interval_millis")),
+        "zero proof policy book snapshot interval must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_live_canary_proof_policy_rejects_blank_strategy_or_execution_client() {
     let messages = validate_root_messages_with_live_canary_proof_policy(
         &valid_live_canary_proof_policy_block()
@@ -4729,6 +4746,7 @@ executor_strategy_id = "canary-proof-executor-proof"
 strategy_instance_id = "configured_strategy"
 execution_client_id = "configured_execution_client"
 book_type = "l2_mbp"
+book_snapshot_interval_millis = 1000
 time_in_force = "fok"
 post_only = false
 reduce_only = false

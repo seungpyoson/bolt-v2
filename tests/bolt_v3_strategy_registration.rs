@@ -1403,6 +1403,10 @@ fn canary_proof_executor_waits_for_submit_time_book_before_submit_attempt() {
         "proof executor must subscribe to immediate book data"
     );
     assert!(
+        on_start_body.contains("self.subscribe_book_at_interval"),
+        "proof executor must subscribe to TOML-owned book snapshots so quiet books still trigger submit-time checks"
+    );
+    assert!(
         !on_start_body.contains("try_submit_proof_order"),
         "proof executor must not submit from startup before a submit-time book is observed"
     );
@@ -1490,6 +1494,7 @@ fn configure_canary_proof_policy_and_artifacts(
         strategy_instance_id: "configured_updown_main".to_string(),
         execution_client_id: "polymarket_main".to_string(),
         book_type: DataClientReadinessProbeBookType::L2Mbp,
+        book_snapshot_interval_millis: 1_000,
         time_in_force: LiveCanaryProofTimeInForce::Fok,
         post_only: false,
         reduce_only: false,

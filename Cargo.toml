@@ -21,6 +21,11 @@ getrandom = "0.4.2"
 hex = "0.4"
 libc = "0.2"
 log = "0.4"
+# Backtesting Engine Gate-1 proof (spec 023 BTE-001), optional + behind the
+# `bte-gate-proof` feature so the production LiveNode build never compiles it.
+# `streaming` is the feature that gates BacktestNode + the catalog-driven API;
+# pure Rust, no pyo3 (do NOT enable `python`).
+nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c", default-features = false, features = ["streaming"], optional = true }
 nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-data = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
@@ -46,6 +51,14 @@ toml = "1.1"
 url = "2"
 ustr = "1.1.0"
 zeroize = "1.8.2"
+
+[features]
+# Backtesting Engine Gate-1/Gate-2 proof (spec 023 §Implementation Gates 1-2,
+# issue #438). OFF by default: the production binary never compiles
+# `nautilus-backtest` or the `nautilus-persistence` `cloud` (S3) backend.
+# Enable only to run the gate proof:
+#   cargo test --features bte-gate-proof --test bte_gate1_backtest_proof
+bte-gate-proof = ["dep:nautilus-backtest", "nautilus-persistence/cloud"]
 
 [dev-dependencies]
 arrow = "58.3.0"

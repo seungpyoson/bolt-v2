@@ -92,3 +92,169 @@ trade_price = "60000.0"
 trade_size = "0.001"
 book_bid = "59999.0"
 book_ask = "60001.0"
+
+# Generic perpetual on a non-crypto underlying (an equity perp) — the case
+# CryptoPerpetual cannot express. `underlying` + `asset_class` distinguish it;
+# base_currency is omitted (an equity underlying is not a currency).
+[[family]]
+label = "equity-perp"
+fixture = "perps/spot"
+kind = "perpetual_contract"
+instrument_id = "NVDA-PERP.REPRESENTATIVE"
+symbol = "NVDA-PERP"
+underlying = "NVDA"
+asset_class = "equity"
+quote_currency = "USDC"
+settlement_currency = "USDC"
+is_inverse = false
+price_increment = "0.01"
+size_increment = "0.1"
+venue = "REPRESENTATIVE"
+account_type = "margin"
+venue_base_currency = "USDC"
+starting_balance = "1000000 USDC"
+trade_price = "950.00"
+trade_size = "1.0"
+book_bid = "949.00"
+book_ask = "951.00"
+
+# Betfair-style sports betting market. Enabled for capability/round-trip coverage;
+# no bolt strategy supports betting yet. Price is decimal odds, currency GBP.
+[[family]]
+label = "betting-betfair"
+fixture = "betting"
+kind = "betting"
+instrument_id = "1.234567890-Arsenal.BETFAIR"
+symbol = "1.234567890-Arsenal"
+quote_currency = "GBP"
+price_increment = "0.01"
+size_increment = "0.01"
+venue = "BETFAIR"
+account_type = "cash"
+venue_base_currency = "GBP"
+starting_balance = "100000 GBP"
+trade_price = "2.00"
+trade_size = "10.00"
+book_bid = "1.98"
+book_ask = "2.02"
+
+[family.betting]
+event_type_id = 1
+event_type_name = "Soccer"
+competition_id = 10932509
+competition_name = "English Premier League"
+event_id = 32011811
+event_name = "Arsenal vs Chelsea"
+event_country_code = "GB"
+event_open_date_ns = 1709400000000000000
+betting_type = "ODDS"
+market_id = "1.234567890"
+market_name = "Match Odds"
+market_type = "WIN"
+market_start_time_ns = 1709400000000000000
+selection_id = 47999
+selection_name = "Arsenal"
+selection_handicap = 0.0
+
+# Dated crypto future (Deribit/Binance-style). `underlying` is a currency code
+# (BTC), unlike PerpetualContract's Ustr underlying. Linear/USDC-settled
+# representative shape — Deribit's own inverse economics are a TOML edit away.
+[[family]]
+label = "crypto-future"
+fixture = "crypto-derivative"
+kind = "crypto_future"
+instrument_id = "BTC-27JUN25.DERIBIT"
+symbol = "BTC-27JUN25"
+underlying = "BTC"
+quote_currency = "USDC"
+settlement_currency = "USDC"
+is_inverse = false
+activation_ns = 1699304047000000000
+expiration_ns = 1708729140000000000
+price_increment = "0.1"
+size_increment = "0.001"
+venue = "DERIBIT"
+account_type = "margin"
+venue_base_currency = "USDC"
+starting_balance = "1000000 USDC"
+trade_price = "60000.0"
+trade_size = "0.001"
+book_bid = "59999.0"
+book_ask = "60001.0"
+
+# Crypto option (Deribit-style BTC call). Adds option_kind + strike_price.
+[[family]]
+label = "crypto-option"
+fixture = "crypto-derivative"
+kind = "crypto_option"
+instrument_id = "BTC-27JUN25-60000-C.DERIBIT"
+symbol = "BTC-27JUN25-60000-C"
+underlying = "BTC"
+quote_currency = "USDC"
+settlement_currency = "USDC"
+is_inverse = false
+option_kind = "call"
+strike_price = "60000.00"
+activation_ns = 1699304047000000000
+expiration_ns = 1708729140000000000
+price_increment = "0.01"
+size_increment = "0.1"
+venue = "DERIBIT"
+account_type = "margin"
+venue_base_currency = "USDC"
+starting_balance = "1000000 USDC"
+trade_price = "1500.00"
+trade_size = "0.1"
+book_bid = "1499.99"
+book_ask = "1500.01"
+
+# Calendar spread on crypto futures. The spread is its own instrument;
+# strategy_type names the spread structure.
+[[family]]
+label = "crypto-futures-spread"
+fixture = "crypto-derivative"
+kind = "crypto_futures_spread"
+instrument_id = "BTC-CAL-27JUN25-26SEP25.DERIBIT"
+symbol = "BTC-CAL-27JUN25-26SEP25"
+underlying = "BTC"
+quote_currency = "USDC"
+settlement_currency = "USDC"
+is_inverse = false
+strategy_type = "CALENDAR"
+activation_ns = 1699304047000000000
+expiration_ns = 1708729140000000000
+price_increment = "0.1"
+size_increment = "0.001"
+venue = "DERIBIT"
+account_type = "margin"
+venue_base_currency = "USDC"
+starting_balance = "1000000 USDC"
+trade_price = "100.0"
+trade_size = "0.001"
+book_bid = "99.9"
+book_ask = "100.1"
+
+# Vertical spread on crypto options.
+[[family]]
+label = "crypto-option-spread"
+fixture = "crypto-derivative"
+kind = "crypto_option_spread"
+instrument_id = "BTC-VERT-60000-65000.DERIBIT"
+symbol = "BTC-VERT-60000-65000"
+underlying = "BTC"
+quote_currency = "USDC"
+settlement_currency = "USDC"
+is_inverse = false
+strategy_type = "VERTICAL"
+activation_ns = 1699304047000000000
+expiration_ns = 1708729140000000000
+price_increment = "0.01"
+size_increment = "0.1"
+venue = "DERIBIT"
+account_type = "margin"
+venue_base_currency = "USDC"
+starting_balance = "1000000 USDC"
+trade_price = "200.00"
+trade_size = "0.1"
+book_bid = "199.99"
+book_ask = "200.01"

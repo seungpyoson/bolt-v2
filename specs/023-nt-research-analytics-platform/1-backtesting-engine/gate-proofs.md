@@ -22,15 +22,32 @@ proof *results* against a concrete NautilusTrader revision; the cross-project
 | Gate 2 | BTE-007 | **PROVEN (local) + PROVEN (S3 interface); live-bucket round-trip deferred** | `ParquetDataCatalog` writes/reads instrument + trade + order-book-delta fixtures on local fs; `s3://` dispatches to the `cloud` object-store backend. |
 | Gate 4 | BTE-029 | **PROVEN (strategy-less pipeline)** | `BacktestNode::run()` executes end-to-end over the catalog and emits a `BacktestResult`; results are pipeline-proof only (synthetic data, no `SourceProofReport`). |
 
-All gates are exercised across **both** spec market-structure fixtures (BTE-003)
-and four market families:
+All gates are exercised across the two spec market-structure fixtures (BTE-003)
+plus additional NT instrument families enabled for capability/round-trip
+coverage — **10 families across 9 distinct NT instrument types** (`9 of 18` of
+NT's `InstrumentAny` catalogue):
 
-| Family | Fixture | NT instrument | Venue | Account |
-|--------|---------|---------------|-------|---------|
-| binary-option | `binary option` | `BinaryOption` | POLYMARKET | Cash |
-| cex-spot | `perps/spot` | `CurrencyPair` | BINANCE | Cash |
-| cex-perp | `perps/spot` | `CryptoPerpetual` | BINANCE | Margin |
-| perp-dex | `perps/spot` | `CryptoPerpetual` | HYPERLIQUID | Margin |
+| Family | NT instrument | Venue | Account | Strategy today? |
+|--------|---------------|-------|---------|-----------------|
+| binary-option | `BinaryOption` | POLYMARKET | Cash | ✅ bolt-v2 |
+| cex-spot | `CurrencyPair` | BINANCE | Cash | ✅ bolt-v3 |
+| cex-perp | `CryptoPerpetual` | BINANCE | Margin | ✅ bolt-v3 |
+| perp-dex | `CryptoPerpetual` | HYPERLIQUID | Margin | ✅ bolt-v3 |
+| equity-perp | `PerpetualContract` | REPRESENTATIVE | Margin | capability only |
+| betting-betfair | `BettingInstrument` | BETFAIR | Cash | capability only |
+| crypto-future | `CryptoFuture` | DERIBIT | Margin | capability only |
+| crypto-option | `CryptoOption` | DERIBIT | Margin | capability only |
+| crypto-futures-spread | `CryptoFuturesSpread` | DERIBIT | Margin | capability only |
+| crypto-option-spread | `CryptoOptionSpread` | DERIBIT | Margin | capability only |
+
+"Capability only" families are modeled, round-tripped, and run end-to-end to
+prove NT can carry the family in our pipeline — **not** that bolt trades it. They
+use representative (not venue-exact) economics: linear/USDC-settled shapes rather
+than e.g. Deribit's inverse BTC settlement, which is a one-line TOML change. The
+9 not yet covered are TradFi-only families (`Equity`, `Cfd`, `Commodity`,
+`IndexInstrument`, `FuturesContract`/`FuturesSpread`,
+`OptionContract`/`OptionSpread`) and `TokenizedAsset` — none has a bolt strategy
+or data source today.
 
 Every runtime value — venue, currencies, increments, balances, the synthetic
 data points — is bound through the TOML registry
@@ -59,13 +76,19 @@ python3 scripts/rust_verification.py cargo --repo "$(git rev-parse --show-toplev
 Observed result (2026-05-30):
 
 ```text
-running 5 tests
+running 11 tests
 test binary_option_polymarket ... ok
 test perps_spot_cex_spot_binance ... ok
 test perps_spot_cex_perp_binance ... ok
 test perps_spot_perp_dex_hyperliquid ... ok
+test perpetual_contract_equity_perp ... ok
+test betting_betfair_match_odds ... ok
+test crypto_future_dated ... ok
+test crypto_option_btc_call ... ok
+test crypto_futures_spread_calendar ... ok
+test crypto_option_spread_vertical ... ok
 test gate2_s3_object_store_backend_is_wired ... ok
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
 `clippy --features bte-gate-proof ... -D warnings` finished clean, and default
@@ -82,15 +105,15 @@ production `LiveNode` build.
   `BacktestNode::new` performs real cross-validation — an `L2_MBP`/`L3_MBO` venue
   must have an order-book data config (`backtest/src/node.rs:341-368`), and only
   one run config is allowed per node (kernel `MessageBus` is a thread-local
-  singleton). For **each** of the four market families the proof builds the
+  singleton). For **each** of the ten market families the proof builds the
   realistic CLOB shape: an `L2_MBP` venue fed both `OrderBookDelta` and
-  `TradeTick` data, with the correct account type (Cash for spot/binary, Margin
-  for perps) and settlement currency.
+  `TradeTick` data, with the correct account type (Cash for spot/binary/betting,
+  Margin for perps/futures/options) and settlement currency.
 - **Gate 2 (BTE-007), local.** For each family, `ParquetDataCatalog` writes the
-  instrument (`BinaryOption` / `CurrencyPair` / `CryptoPerpetual`, via the
-  dedicated `write_instruments`/`query_instruments` path that bypasses DataFusion)
-  plus three `TradeTick`s and two `OrderBookDelta`s, and reads all three classes
-  back byte-identical via `query_typed_data`. Local filesystem needs **no** cargo
+  instrument (one of nine NT instrument types, via the dedicated
+  `write_instruments`/`query_instruments` path that bypasses DataFusion) plus
+  three `TradeTick`s and two `OrderBookDelta`s, and reads all three classes back
+  byte-identical via `query_typed_data`. Local filesystem needs **no** cargo
   features (DataFusion + `object_store` are unconditional deps).
 - **Gate 2 (BTE-007), S3 interface.** With the `cloud` feature on,
   `ParquetDataCatalog::from_uri("s3://…", None, …)` returns `Ok` (asserted via
@@ -116,11 +139,12 @@ production `LiveNode` build.
   at `0.0`. **Claim limit:** the data is synthetic with no `SourceProofReport`
   (BTE-015), so these results prove the *pipeline executes*, never market
   behaviour.
-- **BTE-003 fixture binding.** The four families are bound from the TOML registry
+- **BTE-003 fixture binding.** The ten families are bound from the TOML registry
   `tests/fixtures/bte_market_families.toml` (serde/`toml`), proving the
   "venue/provider selected only through TOML/registry bindings" shape for the
   proof fixtures. A `kind` discriminant selects the NT constructor; no
-  venue/price/currency literal lives in the Rust.
+  venue/price/currency literal lives in the Rust. Adding a family is a TOML edit
+  plus (for a new `kind`) one constructor arm — never a hardcoded venue/price.
 
 ## Build isolation
 

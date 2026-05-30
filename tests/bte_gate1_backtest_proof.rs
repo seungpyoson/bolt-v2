@@ -29,12 +29,23 @@
 //! venue/price/currency literals; the only structural choice it makes is which NT
 //! instrument constructor a fixture's `kind` maps to.
 //!
-//! | Family | Fixture | NT instrument | Venue | Account |
-//! |--------|---------|---------------|-------|---------|
-//! | binary-option | `binary option` | `BinaryOption` | POLYMARKET | Cash |
-//! | cex-spot | `perps/spot` | `CurrencyPair` | BINANCE | Cash |
-//! | cex-perp | `perps/spot` | `CryptoPerpetual` | BINANCE | Margin |
-//! | perp-dex | `perps/spot` | `CryptoPerpetual` | HYPERLIQUID | Margin |
+//! The two spec fixtures (`binary option`, `perps/spot`) are covered, plus
+//! additional NT instrument families enabled for capability/round-trip coverage
+//! (some have no bolt strategy yet — proving NT can carry the family, not that we
+//! trade it). 10 families across 9 distinct NT instrument types:
+//!
+//! | Family | NT instrument | Venue | Account |
+//! |--------|---------------|-------|---------|
+//! | binary-option | `BinaryOption` | POLYMARKET | Cash |
+//! | cex-spot | `CurrencyPair` | BINANCE | Cash |
+//! | cex-perp | `CryptoPerpetual` | BINANCE | Margin |
+//! | perp-dex | `CryptoPerpetual` | HYPERLIQUID | Margin |
+//! | equity-perp | `PerpetualContract` | REPRESENTATIVE | Margin |
+//! | betting-betfair | `BettingInstrument` | BETFAIR | Cash |
+//! | crypto-future | `CryptoFuture` | DERIBIT | Margin |
+//! | crypto-option | `CryptoOption` | DERIBIT | Margin |
+//! | crypto-futures-spread | `CryptoFuturesSpread` | DERIBIT | Margin |
+//! | crypto-option-spread | `CryptoOptionSpread` | DERIBIT | Margin |
 //!
 //! Per the operator decision recorded on #438, the S3 leg is proven at the
 //! *interface* level (scheme dispatch reaches the cloud backend rather than the
@@ -66,11 +77,13 @@ use nautilus_backtest::node::BacktestNode;
 use nautilus_core::UnixNanos;
 use nautilus_model::data::{BookOrder, OrderBookDelta, TradeTick};
 use nautilus_model::enums::{
-    AccountType, AggressorSide, AssetClass, BookAction, BookType, OmsType, OrderSide,
+    AccountType, AggressorSide, AssetClass, BookAction, BookType, OmsType, OptionKind, OrderSide,
 };
 use nautilus_model::identifiers::{InstrumentId, Symbol, TradeId};
 use nautilus_model::instruments::{
-    BinaryOption, CryptoPerpetual, CurrencyPair, Instrument, InstrumentAny,
+    BettingInstrument, BinaryOption, CryptoFuture, CryptoFuturesSpread, CryptoOption,
+    CryptoOptionSpread, CryptoPerpetual, CurrencyPair, Instrument, InstrumentAny,
+    PerpetualContract,
 };
 use nautilus_model::types::{Currency, Price, Quantity};
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
@@ -102,11 +115,23 @@ struct MarketFamily {
     settlement_currency: Option<String>,
     asset_class: Option<String>,
     is_inverse: Option<bool>,
+    /// Underlying for a generic `PerpetualContract` (a Ustr identifier, e.g.
+    /// `NVDA`/`EURUSD`) or for the crypto derivatives (a currency code, e.g.
+    /// `BTC`) — interpreted per `kind`.
+    underlying: Option<String>,
+    /// Option type (`call`/`put`) for `crypto_option`.
+    option_kind: Option<String>,
+    /// Strike price for `crypto_option`.
+    strike_price: Option<String>,
+    /// Spread strategy type (e.g. `CALENDAR`, `VERTICAL`) for the spread kinds.
+    strategy_type: Option<String>,
     price_increment: String,
     size_increment: String,
     activation_ns: Option<u64>,
     expiration_ns: Option<u64>,
     outcome: Option<String>,
+    /// Sports-betting taxonomy, present only for `kind = "betting"`.
+    betting: Option<BettingSpec>,
     venue: String,
     account_type: String,
     venue_base_currency: Option<String>,
@@ -115,6 +140,27 @@ struct MarketFamily {
     trade_size: String,
     book_bid: String,
     book_ask: String,
+}
+
+/// Betfair-style market/selection taxonomy for a `BettingInstrument`.
+#[derive(Debug, Deserialize)]
+struct BettingSpec {
+    event_type_id: u64,
+    event_type_name: String,
+    competition_id: u64,
+    competition_name: String,
+    event_id: u64,
+    event_name: String,
+    event_country_code: String,
+    event_open_date_ns: u64,
+    betting_type: String,
+    market_id: String,
+    market_name: String,
+    market_type: String,
+    market_start_time_ns: u64,
+    selection_id: u64,
+    selection_name: String,
+    selection_handicap: f64,
 }
 
 fn registry() -> FixtureRegistry {
@@ -142,8 +188,22 @@ fn account_type(s: &str) -> AccountType {
     }
 }
 
+fn option_kind(s: &str) -> OptionKind {
+    match s {
+        "call" => OptionKind::Call,
+        "put" => OptionKind::Put,
+        other => panic!("unsupported option_kind `{other}`"),
+    }
+}
+
 fn asset_class(s: &str) -> AssetClass {
     match s {
+        "fx" => AssetClass::FX,
+        "equity" => AssetClass::Equity,
+        "commodity" => AssetClass::Commodity,
+        "debt" => AssetClass::Debt,
+        "index" => AssetClass::Index,
+        "cryptocurrency" => AssetClass::Cryptocurrency,
         "alternative" => AssetClass::Alternative,
         other => panic!("unsupported asset_class `{other}`"),
     }
@@ -228,6 +288,278 @@ fn build_instrument(f: &MarketFamily) -> InstrumentAny {
                     .expect("crypto_perpetual needs settlement_currency"),
             ),
             f.is_inverse.expect("crypto_perpetual needs is_inverse"),
+            price_increment.precision,
+            size_increment.precision,
+            price_increment,
+            size_increment,
+            None, // multiplier
+            None, // lot_size
+            None, // max_quantity
+            None, // min_quantity
+            None, // max_notional
+            None, // min_notional
+            None, // max_price
+            None, // min_price
+            None, // margin_init
+            None, // margin_maint
+            None, // maker_fee
+            None, // taker_fee
+            None, // info
+            UnixNanos::default(),
+            UnixNanos::default(),
+        )
+        .into_any(),
+        "perpetual_contract" => PerpetualContract::new(
+            id,
+            symbol,
+            Ustr::from(
+                f.underlying
+                    .as_deref()
+                    .expect("perpetual_contract needs underlying"),
+            ),
+            asset_class(
+                f.asset_class
+                    .as_deref()
+                    .expect("perpetual_contract needs asset_class"),
+            ),
+            f.base_currency.as_deref().map(currency), // optional (set for FX/crypto underlyings)
+            currency(&f.quote_currency),
+            currency(
+                f.settlement_currency
+                    .as_deref()
+                    .expect("perpetual_contract needs settlement_currency"),
+            ),
+            f.is_inverse.expect("perpetual_contract needs is_inverse"),
+            price_increment.precision,
+            size_increment.precision,
+            price_increment,
+            size_increment,
+            None, // multiplier
+            None, // lot_size
+            None, // max_quantity
+            None, // min_quantity
+            None, // max_notional
+            None, // min_notional
+            None, // max_price
+            None, // min_price
+            None, // margin_init
+            None, // margin_maint
+            None, // maker_fee
+            None, // taker_fee
+            None, // info
+            UnixNanos::default(),
+            UnixNanos::default(),
+        )
+        .into_any(),
+        "betting" => {
+            let b = f
+                .betting
+                .as_ref()
+                .expect("betting needs a [family.betting] table");
+            BettingInstrument::new(
+                id,
+                symbol,
+                b.event_type_id,
+                Ustr::from(b.event_type_name.as_str()),
+                b.competition_id,
+                Ustr::from(b.competition_name.as_str()),
+                b.event_id,
+                Ustr::from(b.event_name.as_str()),
+                Ustr::from(b.event_country_code.as_str()),
+                UnixNanos::from(b.event_open_date_ns),
+                Ustr::from(b.betting_type.as_str()),
+                Ustr::from(b.market_id.as_str()),
+                Ustr::from(b.market_name.as_str()),
+                Ustr::from(b.market_type.as_str()),
+                UnixNanos::from(b.market_start_time_ns),
+                b.selection_id,
+                Ustr::from(b.selection_name.as_str()),
+                b.selection_handicap,
+                currency(&f.quote_currency),
+                price_increment.precision,
+                size_increment.precision,
+                price_increment,
+                size_increment,
+                None, // max_quantity
+                None, // min_quantity
+                None, // max_notional
+                None, // min_notional
+                None, // max_price
+                None, // min_price
+                None, // margin_init
+                None, // margin_maint
+                None, // maker_fee
+                None, // taker_fee
+                None, // info
+                UnixNanos::default(),
+                UnixNanos::default(),
+            )
+            .into_any()
+        }
+        "crypto_future" => CryptoFuture::new(
+            id,
+            symbol,
+            currency(
+                f.underlying
+                    .as_deref()
+                    .expect("crypto_future needs underlying"),
+            ),
+            currency(&f.quote_currency),
+            currency(
+                f.settlement_currency
+                    .as_deref()
+                    .expect("crypto_future needs settlement_currency"),
+            ),
+            f.is_inverse.expect("crypto_future needs is_inverse"),
+            UnixNanos::from(f.activation_ns.expect("crypto_future needs activation_ns")),
+            UnixNanos::from(f.expiration_ns.expect("crypto_future needs expiration_ns")),
+            price_increment.precision,
+            size_increment.precision,
+            price_increment,
+            size_increment,
+            None, // multiplier
+            None, // lot_size
+            None, // max_quantity
+            None, // min_quantity
+            None, // max_notional
+            None, // min_notional
+            None, // max_price
+            None, // min_price
+            None, // margin_init
+            None, // margin_maint
+            None, // maker_fee
+            None, // taker_fee
+            None, // info
+            UnixNanos::default(),
+            UnixNanos::default(),
+        )
+        .into_any(),
+        "crypto_option" => CryptoOption::new(
+            id,
+            symbol,
+            currency(
+                f.underlying
+                    .as_deref()
+                    .expect("crypto_option needs underlying"),
+            ),
+            currency(&f.quote_currency),
+            currency(
+                f.settlement_currency
+                    .as_deref()
+                    .expect("crypto_option needs settlement_currency"),
+            ),
+            f.is_inverse.expect("crypto_option needs is_inverse"),
+            option_kind(
+                f.option_kind
+                    .as_deref()
+                    .expect("crypto_option needs option_kind"),
+            ),
+            Price::from(
+                f.strike_price
+                    .as_deref()
+                    .expect("crypto_option needs strike_price"),
+            ),
+            UnixNanos::from(f.activation_ns.expect("crypto_option needs activation_ns")),
+            UnixNanos::from(f.expiration_ns.expect("crypto_option needs expiration_ns")),
+            price_increment.precision,
+            size_increment.precision,
+            price_increment,
+            size_increment,
+            None, // multiplier
+            None, // lot_size
+            None, // max_quantity
+            None, // min_quantity
+            None, // max_notional
+            None, // min_notional
+            None, // max_price
+            None, // min_price
+            None, // margin_init
+            None, // margin_maint
+            None, // maker_fee
+            None, // taker_fee
+            None, // info
+            UnixNanos::default(),
+            UnixNanos::default(),
+        )
+        .into_any(),
+        "crypto_futures_spread" => CryptoFuturesSpread::new(
+            id,
+            symbol,
+            currency(
+                f.underlying
+                    .as_deref()
+                    .expect("crypto_futures_spread needs underlying"),
+            ),
+            currency(&f.quote_currency),
+            currency(
+                f.settlement_currency
+                    .as_deref()
+                    .expect("crypto_futures_spread needs settlement_currency"),
+            ),
+            f.is_inverse
+                .expect("crypto_futures_spread needs is_inverse"),
+            Ustr::from(
+                f.strategy_type
+                    .as_deref()
+                    .expect("crypto_futures_spread needs strategy_type"),
+            ),
+            UnixNanos::from(
+                f.activation_ns
+                    .expect("crypto_futures_spread needs activation_ns"),
+            ),
+            UnixNanos::from(
+                f.expiration_ns
+                    .expect("crypto_futures_spread needs expiration_ns"),
+            ),
+            price_increment.precision,
+            size_increment.precision,
+            price_increment,
+            size_increment,
+            None, // multiplier
+            None, // lot_size
+            None, // max_quantity
+            None, // min_quantity
+            None, // max_notional
+            None, // min_notional
+            None, // max_price
+            None, // min_price
+            None, // margin_init
+            None, // margin_maint
+            None, // maker_fee
+            None, // taker_fee
+            None, // info
+            UnixNanos::default(),
+            UnixNanos::default(),
+        )
+        .into_any(),
+        "crypto_option_spread" => CryptoOptionSpread::new(
+            id,
+            symbol,
+            currency(
+                f.underlying
+                    .as_deref()
+                    .expect("crypto_option_spread needs underlying"),
+            ),
+            currency(&f.quote_currency),
+            currency(
+                f.settlement_currency
+                    .as_deref()
+                    .expect("crypto_option_spread needs settlement_currency"),
+            ),
+            f.is_inverse.expect("crypto_option_spread needs is_inverse"),
+            Ustr::from(
+                f.strategy_type
+                    .as_deref()
+                    .expect("crypto_option_spread needs strategy_type"),
+            ),
+            UnixNanos::from(
+                f.activation_ns
+                    .expect("crypto_option_spread needs activation_ns"),
+            ),
+            UnixNanos::from(
+                f.expiration_ns
+                    .expect("crypto_option_spread needs expiration_ns"),
+            ),
             price_increment.precision,
             size_increment.precision,
             price_increment,
@@ -444,6 +776,45 @@ fn perps_spot_cex_perp_binance() {
 #[test]
 fn perps_spot_perp_dex_hyperliquid() {
     prove_market_family(market_family("perp-dex"));
+}
+
+/// Generic `PerpetualContract` — an equity perpetual (non-crypto underlying), the
+/// case `CryptoPerpetual` cannot express. Margin account.
+#[test]
+fn perpetual_contract_equity_perp() {
+    prove_market_family(market_family("equity-perp"));
+}
+
+/// `BettingInstrument` — a Betfair-style sports market. Modeled, round-tripped,
+/// and run end-to-end for capability coverage; no bolt strategy supports betting
+/// yet, so this proves NT can carry the family, not that we trade it.
+#[test]
+fn betting_betfair_match_odds() {
+    prove_market_family(market_family("betting-betfair"));
+}
+
+/// `CryptoFuture` — a dated (expiring) crypto future (Deribit/Binance-style).
+#[test]
+fn crypto_future_dated() {
+    prove_market_family(market_family("crypto-future"));
+}
+
+/// `CryptoOption` — a crypto option (Deribit-style BTC call).
+#[test]
+fn crypto_option_btc_call() {
+    prove_market_family(market_family("crypto-option"));
+}
+
+/// `CryptoFuturesSpread` — a calendar spread on crypto futures.
+#[test]
+fn crypto_futures_spread_calendar() {
+    prove_market_family(market_family("crypto-futures-spread"));
+}
+
+/// `CryptoOptionSpread` — a vertical spread on crypto options.
+#[test]
+fn crypto_option_spread_vertical() {
+    prove_market_family(market_family("crypto-option-spread"));
 }
 
 /// Gate 2 (BTE-007) — the `s3://` object-store backend is compiled in.

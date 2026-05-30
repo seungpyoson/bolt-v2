@@ -30,3 +30,6 @@ __pycache__/
 .DS_Store
 __pycache__/
 *.pyc
+
+# BTE cross-engine proof dev scratch (catalogs + result JSON; never committed)
+.bte-cross-engine/

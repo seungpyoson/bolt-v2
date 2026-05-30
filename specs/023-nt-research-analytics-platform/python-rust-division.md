@@ -63,9 +63,21 @@ yet decided or verified — do not treat them as settled.
 
 ## OPEN items (not decided / not verified)
 
-1. **Canonical-catalog writer.** Rust-only vs Python-allowed for writing the
-   `nt_catalog/` the Rust backtest reads. To be settled by the cross-engine test
-   (write-both-directions round-trip + Python-vs-Rust result agreement). **OPEN.**
+1. **Canonical-catalog writer — Direction A + agreement PROVEN (2026-05-31).** The
+   cross-engine test (`scripts/bte_cross_engine_proof.py` + the Rust
+   `binary_option_cross_engine_write` test) shows the Python engine reads the *exact
+   bytes* of a Rust-written catalog, and a strategy-less backtest over those shared
+   bytes yields identical counters in both engines (`iterations 5, total_events 0,
+   total_orders 0, total_positions 0`, run-id + range present).
+   **Finding:** the parquet *data format* is cross-compatible, but the two engines'
+   `ParquetDataCatalog` use different *directory names* — Rust `trades`/`instruments`
+   vs Python `trade_tick`/`<type>` (they agree on `order_book_deltas`). A direct read
+   misses trades + instruments; a thin directory-name shim (instrument dir = config
+   `kind`) bridges it fully — no deep incompatibility.
+   **Implication:** Rust can be the canonical writer and the Python research lane
+   reads it through that small name-normalization shim.
+   **Still pending:** Direction B (Python-written catalog read by Rust) and a
+   production-grade shim. So **partially resolved.**
 2. **Python NT version correspondence — VERIFIED 2026-05-30.** At rev `6e059dc` the
    repo declares Python package **1.228.0** (`pyproject.toml`) and Rust crates
    **0.58.0** (`Cargo.toml`) — the same commit, two numbering schemes. **But 1.228.0

@@ -11,6 +11,11 @@
 # (object_store's S3 builder is lazy; construction touches no network).
 s3_proof_uri = "s3://example-bte-proof/nt-catalog"
 
+# Cross-engine proof scratch root (repo-relative; gitignored, never committed).
+# Both the Rust test and scripts/bte_cross_engine_proof.py resolve this SAME dir,
+# so a catalog written by one engine is read by the other. No path literal in code.
+cross_engine_root = ".bte-cross-engine"
+
 [[family]]
 label = "binary-option"
 fixture = "binary option"

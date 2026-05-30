@@ -68,6 +68,7 @@
 //! run with fills, and a live-bucket S3 round-trip.
 #![cfg(feature = "bte-gate-proof")]
 
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use nautilus_backtest::config::{
@@ -87,7 +88,7 @@ use nautilus_model::instruments::{
 };
 use nautilus_model::types::{Currency, Price, Quantity};
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use ustr::Ustr;
 
 /// The fixture registry — single source of truth for every runtime value the
@@ -98,6 +99,9 @@ const FIXTURES_TOML: &str = include_str!("fixtures/bte_market_families.toml");
 struct FixtureRegistry {
     /// Gate-2 S3 interface target (synthetic bucket).
     s3_proof_uri: String,
+    /// Cross-engine scratch root (repo-relative; resolved identically by the Rust
+    /// test and the Python research engine). Gitignored, never committed.
+    cross_engine_root: String,
     family: Vec<MarketFamily>,
 }
 
@@ -592,25 +596,19 @@ fn build_instrument(f: &MarketFamily) -> InstrumentAny {
 /// CLOB venue, which `BacktestNode` requires to have order-book data both at
 /// construction (`node.rs:341-368`) and at run time, so the proof replays a real
 /// book, not just trades.
-fn prove_market_family(f: MarketFamily) {
-    let label = f.label.as_str();
-    let instrument = build_instrument(&f);
-    let venue = f.venue.as_str();
-    let account = account_type(&f.account_type);
-    let venue_base_currency = f.venue_base_currency.as_deref().map(currency);
-    let starting_balance = f.starting_balance.as_str();
+/// The cross-engine scratch root (catalogs + result JSON), resolved repo-relative
+/// from the TOML `cross_engine_root`. Both engines resolve the SAME directory.
+fn cross_engine_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(registry().cross_engine_root)
+}
+
+/// The shared synthetic data shape: 3 `TradeTick`s (ts 1,2,3) + 2 `OrderBookDelta`s
+/// (bid Add seq0, ask Add seq1, ts 1) — the realistic `L2_REPLAY` shape an `L2_MBP`
+/// venue needs to run. Every value is bound from the family fixture.
+fn build_proof_data(id: InstrumentId, f: &MarketFamily) -> (Vec<TradeTick>, Vec<OrderBookDelta>) {
     let trade_price = f.trade_price.as_str();
     let trade_size = f.trade_size.as_str();
-
-    let tmp = tempfile::tempdir().expect("temp artifact_root");
-    let mut catalog = ParquetDataCatalog::new(tmp.path(), None, Some(5000), None, None);
-    let id = instrument.id();
-
-    // Instruments use the dedicated write/read path (bypasses DataFusion).
-    catalog
-        .write_instruments(vec![instrument.clone()])
-        .unwrap_or_else(|e| panic!("{label}: write instrument: {e}"));
-
+    let label = f.label.as_str();
     let trades: Vec<TradeTick> = (1..=3u64)
         .map(|i| {
             TradeTick::new(
@@ -624,12 +622,6 @@ fn prove_market_family(f: MarketFamily) {
             )
         })
         .collect();
-    catalog
-        .write_to_parquet(trades.clone(), None, None, None)
-        .unwrap_or_else(|e| panic!("{label}: write trades: {e}"));
-
-    // Seed the L2 book: one bid Add + one ask Add. Without book data an `L2_MBP`
-    // venue refuses to run, so this is the realistic L2_REPLAY data shape.
     let deltas: Vec<OrderBookDelta> = [
         (OrderSide::Buy, f.book_bid.as_str(), 1u64),
         (OrderSide::Sell, f.book_ask.as_str(), 2u64),
@@ -648,9 +640,112 @@ fn prove_market_family(f: MarketFamily) {
         )
     })
     .collect();
+    (trades, deltas)
+}
+
+/// Write instrument + trades + deltas into a catalog (the Gate-2 write path).
+/// Instruments use the dedicated write/read path (bypasses DataFusion).
+fn write_catalog(
+    catalog: &mut ParquetDataCatalog,
+    instrument: &InstrumentAny,
+    trades: &[TradeTick],
+    deltas: &[OrderBookDelta],
+    label: &str,
+) {
     catalog
-        .write_to_parquet(deltas.clone(), None, None, None)
+        .write_instruments(vec![instrument.clone()])
+        .unwrap_or_else(|e| panic!("{label}: write instrument: {e}"));
+    catalog
+        .write_to_parquet(trades.to_vec(), None, None, None)
+        .unwrap_or_else(|e| panic!("{label}: write trades: {e}"));
+    catalog
+        .write_to_parquet(deltas.to_vec(), None, None, None)
         .unwrap_or_else(|e| panic!("{label}: write book deltas: {e}"));
+}
+
+/// The cross-engine comparison summary — the intersection of the Python and Rust
+/// `BacktestResult` fields that must agree (the four counters) plus structural
+/// presence flags. Per-run-unique fields (run id value, timestamps) are not compared.
+#[derive(Debug, Serialize)]
+struct ResultSummary {
+    engine: &'static str,
+    family: String,
+    catalog_source: String,
+    iterations: usize,
+    total_events: usize,
+    total_orders: usize,
+    total_positions: usize,
+    run_id_present: bool,
+    backtest_range_present: bool,
+}
+
+/// Construct a catalog-backed `BacktestNode`, run it strategy-less, and return the
+/// comparison summary. Shared by the Gate-4 proof and the cross-engine test.
+fn run_backtest(
+    catalog_path: String,
+    f: &MarketFamily,
+    id: InstrumentId,
+    label: &str,
+    catalog_source: &str,
+) -> ResultSummary {
+    let venue_cfg = BacktestVenueConfig::builder()
+        .name(Ustr::from(f.venue.as_str()))
+        .oms_type(OmsType::Netting)
+        .account_type(account_type(&f.account_type))
+        .book_type(BookType::L2_MBP)
+        .starting_balances(vec![f.starting_balance.clone()])
+        .maybe_base_currency(f.venue_base_currency.as_deref().map(currency))
+        .build();
+    let book_data = BacktestDataConfig::builder()
+        .data_type(NautilusDataType::OrderBookDelta)
+        .catalog_path(catalog_path.clone())
+        .instrument_id(id)
+        .build();
+    let trade_data = BacktestDataConfig::builder()
+        .data_type(NautilusDataType::TradeTick)
+        .catalog_path(catalog_path)
+        .instrument_id(id)
+        .build();
+    let run_config = BacktestRunConfig::builder()
+        .venues(vec![venue_cfg])
+        .data(vec![book_data, trade_data])
+        .build();
+
+    let mut node = BacktestNode::new(vec![run_config])
+        .unwrap_or_else(|e| panic!("{label}: BacktestNode construct: {e}"));
+    assert_eq!(
+        node.configs().len(),
+        1,
+        "{label}: exactly one run config (kernel MessageBus is a thread-local singleton)"
+    );
+
+    let results = node
+        .run()
+        .unwrap_or_else(|e| panic!("{label}: BacktestNode run: {e}"));
+    assert_eq!(results.len(), 1, "{label}: one result per run config");
+    let r = &results[0];
+    ResultSummary {
+        engine: "rust",
+        family: label.to_string(),
+        catalog_source: catalog_source.to_string(),
+        iterations: r.iterations,
+        total_events: r.total_events,
+        total_orders: r.total_orders,
+        total_positions: r.total_positions,
+        run_id_present: r.run_id.is_some(),
+        backtest_range_present: r.backtest_start.is_some() && r.backtest_end.is_some(),
+    }
+}
+
+fn prove_market_family(f: MarketFamily) {
+    let label = f.label.as_str();
+    let instrument = build_instrument(&f);
+    let id = instrument.id();
+    let (trades, deltas) = build_proof_data(id, &f);
+
+    let tmp = tempfile::tempdir().expect("temp artifact_root");
+    let mut catalog = ParquetDataCatalog::new(tmp.path(), None, Some(5000), None, None);
+    write_catalog(&mut catalog, &instrument, &trades, &deltas, label);
 
     // Gate 2 (local): round-trip.
     let read_instruments = catalog
@@ -691,65 +786,37 @@ fn prove_market_family(f: MarketFamily) {
         "{label}: book delta payloads are identical after the parquet round-trip"
     );
 
-    // Gate 1: construct a catalog-backed BacktestNode.
-    let catalog_path = tmp.path().to_string_lossy().to_string();
-    let venue_cfg = BacktestVenueConfig::builder()
-        .name(Ustr::from(venue))
-        .oms_type(OmsType::Netting)
-        .account_type(account)
-        .book_type(BookType::L2_MBP)
-        .starting_balances(vec![starting_balance.to_string()])
-        .maybe_base_currency(venue_base_currency)
-        .build();
-
-    let book_data = BacktestDataConfig::builder()
-        .data_type(NautilusDataType::OrderBookDelta)
-        .catalog_path(catalog_path.clone())
-        .instrument_id(id)
-        .build();
-    let trade_data = BacktestDataConfig::builder()
-        .data_type(NautilusDataType::TradeTick)
-        .catalog_path(catalog_path)
-        .instrument_id(id)
-        .build();
-    let run_config = BacktestRunConfig::builder()
-        .venues(vec![venue_cfg])
-        .data(vec![book_data, trade_data])
-        .build();
-
-    let mut node = BacktestNode::new(vec![run_config])
-        .unwrap_or_else(|e| panic!("{label}: BacktestNode construct: {e}"));
-    assert_eq!(
-        node.configs().len(),
-        1,
-        "{label}: exactly one run config (kernel MessageBus is a thread-local singleton)"
+    // Gate 1 + Gate 4 (BTE-029): construct + run a catalog-backed BacktestNode.
+    // Strategy-less, so every catalog data point is iterated but no orders/positions
+    // are emitted. Results are pipeline-proof only — synthetic data, no SourceProofReport.
+    let summary = run_backtest(
+        tmp.path().to_string_lossy().to_string(),
+        &f,
+        id,
+        label,
+        "tempdir",
     );
-
-    // Gate 4 (BTE-029): run the engine end-to-end over the catalog. Strategy-less,
-    // so every catalog data point is iterated but no orders/positions are emitted.
-    // The results are pipeline-proof only — synthetic data, no SourceProofReport.
-    let results = node
-        .run()
-        .unwrap_or_else(|e| panic!("{label}: BacktestNode run: {e}"));
-    assert_eq!(results.len(), 1, "{label}: one result per run config");
-    let result = &results[0];
     let expected_iterations = trades.len() + deltas.len();
     assert_eq!(
-        result.iterations, expected_iterations,
+        summary.iterations, expected_iterations,
         "{label}: engine iterated every catalog data point (got {}, want {expected_iterations})",
-        result.iterations
+        summary.iterations
     );
     assert_eq!(
-        result.total_orders, 0,
+        summary.total_events, 0,
+        "{label}: strategy-less run emits no events"
+    );
+    assert_eq!(
+        summary.total_orders, 0,
         "{label}: strategy-less run emits no orders"
     );
     assert_eq!(
-        result.total_positions, 0,
+        summary.total_positions, 0,
         "{label}: strategy-less run opens no positions"
     );
-    assert!(result.run_id.is_some(), "{label}: the run records a run id");
+    assert!(summary.run_id_present, "{label}: the run records a run id");
     assert!(
-        result.backtest_start.is_some() && result.backtest_end.is_some(),
+        summary.backtest_range_present,
         "{label}: the run records a backtest time range"
     );
 }
@@ -758,6 +825,49 @@ fn prove_market_family(f: MarketFamily) {
 #[test]
 fn binary_option_polymarket() {
     prove_market_family(market_family("binary-option"));
+}
+
+/// Cross-engine proof — Direction A (Rust → Python) + the Rust half of engine
+/// agreement. Writes the binary-option catalog to the shared `cross_engine_root`
+/// so the Python research engine (same NT rev, in the research venv) can read it,
+/// runs the strategy-less backtest, and emits `rust.binary-option.result.json`.
+/// `scripts/bte_cross_engine_proof.py` reads this catalog, runs the Python
+/// `BacktestEngine`, and asserts its result matches this JSON.
+#[test]
+fn binary_option_cross_engine_write() {
+    let f = market_family("binary-option");
+    let instrument = build_instrument(&f);
+    let id = instrument.id();
+    let (trades, deltas) = build_proof_data(id, &f);
+
+    // Clean-or-recreate: `write_instruments` SKIPS existing files and
+    // `write_to_parquet` APPENDS, so a dirty dir would silently keep stale data and
+    // drift the counters. Recreate so a re-run is deterministic.
+    let root = cross_engine_root().join("rust_written");
+    if root.exists() {
+        std::fs::remove_dir_all(&root).expect("clean rust_written");
+    }
+    std::fs::create_dir_all(&root).expect("create rust_written");
+
+    let mut catalog = ParquetDataCatalog::new(&root, None, Some(5000), None, None);
+    write_catalog(&mut catalog, &instrument, &trades, &deltas, "binary-option");
+
+    let summary = run_backtest(
+        root.to_string_lossy().to_string(),
+        &f,
+        id,
+        "binary-option",
+        "rust_written",
+    );
+    assert_eq!(
+        summary.iterations,
+        trades.len() + deltas.len(),
+        "binary-option: cross-engine run iterates every catalog data point"
+    );
+
+    let out = cross_engine_root().join("rust.binary-option.result.json");
+    std::fs::write(&out, serde_json::to_string_pretty(&summary).unwrap())
+        .unwrap_or_else(|e| panic!("write {out:?}: {e}"));
 }
 
 /// Fixture `perps/spot` — CEX spot `CurrencyPair` (Binance BTCUSDT, Cash account).

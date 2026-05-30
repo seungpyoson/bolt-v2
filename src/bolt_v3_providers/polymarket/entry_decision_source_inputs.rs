@@ -203,13 +203,18 @@ async fn collect_canary_proof_artifacts_inner(
     )
     .await?;
     instruments.sort_by_key(|instrument| instrument.id().to_string());
-    let selected_attempts = selected_entry_decision_market_attempts(
+    let mut selected_attempts = selected_entry_decision_market_attempts(
         context.loaded,
         context.strategy_instance_id,
         &instruments,
         proof_validation.market_selection_timestamp_ms,
         rotation_max_attempts,
     )?;
+    retain_canary_proof_markets_with_source_runway(
+        &mut selected_attempts,
+        proof_validation.market_selection_timestamp_ms,
+        canary_proof_source_runway_milliseconds(context.loaded)?,
+    );
     let clob_client = PolymarketClobPublicClient::new(
         Some(source_config.data.base_url_http.clone()),
         source_config.data.http_timeout_secs,
@@ -650,14 +655,35 @@ fn polymarket_clob_lot_size_step() -> Decimal {
     Decimal::new(1, LOT_SIZE_SCALE)
 }
 
+fn canary_proof_source_runway_milliseconds(
+    loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
+) -> Result<u64, BoltV3OperatorArtifactError> {
+    let live_canary = live_canary_for_canary_proof_artifacts(loaded)?;
+    let max_age_millis =
+        std::time::Duration::from_secs(live_canary.reference_quote_max_age_seconds).as_millis();
+    let wait_timeout_millis =
+        std::time::Duration::from_secs(live_canary.reference_quote_wait_timeout_seconds)
+            .as_millis();
+    Ok(max_age_millis
+        .saturating_add(wait_timeout_millis)
+        .min(u128::from(u64::MAX)) as u64)
+}
+
+fn retain_canary_proof_markets_with_source_runway(
+    attempts: &mut Vec<bolt_v3_market_families::SelectedBinaryOptionMarket>,
+    source_timestamp_ms: u64,
+    source_window_ms: u64,
+) {
+    let minimum_expiration_ms = source_timestamp_ms.saturating_add(source_window_ms);
+    attempts.retain(|selected| selected.expiration_timestamp_milliseconds >= minimum_expiration_ms);
+}
+
 fn live_canary_proof_policy_input(
     loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
     strategy_instance_id: &str,
     current_source_ref: &str,
 ) -> Result<CanaryProofPolicyInput, BoltV3OperatorArtifactError> {
-    let live_canary = loaded.root.live_canary.as_ref().ok_or_else(|| {
-        entry_decision_source_invalid("live_canary block is required for canary proof artifacts")
-    })?;
+    let live_canary = live_canary_for_canary_proof_artifacts(loaded)?;
     let policy = live_canary.proof_policy.as_ref().ok_or_else(|| {
         entry_decision_source_invalid(
             "live_canary.proof_policy block is required for canary proof artifacts",
@@ -686,6 +712,14 @@ fn live_canary_proof_policy_input(
         source_ready: true,
         current_source_ref: current_source_ref.to_string(),
         candidates: Vec::new(),
+    })
+}
+
+fn live_canary_for_canary_proof_artifacts(
+    loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
+) -> Result<&crate::bolt_v3_config::LiveCanaryBlock, BoltV3OperatorArtifactError> {
+    loaded.root.live_canary.as_ref().ok_or_else(|| {
+        entry_decision_source_invalid("live_canary block is required for canary proof artifacts")
     })
 }
 
@@ -803,6 +837,10 @@ mod tests {
     use nautilus_network::websocket::TransportBackend;
 
     use super::*;
+    use crate::bolt_v3_config::{LiveCanaryBlock, load_bolt_v3_config};
+    use crate::bolt_v3_market_families::{
+        MarketSelectionOutcome, SelectedBinaryOptionMarket, SelectedMarketSourceIdentity,
+    };
     use crate::bolt_v3_providers::polymarket::PolymarketSignatureType;
 
     #[test]
@@ -847,6 +885,54 @@ mod tests {
         assert_eq!(input.liquidity_available, 125.0);
     }
 
+    #[test]
+    fn canary_proof_market_filter_drops_markets_expiring_inside_source_window() {
+        let source_timestamp_ms = 1_000_000;
+        let source_window_ms = 300_000;
+        let mut attempts = vec![
+            selected_market("current-market", 1_000_000, 1_140_000),
+            selected_market("next-market", 1_300_000, 1_600_000),
+        ];
+
+        retain_canary_proof_markets_with_source_runway(
+            &mut attempts,
+            source_timestamp_ms,
+            source_window_ms,
+        );
+
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].source_identity.market_slug, "next-market");
+    }
+
+    #[test]
+    fn canary_proof_source_runway_includes_reference_quote_wait_timeout() {
+        let mut loaded = load_bolt_v3_config("tests/fixtures/bolt_v3/root.toml".as_ref())
+            .expect("fixture loads");
+        loaded.root.live_canary = Some(LiveCanaryBlock {
+            approval_id: "test-operator-approval".to_string(),
+            no_submit_readiness_report_path: "reports/no-submit-readiness.json".to_string(),
+            max_no_submit_readiness_report_bytes: 1_000_000,
+            readiness_report_max_age_seconds: 300,
+            reference_quote_max_age_seconds: 300,
+            reference_quote_wait_timeout_seconds: 20,
+            reference_quote_probe_actor_id: "test-reference-probe".to_string(),
+            reference_quote_probe_log_events: false,
+            reference_quote_probe_log_commands: false,
+            max_live_order_count: 1,
+            max_notional_per_order: loaded.root.risk.default_max_notional_per_order.clone(),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: None,
+        });
+
+        assert_eq!(
+            canary_proof_source_runway_milliseconds(&loaded).expect("runway should resolve"),
+            320_000
+        );
+    }
+
     fn execution_config_with_retry_delays(
         retry_delay_initial_ms: u64,
         retry_delay_max_ms: u64,
@@ -866,6 +952,31 @@ mod tests {
             fee_cache_ttl_secs: 300,
             transport_backend: TransportBackend::Sockudo,
             on_chain_collateral: None,
+        }
+    }
+
+    fn selected_market(
+        market_slug: &str,
+        start_timestamp_milliseconds: u64,
+        expiration_timestamp_milliseconds: u64,
+    ) -> SelectedBinaryOptionMarket {
+        let instrument_id = InstrumentId::from(format!("{market_slug}-up.POLYMARKET").as_str());
+        SelectedBinaryOptionMarket {
+            market_id: market_slug.to_string(),
+            instrument_id,
+            up_instrument_id: instrument_id,
+            down_instrument_id: InstrumentId::from(
+                format!("{market_slug}-down.POLYMARKET").as_str(),
+            ),
+            selection_outcome: MarketSelectionOutcome::Current,
+            start_timestamp_milliseconds,
+            expiration_timestamp_milliseconds,
+            seconds_to_end: 1,
+            source_identity: SelectedMarketSourceIdentity {
+                condition_id: format!("{market_slug}-condition"),
+                market_slug: market_slug.to_string(),
+                question_id: format!("{market_slug}-question"),
+            },
         }
     }
 }

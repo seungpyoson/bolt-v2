@@ -66,11 +66,19 @@ yet decided or verified — do not treat them as settled.
 1. **Canonical-catalog writer.** Rust-only vs Python-allowed for writing the
    `nt_catalog/` the Rust backtest reads. To be settled by the cross-engine test
    (write-both-directions round-trip + Python-vs-Rust result agreement). **OPEN.**
-2. **Python NT version correspondence.** PyPI `nautilus_trader` is versioned **1.x**
-   (latest 1.227.0); the Rust crates at the pinned rev `6e059dc` are **0.58.0**.
-   It is **not established** that any PyPI release corresponds to rev `6e059dc`. A
-   valid Python-vs-Rust comparison needs the *same* engine version on both sides —
-   resolve before relying on the Python backtest. **OPEN / feasibility risk.**
+2. **Python NT version correspondence — VERIFIED 2026-05-30.** At rev `6e059dc` the
+   repo declares Python package **1.228.0** (`pyproject.toml`) and Rust crates
+   **0.58.0** (`Cargo.toml`) — the same commit, two numbering schemes. **But 1.228.0
+   is not published on PyPI** (latest published = 1.227.0 per `pip index versions`),
+   and GitHub shows `6e059dc` is a mid-development feature commit ("Improve Blockchain
+   snapshot fail-closed path"), **not a tagged release**. So `pip install
+   nautilus_trader` yields 1.227.0 — a *different* commit than our Rust crates; the
+   two engines would not be the same source, making any Python-vs-Rust disagreement
+   ambiguous. Note: production is therefore pinned to an **unreleased dev commit**.
+   **DECISION OPEN** — for a trustworthy comparison, either (a) re-pin bolt-v2 to a
+   tagged NT release that ships both a PyPI wheel and the Rust crates (also moves
+   production onto a real release), or (b) build the Python package from the exact
+   local `6e059dc` checkout (heavy build; Python-3.14 support unverified — see #3).
 3. **Python runtime / wheels.** The dev host has Python 3.14; NT wheel availability
    for 3.14 is unverified. **OPEN.**
 

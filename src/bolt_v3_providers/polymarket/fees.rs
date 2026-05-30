@@ -182,6 +182,14 @@ impl FeeProvider for PolymarketClobFeeProvider {
         Some(commission / entry_price * Decimal::from(ENTRY_FEE_BPS_SCALE))
     }
 
+    fn max_entry_fee_bps(
+        &self,
+        instrument: &InstrumentAny,
+        _entry_price: Decimal,
+    ) -> Option<Decimal> {
+        Some(instrument_taker_fee(instrument) * Decimal::from(ENTRY_FEE_BPS_SCALE))
+    }
+
     fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
         self.warm_inner(instrument_id)
     }
@@ -299,6 +307,24 @@ mod tests {
             .to_f64()
             .expect("entry fee bps should fit in f64 for assertion");
         assert!((fee_bps - 511.111111111111).abs() < 1e-9);
+    }
+
+    #[test]
+    fn max_entry_fee_bps_uses_raw_nt_fee_rate_for_cash_debit_cap() {
+        let clock = TestClock::new();
+        let fetcher = MockFeeRateFetcher::new(vec![MockFetchResult::Success(decimal("1000"))]);
+        let provider = PolymarketClobFeeProvider::new_for_tests(
+            Arc::new(fetcher),
+            clock.source(),
+            test_fee_cache_ttl(),
+        );
+        let instrument_id = instrument_id_for_token("token_a");
+        let instrument = binary_option_with_taker_fee(instrument_id, decimal("0.07"));
+
+        assert_eq!(
+            provider.max_entry_fee_bps(&instrument, decimal("0.27")),
+            Some(decimal("700.00"))
+        );
     }
 
     #[derive(Clone)]

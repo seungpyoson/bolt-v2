@@ -2681,6 +2681,14 @@ classification = "fee_bps_unit_scale"
 reason = "This is the fixed basis-points unit scale used to convert NT pUSD commission into entry-fee bps; it is not an operator runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "10_000"
+context = "const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;"
+classification = "fee_bps_unit_scale"
+reason = "This is the fixed basis-points unit scale used to convert a source-provided fee bound into fee-inclusive submit admission notional; it is not an operator runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_providers/polymarket.rs"
 kind = "string"
 literal = "\"http_timeout_secs\""

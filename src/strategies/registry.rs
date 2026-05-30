@@ -44,6 +44,13 @@ pub trait FeeProvider: Send + Sync {
     fn entry_fee_bps(&self, instrument: &InstrumentAny, _entry_price: Decimal) -> Option<Decimal> {
         self.fee_bps(instrument.id())
     }
+    fn max_entry_fee_bps(
+        &self,
+        instrument: &InstrumentAny,
+        entry_price: Decimal,
+    ) -> Option<Decimal> {
+        self.entry_fee_bps(instrument, entry_price)
+    }
     fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>>;
 }
 

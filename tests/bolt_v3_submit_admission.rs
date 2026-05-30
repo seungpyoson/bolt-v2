@@ -10,7 +10,7 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderKind,
     BoltV3QuoteQuantityOrderSide, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
     BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-    conservative_quote_quantity_admission_notional,
+    conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
 };
 use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
@@ -187,6 +187,31 @@ fn notional_equal_to_cap_is_admitted() {
         .expect("notional equal to cap should admit");
 
     assert_eq!(admission.admitted_order_count(), 1);
+}
+
+#[test]
+fn fee_inclusive_notional_rejects_when_fee_pushes_cash_debit_over_cap() {
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    ));
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(5, 0),
+        ))
+        .expect("valid gate report should arm admission");
+    let cash_debit_upper_bound =
+        fee_inclusive_admission_notional(Decimal::new(498, 2), Decimal::new(700, 0));
+
+    let error = admission
+        .admit(&submit_request(cash_debit_upper_bound))
+        .expect_err("fee-inclusive cash debit above cap must reject");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::NotionalCapExceeded
+    ));
+    assert_eq!(admission.admitted_order_count(), 0);
 }
 
 #[test]

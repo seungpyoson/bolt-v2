@@ -2619,6 +2619,7 @@ fn build_live_node_with_clients(
         register_canary_proof_executor_on_node(
             &mut node,
             loaded,
+            resolved,
             decision_evidence,
             submit_admission.clone(),
         )

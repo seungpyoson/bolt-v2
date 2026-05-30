@@ -28,10 +28,13 @@ use crate::{
         BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
     },
     bolt_v3_operator_artifacts::{EntryReadinessGateSession, read_file_bounded},
+    bolt_v3_providers::resolve_fee_provider,
+    bolt_v3_secrets::ResolvedBoltV3Secrets,
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-        BoltV3SubmitLifecyclePolicy,
+        BoltV3SubmitLifecyclePolicy, fee_inclusive_admission_notional,
     },
+    strategies::registry::FeeProvider,
 };
 
 const OPERATOR_EVIDENCE_CANARY_PROOF_ORDER_INTENT_PATH_FIELD: &str =
@@ -50,6 +53,7 @@ struct CanaryProofExecutorConfig {
     reduce_only: bool,
     quote_quantity: bool,
     order_intent: CanaryProofOrderIntentArtifact,
+    fee_provider: Arc<dyn FeeProvider>,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
 }
@@ -101,6 +105,17 @@ impl CanaryProofExecutor {
             CanaryProofOrderSide::Sell => OrderSide::Sell,
         };
         let price_decimal = self.config.order_intent.notional / self.config.order_intent.quantity;
+        let max_fee_bps = self
+            .config
+            .fee_provider
+            .max_entry_fee_bps(&instrument, price_decimal)
+            .context("canary proof submit admission requires a max entry fee bound")?;
+        anyhow::ensure!(
+            max_fee_bps >= Decimal::ZERO,
+            "canary proof submit admission max entry fee bound must be non-negative"
+        );
+        let admission_notional =
+            fee_inclusive_admission_notional(self.config.order_intent.notional, max_fee_bps);
         let Some(top_of_book) = self.submit_time_top_of_book(
             instrument_id,
             self.config.order_intent.order_side,
@@ -157,7 +172,7 @@ impl CanaryProofExecutor {
                 strategy_id: self.config.executor_strategy_id.clone(),
                 client_order_id: order.client_order_id().to_string(),
                 instrument_id: order.instrument_id().to_string(),
-                notional: self.config.order_intent.notional,
+                notional: admission_notional,
                 intent_kind: BoltV3SubmitIntentKind::Entry,
                 lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
                 canary_proof_claim: Some(CANARY_PROOF_CLAIM.to_string()),
@@ -243,6 +258,7 @@ nautilus_strategy!(CanaryProofExecutor);
 pub fn register_canary_proof_executor_on_node(
     node: &mut nautilus_live::node::LiveNode,
     loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
 ) -> Result<Option<StrategyId>> {
@@ -263,6 +279,9 @@ pub fn register_canary_proof_executor_on_node(
     let gate_session = load_gate_session(loaded, operator_evidence)?;
     let order_intent = load_canary_proof_order_intent(loaded, operator_evidence)?;
     validate_canary_proof_order_intent(proof_policy, &gate_session, &order_intent)?;
+    let fee_provider =
+        resolve_fee_provider(loaded, proof_policy.execution_client_id.as_str(), resolved)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
     let executor_strategy_id = StrategyId::from(proof_policy.executor_strategy_id.as_str());
     node.add_strategy(CanaryProofExecutor::new(CanaryProofExecutorConfig {
         executor_strategy_id: proof_policy.executor_strategy_id.clone(),
@@ -276,6 +295,7 @@ pub fn register_canary_proof_executor_on_node(
         reduce_only: proof_policy.reduce_only,
         quote_quantity: proof_policy.quote_quantity,
         order_intent,
+        fee_provider,
         decision_evidence,
         submit_admission,
     }))?;

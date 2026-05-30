@@ -8,6 +8,8 @@ use std::sync::{Arc, Mutex};
 use crate::bolt_v3_canary_proof_policy::CANARY_PROOF_CLAIM;
 pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
 
+const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
+
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionState {
     inner: Mutex<BoltV3SubmitAdmissionInner>,
@@ -244,6 +246,12 @@ pub fn conservative_quote_quantity_admission_notional(
             .max(input.submitted_quote_quantity);
     }
     input.calculated_notional
+}
+
+pub fn fee_inclusive_admission_notional(notional: Decimal, max_fee_bps: Decimal) -> Decimal {
+    let fee_multiplier =
+        Decimal::ONE + max_fee_bps / Decimal::from(SUBMIT_ADMISSION_BPS_DENOMINATOR);
+    notional * fee_multiplier
 }
 
 #[derive(Debug, Eq, PartialEq)]

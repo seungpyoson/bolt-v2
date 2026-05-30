@@ -18,7 +18,22 @@ proof *results* against a concrete NautilusTrader revision; the cross-project
 | Gate | Task | Result | Notes |
 |---|---|---|---|
 | Gate 1 | BTE-001 | **PROVEN** | `nautilus-backtest` (+`streaming`) compiles in bolt-v2, pure Rust; `BacktestNode` constructs from a catalog-backed run config. |
-| Gate 2 | BTE-007 | **PROVEN (local) + PROVEN (S3 interface); live-bucket round-trip deferred** | `ParquetDataCatalog` writes/reads a binary-option fixture on local fs; `s3://` dispatches to the `cloud` object-store backend. |
+| Gate 2 | BTE-007 | **PROVEN (local) + PROVEN (S3 interface); live-bucket round-trip deferred** | `ParquetDataCatalog` writes/reads instrument + trade fixtures on local fs; `s3://` dispatches to the `cloud` object-store backend. |
+
+Both gates are exercised across **both** spec market-structure fixtures (BTE-003)
+and four market families:
+
+| Family | Fixture | NT instrument | Venue (example) | Account |
+|--------|---------|---------------|-----------------|---------|
+| binary option | `binary option` | `BinaryOption` | POLYMARKET | Cash |
+| CEX spot | `perps/spot` | `CurrencyPair` | BINANCE | Cash |
+| CEX perp | `perps/spot` | `CryptoPerpetual` | BINANCE | Margin |
+| perp DEX | `perps/spot` | `CryptoPerpetual` | HYPERLIQUID | Margin |
+
+Venue/currency are config/fixture parameters only — no hardcoded venue branch in
+engine logic. (BTE-003 defines these fixtures via TOML/registry bindings; that
+binding layer is the #438 contract slice — here the fixture *shapes* are proven
+to round-trip and drive the engine.)
 
 ## Reproduce
 
@@ -37,11 +52,13 @@ python3 scripts/rust_verification.py cargo --repo "$(git rev-parse --show-toplev
 Observed result (2026-05-30):
 
 ```text
-running 3 tests
-test gate1_backtest_node_constructs_from_catalog_config ... ok
-test gate2_local_catalog_round_trip_binary_option ... ok
+running 5 tests
+test binary_option_polymarket ... ok
+test perps_spot_cex_spot_binance ... ok
+test perps_spot_cex_perp_binance ... ok
+test perps_spot_perp_dex_hyperliquid ... ok
 test gate2_s3_object_store_backend_is_wired ... ok
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
 `clippy --features bte-gate-proof ... -D warnings` finished clean, and default
@@ -58,13 +75,16 @@ production `LiveNode` build.
   `BacktestNode::new` performs real cross-validation — an `L2_MBP`/`L3_MBO` venue
   must have an order-book data config (`backtest/src/node.rs:341-368`), and only
   one run config is allowed per node (kernel `MessageBus` is a thread-local
-  singleton). The proof builds the realistic binary-option/CLOB shape: an
-  `L2_MBP` `POLYMARKET` venue fed both `OrderBookDelta` and `TradeTick` data.
-- **Gate 2 (BTE-007), local.** `ParquetDataCatalog` writes one `BinaryOption`
-  instrument (via the dedicated `write_instruments`/`query_instruments` path that
-  bypasses DataFusion) plus three `TradeTick`s, and reads both back byte-identical
-  via `query_typed_data::<TradeTick>`. Local filesystem needs **no** cargo
-  features (DataFusion + `object_store` are unconditional deps).
+  singleton). For **each** of the four market families the proof builds the
+  realistic CLOB shape: an `L2_MBP` venue fed both `OrderBookDelta` and
+  `TradeTick` data, with the correct account type (Cash for spot/binary, Margin
+  for perps) and settlement currency.
+- **Gate 2 (BTE-007), local.** For each family, `ParquetDataCatalog` writes the
+  instrument (`BinaryOption` / `CurrencyPair` / `CryptoPerpetual`, via the
+  dedicated `write_instruments`/`query_instruments` path that bypasses DataFusion)
+  plus three `TradeTick`s, and reads both back byte-identical via
+  `query_typed_data::<TradeTick>`. Local filesystem needs **no** cargo features
+  (DataFusion + `object_store` are unconditional deps).
 - **Gate 2 (BTE-007), S3 interface.** With the `cloud` feature on,
   `ParquetDataCatalog::from_uri("s3://…")` dispatches to the real S3
   `object_store` backend rather than the "Cloud storage support requires the

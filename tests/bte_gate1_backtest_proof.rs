@@ -3,18 +3,28 @@
 //! Proves, empirically, against the exact NautilusTrader rev this repo pins
 //! (`6e059dcbb59ac1e582132fc431a581936c216c3c`, NT v0.58.0), the two foundational
 //! Implementation Gates from
-//! `specs/023-nt-research-analytics-platform/1-backtesting-engine/plan.md`:
+//! `specs/023-nt-research-analytics-platform/1-backtesting-engine/plan.md`,
+//! across **both** spec market-structure fixtures (BTE-003): `binary option`
+//! and `perps/spot`.
 //!
 //!   * **Gate 1 (BTE-001)** — `nautilus-backtest` compiles in bolt-v2 with the
-//!     `streaming` feature that gates `BacktestNode` and the entire
-//!     catalog-driven API, pure Rust, no pyo3/python. Proven by
-//!     [`gate1_backtest_node_constructs_from_catalog_config`].
-//!   * **Gate 2 (BTE-007)** — `nautilus-persistence`'s `ParquetDataCatalog` can
-//!     write and read back a multi-instrument binary-option fixture
-//!     ([`gate2_local_catalog_round_trip_binary_option`]), and the `s3://`
-//!     object-store backend is wired via the `cloud` feature
-//!     ([`gate2_s3_object_store_backend_is_wired`]), proving the
-//!     configured-`artifact_root` storage path is reachable in Rust.
+//!     `streaming` feature that gates `BacktestNode` and the catalog-driven API,
+//!     pure Rust, no pyo3/python; `BacktestNode` constructs from a catalog-backed
+//!     run config.
+//!   * **Gate 2 (BTE-007)** — `nautilus-persistence`'s `ParquetDataCatalog`
+//!     writes and reads back instrument + trade fixtures, and the `s3://`
+//!     object-store backend is wired via the `cloud` feature.
+//!
+//! Both gates are exercised for four market families spanning the two fixtures,
+//! each with a venue selected only as a config/fixture parameter (no hardcoded
+//! venue branch in engine logic — spec 023 BTE-003):
+//!
+//! | Family | Fixture | NT instrument | Venue (example) | Account |
+//! |--------|---------|---------------|-----------------|---------|
+//! | binary option | `binary option` | `BinaryOption` | POLYMARKET | Cash |
+//! | CEX spot | `perps/spot` | `CurrencyPair` | BINANCE | Cash |
+//! | CEX perp | `perps/spot` | `CryptoPerpetual` | BINANCE | Margin |
+//! | perp DEX | `perps/spot` | `CryptoPerpetual` | HYPERLIQUID | Margin |
 //!
 //! Per the operator decision recorded on #438, the S3 leg is proven at the
 //! *interface* level (scheme dispatch reaches the cloud backend rather than the
@@ -47,30 +57,22 @@ use nautilus_core::UnixNanos;
 use nautilus_model::data::TradeTick;
 use nautilus_model::enums::{AccountType, AggressorSide, AssetClass, BookType, OmsType};
 use nautilus_model::identifiers::{InstrumentId, Symbol, TradeId};
-use nautilus_model::instruments::{BinaryOption, Instrument, InstrumentAny};
+use nautilus_model::instruments::{
+    BinaryOption, CryptoPerpetual, CurrencyPair, Instrument, InstrumentAny,
+};
 use nautilus_model::types::{Currency, Price, Quantity};
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use ustr::Ustr;
 
-/// Venue + raw symbol are fixture parameters only — never branched on in engine
-/// logic. A real run binds these through TOML/registry (spec 023 BTE-003).
-const VENUE: &str = "POLYMARKET";
-const RAW_SYMBOL: &str = "0xPROOF-OUTCOME-YES";
-
-fn instrument_id() -> InstrumentId {
-    InstrumentId::from_str(&format!("{RAW_SYMBOL}.{VENUE}")).unwrap()
-}
-
-/// A minimal but valid Polymarket-shaped binary option.
-///
-/// `price_precision`/`size_precision` are taken from the increments so
+/// A binary option shaped like a Polymarket outcome token (fixture: `binary
+/// option`). `price_precision`/`size_precision` are taken from the increments so
 /// `BinaryOption::new`'s internal precision checks pass.
-fn sample_binary_option() -> BinaryOption {
+fn polymarket_binary_option() -> InstrumentAny {
     let price_increment = Price::from("0.001");
     let size_increment = Quantity::from("0.01");
     BinaryOption::new(
-        instrument_id(),
-        Symbol::new(RAW_SYMBOL),
+        InstrumentId::from_str("0xPROOF-OUTCOME-YES.POLYMARKET").unwrap(),
+        Symbol::new("0xPROOF-OUTCOME-YES"),
         AssetClass::Alternative,
         Currency::USDC(),
         UnixNanos::from(1_699_304_047_000_000_000), // activation_ns
@@ -95,64 +97,264 @@ fn sample_binary_option() -> BinaryOption {
         UnixNanos::default(),    // ts_event
         UnixNanos::default(),    // ts_init
     )
+    .into_any()
 }
 
-/// `n` trades with strictly ascending `ts_init` (the catalog write path requires
-/// ascending timestamps).
-fn sample_trades(n: u64) -> Vec<TradeTick> {
-    (1..=n)
+/// A spot pair shaped like Binance BTCUSDT (fixture: `perps/spot`, CEX spot).
+fn cex_spot_currency_pair() -> InstrumentAny {
+    let price_increment = Price::from("0.01");
+    let size_increment = Quantity::from("0.000001");
+    CurrencyPair::new(
+        InstrumentId::from_str("BTCUSDT.BINANCE").unwrap(),
+        Symbol::new("BTCUSDT"),
+        Currency::BTC(),  // base
+        Currency::USDT(), // quote
+        price_increment.precision,
+        size_increment.precision,
+        price_increment,
+        size_increment,
+        None, // multiplier
+        None, // lot_size
+        None, // max_quantity
+        None, // min_quantity
+        None, // max_notional
+        None, // min_notional
+        None, // max_price
+        None, // min_price
+        None, // margin_init
+        None, // margin_maint
+        None, // maker_fee
+        None, // taker_fee
+        None, // info
+        UnixNanos::default(),
+        UnixNanos::default(),
+    )
+    .into_any()
+}
+
+/// A linear crypto perpetual (fixture: `perps/spot`, perp). Used for both the
+/// CEX-perp (Binance USD-M) and perp-DEX (Hyperliquid) families — the venue and
+/// settlement currency are the only differences.
+fn crypto_perpetual(
+    id: &str,
+    symbol: &str,
+    quote: Currency,
+    settlement: Currency,
+) -> InstrumentAny {
+    let price_increment = Price::from("0.1");
+    let size_increment = Quantity::from("0.001");
+    CryptoPerpetual::new(
+        InstrumentId::from_str(id).unwrap(),
+        Symbol::new(symbol),
+        Currency::BTC(), // base
+        quote,
+        settlement,
+        false, // is_inverse (linear)
+        price_increment.precision,
+        size_increment.precision,
+        price_increment,
+        size_increment,
+        None, // multiplier
+        None, // lot_size
+        None, // max_quantity
+        None, // min_quantity
+        None, // max_notional
+        None, // min_notional
+        None, // max_price
+        None, // min_price
+        None, // margin_init
+        None, // margin_maint
+        None, // maker_fee
+        None, // taker_fee
+        None, // info
+        UnixNanos::default(),
+        UnixNanos::default(),
+    )
+    .into_any()
+}
+
+/// One market family to prove (a fixture binding — venue/currencies are config
+/// parameters, never branched on in engine logic).
+struct MarketFamily {
+    label: &'static str,
+    instrument: InstrumentAny,
+    venue: &'static str,
+    account_type: AccountType,
+    base_currency: Option<Currency>,
+    starting_balance: &'static str,
+    trade_price: &'static str,
+    trade_size: &'static str,
+}
+
+/// Drives both gates for one market family: write the instrument + three trades
+/// to a temp `ParquetDataCatalog`, read both back identical (Gate 2 local), then
+/// build a catalog-backed `BacktestNode` (Gate 1). The venue is an `L2_MBP` CLOB
+/// venue, so `BacktestNode::new`'s "L2 needs order-book data" invariant
+/// (`node.rs:341-368`) is satisfied with an `OrderBookDelta` + `TradeTick` config.
+fn prove_market_family(f: MarketFamily) {
+    let MarketFamily {
+        label,
+        instrument,
+        venue,
+        account_type,
+        base_currency,
+        starting_balance,
+        trade_price,
+        trade_size,
+    } = f;
+    let tmp = tempfile::tempdir().expect("temp artifact_root");
+    let mut catalog = ParquetDataCatalog::new(tmp.path(), None, Some(5000), None, None);
+    let id = instrument.id();
+
+    // Instruments use the dedicated write/read path (bypasses DataFusion).
+    catalog
+        .write_instruments(vec![instrument.clone()])
+        .unwrap_or_else(|e| panic!("{label}: write instrument: {e}"));
+
+    let trades: Vec<TradeTick> = (1..=3u64)
         .map(|i| {
             TradeTick::new(
-                instrument_id(),
-                Price::from("0.450"),
-                Quantity::from("10.00"),
+                id,
+                Price::from(trade_price),
+                Quantity::from(trade_size),
                 AggressorSide::Buyer,
-                TradeId::new(format!("T-{i}")),
+                TradeId::new(format!("{label}-{i}")),
                 UnixNanos::from(i),
                 UnixNanos::from(i),
             )
         })
-        .collect()
-}
-
-/// Gate 2 (BTE-007) — local `ParquetDataCatalog` round-trip for a binary option.
-///
-/// Writes one `BinaryOption` instrument plus three `TradeTick`s under a temp
-/// `artifact_root`, then reads both back and asserts the payloads survive the
-/// parquet round-trip. This needs no cargo features beyond the crate being
-/// present (local filesystem object-store is unconditional).
-#[test]
-fn gate2_local_catalog_round_trip_binary_option() {
-    let tmp = tempfile::tempdir().expect("temp artifact_root");
-    let mut catalog = ParquetDataCatalog::new(tmp.path(), None, Some(5000), None, None);
-
-    // Instruments use the dedicated write/read path (bypasses DataFusion).
-    let instrument: InstrumentAny = sample_binary_option().into_any();
-    catalog
-        .write_instruments(vec![instrument.clone()])
-        .expect("write binary option instrument");
-
-    let trades = sample_trades(3);
+        .collect();
     catalog
         .write_to_parquet(trades.clone(), None, None, None)
-        .expect("write trades to catalog");
+        .unwrap_or_else(|e| panic!("{label}: write trades: {e}"));
 
-    let read_instruments = catalog.query_instruments(None).expect("read instruments");
-    assert_eq!(read_instruments.len(), 1, "one binary option round-trips");
+    // Gate 2 (local): round-trip.
+    let read_instruments = catalog
+        .query_instruments(None)
+        .unwrap_or_else(|e| panic!("{label}: read instruments: {e}"));
+    assert_eq!(
+        read_instruments.len(),
+        1,
+        "{label}: one instrument round-trips"
+    );
     assert_eq!(
         read_instruments[0].id(),
-        instrument.id(),
-        "instrument id survives the round-trip"
+        id,
+        "{label}: instrument id survives the round-trip"
     );
-
     let read_trades: Vec<TradeTick> = catalog
         .query_typed_data::<TradeTick>(None, None, None, None, None, true)
-        .expect("read trades back");
-    assert_eq!(read_trades.len(), 3, "all three trades round-trip");
+        .unwrap_or_else(|e| panic!("{label}: read trades: {e}"));
+    assert_eq!(read_trades.len(), 3, "{label}: all three trades round-trip");
     assert_eq!(
         read_trades, trades,
-        "trade payloads are identical after the parquet round-trip"
+        "{label}: trade payloads are identical after the parquet round-trip"
     );
+
+    // Gate 1: construct a catalog-backed BacktestNode.
+    let catalog_path = tmp.path().to_string_lossy().to_string();
+    let venue_cfg = BacktestVenueConfig::builder()
+        .name(Ustr::from(venue))
+        .oms_type(OmsType::Netting)
+        .account_type(account_type)
+        .book_type(BookType::L2_MBP)
+        .starting_balances(vec![starting_balance.to_string()])
+        .maybe_base_currency(base_currency)
+        .build();
+
+    let book_data = BacktestDataConfig::builder()
+        .data_type(NautilusDataType::OrderBookDelta)
+        .catalog_path(catalog_path.clone())
+        .instrument_id(id)
+        .build();
+    let trade_data = BacktestDataConfig::builder()
+        .data_type(NautilusDataType::TradeTick)
+        .catalog_path(catalog_path)
+        .instrument_id(id)
+        .build();
+    let run_config = BacktestRunConfig::builder()
+        .venues(vec![venue_cfg])
+        .data(vec![book_data, trade_data])
+        .build();
+
+    let node = BacktestNode::new(vec![run_config])
+        .unwrap_or_else(|e| panic!("{label}: BacktestNode construct: {e}"));
+    assert_eq!(
+        node.configs().len(),
+        1,
+        "{label}: exactly one run config (kernel MessageBus is a thread-local singleton)"
+    );
+}
+
+/// Fixture `binary option` — Polymarket-shaped `BinaryOption` on a Cash account.
+#[test]
+fn binary_option_polymarket() {
+    prove_market_family(MarketFamily {
+        label: "binary-option",
+        instrument: polymarket_binary_option(),
+        venue: "POLYMARKET",
+        account_type: AccountType::Cash,
+        base_currency: Some(Currency::USDC()),
+        starting_balance: "1000000 USDC",
+        trade_price: "0.450",
+        trade_size: "10.00",
+    });
+}
+
+/// Fixture `perps/spot` — CEX spot `CurrencyPair` (Binance BTCUSDT, Cash account).
+#[test]
+fn perps_spot_cex_spot_binance() {
+    prove_market_family(MarketFamily {
+        label: "cex-spot",
+        instrument: cex_spot_currency_pair(),
+        venue: "BINANCE",
+        account_type: AccountType::Cash,
+        base_currency: None, // multi-currency spot account
+        starting_balance: "1000000 USDT",
+        trade_price: "60000.00",
+        trade_size: "0.000100",
+    });
+}
+
+/// Fixture `perps/spot` — CEX perp `CryptoPerpetual` (Binance USD-M, Margin).
+#[test]
+fn perps_spot_cex_perp_binance() {
+    prove_market_family(MarketFamily {
+        label: "cex-perp",
+        instrument: crypto_perpetual(
+            "BTCUSDT-PERP.BINANCE",
+            "BTCUSDT-PERP",
+            Currency::USDT(),
+            Currency::USDT(),
+        ),
+        venue: "BINANCE",
+        account_type: AccountType::Margin,
+        base_currency: Some(Currency::USDT()),
+        starting_balance: "1000000 USDT",
+        trade_price: "60000.0",
+        trade_size: "0.001",
+    });
+}
+
+/// Fixture `perps/spot` — perp DEX `CryptoPerpetual` (Hyperliquid, USDC-settled,
+/// Margin).
+#[test]
+fn perps_spot_perp_dex_hyperliquid() {
+    prove_market_family(MarketFamily {
+        label: "perp-dex",
+        instrument: crypto_perpetual(
+            "BTC-PERP.HYPERLIQUID",
+            "BTC-PERP",
+            Currency::USDC(),
+            Currency::USDC(),
+        ),
+        venue: "HYPERLIQUID",
+        account_type: AccountType::Margin,
+        base_currency: Some(Currency::USDC()),
+        starting_balance: "1000000 USDC",
+        trade_price: "60000.0",
+        trade_size: "0.001",
+    });
 }
 
 /// Gate 2 (BTE-007) — the `s3://` object-store backend is compiled in.
@@ -172,55 +374,4 @@ fn gate2_s3_object_store_backend_is_wired() {
             "s3:// must reach the cloud object-store backend, not the cloud-feature bail; got: {msg}"
         );
     }
-}
-
-/// Gate 1 (BTE-001) — `nautilus-backtest`'s `streaming` API compiles and a
-/// `BacktestNode` constructs from a catalog-backed run config.
-///
-/// Building the `BacktestVenueConfig` / `BacktestDataConfig` / `BacktestRunConfig`
-/// `bon` builders and `BacktestNode::new` proves the crate + `streaming` feature
-/// are enabled and usable in bolt-v2 against the pinned rev. The config is the
-/// realistic binary-option/CLOB shape: an `L2_MBP` venue (matching #438's
-/// `L2_REPLAY` fidelity target) fed both order-book-delta and trade data — which
-/// also exercises `BacktestNode::new`'s cross-validation that an `L2_MBP`/`L3_MBO`
-/// venue has order-book data configured (`node.rs:341-368`). (A full `run()` is
-/// BTE-029, out of this gate's scope.)
-#[test]
-fn gate1_backtest_node_constructs_from_catalog_config() {
-    let tmp = tempfile::tempdir().expect("temp artifact_root");
-    let catalog_path = tmp.path().to_string_lossy().to_string();
-
-    let venue = BacktestVenueConfig::builder()
-        .name(Ustr::from(VENUE))
-        .oms_type(OmsType::Netting)
-        .account_type(AccountType::Cash)
-        .book_type(BookType::L2_MBP)
-        .starting_balances(vec!["1000000 USDC".to_string()])
-        .base_currency(Currency::USDC())
-        .build();
-
-    let book_data = BacktestDataConfig::builder()
-        .data_type(NautilusDataType::OrderBookDelta)
-        .catalog_path(catalog_path.clone())
-        .instrument_id(instrument_id())
-        .build();
-
-    let trade_data = BacktestDataConfig::builder()
-        .data_type(NautilusDataType::TradeTick)
-        .catalog_path(catalog_path)
-        .instrument_id(instrument_id())
-        .build();
-
-    let run_config = BacktestRunConfig::builder()
-        .venues(vec![venue])
-        .data(vec![book_data, trade_data])
-        .build();
-
-    let node =
-        BacktestNode::new(vec![run_config]).expect("BacktestNode builds from one run config");
-    assert_eq!(
-        node.configs().len(),
-        1,
-        "exactly one run config (kernel MessageBus is a thread-local singleton)"
-    );
 }

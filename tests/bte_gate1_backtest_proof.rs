@@ -870,6 +870,72 @@ fn binary_option_cross_engine_write() {
         .unwrap_or_else(|e| panic!("write {out:?}: {e}"));
 }
 
+/// Cross-engine proof — Direction B (Python → Rust): the asymmetry, asserted as a
+/// regression guard. Reads the catalog the Python engine wrote (normalized to
+/// Rust's dir convention by the Python script).
+///
+/// FINDING at NT 0.58.0 / 1.228.0 (same rev `6e059dc`): Rust CANNOT read a
+/// Python-written *instrument* — Python encodes the instrument `id` column as
+/// `Dictionary(Int64, Utf8)`, while Rust's dedicated instrument reader requires
+/// plain `Utf8`. Trades and deltas (the DataFusion query path) DO cross-read and
+/// byte-match. This asserts that exact matrix, so it flips loudly if a future NT
+/// unifies the encoding. **Consequence:** the canonical catalog must be
+/// **Rust-written** — Direction A proves Python reads it, but a Python-written
+/// catalog is not directly Rust-consumable (instruments fail). No backtest here: a
+/// Rust `BacktestNode` would load the instrument and hit the same wall. Skips
+/// (loudly) when the Python artifact is absent (e.g. CI without the research venv).
+#[test]
+fn binary_option_cross_engine_read_python() {
+    let view = cross_engine_root().join("python_written_rustview");
+    if !view.exists() {
+        eprintln!(
+            "SKIP binary_option_cross_engine_read_python: {view:?} absent — run \
+             scripts/bte_cross_engine_proof.py in the research venv first"
+        );
+        return;
+    }
+
+    let f = market_family("binary-option");
+    let id = build_instrument(&f).id();
+    let (expected_trades, expected_deltas) = build_proof_data(id, &f);
+
+    let mut catalog = ParquetDataCatalog::new(&view, None, Some(5000), None, None);
+
+    // Instruments: Rust's dedicated reader rejects Python's dictionary-encoded id.
+    let instrument_err = catalog.query_instruments(None).expect_err(
+        "Direction B: Rust unexpectedly READ a Python-written instrument — the \
+         encoding may have been unified; re-evaluate the canonical-writer decision",
+    );
+    let msg = instrument_err.to_string();
+    assert!(
+        msg.contains("Dictionary") && msg.contains("Utf8"),
+        "Direction B: instrument read failed for an unexpected reason: {msg}"
+    );
+
+    // Trades + deltas: the DataFusion query path DOES cross-read, byte-for-byte.
+    let read_trades: Vec<TradeTick> = catalog
+        .query_typed_data::<TradeTick>(None, None, None, None, None, true)
+        .expect("Direction B: read Python-written trades");
+    assert_eq!(
+        read_trades, expected_trades,
+        "Direction B: Python-written trades byte-match Rust-built trades"
+    );
+    let read_deltas: Vec<OrderBookDelta> = catalog
+        .query_typed_data::<OrderBookDelta>(None, None, None, None, None, true)
+        .expect("Direction B: read Python-written book deltas");
+    assert_eq!(
+        read_deltas, expected_deltas,
+        "Direction B: Python-written deltas byte-match Rust-built deltas"
+    );
+
+    let finding = "{\n  \"direction\": \"python_to_rust\",\n  \
+         \"instruments_readable\": false,\n  \
+         \"instrument_block\": \"id column Dictionary(Int64,Utf8) vs Rust Utf8\",\n  \
+         \"trades_readable\": true,\n  \"deltas_readable\": true\n}\n";
+    let out = cross_engine_root().join("rust-from-python.binary-option.finding.json");
+    std::fs::write(&out, finding).unwrap_or_else(|e| panic!("write {out:?}: {e}"));
+}
+
 /// Fixture `perps/spot` — CEX spot `CurrencyPair` (Binance BTCUSDT, Cash account).
 #[test]
 fn perps_spot_cex_spot_binance() {

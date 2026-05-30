@@ -63,21 +63,27 @@ yet decided or verified — do not treat them as settled.
 
 ## OPEN items (not decided / not verified)
 
-1. **Canonical-catalog writer — Direction A + agreement PROVEN (2026-05-31).** The
-   cross-engine test (`scripts/bte_cross_engine_proof.py` + the Rust
-   `binary_option_cross_engine_write` test) shows the Python engine reads the *exact
-   bytes* of a Rust-written catalog, and a strategy-less backtest over those shared
-   bytes yields identical counters in both engines (`iterations 5, total_events 0,
-   total_orders 0, total_positions 0`, run-id + range present).
-   **Finding:** the parquet *data format* is cross-compatible, but the two engines'
-   `ParquetDataCatalog` use different *directory names* — Rust `trades`/`instruments`
-   vs Python `trade_tick`/`<type>` (they agree on `order_book_deltas`). A direct read
-   misses trades + instruments; a thin directory-name shim (instrument dir = config
-   `kind`) bridges it fully — no deep incompatibility.
-   **Implication:** Rust can be the canonical writer and the Python research lane
-   reads it through that small name-normalization shim.
-   **Still pending:** Direction B (Python-written catalog read by Rust) and a
-   production-grade shim. So **partially resolved.**
+1. **Canonical-catalog writer — RESOLVED (2026-05-31): Rust writes, Python reads.**
+   The cross-engine test (both directions) establishes the compatibility matrix at
+   NT 0.58.0 / 1.228.0 (same rev `6e059dc`):
+   - **Rust → Python (Rust writes): FULL.** Python reads the *exact bytes* of a
+     Rust-written catalog — instruments + trades + deltas — through a thin
+     directory-name shim (Rust `trades`/`instruments` vs Python `trade_tick`/`<type>`;
+     they agree on `order_book_deltas`; instrument dir = config `kind`). A
+     strategy-less backtest over the shared bytes agrees: `{iterations 5,
+     total_events 0, total_orders 0, total_positions 0}`, run-id + range present.
+   - **Python → Rust (Python writes): PARTIAL.** Rust reads Python-written *trades*
+     and *deltas* (byte-match), but **NOT instruments** — Python encodes the
+     instrument `id` column as `Dictionary(Int64, Utf8)` while Rust's dedicated
+     instrument reader requires `Utf8`. A Python-written catalog is therefore **not**
+     directly Rust-consumable.
+
+   **Decision:** the canonical catalog is **Rust-written**; the Python research lane
+   reads it through the directory-name shim. ("Python writes the canonical catalog"
+   is ruled out — Rust cannot load Python-written instruments.) The Rust test
+   `binary_option_cross_engine_read_python` is a regression guard that flips loudly
+   if a future NT unifies the instrument encoding.
+   **Still pending:** a production-grade shim and extending past binary-option.
 2. **Python NT version correspondence — VERIFIED 2026-05-30.** At rev `6e059dc` the
    repo declares Python package **1.228.0** (`pyproject.toml`) and Rust crates
    **0.58.0** (`Cargo.toml`) — the same commit, two numbering schemes. **But 1.228.0

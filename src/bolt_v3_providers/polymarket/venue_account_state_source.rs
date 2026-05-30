@@ -1,11 +1,12 @@
+use std::collections::HashMap;
+
+use nautilus_core::consts::NAUTILUS_USER_AGENT;
+use nautilus_network::http::{HttpClient, Method, USER_AGENT};
 use nautilus_polymarket::{
     common::{consts::DUST_POSITION_THRESHOLD, credential::Secrets as PolymarketSecrets},
-    http::{
-        clob::PolymarketClobHttpClient, data_api::PolymarketDataApiHttpClient,
-        query::GetOrdersParams,
-    },
+    http::{clob::PolymarketClobHttpClient, query::GetOrdersParams},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -19,6 +20,7 @@ use crate::{
 
 const CLOB_V2_OPEN_ORDERS_PATH: &str = "/data/orders";
 const POLYMARKET_DATA_API_POSITIONS_PATH: &str = "/positions";
+const POLYMARKET_DATA_API_PAGE_SIZE: u32 = 100;
 
 pub async fn materialize_venue_account_state_source_from_configured_account_queries(
     request: VenueAccountStateSourceMaterializationRequest<'_>,
@@ -107,17 +109,12 @@ pub async fn materialize_venue_account_state_source_from_configured_account_quer
         |orders| !orders.is_empty(),
     )
     .await;
-    let data_api_client = PolymarketDataApiHttpClient::new(
-        Some(cfg.base_url_data_api.clone()),
-        cfg.http_timeout_secs,
-    )
-    .map_err(
-        |_| BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
-            field: "execution.base_url_data_api",
-        },
-    )?;
     let mut positions = fetch_external_snapshot_with_retries(confirmation_policy, || {
-        data_api_client.get_positions(&account_address)
+        fetch_non_redeemable_positions(
+            &cfg.base_url_data_api,
+            cfg.http_timeout_secs,
+            &account_address,
+        )
     })
     .await
     .map_err(
@@ -128,7 +125,13 @@ pub async fn materialize_venue_account_state_source_from_configured_account_quer
     positions = confirm_external_snapshot_before_hard_stop(
         positions,
         confirmation_policy,
-        || data_api_client.get_positions(&account_address),
+        || {
+            fetch_non_redeemable_positions(
+                &cfg.base_url_data_api,
+                cfg.http_timeout_secs,
+                &account_address,
+            )
+        },
         |positions| has_active_positions(positions),
     )
     .await;
@@ -184,17 +187,109 @@ fn sha256_text(value: &str) -> String {
     hex::encode(Sha256::digest(value.as_bytes()))
 }
 
-fn active_position_count(
-    positions: &[nautilus_polymarket::http::models::DataApiPosition],
-) -> usize {
+async fn fetch_non_redeemable_positions(
+    base_url: &str,
+    timeout_secs: u64,
+    user_address: &str,
+) -> Result<Vec<ReadinessDataApiPosition>, BoltV3OperatorArtifactError> {
+    let client = HttpClient::new(
+        HashMap::from([
+            (USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string()),
+            ("Content-Type".to_string(), "application/json".to_string()),
+        ]),
+        vec![],
+        vec![],
+        None,
+        Some(timeout_secs),
+        None,
+    )
+    .map_err(
+        |_| BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+            field: "execution.base_url_data_api",
+        },
+    )?;
+    let base_url = base_url.trim_end_matches('/').to_string();
+    let mut positions = Vec::new();
+    let mut offset = 0_u32;
+
+    loop {
+        let params = positions_request_params(user_address, POLYMARKET_DATA_API_PAGE_SIZE, offset);
+        let response = client
+            .request_with_params(
+                Method::GET,
+                format!("{base_url}{POLYMARKET_DATA_API_POSITIONS_PATH}"),
+                Some(&params),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(
+                |_| BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+                    field: "positions_response",
+                },
+            )?;
+        if !response.status.is_success() {
+            return Err(
+                BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+                    field: "positions_response",
+                },
+            );
+        }
+        let page: Vec<ReadinessDataApiPosition> =
+            serde_json::from_slice(&response.body).map_err(|_| {
+                BoltV3OperatorArtifactError::PreRunVenueAccountStateSourceInvalid {
+                    field: "positions_response",
+                }
+            })?;
+        let count = page.len() as u32;
+        positions.extend(page);
+        if count < POLYMARKET_DATA_API_PAGE_SIZE {
+            break;
+        }
+        offset += count;
+    }
+
+    Ok(positions)
+}
+
+fn positions_request_params(user_address: &str, limit: u32, offset: u32) -> Vec<(String, String)> {
+    vec![
+        ("user".to_string(), user_address.to_string()),
+        ("limit".to_string(), limit.to_string()),
+        ("offset".to_string(), offset.to_string()),
+        ("sizeThreshold".to_string(), "0".to_string()),
+        ("redeemable".to_string(), "false".to_string()),
+        ("sortBy".to_string(), "TOKENS".to_string()),
+        ("sortDirection".to_string(), "DESC".to_string()),
+    ]
+}
+
+fn active_position_count(positions: &[ReadinessDataApiPosition]) -> usize {
     positions
         .iter()
         .filter(|position| position.size >= DUST_POSITION_THRESHOLD)
         .count()
 }
 
-fn has_active_positions(positions: &[nautilus_polymarket::http::models::DataApiPosition]) -> bool {
+fn has_active_positions(positions: &[ReadinessDataApiPosition]) -> bool {
     active_position_count(positions) > usize::MIN
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadinessDataApiPosition {
+    asset: String,
+    #[serde(alias = "condition_id", alias = "conditionId")]
+    condition_id: String,
+    size: f64,
+    #[serde(alias = "avgPrice", alias = "avg_price")]
+    avg_price: Option<f64>,
+    #[serde(default, alias = "current_value", alias = "currentValue")]
+    current_value: Option<f64>,
+    #[serde(default)]
+    redeemable: bool,
 }
 
 #[derive(Serialize)]
@@ -203,15 +298,21 @@ struct DataApiPositionSummary {
     condition_id: String,
     size: String,
     avg_price: Option<String>,
+    current_value: Option<String>,
+    redeemable: bool,
 }
 
-impl From<&nautilus_polymarket::http::models::DataApiPosition> for DataApiPositionSummary {
-    fn from(position: &nautilus_polymarket::http::models::DataApiPosition) -> Self {
+impl From<&ReadinessDataApiPosition> for DataApiPositionSummary {
+    fn from(position: &ReadinessDataApiPosition) -> Self {
         Self {
             asset: position.asset.clone(),
             condition_id: position.condition_id.clone(),
             size: position.size.to_string(),
             avg_price: position.avg_price.map(|avg_price| avg_price.to_string()),
+            current_value: position
+                .current_value
+                .map(|current_value| current_value.to_string()),
+            redeemable: position.redeemable,
         }
     }
 }
@@ -231,4 +332,35 @@ struct VenueAccountStateSnapshotProof<'a> {
     open_position_count: u64,
     open_orders_sha256: &'a str,
     open_positions_sha256: &'a str,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn readiness_position(size: f64, redeemable: bool) -> ReadinessDataApiPosition {
+        ReadinessDataApiPosition {
+            asset: "asset".to_string(),
+            condition_id: "condition".to_string(),
+            size,
+            avg_price: None,
+            current_value: Some(0.0),
+            redeemable,
+        }
+    }
+
+    #[test]
+    fn positions_request_params_exclude_redeemable_positions() {
+        let params = positions_request_params("0xabc", 100, 0);
+
+        assert!(params.contains(&("redeemable".to_string(), "false".to_string())));
+        assert!(params.contains(&("sizeThreshold".to_string(), "0".to_string())));
+    }
+
+    #[test]
+    fn active_position_count_counts_only_returned_non_redeemable_positions() {
+        let positions = vec![readiness_position(DUST_POSITION_THRESHOLD, false)];
+
+        assert_eq!(active_position_count(&positions), 1);
+    }
 }

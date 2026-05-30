@@ -79,8 +79,22 @@ yet decided or verified — do not treat them as settled.
    tagged NT release that ships both a PyPI wheel and the Rust crates (also moves
    production onto a real release), or (b) build the Python package from the exact
    local `6e059dc` checkout (heavy build; Python-3.14 support unverified — see #3).
-3. **Python runtime / wheels.** The dev host has Python 3.14; NT wheel availability
-   for 3.14 is unverified. **OPEN.**
+3. **Python runtime / wheels — VERIFIED 2026-05-31, RESOLVED.** NT 1.227.0 ships
+   `cp312`/`cp313`/**`cp314`** wheels (`requires_python <3.15,>=3.12`), so NT installs
+   on this host's Python 3.14. 3.14 support is **not** a blocker.
+
+## Re-pin investigation (2026-05-31)
+
+- bolt pins **16** NT crates at one rev in the root `Cargo.toml:28-65`; a re-pin is
+  mechanically one rev value (+ `Cargo.lock` + rebuild/re-validate).
+- The latest *released* wheel is **1.227.0** = commit `280ae176`, **Rust crates
+  0.57.0**. Our pinned dev rev (`6e059dc`, Rust **0.58.0**) is **135 commits ahead /
+  57 diverged** from it. **No released wheel exists for our current Rust 0.58.0**
+  (1.228.0 is unreleased).
+- Therefore "re-pin to a release" = a Rust **downgrade** 0.58.0 → 0.57.0, and the
+  real cost is re-validating bolt + the gate proof against the 0.57.0 API — not the
+  edit. The alternative (build Python from the exact `6e059dc`) keeps Rust 0.58.0
+  and is de-risked now that 3.14 is confirmed supported.
 
 ## Method
 

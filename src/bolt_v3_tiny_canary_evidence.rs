@@ -279,11 +279,12 @@ impl Phase8StrategyInputSafetyAudit {
                 anyhow!("failed to parse phase8 strategy input theta_scaled_min_edge_bps: {source}")
             })?;
         let readiness_identity_valid = phase8_strategy_input_readiness_identity_valid(&raw);
-        let expected_price_to_beat_source = if readiness_identity_valid {
-            raw.price_to_beat_source.as_str()
-        } else {
-            expected_price_to_beat_source
-        };
+        // The caller-supplied `expected_price_to_beat_source` is config-derived and MUST flow
+        // straight through so `from_strategy_inputs` keeps a genuine config-vs-runtime equality
+        // check (raw.price_to_beat_source vs config). Never reassign it from the evidence file's
+        // own raw value — doing so turns the integrity check into a self-comparison that always
+        // passes. `readiness_identity_valid` is an additional fail-closed gate below
+        // (DecisionEvidenceUnavailable), never a license to drop the price-to-beat binding.
         let mut audit = Self::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
             realized_volatility,
             seconds_to_market_end: raw.seconds_to_market_end,
@@ -3575,10 +3576,160 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
+        Phase8CanaryBlockReason, Phase8StrategyInputEvidenceFile, Phase8StrategyInputSafetyAudit,
         phase8_is_sha256_hex, phase8_resolve_configured_path, validate_phase8_env_path_value,
         validate_phase8_sha256_env_value, validate_phase8_sha256_field,
     };
+    use crate::bolt_v3_decision_evidence::BoltV3GateEvidenceIdentity;
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
+
+    /// Config-derived price-to-beat source the operator approved. The runtime evidence file's
+    /// own `price_to_beat_source` must equal this for the canary to proceed.
+    const TEST_EXPECTED_PRICE_TO_BEAT_SOURCE: &str = "polymarket-clob-up";
+    /// A drifted runtime source that does NOT match the config-approved value above.
+    const TEST_DRIFTED_PRICE_TO_BEAT_SOURCE: &str = "stale-feed";
+    const TEST_SELECTED_MARKET_KEY: &str = "polymarket-binary-up-down-2026-05-30T00:00:00Z";
+    const TEST_GATE_SESSION_HASH: &str = "gate-session-hash-fixture";
+    const TEST_SHA256_HEX: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// Build a structurally valid `gate_evidence` map so
+    /// `phase8_strategy_input_readiness_identity_valid` returns `true`. This is the precise
+    /// precondition under which the (now-removed) self-comparison bug silently approved a
+    /// drifted price-to-beat source: only when readiness identity is valid did the buggy code
+    /// overwrite `expected_price_to_beat_source` with the file's own raw value.
+    fn valid_gate_evidence() -> BTreeMap<String, BoltV3GateEvidenceIdentity> {
+        let mut gate_evidence = BTreeMap::new();
+        gate_evidence.insert(
+            "resolution".to_string(),
+            BoltV3GateEvidenceIdentity {
+                satisfaction_kind: "evidence".to_string(),
+                selected_market_key: TEST_SELECTED_MARKET_KEY.to_string(),
+                provider_id: Some("polymarket-clob".to_string()),
+                provider_kind: Some("clob".to_string()),
+                value_kind: Some("price".to_string()),
+                normalized_value_sha256: Some(TEST_SHA256_HEX.to_string()),
+                provider_provenance_sha256: Some(TEST_SHA256_HEX.to_string()),
+                artifact_sha256s: vec![TEST_SHA256_HEX.to_string()],
+                resolution_identity: None,
+            },
+        );
+        gate_evidence
+    }
+
+    /// Build a fully-populated evidence file whose runtime `price_to_beat_source` is the caller's
+    /// choice and whose readiness identity is structurally valid (so the integrity check is the
+    /// only variable under test).
+    fn evidence_file_with_price_to_beat_source(
+        price_to_beat_source: &str,
+    ) -> Phase8StrategyInputEvidenceFile {
+        Phase8StrategyInputEvidenceFile {
+            strategy_instance_id: Some("strategy-instance-fixture".to_string()),
+            realized_volatility: "0.25".to_string(),
+            seconds_to_market_end: 3_600,
+            spot_price: "0.51".to_string(),
+            price_to_beat_value: "0.50".to_string(),
+            expected_edge_basis_points: "120".to_string(),
+            worst_case_edge_basis_points: "120".to_string(),
+            fee_rate_basis_points: "10".to_string(),
+            price_to_beat_source: price_to_beat_source.to_string(),
+            gate_session_hash: Some(TEST_GATE_SESSION_HASH.to_string()),
+            selected_market_key: Some(TEST_SELECTED_MARKET_KEY.to_string()),
+            gate_evidence: Some(valid_gate_evidence()),
+            reference_quote_ts_event: 1,
+            pricing_kurtosis: "0.5".to_string(),
+            theta_decay_factor: "0.1".to_string(),
+            theta_scaled_min_edge_bps: "30".to_string(),
+            market_selection_timestamp_ms: 1_700_000_001_000,
+            candidate_market_start_timestamps_ms: Some(vec![1_700_000_000_000]),
+            market_selection_source_path: None,
+            market_selection_source_sha256: None,
+            market_selection_outcome: "current".to_string(),
+            polymarket_condition_id: "condition-id".to_string(),
+            polymarket_market_slug: "market-slug".to_string(),
+            polymarket_question_id: "question-id".to_string(),
+            up_instrument_id: "up-instrument".to_string(),
+            down_instrument_id: "down-instrument".to_string(),
+            selected_market_observed_timestamp_ms: 1_700_000_001_000,
+            polymarket_market_start_timestamp_ms: 1_700_000_000_000,
+            polymarket_market_end_timestamp_ms: 1_700_000_900_000,
+        }
+    }
+
+    /// Regression guard for the price-to-beat self-comparison blocker. With a structurally valid
+    /// readiness identity and a runtime `price_to_beat_source` that has drifted away from the
+    /// config-approved value, the audit MUST be blocked with `UnsupportedPriceToBeatSource`. The
+    /// removed bug overwrote the config-derived expected source with the file's own raw value,
+    /// turning the config-vs-runtime equality check into a tautology that silently approved drift.
+    #[test]
+    fn drifted_price_to_beat_source_is_rejected_even_with_valid_readiness_identity() {
+        let raw = evidence_file_with_price_to_beat_source(TEST_DRIFTED_PRICE_TO_BEAT_SOURCE);
+
+        let audit = Phase8StrategyInputSafetyAudit::from_raw_evidence(
+            raw,
+            TEST_EXPECTED_PRICE_TO_BEAT_SOURCE,
+            None,
+        )
+        .expect("from_raw_evidence should parse a structurally valid evidence file");
+
+        assert!(
+            !audit.is_approved(),
+            "a drifted runtime price_to_beat_source must never be approved; \
+             block_reasons={:?}",
+            audit.block_reasons()
+        );
+        assert!(
+            audit
+                .block_reasons()
+                .contains(&Phase8CanaryBlockReason::UnsupportedPriceToBeatSource),
+            "config-vs-runtime price_to_beat_source drift must surface \
+             UnsupportedPriceToBeatSource; block_reasons={:?}",
+            audit.block_reasons()
+        );
+        assert!(
+            !audit
+                .block_reasons()
+                .contains(&Phase8CanaryBlockReason::DecisionEvidenceUnavailable),
+            "readiness identity is structurally valid in this fixture, so the rejection must come \
+             from the price-to-beat binding, not a degraded readiness identity; \
+             block_reasons={:?}",
+            audit.block_reasons()
+        );
+    }
+
+    /// Control arm: with the SAME structurally valid readiness identity, a runtime
+    /// `price_to_beat_source` that MATCHES the config-approved value must NOT trip
+    /// `UnsupportedPriceToBeatSource`. This proves the integrity check is genuinely comparing
+    /// config-vs-runtime (not always-fail) and isolates the drift signal in the test above.
+    #[test]
+    fn matching_price_to_beat_source_passes_the_integrity_check() {
+        let raw = evidence_file_with_price_to_beat_source(TEST_EXPECTED_PRICE_TO_BEAT_SOURCE);
+
+        let audit = Phase8StrategyInputSafetyAudit::from_raw_evidence(
+            raw,
+            TEST_EXPECTED_PRICE_TO_BEAT_SOURCE,
+            None,
+        )
+        .expect("from_raw_evidence should parse a structurally valid evidence file");
+
+        assert!(
+            !audit
+                .block_reasons()
+                .contains(&Phase8CanaryBlockReason::UnsupportedPriceToBeatSource),
+            "a matching config-vs-runtime price_to_beat_source must not trip the integrity check; \
+             block_reasons={:?}",
+            audit.block_reasons()
+        );
+        assert!(
+            !audit
+                .block_reasons()
+                .contains(&Phase8CanaryBlockReason::MissingPriceToBeatSource),
+            "a non-empty matching price_to_beat_source must not be flagged missing; \
+             block_reasons={:?}",
+            audit.block_reasons()
+        );
+    }
 
     #[test]
     fn phase8_sha256_shape_rejects_uppercase_hex() {

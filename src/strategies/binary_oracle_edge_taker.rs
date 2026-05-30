@@ -57,6 +57,7 @@ use crate::{
         BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderKind,
         BoltV3QuoteQuantityOrderSide, BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind,
         BoltV3SubmitLifecyclePolicy, conservative_quote_quantity_admission_notional,
+        fee_inclusive_admission_notional,
     },
     strategies::registry::{
         BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
@@ -2967,6 +2968,48 @@ impl BinaryOracleEdgeTaker {
             .to_f64()
     }
 
+    /// Resolve the max entry fee bound (in bps) used to compute the
+    /// fee-inclusive admission notional, mirroring the proof executor's
+    /// `fee_provider.max_entry_fee_bps(&instrument, price)` lookup
+    /// (`bolt_v3_canary_proof_executor` line 108-116). Fail-closed: a missing
+    /// instrument context or absent fee bound is a hard error so the
+    /// downstream cap check never silently passes a raw notional.
+    ///
+    /// In production the order is built from a cached instrument, so
+    /// `current_instrument` resolves. Unit tests that exercise this path
+    /// without populating the NT cache supply the bound through the
+    /// `FeeProvider::fee_bps` map, matching the established `#[cfg(test)]`
+    /// fallback in `entry_fee_bps_at_price`.
+    fn max_entry_fee_bps_for_admission(
+        &self,
+        instrument_id: InstrumentId,
+        price: Decimal,
+    ) -> Result<Decimal> {
+        let max_fee_bps = match self.current_instrument(instrument_id) {
+            Some(instrument) => self.context.fee_provider().max_entry_fee_bps(&instrument, price),
+            None => {
+                #[cfg(test)]
+                {
+                    self.context.fee_provider().fee_bps(instrument_id)
+                }
+                #[cfg(not(test))]
+                {
+                    None
+                }
+            }
+        }
+        .with_context(|| {
+            format!(
+                "bolt-v3 submit admission requires a max entry fee bound for instrument_id={instrument_id}"
+            )
+        })?;
+        anyhow::ensure!(
+            max_fee_bps >= Decimal::ZERO,
+            "bolt-v3 submit admission max entry fee bound must be non-negative for instrument_id={instrument_id}, got {max_fee_bps}"
+        );
+        Ok(max_fee_bps)
+    }
+
     fn active_book_for_outcome(&self, side: OutcomeSide) -> &OutcomeBookState {
         match side {
             OutcomeSide::Up => &self.active.books.up,
@@ -3919,6 +3962,14 @@ impl BinaryOracleEdgeTaker {
         } else {
             price * quantity
         };
+        // Scale the raw notional to a fee-inclusive notional before the
+        // admission cap check, using the SAME computation the proof executor
+        // applies (`bolt_v3_canary_proof_executor` line 117-118). Without this
+        // the strategy path would check a raw notional against a cap the proof
+        // path checks fee-inclusive — admitting an order whose fee-inclusive
+        // cost exceeds the intended per-order cap.
+        let max_fee_bps = self.max_entry_fee_bps_for_admission(order.instrument_id(), price)?;
+        let notional = fee_inclusive_admission_notional(notional, max_fee_bps);
 
         Ok(BoltV3SubmitAdmissionRequest {
             strategy_id: intent.strategy_id.clone(),
@@ -5969,9 +6020,7 @@ fn selected_source_market_from_instruments(
     if expected_instrument_ids.len() != selected.instrument_ids.len() {
         return None;
     }
-    let cadence_milliseconds = u64::try_from(config.cadence_seconds)
-        .ok()?
-        .checked_mul(MILLIS_PER_SECOND_U64)?;
+    let cadence_milliseconds = config.cadence_seconds.checked_mul(MILLIS_PER_SECOND_U64)?;
     let max_attempts = instruments.len().max(COUNTER_INCREMENT);
     for attempt_index in INITIAL_COUNTER_USIZE..max_attempts {
         let attempt_offset =
@@ -7244,6 +7293,18 @@ mod tests {
             Arc::new(Self::default())
         }
 
+        /// Build a provider that yields `fee_bps` for `instrument_id`. The
+        /// submit-admission path resolves the fee-inclusive notional through
+        /// `FeeProvider::max_entry_fee_bps`, which falls back to `fee_bps` in
+        /// `#[cfg(test)]` when the NT cache holds no instrument, so seeding the
+        /// fee here is sufficient to exercise the fee-inclusive cap check
+        /// without registering a full cache.
+        fn with_fee(instrument_id: &str, fee_bps: Decimal) -> Arc<Self> {
+            let provider = Arc::new(Self::default());
+            provider.set_fee(instrument_id, fee_bps);
+            provider
+        }
+
         fn set_fee(&self, instrument_id: &str, fee_bps: Decimal) {
             self.fees
                 .lock()
@@ -7932,12 +7993,14 @@ mod tests {
                 RecordingDecisionEvidenceWriter,
             )),
         );
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        // Zero fee leaves the notional unchanged; the unarmed rejection from the
+        // admission gate is what this test exercises.
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -8004,12 +8067,15 @@ mod tests {
         submit_admission
             .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
             .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        // Zero fee keeps the notional (0.50) under the 1.0 cap so admission
+        // succeeds; the test then proves the submit reaches NT (and panics
+        // because the strategy is intentionally unregistered).
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -8076,8 +8142,11 @@ mod tests {
         submit_admission
             .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
             .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        // Zero fee leaves the 0.50 notional under the 1.0 cap; this test
+        // exercises submit-param routing, not the fee-inclusive cap.
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
@@ -8089,7 +8158,6 @@ mod tests {
             risk_handler,
         );
 
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -8149,12 +8217,15 @@ mod tests {
         submit_admission
             .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
             .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        // Zero fee isolates the assertion to "compiled order price drives the
+        // notional": the compiled 2.0 notional still exceeds the 1.0 cap, while
+        // the understated intent price (0.50) must NOT be what is checked.
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(2.0, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -8695,22 +8766,31 @@ mod tests {
 
     #[test]
     fn over_notional_submit_admission_rejects_before_nt_submit() {
+        // Coarse over-cap rejection: raw notional = price*qty = 2.0*1.0 = 2.0
+        // already exceeds the 1.0 cap, so this rejects with OR without the
+        // fee-inclusive scaling and is NOT a discriminating test of the
+        // fee multiplier at `binary_oracle_edge_taker.rs:3972`. The fee
+        // multiplier is pinned by the discriminating pair
+        // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`
+        // / `zero_fee_submit_admission_admits_at_same_cap` below; this test
+        // only proves a grossly over-cap raw notional is rejected before NT
+        // submit.
         let submit_admission = Arc::new(
             crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         );
         submit_admission
-            .arm(live_canary_gate_report(1, Decimal::new(25, 2)))
+            .arm(live_canary_gate_report(1, Decimal::ONE))
             .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
-        let price = Price::new(0.50, 2);
+        let price = Price::new(2.0, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
         let order = nautilus_model::orders::OrderAny::Limit(
             nautilus_model::orders::LimitOrder::new_checked(
@@ -8756,13 +8836,280 @@ mod tests {
                 order,
                 SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
             )
-            .expect_err("over-cap notional must reject before NT submit");
+            .expect_err("fee-inclusive over-cap notional must reject before NT submit");
 
         assert!(
             error.to_string().contains("notional cap is exceeded"),
             "{error:#}"
         );
         assert_eq!(submit_admission.admitted_order_count(), 0);
+    }
+
+    #[test]
+    fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
+        // Strict-inequality boundary: raw notional = price*qty = 1.0*1.0 = 1.0;
+        // at 25 bps the fee-inclusive admission notional is
+        // 1.0 * (1 + 25/10000) = 1.0025, set EXACTLY equal to the cap. The
+        // admission gate rejects only when notional STRICTLY exceeds the cap
+        // (`request.notional > report.max_notional_per_order()`), so this must
+        // be ADMITTED. The strategy is intentionally unregistered, so reaching
+        // NT submit after a successful admission panics — proving admission
+        // passed.
+        //
+        // NOTE: this is NOT a fee-discrimination test — with the cap set to the
+        // fee-inclusive value, the raw 1.0 notional admits with OR without the
+        // fee multiplier (1.0 <= 1.0025 either way). It only pins the strict
+        // `>` boundary. Fee discrimination at
+        // `binary_oracle_edge_taker.rs:3972` is pinned by the
+        // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`
+        // / `zero_fee_submit_admission_admits_at_same_cap` pair below.
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(10025, 4)))
+            .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(1.0, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order = nautilus_model::orders::OrderAny::Limit(
+            nautilus_model::orders::LimitOrder::new_checked(
+                nautilus_model::identifiers::TraderId::from("TRADER-001"),
+                StrategyId::from(strategy.config.strategy_id.as_str()),
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                TimeInForce::Fok,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("limit order should be valid"),
+        );
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            strategy.submit_order_with_decision_evidence(
+                intent,
+                order,
+                SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            )
+        }));
+
+        assert!(
+            result.is_err(),
+            "fee-inclusive notional exactly at the cap must be admitted and reach NT submit (which panics on the unregistered test strategy)"
+        );
+        assert_eq!(
+            submit_admission.admitted_order_count(),
+            1,
+            "fee-inclusive notional exactly at the cap must be admitted"
+        );
+    }
+
+    #[test]
+    fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
+        // DISCRIMINATING test for the fee-inclusive scaling at
+        // `binary_oracle_edge_taker.rs:3972`. The cap is set STRICTLY BETWEEN the
+        // raw notional and the fee-inclusive notional so the rejection is caused
+        // by the fee multiplier specifically, not by the raw notional:
+        //   raw notional      = price*qty = 1.00 * 1.00 = 1.0000
+        //   cap               = 1.001  (Decimal::new(1001, 3))
+        //   fee-inclusive     = 1.00 * (1 + 25/10000) = 1.0025
+        // Since 1.0000 <= 1.001 < 1.0025, the order is admitted with the raw
+        // notional but rejected with the fee-inclusive notional. This test must
+        // FAIL if line 3972 is deleted: without the fee scaling the cap sees the
+        // raw 1.0000 (<= 1.001) and admits, so the expected reject never fires.
+        // The zero-fee CONTROL `zero_fee_submit_admission_admits_at_same_cap`
+        // below uses the SAME raw 1.00 notional and SAME 1.001 cap and ADMITS,
+        // proving the rejection here is caused by the fee scaling.
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(1001, 3)))
+            .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(1.0, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order = nautilus_model::orders::OrderAny::Limit(
+            nautilus_model::orders::LimitOrder::new_checked(
+                nautilus_model::identifiers::TraderId::from("TRADER-001"),
+                StrategyId::from(strategy.config.strategy_id.as_str()),
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                TimeInForce::Fok,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("limit order should be valid"),
+        );
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
+
+        let error = strategy
+            .submit_order_with_decision_evidence(
+                intent,
+                order,
+                SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            )
+            .expect_err(
+                "fee-inclusive notional pushed strictly over the cap by fee scaling must reject before NT submit",
+            );
+
+        assert!(
+            error.to_string().contains("notional cap is exceeded"),
+            "{error:#}"
+        );
+        assert_eq!(submit_admission.admitted_order_count(), 0);
+    }
+
+    #[test]
+    fn zero_fee_submit_admission_admits_at_same_cap() {
+        // Zero-fee CONTROL for
+        // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`.
+        // SAME raw notional (price*qty = 1.00 * 1.00 = 1.0000) and SAME cap
+        // (1.001) as the reject test, but the fee is ZERO so no scaling is
+        // applied:
+        //   admission notional = 1.0000 * (1 + 0/10000) = 1.0000 <= 1.001
+        // and the order is ADMITTED. The strategy is intentionally unregistered,
+        // so reaching NT submit after a successful admission panics — proving
+        // admission passed. Together with the reject test this pair proves the
+        // rejection there is caused by the fee scaling specifically, not by the
+        // raw notional (which admits at this cap when the fee is zero).
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(1001, 3)))
+            .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(1.0, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order = nautilus_model::orders::OrderAny::Limit(
+            nautilus_model::orders::LimitOrder::new_checked(
+                nautilus_model::identifiers::TraderId::from("TRADER-001"),
+                StrategyId::from(strategy.config.strategy_id.as_str()),
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                TimeInForce::Fok,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("limit order should be valid"),
+        );
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            strategy.submit_order_with_decision_evidence(
+                intent,
+                order,
+                SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            )
+        }));
+
+        assert!(
+            result.is_err(),
+            "zero-fee notional below the cap must be admitted and reach NT submit (which panics on the unregistered test strategy)"
+        );
+        assert_eq!(
+            submit_admission.admitted_order_count(),
+            1,
+            "zero-fee notional below the cap must be admitted at the same cap the fee-scaled order is rejected at"
+        );
     }
 
     #[test]
@@ -8789,12 +9136,14 @@ mod tests {
                 },
             )
             .expect("first admission should consume the only slot");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        // Zero fee keeps the 0.50 notional under the 1.0 cap so the rejection is
+        // the count-exhausted check, not the notional cap.
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");

@@ -32,7 +32,7 @@ pub enum CanaryProofSizingMode {
 pub struct CanaryProofInstrumentConstraints {
     pub sizing_mode: CanaryProofSizingMode,
     pub quantity_step: Decimal,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub notional_step: Option<Decimal>,
     pub min_quantity: Option<Decimal>,
     pub min_notional: Option<Decimal>,

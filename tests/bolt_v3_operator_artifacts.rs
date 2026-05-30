@@ -7034,6 +7034,17 @@ fn approval_packet_assembly_writes_non_circular_envelope_from_existing_refs() {
                 .expect("strategy cancel path should exist")
         )
     );
+    // The producer must seal the operator-approved gate-session file hash into
+    // the envelope so the live gate can bind the order to the approval.
+    assert_eq!(
+        envelope["expected_gate_session_sha256"],
+        serde_json::json!(
+            operator_evidence
+                .expected_gate_session_sha256
+                .as_deref()
+                .expect("operator evidence should bind gate session sha256")
+        )
+    );
 
     for forbidden in [
         "approval_envelope_sha256",
@@ -7827,6 +7838,30 @@ fn final_packet_pre_run_verifier_accepts_hash_bound_proof_artifacts() {
         operator_packet["live_canary_operator_evidence"]["canary_proof_order_intent_sha256"]
             .as_str(),
         evidence.canary_proof_order_intent_sha256.as_deref()
+    );
+}
+
+#[test]
+fn assembled_proof_envelope_seals_gate_session_and_order_intent_hashes() {
+    let fixture = assembled_final_packet_fixture_with_proof_artifacts();
+    let evidence = fixture.operator_evidence();
+    let envelope = read_json_value(std::path::Path::new(&evidence.approval_envelope_path));
+    // The producer must seal both the gate-session and the canary proof
+    // order-intent file hashes into the envelope so the live gate can bind the
+    // exact order the operator approved.
+    assert_eq!(
+        envelope["expected_gate_session_sha256"].as_str(),
+        evidence.expected_gate_session_sha256.as_deref(),
+        "producer must seal expected_gate_session_sha256 into the envelope"
+    );
+    assert_eq!(
+        envelope["canary_proof_order_intent_sha256"].as_str(),
+        evidence.canary_proof_order_intent_sha256.as_deref(),
+        "producer must seal canary_proof_order_intent_sha256 into the envelope"
+    );
+    assert!(
+        evidence.canary_proof_order_intent_sha256.is_some(),
+        "proof fixture must bind a canary_proof_order_intent_sha256"
     );
 }
 
@@ -14366,9 +14401,9 @@ fn test_live_canary_proof_policy() -> LiveCanaryProofPolicyBlock {
         book_type: bolt_v2::bolt_v3_config::DataClientReadinessProbeBookType::L2Mbp,
         book_snapshot_interval_millis: 1_000,
         time_in_force: bolt_v2::bolt_v3_config::LiveCanaryProofTimeInForce::Fok,
-        post_only: false,
-        reduce_only: false,
-        quote_quantity: false,
+        is_post_only: false,
+        is_reduce_only: false,
+        is_quote_quantity: false,
         notional_mode: "fixed".to_string(),
         proof_notional: "1.00".to_string(),
         candidate_score_source: "proof_source".to_string(),

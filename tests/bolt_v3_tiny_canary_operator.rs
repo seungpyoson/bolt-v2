@@ -14,10 +14,12 @@ use bolt_v2::{
 };
 use rust_decimal::Decimal;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::env;
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
 
 const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.configured-reference-price";
 const PHASE8_VALIDATION_HEAD_SHA: &str = "expected-head";
@@ -2453,6 +2455,72 @@ fn phase8_assert_post_run_hygiene_proof(
         ));
     }
     Ok(())
+}
+
+const POST_RUN_HYGIENE_FAKE_SECRET: &str = "BOLTV3_PRIVATE_KEY_SENTINEL_DO_NOT_LEAK_FAKE";
+
+/// Write a post-run-hygiene proof for `scanned_bytes` scanned against a single
+/// fake-secret value, and return the resulting `raw_secret_residue_absent`
+/// attestation. Drives the real production writer.
+fn post_run_hygiene_residue_absent_for(scanned_bytes: &[u8]) -> bool {
+    use bolt_v2::bolt_v3_operator_artifacts::{
+        LiveCanaryTerminalResultProofInputs, write_live_canary_terminal_result_artifacts,
+    };
+
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let scanned_artifact = temp.path().join("order-events.jsonl");
+    std::fs::write(&scanned_artifact, scanned_bytes).expect("scan input should write");
+    let retention_path = temp.path().join("retention-purge.txt");
+    let post_run_hygiene_path = temp.path().join("post-run-hygiene.json");
+    let scanned_slice = std::slice::from_ref(&scanned_artifact);
+    let secret_values = vec![Zeroizing::new(POST_RUN_HYGIENE_FAKE_SECRET.to_string())];
+    let strategy_instance_id_hash =
+        hex::encode(Sha256::digest(b"canary-proof-executor-proof".as_slice()));
+
+    write_live_canary_terminal_result_artifacts(&LiveCanaryTerminalResultProofInputs {
+        run_id: "live-run-residue-arm",
+        strategy_instance_id_hash: &strategy_instance_id_hash,
+        client_order_id: "O-20260529-153130-001-proof-arm",
+        venue_order_id: "0x31c0fd542faa4a9af561602ee8f302a4aaf838a04ea87068d2cfa048e2be60f5",
+        venue_order_outcome: "filled",
+        order_remains_open: false,
+        max_operator_evidence_file_bytes: 4096,
+        scanned_artifact_paths: scanned_slice,
+        secret_redaction_values: &secret_values,
+        retention_purge_path: &retention_path,
+        nt_submit_event_path: &temp.path().join("nt-submit-event.json"),
+        venue_order_state_path: &temp.path().join("venue-order-state.json"),
+        restart_reconciliation_path: &temp.path().join("restart-reconciliation.json"),
+        post_run_hygiene_path: &post_run_hygiene_path,
+    })
+    .expect("terminal artifacts should write");
+
+    let proof =
+        phase8_read_post_run_hygiene_proof(post_run_hygiene_path.to_str().expect("path utf8"))
+            .expect("post hygiene should parse");
+    proof.raw_secret_residue_absent
+}
+
+/// Drive the production post-run hygiene writer directly and assert that
+/// `raw_secret_residue_absent` is computed from a real scan of each scanned
+/// artifact's bytes against the run's resolved-secret values — NOT a hardcoded
+/// literal. A clean artifact (scanned against a non-empty secret set whose
+/// values are absent) must attest `true`; an artifact that contains one of the
+/// secret values verbatim must attest `false`. The secret value used here is a
+/// clearly-fake synthetic sentinel, never a real credential.
+#[test]
+fn post_run_hygiene_residue_attestation_is_derived_from_scan_not_hardcoded() {
+    // Clean arm: scanned artifact does NOT contain any secret value -> true.
+    assert!(
+        post_run_hygiene_residue_absent_for(b"accepted order event\n"),
+        "clean artifact (no secret value present) must attest raw_secret_residue_absent = true"
+    );
+    // Leaked arm: scanned artifact contains a secret value verbatim -> false.
+    let leaked = format!("accepted order event\nleaked={POST_RUN_HYGIENE_FAKE_SECRET}\n");
+    assert!(
+        !post_run_hygiene_residue_absent_for(leaked.as_bytes()),
+        "artifact containing a secret value verbatim must attest raw_secret_residue_absent = false"
+    );
 }
 
 fn phase8_assert_operator_evidence_proof(

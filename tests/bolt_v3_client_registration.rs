@@ -188,7 +188,31 @@ transport_backend = "sockudo"
 }
 
 #[test]
-fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_data() {
+fn live_node_build_path_registers_only_strategy_bound_polymarket_data_and_exec() {
+    // The trade build path (`build_bolt_v3_live_node_with_summary`) registers
+    // ONLY strategy-bound clients: the strategy `execution_client_id`, its
+    // `[reference_data].*.data_client_id`, and the proof-policy
+    // `execution_client_id`. The fixture strategy
+    // (tests/fixtures/bolt_v3/strategies/binary_oracle.toml) sets
+    // `execution_client_id = "polymarket_main"` and has an EMPTY
+    // `[reference_data]` block; its reference comes from a source-owned
+    // `decision_reference` (provider id "resolution_oracle_primary"), NOT an NT
+    // data client. So `binance_reference` is a broad-readiness PROBE client that
+    // is configured but unbound, and the scoped trade runner correctly EXCLUDES
+    // it from both the registration summary and the NT engines.
+    //
+    // We keep `fixture_loaded_config_with_binance_reference` so the exclusion is
+    // meaningful: an unbound client is present in config yet must NOT register.
+    //
+    // Coverage of the SEPARATE concerns:
+    //   - broad-readiness registration of every requested data client (without
+    //     extra execution clients) is covered by
+    //     `live_node_registration_can_load_all_requested_data_clients_without_extra_execution_clients`,
+    //     which exercises
+    //     `build_bolt_v3_all_configured_client_mapping_live_node_with_summary`;
+    //   - positive `[reference_data]` scoping (a strategy-bound reference data
+    //     client IS registered) is covered by the
+    //     `trade_transport_config_keeps_only_strategy_bound_clients` unit test.
     let mut loaded = fixture_loaded_config_with_binance_reference();
     let temp = support::TempCaseDir::new("bolt-v3-client-registration-build-path");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
@@ -197,12 +221,17 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode should build through the registration boundary");
 
-    // The summary records bolt-v3's intent at the registration boundary.
-    assert_eq!(summary.clients.len(), 2, "two configured clients");
+    // The scoped trade runner records exactly one strategy-bound client.
+    assert_eq!(
+        summary.clients.len(),
+        1,
+        "scoped trade path registers only strategy-bound clients; got {:?}",
+        summary.clients.keys().collect::<Vec<_>>()
+    );
     let polymarket = summary
         .clients
         .get("polymarket_main")
-        .expect("polymarket_main must appear in summary");
+        .expect("polymarket_main (strategy execution_client_id) must appear in summary");
     assert!(
         polymarket.data,
         "fixture polymarket_main has a [data] block"
@@ -211,29 +240,25 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
         polymarket.execution,
         "fixture polymarket_main has an [execution] block"
     );
-    let binance = summary
-        .clients
-        .get("binance_reference")
-        .expect("binance_reference must appear in summary");
-    assert!(binance.data, "fixture binance_reference has a [data] block");
     assert!(
-        !binance.execution,
-        "fixture binance_reference has no [execution] block"
+        !summary.clients.contains_key("binance_reference"),
+        "binance_reference is unbound (no strategy reference_data binding) and must be excluded from the scoped summary; got {:?}",
+        summary.clients.keys().collect::<Vec<_>>()
     );
 
-    // NT-side state confirms the actual registrations happened. The
-    // bolt-v3 venue identifier is reused as the NT registration name,
-    // so the NT engines expose ClientIds matching those keys. This
-    // proves the wiring goes all the way through `factory.create` and
-    // `engine.register_client` without a parallel NT mock.
+    // NT-side state confirms the actual registrations happened and that the
+    // unbound probe client was excluded all the way through `factory.create`
+    // and `engine.register_client`, without a parallel NT mock. The bolt-v3
+    // venue identifier is reused as the NT registration name, so the NT
+    // engines expose ClientIds matching the configured keys.
     let registered_data: Vec<ClientId> = node.registered_data_client_ids();
     assert!(
         registered_data.contains(&ClientId::from("polymarket_main")),
         "data engine should expose polymarket_main; got {registered_data:?}"
     );
     assert!(
-        registered_data.contains(&ClientId::from("binance_reference")),
-        "data engine should expose binance_reference; got {registered_data:?}"
+        !registered_data.contains(&ClientId::from("binance_reference")),
+        "scoped runner must EXCLUDE the unbound binance_reference data client; got {registered_data:?}"
     );
 
     let registered_exec: Vec<ClientId> = node.registered_exec_client_ids();
@@ -243,7 +268,7 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
     );
     assert!(
         !registered_exec.contains(&ClientId::from("binance_reference")),
-        "binance_reference has no [execution] block, must not be on the exec engine; got {registered_exec:?}"
+        "binance_reference has no [execution] block and is unbound, must not be on the exec engine; got {registered_exec:?}"
     );
 }
 

@@ -1629,8 +1629,16 @@ fn run_operator_artifacts_command(
             retention_purge_path,
         } => {
             let loaded = load_bolt_v3_config(&config)?;
+            // Resolve the run's secrets so the post-run hygiene scan attests
+            // `raw_secret_residue_absent` against the exact secret values this
+            // run handled (the single secret source of truth), not a hardcoded
+            // credential-shape list.
+            check_no_forbidden_credential_env_vars(&loaded.root)?;
+            let ssm_resolver_session = SsmResolverSession::new()?;
+            let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
             let written = write_live_canary_post_run_proof_artifacts_from_config(
                 &loaded,
+                &resolved,
                 &LiveCanaryPostRunProofInputs {
                     run_id: &run_id,
                     runtime_capture_spool_root: &runtime_capture_spool_root,

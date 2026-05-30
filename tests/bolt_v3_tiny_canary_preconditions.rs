@@ -441,7 +441,7 @@ fn strategy_audit_uses_normalized_readiness_identity_not_price_source_string() {
         write_current_market_selection_source(temp.path()).expect("source should write");
     write_current_strategy_input_evidence(
         &evidence_path,
-        "legacy_provider_specific_source",
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
         &source_path,
         &source_hash,
     )
@@ -452,7 +452,7 @@ fn strategy_audit_uses_normalized_readiness_identity_not_price_source_string() {
     let approved = Phase8StrategyInputSafetyAudit::from_evidence_file(
         &evidence_path,
         &evidence_hash,
-        "operator_configured_source",
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
     )
     .expect("readiness identity should audit without legacy price-source equality");
     assert!(approved.is_approved());

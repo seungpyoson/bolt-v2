@@ -21,7 +21,7 @@ use nautilus_network::http::{HttpClient, USER_AGENT};
 use rust_decimal::{Decimal, prelude::FromPrimitive};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
     bolt_v3_archetypes::{
@@ -7834,7 +7834,7 @@ fn write_entry_decision_source_inputs_from_selected_source_files_inner(
         readiness_session: readiness_session_from_entry_decision_price_source(
             loaded,
             strategy_instance_id,
-            &selected,
+            selected,
             &proofs.price_source,
             &proofs.reference_quote,
         )?,
@@ -7854,7 +7854,7 @@ fn write_entry_decision_source_inputs_from_selected_source_files_inner(
         books: BinaryOracleEntryBooksSource {
             price_precision: selected_market_price_precision(
                 request.market_inputs.instruments,
-                &selected,
+                selected,
             )?,
             up: book_side_source_from_input(request.market_inputs.up_book),
             down: book_side_source_from_input(request.market_inputs.down_book),
@@ -15256,6 +15256,22 @@ fn validate_approval_envelope_fields(
             field: "strategy_cancel_path_hash",
         });
     }
+    // Blocker-B binding fields: the sealed gate-session and canary proof
+    // order-intent content hashes must match the operator evidence. The runtime
+    // gate in `bolt_v3_live_canary_gate.rs` is the authoritative enforcer of
+    // these bindings; this is defense-in-depth so both envelope validators
+    // enforce the same fields. Both sides are `Option<String>`, so `None ==
+    // None`, `Some(a) == Some(a)`, and every other pairing mismatches.
+    if envelope.expected_gate_session_sha256 != evidence.expected_gate_session_sha256 {
+        return Err(BoltV3OperatorArtifactError::ApprovalEnvelopeMismatch {
+            field: "expected_gate_session_sha256",
+        });
+    }
+    if envelope.canary_proof_order_intent_sha256 != evidence.canary_proof_order_intent_sha256 {
+        return Err(BoltV3OperatorArtifactError::ApprovalEnvelopeMismatch {
+            field: "canary_proof_order_intent_sha256",
+        });
+    }
     Ok(())
 }
 
@@ -15830,6 +15846,18 @@ fn approval_envelope_from_operator_evidence(
         approval_not_before_unix_secs: evidence.approval_not_before_unix_seconds,
         approval_not_after_unix_secs: evidence.approval_not_after_unix_seconds,
         canary_evidence_path_hash: sha256_text(evidence.canary_evidence_path.as_str()),
+        // Seal the operator-approved gate-session and canary proof
+        // order-intent file-content hashes into the envelope. At
+        // materialization time these `evidence` fields are the genuine file
+        // hashes (the materializer enforces gate-session file ==
+        // expected_gate_session_sha256 and computes
+        // canary_proof_order_intent_sha256 directly from the file), so this
+        // copy binds the exact order the operator authorized. The gate
+        // re-checks the live file content against these sealed envelope
+        // values, rejecting any post-approval file swap that updates only the
+        // self-declared TOML hash.
+        expected_gate_session_sha256: evidence.expected_gate_session_sha256.clone(),
+        canary_proof_order_intent_sha256: evidence.canary_proof_order_intent_sha256.clone(),
         strategy_cancel_path_hash: evidence.strategy_cancel_path.as_deref().map(sha256_text),
     }
 }
@@ -15915,6 +15943,16 @@ pub struct LiveCanaryTerminalResultProofInputs<'a> {
     pub order_remains_open: bool,
     pub max_operator_evidence_file_bytes: u64,
     pub scanned_artifact_paths: &'a [PathBuf],
+    /// The exact set of resolved-secret values this run handled, as produced by
+    /// the single secret source of truth
+    /// [`ResolvedBoltV3Secrets::redaction_values`]. The post-run hygiene scan
+    /// computes `raw_secret_residue_absent` by checking that none of these
+    /// values appear verbatim in any scanned artifact's bytes — it is NOT a
+    /// hardcoded credential-shape list. The values are held in
+    /// [`Zeroizing`] wrappers and are never logged or surfaced; only the boolean
+    /// scan verdict escapes. An empty slice means the run resolved no
+    /// redactable secret material, so no secret value can possibly leak.
+    pub secret_redaction_values: &'a [Zeroizing<String>],
     pub retention_purge_path: &'a Path,
     pub nt_submit_event_path: &'a Path,
     pub venue_order_state_path: &'a Path,
@@ -16012,6 +16050,7 @@ pub fn write_live_canary_terminal_result_artifacts(
 
 pub fn write_live_canary_post_run_proof_artifacts_from_config(
     loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
     inputs: &LiveCanaryPostRunProofInputs<'_>,
 ) -> anyhow::Result<LiveCanaryPostRunProofArtifacts> {
     let live_canary = loaded
@@ -16022,6 +16061,12 @@ pub fn write_live_canary_post_run_proof_artifacts_from_config(
     let operator_evidence = live_canary.operator_evidence.as_ref().ok_or_else(|| {
         anyhow!("live canary post-run proof requires `[live_canary.operator_evidence]`")
     })?;
+    // Single secret source of truth for the post-run hygiene scan: the exact
+    // resolved-secret values this run handled. The scan flags
+    // `raw_secret_residue_absent = false` iff any of these values appears
+    // verbatim in a scanned artifact's bytes. Held in `Zeroizing` wrappers and
+    // never logged.
+    let secret_redaction_values = resolved.redaction_values();
     let financial_envelope: Phase8FinancialEnvelopeEvidenceFile =
         read_operator_evidence_json_artifact(
             loaded,
@@ -16050,6 +16095,7 @@ pub fn write_live_canary_post_run_proof_artifacts_from_config(
             order_remains_open: inputs.order_remains_open,
             max_operator_evidence_file_bytes: operator_evidence.max_operator_evidence_file_bytes,
             scanned_artifact_paths: inputs.scanned_artifact_paths,
+            secret_redaction_values: &secret_redaction_values,
             retention_purge_path: inputs.retention_purge_path,
             nt_submit_event_path: &nt_submit_event_path,
             venue_order_state_path: &venue_order_state_path,
@@ -16155,11 +16201,24 @@ fn write_live_canary_terminal_result_artifact_refs(
     validate_live_canary_terminal_result_inputs(inputs)?;
     let client_order_id_hash = sha256_text(inputs.client_order_id);
     let venue_order_id_hash = sha256_text(inputs.venue_order_id);
-    let scanned_artifact_hashes = inputs
-        .scanned_artifact_paths
-        .iter()
-        .map(|path| sha256_file_bounded(path, inputs.max_operator_evidence_file_bytes))
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    // Single bounded read per scanned artifact: the same bytes are consumed to
+    // both hash the artifact and scan it for raw secret residue. The hygiene
+    // attestation `raw_secret_residue_absent` is computed from that scan — it is
+    // the AND over all scanned artifacts of "none of this run's resolved-secret
+    // values (`inputs.secret_redaction_values`) appears verbatim in the bytes".
+    let mut scanned_artifact_hashes = Vec::with_capacity(inputs.scanned_artifact_paths.len());
+    let mut raw_secret_residue_absent = true;
+    for path in inputs.scanned_artifact_paths {
+        let scanned = hash_and_scan_scanned_artifact_bounded(
+            path,
+            inputs.max_operator_evidence_file_bytes,
+            inputs.secret_redaction_values,
+        )?;
+        if scanned.secret_residue_present {
+            raw_secret_residue_absent = false;
+        }
+        scanned_artifact_hashes.push(scanned.sha256);
+    }
     let nt_submit_event = write_json_artifact_create_new_or_read_existing(
         inputs.nt_submit_event_path,
         &LiveCanarySubmitEventProof {
@@ -16205,7 +16264,7 @@ fn write_live_canary_terminal_result_artifact_refs(
             strategy_instance_id_hash: inputs.strategy_instance_id_hash,
             client_order_id_hash,
             venue_order_id_hash,
-            raw_secret_residue_absent: true,
+            raw_secret_residue_absent,
             scanned_artifact_hashes,
             retention_purge_path_hash: sha256_text(&inputs.retention_purge_path.to_string_lossy()),
         },
@@ -16291,6 +16350,64 @@ fn sha256_file_bounded(path: &Path, max_bytes: u64) -> anyhow::Result<String> {
         )
     })?;
     Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+/// SHA-256 hex digest plus the secret-residue verdict for a single scanned
+/// live-canary artifact, both derived from one bounded read of the file bytes.
+struct HashedScannedArtifact {
+    sha256: String,
+    secret_residue_present: bool,
+}
+
+/// Read a bounded scanned artifact once and derive both its SHA-256 hash and
+/// whether its bytes contain any of this run's resolved-secret values
+/// (`secret_redaction_values`, produced by the single secret source of truth
+/// [`ResolvedBoltV3Secrets::redaction_values`]). The bytes are read a single
+/// time and consumed for both the hash and the scan — never re-read — and the
+/// matched bytes are never returned, logged, or surfaced; only the boolean
+/// verdict escapes this function.
+fn hash_and_scan_scanned_artifact_bounded(
+    path: &Path,
+    max_bytes: u64,
+    secret_redaction_values: &[Zeroizing<String>],
+) -> anyhow::Result<HashedScannedArtifact> {
+    let bytes = read_file_bounded(path, max_bytes).map_err(|source| {
+        anyhow!(
+            "failed to hash bounded live canary evidence file `{}`: {source}",
+            path.display()
+        )
+    })?;
+    let secret_residue_present = bytes_contain_any_secret_value(&bytes, secret_redaction_values);
+    Ok(HashedScannedArtifact {
+        sha256: hex::encode(Sha256::digest(&bytes)),
+        secret_residue_present,
+    })
+}
+
+/// Return `true` if `bytes` contain any of `secret_values` verbatim as a
+/// contiguous byte subsequence. This is the single source of truth for the
+/// post-run hygiene residue verdict: a scanned artifact leaks raw secret
+/// material iff one of the exact resolved-secret values this run handled appears
+/// in its bytes. Empty secret values are skipped (they would match everywhere
+/// and never represent real residue). Never logs or returns the matched bytes.
+fn bytes_contain_any_secret_value(bytes: &[u8], secret_values: &[Zeroizing<String>]) -> bool {
+    secret_values
+        .iter()
+        .map(|value| value.as_bytes())
+        .filter(|value| !value.is_empty())
+        .any(|value| byte_slice_contains(bytes, value))
+}
+
+/// `true` iff `haystack` contains `needle` as a contiguous byte subsequence.
+/// Callers filter out empty `needle`s before calling; an empty `needle` here
+/// returns `false` (an empty secret value never represents real residue).
+fn byte_slice_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 fn write_json_artifact_create_new_or_read_existing<T: Serialize>(
@@ -17024,6 +17141,12 @@ mod tests {
         let scanned_artifact = temp.path().join("order-events.jsonl");
         fs::write(&scanned_artifact, b"accepted order event\n").expect("scan input should write");
         let retention_path = temp.path().join("retention-purge.txt");
+        // A clean artifact scanned against a real (non-empty) secret-value set
+        // whose values do NOT appear in the bytes must attest absent = true.
+        // The synthetic value is never a real credential.
+        let secret_values = vec![Zeroizing::new(
+            "BOLTV3_PRIVATE_KEY_SENTINEL_DO_NOT_LEAK_FAKE".to_string(),
+        )];
 
         let written = write_live_canary_terminal_result_artifacts(
             &LiveCanaryTerminalResultProofInputs {
@@ -17034,7 +17157,8 @@ mod tests {
                 venue_order_outcome: "filled",
                 order_remains_open: false,
                 max_operator_evidence_file_bytes: 1024,
-                scanned_artifact_paths: &[scanned_artifact.clone()],
+                scanned_artifact_paths: std::slice::from_ref(&scanned_artifact),
+                secret_redaction_values: &secret_values,
                 retention_purge_path: &retention_path,
                 nt_submit_event_path: &temp.path().join("nt-submit-event.json"),
                 venue_order_state_path: &temp.path().join("venue-order-state.json"),
@@ -17063,7 +17187,7 @@ mod tests {
         .expect("post hygiene should parse");
         assert_eq!(post_hygiene["raw_secret_residue_absent"], true);
         let expected_scan_hash = hex::encode(Sha256::digest(
-            &fs::read(&scanned_artifact).expect("scan input should read"),
+            fs::read(&scanned_artifact).expect("scan input should read"),
         ));
         assert_eq!(
             post_hygiene["scanned_artifact_hashes"][0],
@@ -17073,6 +17197,98 @@ mod tests {
             post_hygiene["retention_purge_path_hash"],
             sha256_text(&retention_path.to_string_lossy())
         );
+    }
+
+    #[test]
+    fn live_canary_post_run_hygiene_flags_planted_secret_residue_in_scanned_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let scanned_artifact = temp.path().join("order-events.jsonl");
+        // Plant an exact resolved-secret value into the scanned artifact bytes,
+        // then scan against that same value. The value is a clearly-fake
+        // synthetic sentinel, never a real credential.
+        let leaked_secret = "BOLTV3_PRIVATE_KEY_SENTINEL_DO_NOT_LEAK_FAKE";
+        let planted = format!("accepted order event\nleaked={leaked_secret}\n");
+        fs::write(&scanned_artifact, planted.as_bytes()).expect("planted scan input should write");
+        let retention_path = temp.path().join("retention-purge.txt");
+        let secret_values = vec![Zeroizing::new(leaked_secret.to_string())];
+
+        write_live_canary_terminal_result_artifacts(&LiveCanaryTerminalResultProofInputs {
+            run_id: "live-run-residue-001",
+            strategy_instance_id_hash: &sha256_text("canary-proof-executor-proof"),
+            client_order_id: "O-20260529-153130-001-proof-9",
+            venue_order_id: "0x31c0fd542faa4a9af561602ee8f302a4aaf838a04ea87068d2cfa048e2be60f5",
+            venue_order_outcome: "filled",
+            order_remains_open: false,
+            max_operator_evidence_file_bytes: 1024,
+            scanned_artifact_paths: std::slice::from_ref(&scanned_artifact),
+            secret_redaction_values: &secret_values,
+            retention_purge_path: &retention_path,
+            nt_submit_event_path: &temp.path().join("nt-submit-event.json"),
+            venue_order_state_path: &temp.path().join("venue-order-state.json"),
+            restart_reconciliation_path: &temp.path().join("restart-reconciliation.json"),
+            post_run_hygiene_path: &temp.path().join("post-run-hygiene.json"),
+        })
+        .expect("terminal result artifacts should write");
+
+        let post_hygiene: serde_json::Value = serde_json::from_slice(
+            &fs::read(temp.path().join("post-run-hygiene.json")).expect("post hygiene should read"),
+        )
+        .expect("post hygiene should parse");
+        // The scan must catch the planted secret value: a hardcoded `true` here
+        // would fail this assertion, which is exactly what guards against
+        // regressing the attestation back to an unconditional value.
+        assert_eq!(post_hygiene["raw_secret_residue_absent"], false);
+        // The artifact is still hashed from the same single read.
+        let expected_scan_hash = hex::encode(Sha256::digest(
+            fs::read(&scanned_artifact).expect("scan input should read"),
+        ));
+        assert_eq!(
+            post_hygiene["scanned_artifact_hashes"][0],
+            expected_scan_hash
+        );
+    }
+
+    #[test]
+    fn bytes_contain_any_secret_value_discriminates_clean_from_leaked() {
+        let leaked = Zeroizing::new("BOLTV3_PRIVATE_KEY_SENTINEL_DO_NOT_LEAK_FAKE".to_string());
+        let other = Zeroizing::new("BOLTV3_API_SECRET_SENTINEL_DO_NOT_LEAK_FAKE".to_string());
+        let secret_values = vec![leaked.clone(), other];
+
+        // Clean operator-evidence shapes — plain text, a bare 64-hex sha256
+        // digest, and a `0x`-prefixed on-chain identifier — must NOT be flagged
+        // when none of the secret values appear in them.
+        assert!(!bytes_contain_any_secret_value(
+            b"accepted order event\n",
+            &secret_values
+        ));
+        assert!(!bytes_contain_any_secret_value(
+            sha256_text("order-id").as_bytes(),
+            &secret_values
+        ));
+        assert!(!bytes_contain_any_secret_value(
+            b"0x31c0fd542faa4a9af561602ee8f302a4aaf838a04ea87068d2cfa048e2be60f5",
+            &secret_values
+        ));
+        // An empty secret-value set can never flag residue.
+        assert!(!bytes_contain_any_secret_value(
+            b"key=BOLTV3_PRIVATE_KEY_SENTINEL_DO_NOT_LEAK_FAKE",
+            &[]
+        ));
+        // A secret value embedded mid-stream must be caught.
+        assert!(bytes_contain_any_secret_value(
+            b"prefix key=BOLTV3_PRIVATE_KEY_SENTINEL_DO_NOT_LEAK_FAKE suffix",
+            &secret_values
+        ));
+        // Matching against a single value works too.
+        assert!(bytes_contain_any_secret_value(
+            b"key=BOLTV3_PRIVATE_KEY_SENTINEL_DO_NOT_LEAK_FAKE",
+            std::slice::from_ref(&leaked)
+        ));
+        // Empty secret values inside the set are skipped and never match.
+        assert!(!bytes_contain_any_secret_value(
+            b"anything at all",
+            std::slice::from_ref(&Zeroizing::new(String::new()))
+        ));
     }
 
     #[test]

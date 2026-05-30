@@ -10,7 +10,7 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderKind,
     BoltV3QuoteQuantityOrderSide, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
     BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-    conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
+    conservative_quote_quantity_admission_notional, rounded_order_admission_notional,
 };
 use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
@@ -191,6 +191,12 @@ fn notional_equal_to_cap_is_admitted() {
 
 #[test]
 fn fee_inclusive_notional_rejects_when_fee_pushes_cash_debit_over_cap() {
+    // Drive through the SAME production helper the canary proof executor calls
+    // to turn a rounded order into its admission notional. The raw base notional
+    // (4.98) is within the 5.0 cap, but a positive max entry fee (700 bps)
+    // scales the admission notional above the cap. If the fee wrapper were
+    // deleted from `rounded_order_admission_notional`, this would no longer
+    // exceed the cap and the test would fail — it is not tautological.
     let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
     ));
@@ -200,11 +206,15 @@ fn fee_inclusive_notional_rejects_when_fee_pushes_cash_debit_over_cap() {
             Decimal::new(5, 0),
         ))
         .expect("valid gate report should arm admission");
-    let cash_debit_upper_bound =
-        fee_inclusive_admission_notional(Decimal::new(498, 2), Decimal::new(700, 0));
+    let raw_base_notional = Decimal::new(498, 2);
+    let intended_notional = raw_base_notional;
+    let max_entry_fee_bps = Decimal::new(700, 0);
+    let admission_notional =
+        rounded_order_admission_notional(raw_base_notional, intended_notional, max_entry_fee_bps)
+            .expect("within-intent base notional must not trip the rounding-growth guard");
 
     let error = admission
-        .admit(&submit_request(cash_debit_upper_bound))
+        .admit(&submit_request(admission_notional))
         .expect_err("fee-inclusive cash debit above cap must reject");
 
     assert!(matches!(
@@ -212,6 +222,85 @@ fn fee_inclusive_notional_rejects_when_fee_pushes_cash_debit_over_cap() {
         BoltV3SubmitAdmissionError::NotionalCapExceeded
     ));
     assert_eq!(admission.admitted_order_count(), 0);
+}
+
+#[test]
+fn fee_inclusive_notional_admits_same_base_when_fee_is_zero() {
+    // Control arm for the fee boundary above: the IDENTICAL within-cap raw base
+    // notional (4.98 < cap 5.0) with ZERO fee must be ADMITTED. This proves the
+    // rejection above is produced by the fee path, not by the base notional —
+    // remove the fee scaling and the over-cap test would collapse into this one.
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    ));
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(5, 0),
+        ))
+        .expect("valid gate report should arm admission");
+    let raw_base_notional = Decimal::new(498, 2);
+    let intended_notional = raw_base_notional;
+    let admission_notional =
+        rounded_order_admission_notional(raw_base_notional, intended_notional, Decimal::ZERO)
+            .expect("zero-fee within-intent base notional must not trip any guard");
+
+    assert_eq!(
+        admission_notional, raw_base_notional,
+        "zero fee must leave the rounded base notional unscaled"
+    );
+    admission
+        .admit(&submit_request(admission_notional))
+        .expect("within-cap zero-fee admission notional must be admitted");
+    assert_eq!(admission.admitted_order_count(), 1);
+}
+
+#[test]
+fn rounded_order_admission_notional_fails_closed_when_rounding_grows_past_intent() {
+    // FIX #1 regression: banker's rounding to venue precision can round a
+    // quantity (or price) UP, so the submitted order's base notional can exceed
+    // the operator-approved intended notional. A canary proof intent of 5.30 USD
+    // (qty 10.6 @ 0.50, cap 5.3053) rounds to qty 11 @ 0.50 = 5.50 base — 3.7%
+    // over intent. The shared admission helper must refuse it before any cap or
+    // fee scaling so a rounded order can never debit more than approved.
+    let intended_notional = Decimal::new(530, 2);
+    let rounded_base_notional = Decimal::new(550, 2);
+    let max_entry_fee_bps = Decimal::ZERO;
+
+    let error = rounded_order_admission_notional(
+        rounded_base_notional,
+        intended_notional,
+        max_entry_fee_bps,
+    )
+    .expect_err("rounding-induced notional growth past operator intent must fail closed");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::RoundedNotionalExceedsIntent {
+            rounded_base_notional: r,
+            intended_notional: i,
+        } if r == rounded_base_notional && i == intended_notional
+    ));
+}
+
+#[test]
+fn rounded_order_admission_notional_admits_when_rounded_base_equals_intent() {
+    // Boundary control for the fail-closed guard above: when rounding does NOT
+    // grow the order (rounded base == intended notional), admission proceeds and
+    // the helper returns the fee-inclusive notional. This proves the guard
+    // rejects only genuine rounding-induced growth, not every rounded order.
+    let intended_notional = Decimal::new(530, 2);
+    let rounded_base_notional = intended_notional;
+    let max_entry_fee_bps = Decimal::ZERO;
+
+    let admission_notional = rounded_order_admission_notional(
+        rounded_base_notional,
+        intended_notional,
+        max_entry_fee_bps,
+    )
+    .expect("rounded base equal to intent must admit");
+
+    assert_eq!(admission_notional, intended_notional);
 }
 
 #[test]

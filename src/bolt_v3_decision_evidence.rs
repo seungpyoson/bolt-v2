@@ -162,7 +162,7 @@ pub struct BoltV3OrderIntentEvidence {
     pub order_side: String,
     pub price: String,
     pub quantity: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub canary_proof_claim: Option<String>,
     pub order_fields: BoltV3OrderIntentOrderFields,
 }

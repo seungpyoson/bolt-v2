@@ -94,12 +94,11 @@ fn bolt_v3_live_canary_proof_policy_is_absent_or_disabled_by_default() {
         .live_canary
         .expect("fixture should declare live canary controls");
 
-    match live_canary.proof_policy {
-        Some(proof_policy) => assert!(
+    if let Some(proof_policy) = live_canary.proof_policy {
+        assert!(
             !proof_policy.enabled,
             "fixture proof policy must not arm canary proof by default"
-        ),
-        None => {}
+        );
     }
 }
 
@@ -4748,9 +4747,9 @@ execution_client_id = "configured_execution_client"
 book_type = "l2_mbp"
 book_snapshot_interval_millis = 1000
 time_in_force = "fok"
-post_only = false
-reduce_only = false
-quote_quantity = false
+is_post_only = false
+is_reduce_only = false
+is_quote_quantity = false
 notional_mode = "fixed"
 proof_notional = "1.00"
 candidate_score_source = "proof_source"

@@ -492,25 +492,53 @@ fn latest_reference_quotes_by_key(
     latest
 }
 
+/// Verifies every configured reference requirement class fails closed.
+///
+/// A strategy bundle may configure NT `reference_data` requirements, source-owned
+/// `decision_reference` requirements, or BOTH. When both are present, both classes
+/// must pass: a satisfied `reference_data` class must NOT short-circuit
+/// `decision_reference` verification (and vice versa). Errors from every configured
+/// class are accumulated so a single satisfied class can never mask another class's
+/// unmet readiness. Single source of truth, fail closed: any unmet class — or no
+/// configured class at all — fails readiness.
 pub fn reference_readiness_from_no_submit_evidence(
     loaded: &LoadedBoltV3Config,
     evidence: &BoltV3NoSubmitReferenceQuoteEvidence,
 ) -> Result<(), String> {
-    if has_configured_reference_data(loaded) {
-        let observed_at_unix_nanos = evidence
-            .observed_at_unix_nanos()
-            .ok_or_else(|| "no live reference quote evidence was captured".to_string())?;
-        return reference_readiness_from_quote_evidence(loaded, evidence, observed_at_unix_nanos);
+    let has_reference_data = has_configured_reference_data(loaded);
+    let has_decision_reference = has_configured_decision_reference(loaded);
+
+    if !has_reference_data && !has_decision_reference {
+        return Err("no configured reference_data requirements or source-owned decision_reference requirements found".to_string());
     }
 
-    if has_configured_decision_reference(loaded) {
-        return crate::bolt_v3_operator_artifacts::verify_source_owned_reference_readiness_from_operator_evidence(loaded)
-            .map_err(|error| {
-                format!("source-owned decision_reference readiness is invalid: {error}")
-            });
+    let mut failures = Vec::new();
+
+    if has_reference_data {
+        let reference_data_readiness = match evidence.observed_at_unix_nanos() {
+            Some(observed_at_unix_nanos) => {
+                reference_readiness_from_quote_evidence(loaded, evidence, observed_at_unix_nanos)
+            }
+            None => Err("no live reference quote evidence was captured".to_string()),
+        };
+        if let Err(error) = reference_data_readiness {
+            failures.push(error);
+        }
     }
 
-    Err("no configured reference_data requirements or source-owned decision_reference requirements found".to_string())
+    if has_decision_reference
+        && let Err(error) = crate::bolt_v3_operator_artifacts::verify_source_owned_reference_readiness_from_operator_evidence(loaded)
+    {
+        failures.push(format!(
+            "source-owned decision_reference readiness is invalid: {error}"
+        ));
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 fn has_configured_reference_data(loaded: &LoadedBoltV3Config) -> bool {

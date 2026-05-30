@@ -460,11 +460,15 @@ fn live_node_build_path_propagates_adapter_mapping_failures() {
     // that they fire.
     let loaded = fixture_loaded_config_with_binance_reference();
 
-    // Force the binance api_secret resolution to fail; the live-node
+    // Force the polymarket_main api_secret resolution to fail; the live-node
     // builder must surface the error rather than silently skipping the
-    // mapping step.
+    // mapping step. polymarket_main is the strategy-bound execution client,
+    // so the scoped trade build path resolves its secrets — making the
+    // SecretResolution error surface through the mapping boundary. (binance
+    // is an unbound broad-readiness probe client and is not resolved by the
+    // scoped path, so failing its secret would surface nothing here.)
     let bad_resolver = |region: &str, path: &str| -> Result<String, &'static str> {
-        if path == "/bolt/binance_reference/api_secret" {
+        if path == "/bolt/polymarket_main/api_secret" {
             Err("simulated SSM permissions denied")
         } else {
             support::fake_bolt_v3_resolver(region, path)

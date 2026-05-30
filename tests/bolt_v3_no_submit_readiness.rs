@@ -601,6 +601,68 @@ fn no_submit_readiness_switches_to_source_owned_reference_when_reference_data_ab
 }
 
 #[test]
+fn no_submit_readiness_requires_decision_reference_even_when_reference_data_is_satisfied() {
+    // Cross-strategy precedence regression (blocker #6): when a bundle configures
+    // BOTH NT `reference_data` AND source-owned `decision_reference`, a satisfied
+    // `reference_data` class must NOT short-circuit `decision_reference` readiness.
+    // The fixture strategy already carries `[target.gate_subscriptions.decision_reference]`,
+    // whose source-owned readiness fails closed under the test's non-replayable
+    // operator evidence (see
+    // no_submit_readiness_switches_to_source_owned_reference_when_reference_data_absent).
+    let loaded = loaded_with_test_live_canary_and_reference_data();
+    assert!(
+        loaded
+            .strategies
+            .iter()
+            .any(|strategy| !strategy.config.reference_data.is_empty()),
+        "fixture must carry NT reference_data requirements for the dual-class case"
+    );
+
+    // Provide FRESH NT quote evidence for every configured reference_data
+    // requirement so the reference_data class is fully SATISFIED on its own.
+    let max_age_seconds = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should carry live canary config")
+        .reference_quote_max_age_seconds;
+    let observed_at_unix_nanos = 1_800_000_000_000_000_000_u64;
+    let fresh_event_unix_nanos = observed_at_unix_nanos - (max_age_seconds * 1_000_000_000_u64 / 2);
+    let quotes = loaded
+        .strategies
+        .iter()
+        .flat_map(|strategy| strategy.config.reference_data.values())
+        .map(|reference| BoltV3NoSubmitReferenceQuote {
+            data_client_id: reference.data_client_id.to_string(),
+            instrument_id: reference.instrument_id.to_string(),
+            bid_price: 99.0,
+            ask_price: 101.0,
+            ts_event_unix_nanos: fresh_event_unix_nanos,
+            ts_init_unix_nanos: observed_at_unix_nanos,
+            captured_at_unix_nanos: observed_at_unix_nanos,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !quotes.is_empty(),
+        "fixture must carry configured reference_data requirements"
+    );
+    let evidence = BoltV3NoSubmitReferenceQuoteEvidence { quotes };
+
+    // Confirm the reference_data class passes in isolation, so any overall failure
+    // can only come from the decision_reference class being evaluated too.
+    reference_readiness_from_quote_evidence(&loaded, &evidence, observed_at_unix_nanos)
+        .expect("fresh quote evidence should satisfy the reference_data class on its own");
+
+    let error = reference_readiness_from_no_submit_evidence(&loaded, &evidence).expect_err(
+        "a satisfied reference_data class must not short-circuit decision_reference readiness",
+    );
+    assert!(
+        error.contains("source-owned decision_reference readiness"),
+        "dual-class readiness must still evaluate the decision_reference class, got: {error}"
+    );
+}
+
+#[test]
 fn no_submit_readiness_writer_enforces_configured_byte_cap() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("readiness").join("report.json");

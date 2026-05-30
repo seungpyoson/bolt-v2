@@ -21,6 +21,20 @@ use crate::{
 const CLOB_V2_OPEN_ORDERS_PATH: &str = "/data/orders";
 const POLYMARKET_DATA_API_POSITIONS_PATH: &str = "/positions";
 const POLYMARKET_DATA_API_PAGE_SIZE: u32 = 100;
+const POLYMARKET_DATA_API_CONTENT_TYPE_HEADER: &str = "Content-Type";
+const POLYMARKET_DATA_API_CONTENT_TYPE_JSON: &str = "application/json";
+/// Data-API positions query values: smallest position size to return,
+/// whether already-redeemed positions are included, and the sort order the
+/// venue applies before paging. All three pin the read window the readiness
+/// probe depends on, so they are named rather than inlined.
+const POLYMARKET_DATA_API_POSITIONS_SIZE_THRESHOLD: &str = "0";
+const POLYMARKET_DATA_API_POSITIONS_REDEEMABLE: &str = "false";
+const POLYMARKET_DATA_API_POSITIONS_SORT_BY: &str = "TOKENS";
+const POLYMARKET_DATA_API_POSITIONS_SORT_DIRECTION: &str = "DESC";
+/// Defensive fallback for a Data-API position record that omits `redeemable`:
+/// an absent flag is treated as a non-redeemable (still-open) position so the
+/// readiness proof never silently drops an active position.
+const POSITION_REDEEMABLE_WHEN_ABSENT: bool = false;
 
 pub async fn materialize_venue_account_state_source_from_configured_account_queries(
     request: VenueAccountStateSourceMaterializationRequest<'_>,
@@ -195,7 +209,10 @@ async fn fetch_non_redeemable_positions(
     let client = HttpClient::new(
         HashMap::from([
             (USER_AGENT.to_string(), NAUTILUS_USER_AGENT.to_string()),
-            ("Content-Type".to_string(), "application/json".to_string()),
+            (
+                POLYMARKET_DATA_API_CONTENT_TYPE_HEADER.to_string(),
+                POLYMARKET_DATA_API_CONTENT_TYPE_JSON.to_string(),
+            ),
         ]),
         vec![],
         vec![],
@@ -259,10 +276,22 @@ fn positions_request_params(user_address: &str, limit: u32, offset: u32) -> Vec<
         ("user".to_string(), user_address.to_string()),
         ("limit".to_string(), limit.to_string()),
         ("offset".to_string(), offset.to_string()),
-        ("sizeThreshold".to_string(), "0".to_string()),
-        ("redeemable".to_string(), "false".to_string()),
-        ("sortBy".to_string(), "TOKENS".to_string()),
-        ("sortDirection".to_string(), "DESC".to_string()),
+        (
+            "sizeThreshold".to_string(),
+            POLYMARKET_DATA_API_POSITIONS_SIZE_THRESHOLD.to_string(),
+        ),
+        (
+            "redeemable".to_string(),
+            POLYMARKET_DATA_API_POSITIONS_REDEEMABLE.to_string(),
+        ),
+        (
+            "sortBy".to_string(),
+            POLYMARKET_DATA_API_POSITIONS_SORT_BY.to_string(),
+        ),
+        (
+            "sortDirection".to_string(),
+            POLYMARKET_DATA_API_POSITIONS_SORT_DIRECTION.to_string(),
+        ),
     ]
 }
 
@@ -286,10 +315,9 @@ struct ReadinessDataApiPosition {
     size: f64,
     #[serde(alias = "avgPrice", alias = "avg_price")]
     avg_price: Option<f64>,
-    #[serde(default, alias = "current_value", alias = "currentValue")]
+    #[serde(alias = "current_value", alias = "currentValue")]
     current_value: Option<f64>,
-    #[serde(default)]
-    redeemable: bool,
+    redeemable: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -312,7 +340,9 @@ impl From<&ReadinessDataApiPosition> for DataApiPositionSummary {
             current_value: position
                 .current_value
                 .map(|current_value| current_value.to_string()),
-            redeemable: position.redeemable,
+            redeemable: position
+                .redeemable
+                .unwrap_or(POSITION_REDEEMABLE_WHEN_ABSENT),
         }
     }
 }
@@ -345,7 +375,7 @@ mod tests {
             size,
             avg_price: None,
             current_value: Some(0.0),
-            redeemable,
+            redeemable: Some(redeemable),
         }
     }
 

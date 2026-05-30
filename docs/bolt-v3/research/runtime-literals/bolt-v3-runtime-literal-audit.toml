@@ -2228,7 +2228,7 @@ reason = "This fail-closed diagnostic reports that no configured strategy refere
 path = "src/bolt_v3_no_submit_readiness.rs"
 kind = "string"
 literal = '''"no configured reference_data requirements or source-owned decision_reference requirements found"'''
-context = '''Err("no configured reference_data requirements or source-owned decision_reference requirements found".to_string())'''
+context = '''return Err("no configured reference_data requirements or source-owned decision_reference requirements found".to_string());'''
 classification = "no_submit_readiness_diagnostic_template"
 reason = "This fail-closed diagnostic reports that neither legacy NT reference-data evidence nor TOML-owned decision-reference operator evidence is configured for no-submit reference readiness."
 
@@ -11604,7 +11604,7 @@ reason = '''This is a timestamp field label or fixed unit conversion used for ev
 path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''string'''
 literal = '''"metadata"'''
-context = '''matches!(event_kind, "metadata" | "quote" | "book" | "ticker")'''
+context = '''"metadata" | "quote" | "book" | "ticker" | "trade"'''
 classification = '''data_client_behavior_event_kind'''
 reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
 
@@ -11612,7 +11612,7 @@ reason = '''This is a stable data-client behavior event-kind label for readiness
 path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''string'''
 literal = '''"quote"'''
-context = '''matches!(event_kind, "metadata" | "quote" | "book" | "ticker")'''
+context = '''"metadata" | "quote" | "book" | "ticker" | "trade"'''
 classification = '''data_client_behavior_event_kind'''
 reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
 
@@ -11620,7 +11620,7 @@ reason = '''This is a stable data-client behavior event-kind label for readiness
 path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''string'''
 literal = '''"book"'''
-context = '''matches!(event_kind, "metadata" | "quote" | "book" | "ticker")'''
+context = '''"metadata" | "quote" | "book" | "ticker" | "trade"'''
 classification = '''data_client_behavior_event_kind'''
 reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
 
@@ -11628,7 +11628,7 @@ reason = '''This is a stable data-client behavior event-kind label for readiness
 path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''string'''
 literal = '''"ticker"'''
-context = '''matches!(event_kind, "metadata" | "quote" | "book" | "ticker")'''
+context = '''"metadata" | "quote" | "book" | "ticker" | "trade"'''
 classification = '''data_client_behavior_event_kind'''
 reason = '''This is a stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
 
@@ -12027,8 +12027,8 @@ reason = '''This is a stable data-client readiness status/proof label emitted in
 [[allowed]]
 path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''string'''
-literal = '''"quote_or_book_or_ticker_behavior"'''
-context = '''missing.push("quote_or_book_or_ticker_behavior");'''
+literal = '''"quote_or_book_or_ticker_or_trade_behavior"'''
+context = '''missing.push("quote_or_book_or_ticker_or_trade_behavior");'''
 classification = '''data_client_readiness_status_label'''
 reason = '''This is a stable data-client readiness status/proof label emitted into evidence artifacts, not a runtime venue or market selection.'''
 
@@ -14335,3 +14335,443 @@ literal = '''"; "'''
 context = '''rejected_attempts.join("; ")'''
 classification = '''diagnostic_separator'''
 reason = '''This separator joins source-proof rotation rejection diagnostics for operator triage only; the attempted markets and limits remain TOML/source-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''string'''
+literal = '''"bolt-v3-readiness-chunk-advance"'''
+context = '''const CHUNK_ADVANCE_TIMER: &str = "bolt-v3-readiness-chunk-advance";'''
+classification = '''readiness_probe_timer_name'''
+reason = '''Internal NT timer identifier driving the readiness chunk-advance cadence, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''1_000_000_000'''
+context = '''const NANOS_PER_SECOND: u64 = 1_000_000_000;'''
+classification = '''time_unit_conversion'''
+reason = '''Seconds-to-nanoseconds unit conversion constant, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''cursor: Cell::new(0),'''
+classification = '''chunk_walk_cursor_initial_value'''
+reason = '''Initial chunk-walk cursor index; algorithmic starting position, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''walk.cursor.set(0);'''
+classification = '''chunk_walk_cursor_reset_value'''
+reason = '''Resets the chunk-walk cursor to the first index; algorithmic, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''walk.cursor.set(cursor + 1);'''
+classification = '''chunk_walk_cursor_increment'''
+reason = '''Advances the chunk-walk cursor by one chunk; index math, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''return 0;'''
+classification = '''chunk_walk_absent_distinct_count_default'''
+reason = '''Distinct traded-instrument count is zero when no chunk walk is configured; absent-walk default, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''None => (0, 0, 0, 0),'''
+classification = '''chunk_walk_absent_exhaustion_dims_default'''
+reason = '''Universe/chunks/chunk_size/required tuple is zero for the fail-closed exhaustion message when no walk is present; diagnostic default, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''None => (0, 0),'''
+classification = '''chunk_walk_absent_dims_default'''
+reason = '''Chunk-count/window dimensions are zero when no walk is present; absent-walk default, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''Some(min_observed) => min_observed.clamp(1, sampled_len.max(1)),'''
+classification = '''min_observed_targets_clamp_floor'''
+reason = '''Clamps min-observed targets to at least one; algorithmic floor, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''string'''
+literal = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} source-owned metadata_response target(s) sampled this run"'''
+context = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} source-owned metadata_response target(s) sampled this run",'''
+classification = '''live_node_readiness_diagnostic_template'''
+reason = '''Fail-closed diagnostic naming a misconfigured min_observed_targets vs sampled targets, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''required_live_markets >= 1 && distinct_fired >= required_live_markets'''
+classification = '''required_live_markets_floor'''
+reason = '''Requires at least one live market before the probe can pass; algorithmic floor, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''string'''
+literal = '''"trade chunk-count readiness probe per-chunk window overflowed"'''
+context = '''"trade chunk-count readiness probe per-chunk window overflowed".to_string(),'''
+classification = '''live_node_readiness_diagnostic_template'''
+reason = '''Fail-closed diagnostic for arithmetic overflow of the per-chunk window, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''string'''
+literal = '''"trade chunk-count readiness probe chunk-advance time overflowed"'''
+context = '''"trade chunk-count readiness probe chunk-advance time overflowed".to_string(),'''
+classification = '''live_node_readiness_diagnostic_template'''
+reason = '''Fail-closed diagnostic for arithmetic overflow of the chunk-advance time, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''Some(0) => Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup('''
+classification = '''min_observed_targets_zero_rejection_sentinel'''
+reason = '''A configured zero would let the readiness probe pass with no observed data, so zero is rejected fail-closed; sentinel guard, not a tunable value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''string'''
+literal = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} configured readiness_probe.quote_targets"'''
+context = '''"clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} configured readiness_probe.quote_targets",'''
+classification = '''live_node_readiness_diagnostic_template'''
+reason = '''Fail-closed diagnostic naming a misconfigured min_observed_targets vs configured quote_targets, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''string'''
+literal = '''"client readiness_probe metadata_response targets"'''
+context = '''"client readiness_probe metadata_response targets",'''
+classification = '''readiness_probe_target_source_label'''
+reason = '''Diagnostic label naming the readiness-probe target source, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_no_submit_readiness.rs'''
+kind = '''string'''
+literal = '''"no live reference quote evidence was captured"'''
+context = '''None => Err("no live reference quote evidence was captured".to_string()),'''
+classification = '''no_submit_readiness_diagnostic_template'''
+reason = '''Fail-closed diagnostic when no live reference-quote evidence was captured, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''.map(|min_observed| min_observed.clamp(1, quote_targets.len().max(1)))'''
+classification = '''min_observed_targets_clamp_floor'''
+reason = '''Clamps min-observed targets to at least one against quote targets; algorithmic floor, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''.map(|min_observed| min_observed.clamp(1, book_targets.len().max(1)))'''
+classification = '''min_observed_targets_clamp_floor'''
+reason = '''Clamps min-observed targets to at least one against book targets; algorithmic floor, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''let required_live_markets = readiness_probe.min_observed_targets.unwrap_or(0);'''
+classification = '''required_live_markets_unset_default'''
+reason = '''Unset min_observed_targets resolves to zero required live markets for the unfiltered surface scan; absent-config default, not a tunable value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''.map(|min_observed| min_observed.clamp(1, trade_targets.len().max(1)))'''
+classification = '''min_observed_targets_clamp_floor'''
+reason = '''Clamps min-observed targets to at least one against trade targets; algorithmic floor, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''0.0'''
+context = '''if trade.size <= 0.0 || !trade.size.is_finite() {'''
+classification = '''trade_size_nonpositive_guard'''
+reason = '''Rejects non-positive or non-finite trade sizes in the trade probe; validation guard, not a tunable value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"trade.captured_at_unix_nanos"'''
+context = '''nanos_to_millis_checked(trade.captured_at_unix_nanos, "trade.captured_at_unix_nanos")?;'''
+classification = '''operator_source_proof_diagnostic_field'''
+reason = '''Field label for an overflow-checked timestamp conversion diagnostic, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"trade.ts_init_unix_nanos"'''
+context = '''"trade.ts_init_unix_nanos",'''
+classification = '''operator_source_proof_diagnostic_field'''
+reason = '''Field label for an overflow-checked timestamp conversion diagnostic, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"trade"'''
+context = '''event_kind: "trade".to_string(),'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''Stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"source"'''
+context = '''"source": "no_submit_trade_probe",'''
+classification = '''operator_artifact_json_field_name'''
+reason = '''JSON field name in the trade-probe evidence record, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"no_submit_trade_probe"'''
+context = '''"source": "no_submit_trade_probe",'''
+classification = '''operator_artifact_record_kind'''
+reason = '''Record-kind marker identifying the no-submit trade probe evidence source, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"data_client_id_hash"'''
+context = '''"data_client_id_hash": sha256_text(&trade.data_client_id),'''
+classification = '''operator_artifact_json_field_name'''
+reason = '''JSON field name for the hashed data-client id in the trade-probe record, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"instrument_id_hash"'''
+context = '''"instrument_id_hash": sha256_text(&trade.instrument_id),'''
+classification = '''operator_artifact_json_field_name'''
+reason = '''JSON field name for the hashed instrument id in the trade-probe record, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"price"'''
+context = '''"price": trade.price,'''
+classification = '''operator_artifact_json_field_name'''
+reason = '''JSON field name for the observed trade price in the trade-probe record, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"size"'''
+context = '''"size": trade.size,'''
+classification = '''operator_artifact_json_field_name'''
+reason = '''JSON field name for the observed trade size in the trade-probe record, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"ts_event_unix_nanos"'''
+context = '''"ts_event_unix_nanos": trade.ts_event_unix_nanos,'''
+classification = '''operator_artifact_json_field_name'''
+reason = '''JSON field name for the trade event timestamp in the trade-probe record, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"ts_init_unix_nanos"'''
+context = '''"ts_init_unix_nanos": trade.ts_init_unix_nanos,'''
+classification = '''operator_artifact_json_field_name'''
+reason = '''JSON field name for the trade init timestamp in the trade-probe record, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"captured_at_unix_nanos"'''
+context = '''"captured_at_unix_nanos": trade.captured_at_unix_nanos,'''
+classification = '''operator_artifact_json_field_name'''
+reason = '''JSON field name for the capture timestamp in the trade-probe record, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"trade"'''
+context = '''trade_behavior: data_client_surface_observation_from_probe_events(events, "trade")?,'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''Stable data-client behavior event-kind selector for trade-surface observation, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"trade"'''
+context = '''"metadata" | "quote" | "book" | "ticker" | "trade"'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''Stable data-client behavior event-kind label for readiness evidence, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"trade_behavior"'''
+context = '''validate_data_client_behavior_surface_observation("trade_behavior", &source.trade_behavior)?;'''
+classification = '''operator_artifact_validation_field'''
+reason = '''Validation field label for the trade-behavior surface observation, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"trade"'''
+context = '''DataClientReadinessProbeMarketDataKind::Trade => "trade",'''
+classification = '''data_client_behavior_event_kind'''
+reason = '''Stable market-data-kind label mapping the Trade variant to its event-kind string, not a market or venue default.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''number'''
+literal = '''100'''
+context = '''const POLYMARKET_DATA_API_PAGE_SIZE: u32 = 100;'''
+classification = '''polymarket_data_api_pagination_size'''
+reason = '''Fixed Polymarket Data API positions page size for the readiness read window, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''string'''
+literal = '''"Content-Type"'''
+context = '''const POLYMARKET_DATA_API_CONTENT_TYPE_HEADER: &str = "Content-Type";'''
+classification = '''http_protocol_header_name'''
+reason = '''Standard HTTP header name for the Data API request, fixed by protocol, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''string'''
+literal = '''"application/json"'''
+context = '''const POLYMARKET_DATA_API_CONTENT_TYPE_JSON: &str = "application/json";'''
+classification = '''http_protocol_media_type'''
+reason = '''Standard JSON media type for the Data API request, fixed by protocol, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''string'''
+literal = '''"0"'''
+context = '''const POLYMARKET_DATA_API_POSITIONS_SIZE_THRESHOLD: &str = "0";'''
+classification = '''polymarket_data_api_query_value'''
+reason = '''Fixed Data API positions size-threshold query value pinning the read window, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''string'''
+literal = '''"false"'''
+context = '''const POLYMARKET_DATA_API_POSITIONS_REDEEMABLE: &str = "false";'''
+classification = '''polymarket_data_api_query_value'''
+reason = '''Fixed Data API positions redeemable query value pinning the read window, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''string'''
+literal = '''"TOKENS"'''
+context = '''const POLYMARKET_DATA_API_POSITIONS_SORT_BY: &str = "TOKENS";'''
+classification = '''polymarket_data_api_query_value'''
+reason = '''Fixed Data API positions sort-by enum value defined by the vendor, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''string'''
+literal = '''"DESC"'''
+context = '''const POLYMARKET_DATA_API_POSITIONS_SORT_DIRECTION: &str = "DESC";'''
+classification = '''polymarket_data_api_query_value'''
+reason = '''Fixed Data API positions sort-direction enum value defined by the vendor, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''number'''
+literal = '''0_u32'''
+context = '''let mut offset = 0_u32;'''
+classification = '''polymarket_data_api_pagination_offset_initial'''
+reason = '''Initial pagination offset for the Data API positions walk; algorithmic starting value, not config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''string'''
+literal = '''"user"'''
+context = '''("user".to_string(), user_address.to_string()),'''
+classification = '''polymarket_data_api_query_param_name'''
+reason = '''Fixed Data API query parameter name defined by the vendor, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''string'''
+literal = '''"limit"'''
+context = '''("limit".to_string(), limit.to_string()),'''
+classification = '''polymarket_data_api_query_param_name'''
+reason = '''Fixed Data API query parameter name defined by the vendor, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''string'''
+literal = '''"offset"'''
+context = '''("offset".to_string(), offset.to_string()),'''
+classification = '''polymarket_data_api_query_param_name'''
+reason = '''Fixed Data API query parameter name defined by the vendor, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''string'''
+literal = '''"sizeThreshold"'''
+context = '''"sizeThreshold".to_string(),'''
+classification = '''polymarket_data_api_query_param_name'''
+reason = '''Fixed Data API query parameter name defined by the vendor, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''string'''
+literal = '''"redeemable"'''
+context = '''"redeemable".to_string(),'''
+classification = '''polymarket_data_api_query_param_name'''
+reason = '''Fixed Data API query parameter name defined by the vendor, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''string'''
+literal = '''"sortBy"'''
+context = '''"sortBy".to_string(),'''
+classification = '''polymarket_data_api_query_param_name'''
+reason = '''Fixed Data API query parameter name defined by the vendor, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/polymarket/venue_account_state_source.rs'''
+kind = '''string'''
+literal = '''"sortDirection"'''
+context = '''"sortDirection".to_string(),'''
+classification = '''polymarket_data_api_query_param_name'''
+reason = '''Fixed Data API query parameter name defined by the vendor, not an operator-configured value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"clients.{key}.readiness_probe.chunk_size is only valid when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""'''
+context = '''"clients.{key}.readiness_probe.chunk_size is only valid when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""'''
+classification = '''readiness_probe_validation_diagnostic'''
+reason = '''TOML validation diagnostic for readiness_probe.chunk_size configuration, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''string'''
+literal = '''"clients.{key}.readiness_probe.chunk_observation_window_seconds is only valid when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""'''
+context = '''"clients.{key}.readiness_probe.chunk_observation_window_seconds is only valid when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""'''
+classification = '''readiness_probe_validation_diagnostic'''
+reason = '''TOML validation diagnostic for readiness_probe.chunk_observation_window_seconds configuration, not a runtime value.'''

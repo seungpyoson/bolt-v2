@@ -2,11 +2,14 @@ mod support;
 
 use bolt_v2::{
     bolt_v3_config::{
-        LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, load_bolt_v3_config,
+        DataClientReadinessProbeBookType, LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock,
+        LiveCanaryProofPolicyBlock, LiveCanaryProofTimeInForce, LoadedBoltV3Config,
+        load_bolt_v3_config,
     },
     bolt_v3_live_canary_gate::{
         BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate,
         check_bolt_v3_live_canary_pre_consumption_gate,
+        pre_consumption_operator_evidence_bounded_read_paths,
     },
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness_schema::{
@@ -732,6 +735,384 @@ async fn live_canary_gate_accepts_non_circular_approval_envelope_schema() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_accepts_envelope_bound_gate_session() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the gate-session hash into the envelope (production behavior) and
+    // confirm the gate accepts a gate-session file whose content matches the
+    // sealed envelope value.
+    let envelope = valid_approval_envelope_value(&operator_evidence);
+    assert!(
+        envelope
+            .get("expected_gate_session_sha256")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        "envelope fixture must seal expected_gate_session_sha256"
+    );
+    bind_approval_envelope_value(&mut operator_evidence, envelope);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let report = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("envelope-bound gate session should pass");
+
+    assert_eq!(report.approval_id(), "operator-approved-canary-001");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_gate_session_swap_after_toml_self_hash_update() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the original gate-session hash into the envelope, mirroring an
+    // operator approval of the original gate session.
+    let envelope = valid_approval_envelope_value(&operator_evidence);
+    bind_approval_envelope_value(&mut operator_evidence, envelope);
+
+    // Adversary swaps the gate-session file after approval and updates ONLY the
+    // self-declared TOML hash to match the swapped file. The envelope still
+    // carries the original gate-session hash, so the swap must be rejected.
+    let gate_session_path = std::path::PathBuf::from(
+        operator_evidence
+            .gate_session_path
+            .as_ref()
+            .expect("valid operator evidence should bind gate session"),
+    );
+    let mut gate_session: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&gate_session_path).expect("gate session should read"),
+    )
+    .expect("gate session should parse");
+    gate_session["selected_market"]["selected_at_ms"] = serde_json::json!(987_654_321_u64);
+    let swapped_gate_session_bytes =
+        serde_json::to_vec(&gate_session).expect("gate session should serialize");
+    std::fs::write(&gate_session_path, &swapped_gate_session_bytes)
+        .expect("gate session should rewrite");
+    let swapped_gate_session_sha256 = sha256_hex(&swapped_gate_session_bytes);
+    assert_ne!(
+        Some(&swapped_gate_session_sha256),
+        operator_evidence.expected_gate_session_sha256.as_ref(),
+        "swapped gate session must change the file hash"
+    );
+    // Update only the TOML self-hash so the self-declared check passes; the
+    // envelope hash is intentionally left bound to the original gate session.
+    operator_evidence.expected_gate_session_sha256 = Some(swapped_gate_session_sha256);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("post-approval gate-session swap must fail closed on envelope binding");
+
+    match error {
+        BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch { field, .. } => {
+            assert_eq!(
+                field, "expected_gate_session_sha256",
+                "gate-session swap must be rejected by the envelope binding, got {field}"
+            );
+        }
+        other => panic!("expected approval-envelope gate-session binding rejection, got {other:?}"),
+    }
+}
+
+/// Proof-policy block matching the shared operator-evidence gate session so the
+/// proof-policy path of the live canary gate can be exercised end to end.
+fn proof_policy_for_support_gate_session() -> LiveCanaryProofPolicyBlock {
+    LiveCanaryProofPolicyBlock {
+        enabled: true,
+        policy_kind: "least_bad_strategy_candidate".to_string(),
+        proof_claim: "proof_only".to_string(),
+        executor_strategy_id: "canary-proof-executor-proof".to_string(),
+        strategy_instance_id: "configured_updown_main".to_string(),
+        execution_client_id: "polymarket_main".to_string(),
+        book_type: DataClientReadinessProbeBookType::L2Mbp,
+        book_snapshot_interval_millis: 1_000,
+        time_in_force: LiveCanaryProofTimeInForce::Fok,
+        is_post_only: false,
+        is_reduce_only: false,
+        is_quote_quantity: false,
+        notional_mode: "fixed".to_string(),
+        proof_notional: "1.00".to_string(),
+        candidate_score_source: "proof_source".to_string(),
+        allow_negative_expected_ev: true,
+        rotation_observation_enabled: false,
+        rotation_min_distinct_markets: 1,
+        rotation_max_attempts: 1,
+    }
+}
+
+/// Configures the shared operator-evidence fixture for the proof-policy path:
+/// refreshes the gate-session `created_at_ms` so it passes freshness, writes a
+/// canary proof order-intent that binds the gate session, sets the TOML
+/// self-declared hashes, and rebuilds the approval envelope sealing both the
+/// gate-session and order-intent file hashes (production producer behavior).
+fn configure_proof_policy_evidence(operator_evidence: &mut LiveCanaryOperatorEvidenceBlock) {
+    // Refresh the gate-session file so its freshness check passes on the proof
+    // path, then re-bind the self-declared TOML hash to the refreshed file.
+    let gate_session_path = std::path::PathBuf::from(
+        operator_evidence
+            .gate_session_path
+            .as_ref()
+            .expect("valid operator evidence should bind gate session"),
+    );
+    let mut gate_session: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&gate_session_path).expect("gate session should read"),
+    )
+    .expect("gate session should parse");
+    let now_ms = (current_unix_seconds_for_test() as u64).saturating_mul(1_000);
+    gate_session["created_at_ms"] = serde_json::json!(now_ms);
+    let gate_session_bytes =
+        serde_json::to_vec(&gate_session).expect("gate session should serialize");
+    std::fs::write(&gate_session_path, &gate_session_bytes).expect("gate session should rewrite");
+    operator_evidence.expected_gate_session_sha256 = Some(sha256_hex(&gate_session_bytes));
+
+    // Write a canary proof order-intent bound to the gate session and matching
+    // the proof policy, then bind its self-declared TOML hash.
+    let order_intent_path = gate_session_path
+        .parent()
+        .expect("gate session path should have a parent")
+        .join("canary-proof-order-intent.json");
+    let order_intent = serde_json::json!({
+        "record_kind": "bolt_v3_canary_proof_order_intent",
+        "proof_claim": "proof_only",
+        "strategy_instance_id": "configured_updown_main",
+        "execution_client_id": "polymarket_main",
+        "instrument_id": "configured-condition-UP.POLYMARKET",
+        "order_side": "Buy",
+        "notional": "1.00",
+        "quantity": "2.00",
+        "source_refs": ["a".repeat(64)]
+    });
+    let order_intent_bytes =
+        serde_json::to_vec(&order_intent).expect("order intent should serialize");
+    std::fs::write(&order_intent_path, &order_intent_bytes)
+        .expect("order intent should be written");
+    operator_evidence.canary_proof_order_intent_path =
+        Some(order_intent_path.to_string_lossy().to_string());
+    operator_evidence.canary_proof_order_intent_sha256 = Some(sha256_hex(&order_intent_bytes));
+
+    // Rebuild the envelope so it seals both the refreshed gate-session hash and
+    // the order-intent hash, then rebind the envelope file + consumption proof.
+    let envelope = valid_approval_envelope_value(operator_evidence);
+    bind_approval_envelope_value(operator_evidence, envelope);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_accepts_envelope_bound_canary_proof_order_intent() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    configure_proof_policy_evidence(&mut operator_evidence);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(proof_policy_for_support_gate_session()),
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let report = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("envelope-bound canary proof order intent should pass on the proof path");
+
+    assert_eq!(report.approval_id(), "operator-approved-canary-001");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_canary_proof_order_intent_swap_after_toml_self_hash_update() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    configure_proof_policy_evidence(&mut operator_evidence);
+
+    // Adversary swaps the canary proof order-intent file after approval and
+    // updates ONLY the self-declared TOML hash. The envelope still seals the
+    // original order-intent hash, so the swap must be rejected.
+    let order_intent_path = std::path::PathBuf::from(
+        operator_evidence
+            .canary_proof_order_intent_path
+            .as_ref()
+            .expect("proof policy evidence should bind order intent"),
+    );
+    let mut order_intent: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&order_intent_path).expect("order intent should read"),
+    )
+    .expect("order intent should parse");
+    // Redirect the order to the other side of the market while keeping it a
+    // structurally valid, gate-session-bound proof order intent.
+    order_intent["instrument_id"] = serde_json::json!("configured-condition-DOWN.POLYMARKET");
+    let swapped_order_intent_bytes =
+        serde_json::to_vec(&order_intent).expect("order intent should serialize");
+    std::fs::write(&order_intent_path, &swapped_order_intent_bytes)
+        .expect("order intent should rewrite");
+    let swapped_order_intent_sha256 = sha256_hex(&swapped_order_intent_bytes);
+    assert_ne!(
+        Some(&swapped_order_intent_sha256),
+        operator_evidence.canary_proof_order_intent_sha256.as_ref(),
+        "swapped order intent must change the file hash"
+    );
+    operator_evidence.canary_proof_order_intent_sha256 = Some(swapped_order_intent_sha256);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(proof_policy_for_support_gate_session()),
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("post-approval order-intent swap must fail closed on envelope binding");
+
+    match error {
+        BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch { field, .. } => {
+            assert_eq!(
+                field, "canary_proof_order_intent_sha256",
+                "order-intent swap must be rejected by the envelope binding, got {field}"
+            );
+        }
+        other => {
+            panic!("expected approval-envelope order-intent binding rejection, got {other:?}")
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_missing_envelope_order_intent_binding_on_proof_path() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    configure_proof_policy_evidence(&mut operator_evidence);
+
+    // Strip the order-intent binding from the envelope (a legacy/forged
+    // envelope) while keeping the self-declared TOML hash. The proof path must
+    // fail closed because the envelope binding is mandatory there.
+    let mut envelope = valid_approval_envelope_value(&operator_evidence);
+    envelope
+        .as_object_mut()
+        .expect("approval envelope should be an object")
+        .remove("canary_proof_order_intent_sha256");
+    bind_approval_envelope_value(&mut operator_evidence, envelope);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(proof_policy_for_support_gate_session()),
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("missing envelope order-intent binding must fail closed on the proof path");
+
+    match error {
+        BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field } => {
+            assert_eq!(
+                field, "canary_proof_order_intent_sha256",
+                "missing envelope order-intent binding must fail closed, got {field}"
+            );
+        }
+        other => panic!("expected missing envelope order-intent binding rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_approval_consumption_hash_mismatch() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -1231,25 +1612,21 @@ async fn live_canary_gate_rejects_oversized_approval_consumption_before_reading_
 fn largest_pre_consumption_operator_evidence_file_len(
     evidence: &LiveCanaryOperatorEvidenceBlock,
 ) -> u64 {
-    [
-        Some(evidence.approval_envelope_path.as_str()),
-        Some(evidence.ssm_manifest_path.as_str()),
-        Some(evidence.strategy_input_evidence_path.as_str()),
-        evidence.gate_session_path.as_deref(),
-        Some(evidence.financial_envelope_path.as_str()),
-        Some(evidence.pre_run_state_path.as_str()),
-        Some(evidence.abort_plan_path.as_str()),
-        Some(evidence.approval_nonce_path.as_str()),
-    ]
-    .into_iter()
-    .flatten()
-    .map(|path| {
-        std::fs::metadata(path)
-            .unwrap_or_else(|error| panic!("operator evidence file `{path}` should exist: {error}"))
-            .len()
-    })
-    .max()
-    .expect("operator evidence should include pre-consumption files")
+    // Derive the size bound from the production gate's single source of truth so
+    // a newly-added bounded read (e.g. the `decision_evidence_path` chain) can
+    // never desync the test's size bound from the gate's read accounting and let
+    // a non-consumption file exceed the limit ahead of the consumption read.
+    pre_consumption_operator_evidence_bounded_read_paths(evidence)
+        .into_iter()
+        .map(|path| {
+            std::fs::metadata(path)
+                .unwrap_or_else(|error| {
+                    panic!("operator evidence file `{path}` should exist: {error}")
+                })
+                .len()
+        })
+        .max()
+        .expect("operator evidence should include pre-consumption files")
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -3401,6 +3778,26 @@ fn valid_approval_envelope_value(evidence: &LiveCanaryOperatorEvidenceBlock) -> 
         "approval_not_after_unix_secs": evidence.approval_not_after_unix_seconds,
         "canary_evidence_path_hash": sha256_hex(evidence.canary_evidence_path.as_bytes()),
     });
+    // Seal the operator-approved gate-session and canary proof order-intent
+    // file-content hashes into the envelope whenever the TOML evidence binds
+    // them, mirroring the production producer. This exercises the gate's
+    // envelope-binding check (the envelope, not just the self-declared TOML
+    // hash, must match the live file content).
+    let envelope_object = envelope
+        .as_object_mut()
+        .expect("approval envelope should be an object");
+    if let Some(expected_gate_session_sha256) = &evidence.expected_gate_session_sha256 {
+        envelope_object.insert(
+            "expected_gate_session_sha256".to_string(),
+            serde_json::json!(expected_gate_session_sha256),
+        );
+    }
+    if let Some(canary_proof_order_intent_sha256) = &evidence.canary_proof_order_intent_sha256 {
+        envelope_object.insert(
+            "canary_proof_order_intent_sha256".to_string(),
+            serde_json::json!(canary_proof_order_intent_sha256),
+        );
+    }
     if let Some(strategy_cancel_path) = &evidence.strategy_cancel_path {
         envelope
             .as_object_mut()

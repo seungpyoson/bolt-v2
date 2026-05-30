@@ -223,6 +223,10 @@ struct NoSubmitReferenceQuoteSubscription {
 /// chunk to the next.
 const CHUNK_ADVANCE_TIMER: &str = "bolt-v3-readiness-chunk-advance";
 
+/// SI time-unit conversion factor for turning the configured per-chunk
+/// observation window (seconds) into the nanosecond clock the actor timer uses.
+const NANOS_PER_SECOND: u64 = 1_000_000_000;
+
 /// Live state for a trade chunk-count readiness walk. The probe subscribes one
 /// chunk of the instrument universe at a time (so it never holds more than
 /// `chunk_size` channels at once, staying below the venue's silent delivery
@@ -424,7 +428,7 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
     fn chunk_count_window_ns(&self) -> Option<u64> {
         self.chunk_walk.as_ref().and_then(|walk| {
             walk.chunk_observation_window_seconds
-                .checked_mul(1_000_000_000)
+                .checked_mul(NANOS_PER_SECOND)
         })
     }
 
@@ -4324,9 +4328,9 @@ mod tests {
             book_type: DataClientReadinessProbeBookType::L2Mbp,
             book_snapshot_interval_millis: 1_000,
             time_in_force: LiveCanaryProofTimeInForce::Fok,
-            post_only: false,
-            reduce_only: false,
-            quote_quantity: false,
+            is_post_only: false,
+            is_reduce_only: false,
+            is_quote_quantity: false,
             notional_mode: "fixed".to_string(),
             proof_notional: "5.00".to_string(),
             candidate_score_source: "proof_source".to_string(),

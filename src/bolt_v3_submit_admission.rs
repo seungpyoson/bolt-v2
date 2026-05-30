@@ -254,16 +254,68 @@ pub fn fee_inclusive_admission_notional(notional: Decimal, max_fee_bps: Decimal)
     notional * fee_multiplier
 }
 
+/// Cap-bypass-via-rounding guard for submit paths that carry an operator
+/// intent SEPARATE from the order actually built.
+///
+/// Callers must pass the base notional of the already-rounded order
+/// (`rounded_base_notional`) — i.e. the product of the venue-precision
+/// `Price`/`Quantity` actually submitted — together with the operator-intended
+/// raw notional that authorized the order. Banker's rounding to venue precision
+/// can round a quantity or price UP, so the rounded base notional can exceed the
+/// intended notional. When that happens this helper fails CLOSED: a rounded
+/// order may never debit more than the operator approved, so admission is
+/// refused rather than letting the cap be bypassed by rounding.
+///
+/// On success it returns the fee-inclusive admission notional computed from the
+/// rounded base, so the cap check downstream sees the same cash debit the venue
+/// will incur.
+///
+/// Scope: this guard is required precisely where the operator approves an
+/// explicit `order_intent.notional` BEFORE the venue-precision order is
+/// constructed — currently the canary proof executor. The production strategy
+/// path does NOT use this guard and structurally does not need it: it builds
+/// the venue-precision order first and derives its admission notional from that
+/// already-rounded order (`binary_oracle_edge_taker::submit_admission_request_from_order`,
+/// whose intent is `BoltV3OrderIntentEvidence::from_compiled_order`), so the
+/// strict-`>` cap check in [`BoltV3SubmitAdmissionState::admit`] already
+/// evaluates the exact order handed to the venue — there is no separate
+/// unrounded intent for rounding to bypass. Both paths share the same
+/// fee-inclusive cap arithmetic via [`fee_inclusive_admission_notional`].
+pub fn rounded_order_admission_notional(
+    rounded_base_notional: Decimal,
+    intended_notional: Decimal,
+    max_fee_bps: Decimal,
+) -> Result<Decimal, BoltV3SubmitAdmissionError> {
+    if rounded_base_notional > intended_notional {
+        return Err(BoltV3SubmitAdmissionError::RoundedNotionalExceedsIntent {
+            rounded_base_notional,
+            intended_notional,
+        });
+    }
+    Ok(fee_inclusive_admission_notional(
+        rounded_base_notional,
+        max_fee_bps,
+    ))
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum BoltV3SubmitAdmissionError {
     NotArmed,
     AlreadyArmed,
-    SubmitLifecycleDisallowed { intent: BoltV3SubmitIntentKind },
+    SubmitLifecycleDisallowed {
+        intent: BoltV3SubmitIntentKind,
+    },
     CountCapExhausted,
     NonPositiveNotional,
     NotionalCapExceeded,
+    RoundedNotionalExceedsIntent {
+        rounded_base_notional: Decimal,
+        intended_notional: Decimal,
+    },
     InvalidCanaryProofClaim,
-    EvidenceWriteFailed { reason: String },
+    EvidenceWriteFailed {
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for BoltV3SubmitAdmissionError {
@@ -284,6 +336,13 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             Self::NotionalCapExceeded => {
                 write!(f, "bolt-v3 submit admission notional cap is exceeded")
             }
+            Self::RoundedNotionalExceedsIntent {
+                rounded_base_notional,
+                intended_notional,
+            } => write!(
+                f,
+                "bolt-v3 submit admission rejected: rounded order notional {rounded_base_notional} exceeded operator-intended notional {intended_notional}"
+            ),
             Self::InvalidCanaryProofClaim => write!(
                 f,
                 "bolt-v3 submit admission canary proof claim must be proof_only"

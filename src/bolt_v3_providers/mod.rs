@@ -275,6 +275,17 @@ impl ExternalSnapshotConfirmationPolicy {
     fn retry_delay_ms(self) -> u64 {
         self.retry_delay_initial_ms.min(self.retry_delay_max_ms)
     }
+
+    /// Number of consecutive non-blocking confirmation reads the hard-stop
+    /// loop must observe before it may declare a previously-blocking snapshot
+    /// cleared. Sourced from the configured retry budget (`max_retries`) so the
+    /// confirmation count is config-driven, floored at a single confirmation
+    /// (`EXTERNAL_SNAPSHOT_RETRY_DECREMENT`, the one-read step) so that even a
+    /// zero-retry budget never lets the helper clear an observed exposure
+    /// without at least one corroborating read.
+    fn required_clear_confirmations(self) -> u64 {
+        self.max_retries.max(EXTERNAL_SNAPSHOT_RETRY_DECREMENT)
+    }
 }
 
 pub(crate) async fn fetch_external_snapshot_with_retries<T, E, Fetch, Fut>(
@@ -295,8 +306,23 @@ where
     result
 }
 
+/// Confirm whether an account-state snapshot may be treated as cleared (flat)
+/// before a safety hard-stop trusts it. This is the single source of truth used
+/// by every pre-run hard-stop call site (open orders, positions, collateral).
+///
+/// The loop is MONOTONIC and FAIL-CLOSED: once `is_blocking` has been observed
+/// true for any read, a later empty/non-blocking read does NOT clear it. The
+/// cleared state is declared only when the configured number of consecutive
+/// non-blocking confirmations (`required_clear_confirmations`) is observed with
+/// no blocking read and no fetch error interrupting the run. Any fetch `Err`
+/// inside the confirmation window retains the conservative (blocking) snapshot
+/// rather than returning the latest read, so a transient empty venue response
+/// can never defeat the hard-stop.
+///
+/// If the initial snapshot is already non-blocking the cleared state is declared
+/// immediately — there is no observed exposure to confirm away.
 pub(crate) async fn confirm_external_snapshot_before_hard_stop<T, E, Fetch, Fut, IsBlocking>(
-    mut snapshot: T,
+    snapshot: T,
     policy: ExternalSnapshotConfirmationPolicy,
     mut fetch: Fetch,
     is_blocking: IsBlocking,
@@ -306,18 +332,48 @@ where
     Fut: Future<Output = Result<T, E>>,
     IsBlocking: Fn(&T) -> bool,
 {
+    if !is_blocking(&snapshot) {
+        return snapshot;
+    }
+    // Exposure observed: retain this conservative snapshot and only release it
+    // after a run of consecutive non-blocking confirmations long enough to
+    // satisfy the configured count. A blocking read or a fetch error resets the
+    // run, so the cleared state is declared only when no exposure is observed
+    // throughout the confirming window.
+    let blocking_snapshot = snapshot;
+    let required_clear_confirmations = policy.required_clear_confirmations();
+    // Countdown of consecutive non-blocking reads still required to declare the
+    // snapshot cleared. It is reset back to the full requirement on any blocking
+    // read or fetch error, and decremented by one per consecutive clear read;
+    // reaching `EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES` (zero) means the full run
+    // was observed without interruption. Tracking the requirement as a countdown
+    // keeps every counter value sourced from named loop-control constants.
+    let mut remaining_required_clears = required_clear_confirmations;
     let mut remaining_retries = policy.max_retries;
-    while is_blocking(&snapshot) && remaining_retries != EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES {
+    while remaining_retries != EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES {
         sleep_external_snapshot_confirmation_delay(policy).await;
         match fetch().await {
-            Ok(confirmed_snapshot) => {
-                snapshot = confirmed_snapshot;
+            Ok(confirmed_snapshot) if !is_blocking(&confirmed_snapshot) => {
+                remaining_required_clears -= EXTERNAL_SNAPSHOT_RETRY_DECREMENT;
+                if remaining_required_clears == EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES {
+                    // A long-enough run of consecutive non-blocking reads with
+                    // no interruption: the exposure is genuinely cleared.
+                    return confirmed_snapshot;
+                }
             }
-            Err(_) => break,
+            // A still-blocking read shows the exposure persists, and a failed
+            // read tells us nothing about clearance. Either way, any non-blocking
+            // reads observed so far were transient: reset the requirement and keep
+            // the conservative blocking snapshot.
+            _ => {
+                remaining_required_clears = required_clear_confirmations;
+            }
         }
         remaining_retries -= EXTERNAL_SNAPSHOT_RETRY_DECREMENT;
     }
-    snapshot
+    // The confirmation window closed without a long-enough run of consecutive
+    // non-blocking reads: fail closed by retaining the blocking snapshot.
+    blocking_snapshot
 }
 
 async fn sleep_external_snapshot_confirmation_delay(policy: ExternalSnapshotConfirmationPolicy) {
@@ -1086,5 +1142,284 @@ mod tests {
         ));
         assert!(!display.contains(sentinel), "{display}");
         assert!(!debug.contains(sentinel), "{debug}");
+    }
+
+    mod confirm_external_snapshot_before_hard_stop {
+        use super::*;
+        use std::{cell::RefCell, collections::VecDeque};
+
+        /// A "blocking" snapshot models an account that still has exposure
+        /// (non-empty open orders / active positions); the cleared/flat state is
+        /// the empty snapshot. This mirrors the production `is_blocking`
+        /// predicates at the open-orders and positions call sites.
+        type Snapshot = Vec<u32>;
+
+        const BLOCKING_SNAPSHOT: &[u32] = &[1];
+        const CLEARED_SNAPSHOT: &[u32] = &[];
+
+        fn is_blocking(snapshot: &Snapshot) -> bool {
+            !snapshot.is_empty()
+        }
+
+        /// Confirmation policy with zero retry delays so the helper's sleep
+        /// short-circuits and the test runs without touching the wall clock.
+        /// `max_retries` drives both the read budget and (via
+        /// `required_clear_confirmations`) the consecutive-clear count, exactly
+        /// as the production config does — nothing about the count is hardcoded
+        /// in the test.
+        fn policy_with_max_retries(max_retries: u64) -> ExternalSnapshotConfirmationPolicy {
+            ExternalSnapshotConfirmationPolicy::from_retry_fields(max_retries, 0, 0)
+        }
+
+        /// Drives the confirmation fetch from a fixed sequence of outcomes. A
+        /// fetch beyond the scripted sequence panics, so each test asserts the
+        /// helper consumes exactly the reads it should.
+        struct ScriptedFetch {
+            outcomes: RefCell<VecDeque<Result<Snapshot, ()>>>,
+        }
+
+        impl ScriptedFetch {
+            fn new(outcomes: Vec<Result<Snapshot, ()>>) -> Self {
+                Self {
+                    outcomes: RefCell::new(outcomes.into_iter().collect()),
+                }
+            }
+
+            async fn next(&self) -> Result<Snapshot, ()> {
+                self.outcomes
+                    .borrow_mut()
+                    .pop_front()
+                    .expect("confirmation loop fetched more times than the test scripted")
+            }
+
+            fn remaining(&self) -> usize {
+                self.outcomes.borrow().len()
+            }
+        }
+
+        #[tokio::test]
+        async fn blocking_initial_snapshot_with_zero_retries_stays_blocking() {
+            // No retry budget: the observed exposure can never be confirmed away.
+            let scripted = ScriptedFetch::new(vec![]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(0),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                is_blocking(&result),
+                "exposure must not clear with no retry budget"
+            );
+            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
+            assert_eq!(
+                scripted.remaining(),
+                0,
+                "no confirmation reads should occur"
+            );
+        }
+
+        #[tokio::test]
+        async fn isolated_empty_reads_between_blocking_reads_never_clear() {
+            // The core blocker scenario, generalized: scattered transient empty
+            // venue responses inside the confirmation window must NOT clear an
+            // already-observed exposure. Across a three-read budget the clears
+            // never form a consecutive run long enough to satisfy the required
+            // count, so each isolated empty read is discarded and the hard-stop
+            // is retained. A naive "return the last fetch" helper would have
+            // surfaced the trailing empty read as a false flat.
+            let scripted = ScriptedFetch::new(vec![
+                Ok(CLEARED_SNAPSHOT.to_vec()),
+                Ok(BLOCKING_SNAPSHOT.to_vec()),
+                Ok(CLEARED_SNAPSHOT.to_vec()),
+            ]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(3),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                is_blocking(&result),
+                "isolated transient empty reads must not defeat the hard-stop"
+            );
+            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
+            assert_eq!(
+                scripted.remaining(),
+                0,
+                "the helper must consume the full budget without short-circuiting to clear"
+            );
+        }
+
+        #[tokio::test]
+        async fn blocking_then_empty_then_blocking_resets_and_stays_blocking() {
+            // An empty read followed by a still-blocking read proves the clear
+            // was transient: the consecutive-clear run resets and the budget is
+            // exhausted, so the conservative blocking snapshot is retained.
+            let scripted = ScriptedFetch::new(vec![
+                Ok(CLEARED_SNAPSHOT.to_vec()),
+                Ok(BLOCKING_SNAPSHOT.to_vec()),
+            ]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(2),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                is_blocking(&result),
+                "exposure observed mid-window must keep the hard-stop blocking"
+            );
+            assert_eq!(
+                scripted.remaining(),
+                0,
+                "both scripted reads should be consumed"
+            );
+        }
+
+        #[tokio::test]
+        async fn fetch_error_mid_window_retains_blocking_snapshot() {
+            // A fetch Err inside the confirmation window tells us nothing about
+            // clearance: the helper must retain the conservative blocking
+            // snapshot rather than return the latest read.
+            let scripted = ScriptedFetch::new(vec![Ok(CLEARED_SNAPSHOT.to_vec()), Err(())]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(2),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                is_blocking(&result),
+                "a fetch error must not clear an observed exposure"
+            );
+            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
+            assert_eq!(scripted.remaining(), 0, "the error read should be consumed");
+        }
+
+        #[tokio::test]
+        async fn fetch_error_immediately_retains_blocking_snapshot() {
+            // The very first confirmation read failing must keep blocking, never
+            // surface a non-snapshot/empty result.
+            let scripted = ScriptedFetch::new(vec![Err(()), Err(())]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(2),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                is_blocking(&result),
+                "repeated fetch errors must stay blocking"
+            );
+            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
+        }
+
+        #[tokio::test]
+        async fn blocking_then_consecutive_empty_confirmations_clears() {
+            // The whole confirmation window observes no exposure: every read is
+            // empty, satisfying the configured consecutive-clear count, so the
+            // cleared (flat) snapshot is genuinely declared.
+            let scripted = ScriptedFetch::new(vec![
+                Ok(CLEARED_SNAPSHOT.to_vec()),
+                Ok(CLEARED_SNAPSHOT.to_vec()),
+            ]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(2),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                !is_blocking(&result),
+                "consecutive empty confirmations throughout must clear the snapshot"
+            );
+            assert_eq!(result, CLEARED_SNAPSHOT.to_vec());
+            assert_eq!(
+                scripted.remaining(),
+                0,
+                "exactly two confirmations consumed"
+            );
+        }
+
+        #[tokio::test]
+        async fn genuinely_flat_initial_snapshot_clears_without_reads() {
+            // No exposure observed at all: the cleared state is declared
+            // immediately and no confirmation read is performed.
+            let scripted = ScriptedFetch::new(vec![]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                CLEARED_SNAPSHOT.to_vec(),
+                policy_with_max_retries(3),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                !is_blocking(&result),
+                "an initially-flat snapshot stays flat"
+            );
+            assert_eq!(result, CLEARED_SNAPSHOT.to_vec());
+            assert_eq!(
+                scripted.remaining(),
+                0,
+                "no confirmation reads for a flat snapshot"
+            );
+        }
+
+        #[tokio::test]
+        async fn single_retry_requires_one_clear_confirmation_to_clear() {
+            // max_retries = 1 floors required_clear_confirmations at 1, so a
+            // single empty confirmation read is enough to clear — but only
+            // because the entire window observed no exposure.
+            let scripted = ScriptedFetch::new(vec![Ok(CLEARED_SNAPSHOT.to_vec())]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(1),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                !is_blocking(&result),
+                "one clear read satisfies a one-retry budget"
+            );
+            assert_eq!(result, CLEARED_SNAPSHOT.to_vec());
+            assert_eq!(scripted.remaining(), 0);
+        }
+
+        #[tokio::test]
+        async fn single_retry_blocking_confirmation_stays_blocking() {
+            // max_retries = 1: a still-blocking confirmation read exhausts the
+            // budget without a clear, so the hard-stop is retained.
+            let scripted = ScriptedFetch::new(vec![Ok(BLOCKING_SNAPSHOT.to_vec())]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(1),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                is_blocking(&result),
+                "a persistent exposure must stay blocking"
+            );
+            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
+            assert_eq!(scripted.remaining(), 0);
+        }
     }
 }

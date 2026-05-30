@@ -32,7 +32,7 @@ use crate::{
     bolt_v3_secrets::ResolvedBoltV3Secrets,
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-        BoltV3SubmitLifecyclePolicy, fee_inclusive_admission_notional,
+        BoltV3SubmitLifecyclePolicy, rounded_order_admission_notional,
     },
     strategies::registry::FeeProvider,
 };
@@ -49,9 +49,9 @@ struct CanaryProofExecutorConfig {
     book_type: BookType,
     book_snapshot_interval_millis: NonZeroUsize,
     time_in_force: TimeInForce,
-    post_only: bool,
-    reduce_only: bool,
-    quote_quantity: bool,
+    is_post_only: bool,
+    is_reduce_only: bool,
+    is_quote_quantity: bool,
     order_intent: CanaryProofOrderIntentArtifact,
     fee_provider: Arc<dyn FeeProvider>,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
@@ -78,10 +78,11 @@ impl std::fmt::Debug for CanaryProofExecutor {
 impl CanaryProofExecutor {
     fn new(config: CanaryProofExecutorConfig) -> Self {
         Self {
-            core: StrategyCore::new(StrategyConfig {
-                strategy_id: Some(StrategyId::from(config.executor_strategy_id.as_str())),
-                ..Default::default()
-            }),
+            core: StrategyCore::new(
+                StrategyConfig::builder()
+                    .strategy_id(StrategyId::from(config.executor_strategy_id.as_str()))
+                    .build(),
+            ),
             config,
             submitted: false,
         }
@@ -105,17 +106,38 @@ impl CanaryProofExecutor {
             CanaryProofOrderSide::Sell => OrderSide::Sell,
         };
         let price_decimal = self.config.order_intent.notional / self.config.order_intent.quantity;
+        // Build the venue-precision Price/Quantity FIRST so every downstream
+        // guard evaluates the exact order handed to the venue. Banker's rounding
+        // to instrument precision can round a value UP, so the unrounded intent
+        // is not a safe proxy for the submitted order's notional or size.
+        let price = Price::from_decimal_dp(price_decimal, instrument.price_precision())
+            .context("canary proof order price does not fit selected instrument precision")?;
+        let quantity = Quantity::from_decimal_dp(
+            self.config.order_intent.quantity,
+            instrument.size_precision(),
+        )
+        .context("canary proof order quantity does not fit selected instrument precision")?;
+        let rounded_price_decimal = price.as_decimal();
+        let rounded_quantity_decimal = quantity.as_decimal();
+        let base_notional = rounded_price_decimal * rounded_quantity_decimal;
         let max_fee_bps = self
             .config
             .fee_provider
-            .max_entry_fee_bps(&instrument, price_decimal)
+            .max_entry_fee_bps(&instrument, rounded_price_decimal)
             .context("canary proof submit admission requires a max entry fee bound")?;
         anyhow::ensure!(
             max_fee_bps >= Decimal::ZERO,
             "canary proof submit admission max entry fee bound must be non-negative"
         );
-        let admission_notional =
-            fee_inclusive_admission_notional(self.config.order_intent.notional, max_fee_bps);
+        // Single source of truth: admission sees the rounded order's notional and
+        // fails CLOSED if rounding grew the order past the operator-approved
+        // intended notional (cap-bypass-via-rounding guard).
+        let admission_notional = rounded_order_admission_notional(
+            base_notional,
+            self.config.order_intent.notional,
+            max_fee_bps,
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
         let Some(top_of_book) = self.submit_time_top_of_book(
             instrument_id,
             self.config.order_intent.order_side,
@@ -124,21 +146,16 @@ impl CanaryProofExecutor {
         else {
             return Ok(());
         };
+        // Evaluate the book/liquidity guard against the ROUNDED order so a
+        // rounded-up quantity cannot pass a guard sized for the unrounded intent.
         if !submit_time_book_supports_limit(
             self.config.order_intent.order_side,
-            price_decimal,
-            self.config.order_intent.quantity,
+            rounded_price_decimal,
+            rounded_quantity_decimal,
             top_of_book,
         ) {
             return Ok(());
         }
-        let price = Price::from_decimal_dp(price_decimal, instrument.price_precision())
-            .context("canary proof order price does not fit selected instrument precision")?;
-        let quantity = Quantity::from_decimal_dp(
-            self.config.order_intent.quantity,
-            instrument.size_precision(),
-        )
-        .context("canary proof order quantity does not fit selected instrument precision")?;
         let client_order_id = self.core.order_factory().generate_client_order_id();
         let order = self.core.order_factory().limit(
             instrument_id,
@@ -147,9 +164,9 @@ impl CanaryProofExecutor {
             price,
             Some(self.config.time_in_force),
             None,
-            Some(self.config.post_only),
-            Some(self.config.reduce_only),
-            Some(self.config.quote_quantity),
+            Some(self.config.is_post_only),
+            Some(self.config.is_reduce_only),
+            Some(self.config.is_quote_quantity),
             None,
             None,
             None,
@@ -291,9 +308,9 @@ pub fn register_canary_proof_executor_on_node(
             proof_policy.book_snapshot_interval_millis,
         )?,
         time_in_force: proof_policy_time_in_force_to_nt(proof_policy.time_in_force),
-        post_only: proof_policy.post_only,
-        reduce_only: proof_policy.reduce_only,
-        quote_quantity: proof_policy.quote_quantity,
+        is_post_only: proof_policy.is_post_only,
+        is_reduce_only: proof_policy.is_reduce_only,
+        is_quote_quantity: proof_policy.is_quote_quantity,
         order_intent,
         fee_provider,
         decision_evidence,

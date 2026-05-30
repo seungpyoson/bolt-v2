@@ -1684,9 +1684,15 @@ fn bolt_v3_cli_collects_venue_account_state_source_rejects_active_position() {
 fn bolt_v3_cli_collects_venue_account_state_source_confirms_transient_open_order_before_blocking() {
     let temp = tempdir().expect("tempdir should create");
     let output_path = temp.path().join("venue-account-state-source.json");
+    // The fixture's confirmation loop sets max_retries = 3
+    // (tests/fixtures/bolt_v3/root.toml:162), so the fail-closed snapshot
+    // requires 3 consecutive clear reads after the transient blocking read:
+    // 1 blocking + 3 clears = 4 open-orders bodies.
     let output = run_venue_account_state_source_fixture_with_responses(
         [
             open_orders_body_with_one_live_order(),
+            empty_open_orders_body(),
+            empty_open_orders_body(),
             empty_open_orders_body(),
         ],
         ["[]".into()],
@@ -1752,8 +1758,12 @@ fn bolt_v3_cli_collects_venue_account_state_source_confirms_transient_active_pos
         ]"#,
         DUST_POSITION_THRESHOLD
     );
+    // The fixture's confirmation loop sets max_retries = 3
+    // (tests/fixtures/bolt_v3/root.toml:162), so the fail-closed snapshot
+    // requires 3 consecutive clear reads after the transient blocking read:
+    // 1 blocking + 3 clears = 4 data-api position bodies.
     let output = run_venue_account_state_source_fixture_with_data_api_bodies(
-        [active_positions, "[]".into()],
+        [active_positions, "[]".into(), "[]".into(), "[]".into()],
         &output_path,
     );
 
@@ -2001,8 +2011,14 @@ fn bolt_v3_cli_collects_funding_margin_source_from_ssm_backed_balance_allowance(
 fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_confirms_transient_low_balance_allowance_before_blocking()
  {
     let temp = tempdir().expect("tempdir should create");
+    // The fixture's confirmation loop sets max_retries = 3
+    // (tests/fixtures/bolt_v3/root.toml:162), so the fail-closed snapshot
+    // requires 3 consecutive clear reads after the transient blocking read:
+    // 1 low + 3 sufficient balance-allowance bodies.
     let (clob_url, _clob_request_rx) = spawn_clob_balance_allowance_server_with_bodies([
         balance_allowance_body("0", "0"),
+        balance_allowance_body("1000000000", "999999999000000"),
+        balance_allowance_body("1000000000", "999999999000000"),
         balance_allowance_body("1000000000", "999999999000000"),
     ]);
     let output_path = temp
@@ -2184,8 +2200,14 @@ fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_keeps_blocking_when
 fn bolt_v3_cli_collects_funding_margin_source_confirms_transient_low_balance_allowance_before_blocking()
  {
     let temp = tempdir().expect("tempdir should create");
+    // The fixture's confirmation loop sets max_retries = 3
+    // (tests/fixtures/bolt_v3/root.toml:162), so the fail-closed snapshot
+    // requires 3 consecutive clear reads after the transient blocking read:
+    // 1 low + 3 sufficient balance-allowance bodies.
     let (clob_url, _clob_request_rx) = spawn_clob_balance_allowance_server_with_bodies([
         balance_allowance_body("0", "0"),
+        balance_allowance_body("1000000000", "999999999000000"),
+        balance_allowance_body("1000000000", "999999999000000"),
         balance_allowance_body("1000000000", "999999999000000"),
     ]);
     let output_path = temp.path().join("funding-margin-source.json");
@@ -3817,6 +3839,25 @@ approved_egress_identity_sha256 = "{}"
 }
 
 fn live_canary_with_operator_evidence_toml(evidence: &LiveCanaryOperatorEvidenceBlock) -> String {
+    // Round-trip the blocker-B binding fields verbatim so the reloaded config
+    // re-derives the identical approval envelope hash the CLI emitted. Both are
+    // `Option<String>`; emit the line only when `Some` so a `None` round-trips
+    // back to `None`.
+    let expected_gate_session_sha256_line = match evidence.expected_gate_session_sha256.as_deref() {
+        Some(value) => format!(
+            "expected_gate_session_sha256 = \"{}\"\n",
+            toml_string(value)
+        ),
+        None => String::new(),
+    };
+    let canary_proof_order_intent_sha256_line =
+        match evidence.canary_proof_order_intent_sha256.as_deref() {
+            Some(value) => format!(
+                "canary_proof_order_intent_sha256 = \"{}\"\n",
+                toml_string(value)
+            ),
+            None => String::new(),
+        };
     format!(
         r#"
 [live_canary]
@@ -3842,13 +3883,13 @@ ssm_manifest_path = "{ssm_manifest_path}"
 ssm_manifest_sha256 = "{ssm_manifest_sha256}"
 strategy_input_evidence_path = "{strategy_input_evidence_path}"
 strategy_input_evidence_sha256 = "{strategy_input_evidence_sha256}"
-financial_envelope_path = "{financial_envelope_path}"
+{expected_gate_session_sha256_line}financial_envelope_path = "{financial_envelope_path}"
 financial_envelope_sha256 = "{financial_envelope_sha256}"
 pre_run_state_path = "{pre_run_state_path}"
 pre_run_state_sha256 = "{pre_run_state_sha256}"
 abort_plan_path = "{abort_plan_path}"
 abort_plan_sha256 = "{abort_plan_sha256}"
-canary_evidence_path = "{canary_evidence_path}"
+{canary_proof_order_intent_sha256_line}canary_evidence_path = "{canary_evidence_path}"
 approval_not_before_unix_seconds = {approval_not_before_unix_seconds}
 approval_not_after_unix_seconds = {approval_not_after_unix_seconds}
 approval_nonce_path = "{approval_nonce_path}"

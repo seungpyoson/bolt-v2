@@ -937,8 +937,24 @@ async fn validate_operator_evidence(
     }
 
     validate_operator_evidence_file_hashes(root_path, evidence).await?;
-    let gate_session = validate_operator_gate_session_binding(loaded, root_path, evidence).await?;
-    if live_canary_proof_policy_enabled(block) {
+    // Parse and validate the operator-approval envelope before the
+    // gate-session and canary proof order-intent bindings so those
+    // validators can re-check the live file content against the hashes the
+    // operator sealed into the envelope, not only the self-declared TOML
+    // hash. The envelope is the single authoritative binding of the approval
+    // to the exact order that fires.
+    let proof_policy_enabled = live_canary_proof_policy_enabled(block);
+    let approval_envelope =
+        validate_operator_approval_envelope(root_path, evidence, approval_id).await?;
+    let gate_session = validate_operator_gate_session_binding(
+        loaded,
+        root_path,
+        evidence,
+        &approval_envelope,
+        proof_policy_enabled,
+    )
+    .await?;
+    if proof_policy_enabled {
         validate_operator_gate_session_freshness(
             &gate_session,
             block.reference_quote_max_age_seconds,
@@ -950,6 +966,7 @@ async fn validate_operator_evidence(
             evidence,
             &gate_session,
             max_notional_per_order,
+            &approval_envelope,
         )
         .await?;
     } else {
@@ -967,7 +984,6 @@ async fn validate_operator_evidence(
             max_notional_per_order,
         )?;
     }
-    validate_operator_approval_envelope(root_path, evidence, approval_id).await?;
     validate_operator_approval_consumption(
         root_path,
         evidence,
@@ -1137,6 +1153,8 @@ async fn validate_operator_gate_session_binding(
     loaded: &LoadedBoltV3Config,
     root_path: &Path,
     evidence: &LiveCanaryOperatorEvidenceBlock,
+    approval_envelope: &Phase8OperatorApprovalEnvelopeFile,
+    proof_policy_enabled: bool,
 ) -> Result<EntryReadinessGateSession, BoltV3LiveCanaryGateError> {
     let gate_session_path = required_optional_operator_evidence_field(
         "gate_session_path",
@@ -1153,6 +1171,18 @@ async fn validate_operator_gate_session_binding(
             },
         );
     }
+    // Bind the gate-session file to the operator-approval envelope. The
+    // envelope hash is sealed at approval time and re-validated via the
+    // approval-consumption record; checking the live file content against it
+    // rejects a post-approval gate-session swap even when the self-declared
+    // TOML hash above is updated to match the swapped file. On the
+    // proof-policy path (the path that fires the live canary order) the
+    // envelope binding MUST be present, so the gate fails closed on absence.
+    let envelope_gate_session_sha256 = approval_envelope_bound_sha256(
+        approval_envelope.expected_gate_session_sha256.as_deref(),
+        "expected_gate_session_sha256",
+        proof_policy_enabled,
+    )?;
 
     let path = resolve_configured_path(root_path, "gate_session_path", gate_session_path)?;
     let bytes = read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes)
@@ -1162,11 +1192,22 @@ async fn validate_operator_gate_session_binding(
             path: path.clone(),
             source,
         })?;
-    if sha256_hex(&bytes) != expected_gate_session_sha256 {
+    let actual_gate_session_sha256 = sha256_hex(&bytes);
+    if actual_gate_session_sha256 != expected_gate_session_sha256 {
         return Err(BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch {
             field: "expected_gate_session_sha256",
             path,
         });
+    }
+    if let Some(envelope_gate_session_sha256) = envelope_gate_session_sha256
+        && actual_gate_session_sha256 != envelope_gate_session_sha256
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch {
+                path,
+                field: "expected_gate_session_sha256",
+            },
+        );
     }
     let session: EntryReadinessGateSession = serde_json::from_slice(&bytes).map_err(|source| {
         BoltV3LiveCanaryGateError::OperatorGateSessionParse {
@@ -1238,6 +1279,7 @@ async fn validate_operator_canary_proof_order_intent(
     evidence: &LiveCanaryOperatorEvidenceBlock,
     gate_session: &EntryReadinessGateSession,
     max_notional_per_order: Decimal,
+    approval_envelope: &Phase8OperatorApprovalEnvelopeFile,
 ) -> Result<(), BoltV3LiveCanaryGateError> {
     let proof_policy = block.proof_policy.as_ref().ok_or(
         BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
@@ -1260,6 +1302,22 @@ async fn validate_operator_canary_proof_order_intent(
             },
         );
     }
+    // Bind the canary proof order-intent file — the live order that fires — to
+    // the operator-approval envelope. This validator only runs on the
+    // proof-policy path, so the envelope MUST carry the sealed hash; a missing
+    // value fails closed. Re-checking the live file content against the sealed
+    // hash rejects a post-approval order-intent swap even when the
+    // self-declared TOML hash above is updated to match the swapped file.
+    let envelope_order_intent_sha256 = approval_envelope_bound_sha256(
+        approval_envelope
+            .canary_proof_order_intent_sha256
+            .as_deref(),
+        "canary_proof_order_intent_sha256",
+        true,
+    )?
+    .ok_or(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
+        field: "canary_proof_order_intent_sha256",
+    })?;
     let path = resolve_configured_path(root_path, "canary_proof_order_intent_path", path_value)?;
     let bytes = read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes)
         .await
@@ -1268,11 +1326,20 @@ async fn validate_operator_canary_proof_order_intent(
             path: path.clone(),
             source,
         })?;
-    if sha256_hex(&bytes) != expected_sha256 {
+    let actual_order_intent_sha256 = sha256_hex(&bytes);
+    if actual_order_intent_sha256 != expected_sha256 {
         return Err(BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch {
             field: "canary_proof_order_intent_sha256",
             path,
         });
+    }
+    if actual_order_intent_sha256 != envelope_order_intent_sha256 {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch {
+                path,
+                field: "canary_proof_order_intent_sha256",
+            },
+        );
     }
     let order_intent: CanaryProofOrderIntentArtifact =
         serde_json::from_slice(&bytes).map_err(|source| {
@@ -1367,6 +1434,33 @@ fn required_optional_operator_evidence_field<'a>(
         .ok_or(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field })
 }
 
+/// Resolve an operator-approval-envelope-bound SHA-256 that the gate must
+/// re-check the live file content against.
+///
+/// When the proof policy is enabled — the path that fires the live canary
+/// order — the envelope MUST carry the binding hash, so a missing value fails
+/// closed. On the non-proof path the binding is optional and an absent value
+/// yields `None` (the self-declared TOML hash check still applies). A present
+/// value must be a well-formed SHA-256 hex digest.
+fn approval_envelope_bound_sha256(
+    value: Option<&str>,
+    field: &'static str,
+    proof_policy_enabled: bool,
+) -> Result<Option<String>, BoltV3LiveCanaryGateError> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => {
+            if !is_sha256_hex(value) {
+                return Err(BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape { field });
+            }
+            Ok(Some(value.to_string()))
+        }
+        None if proof_policy_enabled => {
+            Err(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field })
+        }
+        None => Ok(None),
+    }
+}
+
 fn validate_live_canary_gate_session(
     loaded: &LoadedBoltV3Config,
     session: &EntryReadinessGateSession,
@@ -1439,6 +1533,22 @@ pub struct Phase8OperatorApprovalEnvelopeFile {
     pub approval_not_before_unix_secs: i64,
     pub approval_not_after_unix_secs: i64,
     pub canary_evidence_path_hash: String,
+    /// SHA-256 of the entry-readiness gate-session file content that the
+    /// operator approved. This binds the order's market selection to the
+    /// approval: a post-approval gate-session swap is rejected because this
+    /// sealed hash no longer matches the swapped file, even when the
+    /// self-declared `[live_canary.operator_evidence]` TOML hash is updated.
+    /// Mandatory on the proof-policy path; the gate fails closed on absence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_gate_session_sha256: Option<String>,
+    /// SHA-256 of the canary proof order-intent file content that the
+    /// operator approved. This binds the live canary order itself to the
+    /// approval: a post-approval order-intent swap is rejected because this
+    /// sealed hash no longer matches the swapped file, even when the
+    /// self-declared `[live_canary.operator_evidence]` TOML hash is updated.
+    /// Mandatory on the proof-policy path; the gate fails closed on absence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_order_intent_sha256: Option<String>,
     pub strategy_cancel_path_hash: Option<String>,
 }
 
@@ -1468,7 +1578,7 @@ async fn validate_operator_approval_envelope(
     root_path: &Path,
     evidence: &LiveCanaryOperatorEvidenceBlock,
     approval_id: &str,
-) -> Result<(), BoltV3LiveCanaryGateError> {
+) -> Result<Phase8OperatorApprovalEnvelopeFile, BoltV3LiveCanaryGateError> {
     let path = resolve_configured_path(
         root_path,
         "approval_envelope_path",
@@ -1590,7 +1700,7 @@ async fn validate_operator_approval_envelope(
         (None, None) => {}
     }
 
-    Ok(())
+    Ok(envelope)
 }
 
 fn validate_approval_envelope_string_field(
@@ -2061,6 +2171,43 @@ fn operator_evidence_path_fields(
         ),
         ("post_run_hygiene_path", &evidence.post_run_hygiene_path),
     ]
+}
+
+/// Single source of truth for every operator-evidence file the gate reads
+/// under the per-file `max_operator_evidence_file_bytes` bound *before* the
+/// approval-consumption read in [`validate_operator_evidence`].
+///
+/// The approval-consumption read is the last bounded read in the sequence and
+/// is intentionally excluded so callers can size that file independently to
+/// exercise the consumption-specific oversize rejection. Every other bounded
+/// read — the seven hash-binding files (which also cover
+/// `strategy_input_evidence_path` and `approval_envelope_path`, re-read later
+/// in the freshness/envelope checks), the optional `gate_session_path`, the
+/// `decision_evidence_path` chain, and the proof-policy
+/// `canary_proof_order_intent_path` — is enumerated here.
+///
+/// Both the production gate's bounded reads and any test that needs to bound a
+/// non-consumption file below the limit must derive their path set from this
+/// function. Adding a new bounded read elsewhere in the gate without adding it
+/// here is the class of desync that previously let the
+/// `decision_evidence_path` chain exceed the limit ahead of the consumption
+/// read and surface the wrong error variant.
+pub fn pre_consumption_operator_evidence_bounded_read_paths(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Vec<&str> {
+    let mut paths: Vec<&str> = operator_evidence_file_hash_bindings(evidence)
+        .into_iter()
+        .map(|binding| binding.path)
+        .collect();
+    if let Some(gate_session_path) = evidence.gate_session_path.as_deref() {
+        paths.push(gate_session_path);
+    }
+    if let Some(canary_proof_order_intent_path) = evidence.canary_proof_order_intent_path.as_deref()
+    {
+        paths.push(canary_proof_order_intent_path);
+    }
+    paths.push(&evidence.decision_evidence_path);
+    paths
 }
 
 fn operator_evidence_hash_fields(

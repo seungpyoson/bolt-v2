@@ -95,7 +95,7 @@ terminal (use a rolling horizon) and the native annualization is fine.
 **This corrects a #488 premise.** #488 (2026-05-28) asserted "[the MM apparatus] is absent today and
 NautilusTrader does not ship it either (NT is execution/backtest substrate, not a strategy brain)."
 **That is outdated for NT 0.58** (this repo's pin since PR #487). Read first-hand in the NT cargo
-checkout `nautilus_trader-3c6af4345b4d438b/38b912a`:
+checkout at bolt's **pinned NT rev `6e059dc`** (re-verified — examples confirmed present at the pin):
 
 **NT ships, tested + venue-agnostic — REUSE, do not reinvent:**
 - **Grid market-making strategy** — `crates/trading/src/examples/strategies/grid_mm/` (strategy 380
@@ -114,6 +114,10 @@ checkout `nautilus_trader-3c6af4345b4d438b/38b912a`:
 - **VPIN toxicity** — `hurst_vpin_directional/strategy.rs:41-61`: `vpin` + **`signed_vpin`**,
   volume-bucket buy/sell imbalance over `vpin_window` (Volume-synchronized Probability of Informed
   Trading). → *This is the toxicity signal; lift it, don't port market-maker-rs `vpin.rs`.*
+- **`composite_market_maker`** (also at the pin) — quotes around an anchor with `inventory_skew_factor`
+  **plus a `signal_skew_factor`** driven by an external `signal_instrument_id` residual
+  `(signal_mid − baseline)/baseline` (`composite_market_maker/config.rs:38-56`). → *Point the signal at
+  the oracle fair-value and it becomes an oracle-anchored maker natively — the best NT-native base.*
 - Other example strategies: `delta_neutral_vol`, `ema_cross`.
 - **Analysis:** `SharpeRatio`, `SortinoRatio`, `WinRate` (`crates/analysis/src/analyzer.rs:90-91`).
 - **Volatility indicators:** `crates/indicators/src/volatility/` (ATR, DC, fuzzy).
@@ -303,7 +307,7 @@ generalist where one exists; NT-native beats a port where NT has it.
 
 | Instrument | First-cut engine | Specialized upgrade | Key tuning / venue signal |
 |---|---|---|---|
-| **Polymarket binary** | NT `grid_mm` + **oracle-anchored mid** (bolt-v3 fair-value) + (0,1) Instrument price-band | **bs-p logit-space A-S** (Rust reimpl, bound-by-construction) **or GLFT** w/ terminal penalty (expiry flatten) | γ, k; VPIN toxicity gate on oracle-delta; **reward-aware spread** (Polymarket liquidity-rewards quadratic score); skip depth-based (thin books) |
+| **Polymarket binary** | NT **`composite_market_maker`** (signal = oracle fair-value) or `grid_mm` + (0,1) Instrument price-band | **bs-p logit-space A-S** (Rust reimpl, bound-by-construction) **or GLFT** w/ terminal penalty (expiry flatten) | γ, k; VPIN toxicity gate on oracle-delta; **reward-aware spread** (Polymarket liquidity-rewards quadratic score); skip depth-based (thin books) |
 | **Hyperliquid perp** | NT `grid_mm` + A-S/GLFT (`market-maker-rs`) | depth-based / adaptive-spread (deeper books) | k calibrated from fills; **funding-rate** as inventory-skew bias; ref: `tikr-hyperliquid` adapter, HL `basic_adding.py` |
 | **CEX spot/futures** | classic **A-S / GLFT** (`market-maker-rs`) — native habitat | depth-based + adaptive-spread (L2 depth) | maker-rebate-aware spread; latency; rolling-horizon (no terminal) |
 | **Perp DEX (dYdX / Drift)** | oracle-anchored quoting (Drift floating-maker pattern); dYdX v4 CLOB ≈ CEX | A-S/GLFT + funding bias | funding; oracle drift re-center; maker-rewards params (dYdX `v4-chain` rewards module) |
@@ -367,8 +371,8 @@ The shared framework already exists in bolt-v3 — the maker work plugs a quote 
 - Aevo — `https://github.com/aevoxyz/aevo-sdk` (stale ~2yr, no license).
 
 **NautilusTrader-native MM (use first):**
-- **NT 0.58 (our pin, verified local):** Rust example strategies `grid_mm`, `hurst_vpin_directional`, `delta_neutral_vol`, `ema_cross` under `crates/trading/src/examples/strategies/`.
-- **NT `develop` (scout, GitHub — arrives on a future NT bump):** `composite_market_maker` (Rust, inventory + signal-price skew, `tests.rs`) — `…/crates/trading/src/examples/strategies/composite_market_maker`; `examples/backtest/polymarket_simple_quoter.py` (**Polymarket binary quoting**, Python backtest — pattern reference, not pure-Rust); `bitmex_grid_market_maker.py`; grid-MM tutorials for **BitMEX & dYdX** (`https://nautilustrader.io/docs/latest/tutorials/grid_market_maker_bitmex/`).
+- **NT pinned rev `6e059dc` (re-verified at the pin):** Rust example strategies `grid_mm`, `hurst_vpin_directional`, **`composite_market_maker`**, `delta_neutral_vol`, `ema_cross` under `crates/trading/src/examples/strategies/`. **`composite_market_maker` is the best NT-native base for the oracle-anchored maker** — `inventory_skew_factor` + a `signal_skew_factor` on an external signal residual (`config.rs:38-56`); point the signal at the oracle fair-value.
+- **NT develop / Python (reference only, not pure-Rust):** `examples/backtest/polymarket_simple_quoter.py` (**Polymarket binary quoting** pattern); `bitmex_grid_market_maker.py`; grid-MM tutorials for **BitMEX & dYdX** (`https://nautilustrader.io/docs/latest/tutorials/grid_market_maker_bitmex/`).
 - NT backtesting fidelity — `https://nautilustrader.io/docs/latest/concepts/backtesting/` (`FillModel.prob_fill_on_limit` queue-position; L2/L3 matching — *fill realism IS the MM backtest*).
 - NT `PortfolioAnalyzer` — Sharpe/Sortino now Rust-native (`crates/analysis/src/statistics/`).
 
@@ -410,6 +414,36 @@ The shared framework already exists in bolt-v3 — the maker work plugs a quote 
   reimplemented in Rust, not linked).
 - **Per-venue connectors** — bolt-v3 ships Polymarket + a Binance provider; Hyperliquid / perp-DEX
   connectors are net-new (NT adapter or custom). Tracked separately from this strategy survey.
+
+---
+
+## Options-implied vol for fair value — venue + cadence fit (investigated 2026-05-30, verified)
+
+The binary fair-value pricer's only uncertain input is **σ**. Options-implied σ is an alternative to
+bolt's realized σ — but only where a *listed option matches bolt's tenor*. Hard findings:
+
+**Shortest listed option tenor — Deribit / OKX / Binance are all DAILY (08:00 UTC settle); none list
+intraday / 0DTE / hourly options.** NT adapter exposure (pinned rev `6e059dc`): **Deribit CONFIRMED**
+(`subscribe_option_greeks` → `OptionGreeks{mark_iv,bid_iv,ask_iv,δ,γ,ν,θ,ρ}` + DVOL custom data),
+**OKX CONFIRMED** (opt-summary feed, no ρ, no native vol index), **Binance EAPI NOT IMPLEMENTED**
+(adapter is a stub — has the data via `/eapi/v1/mark` + BVOL but NT would have to build the path).
+
+**Cadence fit vs bolt's 1m–4h:**
+| bolt cadence | options-IV usable? |
+|---|---|
+| **1h, 4h** | **yes** — tenor-matched (esp. in the hours before the 08:00 UTC daily expiry); digital fair value readable **model-free off the smile** via Breeden-Litzenberger `P(up@K)=−∂C/∂K` |
+| **15m** | borderline — only near a daily expiry; else fragile term extrapolation |
+| **1m, 5m** | **no** — no listed option near tenor; T→0 extrapolation (θ/γ blow-up); realized-vol is more honest |
+
+**What to collect (Deribit primary, OKX secondary):** front-daily smile (mark+bid+ask IV + δ/γ/ν/θ)
+across strikes around spot + per-strike mark prices (→ model-free digital `−∂C/∂K`) + index/perp price
++ DVOL/BVOL as a 30-day regime feature.
+
+**Bottom line:** options-IV improves fair value **only for 1h/4h markets** (15m near expiry). For the
+default **5m** markets it is *not* a usable input — keep realized-vol. The most accurate route where
+tenor matches is the **model-free digital from the smile (Breeden-Litzenberger), not a BS+single-σ
+plug-in.** This is a *shared* fair-value upgrade (benefits the taker too), gated on trading 1h/4h
+cadence — orthogonal to, and not a blocker for, the maker (which starts on the existing mid).
 
 ---
 

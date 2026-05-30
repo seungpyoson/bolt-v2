@@ -32,7 +32,8 @@ use crate::{
     bolt_v3_secrets::ResolvedBoltV3Secrets,
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-        BoltV3SubmitLifecyclePolicy, rounded_order_admission_notional,
+        BoltV3SubmitLifecyclePolicy, admission_base_notional_from_order,
+        rounded_order_admission_notional,
     },
     strategies::registry::FeeProvider,
 };
@@ -119,7 +120,6 @@ impl CanaryProofExecutor {
         .context("canary proof order quantity does not fit selected instrument precision")?;
         let rounded_price_decimal = price.as_decimal();
         let rounded_quantity_decimal = quantity.as_decimal();
-        let base_notional = rounded_price_decimal * rounded_quantity_decimal;
         let max_fee_bps = self
             .config
             .fee_provider
@@ -129,15 +129,6 @@ impl CanaryProofExecutor {
             max_fee_bps >= Decimal::ZERO,
             "canary proof submit admission max entry fee bound must be non-negative"
         );
-        // Single source of truth: admission sees the rounded order's notional and
-        // fails CLOSED if rounding grew the order past the operator-approved
-        // intended notional (cap-bypass-via-rounding guard).
-        let admission_notional = rounded_order_admission_notional(
-            base_notional,
-            self.config.order_intent.notional,
-            max_fee_bps,
-        )
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
         let Some(top_of_book) = self.submit_time_top_of_book(
             instrument_id,
             self.config.order_intent.order_side,
@@ -175,6 +166,35 @@ impl CanaryProofExecutor {
             None,
             Some(client_order_id),
         );
+        // Single source of truth: derive the admission BASE notional from the
+        // BUILT order through the SAME shared helper the production strategy uses
+        // (`admission_base_notional_from_order`). For a quote-quantity order this
+        // sizes by quote semantics instead of the price*quantity shortcut, which
+        // understates the real cash debit. The side-appropriate top-of-book price
+        // (best ask for a BUY, best bid for a SELL) is the conservative reference
+        // the shared helper pulls the effective price toward.
+        let quote_reference_price =
+            Price::from_decimal_dp(top_of_book.price, instrument.price_precision()).context(
+                "canary proof submit-time book price does not fit selected instrument precision",
+            )?;
+        let base_notional = admission_base_notional_from_order(
+            &order,
+            &instrument,
+            rounded_price_decimal,
+            rounded_quantity_decimal,
+            Some(price),
+            Some(quote_reference_price),
+        )
+        .context("canary proof submit admission could not size the built order's notional")?;
+        // Admission sees the rounded order's notional and fails CLOSED if rounding
+        // grew the order past the operator-approved intended notional
+        // (cap-bypass-via-rounding guard).
+        let admission_notional = rounded_order_admission_notional(
+            base_notional,
+            self.config.order_intent.notional,
+            max_fee_bps,
+        )
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
         let mut intent = BoltV3OrderIntentEvidence::from_compiled_order(
             self.config.executor_strategy_id.clone(),
             BoltV3OrderIntentKind::Entry,
@@ -568,5 +588,217 @@ mod tests {
                 available_quantity: Decimal::new(999, 2),
             },
         ));
+    }
+
+    use nautilus_core::{UUID4, UnixNanos};
+    use nautilus_model::{
+        enums::{AssetClass, ContingencyType, OrderSide, TimeInForce},
+        identifiers::{ClientOrderId, InstrumentId, StrategyId, Symbol, TraderId},
+        instruments::{BinaryOption, InstrumentAny},
+        orders::{LimitOrder, Order, OrderAny},
+        types::{Currency, Price, Quantity},
+    };
+
+    use crate::bolt_v3_submit_admission::{
+        admission_base_notional_from_order, base_quantity_admission_notional,
+    };
+
+    const NANOS_PER_MILLI_U64: u64 = 1_000_000;
+    const TEST_BINARY_OPTION_INSTRUMENT_ID: &str = "TESTBINARY-UP.TESTVENUE";
+
+    fn test_binary_option_instrument() -> InstrumentAny {
+        InstrumentAny::BinaryOption(BinaryOption::new(
+            InstrumentId::from(TEST_BINARY_OPTION_INSTRUMENT_ID),
+            Symbol::from("TESTBINARY-UP"),
+            AssetClass::Alternative,
+            Currency::USDC(),
+            (1_u64.saturating_mul(NANOS_PER_MILLI_U64)).into(),
+            (2_u64.saturating_mul(NANOS_PER_MILLI_U64)).into(),
+            3,
+            2,
+            Price::from("0.001"),
+            Quantity::from("0.01"),
+            Some(ustr::Ustr::from("UP")),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            1.into(),
+            1.into(),
+        ))
+    }
+
+    /// Builds a Limit order exactly the way the canary proof executor does:
+    /// `quote_quantity` toggled by the caller, every other flag fixed. This is the
+    /// same order shape `try_submit_proof_order` hands to the shared sizing helper.
+    fn test_canary_limit_order(
+        instrument_id: InstrumentId,
+        order_side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+        quote_quantity: bool,
+    ) -> OrderAny {
+        OrderAny::Limit(LimitOrder::new(
+            TraderId::from("TESTER-001"),
+            StrategyId::from("CANARYPROOF-001"),
+            instrument_id,
+            ClientOrderId::from("O-CANARYPROOF-0001"),
+            order_side,
+            quantity,
+            price,
+            TimeInForce::Fok,
+            None,
+            false,
+            false,
+            quote_quantity,
+            None,
+            None,
+            None,
+            Some(ContingencyType::NoContingency),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            UUID4::new(),
+            UnixNanos::default(),
+        ))
+    }
+
+    #[test]
+    fn quote_quantity_buy_limit_sizes_by_quote_semantics_not_price_times_quantity() {
+        // The canary proof executor builds a quote-quantity order (it passes
+        // `Some(self.config.is_quote_quantity)` to the factory) but USED to size
+        // admission as `rounded_price * rounded_quantity`, which UNDERSTATES the
+        // real cash debit of a quote-currency-denominated order. It now derives
+        // the notional from the built order through the SAME shared helper the
+        // production strategy uses, sizing by quote semantics.
+        //
+        // BUY Limit, quote quantity 25.00 USDC, limit price 0.50, best ask 0.25
+        // (the side-appropriate top-of-book the canary supplies as the reference):
+        //   effective price = min(0.50, 0.25) = 0.25
+        //   base quantity   = 25.00 / 0.25   = 100.00 shares
+        //   notional        = 100.00 * 1 * last(0.50) = 50.00 USDC
+        // The price*quantity shortcut would yield 0.50 * 25.00 = 12.50 — a 4x
+        // understatement. This assertion FAILS on the pre-change inline math.
+        let instrument = test_binary_option_instrument();
+        let instrument_id = InstrumentId::from(TEST_BINARY_OPTION_INSTRUMENT_ID);
+        let quantity = Quantity::new(25.0, 2);
+        let limit_price = Price::new(0.50, 2);
+        let best_ask = Price::new(0.25, 2);
+        let order =
+            test_canary_limit_order(instrument_id, OrderSide::Buy, quantity, limit_price, true);
+        assert!(order.is_quote_quantity());
+
+        let base_notional = admission_base_notional_from_order(
+            &order,
+            &instrument,
+            limit_price.as_decimal(),
+            quantity.as_decimal(),
+            Some(limit_price),
+            Some(best_ask),
+        )
+        .expect("quote-quantity order with a reference price must size");
+
+        let price_times_quantity = limit_price.as_decimal() * quantity.as_decimal();
+        assert_eq!(
+            price_times_quantity,
+            Decimal::from_str_exact("12.50").expect("control decimal should parse"),
+            "control: the discredited price*quantity shortcut",
+        );
+        assert_ne!(
+            base_notional, price_times_quantity,
+            "quote-quantity sizing must NOT collapse to price*quantity",
+        );
+        assert_eq!(
+            base_notional,
+            Decimal::from_str_exact("50.00").expect("expected quote notional should parse"),
+            "quote-quantity BUY Limit must size by NT effective quote notional",
+        );
+    }
+
+    #[test]
+    fn base_quantity_buy_limit_sizes_by_price_times_quantity_unchanged() {
+        // Invariant guard: base-quantity orders (every shipped config has
+        // is_quote_quantity=false) must size EXACTLY as before — price*quantity,
+        // byte-identical to the historical canary computation.
+        let instrument = test_binary_option_instrument();
+        let instrument_id = InstrumentId::from(TEST_BINARY_OPTION_INSTRUMENT_ID);
+        let quantity = Quantity::new(25.0, 2);
+        let limit_price = Price::new(0.50, 2);
+        let best_ask = Price::new(0.25, 2);
+        let order =
+            test_canary_limit_order(instrument_id, OrderSide::Buy, quantity, limit_price, false);
+        assert!(!order.is_quote_quantity());
+
+        let base_notional = admission_base_notional_from_order(
+            &order,
+            &instrument,
+            limit_price.as_decimal(),
+            quantity.as_decimal(),
+            Some(limit_price),
+            Some(best_ask),
+        )
+        .expect("base-quantity order must always size");
+
+        assert_eq!(
+            base_notional,
+            limit_price.as_decimal() * quantity.as_decimal(),
+            "base-quantity admission notional must remain price*quantity",
+        );
+        assert_eq!(
+            base_notional,
+            base_quantity_admission_notional(limit_price.as_decimal(), quantity.as_decimal()),
+            "base-quantity sizing must come from the single shared base definition",
+        );
+    }
+
+    #[test]
+    fn base_quantity_sizing_ignores_reference_prices_so_callers_agree() {
+        // Both submit call sites pass their own reference prices, but for a
+        // base-quantity order the shared helper must ignore them entirely and
+        // return price*quantity — so a strategy call site (which may have no
+        // top-of-book) and the canary call site (which always has one) agree on
+        // the identical base-quantity notional for identical (price, quantity).
+        let instrument = test_binary_option_instrument();
+        let instrument_id = InstrumentId::from(TEST_BINARY_OPTION_INSTRUMENT_ID);
+        let quantity = Quantity::new(25.0, 2);
+        let limit_price = Price::new(0.50, 2);
+        let order =
+            test_canary_limit_order(instrument_id, OrderSide::Buy, quantity, limit_price, false);
+
+        let canary_like = admission_base_notional_from_order(
+            &order,
+            &instrument,
+            limit_price.as_decimal(),
+            quantity.as_decimal(),
+            Some(limit_price),
+            Some(Price::new(0.25, 2)),
+        )
+        .expect("base-quantity order must size with a reference price present");
+        let strategy_like = admission_base_notional_from_order(
+            &order,
+            &instrument,
+            limit_price.as_decimal(),
+            quantity.as_decimal(),
+            None,
+            None,
+        )
+        .expect("base-quantity order must size without any reference price");
+
+        assert_eq!(
+            canary_like, strategy_like,
+            "base-quantity notional must be independent of reference prices",
+        );
     }
 }

@@ -2,7 +2,14 @@ use crate::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
 };
 use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
+use nautilus_model::{
+    enums::OrderSide,
+    instruments::{Instrument, InstrumentAny},
+    orders::{Order, OrderAny},
+    types::Price,
+};
 use rust_decimal::Decimal;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use crate::bolt_v3_canary_proof_policy::CANARY_PROOF_CLAIM;
@@ -230,12 +237,28 @@ pub enum BoltV3QuoteQuantityOrderSide {
     Other,
 }
 
+/// Floor a quote-quantity order's admission notional at the submitted quote
+/// quantity. For a non-inverse quote-quantity Limit/StopLimit order the order
+/// commits exactly its submitted quote quantity in settlement currency on BOTH
+/// sides, so the per-order cap must never be checked against a smaller value.
+///
+/// The conservative effective-price pull (`min(last, ask)` for a BUY,
+/// `max(last, bid)` for a SELL) overstates the notional in the typical case, but
+/// when the venue rounds the derived base quantity DOWN to size precision NT's
+/// effective notional can land a sub-tick BELOW the committed quote quantity.
+/// The floor is therefore applied to Buy and Sell alike — restricting it to one
+/// side leaves the other side's safety dependent on a precision coincidence
+/// rather than a structural guarantee. Inverse instruments do not denominate the
+/// quote quantity in settlement currency, so the floor is skipped for them.
 pub fn conservative_quote_quantity_admission_notional(
     input: BoltV3QuoteQuantityAdmissionInput,
 ) -> Decimal {
     if input.is_quote_quantity
         && !input.is_inverse
-        && input.order_side == BoltV3QuoteQuantityOrderSide::Sell
+        && matches!(
+            input.order_side,
+            BoltV3QuoteQuantityOrderSide::Buy | BoltV3QuoteQuantityOrderSide::Sell
+        )
         && matches!(
             input.order_kind,
             BoltV3QuoteQuantityOrderKind::Limit | BoltV3QuoteQuantityOrderKind::StopLimit
@@ -246,6 +269,120 @@ pub fn conservative_quote_quantity_admission_notional(
             .max(input.submitted_quote_quantity);
     }
     input.calculated_notional
+}
+
+/// Admission base notional for a BASE-quantity order: the product of the
+/// already-rounded order's price and quantity. This is the single definition of
+/// the base-quantity notional; every submit path (and the base-only test helper)
+/// derives it from here so there is no divergent `price * quantity` copy.
+pub fn base_quantity_admission_notional(order_price: Decimal, order_quantity: Decimal) -> Decimal {
+    order_price * order_quantity
+}
+
+/// Single source of truth for "given a built venue-precision order, its
+/// instrument, and a conservative reference/last price, what is the conservative
+/// admission BASE notional?"
+///
+/// Both submit paths derive their admission notional from a built order through
+/// THIS function so base-quantity and quote-quantity orders are sized
+/// identically everywhere. Divergent per-call-site notional math is forbidden
+/// (NO DUAL PATHS): a price*quantity shortcut UNDERSTATES the real cash debit of
+/// a quote-quantity (quote-currency-denominated) order, understating the
+/// per-order cap.
+///
+/// Contract for the inputs:
+/// - `order_price` / `order_quantity` are the Decimal price and quantity of the
+///   already-rounded order actually handed to the venue. For a BASE-quantity
+///   order the result is exactly `order_price * order_quantity`, unchanged from
+///   the historical per-call-site computation.
+/// - `last_price` is the conservative reference/last price used to value a
+///   quote-quantity order. For a quote-quantity order it MUST be `Some`; when a
+///   caller cannot resolve a reference price it passes `None` and this function
+///   returns `None` so the caller can apply its own degraded fallback. It is
+///   ignored for base-quantity orders.
+/// - `quote_reference_price` is the side-appropriate top-of-book price (best ask
+///   for a BUY, best bid for a SELL) used to pick a conservative effective price
+///   for the quote→base conversion. `None` means no top-of-book is available, in
+///   which case the effective price is the `last_price` (matching the historical
+///   no-quote-tick fallback).
+///
+/// For a quote-quantity, non-inverse Limit/StopLimit order the effective price is
+/// pulled toward the book (`min(last, ask)` for a BUY, `max(last, bid)` for a
+/// SELL) so the quote→base conversion yields the LARGEST base quantity the order
+/// could fill — the conservative direction that never understates the notional.
+/// The result is then floored by [`conservative_quote_quantity_admission_notional`].
+pub fn admission_base_notional_from_order(
+    order: &OrderAny,
+    instrument: &InstrumentAny,
+    order_price: Decimal,
+    order_quantity: Decimal,
+    last_price: Option<Price>,
+    quote_reference_price: Option<Price>,
+) -> Option<Decimal> {
+    if !order.is_quote_quantity() {
+        return Some(base_quantity_admission_notional(
+            order_price,
+            order_quantity,
+        ));
+    }
+    let last_px = last_price?;
+    let effective_price =
+        quote_quantity_effective_price(order, instrument, last_px, quote_reference_price);
+    let effective_quantity = if order.is_quote_quantity() && !instrument.is_inverse() {
+        instrument.calculate_base_quantity(order.quantity(), effective_price)
+    } else {
+        order.quantity()
+    };
+    let calculated_notional = instrument
+        .calculate_notional_value(effective_quantity, last_px, Some(true))
+        .as_decimal();
+    let submitted_quote_quantity = Decimal::from_str(order.quantity().to_string().trim()).ok()?;
+    Some(conservative_quote_quantity_admission_notional(
+        BoltV3QuoteQuantityAdmissionInput {
+            order_kind: match order {
+                OrderAny::Limit(_) => BoltV3QuoteQuantityOrderKind::Limit,
+                OrderAny::StopLimit(_) => BoltV3QuoteQuantityOrderKind::StopLimit,
+                _ => BoltV3QuoteQuantityOrderKind::Other,
+            },
+            order_side: match order.order_side() {
+                OrderSide::Buy => BoltV3QuoteQuantityOrderSide::Buy,
+                OrderSide::Sell => BoltV3QuoteQuantityOrderSide::Sell,
+                _ => BoltV3QuoteQuantityOrderSide::Other,
+            },
+            is_quote_quantity: order.is_quote_quantity(),
+            is_inverse: instrument.is_inverse(),
+            submitted_quote_quantity,
+            calculated_notional,
+        },
+    ))
+}
+
+/// Conservative effective price for the quote→base conversion of a
+/// quote-quantity order. Mirrors the production cache-driven selection: for a
+/// non-inverse Limit/StopLimit order it pulls the price toward the book
+/// (`min(last, ask)` for a BUY, `max(last, bid)` for a SELL) so a smaller
+/// effective price yields a larger base quantity — the conservative direction.
+/// Every other shape, or a missing top-of-book, falls back to `last_price`.
+fn quote_quantity_effective_price(
+    order: &OrderAny,
+    instrument: &InstrumentAny,
+    last_price: Price,
+    quote_reference_price: Option<Price>,
+) -> Price {
+    if !order.is_quote_quantity()
+        || instrument.is_inverse()
+        || !matches!(order, OrderAny::Limit(_) | OrderAny::StopLimit(_))
+    {
+        return last_price;
+    }
+    let Some(quote_reference_price) = quote_reference_price else {
+        return last_price;
+    };
+    match order.order_side() {
+        OrderSide::Buy => last_price.min(quote_reference_price),
+        OrderSide::Sell => last_price.max(quote_reference_price),
+        _ => last_price,
+    }
 }
 
 pub fn fee_inclusive_admission_notional(notional: Decimal, max_fee_bps: Decimal) -> Decimal {

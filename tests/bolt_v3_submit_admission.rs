@@ -426,6 +426,69 @@ fn quote_quantity_inverse_sell_stop_limit_preserves_nt_notional() {
 }
 
 #[test]
+fn quote_quantity_buy_limit_helper_floors_to_submitted_quote_quantity() {
+    // A non-inverse quote-quantity BUY commits exactly the submitted quote
+    // quantity in settlement currency. The conservative effective-price pull
+    // overstates in the typical case, but when the venue rounds the derived base
+    // quantity DOWN (size precision), NT's effective notional can land a sub-tick
+    // below the committed quote quantity. The floor must apply to BUY exactly as
+    // it does to SELL, otherwise the per-order cap is checked against an
+    // understated notional.
+    let notional =
+        conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
+            order_kind: BoltV3QuoteQuantityOrderKind::Limit,
+            order_side: BoltV3QuoteQuantityOrderSide::Buy,
+            is_quote_quantity: true,
+            is_inverse: false,
+            submitted_quote_quantity: Decimal::new(2500, 2),
+            calculated_notional: Decimal::new(249995, 4),
+        });
+
+    assert_eq!(
+        notional,
+        Decimal::new(2500, 2),
+        "BUY Limit admission must not understate the committed quote quantity when base rounding leaves NT notional below it"
+    );
+}
+
+#[test]
+fn quote_quantity_buy_stop_limit_helper_floors_to_submitted_quote_quantity() {
+    let notional =
+        conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
+            order_kind: BoltV3QuoteQuantityOrderKind::StopLimit,
+            order_side: BoltV3QuoteQuantityOrderSide::Buy,
+            is_quote_quantity: true,
+            is_inverse: false,
+            submitted_quote_quantity: Decimal::new(2500, 2),
+            calculated_notional: Decimal::new(249995, 4),
+        });
+
+    assert_eq!(
+        notional,
+        Decimal::new(2500, 2),
+        "BUY StopLimit admission must floor to the committed quote quantity"
+    );
+}
+
+#[test]
+fn quote_quantity_inverse_buy_limit_preserves_nt_notional() {
+    // Inverse instruments do not denominate the quote quantity in settlement
+    // currency, so the floor must stay skipped for an inverse BUY just as it is
+    // for an inverse SELL.
+    let notional =
+        conservative_quote_quantity_admission_notional(BoltV3QuoteQuantityAdmissionInput {
+            order_kind: BoltV3QuoteQuantityOrderKind::Limit,
+            order_side: BoltV3QuoteQuantityOrderSide::Buy,
+            is_quote_quantity: true,
+            is_inverse: true,
+            submitted_quote_quantity: Decimal::new(2500, 2),
+            calculated_notional: Decimal::new(1665, 2),
+        });
+
+    assert_eq!(notional, Decimal::new(1665, 2));
+}
+
+#[test]
 fn quote_quantity_admission_helper_source_fence_blocks_market_tokens() {
     fn contains_forbidden_market_token(source: &str) -> bool {
         source

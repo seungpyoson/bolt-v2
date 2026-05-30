@@ -904,7 +904,7 @@ fn configure_proof_policy_evidence(operator_evidence: &mut LiveCanaryOperatorEvi
         &std::fs::read(&gate_session_path).expect("gate session should read"),
     )
     .expect("gate session should parse");
-    let now_ms = (current_unix_seconds_for_test() as u64).saturating_mul(1_000);
+    let now_ms = current_unix_seconds_for_test().saturating_mul(1_000);
     gate_session["created_at_ms"] = serde_json::json!(now_ms);
     let gate_session_bytes =
         serde_json::to_vec(&gate_session).expect("gate session should serialize");

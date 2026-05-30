@@ -54,9 +54,8 @@ use crate::{
         is_observed_open_side,
     },
     bolt_v3_submit_admission::{
-        BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderKind,
-        BoltV3QuoteQuantityOrderSide, BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind,
-        BoltV3SubmitLifecyclePolicy, conservative_quote_quantity_admission_notional,
+        BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+        admission_base_notional_from_order, base_quantity_admission_notional,
         fee_inclusive_admission_notional,
     },
     strategies::registry::{
@@ -3951,16 +3950,30 @@ impl BinaryOracleEdgeTaker {
             )
         })?;
         let notional = if order.is_quote_quantity() {
-            anyhow::ensure!(
-                self.current_instrument(order.instrument_id()).is_some(),
-                "bolt-v3 submit admission missing instrument context for quote-quantity client_order_id={}",
-                client_order_id
-            );
-            self.quote_quantity_last_price_for_order(order)
-                .and_then(|last_px| self.quote_quantity_submit_notional(order, last_px))
-                .unwrap_or(quantity)
+            let instrument = self.current_instrument(order.instrument_id()).with_context(|| {
+                format!(
+                    "bolt-v3 submit admission missing instrument context for quote-quantity client_order_id={}",
+                    client_order_id
+                )
+            })?;
+            let last_price = self.quote_quantity_last_price_for_order(order);
+            let quote_reference_price = self.quote_quantity_reference_price_for_order(order);
+            // Single source of truth: BOTH submit paths derive the admission base
+            // notional from the built order through this shared helper. `None`
+            // means no reference price could be resolved for a quote-quantity
+            // order — fall back to the raw submitted quote quantity, exactly as
+            // before.
+            admission_base_notional_from_order(
+                order,
+                &instrument,
+                price,
+                quantity,
+                last_price,
+                quote_reference_price,
+            )
+            .unwrap_or(quantity)
         } else {
-            price * quantity
+            base_quantity_admission_notional(price, quantity)
         };
         // Scale the raw notional to a fee-inclusive notional before the
         // admission cap check, using the SAME computation the proof executor
@@ -4018,65 +4031,21 @@ impl BinaryOracleEdgeTaker {
             .map(|last_trade| last_trade.price)
     }
 
-    fn quote_quantity_submit_notional(
+    /// Side-appropriate top-of-book price (best ask for a BUY, best bid for a
+    /// SELL) used by [`admission_base_notional_from_order`] to pick a
+    /// conservative effective price for a quote-quantity order's quote→base
+    /// conversion. `None` when no current quote tick is cached, which the shared
+    /// helper treats as "no top-of-book" and falls back to the last price.
+    fn quote_quantity_reference_price_for_order(
         &self,
         order: &nautilus_model::orders::OrderAny,
-        last_px: Price,
-    ) -> Option<Decimal> {
-        let instrument = self.current_instrument(order.instrument_id())?;
-        let effective_price =
-            self.quote_quantity_effective_price_for_order(order, &instrument, last_px);
-        let effective_quantity = if order.is_quote_quantity() && !instrument.is_inverse() {
-            instrument.calculate_base_quantity(order.quantity(), effective_price)
-        } else {
-            order.quantity()
-        };
-        let notional = instrument
-            .calculate_notional_value(effective_quantity, last_px, Some(true))
-            .as_decimal();
-        let submitted_quote_quantity =
-            Decimal::from_str(order.quantity().to_string().trim()).ok()?;
-        Some(conservative_quote_quantity_admission_notional(
-            BoltV3QuoteQuantityAdmissionInput {
-                order_kind: match order {
-                    OrderAny::Limit(_) => BoltV3QuoteQuantityOrderKind::Limit,
-                    OrderAny::StopLimit(_) => BoltV3QuoteQuantityOrderKind::StopLimit,
-                    _ => BoltV3QuoteQuantityOrderKind::Other,
-                },
-                order_side: match order.order_side() {
-                    OrderSide::Buy => BoltV3QuoteQuantityOrderSide::Buy,
-                    OrderSide::Sell => BoltV3QuoteQuantityOrderSide::Sell,
-                    _ => BoltV3QuoteQuantityOrderSide::Other,
-                },
-                is_quote_quantity: order.is_quote_quantity(),
-                is_inverse: instrument.is_inverse(),
-                submitted_quote_quantity,
-                calculated_notional: notional,
-            },
-        ))
-    }
-
-    fn quote_quantity_effective_price_for_order(
-        &self,
-        order: &nautilus_model::orders::OrderAny,
-        instrument: &InstrumentAny,
-        last_px: Price,
-    ) -> Price {
-        if !order.is_quote_quantity()
-            || instrument.is_inverse()
-            || !matches!(order, OrderAny::Limit(_) | OrderAny::StopLimit(_))
-        {
-            return last_px;
-        }
-
+    ) -> Option<Price> {
         let cache = self.cache();
-        let Some(quote_tick) = cache.quote(&order.instrument_id()) else {
-            return last_px;
-        };
+        let quote_tick = cache.quote(&order.instrument_id())?;
         match order.order_side() {
-            OrderSide::Buy => last_px.min(quote_tick.ask_price),
-            OrderSide::Sell => last_px.max(quote_tick.bid_price),
-            _ => last_px,
+            OrderSide::Buy => Some(quote_tick.ask_price),
+            OrderSide::Sell => Some(quote_tick.bid_price),
+            _ => None,
         }
     }
 
@@ -7133,6 +7102,12 @@ fn submit_admission_request_from_order(
             client_order_id
         )
     })?;
+    // Base-only test helper: it has no strategy cache/instrument context, so it
+    // cannot size quote-quantity orders (that requires the full
+    // `admission_base_notional_from_order` path with an instrument). It is NOT a
+    // divergent copy of the notional math — it reuses the shared base-quantity
+    // definition so a base-quantity order is sized identically here, in the
+    // production strategy, and in the canary proof executor.
     anyhow::ensure!(
         !order.is_quote_quantity(),
         "test submit admission helper requires strategy cache context for quote-quantity orders"
@@ -7144,7 +7119,7 @@ fn submit_admission_request_from_order(
             client_order_id
         )
     })?;
-    let notional = price * quantity;
+    let notional = base_quantity_admission_notional(price, quantity);
 
     Ok(BoltV3SubmitAdmissionRequest {
         strategy_id: intent.strategy_id.clone(),

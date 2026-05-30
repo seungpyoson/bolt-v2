@@ -2,8 +2,11 @@
 
 Decision-grade survey of historical market-data sources for the two BTE fixtures.
 A source becomes backtest-eligible only via an accepted `SourceProofReport`
-([schema](./schema.md)). Surveyed 2026-05-30 across 9 sources (web-cited);
-Tardis pricing personally re-verified, other pricing/license survey-sourced.
+([schema](./schema.md)). Binary-option surveyed + operator-corrected 2026-05-30;
+perps/spot re-surveyed the same day via a 6-angle, 14-agent sweep (76 candidate
+sources) after the first pass under-covered the free/native class. Tardis
+subscription tiers personally verified; the Gate.io S3 archive listed directly;
+other pricing/license survey-sourced (see each report's open-verifications).
 
 - **[schema.md](./schema.md)** — the `SourceProofReport` contract (BTE-015)
 - **[binary-option.md](./binary-option.md)** — Polymarket / Kalshi (BTE-016)
@@ -14,7 +17,7 @@ Tardis pricing personally re-verified, other pricing/license survey-sourced.
 | Fixture | Free history? | L2 history? | Recommended start | Pay later? |
 |---------|--------------|-------------|-------------------|-----------|
 | **binary option** | **free bulk trades + free hourly L2 (pmxt)** | **YES, both venues** — free hourly snapshots; finer L2 paid | free pmxt L2 + bulk trades | **Telonex** (PM tick), **kalshi.com / kalshibacktest** (Kalshi) |
-| **perps/spot** | trades + futures snapshots (Binance, $0) | only paid / self-node | **free Binance/HL** for nimble research | **CoinAPI ~$1/GB** for targeted L2; Tardis only if breadth earns it |
+| **perps/spot** | trades+klines+snapshots, $0 (Binance/Bybit/OKX/Kraken/HL) | **YES — free native L2** (Gate.io, OKX) + Crypto Lake `book_delta_v2` free tier; self-capture for the rest | free **CryptoHFTData** + **OKX/Gate native L2** + **cryptofeed** self-capture | Tardis/CoinAPI only for deep history on a proven strategy |
 
 ## Key facts
 
@@ -37,16 +40,20 @@ internal use but restrict *redistribution* — fine for our own backtesting.
 
 ## Cost posture (decided)
 
-Start free, escalate only when a strategy earns it. Do **not** open with a Tardis
-subscription — for a small scope, CoinAPI's pay-per-GB L2 matches Tardis fidelity
-far cheaper, and free Binance/HL data covers the nimble Python research lane. This
-phasing mirrors the **Python-nimble → Rust-final** model: free data to find a
-promising strategy, paid L2 only to validate its execution before production.
+Start free, escalate only when a strategy earns it. The re-survey corrected the
+first pass's pessimism: **free, turnkey, true-`OrderBookDelta` history exists**
+(Gate.io and OKX native archives; Crypto Lake `book_delta_v2` free tier; Tardis
+free 1st-of-month samples), and free **self-capture** (cryptofeed) covers forward
+deltas on every venue incl. the Korean pair. Paid vendors are a Phase-3
+escalation, not the starting point. This mirrors the **Python-nimble →
+Rust-final** model: free data to find a strategy, paid L2 only to validate
+execution before production.
 
 ```
-Phase 0  free (Binance public, HL archive, Deribit trades)  → Python research / signal sanity
-Phase 1  CoinAPI Flat Files (~$1/GB, pay-per-use)           → targeted L2 for a promising strategy
-Phase 2  Tardis ($350+/mo) — only if breadth justifies      → broad continuous multi-venue L2
+Phase 0  free (Binance Vision + Tardis free 1st-of-month L2)    → smoke fixture: prove NT ingest/replay
+Phase 1  free multi-venue (CryptoHFTData + OKX/Gate native L2)  → months-long depth corpus, $0
+Phase 2  free self-capture (cryptofeed → parquet)              → true tick deltas where a strategy needs them
+Phase 3  paid per-leg (Tardis/CoinAPI/Amberdata) — only earned  → deep historical true L2
 ```
 
 ## Hard constraints to remember
@@ -57,14 +64,26 @@ Phase 2  Tardis ($350+/mo) — only if breadth justifies      → broad continuo
   CME-listed BTC/ETH derivatives).
 - A **snapshot-derived** "incremental" feed (HL, Upbit via Tardis) is
   `DEPTH_SNAPSHOT_REPLAY`, not `L2_REPLAY` — don't overclaim fidelity.
+- **Korean venues** (Upbit, Bithumb) have no native delta channel — full-book
+  snapshots only → `DEPTH_SNAPSHOT_REPLAY` ceiling for free; book must be
+  self-captured forward (cryptofeed) or bought (Tardis Upbit / Amberdata Bithumb).
+- **`OrderBookDepth10`, not deltas:** CryptoHFTData, Bybit ob500, all Hyperliquid,
+  Upbit/Bithumb, Kaiko/Amberdata, ccxt.pro. Only Gate.io/OKX native, Tardis
+  `incremental_book_L2`, Crypto Lake `book_delta_v2`, CoinAPI `limitbook_full`,
+  Binance T_DEPTH, and self-captured diff streams are true `OrderBookDelta`.
 
 ## Verify-before-commit (the weak layer)
 
-Fidelity/coverage findings are strong (doc fetches); prediction-market licensing
-is BD-cleared and Telonex is operator-validated. The remaining unverified items,
-all on the crypto side: (1) CoinAPI per-GB pricing (403'd on re-fetch),
-(2) Tardis ToS internal-use clause, (3) Binance-public data license,
-(4) Hyperliquid data license + true archive start date.
+Fidelity/coverage findings are strong (doc fetches; the Gate.io S3 archive was
+listed directly this session); prediction-market licensing is BD-cleared and
+Telonex is operator-validated. The crypto-side items still open (full list in
+[perps-spot.md](./perps-spot.md#open-verifications-the-weak-layer)):
+(1) **delta-vs-snapshot column schema** of the two free native L2 archives —
+confirm by decompressing one Gate.io / OKX file; (2) **commercial/redistribution
+license** for every nominally-free exchange archive (none publishes a formal one);
+(3) paid-vendor pricing (CoinAPI/Kaiko/Amberdata `contact_sales`; Tardis bulk
+quote); (4) Bybit ob500 per-symbol book start date; (5) Crypto Lake free-tier
+`book_delta_v2` inclusion; (6) Dwellir HL raw-diffs authenticity before any buy.
 
 ## Method
 

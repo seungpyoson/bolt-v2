@@ -139,6 +139,14 @@ The backtesting **engine** is built in a separate effort (Epic #437/#438, the BT
 
 ## Open Decisions / NEEDS-VERIFY (post-investigation)
 
-- **Pre-registered P0 thresholds — working default = "Balanced" (the one risk call that is the user's; confirm or adjust before the run, not blocking now since P0 is gated on BTE).** Lock all five before the run: (1) **net edge > 0 at 95% confidence** (bootstrap over resolved markets) — the floor; (2) **net edge ≥ 1.5× round-trip fees** (robust to fee changes); (3) **adverse-selection cost ≤ 50% of gross captured spread**; (4) **≥ N simulated passive fills across ≥ M resolved markets** for power; (5) **≥ K resolved markets in the corpus** — if the sparse ~3-week lake can't reach K, that itself is a STOP / expand-data signal. N/M/K are locked *after* the corpus build reveals what the lake holds but *before* any scoring (still pre-registered). Concrete N/M/K and the exact fee multiple need the fee schedule.
+- **Pre-registered P0 thresholds — TWO bars, locked (user 2026-05-31: "conduct balanced and strict and compare").** P0 runs **once**; the single net-edge distribution is scored against **both** gates — the comparison reports clears-Balanced / clears-Strict / neither, which measures edge robustness. Shared floor for both: net edge > 0 with a statistical-significance test (bootstrap over resolved markets); power floor ≥ N simulated passive fills across ≥ M resolved markets; corpus floor ≥ K resolved markets (if the sparse ~3-week lake can't reach K, that is itself a STOP / expand-data signal, not a fail). The two bars differ on three dials:
+
+  | Dial | Balanced | Strict |
+  |---|---|---|
+  | Confidence that net edge > 0 | 95% | 99% |
+  | Net edge vs round-trip fees | ≥ 1.5× | ≥ 2× |
+  | Adverse-selection ≤ % of gross spread | ≤ 50% | ≤ 35% |
+
+  N/M/K and the exact fee figures are locked *after* the corpus build reveals what the lake holds but *before* any scoring (still pre-registered, not fitted). The fee numbers need the venue fee schedule.
 - **NT ExecutionModel fill realism on a mid/top-only book** — source-prove NT's passive-fill model is adequate, or justify a documented fill assumption (no custom FillSim without NT-insufficiency proof). The no-L2-queue limitation (B) is the binding constraint here.
 - **GM/CG parameter estimators** (informed-trade probability, adverse-selection magnitude) and their inputs from the corpus — defined in W3, but the estimator's data needs must be confirmed present in the corpus during P0.

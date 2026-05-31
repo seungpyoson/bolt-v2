@@ -839,8 +839,7 @@ pub fn market_selection_candidate_windows(
 /// inputs so the strategy treats the market as un-priceable rather
 /// than acting on a step-function probability.
 pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
-    if !inputs.spot_price.is_finite()
-        || !is_positive_finite(inputs.spot_price)
+    if !is_positive_finite(inputs.spot_price)
         || !is_positive_finite(inputs.strike_price)
         || !is_positive_finite(inputs.realized_vol)
         || !inputs.pricing_kurtosis.is_finite()

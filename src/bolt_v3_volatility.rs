@@ -15,14 +15,14 @@
 use std::collections::VecDeque;
 
 use crate::bolt_v3_numeric::{
-    MILLIS_PER_SECOND_U64, POWER_OF_TWO, SECONDS_PER_YEAR_F64, ZERO_F64, is_positive_finite,
+    MILLIS_PER_SECOND_F64, MILLIS_PER_SECOND_U64, POWER_OF_TWO, SECONDS_PER_YEAR_F64, ZERO_F64,
+    is_positive_finite,
 };
 
 const MIN_OBSERVATION_COUNT: u64 = 1;
 const INITIAL_COUNTER_U64: u64 = 0;
 const INITIAL_COUNTER_USIZE: usize = 0;
 const COUNTER_INCREMENT: usize = 1;
-const MILLIS_PER_SECOND_F64: f64 = 1_000.0;
 
 /// Runtime view of the volatility-window knobs the estimator needs.
 ///

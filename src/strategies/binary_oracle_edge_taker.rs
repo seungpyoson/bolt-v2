@@ -857,6 +857,16 @@ impl SignedTradeFlow {
 
     fn observe(&mut self, trade: &TradeTick) {
         let ts_ms = trade.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        // Reject non-monotonic observations, mirroring `RealizedVolEstimator`: a
+        // timestamp at or before the latest retained sample would break the
+        // oldest-first ordering and the time-window eviction cutoff.
+        if self
+            .samples
+            .back()
+            .is_some_and(|previous| ts_ms <= previous.ts_ms)
+        {
+            return;
+        }
         self.samples.push_back(SignedTrade {
             ts_ms,
             aggressor: trade.aggressor_side,
@@ -1367,9 +1377,11 @@ impl PricingState {
     /// Reads the still-current `fast_spot` as the previous observation, before
     /// `observe_reference_quote` overwrites it. The single-step relative move is
     /// `m = (new_price / prev_price - 1).abs()`; when `m >=
-    /// spike_return_threshold` the cooldown deadline is pushed to
-    /// `new_observed_ts_ms + spike_cooldown_secs * MILLIS_PER_SECOND_U64`. With no
-    /// valid previous observation there is no spike. This is an additive read of
+    /// spike_return_threshold` the cooldown deadline is extended to the later of
+    /// its current value and `new_observed_ts_ms + spike_cooldown_secs *
+    /// MILLIS_PER_SECOND_U64`, so an out-of-order quote can never retract an
+    /// active cooldown. With no valid previous observation there is no spike.
+    /// This is an additive read of
     /// previous vs new and does not alter `fast_spot` or realized-vol behavior.
     fn detect_reference_spike(
         &mut self,
@@ -1385,11 +1397,16 @@ impl PricingState {
         }
         let relative_move = (quote.price / previous.price - UNIT_F64).abs();
         if relative_move >= spike_return_threshold {
-            self.spike_until_ms = Some(
-                quote
-                    .observed_ts_ms
-                    .saturating_add(spike_cooldown_secs.saturating_mul(MILLIS_PER_SECOND_U64)),
-            );
+            let new_deadline = quote
+                .observed_ts_ms
+                .saturating_add(spike_cooldown_secs.saturating_mul(MILLIS_PER_SECOND_U64));
+            // Fail closed: the cooldown deadline only ever extends. An
+            // out-of-order spike carrying an earlier timestamp must never shorten
+            // an active cooldown and re-enable entry during volatility.
+            self.spike_until_ms = Some(match self.spike_until_ms {
+                Some(existing) => existing.max(new_deadline),
+                None => new_deadline,
+            });
         }
     }
 
@@ -13316,6 +13333,61 @@ mod tests {
     }
 
     #[test]
+    fn signed_trade_flow_drops_out_of_order_and_duplicate_timestamps() {
+        // The buffer doc promises samples "oldest first" and that it mirrors
+        // RealizedVolEstimator, which rejects non-monotonic observations. A trade
+        // whose timestamp is not strictly greater than the latest retained sample
+        // would otherwise corrupt ordering and the time-window eviction cutoff, so
+        // it must be dropped.
+        let mut config = test_strategy().config.clone();
+        config.trade_flow_window_secs = 600;
+        config.trade_flow_max_samples = 100;
+        let mut flow = SignedTradeFlow::from_config(&config);
+
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.50,
+            1.0,
+            AggressorSide::Buyer,
+            1_000,
+        ));
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.51,
+            1.0,
+            AggressorSide::Buyer,
+            2_000,
+        ));
+        // Out-of-order: an earlier timestamp than the latest retained sample.
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.52,
+            1.0,
+            AggressorSide::Seller,
+            1_500,
+        ));
+        // Duplicate: equal to the latest retained timestamp.
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.53,
+            1.0,
+            AggressorSide::Seller,
+            2_000,
+        ));
+
+        assert_eq!(flow.len(), 2);
+        assert_eq!(
+            flow.samples()
+                .iter()
+                .map(|trade| trade.ts_ms)
+                .collect::<Vec<_>>(),
+            vec![1_000, 2_000],
+            "out-of-order and duplicate-timestamp trades must be dropped to keep \
+             the buffer monotonic"
+        );
+    }
+
+    #[test]
     fn signed_trade_flow_evicts_by_window_then_caps_by_max_samples() {
         // Window eviction: a 10-second window drops trades older than now - window.
         let mut window_config = test_strategy().config.clone();
@@ -14286,6 +14358,50 @@ mod tests {
         assert_eq!(
             strategy.pricing.spike_until_ms, None,
             "no previous observation means no spike"
+        );
+    }
+
+    #[test]
+    fn spike_cooldown_deadline_only_extends_never_retracts() {
+        // The spike cooldown is a fail-closed safety gate: an out-of-order spike
+        // quote carrying an earlier timestamp must never shorten an active
+        // cooldown (which would prematurely re-enable entry during volatility).
+        let mut strategy = ready_to_trade_strategy();
+
+        // Pre-arm an active cooldown deadline at 7_000ms with a seeded baseline.
+        strategy.pricing.spike_until_ms = Some(7_000);
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
+
+        // Out-of-order spike: 100 -> 130 (30% >= 5% threshold) at an earlier ts
+        // (1_500ms). Its naive deadline 1_500 + 5_000 = 6_500ms is before the
+        // active 7_000ms and must not retract it.
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 130.0, 1_500),
+            strategy.config.lead_agreement_min_corr,
+            strategy.config.lead_jitter_max_ms,
+            strategy.config.spike_guard_return_threshold,
+            strategy.config.spike_guard_cooldown_secs,
+        );
+        assert_eq!(
+            strategy.pricing.spike_until_ms,
+            Some(7_000),
+            "an out-of-order spike must not shorten an active cooldown deadline"
+        );
+
+        // A later spike further into the future extends the deadline forward.
+        // Reset the baseline so detection is independent of eligibility chaining.
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 130.0, 4_000),
+            strategy.config.lead_agreement_min_corr,
+            strategy.config.lead_jitter_max_ms,
+            strategy.config.spike_guard_return_threshold,
+            strategy.config.spike_guard_cooldown_secs,
+        );
+        assert_eq!(
+            strategy.pricing.spike_until_ms,
+            Some(9_000),
+            "a later spike (ts 4_000 + 5s) must extend the deadline to 9_000ms"
         );
     }
 

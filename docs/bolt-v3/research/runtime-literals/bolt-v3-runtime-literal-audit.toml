@@ -3737,14 +3737,6 @@ classification = "time_unit_conversion"
 reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
 
 [[allowed]]
-path = "src/bolt_v3_volatility.rs"
-kind = "number"
-literal = '''1_000.0'''
-context = '''const MILLIS_PER_SECOND_F64: f64 = 1_000.0;'''
-classification = "time_unit_conversion"
-reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
-
-[[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "number"
 literal = '''1_000_000'''

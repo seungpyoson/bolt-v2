@@ -4041,8 +4041,8 @@ default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
 bypass = false
-max_order_submit_rate = "100/00:01:00"
-max_order_modify_rate = "100/00:01:00"
+max_order_submit_rate = "40/00:01:00"
+max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
 graceful_shutdown_on_error = false
@@ -4471,8 +4471,8 @@ default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
 bypass = false
-max_order_submit_rate = "100/00:01:00"
-max_order_modify_rate = "100/00:01:00"
+max_order_submit_rate = "40/00:01:00"
+max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
 graceful_shutdown_on_error = false
@@ -5263,15 +5263,15 @@ fn rejects_invalid_nt_risk_rate_limit_strings() {
 
     for (submit_rate, modify_rate) in [
         ("0/00:00:01", "100/00:00:00"),
-        ("100", "100/00:01:00"),
-        ("abc/00:00:01", "100/00:01:00"),
-        ("100/00:01", "100/00:01:00"),
-        ("100/00:00:01:00", "100/00:01:00"),
-        ("100/00:60:00", "100/00:01:00"),
-        ("100/00:00:60", "100/00:01:00"),
+        ("100", "40/00:01:00"),
+        ("abc/00:00:01", "40/00:01:00"),
+        ("100/00:01", "40/00:01:00"),
+        ("100/00:00:01:00", "40/00:01:00"),
+        ("100/00:60:00", "40/00:01:00"),
+        ("100/00:00:60", "40/00:01:00"),
     ] {
         let mutated = replace_in_binance_reference_fixture(
-            "max_order_submit_rate = \"100/00:01:00\"\nmax_order_modify_rate = \"100/00:01:00\"",
+            "max_order_submit_rate = \"40/00:01:00\"\nmax_order_modify_rate = \"40/00:01:00\"",
             &format!(
                 "max_order_submit_rate = \"{submit_rate}\"\nmax_order_modify_rate = \"{modify_rate}\""
             ),
@@ -5309,12 +5309,15 @@ fn rejects_invalid_nt_risk_rate_limit_strings() {
 fn rejects_nt_submit_rate_above_polymarket_egress_cap() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    // The Polymarket REST egress ceiling is 100/min (NT HTTP_RATE_LIMIT). A
-    // submit throttle above it would block at egress (stale quotes) instead of
-    // emitting a loud OrderDenied, so it must fail closed at config load.
+    // The Polymarket REST egress ceiling is 100/min (NT HTTP_RATE_LIMIT), and a
+    // single order command issues up to 2 REST requests (market submit =
+    // get_book + post_order), so the order-rate ceiling is 50/min (50 * 2 = 100
+    // = the cap). A submit rate of 51/min over-drives egress (51 * 2 = 102 >
+    // 100) and would block at egress (stale quotes) instead of emitting a loud
+    // OrderDenied, so it must fail closed at config load.
     let mutated = replace_in_fixture_root(
-        "max_order_submit_rate = \"100/00:01:00\"",
-        "max_order_submit_rate = \"101/00:01:00\"",
+        "max_order_submit_rate = \"40/00:01:00\"",
+        "max_order_submit_rate = \"51/00:01:00\"",
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("over-cap submit-rate fixture should parse");
@@ -5331,9 +5334,13 @@ fn rejects_nt_submit_rate_above_polymarket_egress_cap() {
 fn rejects_nt_modify_rate_above_polymarket_egress_cap() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
+    // The Polymarket REST egress ceiling is 100/min (NT HTTP_RATE_LIMIT), and a
+    // single order command issues up to 2 REST requests, so the order-rate
+    // ceiling is 50/min (50 * 2 = 100 = the cap). A modify rate of 51/min
+    // over-drives egress (51 * 2 = 102 > 100), so it must fail closed.
     let mutated = replace_in_fixture_root(
-        "max_order_modify_rate = \"100/00:01:00\"",
-        "max_order_modify_rate = \"200/00:01:00\"",
+        "max_order_modify_rate = \"40/00:01:00\"",
+        "max_order_modify_rate = \"51/00:01:00\"",
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("over-cap modify-rate fixture should parse");
@@ -5350,17 +5357,45 @@ fn rejects_nt_modify_rate_above_polymarket_egress_cap() {
 fn accepts_nt_order_rates_at_polymarket_egress_cap() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    // 100/00:01:00 == 100/min == NT HTTP_RATE_LIMIT; the boundary value is
-    // accepted because the ceiling check is inclusive.
+    // The Polymarket REST egress ceiling is 100/min (NT HTTP_RATE_LIMIT), and a
+    // single order command issues up to 2 REST requests (market submit =
+    // get_book + post_order), so the order-rate ceiling is 50/min: 50/min * 2
+    // REST = 100 = the cap. The boundary value is accepted because the ceiling
+    // check is inclusive.
     let source = replace_in_fixture_root(
-        "max_order_submit_rate = \"100/00:01:00\"",
-        "max_order_submit_rate = \"100/00:01:00\"",
+        "max_order_submit_rate = \"40/00:01:00\"",
+        "max_order_submit_rate = \"50/00:01:00\"",
     );
     let root: BoltV3RootConfig = toml::from_str(&source).expect("at-cap fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
         !messages.iter().any(|m| m.contains("REST egress cap")),
         "order rates at exactly the venue egress cap must be accepted: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_old_100_per_min_rate_now_overdrives_polymarket_fanout() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // Regression guard for the per-order-command REST fanout the reconciliation
+    // now applies. The old order-rate ceiling was the raw 100/min REST cap, but
+    // a single Polymarket order command issues up to 2 REST requests (market
+    // submit = get_book + post_order), so 100/min order commands = 200 REST/min
+    // = 2x the 100/min cap. The order-rate ceiling is therefore 50/min, and the
+    // previously-accepted 100/00:01:00 value must now fail closed.
+    let mutated = replace_in_fixture_root(
+        "max_order_submit_rate = \"40/00:01:00\"",
+        "max_order_submit_rate = \"100/00:01:00\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("legacy 100/min submit-rate fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("max_order_submit_rate")
+            && m.contains("POLYMARKET")
+            && m.contains("REST egress cap")),
+        "the legacy 100/min order rate now over-drives the 2x Polymarket REST fanout (100 * 2 = 200 > 100) and must fail closed: {messages:#?}"
     );
 }
 
@@ -5372,7 +5407,7 @@ fn rejects_nt_rate_limit_string_whose_interval_overflows_u64() {
     // computation is checked, so this must surface a loud validation message
     // instead of panicking (debug) or wrapping to a bogus interval (release).
     let mutated = replace_in_fixture_root(
-        "max_order_submit_rate = \"100/00:01:00\"",
+        "max_order_submit_rate = \"40/00:01:00\"",
         "max_order_submit_rate = \"1/9999999999999999999:00:00\"",
     );
     let root: BoltV3RootConfig =
@@ -5391,14 +5426,17 @@ fn rejects_nt_submit_rate_above_egress_cap_under_dual_u64_saturation() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     // Hand-verified dual-saturation vector: limit = 5e17, interval_seconds =
-    // 51388888888889 * 3600 = 185000000000000400 (~1.85e17, fits u64). The true
-    // rate is 5e17 * 60 / 1.85e17 ≈ 162/min, above the 100/min POLYMARKET cap.
+    // 51388888888889 * 3600 = 185000000000000400 (~1.85e17, fits u64). This is
+    // a u128-overflow regression vector, not a boundary value, so the fanout
+    // derate is irrelevant: the raw rate already saturates the REST cap. The
+    // true rate is 5e17 * 60 / 1.85e17 ≈ 162/min, far above the 100/min
+    // POLYMARKET REST egress cap regardless of the 2x order-command fanout.
     // Under the old u64-saturating comparison both sides saturate to u64::MAX
     // (5e17*60 = 3e19 and 100*1.85e17 = 1.85e19 both exceed u64::MAX), so
     // MAX > MAX is false and the over-cap rate was wrongly accepted. The u128
     // comparison computes the true products (3e19 > 1.85e19) and rejects it.
     let mutated = replace_in_fixture_root(
-        "max_order_submit_rate = \"100/00:01:00\"",
+        "max_order_submit_rate = \"40/00:01:00\"",
         "max_order_submit_rate = \"500000000000000000/51388888888889:00:00\"",
     );
     let root: BoltV3RootConfig =

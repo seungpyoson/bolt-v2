@@ -86,6 +86,18 @@ pub const KEY: &str = "POLYMARKET";
 /// the NT adapter's own quota constant so bolt-v3 and NT share one source of
 /// truth for the venue capability.
 pub const REST_EGRESS_CAP_PER_MINUTE: u32 = HTTP_RATE_LIMIT;
+/// Worst-case REST requests a single NT order command issues against Polymarket,
+/// used to derate the command-rate ceiling so a config cannot pass validation
+/// yet over-drive the venue's REST quota. Taken from the pinned NT adapter
+/// (`adapters/polymarket/src/execution/submitter.rs`): a MARKET submit issues
+/// `get_book` + `post_order` = 2 requests; a LIMIT submit issues 1; a modify
+/// issues 0 (rejected locally). The global submit/modify throttle does not
+/// distinguish order type, so the worst case (2) is the only sound bound — and
+/// the production strategy fires market exits, so this path is real. Excludes
+/// transient RetryManager retries and non-submit calls (cancels, status,
+/// readiness/account probes); the full shared REST budget is the venue
+/// egress-capability contract tracked in #501.
+pub const MAX_REST_REQUESTS_PER_ORDER_COMMAND: u32 = 2;
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
 const URL_SAFE_BASE64_BLOCK_WIDTH: usize = 4;
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {

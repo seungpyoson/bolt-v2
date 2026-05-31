@@ -1009,34 +1009,50 @@ fn validate_rate_limit_string(value: &str) -> Result<(u64, u64), String> {
 }
 
 /// Reconciles the global NT RiskEngine order submit/modify throttle against the
-/// tightest configured trading-venue REST egress ceiling.
+/// tightest configured trading-venue REST egress ceiling, derated by the venue's
+/// worst-case per-order-command REST request fanout.
 ///
 /// The RiskEngine throttle counts order *commands* while the venue HTTP quota
-/// counts REST *requests*: a submit rate above the venue ceiling therefore does
-/// not reject early with a loud `OrderDenied`; it blocks at egress (added
-/// latency, stale reference quotes) — a silent failure on a live-money path.
-/// Rejecting it at config load keeps the policy fail-loud regardless of the
-/// rendered deploy-time value, which is not otherwise knowable from the repo.
+/// counts REST *requests*, and a single command can issue more than one request
+/// (a Polymarket market submit = `get_book` + `post_order` = 2). A submit rate at
+/// the raw per-minute cap therefore over-drives the venue's request quota by the
+/// fanout factor; the excess does not reject early with a loud `OrderDenied` — it
+/// blocks at egress (added latency, stale reference quotes), a silent failure on
+/// a live-money path. Reconciling `limit * fanout` against the cap at config load
+/// keeps the policy fail-loud regardless of the rendered deploy-time value, which
+/// is not otherwise knowable from the repo.
 ///
-/// NOTE (tier-1): this guards submit/modify against the ceiling only. The full
-/// shared REST budget (submits + cancels + status queries + readiness/account
-/// probes) is the venue-capability contract tracked in #488.
+/// NOTE (tier-1): this derates submit/modify against the per-bucket ceiling using
+/// the deterministic worst-case per-command fanout only. The full shared REST
+/// budget — transient retries, cancels, status queries, readiness/account probes,
+/// and the fact that CLOB and Gamma are *separate* per-client buckets — is the
+/// venue egress-capability contract tracked in #501.
 fn validate_order_rate_within_venue_egress(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();
-    // Fail closed on any execution venue whose REST egress ceiling bolt-v3 does
-    // not model: skipping it silently would let an unbounded submit rate through
-    // on a venue we cannot reconcile against. Iterate the keyed client map so the
+    // Fail closed on any execution venue whose REST egress model bolt-v3 does not
+    // model: skipping it silently would let an unbounded submit rate through on a
+    // venue we cannot reconcile against. Iterate the keyed client map so the
     // error can name the offending `clients.<id>`.
-    let mut tightest: Option<(&str, u32)> = None;
+    let mut tightest: Option<(&str, crate::bolt_v3_providers::VenueEgressModel)> = None;
     for (key, client) in &root.clients {
         if client.execution.is_none() {
             continue;
         }
         let venue = client.venue.as_str();
-        match crate::bolt_v3_providers::venue_rest_egress_cap_per_minute(venue) {
-            Some(cap) => {
-                if tightest.is_none_or(|(_, tightest_cap)| cap < tightest_cap) {
-                    tightest = Some((venue, cap));
+        match crate::bolt_v3_providers::venue_egress_model(venue) {
+            Some(model) => {
+                // Tightest = smallest effective ceiling cap/fanout. Compare via
+                // cross-multiplication (cap_a/fanout_a < cap_b/fanout_b iff
+                // cap_a * fanout_b < cap_b * fanout_a) in u128 to avoid integer
+                // division and any saturation.
+                let tighter = tightest.is_none_or(|(_, current)| {
+                    (model.cap_per_minute as u128)
+                        * (current.max_rest_requests_per_order_command as u128)
+                        < (current.cap_per_minute as u128)
+                            * (model.max_rest_requests_per_order_command as u128)
+                });
+                if tighter {
+                    tightest = Some((venue, model));
                 }
             }
             None => errors.push(format!(
@@ -1045,11 +1061,15 @@ fn validate_order_rate_within_venue_egress(root: &BoltV3RootConfig) -> Vec<Strin
             )),
         }
     }
-    let Some((venue, cap_per_minute)) = tightest else {
+    let Some((venue, model)) = tightest else {
         // No modeled execution venue to reconcile against; `errors` may already
         // carry fail-closed messages for unmodeled execution venues above.
         return errors;
     };
+    let cap_per_minute = model.cap_per_minute;
+    let fanout = model.max_rest_requests_per_order_command;
+    // Largest order-command rate per minute that keeps `limit * fanout <= cap`.
+    let derated_ceiling = cap_per_minute / fanout;
     for (label, value) in [
         (
             "risk.nautilus.max_order_submit_rate",
@@ -1065,19 +1085,20 @@ fn validate_order_rate_within_venue_egress(root: &BoltV3RootConfig) -> Vec<Strin
         let Ok((limit, interval_seconds)) = validate_rate_limit_string(value) else {
             continue;
         };
-        // The rate exceeds the cap iff limit/interval_seconds > cap/60, i.e.
-        // limit * SECONDS_PER_MINUTE > cap * interval_seconds. Compared in u128
-        // so neither product can saturate to u64::MAX and let an over-cap rate
-        // slip through (MAX > MAX is false). validate_rate_limit_string
-        // guarantees interval_seconds >= 1, so no zero-interval guard is needed.
-        if (limit as u128) * (SECONDS_PER_MINUTE as u128)
+        // Over-drives the cap iff limit/interval > (cap/fanout)/60, i.e.
+        // limit * fanout * SECONDS_PER_MINUTE > cap * interval_seconds. Compared
+        // in u128 so no product can saturate to u64::MAX and let an over-cap rate
+        // slip through (MAX > MAX is false). validate_rate_limit_string guarantees
+        // interval_seconds >= 1, so no zero-interval guard is needed.
+        if (limit as u128) * (fanout as u128) * (SECONDS_PER_MINUTE as u128)
             > (cap_per_minute as u128) * (interval_seconds as u128)
         {
             errors.push(format!(
-                "{label} = `{value}` exceeds the {venue} REST egress cap of \
-                 {cap_per_minute}/min (nautilus HTTP_RATE_LIMIT); the order rate must not exceed \
-                 the venue ceiling or submits block at egress with stale reference quotes instead \
-                 of failing loud — lower it to at most {cap_per_minute}/00:01:00"
+                "{label} = `{value}` over-drives the {venue} REST egress cap of \
+                 {cap_per_minute}/min (nautilus HTTP_RATE_LIMIT): a single order command issues up \
+                 to {fanout} REST requests (market submit = book + post), so the order rate must \
+                 not exceed {derated_ceiling}/min or submits block at egress with stale reference \
+                 quotes instead of failing loud — lower it to at most {derated_ceiling}/00:01:00"
             ));
         }
     }

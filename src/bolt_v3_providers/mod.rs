@@ -571,14 +571,29 @@ pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
         .find(|binding| binding.key == key)
 }
 
-/// Per-minute REST egress ceiling for a configured trading venue, looked up by
-/// NT venue key from the owning provider module so core validation stays
-/// provider-agnostic. Returns `None` for venues whose ceiling bolt-v3 does not
-/// model; the complete multi-venue total-REST-budget contract is tracked in
-/// #488.
-pub fn venue_rest_egress_cap_per_minute(venue: &str) -> Option<u32> {
+/// A configured trading venue's modeled REST-egress capabilities. The per-minute
+/// request `cap_per_minute` and the per-order-command request fanout
+/// `max_rest_requests_per_order_command` share the venue's lifecycle, so they are
+/// looked up together (group-by-change). The fanout derates the command-rate
+/// ceiling: an NT order command can issue more than one REST request, so a submit
+/// rate at the raw cap would over-drive the venue's request quota.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VenueEgressModel {
+    pub cap_per_minute: u32,
+    pub max_rest_requests_per_order_command: u32,
+}
+
+/// REST-egress model for a configured trading venue, looked up by NT venue key
+/// from the owning provider module so core validation stays provider-agnostic.
+/// Returns `None` for venues whose egress bolt-v3 does not model; the complete
+/// multi-venue total-REST-budget contract (retries + cancels + status + probes,
+/// across per-client buckets) is tracked in #501.
+pub fn venue_egress_model(venue: &str) -> Option<VenueEgressModel> {
     match venue {
-        polymarket::KEY => Some(polymarket::REST_EGRESS_CAP_PER_MINUTE),
+        polymarket::KEY => Some(VenueEgressModel {
+            cap_per_minute: polymarket::REST_EGRESS_CAP_PER_MINUTE,
+            max_rest_requests_per_order_command: polymarket::MAX_REST_REQUESTS_PER_ORDER_COMMAND,
+        }),
         _ => None,
     }
 }

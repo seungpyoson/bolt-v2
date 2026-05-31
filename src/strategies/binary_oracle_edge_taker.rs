@@ -10,11 +10,14 @@ use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
 use nautilus_core::{Params, UnixNanos};
 #[cfg(not(test))]
 use nautilus_model::enums::BookType;
-use nautilus_model::{data::QuoteTick, enums::PositionSide};
+use nautilus_model::{
+    data::{QuoteTick, TradeTick},
+    enums::PositionSide,
+};
 use nautilus_model::{
     enums::{
-        BookAction, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce, TrailingOffsetType,
-        TriggerType,
+        AggressorSide, BookAction, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce,
+        TrailingOffsetType, TriggerType,
     },
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
     instruments::{Instrument, InstrumentAny},
@@ -106,6 +109,10 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             vol_gap_reset_secs: u64 => Integer;
             vol_min_observations: u64 => Integer;
             vol_bridge_valid_secs: u64 => Integer;
+            trade_flow_window_secs: u64 => Integer;
+            trade_flow_max_samples: u64 => Integer;
+            spike_guard_return_threshold: f64 => Float;
+            spike_guard_cooldown_secs: u64 => Integer;
             price_to_beat_source: String => String;
             pricing_kurtosis: f64 => Float;
             theta_decay_factor: f64 => Float;
@@ -507,6 +514,18 @@ impl OutcomeBookState {
         self.best_bid.is_some() && self.best_ask.is_some()
     }
 
+    /// Whether this book is priced and strictly crossed (`best_bid > best_ask`).
+    ///
+    /// A locked book (`best_bid == best_ask`) is not crossed and is intentionally
+    /// not flagged. An unpriced book (either side missing) is not crossed either;
+    /// the [`EntryBlockReason::ActiveBookNotPriced`] gate already covers that case.
+    fn is_crossed(&self) -> bool {
+        matches!(
+            (self.best_bid, self.best_ask),
+            (Some(best_bid), Some(best_ask)) if best_bid > best_ask
+        )
+    }
+
     fn metadata_matches_selection(&self) -> bool {
         self.last_observed_instrument_id.is_some()
             && self.last_observed_instrument_id == self.instrument_id
@@ -706,6 +725,15 @@ impl OutcomePreparedBooks {
         self.up.is_priced() && self.down.is_priced()
     }
 
+    /// Whether either active outcome book is priced and strictly crossed.
+    ///
+    /// Mirrors how [`OutcomePreparedBooks::is_priced`] treats both outcome books
+    /// as the active book for the entry gate: a cross on either side is an invalid
+    /// market state that must block entry.
+    fn any_crossed(&self) -> bool {
+        self.up.is_crossed() || self.down.is_crossed()
+    }
+
     fn metadata_matches_selection(&self) -> bool {
         self.up.metadata_matches_selection() && self.down.metadata_matches_selection()
     }
@@ -749,6 +777,7 @@ struct ActiveMarketState {
     warmup_count: u64,
     warmup_target: u64,
     books: OutcomePreparedBooks,
+    trade_flow: BTreeMap<InstrumentId, SignedTradeFlow>,
     fast_venue_incoherent: bool,
     forced_flat: bool,
 }
@@ -936,6 +965,86 @@ impl RealizedVolEstimator {
     }
 }
 
+/// A single signed trade retained for downstream adverse-selection / VPIN analysis.
+///
+/// This is the per-trade element stored by [`SignedTradeFlow`]; the signed
+/// aggressor side, price, and size are the inputs the W3 Glosten-Milgrom / VPIN
+/// stage will read. Fields are public because this struct is the read seam for
+/// that later stage.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SignedTrade {
+    pub ts_ms: u64,
+    pub aggressor: AggressorSide,
+    pub price: f64,
+    pub size: f64,
+}
+
+/// Bounded rolling buffer of signed trades for a single quoted instrument.
+///
+/// Mirrors [`RealizedVolEstimator`]'s config-driven rolling-window shape: the
+/// retention window and hard sample cap both come from strategy config, and the
+/// buffer is bounded by time (`window_ms`) and count (`max_samples`). It only
+/// retains signed trade flow; the W3 stage reads it to compute adverse-selection
+/// signals.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignedTradeFlow {
+    window_ms: u64,
+    max_samples: usize,
+    samples: VecDeque<SignedTrade>,
+}
+
+impl SignedTradeFlow {
+    fn from_config(config: &BinaryOracleEdgeTakerConfig) -> Self {
+        Self {
+            window_ms: config
+                .trade_flow_window_secs
+                .saturating_mul(MILLIS_PER_SECOND_U64),
+            max_samples: config.trade_flow_max_samples as usize,
+            samples: VecDeque::new(),
+        }
+    }
+
+    fn observe(&mut self, trade: &TradeTick) {
+        let ts_ms = trade.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        self.samples.push_back(SignedTrade {
+            ts_ms,
+            aggressor: trade.aggressor_side,
+            price: trade.price.as_f64(),
+            size: trade.size.as_f64(),
+        });
+        self.evict(ts_ms);
+    }
+
+    fn evict(&mut self, now_ms: u64) {
+        let cutoff_ms = now_ms.saturating_sub(self.window_ms);
+        while self
+            .samples
+            .front()
+            .is_some_and(|trade| trade.ts_ms < cutoff_ms)
+        {
+            let _ = self.samples.pop_front();
+        }
+        while self.samples.len() > self.max_samples {
+            let _ = self.samples.pop_front();
+        }
+    }
+
+    /// Number of signed trades currently retained. Read seam for the W3 stage.
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// Whether the buffer currently holds no retained trades.
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
+
+    /// Retained signed trades, oldest first. Read seam for the W3 stage.
+    pub fn samples(&self) -> &VecDeque<SignedTrade> {
+        &self.samples
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct PricingState {
     last_reference_fair_value: Option<f64>,
@@ -951,6 +1060,10 @@ struct PricingState {
     last_fast_venue_jitter_ms: Option<u64>,
     fast_venue_incoherent: bool,
     lead_quality_policy_applied: bool,
+    /// Reference-spot spike cooldown deadline (ms). When set, entry is blocked
+    /// until `now_ms >= spike_until_ms`. Set when a single-step reference-spot
+    /// move clears the configured spike threshold; `None` outside any cooldown.
+    spike_until_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1317,6 +1430,7 @@ impl PricingState {
             last_fast_venue_jitter_ms: None,
             fast_venue_incoherent: false,
             lead_quality_policy_applied: false,
+            spike_until_ms: None,
         }
     }
 
@@ -1325,10 +1439,14 @@ impl PricingState {
         quote: &FastSpotObservation,
         min_agreement_corr: f64,
         max_jitter_ms: u64,
+        spike_return_threshold: f64,
+        spike_cooldown_secs: u64,
     ) {
         if !is_positive_finite(quote.price) {
             return;
         }
+
+        self.detect_reference_spike(quote, spike_return_threshold, spike_cooldown_secs);
 
         self.last_reference_fair_value = Some(quote.price);
         self.lead_quality_policy_applied = true;
@@ -1377,6 +1495,38 @@ impl PricingState {
             self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
             self.last_fast_venue_jitter_ms = Some(jitter_ms);
             self.fast_venue_incoherent = true;
+        }
+    }
+
+    /// Arm the spike cooldown when a new reference-spot observation jumps past
+    /// the configured single-step return threshold.
+    ///
+    /// Reads the still-current `fast_spot` as the previous observation, before
+    /// `observe_reference_quote` overwrites it. The single-step relative move is
+    /// `m = (new_price / prev_price - 1).abs()`; when `m >=
+    /// spike_return_threshold` the cooldown deadline is pushed to
+    /// `new_observed_ts_ms + spike_cooldown_secs * MILLIS_PER_SECOND_U64`. With no
+    /// valid previous observation there is no spike. This is an additive read of
+    /// previous vs new and does not alter `fast_spot` or realized-vol behavior.
+    fn detect_reference_spike(
+        &mut self,
+        quote: &FastSpotObservation,
+        spike_return_threshold: f64,
+        spike_cooldown_secs: u64,
+    ) {
+        let Some(previous) = self.fast_spot.as_ref() else {
+            return;
+        };
+        if !is_positive_finite(previous.price) || !is_positive_finite(quote.price) {
+            return;
+        }
+        let relative_move = (quote.price / previous.price - UNIT_F64).abs();
+        if relative_move >= spike_return_threshold {
+            self.spike_until_ms = Some(
+                quote
+                    .observed_ts_ms
+                    .saturating_add(spike_cooldown_secs.saturating_mul(MILLIS_PER_SECOND_U64)),
+            );
         }
     }
 
@@ -1689,6 +1839,7 @@ impl ActiveMarketState {
             warmup_count: INITIAL_COUNTER_U64,
             warmup_target: INITIAL_COUNTER_U64,
             books: OutcomePreparedBooks::empty(),
+            trade_flow: BTreeMap::new(),
             fast_venue_incoherent: false,
             forced_flat: false,
         }
@@ -1734,6 +1885,7 @@ impl ActiveMarketState {
             warmup_count: INITIAL_COUNTER_U64,
             warmup_target,
             books: OutcomePreparedBooks::from_market(market),
+            trade_flow: BTreeMap::new(),
             fast_venue_incoherent: false,
             forced_flat,
         }
@@ -1952,6 +2104,8 @@ impl BinaryOracleEdgeTaker {
             quote,
             self.config.lead_agreement_min_corr,
             self.config.lead_jitter_max_ms,
+            self.config.spike_guard_return_threshold,
+            self.config.spike_guard_cooldown_secs,
         );
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
         self.refresh_fee_readiness();
@@ -2449,6 +2603,9 @@ impl BinaryOracleEdgeTaker {
         if !self.active.books.is_priced() {
             blocked_by.push(EntryBlockReason::ActiveBookNotPriced);
         }
+        if self.active.books.any_crossed() {
+            blocked_by.push(EntryBlockReason::BookCrossed);
+        }
         if self.active.interval_open.is_none() {
             blocked_by.push(EntryBlockReason::IntervalOpenMissing);
         }
@@ -2466,6 +2623,13 @@ impl BinaryOracleEdgeTaker {
             .is_some_and(|market_id| self.market_in_cooldown(market_id, now_ms))
         {
             blocked_by.push(EntryBlockReason::MarketCoolingDown);
+        }
+        if self
+            .pricing
+            .spike_until_ms
+            .is_some_and(|spike_until_ms| now_ms < spike_until_ms)
+        {
+            blocked_by.push(EntryBlockReason::SpotSpikeCooldown);
         }
         for reason in self
             .active_forced_flat_reasons_at(now_ms)
@@ -4810,6 +4974,13 @@ impl DataActor for BinaryOracleEdgeTaker {
         Ok(())
     }
 
+    fn on_trade(&mut self, trade: &TradeTick) -> anyhow::Result<()> {
+        if let Some(trade_flow) = self.active.trade_flow.get_mut(&trade.instrument_id) {
+            trade_flow.observe(trade);
+        }
+        Ok(())
+    }
+
     fn on_order_filled(
         &mut self,
         event: &nautilus_model::events::OrderFilled,
@@ -5302,11 +5473,13 @@ fn apply_selection_snapshot_to_active(
     warmup_target: u64,
 ) {
     let previous_books = active.books.clone();
+    let previous_trade_flow = std::mem::take(&mut active.trade_flow);
     let next = ActiveMarketState::from_snapshot(snapshot, warmup_target);
     let preserve_books = active.market_id.is_some()
         && active.market_id == next.market_id
         && active.instrument_id == next.instrument_id;
     if active.same_boundary(&next) {
+        active.trade_flow = previous_trade_flow;
         return;
     }
     if same_market_transition(active, &next) {
@@ -5314,11 +5487,13 @@ fn apply_selection_snapshot_to_active(
         active.forced_flat = next.forced_flat;
         active.market_selection_outcome = next.market_selection_outcome;
         active.interval_end_ms = next.interval_end_ms;
+        active.trade_flow = previous_trade_flow;
         return;
     }
     *active = next;
     if preserve_books {
         active.books = previous_books;
+        active.trade_flow = previous_trade_flow;
     }
 }
 
@@ -5446,6 +5621,9 @@ fn unsubscribe_missing_books(
     {
         #[cfg(not(test))]
         strategy.unsubscribe_book_deltas(instrument_id, None, None);
+        #[cfg(not(test))]
+        strategy.unsubscribe_trades(instrument_id, None, None);
+        strategy.active.trade_flow.remove(&instrument_id);
         strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
     }
     if let Some(instrument_id) = current.down_instrument_id
@@ -5453,6 +5631,9 @@ fn unsubscribe_missing_books(
     {
         #[cfg(not(test))]
         strategy.unsubscribe_book_deltas(instrument_id, None, None);
+        #[cfg(not(test))]
+        strategy.unsubscribe_trades(instrument_id, None, None);
+        strategy.active.trade_flow.remove(&instrument_id);
         strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
     }
     if let Some(instrument_id) = current.tracked_position_instrument_id
@@ -5460,6 +5641,9 @@ fn unsubscribe_missing_books(
     {
         #[cfg(not(test))]
         strategy.unsubscribe_book_deltas(instrument_id, None, None);
+        #[cfg(not(test))]
+        strategy.unsubscribe_trades(instrument_id, None, None);
+        strategy.active.trade_flow.remove(&instrument_id);
         strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
     }
 }
@@ -5474,6 +5658,10 @@ fn subscribe_new_books(
     {
         #[cfg(not(test))]
         strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
+        #[cfg(not(test))]
+        strategy.subscribe_trades(instrument_id, None, None);
+        let trade_flow = SignedTradeFlow::from_config(&strategy.config);
+        strategy.active.trade_flow.insert(instrument_id, trade_flow);
         strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
     }
     if let Some(instrument_id) = next.down_instrument_id
@@ -5481,6 +5669,10 @@ fn subscribe_new_books(
     {
         #[cfg(not(test))]
         strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
+        #[cfg(not(test))]
+        strategy.subscribe_trades(instrument_id, None, None);
+        let trade_flow = SignedTradeFlow::from_config(&strategy.config);
+        strategy.active.trade_flow.insert(instrument_id, trade_flow);
         strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
     }
     if let Some(instrument_id) = next.tracked_position_instrument_id
@@ -5488,6 +5680,10 @@ fn subscribe_new_books(
     {
         #[cfg(not(test))]
         strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
+        #[cfg(not(test))]
+        strategy.subscribe_trades(instrument_id, None, None);
+        let trade_flow = SignedTradeFlow::from_config(&strategy.config);
+        strategy.active.trade_flow.insert(instrument_id, trade_flow);
         strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
     }
 }
@@ -6067,11 +6263,13 @@ enum EntryBlockReason {
     PhaseNotActive,
     MetadataMismatch,
     ActiveBookNotPriced,
+    BookCrossed,
     IntervalOpenMissing,
     WarmupIncomplete,
     FeesNotReady,
     RecoveryMode,
     MarketCoolingDown,
+    SpotSpikeCooldown,
     ForcedFlat(ForcedFlatReason),
     OnePositionInvariant(ExposureOccupancy),
 }
@@ -6554,6 +6752,10 @@ mod tests {
             vol_gap_reset_secs = 10
             vol_min_observations = 20
             vol_bridge_valid_secs = 10
+            trade_flow_window_secs = 30
+            trade_flow_max_samples = 100
+            spike_guard_return_threshold = 0.05
+            spike_guard_cooldown_secs = 5
             price_to_beat_source = "chainlink_data_streams.report_at_boundary"
             pricing_kurtosis = 0.0
             theta_decay_factor = 0.0
@@ -6947,6 +7149,10 @@ mod tests {
                 vol_gap_reset_secs: 10,
                 vol_min_observations: 20,
                 vol_bridge_valid_secs: 10,
+                trade_flow_window_secs: 30,
+                trade_flow_max_samples: 100,
+                spike_guard_return_threshold: 0.05,
+                spike_guard_cooldown_secs: 5,
                 price_to_beat_source: "chainlink_data_streams.report_at_boundary".to_string(),
                 pricing_kurtosis: 0.0,
                 theta_decay_factor: 0.0,
@@ -7086,11 +7292,27 @@ mod tests {
     }
 
     fn trade_tick(instrument_id: &str, price: f64, ts_ms: u64) -> nautilus_model::data::TradeTick {
+        trade_tick_with_aggressor(
+            instrument_id,
+            price,
+            1.0,
+            nautilus_model::enums::AggressorSide::Buyer,
+            ts_ms,
+        )
+    }
+
+    fn trade_tick_with_aggressor(
+        instrument_id: &str,
+        price: f64,
+        size: f64,
+        aggressor: nautilus_model::enums::AggressorSide,
+        ts_ms: u64,
+    ) -> nautilus_model::data::TradeTick {
         nautilus_model::data::TradeTick::new_checked(
             InstrumentId::from(instrument_id),
             Price::new(price, 2),
-            Quantity::new(1.0, 0),
-            nautilus_model::enums::AggressorSide::Buyer,
+            Quantity::new(size, 0),
+            aggressor,
             nautilus_model::identifiers::TradeId::from("TRADE-TICK-001"),
             nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
             nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
@@ -9149,6 +9371,26 @@ mod tests {
             errors
                 .iter()
                 .any(|e| e.field == "strategies[0].config.vol_bridge_valid_secs")
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.field == "strategies[0].config.trade_flow_window_secs")
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.field == "strategies[0].config.trade_flow_max_samples")
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.field == "strategies[0].config.spike_guard_return_threshold")
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.field == "strategies[0].config.spike_guard_cooldown_secs")
         );
         assert!(
             errors
@@ -13347,6 +13589,237 @@ mod tests {
     }
 
     #[test]
+    fn signed_trade_flow_observe_appends_signed_price_and_size() {
+        let mut config = test_strategy().config.clone();
+        config.trade_flow_window_secs = 30;
+        config.trade_flow_max_samples = 100;
+        let mut flow = SignedTradeFlow::from_config(&config);
+
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.42,
+            3.0,
+            AggressorSide::Buyer,
+            1_000,
+        ));
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.41,
+            2.0,
+            AggressorSide::Seller,
+            1_500,
+        ));
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.40,
+            1.0,
+            AggressorSide::NoAggressor,
+            2_000,
+        ));
+
+        assert_eq!(flow.len(), 3);
+        assert!(!flow.is_empty());
+        let samples: Vec<SignedTrade> = flow.samples().iter().copied().collect();
+        // Prices/sizes are compared through the same fixed-point round-trip the
+        // production path uses, so the test does not depend on literal f64 bits.
+        assert_eq!(
+            samples,
+            vec![
+                SignedTrade {
+                    ts_ms: 1_000,
+                    aggressor: AggressorSide::Buyer,
+                    price: Price::new(0.42, 2).as_f64(),
+                    size: Quantity::new(3.0, 0).as_f64(),
+                },
+                SignedTrade {
+                    ts_ms: 1_500,
+                    aggressor: AggressorSide::Seller,
+                    price: Price::new(0.41, 2).as_f64(),
+                    size: Quantity::new(2.0, 0).as_f64(),
+                },
+                SignedTrade {
+                    ts_ms: 2_000,
+                    aggressor: AggressorSide::NoAggressor,
+                    price: Price::new(0.40, 2).as_f64(),
+                    size: Quantity::new(1.0, 0).as_f64(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn signed_trade_flow_evicts_by_window_then_caps_by_max_samples() {
+        // Window eviction: a 10-second window drops trades older than now - window.
+        let mut window_config = test_strategy().config.clone();
+        window_config.trade_flow_window_secs = 10;
+        window_config.trade_flow_max_samples = 100;
+        let mut windowed = SignedTradeFlow::from_config(&window_config);
+
+        windowed.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.50,
+            1.0,
+            AggressorSide::Buyer,
+            1_000,
+        ));
+        windowed.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.51,
+            1.0,
+            AggressorSide::Buyer,
+            5_000,
+        ));
+        // Latest trade at 15_000ms makes the window cutoff 5_000ms; the 1_000ms
+        // sample is strictly older than the cutoff and is evicted, the 5_000ms
+        // sample sits exactly on the cutoff and is retained.
+        windowed.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.52,
+            1.0,
+            AggressorSide::Seller,
+            15_000,
+        ));
+
+        assert_eq!(windowed.len(), 2);
+        assert_eq!(
+            windowed
+                .samples()
+                .iter()
+                .map(|trade| trade.ts_ms)
+                .collect::<Vec<_>>(),
+            vec![5_000, 15_000]
+        );
+
+        // Count cap: with a wide window, max_samples bounds retained trades and
+        // drops the oldest first.
+        let mut cap_config = test_strategy().config.clone();
+        cap_config.trade_flow_window_secs = 600;
+        cap_config.trade_flow_max_samples = 2;
+        let mut capped = SignedTradeFlow::from_config(&cap_config);
+
+        for index in 0..4_u64 {
+            capped.observe(&trade_tick_with_aggressor(
+                "condition-A-A-UP.POLYMARKET",
+                0.50,
+                1.0,
+                AggressorSide::Buyer,
+                1_000 + index,
+            ));
+        }
+
+        assert_eq!(capped.len(), 2);
+        assert_eq!(
+            capped
+                .samples()
+                .iter()
+                .map(|trade| trade.ts_ms)
+                .collect::<Vec<_>>(),
+            vec![1_002, 1_003]
+        );
+    }
+
+    #[test]
+    fn on_trade_routes_to_subscribed_instrument_and_ignores_untracked() {
+        let mut strategy = test_strategy();
+        strategy.apply_selection_snapshot(active_snapshot("A"));
+
+        let up_instrument = "condition-A-A-UP.POLYMARKET";
+        let down_instrument = "condition-A-A-DOWN.POLYMARKET";
+        let untracked_instrument = "condition-Z-Z-UP.POLYMARKET";
+
+        strategy
+            .on_trade(&trade_tick_with_aggressor(
+                up_instrument,
+                0.42,
+                2.0,
+                AggressorSide::Buyer,
+                1_000,
+            ))
+            .expect("trade on subscribed instrument should process");
+        strategy
+            .on_trade(&trade_tick_with_aggressor(
+                untracked_instrument,
+                0.99,
+                1.0,
+                AggressorSide::Seller,
+                1_100,
+            ))
+            .expect("trade on untracked instrument should be ignored without error");
+
+        let up_flow = strategy
+            .active
+            .trade_flow
+            .get(&InstrumentId::from(up_instrument))
+            .expect("subscribed up instrument should have a trade-flow buffer");
+        assert_eq!(up_flow.len(), 1);
+        assert_eq!(up_flow.samples()[0].aggressor, AggressorSide::Buyer);
+
+        let down_flow = strategy
+            .active
+            .trade_flow
+            .get(&InstrumentId::from(down_instrument))
+            .expect("subscribed down instrument should have a trade-flow buffer");
+        assert!(down_flow.is_empty());
+
+        assert!(
+            !strategy
+                .active
+                .trade_flow
+                .contains_key(&InstrumentId::from(untracked_instrument)),
+            "untracked instrument must not create a trade-flow buffer"
+        );
+    }
+
+    #[test]
+    fn market_switch_creates_and_removes_trade_flow_buffers_in_lockstep_with_books() {
+        let mut strategy = test_strategy();
+
+        strategy.apply_selection_snapshot(active_snapshot("A"));
+        assert_eq!(
+            strategy.active.trade_flow.keys().collect::<Vec<_>>(),
+            vec![
+                &InstrumentId::from("condition-A-A-DOWN.POLYMARKET"),
+                &InstrumentId::from("condition-A-A-UP.POLYMARKET"),
+            ]
+        );
+
+        strategy.apply_selection_snapshot(active_snapshot("B"));
+        assert_eq!(
+            strategy.active.trade_flow.keys().collect::<Vec<_>>(),
+            vec![
+                &InstrumentId::from("condition-B-B-DOWN.POLYMARKET"),
+                &InstrumentId::from("condition-B-B-UP.POLYMARKET"),
+            ]
+        );
+    }
+
+    #[test]
+    fn same_market_refresh_preserves_accumulated_trade_flow() {
+        let mut strategy = test_strategy();
+        strategy.apply_selection_snapshot(active_snapshot_with_start("A", 1_000));
+
+        strategy
+            .on_trade(&trade_tick_with_aggressor(
+                "condition-A-A-UP.POLYMARKET",
+                0.42,
+                2.0,
+                AggressorSide::Buyer,
+                1_200,
+            ))
+            .expect("trade on subscribed instrument should process");
+
+        // A new interval for the same market must not discard accumulated flow.
+        strategy.apply_selection_snapshot(active_snapshot_with_start("A", 2_000));
+
+        let up_flow = strategy
+            .active
+            .trade_flow
+            .get(&InstrumentId::from("condition-A-A-UP.POLYMARKET"))
+            .expect("same-market refresh should retain the trade-flow buffer");
+        assert_eq!(up_flow.len(), 1);
+    }
+
+    #[test]
     fn strategy_selects_configured_updown_target_from_nt_binary_option_metadata() {
         let strategy = test_strategy();
         let current_start = 1_746_000_000_i64;
@@ -13918,6 +14391,212 @@ mod tests {
             strategy.last_reported_exposure_occupancy.get(),
             Some(ExposureOccupancy::BlindRecovery)
         );
+    }
+
+    #[test]
+    fn entry_gate_blocks_when_active_outcome_book_is_strictly_crossed() {
+        // Normal book: bid < ask is not crossed.
+        let normal = ready_to_trade_strategy();
+        assert!(
+            normal.active.books.up.best_bid.unwrap() < normal.active.books.up.best_ask.unwrap()
+        );
+        assert!(
+            !normal
+                .entry_gate_decision_at(2_000)
+                .blocked_by
+                .contains(&EntryBlockReason::BookCrossed),
+            "normal bid<ask book must not trip the crossed-book guard"
+        );
+
+        // Up book strictly crossed: best_bid > best_ask blocks entry.
+        let mut up_crossed = ready_to_trade_strategy();
+        up_crossed.active.books.up.best_bid = Some(0.46);
+        up_crossed.active.books.up.best_ask = Some(0.45);
+        assert!(
+            up_crossed
+                .entry_gate_decision_at(2_000)
+                .blocked_by
+                .contains(&EntryBlockReason::BookCrossed),
+            "strictly crossed up book must block entry"
+        );
+
+        // Down book strictly crossed is detected too (gate treats both books as active).
+        let mut down_crossed = ready_to_trade_strategy();
+        down_crossed.active.books.down.best_bid = Some(0.46);
+        down_crossed.active.books.down.best_ask = Some(0.45);
+        assert!(
+            down_crossed
+                .entry_gate_decision_at(2_000)
+                .blocked_by
+                .contains(&EntryBlockReason::BookCrossed),
+            "strictly crossed down book must block entry"
+        );
+
+        // Locked book (bid == ask) is intentionally not crossed.
+        let mut locked = ready_to_trade_strategy();
+        locked.active.books.up.best_bid = Some(0.45);
+        locked.active.books.up.best_ask = Some(0.45);
+        assert!(
+            !locked
+                .entry_gate_decision_at(2_000)
+                .blocked_by
+                .contains(&EntryBlockReason::BookCrossed),
+            "locked bid==ask book must not trip the crossed-book guard"
+        );
+    }
+
+    #[test]
+    fn reference_spot_spike_sets_cooldown_and_blocks_then_allows_entry() {
+        let mut strategy = ready_to_trade_strategy();
+        // Threshold from the test config fixture.
+        assert_eq!(strategy.config.spike_guard_return_threshold, 0.05);
+        assert_eq!(strategy.config.spike_guard_cooldown_secs, 5);
+
+        // Seed a previous reference-spot observation so the next one has a baseline.
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
+
+        // A jump from 100.0 -> 110.0 is a 10% single-step move, >= the 5% threshold.
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 110.0, 2_000),
+            strategy.config.lead_agreement_min_corr,
+            strategy.config.lead_jitter_max_ms,
+            strategy.config.spike_guard_return_threshold,
+            strategy.config.spike_guard_cooldown_secs,
+        );
+
+        // Cooldown deadline = observed_ts (2_000ms) + 5s * 1_000ms = 7_000ms.
+        assert_eq!(strategy.pricing.spike_until_ms, Some(7_000));
+
+        // Entry is blocked while now_ms < spike_until_ms.
+        assert!(
+            strategy
+                .entry_gate_decision_at(6_999)
+                .blocked_by
+                .contains(&EntryBlockReason::SpotSpikeCooldown),
+            "entry must be blocked before the spike cooldown deadline"
+        );
+        // Boundary: at the deadline the cooldown has elapsed (now_ms < deadline is false).
+        assert!(
+            !strategy
+                .entry_gate_decision_at(7_000)
+                .blocked_by
+                .contains(&EntryBlockReason::SpotSpikeCooldown),
+            "entry must be allowed once now_ms reaches the spike cooldown deadline"
+        );
+        assert!(
+            !strategy
+                .entry_gate_decision_at(7_001)
+                .blocked_by
+                .contains(&EntryBlockReason::SpotSpikeCooldown),
+            "entry must be allowed after the spike cooldown deadline"
+        );
+    }
+
+    #[test]
+    fn sub_threshold_reference_spot_move_does_not_arm_spike_cooldown() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.pricing.spike_until_ms = None;
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
+
+        // A 2% move (100.0 -> 102.0) is below the 5% threshold.
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 102.0, 2_000),
+            strategy.config.lead_agreement_min_corr,
+            strategy.config.lead_jitter_max_ms,
+            strategy.config.spike_guard_return_threshold,
+            strategy.config.spike_guard_cooldown_secs,
+        );
+
+        assert_eq!(
+            strategy.pricing.spike_until_ms, None,
+            "sub-threshold move must not arm the spike cooldown"
+        );
+        assert!(
+            !strategy
+                .entry_gate_decision_at(2_001)
+                .blocked_by
+                .contains(&EntryBlockReason::SpotSpikeCooldown)
+        );
+    }
+
+    #[test]
+    fn spike_detection_requires_a_valid_previous_observation() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.pricing.fast_spot = None;
+        strategy.pricing.spike_until_ms = None;
+
+        // First observation has no baseline; a spike cannot be inferred.
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 110.0, 2_000),
+            strategy.config.lead_agreement_min_corr,
+            strategy.config.lead_jitter_max_ms,
+            strategy.config.spike_guard_return_threshold,
+            strategy.config.spike_guard_cooldown_secs,
+        );
+
+        assert_eq!(
+            strategy.pricing.spike_until_ms, None,
+            "no previous observation means no spike"
+        );
+    }
+
+    #[test]
+    fn taker_hardening_guards_are_entry_only_and_do_not_block_exits() {
+        // Exits must always be able to fire (risk-off), even with a crossed book
+        // and an armed spike cooldown. The exit path is structurally independent
+        // of `entry_gate_decision_at`, so neither new gate reason can reach it.
+        let configured_instruments = configured_outcome_instruments(
+            &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
+        );
+        for instrument_id in configured_instruments {
+            let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+            strategy.config.exit_order.order_type = OrderType::Limit;
+            strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+            strategy.config.exit_order.is_post_only = true;
+            strategy.active.phase = SelectionPhase::Freeze;
+            let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+            materialize_managed_position_with_resting_pending_entry(
+                &mut strategy,
+                instrument_id,
+                PositionId::from(format!("POSITION-ENTRY-ONLY-{instrument_id}").as_str()),
+                position_quantity,
+            );
+
+            // Cross both active books and arm the spike cooldown well into the future.
+            strategy.active.books.up.best_bid = Some(0.46);
+            strategy.active.books.up.best_ask = Some(0.45);
+            strategy.active.books.down.best_bid = Some(0.46);
+            strategy.active.books.down.best_ask = Some(0.45);
+            strategy.pricing.spike_until_ms = Some(1_000_000);
+
+            // The entry gate is blocked by both new guards...
+            let gate = strategy.entry_gate_decision_at(1_200);
+            assert!(
+                gate.blocked_by.contains(&EntryBlockReason::BookCrossed),
+                "{instrument_id}: crossed book must block entry"
+            );
+            assert!(
+                gate.blocked_by
+                    .contains(&EntryBlockReason::SpotSpikeCooldown),
+                "{instrument_id}: armed spike cooldown must block entry"
+            );
+
+            // ...but the exit still submits.
+            let decision = strategy.exit_submission_decision_at(1_200);
+            assert_eq!(decision.blocked_reason, None, "{instrument_id}");
+            assert_eq!(
+                decision.forced_flat_reasons,
+                vec![ForcedFlatReason::Freeze],
+                "{instrument_id}"
+            );
+            assert_eq!(
+                decision.order_side,
+                Some(OrderSide::Sell),
+                "{instrument_id}"
+            );
+            assert!(decision.instrument_id.is_some(), "{instrument_id}");
+            assert!(decision.quantity.is_some(), "{instrument_id}");
+        }
     }
 
     #[test]

@@ -535,6 +535,38 @@ reason = "This is a nested existing taker strategy config schema field name, pop
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"trade_flow_max_samples"'''
+context = '''"trade_flow_max_samples",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name; the signed-trade-flow per-instrument sample cap comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trade_flow_window_secs"'''
+context = '''"trade_flow_window_secs",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name; the signed-trade-flow retention window comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"spike_guard_return_threshold"'''
+context = '''"spike_guard_return_threshold",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name; the entry spike-guard single-step return threshold comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"spike_guard_cooldown_secs"'''
+context = '''"spike_guard_cooldown_secs",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name; the entry spike-guard cooldown duration comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"underlying_asset"'''
 context = '''insert_string(&mut table, "underlying_asset", target.underlying_asset);'''
 classification = "strategy_runtime_schema_field"

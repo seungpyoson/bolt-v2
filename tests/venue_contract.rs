@@ -11,7 +11,8 @@ use bolt_v2::{
     lake_batch::convert_live_spool_to_parquet,
     nt_runtime_capture,
     venue_contract::{
-        Capability, CompletenessReport, Policy, Provenance, StreamContract, VenueContract,
+        Capability, CompletenessReport, Policy, Provenance, RateBudget, SettlementKind,
+        StreamContract, VenueContract,
     },
 };
 mod support;
@@ -130,9 +131,16 @@ fn base_polymarket_streams() -> BTreeMap<String, StreamContract> {
 
 fn make_contract(streams: BTreeMap<String, StreamContract>) -> VenueContract {
     VenueContract {
-        schema_version: 1,
+        schema_version: 2,
         venue: "test".to_string(),
         adapter_version: "bolt-v2".to_string(),
+        supports_modify: false,
+        settlement_kind: SettlementKind::Binary,
+        rate_budget: RateBudget {
+            clob_per_minute: 100,
+            gamma_per_minute: 100,
+            batch_submit_limit: 15,
+        },
         streams,
     }
 }
@@ -144,8 +152,15 @@ fn loads_polymarket_contract() {
             .expect("polymarket contract should load");
 
     assert_eq!(contract.venue, "polymarket");
-    assert_eq!(contract.schema_version, 1);
+    assert_eq!(contract.schema_version, 2);
     assert_eq!(contract.streams.len(), 7);
+
+    // Execution-capability facts (sourced from the NT Polymarket adapter).
+    assert!(!contract.supports_modify);
+    assert_eq!(contract.settlement_kind, SettlementKind::Binary);
+    assert_eq!(contract.rate_budget.clob_per_minute, 100);
+    assert_eq!(contract.rate_budget.gamma_per_minute, 100);
+    assert_eq!(contract.rate_budget.batch_submit_limit, 15);
 }
 
 #[test]
@@ -233,6 +248,33 @@ fn rejects_wrong_schema_version() {
         err.to_string()
             .contains("unsupported contract schema_version"),
         "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_zero_rate_budget() {
+    let mut contract = make_contract(base_polymarket_streams());
+    contract.rate_budget.clob_per_minute = 0;
+    let err = contract.validate().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("rate_budget.clob_per_minute must be positive"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_contract_missing_supports_modify() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("missing-supports-modify.toml");
+    let fixture = std::fs::read_to_string("contracts/polymarket.toml").unwrap();
+    let mutated = fixture.replacen("supports_modify = false\n", "", 1);
+    std::fs::write(&path, mutated).unwrap();
+
+    let err = VenueContract::load_and_validate(&path).unwrap_err();
+    assert!(
+        err.to_string().contains("missing field `supports_modify`"),
+        "supports_modify must be explicit, got: {err}"
     );
 }
 

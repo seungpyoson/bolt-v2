@@ -1,6 +1,23 @@
-schema_version = 1
+schema_version = 2
 venue = "polymarket"
 adapter_version = "bolt-v2"
+
+# Polymarket rejects in-place order modification (NT adapter
+# execution/mod.rs: modify_order emits "Order modification not supported");
+# requoting must cancel + resubmit.
+supports_modify = false
+
+# Winner-take-all outcome tokens settle to 0 or 1 at resolution (NT adapter
+# data.rs: MarketResolved -> InstrumentStatus::Close with a winning outcome).
+settlement_kind = "binary"
+
+# REST budget the strategy paces to. Mirrors the NT adapter's published limits
+# (common/consts.rs: HTTP_RATE_LIMIT = 100/min on both CLOB and Gamma;
+# BATCH_ORDER_LIMIT = 15). The adapter is authoritative for enforcement.
+[rate_budget]
+clob_per_minute = 100
+gamma_per_minute = 100
+batch_submit_limit = 15
 
 [streams.quotes]
 capability = "supported"

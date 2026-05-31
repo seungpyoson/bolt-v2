@@ -735,7 +735,9 @@ fn paths_overlap(left: &Path, right: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::venue_contract::{Capability, Policy, Provenance, StreamContract, VenueContract};
+    use crate::venue_contract::{
+        Capability, Policy, Provenance, RateBudget, SettlementKind, StreamContract, VenueContract,
+    };
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
@@ -778,9 +780,16 @@ mod tests {
     fn completeness_report_keeps_optional_unconverted_spool_nonfatal() {
         let source_root = tempdir().expect("tempdir should exist");
         let contract = VenueContract {
-            schema_version: 1,
+            schema_version: 2,
             venue: "test".to_string(),
             adapter_version: "bolt-v2".to_string(),
+            supports_modify: false,
+            settlement_kind: SettlementKind::Binary,
+            rate_budget: RateBudget {
+                clob_per_minute: 100,
+                gamma_per_minute: 100,
+                batch_submit_limit: 15,
+            },
             streams: [(
                 "quotes".to_string(),
                 StreamContract {

@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 pub const STREAM_CLASS_QUOTES: &str = "quotes";
 pub const STREAM_CLASS_TRADES: &str = "trades";
@@ -55,6 +55,35 @@ pub enum Provenance {
     Derived,
 }
 
+/// Payout/settlement structure for instruments on a venue.
+///
+/// This describes only the *payout* shape (what an outcome is worth at
+/// resolution), not the *resolution rule* (at-expiry vs path-dependent), which
+/// is instrument-type math owned by the market-family layer.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SettlementKind {
+    /// Winner-take-all outcome tokens that settle to 0 or 1 at resolution
+    /// (e.g. Polymarket binary markets).
+    Binary,
+}
+
+/// Per-minute REST request budget and batch limits the strategy must respect
+/// when pacing order traffic to a venue.
+///
+/// These values mirror the venue's published limits and inform strategy-side
+/// pacing. The execution adapter remains authoritative for enforcement; the
+/// budget must not exceed what the adapter will physically allow.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RateBudget {
+    /// Sustained CLOB REST requests permitted per minute.
+    pub clob_per_minute: u32,
+    /// Sustained Gamma REST requests permitted per minute.
+    pub gamma_per_minute: u32,
+    /// Maximum number of orders accepted in a single batch submit.
+    pub batch_submit_limit: u32,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StreamContract {
     pub capability: Capability,
@@ -69,6 +98,13 @@ pub struct VenueContract {
     pub schema_version: u32,
     pub venue: String,
     pub adapter_version: String,
+    /// Whether the venue supports in-place order modification. When `false`,
+    /// the strategy must requote by cancel + resubmit.
+    pub supports_modify: bool,
+    /// Payout/settlement structure for instruments on this venue.
+    pub settlement_kind: SettlementKind,
+    /// REST rate budget and batch limits for order-traffic pacing.
+    pub rate_budget: RateBudget,
     pub streams: BTreeMap<String, StreamContract>,
 }
 
@@ -222,6 +258,19 @@ impl VenueContract {
             self.schema_version == CURRENT_SCHEMA_VERSION,
             "unsupported contract schema_version {}, expected {CURRENT_SCHEMA_VERSION}",
             self.schema_version
+        );
+
+        ensure!(
+            self.rate_budget.clob_per_minute > 0,
+            "rate_budget.clob_per_minute must be positive"
+        );
+        ensure!(
+            self.rate_budget.gamma_per_minute > 0,
+            "rate_budget.gamma_per_minute must be positive"
+        );
+        ensure!(
+            self.rate_budget.batch_submit_limit > 0,
+            "rate_budget.batch_submit_limit must be positive"
         );
 
         for cls in supported_stream_classes() {

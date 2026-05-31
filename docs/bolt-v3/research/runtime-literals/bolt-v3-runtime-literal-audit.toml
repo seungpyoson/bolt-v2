@@ -11581,24 +11581,24 @@ path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''number'''
 literal = '''95'''
 context = '''let latency_p95_index = (latency_millis.len() * 95).div_ceil(100).saturating_sub(1);'''
-classification = '''time_unit_conversion_or_timestamp_field'''
-reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+classification = '''latency_percentile_index_math'''
+reason = '''Computes the p95 latency index as ceil(n*95/100)-1 into the sorted observed-latency sample; a fixed percentile definition, not a configurable trading value. The readiness gate compares the resulting latency_p95_millis against the config-owned latency_max_millis threshold.'''
 
 [[allowed]]
 path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''number'''
 literal = '''100'''
 context = '''let latency_p95_index = (latency_millis.len() * 95).div_ceil(100).saturating_sub(1);'''
-classification = '''time_unit_conversion_or_timestamp_field'''
-reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+classification = '''latency_percentile_index_math'''
+reason = '''Computes the p95 latency index as ceil(n*95/100)-1 into the sorted observed-latency sample; a fixed percentile definition, not a configurable trading value. The readiness gate compares the resulting latency_p95_millis against the config-owned latency_max_millis threshold.'''
 
 [[allowed]]
 path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''number'''
 literal = '''1'''
 context = '''let latency_p95_index = (latency_millis.len() * 95).div_ceil(100).saturating_sub(1);'''
-classification = '''time_unit_conversion_or_timestamp_field'''
-reason = '''This is a timestamp field label or fixed unit conversion used for evidence timing, not a configurable trading value.'''
+classification = '''latency_percentile_index_math'''
+reason = '''Zero-based index adjustment (saturating_sub(1)) in the p95 latency index ceil(n*95/100)-1 into the sorted observed-latency sample; a fixed percentile definition, not a configurable trading value. The readiness gate compares the resulting latency_p95_millis against the config-owned latency_max_millis threshold.'''
 
 [[allowed]]
 path = '''src/bolt_v3_operator_artifacts.rs'''

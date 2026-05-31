@@ -1521,7 +1521,7 @@ impl PricingState {
             self.realized_vol_source_venue
                 .clone()
                 .or_else(|| self.fast_spot.as_ref().map(|spot| spot.venue_name.clone()))
-                .or_else(|| self.realized_vol.active_venue_name.clone()),
+                .or_else(|| self.realized_vol.active_venue.clone()),
             self.realized_vol.last_ready_ts_ms,
         )
     }
@@ -2617,7 +2617,7 @@ impl BinaryOracleEdgeTaker {
             &FairProbabilityInputs {
                 spot_price: inputs.spot_price,
                 strike_price: inputs.strike_price,
-                seconds_to_expiry: inputs.seconds_to_expiry,
+                seconds_to_market_end: inputs.seconds_to_expiry,
                 realized_vol: inputs.realized_vol,
                 pricing_kurtosis: self.config.pricing_kurtosis,
             },
@@ -3363,7 +3363,7 @@ impl BinaryOracleEdgeTaker {
             &FairProbabilityInputs {
                 spot_price,
                 strike_price,
-                seconds_to_expiry,
+                seconds_to_market_end: seconds_to_expiry,
                 realized_vol,
                 pricing_kurtosis: self.config.pricing_kurtosis,
             },
@@ -3396,7 +3396,7 @@ impl BinaryOracleEdgeTaker {
             &FairProbabilityInputs {
                 spot_price,
                 strike_price,
-                seconds_to_expiry,
+                seconds_to_market_end: seconds_to_expiry,
                 realized_vol,
                 pricing_kurtosis: self.config.pricing_kurtosis,
             },
@@ -5359,9 +5359,9 @@ fn apply_selection_snapshot_to_active(
         return;
     }
     *active = next;
+    active.trade_flow = previous_trade_flow;
     if preserve_books {
         active.books = previous_books;
-        active.trade_flow = previous_trade_flow;
     }
 }
 
@@ -13485,6 +13485,87 @@ mod tests {
             .get(&InstrumentId::from("condition-A-A-UP.POLYMARKET"))
             .expect("same-market refresh should retain the trade-flow buffer");
         assert_eq!(up_flow.len(), 1);
+    }
+
+    #[test]
+    fn real_market_change_preserves_retained_instrument_trade_flow() {
+        // Regression: on a real market change (preserve_books == false), the
+        // trade_flow restore must be unconditional. An instrument that is
+        // RETAINED across the rotation (here, the open position's instrument,
+        // tracked via `tracked_position_instrument_id`) is touched by neither
+        // `unsubscribe_missing_books` (it did not change away) nor
+        // `subscribe_new_books` (it is not new), so dropping its buffer in
+        // `apply_selection_snapshot_to_active` would silently lose all
+        // accumulated SignedTradeFlow for the live position.
+        let mut strategy = ready_to_trade_strategy();
+        let entry_client_order_id = ClientOrderId::from("ENTRY-A");
+        let position_id = PositionId::from("P-A");
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let retained_instrument = pending.instrument_id;
+        set_pending_entry(&mut strategy, pending);
+
+        // Rotate to a different market, then fill: the position materializes on
+        // the original (now non-active) instrument, which becomes the tracked
+        // position instrument with its own freshly subscribed trade-flow buffer.
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+        strategy
+            .on_order_filled(&order_filled_event(
+                entry_client_order_id,
+                retained_instrument,
+                position_id,
+            ))
+            .expect("fill bookkeeping should succeed");
+        assert_eq!(
+            strategy.book_subscriptions.tracked_position_instrument_id,
+            Some(retained_instrument),
+            "open position instrument must be the retained tracked instrument",
+        );
+        assert!(
+            strategy
+                .active
+                .trade_flow
+                .contains_key(&retained_instrument),
+            "fill must subscribe a trade-flow buffer for the tracked instrument",
+        );
+
+        // Accumulate signed trade flow on the retained instrument.
+        strategy
+            .on_trade(&trade_tick_with_aggressor(
+                retained_instrument.to_string().as_str(),
+                0.42,
+                2.0,
+                AggressorSide::Buyer,
+                2_200,
+            ))
+            .expect("trade on the tracked instrument should process");
+        assert!(
+            !strategy
+                .active
+                .trade_flow
+                .get(&retained_instrument)
+                .expect("tracked instrument buffer must exist before rotation")
+                .is_empty(),
+            "seeded trade should be retained before the rotation",
+        );
+
+        // Real market change (preserve_books == false). The retained instrument
+        // is unchanged across the rotation, so its buffer must survive.
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-3", 3_000));
+        assert_eq!(
+            strategy.book_subscriptions.tracked_position_instrument_id,
+            Some(retained_instrument),
+            "instrument should remain the tracked instrument across the rotation",
+        );
+        let retained_flow = strategy
+            .active
+            .trade_flow
+            .get(&retained_instrument)
+            .expect("retained instrument trade-flow buffer must survive a real market change");
+        assert!(
+            !retained_flow.is_empty(),
+            "retained instrument must keep its accumulated SignedTradeFlow across a real market change",
+        );
+        assert_eq!(retained_flow.len(), 1);
     }
 
     #[test]

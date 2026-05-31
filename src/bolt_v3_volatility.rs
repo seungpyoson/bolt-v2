@@ -60,7 +60,7 @@ pub struct RealizedVolEstimator {
     gap_reset_ms: u64,
     min_observations: u64,
     pub bridge_valid_ms: u64,
-    pub active_venue_name: Option<String>,
+    pub active_venue: Option<String>,
     samples: VecDeque<VolatilitySample>,
     pub last_ready_vol: Option<f64>,
     pub last_ready_ts_ms: Option<u64>,
@@ -75,7 +75,7 @@ impl RealizedVolEstimator {
             bridge_valid_ms: config
                 .bridge_valid_secs
                 .saturating_mul(MILLIS_PER_SECOND_U64),
-            active_venue_name: None,
+            active_venue: None,
             samples: VecDeque::new(),
             last_ready_vol: None,
             last_ready_ts_ms: None,
@@ -88,7 +88,7 @@ impl RealizedVolEstimator {
             gap_reset_ms: self.gap_reset_ms,
             min_observations: self.min_observations,
             bridge_valid_ms: self.bridge_valid_ms,
-            active_venue_name: None,
+            active_venue: None,
             samples: VecDeque::new(),
             last_ready_vol: None,
             last_ready_ts_ms: None,
@@ -96,20 +96,20 @@ impl RealizedVolEstimator {
     }
 
     fn reset(&mut self) {
-        self.active_venue_name = None;
+        self.active_venue = None;
         self.samples.clear();
         self.last_ready_vol = None;
         self.last_ready_ts_ms = None;
     }
 
-    pub fn observe(&mut self, venue_name: &str, price: f64, observed_ts_ms: u64) -> Option<f64> {
+    pub fn observe(&mut self, venue: &str, price: f64, observed_ts_ms: u64) -> Option<f64> {
         if !is_positive_finite(price) {
             return None;
         }
 
-        if self.active_venue_name.as_deref() != Some(venue_name) {
+        if self.active_venue.as_deref() != Some(venue) {
             self.reset();
-            self.active_venue_name = Some(venue_name.to_string());
+            self.active_venue = Some(venue.to_string());
         }
 
         if let Some(previous) = self.samples.back() {
@@ -118,7 +118,7 @@ impl RealizedVolEstimator {
             }
             if observed_ts_ms.saturating_sub(previous.ts_ms) > self.gap_reset_ms {
                 self.reset();
-                self.active_venue_name = Some(venue_name.to_string());
+                self.active_venue = Some(venue.to_string());
             }
         }
 

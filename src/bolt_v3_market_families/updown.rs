@@ -854,7 +854,7 @@ pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
         return None;
     }
 
-    let time_to_expiry_years = inputs.seconds_to_expiry as f64 / SECONDS_PER_YEAR_F64;
+    let time_to_expiry_years = inputs.seconds_to_market_end as f64 / SECONDS_PER_YEAR_F64;
     if time_to_expiry_years <= ZERO_F64 {
         return None;
     }
@@ -1087,7 +1087,7 @@ mod tests {
         let above = fair_probability_up(&FairProbabilityInputs {
             spot_price: 3_105.0,
             strike_price: 3_100.0,
-            seconds_to_expiry: 60,
+            seconds_to_market_end: 60,
             realized_vol: 0.45,
             pricing_kurtosis: 0.0,
         })
@@ -1095,7 +1095,7 @@ mod tests {
         let below = fair_probability_up(&FairProbabilityInputs {
             spot_price: 3_095.0,
             strike_price: 3_100.0,
-            seconds_to_expiry: 60,
+            seconds_to_market_end: 60,
             realized_vol: 0.45,
             pricing_kurtosis: 0.0,
         })
@@ -1114,7 +1114,7 @@ mod tests {
             fair_probability_up(&FairProbabilityInputs {
                 spot_price: 3_100.0,
                 strike_price: 3_100.0,
-                seconds_to_expiry: 60,
+                seconds_to_market_end: 60,
                 realized_vol: 0.0,
                 pricing_kurtosis: 0.0,
             })
@@ -1128,7 +1128,7 @@ mod tests {
             fair_probability_up(&FairProbabilityInputs {
                 spot_price: 3_105.0,
                 strike_price: 3_100.0,
-                seconds_to_expiry: 0,
+                seconds_to_market_end: 0,
                 realized_vol: 0.45,
                 pricing_kurtosis: 0.0,
             })

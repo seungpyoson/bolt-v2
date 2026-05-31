@@ -71,7 +71,7 @@ pub struct MarketFamilyValidationBinding {
 pub struct FairProbabilityInputs {
     pub spot_price: f64,
     pub strike_price: f64,
-    pub seconds_to_expiry: u64,
+    pub seconds_to_market_end: u64,
     pub realized_vol: f64,
     pub pricing_kurtosis: f64,
 }
@@ -761,7 +761,7 @@ mod tests {
         let inputs = FairProbabilityInputs {
             spot_price: 3_105.0,
             strike_price: 3_100.0,
-            seconds_to_expiry: 60,
+            seconds_to_market_end: 60,
             realized_vol: 0.45,
             pricing_kurtosis: 0.0,
         };

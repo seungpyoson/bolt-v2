@@ -5075,6 +5075,27 @@ fn rejects_zero_runtime_capture_start_poll_interval() {
 }
 
 #[test]
+fn rejects_absolute_decision_evidence_order_intents_relative_path() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
+        "order_intents_relative_path = \"/var/lib/bolt/decision-evidence/order-intents.jsonl\"",
+    );
+    let root: BoltV3RootConfig = toml::from_str(&mutated)
+        .expect("absolute decision-evidence relative-path fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|m| {
+            m.contains("persistence.decision_evidence.order_intents_relative_path")
+                && m.contains("must be non-empty, relative, and stay under catalog_directory")
+        }),
+        "expected config-load rejection of an absolute decision-evidence path, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_invalid_nt_data_engine_values() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

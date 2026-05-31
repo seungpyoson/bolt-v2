@@ -53,6 +53,7 @@ use crate::bolt_v3_config::{
     LiveCanaryProofPolicyBlock, LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND,
     PersistenceBlock, RiskBlock, SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
+use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
 
 #[derive(Debug)]
 pub struct BoltV3ValidationError {
@@ -1039,7 +1040,7 @@ fn validate_order_rate_within_venue_egress(root: &BoltV3RootConfig) -> Vec<Strin
                 }
             }
             None => errors.push(format!(
-                "clients.{key} (venue=`{venue}`) declares an [execution] block but bolt-v3 \
+                "clients.{key} (provider={venue}) declares an [execution] block but bolt-v3 \
                  models no REST egress cap for it; cannot reconcile order rates — fail closed"
             )),
         }
@@ -1100,6 +1101,11 @@ fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {
     if block.streaming.flush_interval_ms == 0 {
         errors
             .push("persistence.streaming.flush_interval_ms must be a positive integer".to_string());
+    }
+    if let Err(message) = validate_decision_evidence_relative_path(
+        &block.decision_evidence.order_intents_relative_path,
+    ) {
+        errors.push(message);
     }
     errors
 }

@@ -378,26 +378,35 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
     }
 }
 
-pub fn decision_evidence_path(loaded: &LoadedBoltV3Config) -> Result<PathBuf> {
-    let relative = Path::new(
-        loaded
-            .root
-            .persistence
-            .decision_evidence
-            .order_intents_relative_path
-            .trim(),
-    );
+/// Validates `persistence.decision_evidence.order_intents_relative_path` as the
+/// single source of truth for the predicate: the trimmed value must be
+/// non-empty, relative, and contain no `..` component so it always stays under
+/// `catalog_directory`. Returns the operator-facing error string on rejection so
+/// both config-load validation and the runtime path builder share one check.
+pub(crate) fn validate_decision_evidence_relative_path(raw: &str) -> Result<(), String> {
+    let relative = Path::new(raw.trim());
     if relative.as_os_str().is_empty()
         || relative.is_absolute()
         || relative
             .components()
             .any(|component| matches!(component, Component::ParentDir))
     {
-        return Err(anyhow!(
+        return Err(
             "persistence.decision_evidence.order_intents_relative_path must be non-empty, relative, and stay under catalog_directory"
-        ));
+                .to_string(),
+        );
     }
-    Ok(Path::new(&loaded.root.persistence.catalog_directory).join(relative))
+    Ok(())
+}
+
+pub fn decision_evidence_path(loaded: &LoadedBoltV3Config) -> Result<PathBuf> {
+    let raw = &loaded
+        .root
+        .persistence
+        .decision_evidence
+        .order_intents_relative_path;
+    validate_decision_evidence_relative_path(raw).map_err(|message| anyhow!(message))?;
+    Ok(Path::new(&loaded.root.persistence.catalog_directory).join(Path::new(raw.trim())))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

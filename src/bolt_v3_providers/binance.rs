@@ -151,7 +151,7 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
     let mut errors = Vec::new();
     if client.execution.is_some() {
         errors.push(format!(
-            "clients.{key} (provider=BINANCE) is not allowed to declare an [execution] block in the current bolt-v3 scope"
+            "clients.{key} (provider={KEY}) is not allowed to declare an [execution] block in the current bolt-v3 scope"
         ));
     }
     if let Some(data) = &client.data {
@@ -163,7 +163,7 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
     if let Some(secrets) = &client.secrets {
         if client.data.is_none() {
             errors.push(format!(
-                "clients.{key} (provider=BINANCE) declares [secrets] but no [data] block is configured; \
+                "clients.{key} (provider={KEY}) declares [secrets] but no [data] block is configured; \
                  Binance [secrets] are only allowed alongside the data adapter that consumes them"
             ));
         }

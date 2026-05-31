@@ -252,7 +252,7 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
         // on the same `clients.<id>` as the [execution] adapter.
         if client.data.is_none() {
             errors.push(format!(
-                "clients.{key} (provider=POLYMARKET) declares [execution] but no [data] block is configured; \
+                "clients.{key} (provider={KEY}) declares [execution] but no [data] block is configured; \
                  Polymarket per-target market-slug filters are attached during data-client mapping and bind by \
                  client_key, so the [data] adapter must be co-located on the same `clients.<id>` as the \
                  [execution] adapter to keep configured target market filters bound to this client_key"
@@ -276,7 +276,7 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
         // misconfiguration rather than a silent no-op.
         if client.execution.is_none() {
             errors.push(format!(
-                "clients.{key} (provider=POLYMARKET) declares [secrets] but no [execution] block is configured; \
+                "clients.{key} (provider={KEY}) declares [secrets] but no [execution] block is configured; \
                  Polymarket [secrets] are only allowed alongside the execution adapter that consumes them"
             ));
         }

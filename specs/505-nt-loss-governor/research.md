@@ -102,9 +102,9 @@
 - `src/bolt_v3_loss_governor.rs`: adds config-derived `LossGovernorPolicy`, NT-derived `LossSnapshot`, `LossAdmissionDecision`, `LossHaltReason`, and `evaluate_loss_admission`.
 - `src/lib.rs`: exports `bolt_v3_loss_governor` and `bolt_v3_loss_runtime_feed`.
 - `src/bolt_v3_config.rs`, `src/bolt_v3_validate.rs`, `tests/config_parsing.rs`: add and validate `[risk.loss_governor]` fields, including configured account id, freshness, rolling window, and thresholds.
-- `src/bolt_v3_capital_reservation.rs`: adds the reservation ledger used by the sizer core.
+- `src/bolt_v3_capital_reservation.rs`: adds the reservation ledger used by the sizer core, including reserve, release, restart rebuild, and live-liability revalue primitives.
 - `src/bolt_v3_sizing_state.rs`: validates NT-derived portfolio, order-lifecycle, product, reservation, and optional loss evidence.
-- `src/bolt_v3_position_sizer.rs`: composes policy, worst-case binary liability, loss evaluation, state freshness, and capital reservation into a pure admission decision.
+- `src/bolt_v3_position_sizer.rs`: composes policy, worst-case binary liability, loss evaluation, state freshness, and capital reservation into a pure admission decision; the admission gate exposes reserve, release, rebuild, and revalue as the lifecycle surface later live wiring must use.
 - `src/bolt_v3_submit_admission.rs`: carries optional configured loss-governor policy in shared submit admission, accepts explicit loss snapshots, rejects entry/replace risk before NT submit on missing/stale/breached facts, and leaves risk-reducing exits under existing lifecycle/count caps.
 - `src/bolt_v3_loss_runtime_feed.rs`: subscribes to NT portfolio and position event topics, filters to the configured account, derives daily/session PnL, rolling PnL from portfolio PnL deltas, per-trade PnL from position changed/closed events, current equity, and peak equity, and publishes a conservative `LossSnapshot` to submit admission.
 - `src/bolt_v3_live_node.rs`: maps enabled `[risk.loss_governor]` TOML into the shared submit-admission state and configured NT runtime feed during live-node build.
@@ -118,6 +118,8 @@
   - `max_drawdown_breach_rejects_admission`: failed before drawdown evaluation, then passed.
   - `sizer_rejects_when_loss_governor_rejects`: proves the pure sizer rejects when the pure governor rejects.
   - `restart_requires_rebuilt_open_order_reservations_before_admission`: proves the pure ledger starts fail-closed until reconciliation.
+  - `admission_gate_revalues_live_reservation_from_order_lifecycle_evidence`: failed before the gate exposed revalue, then passed after the gate wrapped the ledger revalue primitive.
+  - `admission_gate_rejects_stale_revalue_without_mutating_live_reservation`: proves stale lifecycle revalue attempts do not mutate the live reservation.
   - `configured_loss_governor_rejects_entry_without_fresh_snapshot_before_nt_submit`: proves configured submit admission fails closed before NT submit when no loss snapshot exists.
   - `configured_loss_governor_admits_entry_after_fresh_below_limit_snapshot`: proves explicit fresh below-limit snapshots admit otherwise-valid entries.
   - `configured_loss_governor_admit_uses_runtime_clock_after_fresh_snapshot_update`: failed while the live-facing `admit()` path had no runtime clock, then passed after `admit()` evaluated snapshots against system time.

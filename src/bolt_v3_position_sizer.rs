@@ -2,7 +2,7 @@ use rust_decimal::Decimal;
 
 use crate::bolt_v3_capital_reservation::{
     CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason, ReservationReleaseDecision,
-    ReservationRequest,
+    ReservationRequest, ReservationRevalueDecision, ReservationRevalueRequest,
 };
 use crate::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, evaluate_loss_admission};
 use crate::bolt_v3_sizing_state::{
@@ -214,6 +214,22 @@ impl PositionSizingAdmissionGate {
         evidence_label: &str,
     ) -> ReservationReleaseDecision {
         self.reservation_ledger.release(intent_id, evidence_label)
+    }
+
+    pub fn revalue_pending_reservation(
+        &mut self,
+        pool: &CapitalPoolSnapshot,
+        request: &ReservationRevalueRequest,
+        now_ns: u64,
+        min_remaining_pool_balance: Option<Decimal>,
+    ) -> ReservationRevalueDecision {
+        self.reservation_ledger.revalue(
+            pool,
+            request,
+            now_ns,
+            pool.max_snapshot_age_ns,
+            min_remaining_pool_balance,
+        )
     }
 
     pub fn live_reserved_liability(&self, pool_id: &str) -> Decimal {
@@ -649,6 +665,7 @@ mod tests {
 
     use crate::bolt_v3_capital_reservation::{
         CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason, ReservationRequest,
+        ReservationRevalueRequest,
     };
     use crate::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, LossSnapshot};
     use crate::bolt_v3_sizing_state::{
@@ -791,6 +808,21 @@ mod tests {
         ReservationRequest {
             evidence_label: String::new(),
             ..rebuilt_open_order_reservation(intent_id)
+        }
+    }
+
+    fn open_order_revalue(
+        intent_id: &str,
+        liability: Decimal,
+        observed_at_ns: u64,
+    ) -> ReservationRevalueRequest {
+        ReservationRevalueRequest {
+            request_id: intent_id.to_string(),
+            pool_id: "pool-1".to_string(),
+            collateral_group_id: "group-1".to_string(),
+            liability,
+            observed_at_ns,
+            evidence_label: "nt_open_order_revalue".to_string(),
         }
     }
 
@@ -1194,6 +1226,64 @@ mod tests {
 
         assert!(retry.accepted);
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
+    }
+
+    #[test]
+    fn admission_gate_revalues_live_reservation_from_order_lifecycle_evidence() {
+        let capital_pool = single_order_capital_pool();
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[rebuilt_open_order_reservation("intent-open")],
+            1_000,
+            None,
+        );
+        assert!(rebuild.accepted);
+
+        let revalue = gate.revalue_pending_reservation(
+            &capital_pool,
+            &open_order_revalue("intent-open", Decimal::new(250, 2), 1_050),
+            1_060,
+            None,
+        );
+
+        assert!(revalue.accepted);
+        assert_eq!(revalue.previous_liability, Some(Decimal::new(430, 2)));
+        assert_eq!(revalue.revalued_liability, Some(Decimal::new(250, 2)));
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(250, 2));
+    }
+
+    #[test]
+    fn admission_gate_rejects_stale_revalue_without_mutating_live_reservation() {
+        let capital_pool = single_order_capital_pool();
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[rebuilt_open_order_reservation("intent-open")],
+            1_000,
+            None,
+        );
+        assert!(rebuild.accepted);
+
+        let first = gate.revalue_pending_reservation(
+            &capital_pool,
+            &open_order_revalue("intent-open", Decimal::new(250, 2), 1_050),
+            1_060,
+            None,
+        );
+        assert!(first.accepted);
+
+        let stale = gate.revalue_pending_reservation(
+            &capital_pool,
+            &open_order_revalue("intent-open", Decimal::new(300, 2), 1_025),
+            1_060,
+            None,
+        );
+
+        assert!(!stale.accepted);
+        assert_eq!(stale.reason, Some(ReservationRejectionReason::StaleRequest));
+        assert_eq!(stale.revalued_liability, None);
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(250, 2));
     }
 
     #[test]

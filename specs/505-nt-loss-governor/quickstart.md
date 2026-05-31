@@ -30,4 +30,4 @@ Expected output is empty for this slice.
 
 ## Proof Boundary
 
-Passing tests in PR #507 prove pure policy behavior, config binding, NT-derived sizing-state validation, worst-case binary liability sizing, capital-reservation behavior, configured submit-admission loss rejection before NT submit, and configured NT event-feed snapshot derivation. They do not prove positional-sizer live-path enforcement, cancel/flatten behavior, or explicit NT RiskEngine trading-state transitions.
+Passing tests in PR #507 prove pure policy behavior, config binding, NT-derived sizing-state validation, worst-case binary liability sizing, capital-reservation reserve/release/rebuild/revalue behavior, configured submit-admission loss rejection before NT submit, and configured NT event-feed snapshot derivation. They do not prove positional-sizer live-path enforcement, cancel/flatten behavior, or explicit NT RiskEngine trading-state transitions.

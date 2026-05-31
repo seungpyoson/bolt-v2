@@ -24,6 +24,7 @@ pub struct ReservationRequest {
 pub struct ReservationRevalueRequest {
     pub request_id: String,
     pub pool_id: String,
+    pub collateral_group_id: String,
     pub liability: Decimal,
     pub observed_at_ns: u64,
     pub evidence_label: String,
@@ -36,6 +37,7 @@ pub enum ReservationRejectionReason {
     PoolMismatch,
     OverBudget,
     InvalidRequest,
+    CollateralGroupMismatch,
     DuplicateReservation,
     UnknownReservation,
     UnknownRelease,
@@ -240,8 +242,10 @@ impl ReservationLedger {
         if pool.pool_id != request.pool_id {
             return rejected_revalue(ReservationRejectionReason::PoolMismatch);
         }
+        // Terminal zero-liability order events release reservations; revalue tracks live residual liability.
         if request.request_id.trim().is_empty()
             || request.pool_id.trim().is_empty()
+            || request.collateral_group_id.trim().is_empty()
             || request.liability <= Decimal::ZERO
         {
             return rejected_revalue(ReservationRejectionReason::InvalidRequest);
@@ -264,6 +268,12 @@ impl ReservationLedger {
         };
         if self.live_reservations[index].pool_id != pool.pool_id {
             return rejected_revalue(ReservationRejectionReason::PoolMismatch);
+        }
+        if self.live_reservations[index].collateral_group_id != request.collateral_group_id {
+            return rejected_revalue(ReservationRejectionReason::CollateralGroupMismatch);
+        }
+        if request.observed_at_ns <= self.live_reservations[index].observed_at_ns {
+            return rejected_revalue(ReservationRejectionReason::StaleRequest);
         }
         let previous_liability = self.live_reservations[index].liability;
         let available_before = pool.max_pool_liability
@@ -470,6 +480,7 @@ mod tests {
         let revalue = ReservationRevalueRequest {
             request_id: "request-4".to_string(),
             pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
             liability: Decimal::new(25, 0),
             observed_at_ns: 1_030,
             evidence_label: "nt-partial-fill-snapshot".to_string(),
@@ -510,6 +521,7 @@ mod tests {
         let revalue = ReservationRevalueRequest {
             request_id: "request-5".to_string(),
             pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
             liability: Decimal::new(25, 0),
             observed_at_ns: 1_030,
             evidence_label: "nt-open-order-revalue".to_string(),
@@ -529,6 +541,214 @@ mod tests {
         assert_eq!(
             ledger.live_reserved_liability("polymarket-live"),
             Decimal::new(10, 0)
+        );
+    }
+
+    #[test]
+    fn upward_revalue_within_budget_increases_live_reservation() {
+        let pool = CapitalPoolSnapshot {
+            source: "nt_account_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            pool_id: "polymarket-live".to_string(),
+            max_pool_liability: Decimal::new(100, 0),
+            committed_liability: Decimal::ZERO,
+            max_snapshot_age_ns: 100,
+        };
+        let request = ReservationRequest {
+            request_id: "request-6".to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
+            liability: Decimal::new(10, 0),
+            observed_at_ns: 1_010,
+            evidence_label: "nt-open-order-snapshot".to_string(),
+        };
+        let revalue = ReservationRevalueRequest {
+            request_id: "request-6".to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
+            liability: Decimal::new(25, 0),
+            observed_at_ns: 1_030,
+            evidence_label: "nt-open-order-revalue".to_string(),
+        };
+        let mut ledger = ReservationLedger::reconciled();
+        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+
+        let decision = ledger.revalue(&pool, &revalue, 1_040, 100, None);
+
+        assert!(decision.accepted);
+        assert_eq!(decision.previous_liability, Some(Decimal::new(10, 0)));
+        assert_eq!(decision.revalued_liability, Some(Decimal::new(25, 0)));
+        assert_eq!(
+            ledger.live_reserved_liability("polymarket-live"),
+            Decimal::new(25, 0)
+        );
+    }
+
+    #[test]
+    fn revalue_rejects_when_min_remaining_pool_balance_would_be_breached() {
+        let pool = CapitalPoolSnapshot {
+            source: "nt_account_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            pool_id: "polymarket-live".to_string(),
+            max_pool_liability: Decimal::new(100, 0),
+            committed_liability: Decimal::ZERO,
+            max_snapshot_age_ns: 100,
+        };
+        let request = ReservationRequest {
+            request_id: "request-7".to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
+            liability: Decimal::new(10, 0),
+            observed_at_ns: 1_010,
+            evidence_label: "nt-open-order-snapshot".to_string(),
+        };
+        let revalue = ReservationRevalueRequest {
+            request_id: "request-7".to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
+            liability: Decimal::new(25, 0),
+            observed_at_ns: 1_030,
+            evidence_label: "nt-open-order-revalue".to_string(),
+        };
+        let mut ledger = ReservationLedger::reconciled();
+        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+
+        let decision = ledger.revalue(&pool, &revalue, 1_040, 100, Some(Decimal::new(80, 0)));
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.reason,
+            Some(super::ReservationRejectionReason::OverBudget)
+        );
+        assert_eq!(
+            ledger.live_reserved_liability("polymarket-live"),
+            Decimal::new(10, 0)
+        );
+    }
+
+    #[test]
+    fn out_of_order_revalue_rejects_without_mutating_live_reservation() {
+        let pool = CapitalPoolSnapshot {
+            source: "nt_account_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            pool_id: "polymarket-live".to_string(),
+            max_pool_liability: Decimal::new(100, 0),
+            committed_liability: Decimal::ZERO,
+            max_snapshot_age_ns: 100,
+        };
+        let request = ReservationRequest {
+            request_id: "request-6".to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
+            liability: Decimal::new(40, 0),
+            observed_at_ns: 1_030,
+            evidence_label: "nt-open-order-snapshot".to_string(),
+        };
+        let revalue = ReservationRevalueRequest {
+            request_id: "request-6".to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
+            liability: Decimal::new(25, 0),
+            observed_at_ns: 1_020,
+            evidence_label: "nt-delayed-partial-fill-snapshot".to_string(),
+        };
+        let mut ledger = ReservationLedger::reconciled();
+        assert!(ledger.reserve(&pool, &request, 1_040, 100, None).accepted);
+
+        let decision = ledger.revalue(&pool, &revalue, 1_050, 100, None);
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.reason,
+            Some(super::ReservationRejectionReason::StaleRequest)
+        );
+        assert_eq!(
+            ledger.live_reserved_liability("polymarket-live"),
+            Decimal::new(40, 0)
+        );
+    }
+
+    #[test]
+    fn equal_timestamp_revalue_rejects_without_mutating_live_reservation() {
+        let pool = CapitalPoolSnapshot {
+            source: "nt_account_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            pool_id: "polymarket-live".to_string(),
+            max_pool_liability: Decimal::new(100, 0),
+            committed_liability: Decimal::ZERO,
+            max_snapshot_age_ns: 100,
+        };
+        let request = ReservationRequest {
+            request_id: "request-8".to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
+            liability: Decimal::new(40, 0),
+            observed_at_ns: 1_030,
+            evidence_label: "nt-open-order-snapshot".to_string(),
+        };
+        let revalue = ReservationRevalueRequest {
+            request_id: "request-8".to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
+            liability: Decimal::new(25, 0),
+            observed_at_ns: 1_030,
+            evidence_label: "nt-duplicate-order-snapshot".to_string(),
+        };
+        let mut ledger = ReservationLedger::reconciled();
+        assert!(ledger.reserve(&pool, &request, 1_040, 100, None).accepted);
+
+        let decision = ledger.revalue(&pool, &revalue, 1_050, 100, None);
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.reason,
+            Some(super::ReservationRejectionReason::StaleRequest)
+        );
+        assert_eq!(
+            ledger.live_reserved_liability("polymarket-live"),
+            Decimal::new(40, 0)
+        );
+    }
+
+    #[test]
+    fn revalue_rejects_collateral_group_mismatch_without_mutating_live_reservation() {
+        let pool = CapitalPoolSnapshot {
+            source: "nt_account_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            pool_id: "polymarket-live".to_string(),
+            max_pool_liability: Decimal::new(100, 0),
+            committed_liability: Decimal::ZERO,
+            max_snapshot_age_ns: 100,
+        };
+        let request = ReservationRequest {
+            request_id: "request-9".to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
+            liability: Decimal::new(40, 0),
+            observed_at_ns: 1_010,
+            evidence_label: "nt-open-order-snapshot".to_string(),
+        };
+        let revalue = ReservationRevalueRequest {
+            request_id: "request-9".to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "eth-updown-15m".to_string(),
+            liability: Decimal::new(25, 0),
+            observed_at_ns: 1_030,
+            evidence_label: "nt-open-order-revalue".to_string(),
+        };
+        let mut ledger = ReservationLedger::reconciled();
+        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+
+        let decision = ledger.revalue(&pool, &revalue, 1_040, 100, None);
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.reason,
+            Some(super::ReservationRejectionReason::CollateralGroupMismatch)
+        );
+        assert_eq!(
+            ledger.live_reserved_liability("polymarket-live"),
+            Decimal::new(40, 0)
         );
     }
 
@@ -557,6 +777,7 @@ mod tests {
         let revalue = ReservationRevalueRequest {
             request_id: "request-6".to_string(),
             pool_id: "kalshi-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
             liability: Decimal::new(25, 0),
             observed_at_ns: 1_030,
             evidence_label: "nt-open-order-revalue".to_string(),

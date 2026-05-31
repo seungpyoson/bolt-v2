@@ -134,13 +134,13 @@ pub struct PositionSizingRebuildDecision {
     pub live_reserved_liability: Decimal,
 }
 
+/// Serialize access to this gate behind one actor, mutex, or exclusive borrow.
 #[derive(Debug)]
 pub struct PositionSizingAdmissionGate {
     reservation_ledger: ReservationLedger,
 }
 
 impl PositionSizingAdmissionGate {
-    /// Own this gate behind one actor, mutex, or exclusive borrow for live submit admission.
     pub fn unreconciled() -> Self {
         Self {
             reservation_ledger: ReservationLedger::unreconciled(),
@@ -160,6 +160,9 @@ impl PositionSizingAdmissionGate {
         now_ns: u64,
         min_remaining_pool_balance: Option<Decimal>,
     ) -> PositionSizingRebuildDecision {
+        // Restart replay is a replacement operation: fail closed unless every recovered order
+        // reservation can be rebuilt from current NT-derived evidence.
+        self.reservation_ledger = ReservationLedger::unreconciled();
         let mut rebuilt_ledger = ReservationLedger::reconciled();
         for (index, reservation) in open_order_reservations.iter().enumerate() {
             let decision = rebuilt_ledger.reserve(
@@ -1278,6 +1281,41 @@ mod tests {
     }
 
     #[test]
+    fn restart_rebuild_with_no_open_orders_reopens_gate_with_zero_reservations() {
+        let loss_snapshot = LossSnapshot {
+            source: "nt_portfolio_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            per_trade_pnl: Some(Decimal::new(-5, 0)),
+            daily_pnl: None,
+            rolling_pnl: None,
+            current_equity: None,
+            peak_equity: None,
+        };
+        let state = nt_state(Some(loss_snapshot));
+        let policy = policy();
+        let capital_pool = capital_pool();
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+
+        let rebuild = gate.rebuild_open_order_reservations(&capital_pool, &[], 1_000, None);
+
+        assert!(rebuild.accepted);
+        assert_eq!(rebuild.attempted_reservation_count, 0);
+        assert_eq!(rebuild.rebuilt_reservation_count, 0);
+        assert_eq!(rebuild.live_reserved_liability, Decimal::ZERO);
+
+        let decision = gate.evaluate_and_reserve(PositionSizingGateInputs {
+            request: &request_with_intent("intent-new"),
+            state: Some(&state),
+            policy: &policy,
+            loss_policy: Some(&loss_policy()),
+            capital_pool: &capital_pool,
+        });
+
+        assert!(decision.accepted);
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
+    }
+
+    #[test]
     fn failed_restart_rebuild_keeps_gate_closed_without_partial_reservations() {
         let loss_snapshot = LossSnapshot {
             source: "nt_portfolio_snapshot".to_string(),
@@ -1309,6 +1347,113 @@ mod tests {
         assert_eq!(rebuild.attempted_reservation_count, 1);
         assert_eq!(rebuild.rebuilt_reservation_count, 0);
         assert_eq!(rebuild.live_reserved_liability, Decimal::ZERO);
+
+        let decision = gate.evaluate_and_reserve(PositionSizingGateInputs {
+            request: &request_with_intent("intent-new"),
+            state: Some(&state),
+            policy: &policy,
+            loss_policy: Some(&loss_policy()),
+            capital_pool: &capital_pool,
+        });
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.reasons,
+            vec![SizedAdmissionReason::Reservation(
+                ReservationRejectionReason::ReconciliationRequired
+            )]
+        );
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
+    }
+
+    #[test]
+    fn failed_restart_rebuild_discards_reservations_staged_before_later_failure() {
+        let loss_snapshot = LossSnapshot {
+            source: "nt_portfolio_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            per_trade_pnl: Some(Decimal::new(-5, 0)),
+            daily_pnl: None,
+            rolling_pnl: None,
+            current_equity: None,
+            peak_equity: None,
+        };
+        let state = nt_state(Some(loss_snapshot));
+        let policy = policy();
+        let capital_pool = single_order_capital_pool();
+        let open_reservation = rebuilt_open_order_reservation("intent-open");
+        let invalid_reservation = invalid_rebuilt_open_order_reservation("intent-invalid");
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+
+        let rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[open_reservation, invalid_reservation],
+            1_000,
+            None,
+        );
+
+        assert!(!rebuild.accepted);
+        assert_eq!(
+            rebuild.reason,
+            Some(ReservationRejectionReason::MissingEvidence)
+        );
+        assert_eq!(rebuild.attempted_reservation_count, 2);
+        assert_eq!(rebuild.rebuilt_reservation_count, 1);
+        assert_eq!(rebuild.live_reserved_liability, Decimal::ZERO);
+
+        let decision = gate.evaluate_and_reserve(PositionSizingGateInputs {
+            request: &request_with_intent("intent-new"),
+            state: Some(&state),
+            policy: &policy,
+            loss_policy: Some(&loss_policy()),
+            capital_pool: &capital_pool,
+        });
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.reasons,
+            vec![SizedAdmissionReason::Reservation(
+                ReservationRejectionReason::ReconciliationRequired
+            )]
+        );
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
+    }
+
+    #[test]
+    fn failed_restart_rebuild_after_prior_success_clears_stale_reservations() {
+        let loss_snapshot = LossSnapshot {
+            source: "nt_portfolio_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            per_trade_pnl: Some(Decimal::new(-5, 0)),
+            daily_pnl: None,
+            rolling_pnl: None,
+            current_equity: None,
+            peak_equity: None,
+        };
+        let state = nt_state(Some(loss_snapshot));
+        let policy = policy();
+        let capital_pool = single_order_capital_pool();
+        let open_reservation = rebuilt_open_order_reservation("intent-open");
+        let invalid_reservation = invalid_rebuilt_open_order_reservation("intent-invalid");
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+
+        let initial_rebuild =
+            gate.rebuild_open_order_reservations(&capital_pool, &[open_reservation], 1_000, None);
+        assert!(initial_rebuild.accepted);
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
+
+        let failed_rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[invalid_reservation],
+            1_000,
+            None,
+        );
+
+        assert!(!failed_rebuild.accepted);
+        assert_eq!(
+            failed_rebuild.reason,
+            Some(ReservationRejectionReason::MissingEvidence)
+        );
+        assert_eq!(failed_rebuild.live_reserved_liability, Decimal::ZERO);
 
         let decision = gate.evaluate_and_reserve(PositionSizingGateInputs {
             request: &request_with_intent("intent-new"),

@@ -1,0 +1,69 @@
+# P5 Adjudication — Market-Family / Instrument-Filter (PR #480)
+
+HEAD `1f6ee056`. 6 external models; every finding re-verified vs HEAD bytes (and the pinned
+NT rev `6e059dc` for adapter semantics). Verdict: **HAS-LIVE-MONEY-CRITICAL (conditional)** —
+driven solely by P5-5 (venue-unscoped selection from the global cache); not reachable under the
+current single-venue config but a genuine missing fail-closed invariant. Everything else is
+HARDENING.
+
+Anchors use function name + file (line numbers approximate; re-locate by name + re-verify).
+**Every fix must preserve or TIGHTEN fail-closed behavior — never loosen a guard.**
+
+## CONFIRMED — actionable
+
+- **P5-5 (LIVE-MONEY, conditional) — DEFERRED to multi-venue workstream (operator decision 2026-05-31).**
+  NOT reachable in the current single-venue (Polymarket-only) config — a wrong-venue selection
+  cannot occur while only one venue's instruments are in the NT cache, and the existing
+  `up_venue == down_venue` self-consistency guard (`selected_market_requirement`) stays. The clean
+  fix needs the execution venue (`root.clients[execution_client_id].venue`) threaded into the
+  strategy build context (~8 `StrategyBuildContext::new` sites + venue-resolution wiring) — broad
+  surgery on the live strategy that is the wrong risk/reward immediately before the real-money
+  canary, for an invariant that cannot fire single-venue. TRACK as a fail-closed invariant for the
+  multi-venue work; add a loud code comment at the selection site; revisit when a second venue's
+  instruments can coexist in the cache. Original analysis retained below for that future work.
+  `src/bolt_v3_market_families/updown.rs`
+  (`updown_outcome_instrument` ~1203-1234 matches `market_slug` + `Up`/`Down` outcome with NO
+  `binary.id.venue` check) + `src/strategies/binary_oracle_edge_taker.rs` (~2142 feeds the
+  selection the WHOLE global NT cache via `cache.instrument_ids(None)`). Venue is only
+  self-consistency-checked (up_venue == down_venue, updown.rs ~1004), never tied to the
+  execution client's venue. A colliding slug+identity instrument on another venue could be
+  selected. FIX (fail-closed): scope selection to the execution client's configured venue —
+  filter the instrument set to that venue (replace `instrument_ids(None)` with a venue-scoped
+  query) AND/OR add a venue guard in `updown_outcome_instrument`/`selected_market_requirement`
+  asserting the selected pair's venue equals the configured execution venue. Prefer doing BOTH
+  (defense in depth). Must not change single-venue behavior.
+- **P5-1** `src/bolt_v3_market_families/mod.rs` (`market_identity_plan_from_config` ~244-249) —
+  hardcodes `updown::plan_market_identity` dispatch, bypassing `VALIDATION_BINDINGS` that the
+  other 5 family operations use. FIX: route plan-building through a registry binding entry, same
+  pattern as the siblings (single dispatch path).
+- **P5-2** `src/bolt_v3_providers/polymarket.rs` (`build_market_slug_filter` Err arm ~738-743)
+  — warns then returns `Vec::new()` on clock/period error. It is fail-CLOSED (universe narrows
+  to zero, proven vs NT `6e059dc`), but silent. FIX: escalate `warn!`→`error!` or fail-closed at
+  startup so silent data-starvation is loud. **(This file is owned by the providers cluster.)**
+- **P5-3** `src/bolt_v3_market_families/mod.rs` (`select_binary_option_market_from_target_with_bindings`
+  ~329-341) — returns silent `None` for an unknown family; sibling dispatchers return
+  `UnsupportedFamily`. FIX: return `Result<Option<_>, InstrumentFilterError>` (or equivalent)
+  and converge with the siblings — fail loud on unknown family.
+- **P5-4** `src/bolt_v3_market_families/mod.rs` (`instrument_filters_from_config[_with_bindings]`
+  ~251-286) + `src/bolt_v3_instrument_filters.rs` (~11-59) — dead production path (only test
+  callers); production filters run through `market_identity_plan_from_config`. FIX: delete the
+  unused path (NO DUAL PATHS), or make production consume it. Verify zero non-test callers first.
+- **P5-6** `src/bolt_v3_market_families/updown.rs` (`target_runtime_string` ~865-874) — two
+  `.expect()` on a generic `T: Serialize`. Unreachable today (callers pass validated enums) but a
+  latent panic. FIX: return `Result` and propagate.
+- **P5-7** dup `format_target_prefix`: `src/bolt_v3_instrument_filters.rs` (~144-154, pub(crate))
+  vs `src/bolt_v3_market_families/updown.rs` (~632-642, private). FIX: delete the private copy;
+  call the `pub(crate)` one (NO DUAL PATHS).
+- **P5-8** `src/bolt_v3_market_families/updown.rs` (`select_market_from_instruments` ~881-883) —
+  `.ok()?` swallows period/clock errors to silent `None`. FIX: converge with P5-3 policy (return
+  Result / fail loud); cadence is config-validated so this is defensive.
+- **P5-10** `src/strategies/binary_oracle_edge_taker.rs` (~86 `rotating_market_family: String`)
+  — accepts any value at parse. Startup validation rejects unknown families loud, so
+  defense-in-depth only. FIX (optional): validate against `validation_bindings()` at parse.
+
+## DISPROVEN / scope-drift (do NOT touch)
+- **P5-9** (Gemini) — mismatched activation/expiration "dangerous aggregation": DISPROVEN as a
+  hazard; the 4-field identity cross-check (`candidate_market_for_slug` ~1163-1168) gates pairing
+  before the conservative min/max. No change.
+- **P5-11** (Gemini) — core validation traversing gate_subscriptions/market_mappings: SCOPE-DRIFT
+  to P2; not a P5 concern.

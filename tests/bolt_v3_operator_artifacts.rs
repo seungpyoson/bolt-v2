@@ -11874,7 +11874,6 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
         &decision_evidence_path,
         100_000,
         market_selection_source_ref,
-        &[TEST_MARKET_SELECTION_START_MS],
         &strategy_input_path,
     )
     .expect("source-bound runtime decision evidence should write strategy input evidence");
@@ -11955,7 +11954,6 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
         &wrong_decision_evidence_path,
         100_000,
         market_selection_source_ref,
-        &[TEST_MARKET_SELECTION_START_MS],
         &wrong_strategy_input_path,
     )
     .expect_err("strategy input evidence must reject decision chains from another strategy");

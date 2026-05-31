@@ -129,6 +129,7 @@ pub struct PositionSizingGateInputs<'a> {
 pub struct PositionSizingRebuildDecision {
     pub accepted: bool,
     pub reason: Option<ReservationRejectionReason>,
+    pub attempted_reservation_count: usize,
     pub rebuilt_reservation_count: usize,
     pub live_reserved_liability: Decimal,
 }
@@ -172,6 +173,7 @@ impl PositionSizingAdmissionGate {
                 return PositionSizingRebuildDecision {
                     accepted: false,
                     reason: decision.reason,
+                    attempted_reservation_count: index + 1,
                     rebuilt_reservation_count: index,
                     live_reserved_liability: self.live_reserved_liability(&pool.pool_id),
                 };
@@ -182,6 +184,7 @@ impl PositionSizingAdmissionGate {
         PositionSizingRebuildDecision {
             accepted: true,
             reason: None,
+            attempted_reservation_count: open_order_reservations.len(),
             rebuilt_reservation_count: open_order_reservations.len(),
             live_reserved_liability: self.live_reserved_liability(&pool.pool_id),
         }
@@ -780,6 +783,13 @@ mod tests {
         }
     }
 
+    fn invalid_rebuilt_open_order_reservation(intent_id: &str) -> ReservationRequest {
+        ReservationRequest {
+            evidence_label: String::new(),
+            ..rebuilt_open_order_reservation(intent_id)
+        }
+    }
+
     #[test]
     fn prediction_market_binary_liability_formula_is_pinned() {
         let calculator = PredictionMarketBinaryLiabilityCalculator;
@@ -1264,5 +1274,56 @@ mod tests {
             )]
         );
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
+    }
+
+    #[test]
+    fn failed_restart_rebuild_keeps_gate_closed_without_partial_reservations() {
+        let loss_snapshot = LossSnapshot {
+            source: "nt_portfolio_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            per_trade_pnl: Some(Decimal::new(-5, 0)),
+            daily_pnl: None,
+            rolling_pnl: None,
+            current_equity: None,
+            peak_equity: None,
+        };
+        let state = nt_state(Some(loss_snapshot));
+        let policy = policy();
+        let capital_pool = single_order_capital_pool();
+        let invalid_reservation = invalid_rebuilt_open_order_reservation("intent-open");
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+
+        let rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[invalid_reservation],
+            1_000,
+            None,
+        );
+
+        assert!(!rebuild.accepted);
+        assert_eq!(
+            rebuild.reason,
+            Some(ReservationRejectionReason::MissingEvidence)
+        );
+        assert_eq!(rebuild.attempted_reservation_count, 1);
+        assert_eq!(rebuild.rebuilt_reservation_count, 0);
+        assert_eq!(rebuild.live_reserved_liability, Decimal::ZERO);
+
+        let decision = gate.evaluate_and_reserve(PositionSizingGateInputs {
+            request: &request_with_intent("intent-new"),
+            state: Some(&state),
+            policy: &policy,
+            loss_policy: Some(&loss_policy()),
+            capital_pool: &capital_pool,
+        });
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.reasons,
+            vec![SizedAdmissionReason::Reservation(
+                ReservationRejectionReason::ReconciliationRequired
+            )]
+        );
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
     }
 }

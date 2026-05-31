@@ -338,12 +338,23 @@ pub fn select_binary_option_market_from_target_with_bindings(
     now_milliseconds: u64,
     bindings: &[MarketFamilyValidationBinding],
 ) -> Option<SelectedBinaryOptionMarket> {
-    bindings
+    // An unknown `family_key` must never reach here: startup validation (P5-10) rejects
+    // an unregistered `rotating_market_family` at config load. If it somehow does, fail
+    // LOUD — an `error!` an operator can see — rather than a silent `None` that is
+    // indistinguishable from "no market this cycle" and masks the broken invariant
+    // (P5-3). The signature stays `Option` so the live-money strategy/operator selection
+    // chain is not refactored to `Result` for a branch that cannot be reached.
+    let Some(binding) = bindings
         .iter()
         .find(|binding| binding.key == target.family_key)
-        .and_then(|binding| {
-            (binding.select_binary_option_market)(target, instruments, now_milliseconds)
-        })
+    else {
+        log::error!(
+            "bolt-v3 market selection: no registered family binding for `{}` (config validation should have rejected this before runtime); selecting no market",
+            target.family_key
+        );
+        return None;
+    };
+    (binding.select_binary_option_market)(target, instruments, now_milliseconds)
 }
 
 pub fn market_selection_candidate_windows_from_target(

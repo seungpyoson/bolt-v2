@@ -813,9 +813,28 @@ pub fn select_market_from_instruments(
     instruments: &[InstrumentAny],
     now_milliseconds: u64,
 ) -> Option<SelectedUpdownMarket> {
-    let now_unix_secs = i64::try_from(Duration::from_millis(now_milliseconds).as_secs()).ok()?;
-    let (current_start, next_start) =
-        updown_period_pair(target.cadence_secs, now_unix_secs).ok()?;
+    // The cadence is config-validated positive and `now_milliseconds` comes from the
+    // runtime clock, so neither step below can fail in practice. If one ever does, fail
+    // LOUD (operator-visible `error!`) instead of a silent `None` that masks a clock /
+    // overflow fault (P5-8). The signature stays `Option` for the same reason as
+    // `select_binary_option_market_from_target_with_bindings` (P5-3): no `Result` refactor
+    // of the live-money selection chain for a branch that cannot be reached.
+    let Ok(now_unix_secs) = i64::try_from(Duration::from_millis(now_milliseconds).as_secs()) else {
+        log::error!(
+            "bolt-v3 updown selection: now_milliseconds={now_milliseconds} overflows i64 seconds; selecting no market"
+        );
+        return None;
+    };
+    let (current_start, next_start) = match updown_period_pair(target.cadence_secs, now_unix_secs) {
+        Ok(pair) => pair,
+        Err(error) => {
+            log::error!(
+                "bolt-v3 updown selection: period-pair failed (cadence_secs={}, now_unix_secs={now_unix_secs}); selecting no market: {error}",
+                target.cadence_secs
+            );
+            return None;
+        }
+    };
     let current_slug = updown_market_slug(
         target.underlying_asset,
         target.cadence_slug_token,

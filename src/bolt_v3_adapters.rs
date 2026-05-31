@@ -401,6 +401,10 @@ mod tests {
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }
+
+        fn redaction_values(&self) -> Vec<&str> {
+            Vec::new()
+        }
     }
 
     fn validate_fake_provider_client(

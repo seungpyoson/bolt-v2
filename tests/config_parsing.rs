@@ -1305,6 +1305,52 @@ fn bolt_v3_archetype_rejects_order_notional_target_above_maximum_position_notion
 }
 
 #[test]
+fn bolt_v3_archetype_rejects_negative_edge_threshold_basis_points() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let parameters = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table");
+    // A negative edge threshold admits negative-edge (guaranteed-loss) entries and must
+    // fail closed at load (A-EDGE).
+    parameters.insert(
+        "edge_threshold_basis_points".to_string(),
+        toml::Value::Integer(-1),
+    );
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.edge_threshold_basis_points")
+                && message.contains("must be >= 0")
+        }),
+        "negative edge_threshold_basis_points must fail closed at load: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_archetype_rejects_reduce_only_entry_order() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},

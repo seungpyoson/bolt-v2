@@ -60,3 +60,13 @@ F6 (Debug leak — wrapper redacts, test asserts), F11 (data-only execution:None
 loud at load), F14 (4 mandatory SSM paths — all required by NT CLOB), F18 (AWS SDK identity
 chain — infra identity ≠ trading secret, required by design). F13/F15 are scope-drift to P4
 and correct as-is.
+
+## Fix-landing status (current head, 2026-06-01)
+
+Re-verified vs HEAD (verification workflow + personal spot-checks):
+- **FIXED-IN-CODE (landed in `dfb4a44e`):** F1, F2, F5, F7, F8, F12, F16, F17, F19 (9 hardening items).
+- **DEFERRED-OK:** F4 (build-graph — the leak verifier derives its denylist from Cargo `nautilus-*` deps, so it compensates), F9 (NT-boundary clone — unavoidable NT API constraint), F20 (NT Debug leak — mitigated by the `WARN` filter; upstream concern).
+- **F10 — FIXED (this slice):** `ProviderResolvedSecrets::redaction_values` default body removed → required trait method (a missing override is now a COMPILE error); `FakeProviderSecrets` test impl given an explicit empty override. Verified: lib + test compile; 3 redaction tests pass.
+- **F3 — DEFERRED (recorded):** the `ClobV2*` materialization types/fns are Polymarket-specific; an explicit ownership comment now sits on the declarations in `src/bolt_v3_providers/mod.rs` (preserves the fence intent). Full rename to `PolymarketClobV2*` is deferred to a dedicated PR (~7-file blast radius: `src/main.rs`, `src/bolt_v3_operator_artifacts.rs` ~85 refs, `polymarket/*` submodules).
+
+**No remaining unaddressed P3 finding.** Ready for external re-review (base `1f6ee056` → current head).

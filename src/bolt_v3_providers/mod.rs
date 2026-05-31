@@ -40,9 +40,11 @@ use crate::{
 pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
     fn provider_key(&self) -> &'static str;
     fn as_any(&self) -> &dyn Any;
-    fn redaction_values(&self) -> Vec<&str> {
-        Vec::new()
-    }
+    /// Required (no default): each provider's resolved-secrets type MUST declare the
+    /// secret strings the post-run residue scan redacts. Removing the default makes a
+    /// missing override a COMPILE error, so a new provider can't silently contribute
+    /// zero redaction values (F10).
+    fn redaction_values(&self) -> Vec<&str>;
 }
 
 pub type ResolvedClientSecrets = Arc<dyn ProviderResolvedSecrets>;
@@ -173,6 +175,14 @@ pub type CanaryProofArtifactsCollector = for<'a> fn(
     Box<dyn Future<Output = Result<CanaryProofArtifactsWritten, BoltV3OperatorArtifactError>> + 'a>,
 >;
 
+// PROVIDER-SPECIFIC (Polymarket CLOB v2) — DEFER (P3-F3). Every `ClobV2*` type and
+// `*_clob_v2_*` fn below materializes Polymarket CLOB v2 signing / fee / collateral
+// evidence from NT `nautilus_polymarket` sources — they are NOT venue-agnostic despite
+// the neutral `ClobV2` prefix. The provider-leak fence intent is preserved here by this
+// explicit ownership note; a full rename to `PolymarketClobV2*` is deferred to a
+// dedicated PR because it touches ~7 files (src/main.rs, src/bolt_v3_operator_artifacts.rs
+// at ~85 refs, and the polymarket/* submodules) — out of scope for this readiness slice.
+// Recorded in specs/024-production-trade-readiness/external-review/P3-adjudication.md (F3).
 #[derive(Clone, Copy)]
 pub struct ClobV2AdapterSigningSourceMaterializationRequest<'a> {
     pub schema_version: u32,

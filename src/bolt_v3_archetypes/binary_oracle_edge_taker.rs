@@ -1256,6 +1256,15 @@ fn validate_parameter_bounds(
             "{context}: parameters.order_notional_target ({order_target}) must be <= parameters.maximum_position_notional ({position_max})"
         ));
     }
+    // A negative edge threshold admits negative-edge (guaranteed-loss) entries: the entry
+    // edge gate `expected_edge > threshold * theta` is satisfied for any edge — including
+    // losing ones — when the threshold is negative. Fail closed at load (A-EDGE).
+    if parameters.edge_threshold_basis_points < 0 {
+        errors.push(format!(
+            "{context}: parameters.edge_threshold_basis_points ({}) must be >= 0 (a negative edge threshold admits negative-edge / guaranteed-loss entries)",
+            parameters.edge_threshold_basis_points
+        ));
+    }
     errors
 }
 

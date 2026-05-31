@@ -67,3 +67,22 @@ Anchors use function name + file (line numbers approximate; re-locate by name + 
   before the conservative min/max. No change.
 - **P5-11** (Gemini) — core validation traversing gate_subscriptions/market_mappings: SCOPE-DRIFT
   to P2; not a P5 concern.
+
+## Fix-landing status (current head, 2026-06-01)
+
+Re-verified vs HEAD (verification workflow + personal):
+- **FIXED-IN-CODE (landed in `dfb4a44e`):** P5-1, P5-2, P5-4, P5-6, P5-7, P5-10.
+- **DEFERRED-OK:** P5-5 (multi-venue) — the loud deferral comment + the `up_venue == down_venue`
+  self-consistency guard are both present at the selection site; the cross-venue invariant is
+  unreachable single-venue and tracked for the multi-venue workstream.
+- **P5-3 — FIXED (this slice):** the unknown-`family_key` branch of
+  `select_binary_option_market_from_target_with_bindings` now emits a loud `error!` instead of a
+  silent `None` (the "or equivalent" fail-loud the finding asked for). The signature stays
+  `Option` deliberately — converting the live-money strategy/operator selection chain to `Result`
+  for a branch that **cannot** be reached (P5-10 rejects unknown families at config load) is the
+  wrong risk/reward; the loud guard makes the should-never-happen visible without the cascade.
+- **P5-8 — FIXED (this slice):** the `i64::try_from` and `updown_period_pair` `.ok()?` swallows in
+  `select_market_from_instruments` now emit a loud `error!` before returning `None` (same rationale;
+  cadence is config-validated positive and `now` is clock-sourced, so both are unreachable faults).
+
+**No remaining unaddressed P5 finding.** Ready for external re-review (base `1f6ee056` → current head).

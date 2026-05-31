@@ -571,6 +571,18 @@ pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
         .find(|binding| binding.key == key)
 }
 
+/// Per-minute REST egress ceiling for a configured trading venue, looked up by
+/// NT venue key from the owning provider module so core validation stays
+/// provider-agnostic. Returns `None` for venues whose ceiling bolt-v3 does not
+/// model; the complete multi-venue total-REST-budget contract is tracked in
+/// #488.
+pub fn venue_rest_egress_cap_per_minute(venue: &str) -> Option<u32> {
+    match venue {
+        polymarket::KEY => Some(polymarket::REST_EGRESS_CAP_PER_MINUTE),
+        _ => None,
+    }
+}
+
 pub fn materialize_clob_v2_adapter_signing_source_from_nt_signing_source(
     request: ClobV2AdapterSigningSourceMaterializationRequest<'_>,
 ) -> Result<ClobV2AdapterSigningSourceMaterialization, BoltV3OperatorArtifactError> {

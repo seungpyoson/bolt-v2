@@ -46,8 +46,6 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 
-use nautilus_polymarket::common::consts::{HTTP_RATE_LIMIT, POLYMARKET};
-
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
     ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
@@ -929,17 +927,6 @@ fn validate_rate_limit_string(value: &str) -> Result<(u64, u64), String> {
     Ok((limit, interval_seconds))
 }
 
-/// Per-minute REST egress ceiling for a trading venue's HTTP client, sourced
-/// from the venue adapter's own constant so there is a single source of truth.
-/// Returns `None` for venues whose ceiling bolt-v3 does not yet model; the
-/// complete multi-venue total-REST-budget contract is tracked in #488.
-fn venue_rest_egress_cap_per_minute(venue: &str) -> Option<u32> {
-    match venue {
-        POLYMARKET => Some(HTTP_RATE_LIMIT),
-        _ => None,
-    }
-}
-
 /// Reconciles the global NT RiskEngine order submit/modify throttle against the
 /// tightest configured trading-venue REST egress ceiling.
 ///
@@ -960,7 +947,7 @@ fn validate_order_rate_within_venue_egress(root: &BoltV3RootConfig) -> Vec<Strin
         .values()
         .filter(|client| client.execution.is_some())
         .filter_map(|client| {
-            venue_rest_egress_cap_per_minute(client.venue.as_str())
+            crate::bolt_v3_providers::venue_rest_egress_cap_per_minute(client.venue.as_str())
                 .map(|cap| (client.venue.as_str(), cap))
         })
         .min_by_key(|(_, cap)| *cap);

@@ -49,6 +49,7 @@ use nautilus_core::string::secret::REDACTED;
 use nautilus_model::identifiers::AccountId;
 use nautilus_network::websocket::TransportBackend;
 use nautilus_polymarket::{
+    common::consts::HTTP_RATE_LIMIT,
     common::credential::{EvmPrivateKey, Secrets as PolymarketSecrets},
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
@@ -81,6 +82,10 @@ use crate::{
 use self::fees::PolymarketClobFeeProvider;
 
 pub const KEY: &str = "POLYMARKET";
+/// Per-minute REST egress ceiling for the Polymarket HTTP clients, taken from
+/// the NT adapter's own quota constant so bolt-v3 and NT share one source of
+/// truth for the venue capability.
+pub const REST_EGRESS_CAP_PER_MINUTE: u32 = HTTP_RATE_LIMIT;
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
 const URL_SAFE_BASE64_BLOCK_WIDTH: usize = 4;
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {

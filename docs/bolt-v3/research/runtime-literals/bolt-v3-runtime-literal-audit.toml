@@ -3340,7 +3340,7 @@ reason = "Seconds-per-minute constant converting an HH:MM:SS rate-limit interval
 path = "src/bolt_v3_validate.rs"
 kind = "number"
 literal = "60"
-context = "&& limit.saturating_mul(60)"
+context = "&& limit.saturating_mul(60) > u64::from(cap_per_minute).saturating_mul(interval_seconds)"
 classification = "time_unit_conversion"
 reason = "Seconds-per-minute constant scaling the per-minute REST egress cap to compare against a per-second order rate; a fixed unit conversion, not an operator runtime value."
 

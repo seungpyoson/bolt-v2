@@ -43,10 +43,9 @@ use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
     bolt_v3_instrument_filters::{InstrumentFilterError, InstrumentFilterTarget},
     bolt_v3_market_families::{
-        FairProbabilityInputs, MarketFamilyValidationBinding, MarketIdentityPlan,
-        MarketIdentityTarget, MarketSelectionCandidateWindow, MarketSelectionOutcome,
-        MarketSelectionTarget, SelectedBinaryOptionMarket, SelectedMarketSourceIdentity,
-        TargetRuntimeFields,
+        FairProbabilityInputs, MarketIdentityPlan, MarketIdentityTarget,
+        MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget,
+        SelectedBinaryOptionMarket, SelectedMarketSourceIdentity, TargetRuntimeFields,
     },
     bolt_v3_numeric::{
         POWER_OF_TWO, SECONDS_PER_YEAR_F64, UNIT_F64, ZERO_F64, is_positive_finite,
@@ -55,18 +54,6 @@ use crate::{
 };
 
 pub const KEY: &str = "updown";
-
-pub fn validation_binding() -> MarketFamilyValidationBinding {
-    MarketFamilyValidationBinding {
-        key: KEY,
-        validate_target: validate_target_block,
-        instrument_filter_target_for_strategy,
-        target_runtime_fields,
-        select_binary_option_market,
-        market_selection_candidate_windows,
-        fair_probability_up,
-    }
-}
 
 /// Updown rotating-cadence target block. Owned by the updown market-
 /// family binding because `cadence_secs`, `underlying_asset`,

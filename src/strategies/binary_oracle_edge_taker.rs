@@ -5181,6 +5181,45 @@ impl BinaryOracleEdgeTakerBuilder {
             config.trade_flow_max_samples > 0,
             "trade_flow_max_samples must be positive"
         );
+        // Fail loud at load on every remaining positive-required duration/count
+        // knob. Each silently degenerates the seam it feeds when zero (the TOML
+        // type check accepts 0), so the bound is enforced here rather than
+        // discovered as a dead signal at runtime, mirroring the two guards above:
+        //   - trade_flow_window_secs = 0 collapses the trade-flow window to
+        //     "exact now", so every observe evicts all prior trades.
+        //   - spike_guard_cooldown_secs = 0 makes spike_until_ms equal the observed
+        //     timestamp, so `now < spike_until` is never true and the guard is inert.
+        //   - vol_window_secs = 0 collapses the realized-vol sample window.
+        //   - vol_gap_reset_secs = 0 resets the estimator on any time advance, so it
+        //     can never accumulate enough observations.
+        //   - vol_min_observations = 0 would be silently lifted to 1 by the
+        //     estimator floor instead of surfacing the misconfiguration.
+        //   - vol_bridge_valid_secs = 0 makes a computed vol valid only at the exact
+        //     millisecond it was produced, so it is essentially never read.
+        anyhow::ensure!(
+            config.trade_flow_window_secs > 0,
+            "trade_flow_window_secs must be positive"
+        );
+        anyhow::ensure!(
+            config.spike_guard_cooldown_secs > 0,
+            "spike_guard_cooldown_secs must be positive"
+        );
+        anyhow::ensure!(
+            config.vol_window_secs > 0,
+            "vol_window_secs must be positive"
+        );
+        anyhow::ensure!(
+            config.vol_gap_reset_secs > 0,
+            "vol_gap_reset_secs must be positive"
+        );
+        anyhow::ensure!(
+            config.vol_min_observations > 0,
+            "vol_min_observations must be positive"
+        );
+        anyhow::ensure!(
+            config.vol_bridge_valid_secs > 0,
+            "vol_bridge_valid_secs must be positive"
+        );
         Ok(config)
     }
 
@@ -7159,6 +7198,36 @@ mod tests {
                 .contains("trade_flow_max_samples must be positive"),
             "expected positivity rejection, got: {err}"
         );
+    }
+
+    #[test]
+    fn parse_config_rejects_zero_positive_required_duration_and_count_fields() {
+        // Every positive-required duration/count knob silently degenerates the
+        // seam it feeds when zero (collapsed trade-flow/vol window, inert spike
+        // guard, never-ready vol, silent min-observations uplift, unread vol
+        // bridge). 0 is a valid TOML integer so the type check cannot catch it;
+        // each must be rejected fail-loud at config load. Guarding the whole class
+        // here, not just the two that earlier reviews happened to name.
+        for field in [
+            "trade_flow_window_secs",
+            "spike_guard_cooldown_secs",
+            "vol_window_secs",
+            "vol_gap_reset_secs",
+            "vol_min_observations",
+            "vol_bridge_valid_secs",
+        ] {
+            let mut raw = valid_raw_config();
+            raw.as_table_mut()
+                .expect("raw config should be a TOML table")
+                .insert(field.to_string(), Value::Integer(0));
+            let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+                .expect_err(&format!("zero {field} must be rejected"));
+            assert!(
+                err.to_string()
+                    .contains(&format!("{field} must be positive")),
+                "expected positivity rejection for {field}, got: {err}"
+            );
+        }
     }
 
     #[test]

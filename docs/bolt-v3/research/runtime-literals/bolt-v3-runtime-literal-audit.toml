@@ -3585,6 +3585,54 @@ classification = "config_validation_boundary"
 reason = "This is the positivity boundary of a fail-loud config-validation guard that rejects a zero trade-flow sample cap at load; the cap value itself is TOML-owned."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0'''
+context = '''config.trade_flow_window_secs > 0,'''
+classification = "config_validation_boundary"
+reason = "Positivity boundary of a fail-loud config-validation guard that rejects a zero trade-flow window at load; the window value itself is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0'''
+context = '''config.spike_guard_cooldown_secs > 0,'''
+classification = "config_validation_boundary"
+reason = "Positivity boundary of a fail-loud config-validation guard that rejects a zero spike-guard cooldown at load; the cooldown value itself is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0'''
+context = '''config.vol_window_secs > 0,'''
+classification = "config_validation_boundary"
+reason = "Positivity boundary of a fail-loud config-validation guard that rejects a zero realized-vol window at load; the window value itself is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0'''
+context = '''config.vol_gap_reset_secs > 0,'''
+classification = "config_validation_boundary"
+reason = "Positivity boundary of a fail-loud config-validation guard that rejects a zero realized-vol gap-reset interval at load; the value itself is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0'''
+context = '''config.vol_min_observations > 0,'''
+classification = "config_validation_boundary"
+reason = "Positivity boundary of a fail-loud config-validation guard that rejects a zero realized-vol minimum observation count at load; the value itself is TOML-owned."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "number"
+literal = '''0'''
+context = '''config.vol_bridge_valid_secs > 0,'''
+classification = "config_validation_boundary"
+reason = "Positivity boundary of a fail-loud config-validation guard that rejects a zero realized-vol bridge-validity horizon at load; the value itself is TOML-owned."
+
+[[allowed]]
 path = "src/bolt_v3_volatility.rs"
 kind = "number"
 literal = '''0'''

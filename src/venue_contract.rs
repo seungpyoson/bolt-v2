@@ -60,7 +60,7 @@ pub enum Provenance {
 /// This describes only the *payout* shape (what an outcome is worth at
 /// resolution), not the *resolution rule* (at-expiry vs path-dependent), which
 /// is instrument-type math owned by the market-family layer.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SettlementKind {
     /// Winner-take-all outcome tokens that settle to 0 or 1 at resolution
@@ -74,7 +74,7 @@ pub enum SettlementKind {
 /// These values mirror the venue's published limits and inform strategy-side
 /// pacing. The execution adapter remains authoritative for enforcement; the
 /// budget must not exceed what the adapter will physically allow.
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct RateBudget {
     /// Sustained CLOB REST requests permitted per minute.
     pub clob_per_minute: u32,

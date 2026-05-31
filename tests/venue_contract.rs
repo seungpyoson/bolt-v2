@@ -268,7 +268,7 @@ fn rejects_contract_missing_supports_modify() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("missing-supports-modify.toml");
     let fixture = std::fs::read_to_string("contracts/polymarket.toml").unwrap();
-    let mutated = fixture.replacen("supports_modify = false\n", "", 1);
+    let mutated = fixture.replacen("supports_modify = false", "", 1);
     std::fs::write(&path, mutated).unwrap();
 
     let err = VenueContract::load_and_validate(&path).unwrap_err();

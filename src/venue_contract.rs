@@ -72,8 +72,10 @@ pub enum SettlementKind {
 /// when pacing order traffic to a venue.
 ///
 /// These values mirror the venue's published limits and inform strategy-side
-/// pacing. The execution adapter remains authoritative for enforcement; the
-/// budget must not exceed what the adapter will physically allow.
+/// pacing. `validate()` only enforces positivity; the execution adapter remains
+/// the authoritative enforcer of the physical ceiling, so a budget set above the
+/// adapter's real limit is clamped or rejected by the adapter at runtime rather
+/// than here.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct RateBudget {
     /// Sustained CLOB REST requests permitted per minute.
@@ -241,6 +243,35 @@ pub struct CompletenessReport {
     pub instance_id: String,
     pub outcome: CompletenessOutcome,
     pub classes: BTreeMap<String, ClassReport>,
+}
+
+/// Test-only contract fixture: discover whichever venue contract(s) ship under
+/// the repo's `contracts/` directory, load the first via the production loader,
+/// then swap in caller-supplied `streams`. No venue name, budget value,
+/// settlement kind, or policy is written here — the envelope is sourced entirely
+/// from the shipped config (the single source of truth), so machinery tests track
+/// that config and adapt automatically when more venues are added. Integration
+/// tests use the mirror in `tests/support`; Rust's lib/integration-test boundary
+/// forces the two copies of this discovery logic (it carries no config values,
+/// only the lookup).
+#[cfg(test)]
+pub(crate) fn sample_contract_with_streams(
+    streams: BTreeMap<String, StreamContract>,
+) -> VenueContract {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("contracts");
+    let mut paths: Vec<PathBuf> = fs::read_dir(&dir)
+        .unwrap_or_else(|error| panic!("contracts dir {} must be readable: {error}", dir.display()))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("toml"))
+        .collect();
+    paths.sort();
+    let path = paths
+        .first()
+        .unwrap_or_else(|| panic!("at least one venue contract must ship in {}", dir.display()));
+    let mut contract = VenueContract::load_and_validate(path)
+        .unwrap_or_else(|error| panic!("shipped contract {} must load: {error}", path.display()));
+    contract.streams = streams;
+    contract
 }
 
 impl VenueContract {

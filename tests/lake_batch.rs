@@ -12,9 +12,7 @@ use arrow::array::{Array, StringArray};
 use bolt_v2::{
     lake_batch::{convert_live_spool_to_parquet, supported_stream_classes},
     nt_runtime_capture,
-    venue_contract::{
-        Capability, Policy, Provenance, RateBudget, SettlementKind, StreamContract, VenueContract,
-    },
+    venue_contract::{Capability, Policy, Provenance, StreamContract, VenueContract},
 };
 mod support;
 use nautilus_common::msgbus::{
@@ -77,19 +75,7 @@ fn all_supported_optional_contract() -> VenueContract {
         })
         .collect::<BTreeMap<_, _>>();
 
-    VenueContract {
-        schema_version: 2,
-        venue: "test".to_string(),
-        adapter_version: "bolt-v2".to_string(),
-        supports_modify: false,
-        settlement_kind: SettlementKind::Binary,
-        rate_budget: RateBudget {
-            clob_per_minute: 100,
-            gamma_per_minute: 100,
-            batch_submit_limit: 15,
-        },
-        streams,
-    }
+    support::sample_contract_with_streams(streams)
 }
 
 fn collect_paths(root: &Path) -> Vec<std::path::PathBuf> {

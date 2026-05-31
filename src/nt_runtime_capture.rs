@@ -1007,9 +1007,7 @@ pub fn wire_nt_runtime_capture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::venue_contract::{
-        Capability, Policy, Provenance, RateBudget, SettlementKind, StreamContract, VenueContract,
-    };
+    use crate::venue_contract::{Capability, Policy, Provenance, StreamContract};
     use nautilus_model::{
         data::QuoteTick,
         identifiers::InstrumentId,
@@ -1108,18 +1106,8 @@ mod tests {
 
     #[test]
     fn contract_startup_summary_separates_disabled_from_capability_buckets() {
-        let contract = VenueContract {
-            schema_version: 2,
-            venue: "test".to_string(),
-            adapter_version: "bolt-v2".to_string(),
-            supports_modify: false,
-            settlement_kind: SettlementKind::Binary,
-            rate_budget: RateBudget {
-                clob_per_minute: 100,
-                gamma_per_minute: 100,
-                batch_submit_limit: 15,
-            },
-            streams: [
+        let contract = crate::venue_contract::sample_contract_with_streams(
+            [
                 (
                     "quotes".to_string(),
                     StreamContract {
@@ -1173,7 +1161,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
-        };
+        );
 
         assert_eq!(
             contract_startup_summary(&contract),
@@ -1188,18 +1176,8 @@ mod tests {
 
     #[test]
     fn contract_startup_log_message_describes_boundary_exactly() {
-        let contract = VenueContract {
-            schema_version: 2,
-            venue: "test".to_string(),
-            adapter_version: "bolt-v2".to_string(),
-            supports_modify: false,
-            settlement_kind: SettlementKind::Binary,
-            rate_budget: RateBudget {
-                clob_per_minute: 100,
-                gamma_per_minute: 100,
-                batch_submit_limit: 15,
-            },
-            streams: [
+        let contract = crate::venue_contract::sample_contract_with_streams(
+            [
                 (
                     "quotes".to_string(),
                     StreamContract {
@@ -1253,11 +1231,14 @@ mod tests {
             ]
             .into_iter()
             .collect(),
-        };
+        );
 
         assert_eq!(
             format_contract_startup_log(&contract),
-            "Contract loaded: test -- supported [\"quotes\"]; conditional [\"trades\"]; disabled [\"mark_prices\", \"order_book_deltas\"]; unsupported [\"instrument_closes\"]. Startup subscriptions are unchanged; contract policy is enforced during stream-to-lake conversion."
+            format!(
+                "Contract loaded: {} -- supported [\"quotes\"]; conditional [\"trades\"]; disabled [\"mark_prices\", \"order_book_deltas\"]; unsupported [\"instrument_closes\"]. Startup subscriptions are unchanged; contract policy is enforced during stream-to-lake conversion.",
+                contract.venue
+            )
         );
     }
 }

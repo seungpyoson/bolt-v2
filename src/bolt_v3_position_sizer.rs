@@ -1,7 +1,8 @@
 use rust_decimal::Decimal;
 
 use crate::bolt_v3_capital_reservation::{
-    CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason, ReservationRequest,
+    CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason, ReservationReleaseDecision,
+    ReservationRequest,
 };
 use crate::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, evaluate_loss_admission};
 use crate::bolt_v3_sizing_state::{
@@ -114,6 +115,59 @@ pub struct PositionSizingInputs<'a> {
     pub loss_policy: Option<&'a LossGovernorPolicy>,
     pub capital_pool: &'a CapitalPoolSnapshot,
     pub reservation_ledger: &'a mut ReservationLedger,
+}
+
+pub struct PositionSizingGateInputs<'a> {
+    pub request: &'a PositionSizingRequest,
+    pub state: Option<&'a NtDerivedSizingState>,
+    pub policy: &'a SizingPolicy,
+    pub loss_policy: Option<&'a LossGovernorPolicy>,
+    pub capital_pool: &'a CapitalPoolSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PositionSizingAdmissionGate {
+    reservation_ledger: ReservationLedger,
+}
+
+impl PositionSizingAdmissionGate {
+    pub fn unreconciled() -> Self {
+        Self {
+            reservation_ledger: ReservationLedger::unreconciled(),
+        }
+    }
+
+    pub fn reconciled() -> Self {
+        Self {
+            reservation_ledger: ReservationLedger::reconciled(),
+        }
+    }
+
+    pub fn evaluate_and_reserve(
+        &mut self,
+        inputs: PositionSizingGateInputs<'_>,
+    ) -> SizedAdmissionDecision {
+        evaluate_position_sizing(PositionSizingInputs {
+            request: inputs.request,
+            state: inputs.state,
+            policy: inputs.policy,
+            loss_policy: inputs.loss_policy,
+            capital_pool: inputs.capital_pool,
+            reservation_ledger: &mut self.reservation_ledger,
+        })
+    }
+
+    pub fn release_pending_reservation(
+        &mut self,
+        request_id: &str,
+        evidence_label: &str,
+    ) -> ReservationReleaseDecision {
+        self.reservation_ledger.release(request_id, evidence_label)
+    }
+
+    pub fn live_reserved_liability(&self, pool_id: &str) -> Decimal {
+        self.reservation_ledger.live_reserved_liability(pool_id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -553,7 +607,8 @@ mod tests {
 
     use super::{
         FeeSlippagePolicy, IntentLiquidity, IntentOrderKind, IntentSide, LiabilityError,
-        PositionSizingInputs, PositionSizingRequest, PredictionMarketBinaryLiabilityCalculator,
+        PositionSizingAdmissionGate, PositionSizingGateInputs, PositionSizingInputs,
+        PositionSizingRequest, PredictionMarketBinaryLiabilityCalculator,
         PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot, SizedAdmissionReason,
         SizingEvidenceKind, SizingMode, SizingPolicy, evaluate_position_sizing,
     };
@@ -652,6 +707,20 @@ mod tests {
     fn small_capital_pool() -> CapitalPoolSnapshot {
         CapitalPoolSnapshot {
             max_pool_liability: Decimal::new(4, 0),
+            ..capital_pool()
+        }
+    }
+
+    fn request_with_intent(intent_id: &str) -> PositionSizingRequest {
+        PositionSizingRequest {
+            intent_id: intent_id.to_string(),
+            ..request(IntentSide::Buy, IntentLiquidity::Taker)
+        }
+    }
+
+    fn single_order_capital_pool() -> CapitalPoolSnapshot {
+        CapitalPoolSnapshot {
+            max_pool_liability: Decimal::new(8, 0),
             ..capital_pool()
         }
     }
@@ -996,5 +1065,65 @@ mod tests {
             unreconciled_ledger.live_reserved_liability("pool-1"),
             Decimal::ZERO
         );
+    }
+
+    #[test]
+    fn reserve_to_submit_is_single_serialized_critical_section() {
+        let loss_snapshot = LossSnapshot {
+            source: "nt_portfolio_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            per_trade_pnl: Some(Decimal::new(-5, 0)),
+            daily_pnl: None,
+            rolling_pnl: None,
+            current_equity: None,
+            peak_equity: None,
+        };
+        let state = nt_state(Some(loss_snapshot));
+        let policy = policy();
+        let capital_pool = single_order_capital_pool();
+        let first_request = request_with_intent("intent-1");
+        let second_request = request_with_intent("intent-2");
+        let mut gate = PositionSizingAdmissionGate::reconciled();
+
+        let first = gate.evaluate_and_reserve(PositionSizingGateInputs {
+            request: &first_request,
+            state: Some(&state),
+            policy: &policy,
+            loss_policy: Some(&loss_policy()),
+            capital_pool: &capital_pool,
+        });
+        let second = gate.evaluate_and_reserve(PositionSizingGateInputs {
+            request: &second_request,
+            state: Some(&state),
+            policy: &policy,
+            loss_policy: Some(&loss_policy()),
+            capital_pool: &capital_pool,
+        });
+
+        assert!(first.accepted);
+        assert!(!second.accepted);
+        assert_eq!(
+            second.reasons,
+            vec![SizedAdmissionReason::Reservation(
+                ReservationRejectionReason::OverBudget
+            )]
+        );
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
+
+        let release = gate.release_pending_reservation("intent-1", "nt-submit-rejected");
+        assert!(release.accepted);
+        assert_eq!(release.released_liability, Some(Decimal::new(430, 2)));
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
+
+        let retry = gate.evaluate_and_reserve(PositionSizingGateInputs {
+            request: &second_request,
+            state: Some(&state),
+            policy: &policy,
+            loss_policy: Some(&loss_policy()),
+            capital_pool: &capital_pool,
+        });
+
+        assert!(retry.accepted);
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
     }
 }

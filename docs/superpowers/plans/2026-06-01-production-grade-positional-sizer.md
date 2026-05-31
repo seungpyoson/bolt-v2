@@ -671,7 +671,7 @@ Implement validation errors with stable reason names. Do not print secrets or li
 - Modify: `src/bolt_v3_position_sizer.rs`
 - Modify: `src/lib.rs`
 
-- [ ] **Step 1: RED startup stays closed until NT reconciliation completes**
+- [x] **Step 1: RED startup stays closed until NT reconciliation completes**
 
 Add `restart_requires_rebuilt_open_order_reservations_before_admission`.
 
@@ -685,11 +685,11 @@ Expected:
 
 - FAIL before restart reconciliation state exists.
 
-- [ ] **Step 2: GREEN restart fail-closed state**
+- [x] **Step 2: GREEN restart fail-closed state**
 
 On process start, sizing admission remains closed until NT-derived open orders, positions, portfolio/account snapshots, and reservation reconstruction evidence are all fresh and attributed. Unsubmitted pre-crash reservations are discarded; submitted/open order reservations are reconstructed from NT open-order/cache evidence.
 
-- [ ] **Step 3: RED concurrent reserve-submit path is serialized**
+- [x] **Step 3: RED concurrent reserve-submit path is serialized**
 
 Add `reserve_to_submit_is_single_serialized_critical_section`.
 
@@ -703,7 +703,7 @@ Expected:
 
 - FAIL before serialization is modeled.
 
-- [ ] **Step 4: GREEN serialized critical section**
+- [x] **Step 4: GREEN serialized critical section**
 
 Use one actor, one mutex-guarded ledger, or a `&mut self` admission gate so `evaluate -> reserve -> submit handoff` is indivisible for a given pool. If NT submit rejects before venue acceptance, release the pending reservation with matched evidence.
 

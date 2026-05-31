@@ -535,6 +535,38 @@ reason = "This is a nested existing taker strategy config schema field name, pop
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"trade_flow_max_samples"'''
+context = '''"trade_flow_max_samples",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name; the signed-trade-flow per-instrument sample cap comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"trade_flow_window_secs"'''
+context = '''"trade_flow_window_secs",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name; the signed-trade-flow retention window comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"spike_guard_return_threshold"'''
+context = '''"spike_guard_return_threshold",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name; the entry spike-guard single-step return threshold comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"spike_guard_cooldown_secs"'''
+context = '''"spike_guard_cooldown_secs",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is a taker strategy config schema field name; the entry spike-guard cooldown duration comes from bolt-v3 TOML."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"underlying_asset"'''
 context = '''insert_string(&mut table, "underlying_asset", target.underlying_asset);'''
 classification = "strategy_runtime_schema_field"
@@ -3521,7 +3553,7 @@ classification = "ssm_resolver_redaction_token"
 reason = "This token replaces a configured SSM parameter path in diagnostics; it is redaction text, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''-0.356_563_8'''
 context = '''const NORMAL_CDF_POLY_A2: f64 = -0.356_563_8;'''
@@ -3529,7 +3561,7 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''-1.821_256'''
 context = '''const NORMAL_CDF_POLY_A4: f64 = -1.821_256;'''
@@ -3548,20 +3580,92 @@ reason = "This is a named initial counter invariant for strategy state, not an o
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "number"
 literal = '''0'''
+context = '''config.trade_flow_max_samples > 0,'''
+classification = "config_validation_boundary"
+reason = "This is the positivity boundary of a fail-loud config-validation guard that rejects a zero trade-flow sample cap at load; the cap value itself is TOML-owned."
+
+[[allowed]]
+path = "src/bolt_v3_volatility.rs"
+kind = "number"
+literal = '''0'''
 context = '''const INITIAL_COUNTER_USIZE: usize = 0;'''
 classification = "strategy_state_invariant"
-reason = "This is a named initial counter invariant for strategy state, not an operator runtime value."
+reason = "This is a named initial counter invariant for the realized-volatility estimator's accumulation loop, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_volatility.rs"
+kind = "number"
+literal = '''0'''
+context = '''const INITIAL_COUNTER_U64: u64 = 0;'''
+classification = "strategy_state_invariant"
+reason = "This is a named initial counter invariant for the realized-volatility estimator's accumulation loop, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_volatility.rs"
+kind = "number"
+literal = '''1'''
+context = '''const COUNTER_INCREMENT: usize = 1;'''
+classification = "strategy_state_invariant"
+reason = "This is a named counter increment invariant for the realized-volatility estimator's accumulation loop, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''0.0'''
-context = '''const ZERO_F64: f64 = 0.0;'''
-classification = "strategy_math_invariant"
-reason = "This is a named math invariant used by strategy calculations, not an operator runtime value."
+context = '''pub const ZERO_F64: f64 = 0.0;'''
+classification = "shared_numeric_math_invariant"
+reason = "This is the named zero invariant shared by the updown family pricing and the strategy, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
+literal = '''1.0'''
+context = '''pub const UNIT_F64: f64 = 1.0;'''
+classification = "shared_numeric_math_invariant"
+reason = "This is the named unit invariant shared by the updown family pricing and the strategy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
+literal = '''2'''
+context = '''pub const POWER_OF_TWO: i32 = 2;'''
+classification = "shared_numeric_math_invariant"
+reason = "This is the named squaring exponent shared by the updown family pricing and the strategy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
+literal = '''365.25'''
+context = '''pub const DAYS_PER_YEAR_F64: f64 = 365.25;'''
+classification = "annualization_constant"
+reason = "This is a named annualization conversion constant shared by the updown family pricing and the strategy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
+literal = '''24.0'''
+context = '''pub const HOURS_PER_DAY_F64: f64 = 24.0;'''
+classification = "annualization_constant"
+reason = "This is a named calendar conversion constant shared by the updown family pricing and the strategy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
+literal = '''60.0'''
+context = '''pub const MINUTES_PER_HOUR_F64: f64 = 60.0;'''
+classification = "annualization_constant"
+reason = "This is a named time conversion constant shared by the updown family pricing and the strategy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
+literal = '''60.0'''
+context = '''pub const SECONDS_PER_MINUTE_F64: f64 = 60.0;'''
+classification = "annualization_constant"
+reason = "This is a named time conversion constant shared by the updown family pricing and the strategy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''0.231_641_9'''
 context = '''const NORMAL_CDF_T_SCALE: f64 = 0.231_641_9;'''
@@ -3569,7 +3673,7 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''0.319_381_5'''
 context = '''const NORMAL_CDF_POLY_A1: f64 = 0.319_381_5;'''
@@ -3577,7 +3681,7 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''0.398_942_3'''
 context = '''const NORMAL_CDF_DENSITY_SCALE: f64 = 0.398_942_3;'''
@@ -3601,7 +3705,7 @@ classification = "strategy_state_invariant"
 reason = "This is a named counter increment invariant for strategy state, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_volatility.rs"
 kind = "number"
 literal = '''1'''
 context = '''const MIN_OBSERVATION_COUNT: u64 = 1;'''
@@ -3609,15 +3713,7 @@ classification = "strategy_state_invariant"
 reason = "This is the named minimum observation count needed for realized-volatility math, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
-kind = "number"
-literal = '''1.0'''
-context = '''const UNIT_F64: f64 = 1.0;'''
-classification = "strategy_math_invariant"
-reason = "This is a named math invariant used by strategy calculations, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''1.330_274'''
 context = '''const NORMAL_CDF_POLY_A5: f64 = 1.330_274;'''
@@ -3625,7 +3721,7 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''1.781_478'''
 context = '''const NORMAL_CDF_POLY_A3: f64 = 1.781_478;'''
@@ -3641,18 +3737,10 @@ classification = "financial_unit_conversion"
 reason = "This is the basis-points denominator for financial unit conversion, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''1_000'''
-context = '''const MILLIS_PER_SECOND_U64: u64 = 1_000;'''
-classification = "time_unit_conversion"
-reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
-kind = "number"
-literal = '''1_000.0'''
-context = '''const MILLIS_PER_SECOND_F64: f64 = 1_000.0;'''
+context = '''pub const MILLIS_PER_SECOND_U64: u64 = 1_000;'''
 classification = "time_unit_conversion"
 reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
 
@@ -3675,21 +3763,13 @@ reason = "This is a named SI time-unit conversion constant, not an operator runt
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "number"
-literal = '''2'''
-context = '''const POWER_OF_TWO: i32 = 2;'''
-classification = "strategy_math_invariant"
-reason = "This is the named exponent for squared terms in strategy pricing math, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
-kind = "number"
 literal = '''2.0'''
 context = '''const MIDPOINT_DIVISOR_F64: f64 = 2.0;'''
 classification = "strategy_math_invariant"
 reason = "This is the named divisor for midpoint calculation, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''2.0'''
 context = '''const NORMAL_DENSITY_EXPONENT_DIVISOR: f64 = 2.0;'''
@@ -3705,44 +3785,12 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the strategy sizing formula, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
-kind = "number"
-literal = '''24.0'''
-context = '''const HOURS_PER_DAY_F64: f64 = 24.0;'''
-classification = "annualization_constant"
-reason = "This is a named calendar conversion constant used by volatility math, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
-kind = "number"
-literal = '''365.25'''
-context = '''const DAYS_PER_YEAR_F64: f64 = 365.25;'''
-classification = "annualization_constant"
-reason = "This is a named annualization conversion constant used by volatility math, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
 literal = '''6.0'''
 context = '''const KURTOSIS_NORMALIZATION: f64 = 6.0;'''
 classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the fair-probability formula, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
-kind = "number"
-literal = '''60.0'''
-context = '''const MINUTES_PER_HOUR_F64: f64 = 60.0;'''
-classification = "annualization_constant"
-reason = "This is a named time conversion constant used by volatility math, not an operator runtime value."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
-kind = "number"
-literal = '''60.0'''
-context = '''const SECONDS_PER_MINUTE_F64: f64 = 60.0;'''
-classification = "annualization_constant"
-reason = "This is a named time conversion constant used by volatility math, not an operator runtime value."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
@@ -5983,3 +6031,11 @@ literal = '''"down_instrument_id"'''
 context = '''"down_instrument_id",'''
 classification = "phase8_strategy_input_schema_field"
 reason = "This names a required source-bound instrument field in the Phase 8 strategy-input evidence schema, not a concrete instrument id or operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/updown.rs"
+kind = "number"
+literal = '''2.0'''
+context = '''const SIGMA_SQUARED_HALF_DIVISOR: f64 = 2.0;'''
+classification = "pricing_formula_constant"
+reason = "This is the named sigma-squared-over-two divisor in the updown family's fair-probability formula, not an operator runtime value."

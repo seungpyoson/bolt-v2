@@ -101,6 +101,10 @@ pub struct RuntimeParametersBlock {
     pub vol_gap_reset_secs: u64,
     pub vol_min_observations: u64,
     pub vol_bridge_valid_secs: u64,
+    pub trade_flow_window_secs: u64,
+    pub trade_flow_max_samples: u64,
+    pub spike_guard_return_threshold: f64,
+    pub spike_guard_cooldown_secs: u64,
     pub price_to_beat_source: String,
     pub pricing_kurtosis: f64,
     pub theta_decay_factor: f64,
@@ -530,6 +534,29 @@ pub fn raw_taker_config(
         strategy_instance_id,
         "vol_bridge_valid_secs",
         parameters.runtime.vol_bridge_valid_secs,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "trade_flow_window_secs",
+        parameters.runtime.trade_flow_window_secs,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "trade_flow_max_samples",
+        parameters.runtime.trade_flow_max_samples,
+    )?;
+    insert_float(
+        &mut table,
+        "spike_guard_return_threshold",
+        parameters.runtime.spike_guard_return_threshold,
+    );
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "spike_guard_cooldown_secs",
+        parameters.runtime.spike_guard_cooldown_secs,
     )?;
     insert_string(
         &mut table,

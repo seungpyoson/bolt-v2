@@ -43,9 +43,14 @@ use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
     bolt_v3_instrument_filters::{InstrumentFilterError, InstrumentFilterTarget},
     bolt_v3_market_families::{
-        MarketFamilyValidationBinding, MarketIdentityPlan, MarketIdentityTarget,
-        MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget,
-        SelectedBinaryOptionMarket, SelectedMarketSourceIdentity, TargetRuntimeFields,
+        FairProbabilityInputs, MarketFamilyValidationBinding, MarketIdentityPlan,
+        MarketIdentityTarget, MarketSelectionCandidateWindow, MarketSelectionOutcome,
+        MarketSelectionTarget, SelectedBinaryOptionMarket, SelectedMarketSourceIdentity,
+        TargetRuntimeFields,
+    },
+    bolt_v3_numeric::{
+        POWER_OF_TWO, SECONDS_PER_YEAR_F64, UNIT_F64, ZERO_F64, is_positive_finite,
+        sanitize_probability,
     },
 };
 
@@ -59,6 +64,7 @@ pub fn validation_binding() -> MarketFamilyValidationBinding {
         target_runtime_fields,
         select_binary_option_market,
         market_selection_candidate_windows,
+        fair_probability_up,
     }
 }
 
@@ -822,6 +828,64 @@ pub fn market_selection_candidate_windows(
     ])
 }
 
+/// Family-owned binary up/down fair-value model.
+///
+/// Black-Scholes digital: under risk-neutral GBM the probability the
+/// underlying finishes above the strike is `N(d2)`, where
+/// `d2 = (ln(S/K) - sigma_eff^2/2 * T) / (sigma_eff * sqrt(T))`. The
+/// realized-volatility estimate is widened by a kurtosis term
+/// (`sigma_eff = realized_vol * (1 + kurtosis / 6)`) so fat-tailed
+/// regimes price wider. Fails closed (returns `None`) on degenerate
+/// inputs so the strategy treats the market as un-priceable rather
+/// than acting on a step-function probability.
+pub fn fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
+    if !is_positive_finite(inputs.spot_price)
+        || !is_positive_finite(inputs.strike_price)
+        || !is_positive_finite(inputs.realized_vol)
+        || !inputs.pricing_kurtosis.is_finite()
+    {
+        return None;
+    }
+
+    let sigma_eff =
+        inputs.realized_vol * (UNIT_F64 + inputs.pricing_kurtosis / KURTOSIS_NORMALIZATION);
+    if !is_positive_finite(sigma_eff) {
+        return None;
+    }
+
+    let time_to_expiry_years = inputs.seconds_to_market_end as f64 / SECONDS_PER_YEAR_F64;
+    if time_to_expiry_years <= ZERO_F64 {
+        return None;
+    }
+
+    let d2 = ((inputs.spot_price / inputs.strike_price).ln()
+        - (sigma_eff.powi(POWER_OF_TWO) / SIGMA_SQUARED_HALF_DIVISOR) * time_to_expiry_years)
+        / (sigma_eff * time_to_expiry_years.sqrt());
+    sanitize_probability(standard_normal_cdf(d2))
+}
+
+fn standard_normal_cdf(x: f64) -> f64 {
+    let t = UNIT_F64 / (UNIT_F64 + NORMAL_CDF_T_SCALE * x.abs());
+    let d = NORMAL_CDF_DENSITY_SCALE * (-x * x / NORMAL_DENSITY_EXPONENT_DIVISOR).exp();
+    let prob = d
+        * t
+        * (NORMAL_CDF_POLY_A1
+            + t * (NORMAL_CDF_POLY_A2
+                + t * (NORMAL_CDF_POLY_A3 + t * (NORMAL_CDF_POLY_A4 + t * NORMAL_CDF_POLY_A5))));
+    if x > ZERO_F64 { UNIT_F64 - prob } else { prob }
+}
+
+const SIGMA_SQUARED_HALF_DIVISOR: f64 = 2.0;
+const KURTOSIS_NORMALIZATION: f64 = 6.0;
+const NORMAL_DENSITY_EXPONENT_DIVISOR: f64 = 2.0;
+const NORMAL_CDF_T_SCALE: f64 = 0.231_641_9;
+const NORMAL_CDF_DENSITY_SCALE: f64 = 0.398_942_3;
+const NORMAL_CDF_POLY_A1: f64 = 0.319_381_5;
+const NORMAL_CDF_POLY_A2: f64 = -0.356_563_8;
+const NORMAL_CDF_POLY_A3: f64 = 1.781_478;
+const NORMAL_CDF_POLY_A4: f64 = -1.821_256;
+const NORMAL_CDF_POLY_A5: f64 = 1.330_274;
+
 fn period_start_milliseconds(
     period_start_seconds: i64,
     cadence_seconds: i64,
@@ -1015,5 +1079,60 @@ mod tests {
         assert_eq!(updown_cadence_slug_token(3600), Some("1h"));
         assert_eq!(updown_cadence_slug_token(14400), Some("4h"));
         assert_eq!(updown_cadence_slug_token(120), None);
+    }
+
+    #[test]
+    fn fair_probability_is_directional_and_fail_closed_on_invalid_inputs() {
+        let above = fair_probability_up(&FairProbabilityInputs {
+            spot_price: 3_105.0,
+            strike_price: 3_100.0,
+            seconds_to_market_end: 60,
+            realized_vol: 0.45,
+            pricing_kurtosis: 0.0,
+        })
+        .expect("valid inputs should produce fair probability");
+        let below = fair_probability_up(&FairProbabilityInputs {
+            spot_price: 3_095.0,
+            strike_price: 3_100.0,
+            seconds_to_market_end: 60,
+            realized_vol: 0.45,
+            pricing_kurtosis: 0.0,
+        })
+        .expect("valid inputs should produce fair probability");
+
+        assert!(
+            above > 0.5,
+            "above-strike spot should imply >50% up probability"
+        );
+        assert!(
+            below < 0.5,
+            "below-strike spot should imply <50% up probability"
+        );
+        assert!(above > below);
+        assert!(
+            fair_probability_up(&FairProbabilityInputs {
+                spot_price: 3_100.0,
+                strike_price: 3_100.0,
+                seconds_to_market_end: 60,
+                realized_vol: 0.0,
+                pricing_kurtosis: 0.0,
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn fair_probability_fails_closed_when_expired() {
+        assert!(
+            fair_probability_up(&FairProbabilityInputs {
+                spot_price: 3_105.0,
+                strike_price: 3_100.0,
+                seconds_to_market_end: 0,
+                realized_vol: 0.45,
+                pricing_kurtosis: 0.0,
+            })
+            .is_none(),
+            "expired markets must not produce a step-function entry probability"
+        );
     }
 }

@@ -390,6 +390,16 @@ transport_backend = "sockudo"
                 "BINANCE_ED25519_API_SECRET",
                 "BINANCE_API_KEY",
                 "BINANCE_API_SECRET",
+                "BINANCE_TESTNET_API_KEY",
+                "BINANCE_TESTNET_API_SECRET",
+                "BINANCE_TESTNET_ED25519_API_KEY",
+                "BINANCE_TESTNET_ED25519_API_SECRET",
+                "BINANCE_FUTURES_TESTNET_API_KEY",
+                "BINANCE_FUTURES_TESTNET_API_SECRET",
+                "BINANCE_FUTURES_TESTNET_ED25519_API_KEY",
+                "BINANCE_FUTURES_TESTNET_ED25519_API_SECRET",
+                "BINANCE_DEMO_API_KEY",
+                "BINANCE_DEMO_API_SECRET",
             ]
         );
     }

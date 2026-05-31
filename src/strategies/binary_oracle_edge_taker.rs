@@ -8051,11 +8051,14 @@ mod tests {
 
     #[test]
     fn decision_evidence_failure_rejects_before_nt_submit() {
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        // Seed a (zero) fee for the order's instrument so admission clears the
+        // fee-bound guard and the FailingDecisionEvidenceWriter is what rejects
+        // the order before NT submit — the behavior this test pins.
         let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(FailingDecisionEvidenceWriter),
         );
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");

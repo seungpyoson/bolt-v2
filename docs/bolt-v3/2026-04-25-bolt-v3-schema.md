@@ -162,8 +162,8 @@ default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
 bypass = false
-max_order_submit_rate = "100/00:00:01"
-max_order_modify_rate = "100/00:00:01"
+max_order_submit_rate = "100/00:01:00"
+max_order_modify_rate = "100/00:01:00"
 max_notional_per_order = {}
 debug = false
 graceful_shutdown_on_error = false
@@ -1781,8 +1781,8 @@ default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
 bypass = false
-max_order_submit_rate = "100/00:00:01"
-max_order_modify_rate = "100/00:00:01"
+max_order_submit_rate = "100/00:01:00"
+max_order_modify_rate = "100/00:01:00"
 max_notional_per_order = {}
 debug = false
 graceful_shutdown_on_error = false

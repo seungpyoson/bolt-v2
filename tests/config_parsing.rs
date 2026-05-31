@@ -4041,8 +4041,8 @@ default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
 bypass = false
-max_order_submit_rate = "100/00:00:01"
-max_order_modify_rate = "100/00:00:01"
+max_order_submit_rate = "100/00:01:00"
+max_order_modify_rate = "100/00:01:00"
 max_notional_per_order = {}
 debug = false
 graceful_shutdown_on_error = false
@@ -4471,8 +4471,8 @@ default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
 bypass = false
-max_order_submit_rate = "100/00:00:01"
-max_order_modify_rate = "100/00:00:01"
+max_order_submit_rate = "100/00:01:00"
+max_order_modify_rate = "100/00:01:00"
 max_notional_per_order = {}
 debug = false
 graceful_shutdown_on_error = false
@@ -5242,15 +5242,15 @@ fn rejects_invalid_nt_risk_rate_limit_strings() {
 
     for (submit_rate, modify_rate) in [
         ("0/00:00:01", "100/00:00:00"),
-        ("100", "100/00:00:01"),
-        ("abc/00:00:01", "100/00:00:01"),
-        ("100/00:01", "100/00:00:01"),
-        ("100/00:00:01:00", "100/00:00:01"),
-        ("100/00:60:00", "100/00:00:01"),
-        ("100/00:00:60", "100/00:00:01"),
+        ("100", "100/00:01:00"),
+        ("abc/00:00:01", "100/00:01:00"),
+        ("100/00:01", "100/00:01:00"),
+        ("100/00:00:01:00", "100/00:01:00"),
+        ("100/00:60:00", "100/00:01:00"),
+        ("100/00:00:60", "100/00:01:00"),
     ] {
         let mutated = replace_in_binance_reference_fixture(
-            "max_order_submit_rate = \"100/00:00:01\"\nmax_order_modify_rate = \"100/00:00:01\"",
+            "max_order_submit_rate = \"100/00:01:00\"\nmax_order_modify_rate = \"100/00:01:00\"",
             &format!(
                 "max_order_submit_rate = \"{submit_rate}\"\nmax_order_modify_rate = \"{modify_rate}\""
             ),
@@ -5282,6 +5282,65 @@ fn rejects_invalid_nt_risk_rate_limit_strings() {
             );
         }
     }
+}
+
+#[test]
+fn rejects_nt_submit_rate_above_polymarket_egress_cap() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // The Polymarket REST egress ceiling is 100/min (NT HTTP_RATE_LIMIT). A
+    // submit throttle above it would block at egress (stale quotes) instead of
+    // emitting a loud OrderDenied, so it must fail closed at config load.
+    let mutated = replace_in_fixture_root(
+        "max_order_submit_rate = \"100/00:01:00\"",
+        "max_order_submit_rate = \"101/00:01:00\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("over-cap submit-rate fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("max_order_submit_rate")
+            && m.contains("POLYMARKET")
+            && m.contains("REST egress cap")),
+        "submit rate above the POLYMARKET egress cap must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_nt_modify_rate_above_polymarket_egress_cap() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "max_order_modify_rate = \"100/00:01:00\"",
+        "max_order_modify_rate = \"200/00:01:00\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("over-cap modify-rate fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("max_order_modify_rate")
+            && m.contains("POLYMARKET")
+            && m.contains("REST egress cap")),
+        "modify rate above the POLYMARKET egress cap must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn accepts_nt_order_rates_at_polymarket_egress_cap() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // 100/00:01:00 == 100/min == NT HTTP_RATE_LIMIT; the boundary value is
+    // accepted because the ceiling check is inclusive.
+    let source = replace_in_fixture_root(
+        "max_order_submit_rate = \"100/00:01:00\"",
+        "max_order_submit_rate = \"100/00:01:00\"",
+    );
+    let root: BoltV3RootConfig = toml::from_str(&source).expect("at-cap fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        !messages.iter().any(|m| m.contains("REST egress cap")),
+        "order rates at exactly the venue egress cap must be accepted: {messages:#?}"
+    );
 }
 
 #[test]

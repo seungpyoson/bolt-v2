@@ -5016,8 +5016,8 @@ mod tests {
         assert!(!cfg.exec_engine.allow_overfills);
         assert!(!cfg.exec_engine.manage_own_order_books);
         assert!(!cfg.risk_engine.bypass);
-        assert_eq!(cfg.risk_engine.max_order_submit_rate, "100/00:00:01");
-        assert_eq!(cfg.risk_engine.max_order_modify_rate, "100/00:00:01");
+        assert_eq!(cfg.risk_engine.max_order_submit_rate, "100/00:01:00");
+        assert_eq!(cfg.risk_engine.max_order_modify_rate, "100/00:01:00");
         assert!(cfg.risk_engine.max_notional_per_order.is_empty());
         assert!(!cfg.risk_engine.debug);
         assert!(!cfg.risk_engine.graceful_shutdown_on_error);

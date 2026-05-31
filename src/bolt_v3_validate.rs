@@ -46,6 +46,8 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 
+use nautilus_polymarket::common::consts::{HTTP_RATE_LIMIT, POLYMARKET};
+
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
     ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
@@ -163,6 +165,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     }
     errors.extend(validate_nautilus_block(&root.nautilus));
     errors.extend(validate_risk_block(&root.risk));
+    errors.extend(validate_order_rate_within_venue_egress(root));
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
     errors.extend(validate_clients_block(&root.clients));
@@ -886,11 +889,14 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     errors
 }
 
-fn validate_rate_limit_string(value: &str) -> Result<(), String> {
+/// Validates an NT `limit/HH:MM:SS` rate-limit string and returns the parsed
+/// `(limit, interval_seconds)` so callers can reconcile the rate against a
+/// venue REST egress ceiling without re-parsing.
+fn validate_rate_limit_string(value: &str) -> Result<(u64, u64), String> {
     let (limit, interval) = value
         .split_once('/')
         .ok_or_else(|| "expected `limit/HH:MM:SS`".to_string())?;
-    let limit = limit.parse::<usize>().map_err(|error| error.to_string())?;
+    let limit = limit.parse::<u64>().map_err(|error| error.to_string())?;
     if limit == 0 {
         return Err("limit must be greater than zero".to_string());
     }
@@ -919,7 +925,78 @@ fn validate_rate_limit_string(value: &str) -> Result<(), String> {
         return Err("interval must be greater than zero".to_string());
     }
 
-    Ok(())
+    let interval_seconds = hours * 3600 + minutes * 60 + seconds;
+    Ok((limit, interval_seconds))
+}
+
+/// Per-minute REST egress ceiling for a trading venue's HTTP client, sourced
+/// from the venue adapter's own constant so there is a single source of truth.
+/// Returns `None` for venues whose ceiling bolt-v3 does not yet model; the
+/// complete multi-venue total-REST-budget contract is tracked in #488.
+fn venue_rest_egress_cap_per_minute(venue: &str) -> Option<u32> {
+    match venue {
+        POLYMARKET => Some(HTTP_RATE_LIMIT),
+        _ => None,
+    }
+}
+
+/// Reconciles the global NT RiskEngine order submit/modify throttle against the
+/// tightest configured trading-venue REST egress ceiling.
+///
+/// The RiskEngine throttle counts order *commands* while the venue HTTP quota
+/// counts REST *requests*: a submit rate above the venue ceiling therefore does
+/// not reject early with a loud `OrderDenied`; it blocks at egress (added
+/// latency, stale reference quotes) — a silent failure on a live-money path.
+/// Rejecting it at config load keeps the policy fail-loud regardless of the
+/// rendered deploy-time value, which is not otherwise knowable from the repo.
+///
+/// NOTE (tier-1): this guards submit/modify against the ceiling only. The full
+/// shared REST budget (submits + cancels + status queries + readiness/account
+/// probes) is the venue-capability contract tracked in #488.
+fn validate_order_rate_within_venue_egress(root: &BoltV3RootConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let tightest = root
+        .clients
+        .values()
+        .filter(|client| client.execution.is_some())
+        .filter_map(|client| {
+            venue_rest_egress_cap_per_minute(client.venue.as_str())
+                .map(|cap| (client.venue.as_str(), cap))
+        })
+        .min_by_key(|(_, cap)| *cap);
+    let Some((venue, cap_per_minute)) = tightest else {
+        return errors;
+    };
+    for (label, value) in [
+        (
+            "risk.nautilus.max_order_submit_rate",
+            root.risk.nautilus.max_order_submit_rate.as_str(),
+        ),
+        (
+            "risk.nautilus.max_order_modify_rate",
+            root.risk.nautilus.max_order_modify_rate.as_str(),
+        ),
+    ] {
+        // Only well-formed rate strings reach the ceiling check; malformed
+        // strings are already reported by validate_rate_limit_string above.
+        let Ok((limit, interval_seconds)) = validate_rate_limit_string(value) else {
+            continue;
+        };
+        // The rate exceeds the cap iff limit/interval_seconds > cap/60, i.e.
+        // limit * 60 > cap * interval_seconds. Compared in integer space to
+        // avoid rounding.
+        if interval_seconds > 0
+            && limit.saturating_mul(60) > u64::from(cap_per_minute).saturating_mul(interval_seconds)
+        {
+            errors.push(format!(
+                "{label} = `{value}` exceeds the {venue} REST egress cap of \
+                 {cap_per_minute}/min (nautilus HTTP_RATE_LIMIT); the order rate must not exceed \
+                 the venue ceiling or submits block at egress with stale reference quotes instead \
+                 of failing loud — lower it to at most {cap_per_minute}/00:01:00"
+            ));
+        }
+    }
+    errors
 }
 
 fn validate_persistence_block(block: &PersistenceBlock) -> Vec<String> {

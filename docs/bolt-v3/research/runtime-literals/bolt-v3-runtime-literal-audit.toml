@@ -3323,6 +3323,30 @@ reason = "The schema version is a structural compatibility gate, not an operator
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "number"
+literal = "3600"
+context = "let interval_seconds = hours * 3600 + minutes * 60 + seconds;"
+classification = "time_unit_conversion"
+reason = "Seconds-per-hour constant converting an HH:MM:SS rate-limit interval into whole seconds for the venue egress reconciliation; a fixed unit conversion, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "60"
+context = "let interval_seconds = hours * 3600 + minutes * 60 + seconds;"
+classification = "time_unit_conversion"
+reason = "Seconds-per-minute constant converting an HH:MM:SS rate-limit interval into whole seconds for the venue egress reconciliation; a fixed unit conversion, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = "60"
+context = "&& limit.saturating_mul(60)"
+classification = "time_unit_conversion"
+reason = "Seconds-per-minute constant scaling the per-minute REST egress cap to compare against a per-second order rate; a fixed unit conversion, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
 literal = "2"
 context = "pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;"
 classification = "schema_version_gate"

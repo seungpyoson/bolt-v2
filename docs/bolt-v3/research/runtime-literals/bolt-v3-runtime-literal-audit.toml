@@ -14775,3 +14775,35 @@ literal = '''"clients.{key}.readiness_probe.chunk_observation_window_seconds is 
 context = '''"clients.{key}.readiness_probe.chunk_observation_window_seconds is only valid when market_data_kind = \"trade\" and quote_target_source = \"metadata_response\""'''
 classification = '''readiness_probe_validation_diagnostic'''
 reason = '''TOML validation diagnostic for readiness_probe.chunk_observation_window_seconds configuration, not a runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''string'''
+literal = '''"bolt-v3 submit admission refuses a market-style order without a declared instrument price ceiling"'''
+context = '''"bolt-v3 submit admission refuses a market-style order without a declared instrument price ceiling"'''
+classification = '''diagnostic_template'''
+reason = '''Error-display template for the MissingPriceCeiling rejection; it carries no operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker.rs'''
+kind = '''string'''
+literal = '''"bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})"'''
+context = '''"bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})",'''
+classification = '''diagnostic_template'''
+reason = '''Fail-closed diagnostic for an inverse quote-quantity order; the interpolated client_order_id is computed from the typed order, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker.rs'''
+kind = '''string'''
+literal = '''"bolt-v3 submit admission refuses a market-style entry without a structural price ceiling for client_order_id={}"'''
+context = '''"bolt-v3 submit admission refuses a market-style entry without a structural price ceiling for client_order_id={}",'''
+classification = '''diagnostic_template'''
+reason = '''Fail-closed diagnostic for a market-style entry lacking a structural price ceiling; the interpolated client_order_id is computed from the typed order, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/strategies/binary_oracle_edge_taker.rs'''
+kind = '''string'''
+literal = '''"reference_instrument_id"'''
+context = '''if let Some(Value::String(instrument_id)) = table.get("reference_instrument_id")'''
+classification = '''strategy_runtime_schema_field'''
+reason = '''This is an existing taker strategy config schema field name (the TOML key), read to validate that the configured reference_data instrument_id parses as an InstrumentId; not a runtime operator value.'''

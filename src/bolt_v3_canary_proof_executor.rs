@@ -637,14 +637,15 @@ mod tests {
     }
 
     /// Builds a Limit order exactly the way the canary proof executor does:
-    /// `quote_quantity` toggled by the caller, every other flag fixed. This is the
-    /// same order shape `try_submit_proof_order` hands to the shared sizing helper.
+    /// `is_quote_quantity` toggled by the caller, every other flag fixed. This is
+    /// the same order shape `try_submit_proof_order` hands to the shared sizing
+    /// helper.
     fn test_canary_limit_order(
         instrument_id: InstrumentId,
         order_side: OrderSide,
         quantity: Quantity,
         price: Price,
-        quote_quantity: bool,
+        is_quote_quantity: bool,
     ) -> OrderAny {
         OrderAny::Limit(LimitOrder::new(
             TraderId::from("TESTER-001"),
@@ -658,7 +659,7 @@ mod tests {
             None,
             false,
             false,
-            quote_quantity,
+            is_quote_quantity,
             None,
             None,
             None,

@@ -42,6 +42,7 @@ The root file owns:
 - persistence paths
 - keyed client definitions
 - client secret references
+- keyed gate-provider definitions
 - explicit strategy file list
 
 The root file does not own:
@@ -747,6 +748,46 @@ This section is optional for parse/build-only checks and required before `run_bo
 - must be less than or equal to `risk.default_max_notional_per_order`
 - the run gate does not submit orders; submit-admission code must consume this bound before any live submit
 
+#### Egress-identity fields
+
+These three optional fields bind the approved network egress identity into the live canary gate. They are absent unless the operator pins an egress identity for the run.
+
+- `egress_identity_observed_path`
+  - type: optional path string
+  - path to the observed egress-identity proof the gate reads
+- `egress_identity_observed_max_bytes`
+  - type: optional positive integer
+  - maximum size of the observed egress-identity proof read by the fail-closed gate
+- `approved_egress_identity_sha256`
+  - type: optional sha256 string
+  - approved egress-identity hash the gate compares against the observed proof
+
+### `[live_canary.proof_policy]`
+
+This subtable is optional. When present and `enabled = true`, it configures the least-bad-strategy-candidate proof executor that fires the single tiny-capital canary order; when absent, no proof order is constructed by this path. Config-load validation only enforces the rules below when `enabled = true`.
+
+| Field | Type / Rule | Required |
+|---|---|---|
+| `enabled` | boolean; gates whether the proof policy is active | yes when `[proof_policy]` is present |
+| `policy_kind` | string; must be `least_bad_strategy_candidate` when enabled | yes when `[proof_policy]` is present |
+| `proof_claim` | string; must be `proof_only` when enabled | yes when `[proof_policy]` is present |
+| `executor_strategy_id` | non-blank string; valid NautilusTrader `StrategyId` when enabled | yes when `[proof_policy]` is present |
+| `strategy_instance_id` | non-blank string when enabled | yes when `[proof_policy]` is present |
+| `execution_client_id` | non-blank string when enabled | yes when `[proof_policy]` is present |
+| `book_type` | string enum: `l1_mbp`, `l2_mbp`, or `l3_mbo` | yes when `[proof_policy]` is present |
+| `book_snapshot_interval_millis` | positive integer when enabled | yes when `[proof_policy]` is present |
+| `time_in_force` | string enum: `fok`, `gtc`, or `ioc` | yes when `[proof_policy]` is present |
+| `is_post_only` | boolean | yes when `[proof_policy]` is present |
+| `is_reduce_only` | boolean | yes when `[proof_policy]` is present |
+| `is_quote_quantity` | boolean | yes when `[proof_policy]` is present |
+| `notional_mode` | string; must be `fixed` when enabled | yes when `[proof_policy]` is present |
+| `proof_notional` | positive decimal string; must be `<=` `live_canary.max_notional_per_order` | yes when `[proof_policy]` is present |
+| `candidate_score_source` | string; must be `proof_source` when enabled | yes when `[proof_policy]` is present |
+| `allow_negative_expected_ev` | boolean | yes when `[proof_policy]` is present |
+| `rotation_observation_enabled` | boolean | yes when `[proof_policy]` is present |
+| `rotation_min_distinct_markets` | positive integer when enabled; must be `<=` `rotation_max_attempts` | yes when `[proof_policy]` is present |
+| `rotation_max_attempts` | positive integer when enabled | yes when `[proof_policy]` is present |
+
 ### Phase 8 operator-harness evidence envelope
 
 The `[live_canary]` TOML block is necessary but not sufficient for the one tiny-capital canary operator harness. Before live runner entry, the ignored Phase 8 harness also requires an operator-supplied evidence envelope through these environment fields. Values are evidence paths, sha256s, timestamps, or hashed identifiers; do not put secret values in these fields.
@@ -916,6 +957,11 @@ Live-result proof JSON files:
 The key is a configuration reference name.
 It is not the trader identifier.
 
+`[clients]` is a map keyed by these identifiers, so each client key must be unique.
+More than one client may target the same `venue`: the schema does not enforce a one-client-per-venue rule.
+A common layout is a trade client and a separate reference-data client on the same venue, distinguished by their keys and their `[data]` / `[execution]` blocks.
+Cross-client collisions are rejected only where two clients would produce indistinguishable runtime evidence: the same `instrument_id` must not be declared under more than one client's `readiness_probe.quote_targets`, and the same reference-data `instrument_id` must not be declared under more than one `data_client_id`, because NautilusTrader `QuoteTick` carries the instrument but not the producing data-client identifier.
+
 #### `venue`
 
 - type: NautilusTrader `Venue` identifier (string)
@@ -1079,6 +1125,16 @@ The current schema also requires these pinned adapter fields to be explicit:
 `fee_cache_ttl_secs` is a positive integer and controls the provider fee cache lifetime.
 `transport_backend` is a string enum with current allowed value `sockudo` and maps directly to the pinned NT adapter field.
 
+#### `[clients.<identifier>.execution.on_chain_collateral]`
+
+This subtable is optional for a Polymarket `[execution]` block. When present it configures the on-chain collateral-accounting source used by the live canary CLOB V2 collateral proof; when absent the operator artifact path treats on-chain collateral accounting as unconfigured.
+
+| Field | Type / Rule | Required |
+|---|---|---|
+| `rpc_url` | string; must start with `http://` or `https://` | yes when `[on_chain_collateral]` is present |
+| `chain_id` | positive integer EVM chain id | yes when `[on_chain_collateral]` is present |
+| `collateral_token_address` | `0x`-prefixed EVM public address (collateral token contract) | yes when `[on_chain_collateral]` is present |
+
 ### `[clients.<identifier>.secrets]`
 
 Presence of `[secrets]` means the client requires credential resolution.
@@ -1153,6 +1209,64 @@ For current Binance reference-data use:
 - current allowed value:
   - `sockudo`
 - maps directly to `BinanceDataClientConfig.transport_backend`
+
+### `[clients.<identifier>.readiness_probe]`
+
+This subtable is optional. When present it configures the no-submit data-client readiness probe for that client and the client must also declare a `[data]` block. It does not authorize order submission; it only proves the client's market-data path delivers fresh observations.
+
+| Field | Type / Rule | Required |
+|---|---|---|
+| `market_data_kind` | string enum: `quote`, `book`, or `trade` | yes when `[readiness_probe]` is present |
+| `book_type` | string enum: `l1_mbp`, `l2_mbp`, or `l3_mbo` | required when `market_data_kind = "book"`; forbidden otherwise |
+| `quote_target_source` | string enum: `configured` or `metadata_response` | yes when `[readiness_probe]` is present |
+| `max_metadata_quote_targets` | positive integer; cap on sampled metadata targets | required when `quote_target_source = "metadata_response"` and not a trade chunk-count probe; forbidden when `quote_target_source = "configured"` |
+| `allow_metadata_target_sampling` | boolean; whether broad metadata universes may be sampled | must be set explicitly when `quote_target_source = "metadata_response"` and not a trade chunk-count probe; forbidden when `quote_target_source = "configured"` |
+| `min_observed_targets` | positive integer; minimum sampled targets that must produce a fresh observation. When unset the probe requires every sampled target (strict, fail-closed default) | required for a trade chunk-count probe; optional otherwise |
+| `chunk_size` | positive integer; maximum instruments a trade chunk-count probe subscribes to at once while walking the venue universe in chunks | required (and only valid) when `market_data_kind = "trade"` and `quote_target_source = "metadata_response"` |
+| `chunk_observation_window_seconds` | positive integer; seconds a trade chunk-count probe watches each chunk before advancing | required (and only valid) when `market_data_kind = "trade"` and `quote_target_source = "metadata_response"` |
+| `quote_targets` | map of target-id to `{ instrument_id }` blocks | required and non-empty when `quote_target_source = "configured"`; forbidden when `quote_target_source = "metadata_response"` |
+
+A trade chunk-count probe is the combination `market_data_kind = "trade"` with `quote_target_source = "metadata_response"`: it walks the venue's full instrument universe in chunks of `chunk_size`, watches each chunk for `chunk_observation_window_seconds`, and passes once `min_observed_targets` (`m`) distinct markets have traded. It has no fixed sample, so the sampling knobs (`max_metadata_quote_targets`, `allow_metadata_target_sampling`) are rejected for it and the chunk knobs are required instead.
+
+#### `[clients.<identifier>.readiness_probe.quote_targets.<target-id>]`
+
+- `instrument_id`: string; literal NautilusTrader `InstrumentId`, required. Its venue must match the client's `venue`.
+
+The same `instrument_id` must not appear under more than one client's `readiness_probe.quote_targets`, because NautilusTrader `QuoteTick` does not carry the producing data-client identifier and no-submit quote evidence must stay source-disambiguated.
+
+### `[gate_providers.<identifier>]`
+
+This root-level section is optional. It is a map keyed by provider identifier that declares the resolution/reference gate providers (such as the Chainlink Data Streams resolution anchor) the runtime may consume. Each provider key must be unique.
+
+#### `provider_kind`
+
+- type: string enum
+- required: yes when the provider block is present
+- registered kinds: `chainlink_data_streams`, `pyth`, `exchange_index`, `venue_native`, `hyperliquid_hip4`, `deribit_index`, `outcome_oracle`
+- `test_double` is registered for source/unit tests only and is rejected in live/local operator TOML
+
+#### `capabilities`
+
+- type: array of string enums
+- required: yes; must contain one or more entries
+- registered capabilities: `resolution_value`, `reference_value`, `market_metadata`
+
+#### `client_id`
+
+- type: optional keyed reference string
+- when present, must match a root `[clients.<id>]` key
+
+#### `[gate_providers.<identifier>.freshness]`
+
+- required: yes when the provider block is present
+- `max_age_ms`: positive integer; maximum accepted observation age
+- `max_clock_skew_ms`: positive integer; maximum accepted clock skew; must be `<=` `max_age_ms`
+
+#### Provider-specific subtable
+
+- a provider with `provider_kind = "<kind>"` must define exactly one provider-specific subtable named `[gate_providers.<identifier>.<kind>]`, and no other subtable
+- a `ssm_credential_parameter` field inside a provider subtable, when present, must be a non-empty absolute-style SSM path starting with `/`
+- the `chainlink_data_streams` subtable has its own required fields (`endpoint_id`, `rest_base_url`, `report_endpoint_path`, `http_timeout_secs`, `api_key_ssm_parameter`, `api_secret_ssm_parameter`, and one or more `[[...feed_bindings]]`); those provider-specific field rules are owned by the Chainlink gate-provider validator and are not restated here
 
 ## 6. Strategy File: Candidate Schema
 
@@ -1665,7 +1779,6 @@ Must fail if:
 - a client reference points to a missing client
 - a strategy `execution_client_id` points to a data-only client (no `[execution]` block)
 - a reference-data `data_client_id` points to a client without `[data]`
-- more than one `[clients.<identifier>]` block declares the same `venue` (NT `Venue` identifier) in the current one-client-per-venue slice
 - a `[secrets]` block is present without the same client's consuming adapter block
 - an SSM parameter path is empty or does not start with `/`
 - two listed strategy files declare the same `strategy_instance_id`

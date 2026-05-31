@@ -125,7 +125,7 @@ pub struct PositionSizingGateInputs<'a> {
     pub capital_pool: &'a CapitalPoolSnapshot,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct PositionSizingAdmissionGate {
     reservation_ledger: ReservationLedger,
 }
@@ -159,10 +159,10 @@ impl PositionSizingAdmissionGate {
 
     pub fn release_pending_reservation(
         &mut self,
-        request_id: &str,
+        intent_id: &str,
         evidence_label: &str,
     ) -> ReservationReleaseDecision {
-        self.reservation_ledger.release(request_id, evidence_label)
+        self.reservation_ledger.release(intent_id, evidence_label)
     }
 
     pub fn live_reserved_liability(&self, pool_id: &str) -> Decimal {
@@ -1125,5 +1125,47 @@ mod tests {
 
         assert!(retry.accepted);
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
+    }
+
+    #[test]
+    fn admission_gate_fails_closed_until_reconciled_and_rejects_unknown_release() {
+        let loss_snapshot = LossSnapshot {
+            source: "nt_portfolio_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            per_trade_pnl: Some(Decimal::new(-5, 0)),
+            daily_pnl: None,
+            rolling_pnl: None,
+            current_equity: None,
+            peak_equity: None,
+        };
+        let state = nt_state(Some(loss_snapshot));
+        let policy = policy();
+        let request = request_with_intent("intent-1");
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+
+        let decision = gate.evaluate_and_reserve(PositionSizingGateInputs {
+            request: &request,
+            state: Some(&state),
+            policy: &policy,
+            loss_policy: Some(&loss_policy()),
+            capital_pool: &capital_pool(),
+        });
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.reasons,
+            vec![SizedAdmissionReason::Reservation(
+                ReservationRejectionReason::ReconciliationRequired
+            )]
+        );
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
+
+        let release = gate.release_pending_reservation("intent-1", "nt-submit-rejected");
+        assert!(!release.accepted);
+        assert_eq!(
+            release.reason,
+            Some(ReservationRejectionReason::UnknownRelease)
+        );
+        assert_eq!(release.released_liability, None);
     }
 }

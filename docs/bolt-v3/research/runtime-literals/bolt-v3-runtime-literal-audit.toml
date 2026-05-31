@@ -767,10 +767,10 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''5'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 5;'''
+literal = '''6'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 6;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v5 combines compiled NT order-field evidence with strategy-input snapshot evidence; it is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v6 adds loss-governor halt evidence; it is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -3023,6 +3023,22 @@ literal = '''"bolt-v3 submit admission lifecycle policy disallows {intent:?} sub
 context = '''"bolt-v3 submit admission lifecycle policy disallows {intent:?} submit"'''
 classification = "diagnostic_template"
 reason = "This is an error-display template for a submit lifecycle policy rejection; the rejected intent is computed from typed admission state, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''","'''
+context = '''.join(",");'''
+classification = "diagnostic_separator"
+reason = "This separator joins typed loss-governor halt reasons for an error-display diagnostic only; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt-v3 submit admission loss governor halted: {reasons}"'''
+context = '''"bolt-v3 submit admission loss governor halted: {reasons}"'''
+classification = "diagnostic_template"
+reason = "This is an error-display template for a loss-governor admission rejection; the halt reasons come from typed policy evaluation, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_tiny_canary_evidence.rs"
@@ -15078,6 +15094,7 @@ literal = '''2.0'''
 context = '''const SIGMA_SQUARED_HALF_DIVISOR: f64 = 2.0;'''
 classification = "pricing_formula_constant"
 reason = "This is the named sigma-squared-over-two divisor in the updown family's fair-probability formula, not an operator runtime value."
+
 [[allowed]]
 path = '''src/bolt_v3_live_canary_gate.rs'''
 kind = '''string'''
@@ -15147,3 +15164,67 @@ literal = '''2'''
 context = '''max_live_order_count.saturating_mul(2)'''
 classification = '''phase8_entry_exit_order_pair_multiplier'''
 reason = '''Structural Phase 8 proof multiplier for one admitted entry and one admitted exit per configured live order cap; max_live_order_count remains TOML-owned.'''
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"daily_loss_limit"'''
+context = '''Self::DailyLossLimit => "daily_loss_limit",'''
+classification = "loss_governor_halt_reason_code"
+reason = "This is a stable evidence reason code for a TOML-configured loss-governor threshold breach; the threshold value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"max_drawdown_limit"'''
+context = '''Self::MaxDrawdownLimit => "max_drawdown_limit",'''
+classification = "loss_governor_halt_reason_code"
+reason = "This is a stable evidence reason code for a TOML-configured loss-governor threshold breach; the threshold value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"per_trade_loss_limit"'''
+context = '''Self::PerTradeLossLimit => "per_trade_loss_limit",'''
+classification = "loss_governor_halt_reason_code"
+reason = "This is a stable evidence reason code for a TOML-configured loss-governor threshold breach; the threshold value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"rolling_loss_limit"'''
+context = '''Self::RollingLossLimit => "rolling_loss_limit",'''
+classification = "loss_governor_halt_reason_code"
+reason = "This is a stable evidence reason code for a TOML-configured loss-governor threshold breach; the threshold value remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"stale_loss_snapshot"'''
+context = '''Self::StaleLossSnapshot => "stale_loss_snapshot",'''
+classification = "loss_governor_halt_reason_code"
+reason = "This is a stable evidence reason code for fail-closed stale loss-governor state; the freshness bound remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"explicit_clip_to_available"'''
+context = '''"reject_only" | "explicit_clip_to_available"'''
+classification = "capital_pool_config_enum_value"
+reason = "This is a supported TOML schema discriminator for the capital-pool sizing policy; the selected mode remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"prediction_market_binary"'''
+context = '''if pool.product_kind != "prediction_market_binary" {'''
+classification = "capital_pool_config_enum_value"
+reason = "This is a supported TOML schema discriminator for the first capital-pool product calculator; the pool assignment remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"reject_only"'''
+context = '''"reject_only" | "explicit_clip_to_available"'''
+classification = "capital_pool_config_enum_value"
+reason = "This is a supported TOML schema discriminator for the capital-pool sizing policy; the selected mode remains config-owned."

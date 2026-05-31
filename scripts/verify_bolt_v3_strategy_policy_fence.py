@@ -70,6 +70,15 @@ FORBIDDEN_RULES: tuple[Rule, ...] = (
             re.MULTILINE,
         ),
     ),
+    Rule(
+        "strategy-owned sizing and admission module coupling",
+        re.compile(
+            r"\bbolt_v3_capital_reservation\b"
+            r"|\bbolt_v3_loss_governor\b"
+            r"|\bbolt_v3_position_sizer\b"
+            r"|\bbolt_v3_sizing_state\b"
+        ),
+    ),
 )
 
 

@@ -50,6 +50,18 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         self.assertIn("buy-only entry VWAP helper", labels)
         self.assertIn("buy-biased entry price block", labels)
 
+    def test_detects_strategy_owned_sizing_and_admission_modules(self) -> None:
+        labels = self.labels_for(
+            """
+            use crate::bolt_v3_capital_reservation::ReservationLedger;
+            use crate::bolt_v3_loss_governor::LossGovernorPolicy;
+            use crate::bolt_v3_position_sizer::SizedAdmissionDecision;
+            use crate::bolt_v3_sizing_state::NtDerivedSizingState;
+            """
+        )
+
+        self.assertIn("strategy-owned sizing and admission module coupling", labels)
+
     def test_identifier_rules_do_not_match_substrings(self) -> None:
         labels = self.labels_for(
             """

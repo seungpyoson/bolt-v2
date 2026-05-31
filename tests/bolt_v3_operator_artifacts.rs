@@ -12155,12 +12155,13 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
         notional: "0.50".to_string(),
         intent_kind: BoltV3SubmitIntentKind::Entry,
         outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+        loss_halt_reasons: Vec::new(),
     };
     let decision_evidence_path = temp.path().join("decision-evidence.jsonl");
     let mut decision_evidence = String::new();
     for line in [
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -12168,7 +12169,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "snapshot": snapshot.clone(),
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -12176,7 +12177,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "intent": intent.clone(),
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",
@@ -12240,7 +12241,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
     let mut wrong_decision_evidence = String::new();
     for line in [
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -12248,7 +12249,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "snapshot": wrong_snapshot,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -12256,7 +12257,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "intent": wrong_intent,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",
@@ -14612,11 +14613,12 @@ fn write_entry_decision_evidence_chain_at(
         notional: "0.50".to_string(),
         intent_kind: BoltV3SubmitIntentKind::Entry,
         outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+        loss_halt_reasons: Vec::new(),
     };
     let mut decision_evidence = String::new();
     for line in [
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -14624,7 +14626,7 @@ fn write_entry_decision_evidence_chain_at(
             "snapshot": snapshot,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -14632,7 +14634,7 @@ fn write_entry_decision_evidence_chain_at(
             "intent": intent,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",

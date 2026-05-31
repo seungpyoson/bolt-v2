@@ -94,6 +94,7 @@ use crate::{
         BoltV3LiveCanaryGateError, build_bolt_v3_live_submit_admission_report_from_config,
         current_build_head_sha,
     },
+    bolt_v3_loss_governor::LossGovernorPolicy,
     bolt_v3_providers,
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
@@ -110,6 +111,7 @@ use crate::{
         Phase8EvidenceRef, Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef,
         phase8_sha256_text,
     },
+    bolt_v3_validate::parse_decimal_string,
     nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
     secrets::SsmResolverSession,
 };
@@ -1657,6 +1659,10 @@ impl BoltV3LiveNodeRuntime {
     pub fn admitted_order_count(&self) -> u32 {
         self.submit_admission.admitted_order_count()
     }
+
+    pub fn loss_governor_configured(&self) -> bool {
+        self.submit_admission.loss_governor_configured()
+    }
 }
 
 impl std::fmt::Debug for BoltV3LiveNodeRuntime {
@@ -1708,6 +1714,7 @@ pub enum BoltV3LiveNodeError {
     BuilderConstruction(BoltV3LiveNodeBuilderError),
     ClientRegistration(BoltV3ClientRegistrationError),
     StrategyRegistration(BoltV3StrategyRegistrationError),
+    RiskPolicy(anyhow::Error),
     Build(anyhow::Error),
     /// The live canary gate rejected entry to NT's runner loop before
     /// `LiveNode::run` was invoked. This variant wraps the specific
@@ -1846,6 +1853,9 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::StrategyRegistration(error) => {
                 write!(f, "bolt-v3 strategy registration failed: {error}")
             }
+            BoltV3LiveNodeError::RiskPolicy(error) => {
+                write!(f, "bolt-v3 risk policy mapping failed: {error}")
+            }
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
             BoltV3LiveNodeError::LiveCanaryGate(error) => {
                 write!(
@@ -1978,6 +1988,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::BuilderConstruction(error) => Some(error),
             BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
             BoltV3LiveNodeError::StrategyRegistration(error) => Some(error),
+            BoltV3LiveNodeError::RiskPolicy(error) => error.source(),
             BoltV3LiveNodeError::Build(error) => error.source(),
             BoltV3LiveNodeError::LiveCanaryGate(error) => Some(error),
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => Some(error.as_ref()),
@@ -3245,9 +3256,14 @@ fn build_live_node_with_clients(
                 })?,
             )
         };
-    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(
-        decision_evidence.clone(),
-    ));
+    let loss_policy = loss_governor_policy_from_loaded(loaded)?;
+    let submit_admission = Arc::new(match loss_policy {
+        Some(policy) => BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+            decision_evidence.clone(),
+            policy,
+        ),
+        None => BoltV3SubmitAdmissionState::new_unarmed(decision_evidence.clone()),
+    });
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
@@ -3299,6 +3315,55 @@ fn build_live_node_with_clients(
         ),
         summary,
     ))
+}
+
+fn loss_governor_policy_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<LossGovernorPolicy>, BoltV3LiveNodeError> {
+    let Some(block) = loaded.root.risk.loss_governor.as_ref() else {
+        return Ok(None);
+    };
+    if !block.enabled {
+        return Ok(None);
+    }
+    Ok(Some(LossGovernorPolicy {
+        max_snapshot_age_ns: block.max_snapshot_age_ns,
+        max_per_trade_loss: Some(required_loss_governor_decimal(
+            "risk.loss_governor.max_per_trade_loss",
+            block.max_per_trade_loss.as_deref(),
+        )?),
+        max_daily_loss: Some(required_loss_governor_decimal(
+            "risk.loss_governor.max_daily_loss",
+            block.max_daily_loss.as_deref(),
+        )?),
+        max_rolling_loss: Some(required_loss_governor_decimal(
+            "risk.loss_governor.max_rolling_loss",
+            block.max_rolling_loss.as_deref(),
+        )?),
+        max_drawdown: Some(required_loss_governor_decimal(
+            "risk.loss_governor.max_drawdown",
+            block.max_drawdown.as_deref(),
+        )?),
+    }))
+}
+
+fn required_loss_governor_decimal(
+    label: &'static str,
+    value: Option<&str>,
+) -> Result<Decimal, BoltV3LiveNodeError> {
+    let value =
+        value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))?;
+    let decimal = parse_decimal_string(value).map_err(|reason| {
+        BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+            "{label} must be a valid decimal string ({reason}): `{value}`"
+        ))
+    })?;
+    if decimal <= Decimal::ZERO {
+        return Err(BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+            "{label} must be positive: `{value}`"
+        )));
+    }
+    Ok(decimal)
 }
 
 /// Translates a validated bolt-v3 config into an NT-native

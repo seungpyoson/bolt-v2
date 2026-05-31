@@ -48,10 +48,11 @@ use rust_decimal::Decimal;
 
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
-    ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
-    GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, LiveCanaryBlock,
-    LiveCanaryProofPolicyBlock, LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND,
-    PersistenceBlock, RiskBlock, SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
+    CapitalPoolBlock, ClientBlock, DataClientReadinessProbeQuoteTargetSource,
+    GATE_PROVIDER_CAPABILITIES, GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock,
+    LiveCanaryBlock, LiveCanaryProofPolicyBlock, LoadedStrategy, NautilusBlock,
+    PRICE_GATE_VALUE_KIND, PersistenceBlock, RiskBlock, SSM_CREDENTIAL_PARAMETER_FIELD,
+    TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
 
@@ -910,6 +911,80 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
             ));
         }
     }
+    if let Some(loss_governor) = block.loss_governor.as_ref() {
+        if loss_governor.enabled && loss_governor.max_snapshot_age_ns == 0 {
+            errors.push(
+                "risk.loss_governor.max_snapshot_age_ns must be a positive integer".to_string(),
+            );
+        }
+        if loss_governor.enabled && loss_governor.rolling_window_ns == 0 {
+            errors.push(
+                "risk.loss_governor.rolling_window_ns must be a positive integer".to_string(),
+            );
+        }
+        if loss_governor.enabled {
+            for (label, threshold) in [
+                (
+                    "risk.loss_governor.max_per_trade_loss",
+                    loss_governor.max_per_trade_loss.as_deref(),
+                ),
+                (
+                    "risk.loss_governor.max_daily_loss",
+                    loss_governor.max_daily_loss.as_deref(),
+                ),
+                (
+                    "risk.loss_governor.max_rolling_loss",
+                    loss_governor.max_rolling_loss.as_deref(),
+                ),
+                (
+                    "risk.loss_governor.max_drawdown",
+                    loss_governor.max_drawdown.as_deref(),
+                ),
+            ] {
+                if threshold.is_none() {
+                    errors.push(format!("{label} must be configured when enabled"));
+                }
+            }
+        }
+        for (label, threshold) in [
+            (
+                "risk.loss_governor.max_per_trade_loss",
+                loss_governor.max_per_trade_loss.as_deref(),
+            ),
+            (
+                "risk.loss_governor.max_daily_loss",
+                loss_governor.max_daily_loss.as_deref(),
+            ),
+            (
+                "risk.loss_governor.max_rolling_loss",
+                loss_governor.max_rolling_loss.as_deref(),
+            ),
+            (
+                "risk.loss_governor.max_drawdown",
+                loss_governor.max_drawdown.as_deref(),
+            ),
+        ] {
+            let Some(value) = threshold else {
+                continue;
+            };
+            match parse_decimal_string(value) {
+                Ok(decimal) if decimal <= Decimal::ZERO => {
+                    errors.push(format!(
+                        "{label} must be a positive decimal string: `{value}`"
+                    ));
+                }
+                Ok(_) => {}
+                Err(reason) => {
+                    errors.push(format!(
+                        "{label} is not a valid decimal string ({reason}): `{value}`"
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(capital_pools) = block.capital_pools.as_ref() {
+        errors.extend(validate_capital_pools(capital_pools));
+    }
     if block.nautilus.bypass {
         errors.push("risk.nautilus.bypass must be false".to_string());
     }
@@ -971,6 +1046,95 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
 /// computation reads as a time conversion rather than bare magic numbers.
 const SECONDS_PER_HOUR: u64 = 3600;
 const SECONDS_PER_MINUTE: u64 = 60;
+
+fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut pool_ids = HashSet::new();
+
+    for pool in pools {
+        let label = format!("risk.capital_pools[{}]", pool.pool_id);
+        if pool.pool_id.trim().is_empty() {
+            errors.push("risk.capital_pools pool_id must be a non-empty string".to_string());
+        } else if !pool_ids.insert(pool.pool_id.as_str()) {
+            errors.push(format!("{label}.pool_id must be unique"));
+        }
+        if pool.venue_id.trim().is_empty() {
+            errors.push(format!("{label}.venue_id must be a non-empty string"));
+        }
+        if pool.collateral_currency.trim().is_empty() {
+            errors.push(format!(
+                "{label}.collateral_currency must be a non-empty string"
+            ));
+        }
+        if pool.product_kind != "prediction_market_binary" {
+            errors.push(format!(
+                "{label}.product_kind must be `prediction_market_binary`"
+            ));
+        }
+        validate_positive_decimal(
+            &format!("{label}.max_pool_liability"),
+            &pool.max_pool_liability,
+            &mut errors,
+        );
+        if pool.max_snapshot_age_ns == 0 {
+            errors.push(format!(
+                "{label}.max_snapshot_age_ns must be a positive integer"
+            ));
+        }
+        if !matches!(
+            pool.sizing_policy.mode.as_str(),
+            "reject_only" | "explicit_clip_to_available"
+        ) {
+            errors.push(format!(
+                "{label}.sizing_policy.mode must be `reject_only` or `explicit_clip_to_available`"
+            ));
+        }
+        if let Some(max_order_liability) = pool.sizing_policy.max_order_liability.as_ref() {
+            validate_positive_decimal(
+                &format!("{label}.sizing_policy.max_order_liability"),
+                max_order_liability,
+                &mut errors,
+            );
+        }
+        if let Some(min_remaining_pool_balance) =
+            pool.sizing_policy.min_remaining_pool_balance.as_ref()
+        {
+            validate_positive_decimal(
+                &format!("{label}.sizing_policy.min_remaining_pool_balance"),
+                min_remaining_pool_balance,
+                &mut errors,
+            );
+        }
+        validate_positive_decimal(
+            &format!("{label}.sizing_policy.fee_slippage.max_fee_liability"),
+            &pool.sizing_policy.fee_slippage.max_fee_liability,
+            &mut errors,
+        );
+        validate_positive_decimal(
+            &format!("{label}.sizing_policy.fee_slippage.max_slippage_liability"),
+            &pool.sizing_policy.fee_slippage.max_slippage_liability,
+            &mut errors,
+        );
+    }
+
+    errors
+}
+
+fn validate_positive_decimal(label: &str, value: &str, errors: &mut Vec<String>) {
+    match parse_decimal_string(value) {
+        Ok(decimal) if decimal <= Decimal::ZERO => {
+            errors.push(format!(
+                "{label} must be a positive decimal string: `{value}`"
+            ));
+        }
+        Ok(_) => {}
+        Err(reason) => {
+            errors.push(format!(
+                "{label} is not a valid decimal string ({reason}): `{value}`"
+            ));
+        }
+    }
+}
 
 /// Validates an NT `limit/HH:MM:SS` rate-limit string and returns the parsed
 /// `(limit, interval_seconds)` so callers can reconcile the rate against a

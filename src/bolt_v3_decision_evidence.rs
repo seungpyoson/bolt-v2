@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::bolt_v3_config::LoadedBoltV3Config;
 use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 5;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 6;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
@@ -305,6 +305,7 @@ pub enum BoltV3AdmissionOutcome {
     Admitted,
     RejectedNotArmed,
     RejectedSubmitLifecycleDisallowed,
+    RejectedLossGovernorHalted,
     RejectedNonPositiveNotional,
     RejectedNotionalCapExceeded,
     RejectedInvalidCanaryProofClaim,
@@ -320,6 +321,7 @@ pub struct BoltV3AdmissionDecisionEvidence {
     pub notional: String,
     pub intent_kind: BoltV3SubmitIntentKind,
     pub outcome: BoltV3AdmissionOutcome,
+    pub loss_halt_reasons: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -1215,6 +1217,7 @@ mod tests {
             BoltV3AdmissionOutcome::Admitted,
             BoltV3AdmissionOutcome::RejectedNotArmed,
             BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed,
+            BoltV3AdmissionOutcome::RejectedLossGovernorHalted,
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
             BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim,
@@ -1228,6 +1231,12 @@ mod tests {
                 notional: "1.0".to_string(),
                 intent_kind: BoltV3SubmitIntentKind::Entry,
                 outcome: outcome.clone(),
+                loss_halt_reasons: match outcome {
+                    BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
+                        vec!["stale_loss_snapshot".to_string()]
+                    }
+                    _ => Vec::new(),
+                },
             };
 
             let line = encode_admission_decision_line(&decision).expect("decision should encode");
@@ -1261,6 +1270,9 @@ mod tests {
                 BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
                     "rejected_submit_lifecycle_disallowed"
                 }
+                BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
+                    "rejected_loss_governor_halted"
+                }
                 BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
                     "rejected_non_positive_notional"
                 }
@@ -1276,6 +1288,12 @@ mod tests {
                 BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",
             };
             assert_eq!(decision_field["outcome"], expected_outcome);
+            if outcome == BoltV3AdmissionOutcome::RejectedLossGovernorHalted {
+                assert_eq!(
+                    decision_field["loss_halt_reasons"],
+                    serde_json::json!(["stale_loss_snapshot"])
+                );
+            }
         }
     }
 

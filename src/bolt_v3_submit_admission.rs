@@ -2,6 +2,9 @@ use crate::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
 };
 use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
+use crate::bolt_v3_loss_governor::{
+    LossGovernorPolicy, LossHaltReason, LossSnapshot, evaluate_loss_admission,
+};
 use nautilus_model::{
     enums::{OrderSide, PositionSide},
     instruments::{Instrument, InstrumentAny},
@@ -9,8 +12,11 @@ use nautilus_model::{
     types::Price,
 };
 use rust_decimal::Decimal;
-use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::{
+    str::FromStr,
+    sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use crate::bolt_v3_canary_proof_policy::CANARY_PROOF_CLAIM;
 pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
@@ -30,10 +36,26 @@ struct BoltV3SubmitAdmissionInner {
     admitted_entry_order_count: u32,
     admitted_risk_reducing_exit_order_count: u32,
     admitted_replace_submit_order_count: u32,
+    loss_policy: Option<LossGovernorPolicy>,
+    loss_snapshot: Option<LossSnapshot>,
 }
 
 impl BoltV3SubmitAdmissionState {
     pub fn new_unarmed(decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>) -> Self {
+        Self::new_unarmed_with_optional_loss_governor(decision_evidence, None)
+    }
+
+    pub fn new_unarmed_with_loss_governor(
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        loss_policy: LossGovernorPolicy,
+    ) -> Self {
+        Self::new_unarmed_with_optional_loss_governor(decision_evidence, Some(loss_policy))
+    }
+
+    fn new_unarmed_with_optional_loss_governor(
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        loss_policy: Option<LossGovernorPolicy>,
+    ) -> Self {
         Self {
             inner: Mutex::new(BoltV3SubmitAdmissionInner {
                 gate_report: None,
@@ -41,6 +63,8 @@ impl BoltV3SubmitAdmissionState {
                 admitted_entry_order_count: 0,
                 admitted_risk_reducing_exit_order_count: 0,
                 admitted_replace_submit_order_count: 0,
+                loss_policy,
+                loss_snapshot: None,
             }),
             decision_evidence,
         }
@@ -65,29 +89,57 @@ impl BoltV3SubmitAdmissionState {
         Ok(())
     }
 
+    pub fn update_loss_snapshot(&self, snapshot: LossSnapshot) {
+        self.inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .loss_snapshot = Some(snapshot);
+    }
+
     pub fn admit(
         &self,
         request: &BoltV3SubmitAdmissionRequest,
+    ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
+        self.admit_with_clock(request, current_unix_ns()?)
+    }
+
+    pub fn admit_at(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+        now_ns: u64,
+    ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
+        self.admit_with_clock(request, now_ns)
+    }
+
+    fn admit_with_clock(
+        &self,
+        request: &BoltV3SubmitAdmissionRequest,
+        now_ns: u64,
     ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
         let mut inner = self
             .inner
             .lock()
             .expect("submit admission state mutex should not be poisoned");
-        let outcome = Self::evaluate(&inner, request);
+        let evaluation = Self::evaluate(&inner, request, now_ns);
         let evidence = BoltV3AdmissionDecisionEvidence {
             strategy_id: request.strategy_id.clone(),
             client_order_id: request.client_order_id.clone(),
             instrument_id: request.instrument_id.clone(),
             notional: request.notional.to_string(),
             intent_kind: request.intent_kind,
-            outcome: outcome.clone(),
+            outcome: evaluation.outcome.clone(),
+            loss_halt_reasons: evaluation
+                .loss_halt_reasons
+                .iter()
+                .map(|reason| reason.as_str().to_string())
+                .collect(),
         };
         self.decision_evidence
             .record_admission_decision(&evidence)
             .map_err(|err| BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                 reason: format!("{err:#}"),
             })?;
-        match outcome {
+        match evaluation.outcome {
             BoltV3AdmissionOutcome::Admitted => {
                 inner.admitted_order_count += 1;
                 match request.intent_kind {
@@ -107,6 +159,11 @@ impl BoltV3SubmitAdmissionState {
             BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
                 Err(BoltV3SubmitAdmissionError::SubmitLifecycleDisallowed {
                     intent: request.intent_kind,
+                })
+            }
+            BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
+                Err(BoltV3SubmitAdmissionError::LossGovernorHalted {
+                    reasons: evaluation.loss_halt_reasons,
                 })
             }
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
@@ -130,58 +187,91 @@ impl BoltV3SubmitAdmissionState {
     fn evaluate(
         inner: &BoltV3SubmitAdmissionInner,
         request: &BoltV3SubmitAdmissionRequest,
-    ) -> BoltV3AdmissionOutcome {
+        now_ns: u64,
+    ) -> BoltV3SubmitAdmissionEvaluation {
         let Some(report) = inner.gate_report.as_ref() else {
-            return BoltV3AdmissionOutcome::RejectedNotArmed;
+            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                BoltV3AdmissionOutcome::RejectedNotArmed,
+            );
         };
         if !request.lifecycle_policy.allows(request.intent_kind) {
-            return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;
+            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed,
+            );
+        }
+        if let Some(loss_policy) = inner.loss_policy.as_ref()
+            && matches!(
+                request.intent_kind,
+                BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
+            )
+        {
+            let decision =
+                evaluate_loss_admission(loss_policy, inner.loss_snapshot.as_ref(), now_ns);
+            if !decision.accepted {
+                return BoltV3SubmitAdmissionEvaluation::loss_halt(decision.halt_reasons);
+            }
         }
         if request.notional <= Decimal::ZERO {
-            return BoltV3AdmissionOutcome::RejectedNonPositiveNotional;
+            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
+            );
         }
         if matches!(
             request.intent_kind,
             BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
         ) && request.notional > report.max_notional_per_order()
         {
-            return BoltV3AdmissionOutcome::RejectedNotionalCapExceeded;
+            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
+            );
         }
         if request
             .canary_proof_claim
             .as_deref()
             .is_some_and(|claim| claim != CANARY_PROOF_CLAIM)
         {
-            return BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim;
+            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim,
+            );
         }
         match request.intent_kind {
             BoltV3SubmitIntentKind::Entry => {
                 if inner.admitted_entry_order_count >= report.max_live_entry_order_count() {
-                    return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                    return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                        BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+                    );
                 }
             }
             BoltV3SubmitIntentKind::RiskReducingExit => {
                 let Some(proof) = request.risk_reducing_exit_proof.as_ref() else {
-                    return BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof;
+                    return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                        BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
+                    );
                 };
                 if !proof.is_valid_for(request) {
-                    return BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof;
+                    return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                        BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
+                    );
                 }
                 if inner.admitted_risk_reducing_exit_order_count
                     >= report.max_live_risk_reducing_exit_order_count()
                 {
-                    return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                    return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                        BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+                    );
                 }
             }
             BoltV3SubmitIntentKind::ReplaceSubmit => {
                 if inner.admitted_replace_submit_order_count
                     >= report.max_live_replace_submit_order_count()
                 {
-                    return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                    return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                        BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+                    );
                 }
             }
         }
-        BoltV3AdmissionOutcome::Admitted
+        BoltV3SubmitAdmissionEvaluation::without_loss_halt(BoltV3AdmissionOutcome::Admitted)
     }
 
     pub fn admitted_order_count(&self) -> u32 {
@@ -207,10 +297,40 @@ impl BoltV3SubmitAdmissionState {
             .as_ref()
             .map(BoltV3LiveCanaryGateReport::reference_quote_max_age_seconds)
     }
+
+    pub fn loss_governor_configured(&self) -> bool {
+        self.inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .loss_policy
+            .is_some()
+    }
 }
 
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionPermit(());
+
+#[derive(Debug)]
+struct BoltV3SubmitAdmissionEvaluation {
+    outcome: BoltV3AdmissionOutcome,
+    loss_halt_reasons: Vec<LossHaltReason>,
+}
+
+impl BoltV3SubmitAdmissionEvaluation {
+    fn without_loss_halt(outcome: BoltV3AdmissionOutcome) -> Self {
+        Self {
+            outcome,
+            loss_halt_reasons: Vec::new(),
+        }
+    }
+
+    fn loss_halt(loss_halt_reasons: Vec<LossHaltReason>) -> Self {
+        Self {
+            outcome: BoltV3AdmissionOutcome::RejectedLossGovernorHalted,
+            loss_halt_reasons,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum BoltV3OrderLifecycleIntent {
@@ -541,9 +661,15 @@ pub enum BoltV3SubmitAdmissionError {
     SubmitLifecycleDisallowed {
         intent: BoltV3SubmitIntentKind,
     },
+    LossGovernorHalted {
+        reasons: Vec<LossHaltReason>,
+    },
     CountCapExhausted,
     NonPositiveNotional,
     NotionalCapExceeded,
+    SystemClock {
+        reason: String,
+    },
     MissingPriceCeiling,
     RoundedNotionalExceedsIntent {
         rounded_base_notional: Decimal,
@@ -565,6 +691,17 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
                 f,
                 "bolt-v3 submit admission lifecycle policy disallows {intent:?} submit"
             ),
+            Self::LossGovernorHalted { reasons } => {
+                let reasons = reasons
+                    .iter()
+                    .map(|reason| reason.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                write!(
+                    f,
+                    "bolt-v3 submit admission loss governor halted: {reasons}"
+                )
+            }
             Self::CountCapExhausted => {
                 write!(f, "bolt-v3 submit admission order count cap is exhausted")
             }
@@ -573,6 +710,9 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             }
             Self::NotionalCapExceeded => {
                 write!(f, "bolt-v3 submit admission notional cap is exceeded")
+            }
+            Self::SystemClock { reason } => {
+                write!(f, "bolt-v3 submit admission system clock failed: {reason}")
             }
             Self::MissingPriceCeiling => write!(
                 f,
@@ -601,6 +741,20 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             }
         }
     }
+}
+
+fn current_unix_ns() -> Result<u64, BoltV3SubmitAdmissionError> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|source| BoltV3SubmitAdmissionError::SystemClock {
+            reason: format!("system time before UNIX_EPOCH: {source}"),
+        })?
+        .as_nanos();
+    nanos
+        .try_into()
+        .map_err(|_| BoltV3SubmitAdmissionError::SystemClock {
+            reason: format!("unix nanoseconds does not fit u64: {nanos}"),
+        })
 }
 
 impl std::error::Error for BoltV3SubmitAdmissionError {}

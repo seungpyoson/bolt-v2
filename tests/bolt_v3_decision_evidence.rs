@@ -52,6 +52,32 @@ fn latest_entry_decision_evidence_chain_binds_snapshot_order_intent_and_admissio
 }
 
 #[test]
+fn admission_decision_evidence_records_loss_governor_halt_reasons_in_schema_v6() {
+    assert_eq!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION, 6);
+
+    let admission = BoltV3AdmissionDecisionEvidence {
+        strategy_id: "strategy-one".to_string(),
+        client_order_id: "client-order-one".to_string(),
+        instrument_id: "instrument-one".to_string(),
+        notional: "0.10".to_string(),
+        intent_kind: BoltV3SubmitIntentKind::Entry,
+        outcome: BoltV3AdmissionOutcome::RejectedLossGovernorHalted,
+        loss_halt_reasons: vec![
+            "per_trade_loss_limit".to_string(),
+            "daily_loss_limit".to_string(),
+        ],
+    };
+
+    let encoded = serde_json::to_value(&admission).expect("admission should serialize");
+
+    assert_eq!(encoded["outcome"], "rejected_loss_governor_halted");
+    assert_eq!(
+        encoded["loss_halt_reasons"],
+        serde_json::json!(["per_trade_loss_limit", "daily_loss_limit"])
+    );
+}
+
+#[test]
 #[allow(clippy::type_complexity)]
 fn latest_entry_decision_evidence_chain_rejects_untrusted_record_metadata() {
     let cases: [(&str, fn(&mut serde_json::Value)); 8] = [
@@ -334,6 +360,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         notional: "0.50".to_string(),
         intent_kind: BoltV3SubmitIntentKind::Entry,
         outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+        loss_halt_reasons: Vec::new(),
     };
     [
         serde_json::json!({

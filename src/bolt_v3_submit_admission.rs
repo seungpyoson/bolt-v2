@@ -421,6 +421,23 @@ pub fn rounded_order_admission_notional(
     ))
 }
 
+/// Admission notional for a market-style order — one with NO firm limit price
+/// (Market / StopMarket / MarketIfTouched / TrailingStopMarket). Such an order
+/// carries no venue-enforced price bound: it can fill anywhere up to the
+/// instrument's structural price ceiling. The per-order cap must therefore be
+/// checked against that ceiling — the only price the venue physically cannot
+/// exceed — never against a reference-price estimate or a configured slippage
+/// budget (an estimate is not a bound). Fails CLOSED when the instrument
+/// declares no ceiling: an order whose worst-case cash cost cannot be bounded
+/// must not be admitted.
+pub fn market_style_admission_ceiling_notional(
+    price_ceiling: Option<Decimal>,
+    order_quantity: Decimal,
+) -> Result<Decimal, BoltV3SubmitAdmissionError> {
+    let ceiling = price_ceiling.ok_or(BoltV3SubmitAdmissionError::MissingPriceCeiling)?;
+    Ok(base_quantity_admission_notional(ceiling, order_quantity))
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum BoltV3SubmitAdmissionError {
     NotArmed,
@@ -431,6 +448,7 @@ pub enum BoltV3SubmitAdmissionError {
     CountCapExhausted,
     NonPositiveNotional,
     NotionalCapExceeded,
+    MissingPriceCeiling,
     RoundedNotionalExceedsIntent {
         rounded_base_notional: Decimal,
         intended_notional: Decimal,
@@ -459,6 +477,10 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             Self::NotionalCapExceeded => {
                 write!(f, "bolt-v3 submit admission notional cap is exceeded")
             }
+            Self::MissingPriceCeiling => write!(
+                f,
+                "bolt-v3 submit admission refuses a market-style order without a declared instrument price ceiling"
+            ),
             Self::RoundedNotionalExceedsIntent {
                 rounded_base_notional,
                 intended_notional,

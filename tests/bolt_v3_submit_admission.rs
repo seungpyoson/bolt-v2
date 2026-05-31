@@ -10,7 +10,8 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderSide,
     BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
     BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-    conservative_quote_quantity_admission_notional, rounded_order_admission_notional,
+    conservative_quote_quantity_admission_notional, market_style_admission_ceiling_notional,
+    rounded_order_admission_notional,
 };
 use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
@@ -22,6 +23,38 @@ use std::{
     thread,
     time::Duration,
 };
+
+#[test]
+fn market_style_admission_ceiling_notional_values_at_instrument_price_ceiling() {
+    // A market-style order (no firm limit price) can fill anywhere up to the
+    // instrument's structural price ceiling, so its admission notional must be
+    // valued at qty * ceiling — the hard bound the venue cannot exceed — never
+    // at a reference-price estimate or a configured slippage budget.
+    let ceiling = Decimal::from_str_exact("0.999").expect("ceiling should parse");
+    let quantity = Decimal::from(100u32);
+
+    let notional = market_style_admission_ceiling_notional(Some(ceiling), quantity)
+        .expect("a declared ceiling should value the order");
+
+    assert_eq!(
+        notional,
+        Decimal::from_str_exact("99.9").expect("expected notional should parse"),
+        "market-style notional must be qty * instrument price ceiling"
+    );
+}
+
+#[test]
+fn market_style_admission_ceiling_notional_fails_closed_without_a_ceiling() {
+    // With no declared ceiling there is no price the venue cannot exceed, so the
+    // order's worst-case cash cost is unbounded and admission must be refused.
+    let result = market_style_admission_ceiling_notional(None, Decimal::from(100u32));
+
+    assert_eq!(
+        result,
+        Err(BoltV3SubmitAdmissionError::MissingPriceCeiling),
+        "an unbounded market-style order with no declared ceiling must fail closed"
+    );
+}
 
 #[test]
 fn live_node_runtime_does_not_expose_manual_admission_or_raw_run_bypass() {

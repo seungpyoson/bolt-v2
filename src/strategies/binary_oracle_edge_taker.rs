@@ -56,7 +56,7 @@ use crate::{
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
         admission_base_notional_from_order, base_quantity_admission_notional,
-        fee_inclusive_admission_notional,
+        fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
     },
     strategies::registry::{
         BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
@@ -3963,15 +3963,33 @@ impl BinaryOracleEdgeTaker {
             // means no reference price could be resolved for a quote-quantity
             // order — fall back to the raw submitted quote quantity, exactly as
             // before.
-            admission_base_notional_from_order(
+            match admission_base_notional_from_order(
                 order,
                 &instrument,
                 price,
                 quantity,
                 last_price,
                 quote_reference_price,
-            )
-            .unwrap_or(quantity)
+            ) {
+                Some(base_notional) => base_notional,
+                None => {
+                    // Degraded fallback: no reference price could be resolved.
+                    // The raw submitted quote quantity equals the committed
+                    // settlement-currency amount ONLY for a non-inverse
+                    // instrument; for an inverse instrument the quote quantity is
+                    // denominated in the quote currency, not settlement, so
+                    // falling back to it would understate the cap. This system
+                    // trades only non-inverse binary options — assert the
+                    // invariant and FAIL CLOSED rather than admit a
+                    // mis-denominated notional if that ever changes.
+                    anyhow::ensure!(
+                        !instrument.is_inverse(),
+                        "bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})",
+                        client_order_id
+                    );
+                    quantity
+                }
+            }
         } else {
             base_quantity_admission_notional(price, quantity)
         };
@@ -3982,24 +4000,36 @@ impl BinaryOracleEdgeTaker {
         // path checks fee-inclusive — admitting an order whose fee-inclusive
         // cost exceeds the intended per-order cap.
         let max_fee_bps = self.max_entry_fee_bps_for_admission(order.instrument_id(), price)?;
-        // An entry order with NO firm limit price (Market / StopMarket /
-        // MarketIfTouched / TrailingStopMarket) can fill PAST the reference price
-        // its notional is valued at, up to the strategy's own book-impact
-        // slippage budget. Fold that worst-case slippage into the admission
-        // scaling so the per-order cap is a hard ceiling on the cash a
-        // base-quantity entry can actually spend. Quote-quantity orders commit a
-        // fixed quote amount (already floored to it) and exits are risk-reducing,
-        // so neither is scaled; a firm-limit order can never fill past its own
-        // price, so it carries the fee budget alone.
-        let admission_adverse_bps = if matches!(intent.intent_kind, BoltV3OrderIntentKind::Entry)
+        // An ENTRY order with NO firm limit price (Market / StopMarket /
+        // MarketIfTouched / TrailingStopMarket) carries no venue-enforced price
+        // bound: it can fill anywhere up to the instrument's structural price
+        // ceiling. Value its admission notional at that ceiling — the only price
+        // the venue cannot exceed — so the per-order cap is a HARD bound on the
+        // cash a base-quantity entry can commit, not an estimate. A configured
+        // slippage budget is an estimate, not a bound, and must never stand in
+        // for the cap. Quote-quantity orders commit a fixed quote amount (already
+        // floored); a firm-limit order can never fill past its own price; an exit
+        // reduces a position the entry cap already admitted and must never be
+        // blocked. Those keep their own notional. Fail CLOSED if the instrument
+        // declares no ceiling.
+        let notional = if matches!(intent.intent_kind, BoltV3OrderIntentKind::Entry)
             && order.price().is_none()
             && !order.is_quote_quantity()
         {
-            max_fee_bps + Decimal::from(self.config.book_impact_cap_bps)
+            let price_ceiling = self
+                .current_instrument(order.instrument_id())
+                .and_then(|instrument| instrument.max_price())
+                .map(|ceiling| ceiling.as_decimal());
+            market_style_admission_ceiling_notional(price_ceiling, quantity).with_context(|| {
+                format!(
+                    "bolt-v3 submit admission refuses a market-style entry without a structural price ceiling for client_order_id={}",
+                    client_order_id
+                )
+            })?
         } else {
-            max_fee_bps
+            notional
         };
-        let notional = fee_inclusive_admission_notional(notional, admission_adverse_bps);
+        let notional = fee_inclusive_admission_notional(notional, max_fee_bps);
 
         Ok(BoltV3SubmitAdmissionRequest {
             strategy_id: intent.strategy_id.clone(),
@@ -7121,13 +7151,20 @@ fn submit_admission_request_from_order(
     })?;
     // Base-only test helper: it has no strategy cache/instrument context, so it
     // cannot size quote-quantity orders (that requires the full
-    // `admission_base_notional_from_order` path with an instrument). It is NOT a
-    // divergent copy of the notional math — it reuses the shared base-quantity
-    // definition so a base-quantity order is sized identically here, in the
-    // production strategy, and in the canary proof executor.
+    // `admission_base_notional_from_order` path with an instrument) and it cannot
+    // value a market-style ENTRY (production values that at the instrument's
+    // structural price ceiling via the strategy method). It is NOT a divergent
+    // copy of the notional math — for the shapes it DOES accept (base-quantity
+    // firm-limit orders, and exits, which production never ceilings) it reuses
+    // the shared base-quantity definition so the order is sized identically here,
+    // in the production strategy, and in the canary proof executor.
     anyhow::ensure!(
         !order.is_quote_quantity(),
         "test submit admission helper requires strategy cache context for quote-quantity orders"
+    );
+    anyhow::ensure!(
+        !(matches!(intent.intent_kind, BoltV3OrderIntentKind::Entry) && order.price().is_none()),
+        "test submit admission helper cannot value a market-style entry (no firm limit price): production values it at the instrument price ceiling — use `strategy.submit_admission_request_from_order` with a cache-seeded instrument"
     );
     let price_source = compiled_order_price_source(intent.price.clone(), order);
     let price = Decimal::from_str(price_source.trim()).with_context(|| {
@@ -8700,21 +8737,20 @@ mod tests {
     }
 
     #[test]
-    fn base_quantity_market_entry_admission_folds_in_worst_case_slippage() {
+    fn base_quantity_market_entry_admission_values_at_instrument_price_ceiling() {
         // A base-quantity Market entry has no firm limit price, so the venue fill
-        // can slip past the reference price the notional is valued at. The
-        // admission notional must fold in the strategy's own book-impact slippage
-        // budget so the per-order cap is a hard ceiling on the cash the entry can
-        // actually spend. A firm-limit entry (fill <= limit) needs no such
-        // adjustment; this test pins the worst-case scaling for the market-style
-        // shape that lacks one.
+        // can land anywhere up to the instrument's structural price ceiling. The
+        // admission notional must therefore be valued at that ceiling — the only
+        // price the venue cannot exceed — not at the reference price the order
+        // happens to be priced at. A firm-limit entry (fill <= limit) needs no
+        // such adjustment; this test pins the ceiling valuation for the
+        // market-style shape that lacks a firm price.
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let cache = register_test_strategy(&mut strategy);
         add_active_instruments_to_cache(&strategy, &cache);
         strategy.config.entry_order.order_type = OrderType::Market;
         strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
         strategy.config.entry_order.is_quote_quantity = false;
-        strategy.config.book_impact_cap_bps = 50;
         let instrument_id = selected_entry_instrument(&strategy);
         let quantity = Quantity::new(100.0, 2);
         let price = Price::new(0.33, 2);
@@ -8741,13 +8777,19 @@ mod tests {
                 ),
                 &order,
             )
-            .expect("base-quantity market admission should value worst-case slippage");
+            .expect("base-quantity market admission should value at the instrument price ceiling");
 
-        // base notional = 0.33 * 100 = 33.00; worst-case = 33.00 * (1 + 50bps) = 33.165
+        // The fixture instrument declares max_price = 0.999 (the production NT
+        // Polymarket adapter's ceiling), so the cap is valued at the ceiling
+        // (0.999 * 100 = 99.9), NOT at the 0.33 reference price (33.00).
         assert_eq!(
             admission.notional,
-            Decimal::from_str("33.165").expect("expected decimal should parse"),
-            "base-quantity market entry admission must fold worst-case book-impact slippage into the cap valuation"
+            Decimal::from_str("99.9").expect("expected decimal should parse"),
+            "a market-style base-quantity entry must be valued at qty * the instrument price ceiling"
+        );
+        assert!(
+            admission.notional > price.as_decimal() * Decimal::from(100u32),
+            "the ceiling valuation must bound strictly above the reference-price estimate it replaces"
         );
     }
 
@@ -9794,7 +9836,10 @@ mod tests {
             None,
             None,
             None,
-            None,
+            // max_price: a binary option's structural payout ceiling. Mirrors the
+            // upstream NT Polymarket adapter (MAX_PRICE = "0.999") so the fixture
+            // declares the same hard price bound production instruments carry.
+            Some(Price::from("0.999")),
             None,
             None,
             None,
@@ -11573,7 +11618,8 @@ mod tests {
     #[test]
     fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-        let _cache = register_test_strategy(&mut strategy);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
         strategy.config.entry_order.order_type = OrderType::MarketIfTouched;
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.trigger_price = Some(0.52);
@@ -11597,16 +11643,17 @@ mod tests {
             )
             .expect("MarketIfTouched order with explicit trigger price should build");
 
-        let admission = submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence::from_compiled_order(
-                strategy.config.strategy_id.clone(),
-                BoltV3OrderIntentKind::Entry,
-                fallback_price.to_string(),
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    BoltV3OrderIntentKind::Entry,
+                    fallback_price.to_string(),
+                    &order,
+                ),
                 &order,
-            ),
-            &order,
-        )
-        .expect("MarketIfTouched admission should derive from compiled trigger price");
+            )
+            .expect("MarketIfTouched admission should derive from the instrument price ceiling");
 
         let OrderAny::MarketIfTouched(order) = order else {
             panic!("MarketIfTouched config should build an NT market-if-touched order");
@@ -11621,7 +11668,8 @@ mod tests {
         assert!(!order.is_quote_quantity());
         assert_eq!(
             admission.notional,
-            Decimal::from_str("1.040").expect("expected decimal should parse")
+            Decimal::from_str("1.998").expect("expected decimal should parse"),
+            "a market-style MarketIfTouched entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
         );
     }
 
@@ -12069,7 +12117,8 @@ mod tests {
     #[test]
     fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-        let _cache = register_test_strategy(&mut strategy);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
         strategy.config.entry_order.order_type = OrderType::StopMarket;
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.trigger_price = Some(0.52);
@@ -12088,16 +12137,17 @@ mod tests {
             )
             .expect("StopMarket order with explicit trigger price should build");
 
-        let admission = submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence::from_compiled_order(
-                strategy.config.strategy_id.clone(),
-                BoltV3OrderIntentKind::Entry,
-                admission_price.to_string(),
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    BoltV3OrderIntentKind::Entry,
+                    admission_price.to_string(),
+                    &order,
+                ),
                 &order,
-            ),
-            &order,
-        )
-        .expect("StopMarket admission should derive from compiled order plus fallback price");
+            )
+            .expect("StopMarket admission should derive from the instrument price ceiling");
 
         let OrderAny::StopMarket(order) = order else {
             panic!("StopMarket config should build an NT stop-market order");
@@ -12111,7 +12161,8 @@ mod tests {
         assert!(!order.is_quote_quantity());
         assert_eq!(
             admission.notional,
-            Decimal::from_str("1.040").expect("expected decimal should parse")
+            Decimal::from_str("1.998").expect("expected decimal should parse"),
+            "a market-style StopMarket entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
         );
     }
 
@@ -12438,7 +12489,8 @@ mod tests {
     #[test]
     fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-        let _cache = register_test_strategy(&mut strategy);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
         let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
         strategy.config.entry_order.order_type = OrderType::TrailingStopMarket;
         strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
@@ -12470,16 +12522,17 @@ mod tests {
             )
             .expect("TrailingStopMarket entry order with explicit trailing fields should build");
 
-        let admission = submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence::from_compiled_order(
-                strategy.config.strategy_id.clone(),
-                BoltV3OrderIntentKind::Entry,
-                fallback_price.to_string(),
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    BoltV3OrderIntentKind::Entry,
+                    fallback_price.to_string(),
+                    &order,
+                ),
                 &order,
-            ),
-            &order,
-        )
-        .expect("TrailingStopMarket admission should derive from compiled trigger price");
+            )
+            .expect("TrailingStopMarket admission should derive from the instrument price ceiling");
 
         let OrderAny::TrailingStopMarket(order) = order else {
             panic!("TrailingStopMarket config should build an NT trailing-stop-market order");
@@ -12502,7 +12555,8 @@ mod tests {
         assert!(!order.is_quote_quantity());
         assert_eq!(
             admission.notional,
-            Decimal::from_str("1.040").expect("expected decimal should parse")
+            Decimal::from_str("1.998").expect("expected decimal should parse"),
+            "a market-style TrailingStopMarket entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
         );
 
         let exit_fallback_price = Price::new(0.45, 2);

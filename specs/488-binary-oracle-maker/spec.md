@@ -185,6 +185,7 @@ As the maintainer, the maker must price from one fair-value path so there is no 
 
 - Tracking issue: **#488** (umbrella; being renamed/rewritten to this plan).
 - Authoritative actual-code audit: `docs/research/mm-code-audit-2026-05-30.md`.
+- Data-provider survey (binary L2 + underlying + perps/CEX; the free-substrate decision): `docs/research/mm-data-providers-2026-05-31.md`.
 - Reward research: `docs/bolt-v3/research/polymarket-rewards-2026-05-13.md`.
 - Implementation approach: `specs/488-binary-oracle-maker/plan.md`.
 - Precursors (execution plumbing only — they stop at NT OrderFactory construction): `specs/022-nt-maker-order-scope`, `specs/023-nt-order-intent-layer`, `specs/023-nt-research-analytics-platform/1-backtesting-engine`.

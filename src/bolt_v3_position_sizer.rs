@@ -216,6 +216,7 @@ impl PositionSizingAdmissionGate {
         self.reservation_ledger.release(intent_id, evidence_label)
     }
 
+    /// Uses the capital-pool snapshot freshness bound for both pool and revalue evidence.
     pub fn revalue_pending_reservation(
         &mut self,
         pool: &CapitalPoolSnapshot,
@@ -1284,6 +1285,31 @@ mod tests {
         assert_eq!(stale.reason, Some(ReservationRejectionReason::StaleRequest));
         assert_eq!(stale.revalued_liability, None);
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(250, 2));
+    }
+
+    #[test]
+    fn admission_gate_forwards_min_remaining_balance_to_revalue() {
+        let capital_pool = single_order_capital_pool();
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[rebuilt_open_order_reservation("intent-open")],
+            1_000,
+            None,
+        );
+        assert!(rebuild.accepted);
+
+        let revalue = gate.revalue_pending_reservation(
+            &capital_pool,
+            &open_order_revalue("intent-open", Decimal::new(250, 2), 1_050),
+            1_060,
+            Some(Decimal::new(6, 0)),
+        );
+
+        assert!(!revalue.accepted);
+        assert_eq!(revalue.reason, Some(ReservationRejectionReason::OverBudget));
+        assert_eq!(revalue.revalued_liability, None);
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
     }
 
     #[test]

@@ -120,6 +120,7 @@
   - `restart_requires_rebuilt_open_order_reservations_before_admission`: proves the pure ledger starts fail-closed until reconciliation.
   - `admission_gate_revalues_live_reservation_from_order_lifecycle_evidence`: failed before the gate exposed revalue, then passed after the gate wrapped the ledger revalue primitive.
   - `admission_gate_rejects_stale_revalue_without_mutating_live_reservation`: proves stale lifecycle revalue attempts do not mutate the live reservation.
+  - `admission_gate_forwards_min_remaining_balance_to_revalue`: proves the gate forwards the configured residual-balance constraint to ledger revalue instead of bypassing it.
   - `configured_loss_governor_rejects_entry_without_fresh_snapshot_before_nt_submit`: proves configured submit admission fails closed before NT submit when no loss snapshot exists.
   - `configured_loss_governor_admits_entry_after_fresh_below_limit_snapshot`: proves explicit fresh below-limit snapshots admit otherwise-valid entries.
   - `configured_loss_governor_admit_uses_runtime_clock_after_fresh_snapshot_update`: failed while the live-facing `admit()` path had no runtime clock, then passed after `admit()` evaluated snapshots against system time.

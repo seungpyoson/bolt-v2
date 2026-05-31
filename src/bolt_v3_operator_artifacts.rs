@@ -6875,7 +6875,6 @@ pub fn write_strategy_input_evidence_artifact_from_runtime_snapshot(
     snapshot: &BoltV3StrategyInputEvidenceSnapshot,
     market_selection_source_ref: &WrittenOperatorArtifact,
     max_market_selection_source_bytes: u64,
-    _candidate_market_start_timestamps_ms: &[u64],
     path: &Path,
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
     let financial_envelope =
@@ -6948,7 +6947,6 @@ pub fn write_strategy_input_evidence_artifact_from_decision_evidence_file(
     decision_evidence_path: &Path,
     max_decision_evidence_bytes: u64,
     market_selection_source_ref: &WrittenOperatorArtifact,
-    candidate_market_start_timestamps_ms: &[u64],
     path: &Path,
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
     let chain = read_latest_entry_decision_evidence_chain(
@@ -6964,7 +6962,6 @@ pub fn write_strategy_input_evidence_artifact_from_decision_evidence_file(
         &chain.snapshot,
         market_selection_source_ref,
         max_decision_evidence_bytes,
-        candidate_market_start_timestamps_ms,
         path,
     )
 }
@@ -14683,11 +14680,11 @@ fn verify_strategy_input_replay_binding(
         &resolved_market_selection_source_path,
         operator_evidence.max_operator_evidence_file_bytes,
     )
-    .map_err(
-        |_| BoltV3OperatorArtifactError::StrategyInputReplayInvalid {
-            field: "strategy_input_replay.market_selection_source_path",
-        },
-    )?;
+    .map_err(|source| BoltV3OperatorArtifactError::FinalEvidenceRead {
+        field: "strategy_input_replay.market_selection_source_path",
+        path: resolved_market_selection_source_path.clone(),
+        source,
+    })?;
     if hex::encode(Sha256::digest(&market_selection_source_bytes)) != market_selection_source_sha256
     {
         return Err(BoltV3OperatorArtifactError::StrategyInputReplayInvalid {

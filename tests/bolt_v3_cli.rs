@@ -2752,7 +2752,6 @@ fn bolt_v3_cli_exposes_strategy_input_decision_evidence_command() {
     assert!(stdout.contains("--max-decision-evidence-bytes"));
     assert!(stdout.contains("--market-selection-source"));
     assert!(stdout.contains("--market-selection-source-sha256"));
-    assert!(stdout.contains("--candidate-market-start-timestamp-ms"));
     assert!(stdout.contains("--output"));
 }
 

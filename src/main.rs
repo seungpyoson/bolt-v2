@@ -661,8 +661,6 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         market_selection_source_sha256: String,
         #[arg(long)]
-        candidate_market_start_timestamp_ms: Vec<u64>,
-        #[arg(long)]
         output: PathBuf,
     },
     GenerateMarketSelectionFromDecisionEvidence {
@@ -1360,7 +1358,6 @@ fn run_operator_artifacts_command(
             max_decision_evidence_bytes,
             market_selection_source,
             market_selection_source_sha256,
-            candidate_market_start_timestamp_ms,
             output,
         } => {
             let loaded = load_bolt_v3_config(&config)?;
@@ -1374,7 +1371,6 @@ fn run_operator_artifacts_command(
                 &decision_evidence,
                 max_decision_evidence_bytes,
                 &market_selection_source_ref,
-                &candidate_market_start_timestamp_ms,
                 &output,
             )?;
             print_written_operator_artifact(&written)

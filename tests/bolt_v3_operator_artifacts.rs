@@ -5322,7 +5322,6 @@ fn pre_run_state_writer_emits_artifact_from_source_owned_collectors() {
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
         100_000,
-        &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
     .expect("source-bound strategy input evidence should write");
@@ -5556,7 +5555,6 @@ fn pre_run_state_writer_rejects_strategy_input_without_readiness_identity() {
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
         100_000,
-        &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
     .expect("source-bound strategy input evidence should write");
@@ -12019,7 +12017,6 @@ fn strategy_input_writer_rejects_runtime_snapshot_target_gate_and_hash_mismatche
                 &snapshot,
                 &source_ref,
                 100_000,
-                &fixture.candidate_market_start_timestamps_ms,
                 &output_path,
             )
             .expect_err(case_name);
@@ -12050,7 +12047,6 @@ fn strategy_input_writer_rejects_oversized_market_selection_source_before_artifa
             &fixture.snapshot,
             &fixture.market_selection_source_ref,
             source_len.saturating_sub(1),
-            &fixture.candidate_market_start_timestamps_ms,
             &output_path,
         )
         .expect_err("oversized market-selection source must fail before strategy-input write");
@@ -13693,7 +13689,6 @@ fn pre_run_market_window_source_proof_derives_source_owned_values() {
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
         100_000,
-        &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
     .expect("source-bound strategy input evidence should write");
@@ -13733,7 +13728,6 @@ fn pre_run_market_window_source_proof_rejects_symlinked_market_source() {
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
         100_000,
-        &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
     .expect("source-bound strategy input evidence should write");
@@ -13770,7 +13764,6 @@ fn pre_run_market_window_source_proof_rejects_stale_market_source_hash() {
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
         100_000,
-        &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
     .expect("source-bound strategy input evidence should write");
@@ -13801,7 +13794,6 @@ fn pre_run_market_window_source_proof_rejects_parent_dir_market_source_before_re
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
         100_000,
-        &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
     .expect("source-bound strategy input evidence should write");
@@ -13859,7 +13851,6 @@ fn pre_run_market_window_source_proof_rejects_oversized_market_source_before_aud
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
         100_000,
-        &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
     .expect("source-bound strategy input evidence should write");
@@ -13929,7 +13920,6 @@ fn strategy_input_writer_reports_market_selection_source_read_as_read_error() {
             &fixture.snapshot,
             &missing_ref,
             100_000,
-            &fixture.candidate_market_start_timestamps_ms,
             &output_path,
         )
         .expect_err("missing market-selection source should fail before write");
@@ -13979,7 +13969,6 @@ fn strategy_input_writer_reports_market_selection_source_json_as_parse_error() {
             &fixture.snapshot,
             &invalid_ref,
             100_000,
-            &fixture.candidate_market_start_timestamps_ms,
             &output_path,
         )
         .expect_err("invalid market-selection source JSON should fail before write");
@@ -14031,7 +14020,6 @@ fn strategy_input_writer_rejects_symlinked_market_selection_source_before_artifa
             &fixture.snapshot,
             &fixture.market_selection_source_ref,
             100_000,
-            &fixture.candidate_market_start_timestamps_ms,
             &output_path,
         )
         .expect_err("symlinked market-selection source must fail before artifact write");
@@ -14112,7 +14100,6 @@ struct StrategyInputRuntimeFixture {
     loaded: bolt_v2::bolt_v3_config::LoadedBoltV3Config,
     strategy_instance_id: String,
     market_selection_source_ref: WrittenOperatorArtifact,
-    candidate_market_start_timestamps_ms: Vec<u64>,
     snapshot: BoltV3StrategyInputEvidenceSnapshot,
 }
 
@@ -14232,7 +14219,6 @@ fn strategy_input_runtime_fixture() -> StrategyInputRuntimeFixture {
         loaded,
         strategy_instance_id,
         market_selection_source_ref,
-        candidate_market_start_timestamps_ms: vec![TEST_MARKET_SELECTION_START_MS],
         snapshot,
     }
 }
@@ -15616,7 +15602,6 @@ fn write_replayable_strategy_input_artifacts_for_test(
         &decision_evidence_path,
         operator_evidence.max_operator_evidence_file_bytes,
         &market_selection_source_ref,
-        &runtime.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
     .expect("final packet fixture should write replayable strategy input evidence");

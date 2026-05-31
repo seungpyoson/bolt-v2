@@ -669,4 +669,112 @@ mod tests {
         assert!(!target_table.is_empty());
         assert!(strategy.reference_data.is_empty());
     }
+
+    /// A `[live_canary]` block with a configurable per-order cap and no
+    /// `proof_policy` / `operator_evidence` (both optional), used to exercise
+    /// the unconditional base-field validation in `validate_live_canary_block`.
+    fn live_canary_block_with_cap(max_notional_per_order: &str) -> LiveCanaryBlock {
+        LiveCanaryBlock {
+            approval_id: "approval-1".to_string(),
+            no_submit_readiness_report_path: "/tmp/readiness.json".to_string(),
+            max_no_submit_readiness_report_bytes: 1024,
+            readiness_report_max_age_seconds: 60,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 20,
+            reference_quote_probe_actor_id: "probe-1".to_string(),
+            reference_quote_probe_log_events: false,
+            reference_quote_probe_log_commands: false,
+            max_live_order_count: 1,
+            max_notional_per_order: max_notional_per_order.to_string(),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: None,
+        }
+    }
+
+    #[test]
+    fn risk_default_max_notional_must_be_positive_decimal() {
+        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        for bad in ["0.00", "-1.00"] {
+            root.risk.default_max_notional_per_order = bad.to_string();
+            let errors = crate::bolt_v3_validate::validate_root_only(&root);
+            assert!(
+                errors.iter().any(|e| e.contains(
+                    "risk.default_max_notional_per_order must be a positive decimal string"
+                )),
+                "default_max_notional_per_order={bad} must fail the positive check; got: {errors:?}"
+            );
+        }
+        // A malformed decimal keeps the existing syntax error rather than the
+        // positivity message.
+        root.risk.default_max_notional_per_order = "not-a-decimal".to_string();
+        let errors = crate::bolt_v3_validate::validate_root_only(&root);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e
+                    .contains("risk.default_max_notional_per_order is not a valid decimal string")),
+            "malformed default_max_notional must keep the syntax error; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn live_canary_max_notional_validated_without_proof_policy() {
+        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        // No proof_policy: the cap must still be range-validated at config load.
+        root.live_canary = Some(live_canary_block_with_cap("0.00"));
+        let errors = crate::bolt_v3_validate::validate_root_only(&root);
+        assert!(
+            errors.iter().any(|e| e
+                .contains("live_canary.max_notional_per_order must be a positive decimal string")),
+            "a non-positive canary cap must fail even without proof_policy; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn live_canary_max_notional_must_not_exceed_default_max() {
+        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        root.risk.default_max_notional_per_order = "1.00".to_string();
+        root.live_canary = Some(live_canary_block_with_cap("1000.00"));
+        let errors = crate::bolt_v3_validate::validate_root_only(&root);
+        assert!(
+            errors.iter().any(|e| e.contains(
+                "live_canary.max_notional_per_order must be <= risk.default_max_notional_per_order"
+            )),
+            "a canary cap above the entity cap must fail; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn live_canary_max_live_order_count_must_be_positive() {
+        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        let mut block = live_canary_block_with_cap("1.00");
+        block.max_live_order_count = 0;
+        root.live_canary = Some(block);
+        let errors = crate::bolt_v3_validate::validate_root_only(&root);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("live_canary.max_live_order_count must be a positive integer")),
+            "a zero max_live_order_count must fail; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn live_canary_valid_block_passes_base_field_checks() {
+        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        root.risk.default_max_notional_per_order = "100.00".to_string();
+        root.live_canary = Some(live_canary_block_with_cap("10.00"));
+        let errors = crate::bolt_v3_validate::validate_root_only(&root);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.contains("live_canary.max_notional_per_order")
+                    || e.contains("live_canary.max_live_order_count")
+                    || e.contains("live_canary.approval_id")),
+            "a valid canary block must not produce base-field errors; got: {errors:?}"
+        );
+    }
 }

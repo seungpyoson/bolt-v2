@@ -49,9 +49,9 @@ use rust_decimal::Decimal;
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
     ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
-    GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, LiveCanaryProofPolicyBlock,
-    LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND, PersistenceBlock, RiskBlock,
-    SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
+    GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, LiveCanaryBlock,
+    LiveCanaryProofPolicyBlock, LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND,
+    PersistenceBlock, RiskBlock, SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
 };
 
 #[derive(Debug)]
@@ -170,13 +170,71 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
-    if let Some(live_canary) = root.live_canary.as_ref()
-        && let Some(proof_policy) = live_canary.proof_policy.as_ref()
-    {
-        errors.extend(validate_live_canary_proof_policy(
-            proof_policy,
-            &live_canary.max_notional_per_order,
+    if let Some(live_canary) = root.live_canary.as_ref() {
+        // Validate the live-money-gating base fields unconditionally. The
+        // previous code only ran when `proof_policy` was present, so a
+        // `[live_canary]` block without a proof policy skipped all of it — a
+        // zero/negative or over-cap `max_notional_per_order` passed config load.
+        // Operator-evidence integrity (sha256/head_sha shapes, approval window)
+        // is validated by the live-canary gate at run time (single source of
+        // truth) and is intentionally not duplicated here.
+        errors.extend(validate_live_canary_block(
+            live_canary,
+            &root.risk.default_max_notional_per_order,
         ));
+        if let Some(proof_policy) = live_canary.proof_policy.as_ref() {
+            errors.extend(validate_live_canary_proof_policy(
+                proof_policy,
+                &live_canary.max_notional_per_order,
+            ));
+        }
+    }
+
+    errors
+}
+
+/// Validates the live-money-gating base fields of a `[live_canary]` block at
+/// config load, independent of whether a `[live_canary.proof_policy]` subtable
+/// is present. The operator-evidence integrity fields (sha256/head_sha shapes,
+/// approval-consumption window) are owned by the live-canary gate at run time
+/// and are intentionally not re-validated here (single source of truth / no
+/// dual paths).
+fn validate_live_canary_block(
+    live_canary: &LiveCanaryBlock,
+    default_max_notional_per_order: &str,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    if live_canary.approval_id.trim().is_empty() {
+        errors.push("live_canary.approval_id must not be blank".to_string());
+    }
+    if live_canary.max_live_order_count == 0 {
+        errors.push("live_canary.max_live_order_count must be a positive integer".to_string());
+    }
+
+    match (
+        parse_decimal_string(&live_canary.max_notional_per_order),
+        parse_decimal_string(default_max_notional_per_order),
+    ) {
+        (Ok(max_notional), _) if max_notional <= Decimal::ZERO => {
+            errors.push(
+                "live_canary.max_notional_per_order must be a positive decimal string".to_string(),
+            );
+        }
+        (Ok(max_notional), Ok(default_max)) if max_notional > default_max => {
+            errors.push(
+                "live_canary.max_notional_per_order must be <= risk.default_max_notional_per_order"
+                    .to_string(),
+            );
+        }
+        (Err(reason), _) => errors.push(format!(
+            "live_canary.max_notional_per_order is not a valid decimal string ({reason}): `{}`",
+            live_canary.max_notional_per_order
+        )),
+        // A positive max_notional with a malformed risk.default_max_notional_per_order
+        // is left to validate_risk_block to report; a positive max_notional within the
+        // cap is valid.
+        _ => {}
     }
 
     errors
@@ -824,11 +882,20 @@ fn validate_exec_engine_block(
 
 fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     let mut errors = Vec::new();
-    if let Err(reason) = parse_decimal_string(&block.default_max_notional_per_order) {
-        errors.push(format!(
-            "risk.default_max_notional_per_order is not a valid decimal string ({reason}): `{value}`",
-            value = block.default_max_notional_per_order
-        ));
+    match parse_decimal_string(&block.default_max_notional_per_order) {
+        Ok(value) if value <= Decimal::ZERO => {
+            errors.push(format!(
+                "risk.default_max_notional_per_order must be a positive decimal string: `{value}`",
+                value = block.default_max_notional_per_order
+            ));
+        }
+        Ok(_) => {}
+        Err(reason) => {
+            errors.push(format!(
+                "risk.default_max_notional_per_order is not a valid decimal string ({reason}): `{value}`",
+                value = block.default_max_notional_per_order
+            ));
+        }
     }
     if block.nautilus.bypass {
         errors.push("risk.nautilus.bypass must be false".to_string());

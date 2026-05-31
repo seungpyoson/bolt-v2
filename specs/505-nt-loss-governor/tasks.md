@@ -86,7 +86,7 @@
 - [X] T030 [US3] Update `specs/505-nt-loss-governor/research.md` with implementation evidence and live-protection boundary
 - [X] T031 [US3] Require every enabled loss-governor threshold in config validation
 - [X] T032 [US3] Bump decision-evidence schema to v6 for loss-governor halt evidence
-- [X] T033 [US3] Keep mixed NT feed snapshots fresh only to the oldest contributing fact timestamp
+- [X] T033 [US3] Keep NT feed snapshots fresh to the latest accepted account event while portfolio heartbeats evict expired rolling-window samples
 
 ---
 

@@ -60,7 +60,7 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - Snapshot has no configured currency facts for a configured loss policy.
 - Negative PnL values are represented as losses; non-loss values must not trip loss thresholds.
 - Missing enabled policy threshold must fail config validation instead of creating a hardcoded default.
-- Mixed NT facts must use the oldest contributing fact timestamp so a fresh event cannot refresh unrelated stale facts.
+- Fresh NT portfolio heartbeats must refresh aggregate loss/equity facts and evict expired rolling-window samples without letting historical peak equity make the snapshot stale.
 - Multiple breach reasons must be reported deterministically.
 - Risk-reducing exits must not be blocked by loss halt policy; existing operator count and lifecycle caps still apply.
 
@@ -81,7 +81,7 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - **FR-011**: System MUST use TDD vertical slices before production behavior changes.
 - **FR-012**: System MUST NOT implement cancel, flatten, or bespoke venue side effects in this slice.
 - **FR-013**: System MUST require every `[risk.loss_governor]` threshold when the governor is enabled.
-- **FR-014**: System MUST evaluate combined loss snapshots against the oldest timestamp among the currently combined NT-derived facts.
+- **FR-014**: System MUST evaluate loss snapshots against the latest accepted NT account event timestamp and MUST evict expired rolling-window samples on fresh portfolio heartbeats.
 
 ### Key Entities
 

@@ -40,12 +40,14 @@ pub struct LossGovernorRuntimeFeedSubscription {
 #[derive(Debug)]
 struct LossGovernorRuntimeFeedState {
     currency: Option<Currency>,
+    previous_daily_pnl: Option<TimedDecimal>,
     daily_pnl: Option<TimedDecimal>,
     rolling_samples: VecDeque<TimedDecimal>,
     rolling_pnl: Option<TimedDecimal>,
     per_trade_pnl: Option<TimedDecimal>,
     current_equity: Option<TimedDecimal>,
     peak_equity: Option<TimedDecimal>,
+    latest_observed_at_ns: Option<u64>,
     latest_snapshot: Option<LossSnapshot>,
 }
 
@@ -137,19 +139,23 @@ impl LossGovernorRuntimeFeed {
         }
 
         let observed_at_ns = snapshot.ts_event.as_u64();
-        self.state.daily_pnl = Some(TimedDecimal::new(
-            daily_pnl(snapshot, currency)?,
-            observed_at_ns,
-        ));
+        let daily_pnl = daily_pnl(snapshot, currency)?;
+        self.state
+            .update_rolling_pnl(daily_pnl, observed_at_ns, self.config.rolling_window_ns);
+        self.state.daily_pnl = Some(TimedDecimal::new(daily_pnl, observed_at_ns));
+        self.state
+            .per_trade_pnl
+            .get_or_insert(TimedDecimal::new(Decimal::ZERO, observed_at_ns));
 
         let current_equity = total_equity(snapshot, currency)?;
         self.state.current_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
         match self.state.peak_equity {
-            Some(peak) if peak.value >= current_equity => {}
+            Some(peak) if peak.value > current_equity => {}
             _ => {
                 self.state.peak_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
             }
         }
+        self.state.latest_observed_at_ns = Some(observed_at_ns);
 
         self.publish_if_complete()
     }
@@ -163,36 +169,13 @@ impl LossGovernorRuntimeFeed {
             return None;
         }
 
-        let timed_pnl = TimedDecimal::new(position_fact.pnl, position_fact.observed_at_ns);
-        self.state.per_trade_pnl = Some(timed_pnl);
-
-        if position_fact.is_rolling_delta {
-            self.state.rolling_samples.push_back(timed_pnl);
-            let oldest_accepted = position_fact
-                .observed_at_ns
-                .saturating_sub(self.config.rolling_window_ns);
-            while self
-                .state
-                .rolling_samples
-                .front()
-                .is_some_and(|sample| sample.observed_at_ns < oldest_accepted)
-            {
-                self.state.rolling_samples.pop_front();
-            }
-
-            let rolling_pnl = self
-                .state
-                .rolling_samples
-                .iter()
-                .map(|sample| sample.value)
-                .sum();
-            let rolling_observed_at_ns = self
-                .state
-                .rolling_samples
-                .front()
-                .map(|sample| sample.observed_at_ns)?;
-            self.state.rolling_pnl = Some(TimedDecimal::new(rolling_pnl, rolling_observed_at_ns));
+        if let Some(per_trade_pnl) = position_fact.per_trade_pnl {
+            self.state.per_trade_pnl = Some(TimedDecimal::new(
+                per_trade_pnl,
+                position_fact.observed_at_ns,
+            ));
         }
+        self.state.latest_observed_at_ns = Some(position_fact.observed_at_ns);
 
         self.publish_if_complete()
     }
@@ -208,15 +191,7 @@ impl LossGovernorRuntimeFeed {
         let rolling_pnl = self.state.rolling_pnl?;
         let current_equity = self.state.current_equity?;
         let peak_equity = self.state.peak_equity?;
-        let observed_at_ns = [
-            per_trade_pnl.observed_at_ns,
-            daily_pnl.observed_at_ns,
-            rolling_pnl.observed_at_ns,
-            current_equity.observed_at_ns,
-            peak_equity.observed_at_ns,
-        ]
-        .into_iter()
-        .min()?;
+        let observed_at_ns = self.state.latest_observed_at_ns?;
 
         let snapshot = LossSnapshot {
             source: LOSS_RUNTIME_FEED_SOURCE.to_string(),
@@ -237,12 +212,14 @@ impl LossGovernorRuntimeFeedState {
     const fn new() -> Self {
         Self {
             currency: None,
+            previous_daily_pnl: None,
             daily_pnl: None,
             rolling_samples: VecDeque::new(),
             rolling_pnl: None,
             per_trade_pnl: None,
             current_equity: None,
             peak_equity: None,
+            latest_observed_at_ns: None,
             latest_snapshot: None,
         }
     }
@@ -256,15 +233,41 @@ impl LossGovernorRuntimeFeedState {
             }
         }
     }
+
+    fn update_rolling_pnl(
+        &mut self,
+        daily_pnl: Decimal,
+        observed_at_ns: u64,
+        rolling_window_ns: u64,
+    ) {
+        if let Some(previous_daily_pnl) = self.previous_daily_pnl {
+            self.rolling_samples.push_back(TimedDecimal::new(
+                daily_pnl - previous_daily_pnl.value,
+                observed_at_ns,
+            ));
+        }
+        self.previous_daily_pnl = Some(TimedDecimal::new(daily_pnl, observed_at_ns));
+
+        let oldest_accepted = observed_at_ns.saturating_sub(rolling_window_ns);
+        while self
+            .rolling_samples
+            .front()
+            .is_some_and(|sample| sample.observed_at_ns < oldest_accepted)
+        {
+            self.rolling_samples.pop_front();
+        }
+
+        let rolling_pnl = self.rolling_samples.iter().map(|sample| sample.value).sum();
+        self.rolling_pnl = Some(TimedDecimal::new(rolling_pnl, observed_at_ns));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PositionPnlFact {
     account_id: AccountId,
     currency: Currency,
-    pnl: Decimal,
+    per_trade_pnl: Option<Decimal>,
     observed_at_ns: u64,
-    is_rolling_delta: bool,
 }
 
 fn position_pnl_fact(event: &PositionEvent) -> Option<PositionPnlFact> {
@@ -273,25 +276,28 @@ fn position_pnl_fact(event: &PositionEvent) -> Option<PositionPnlFact> {
         PositionEvent::PositionChanged(changed) => Some(PositionPnlFact {
             account_id: changed.account_id,
             currency: changed.unrealized_pnl.currency,
-            pnl: combined_position_pnl(changed.realized_pnl, changed.unrealized_pnl)?,
+            per_trade_pnl: Some(combined_position_pnl(
+                changed.realized_pnl,
+                changed.unrealized_pnl,
+            )?),
             observed_at_ns: changed.ts_event.as_u64(),
-            is_rolling_delta: false,
         }),
         PositionEvent::PositionClosed(closed) => Some(PositionPnlFact {
             account_id: closed.account_id,
             currency: closed.unrealized_pnl.currency,
-            pnl: combined_position_pnl(closed.realized_pnl, closed.unrealized_pnl)?,
+            per_trade_pnl: Some(combined_position_pnl(
+                closed.realized_pnl,
+                closed.unrealized_pnl,
+            )?),
             observed_at_ns: closed.ts_event.as_u64(),
-            is_rolling_delta: false,
         }),
         PositionEvent::PositionAdjusted(adjusted) => {
             let pnl_change = adjusted.pnl_change?;
             Some(PositionPnlFact {
                 account_id: adjusted.account_id,
                 currency: pnl_change.currency,
-                pnl: pnl_change.as_decimal(),
+                per_trade_pnl: None,
                 observed_at_ns: adjusted.ts_event.as_u64(),
-                is_rolling_delta: true,
             })
         }
     }

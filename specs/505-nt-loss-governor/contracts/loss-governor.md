@@ -44,12 +44,12 @@ When `[risk.loss_governor].enabled = true`:
 
 The live integration subscribes to NT portfolio snapshot and position event topics for the configured account. The feed derives:
 
-- per-trade PnL from NT position events
+- per-trade PnL from NT position changed/closed events, with a zero baseline before the first trade-level position PnL event
 - daily/session PnL from NT realized plus unrealized PnL in `PortfolioSnapshot`
-- rolling PnL from the configured rolling window
+- rolling PnL from configured-window deltas between NT portfolio PnL snapshots
 - current and peak equity from NT total-equity snapshots
 
-When a published `LossSnapshot` combines facts observed at different NT event timestamps, its `observed_at_ns` is the oldest contributing timestamp. This makes freshness fail closed when any currently required fact goes stale.
+The feed publishes a `LossSnapshot` on accepted account heartbeats. `observed_at_ns` is the latest accepted NT event timestamp for that account, while stale or expired rolling-window samples are evicted on each fresh portfolio snapshot. Historical peak equity remains an input to drawdown but does not make an otherwise fresh portfolio heartbeat stale.
 
 ## Non-Goals
 

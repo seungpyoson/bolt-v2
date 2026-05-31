@@ -26,7 +26,7 @@ A snapshot derived from NT Portfolio/account state and position events.
 Fields:
 
 - `source`: non-empty attribution to the NT source or capture path.
-- `observed_at_ns`: oldest timestamp among the currently combined NT-derived loss/equity facts.
+- `observed_at_ns`: latest accepted NT account event timestamp for the published snapshot.
 - `per_trade_pnl`: optional PnL for current trade context.
 - `daily_pnl`: optional day/session PnL from NT realized plus unrealized PnL facts.
 - `rolling_pnl`: optional rolling-window PnL from the configured live feed window.
@@ -38,7 +38,7 @@ Validation:
 - Missing or empty source fails closed.
 - Missing required field for a configured policy dimension fails closed.
 - Snapshot older than policy freshness fails closed.
-- Mixed NT event facts remain conservative: a fresh position event cannot refresh older portfolio PnL/equity facts, and a fresh portfolio snapshot cannot refresh older per-trade facts.
+- Fresh portfolio heartbeats refresh aggregate daily, rolling, current-equity, and drawdown facts, and evict expired rolling-window samples.
 
 ## LossGovernorRuntimeFeed
 
@@ -47,12 +47,13 @@ Live in-process feed for the configured account.
 Inputs:
 
 - NT `PortfolioSnapshot`: supplies realized PnL, unrealized PnL, total equity, account id, and event timestamp.
-- NT `PositionEvent`: supplies per-trade PnL facts from opened/changed/closed/adjusted position events.
+- NT `PositionEvent`: supplies per-trade PnL facts from changed/closed position events. Adjustments do not overwrite a trade-level PnL fact.
 
 Rules:
 
 - Ignore events for other accounts.
 - Use configured `rolling_window_ns`; no hardcoded window.
+- Derive rolling PnL from deltas between accepted NT portfolio PnL snapshots.
 - Track peak equity from observed NT total-equity snapshots.
 - Publish a `LossSnapshot` to submit admission whenever enough NT-derived facts exist.
 

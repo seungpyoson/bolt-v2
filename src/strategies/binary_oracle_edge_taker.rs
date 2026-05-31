@@ -864,6 +864,10 @@ fn signed_trade_flow_config(config: &BinaryOracleEdgeTakerConfig) -> SignedTrade
 pub struct SignedTradeFlow {
     window_ms: u64,
     max_samples: usize,
+    /// Event-time watermark of the latest accepted trade, in nanoseconds. The
+    /// ordering guard compares against this at full ns resolution so that
+    /// multiple trades inside the same millisecond are not collapsed.
+    last_observed_ns: Option<u64>,
     samples: VecDeque<SignedTrade>,
 }
 
@@ -872,22 +876,28 @@ impl SignedTradeFlow {
         Self {
             window_ms: config.window_secs.saturating_mul(MILLIS_PER_SECOND_U64),
             max_samples: config.max_samples as usize,
+            last_observed_ns: None,
             samples: VecDeque::new(),
         }
     }
 
     fn observe(&mut self, trade: &TradeTick) {
-        let ts_ms = trade.ts_event.as_u64() / NANOS_PER_MILLI_U64;
-        // Reject non-monotonic observations, mirroring `RealizedVolEstimator`: a
-        // timestamp at or before the latest retained sample would break the
-        // oldest-first ordering and the time-window eviction cutoff.
+        let ts_ns = trade.ts_event.as_u64();
+        // Reject non-monotonic / duplicate observations at full nanosecond
+        // resolution. Ordering on the raw ns watermark (not the millisecond it
+        // truncates to) keeps every trade that is strictly later in event time —
+        // so multiple trades within the same millisecond, common in bursts, are
+        // all retained and signed-flow counts are not silently lost — while
+        // still dropping a trade at or before the latest retained one, which
+        // would break oldest-first ordering and the window cutoff.
         if self
-            .samples
-            .back()
-            .is_some_and(|previous| ts_ms <= previous.ts_ms)
+            .last_observed_ns
+            .is_some_and(|previous_ns| ts_ns <= previous_ns)
         {
             return;
         }
+        self.last_observed_ns = Some(ts_ns);
+        let ts_ms = ts_ns / NANOS_PER_MILLI_U64;
         self.samples.push_back(SignedTrade {
             ts_ms,
             aggressor: trade.aggressor_side,
@@ -930,16 +940,18 @@ impl SignedTradeFlow {
         &self.samples
     }
 
-    /// Signed trades still inside the retention window as of `now_ms`, oldest
-    /// first. Unlike [`samples`](Self::samples) this filters against the caller's
-    /// clock rather than the last `observe` timestamp, so a quiet market does not
-    /// surface trades that have aged out of the window. Read seam for the W3
-    /// stage's point-in-time adverse-selection reads.
+    /// Signed trades inside the retention window `(now_ms - window, now_ms]` as
+    /// of `now_ms`, oldest first. Unlike [`samples`](Self::samples) this filters
+    /// against the caller's clock rather than the last `observe` timestamp: a
+    /// quiet market does not surface trades that have aged out of the window
+    /// (lower bound), and a point-in-time read "as of" an earlier clock does not
+    /// surface trades that postdate it (upper bound — no look-ahead). Read seam
+    /// for the W3 stage's point-in-time adverse-selection reads.
     pub fn samples_within(&self, now_ms: u64) -> impl Iterator<Item = &SignedTrade> {
         let cutoff_ms = now_ms.saturating_sub(self.window_ms);
         self.samples
             .iter()
-            .filter(move |trade| trade.ts_ms >= cutoff_ms)
+            .filter(move |trade| trade.ts_ms >= cutoff_ms && trade.ts_ms <= now_ms)
     }
 }
 
@@ -962,6 +974,11 @@ struct PricingState {
     /// until `now_ms >= spike_until_ms`. Set when a single-step reference-spot
     /// move clears the configured spike threshold; `None` outside any cooldown.
     spike_until_ms: Option<u64>,
+    /// Event-time (ms) of the latest accepted reference quote. Out-of-order
+    /// quotes (`observed_ts_ms <= this`) are dropped before they can overwrite
+    /// `fast_spot` with a stale price, saturate the timing jitter to zero, or arm
+    /// a spurious spike against a stale baseline. `None` until the first quote.
+    last_reference_observed_ts_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1341,6 +1358,7 @@ impl PricingState {
             fast_venue_incoherent: false,
             lead_quality_policy_applied: false,
             spike_until_ms: None,
+            last_reference_observed_ts_ms: None,
         }
     }
 
@@ -1355,6 +1373,19 @@ impl PricingState {
         if !is_positive_finite(quote.price) {
             return;
         }
+
+        // Reject out-of-order reference quotes. A quote at or before the latest
+        // accepted reference time would overwrite `fast_spot` with a stale price,
+        // saturate the timing jitter to zero, and let a subsequent quote measure
+        // its spike against the stale baseline. Mirrors the monotonicity guard the
+        // cadence tracker and the signed-trade-flow buffer already apply.
+        if self
+            .last_reference_observed_ts_ms
+            .is_some_and(|last_ts_ms| quote.observed_ts_ms <= last_ts_ms)
+        {
+            return;
+        }
+        self.last_reference_observed_ts_ms = Some(quote.observed_ts_ms);
 
         self.detect_reference_spike(quote, spike_return_threshold, spike_cooldown_secs);
 
@@ -7213,14 +7244,32 @@ mod tests {
         aggressor: nautilus_model::enums::AggressorSide,
         ts_ms: u64,
     ) -> nautilus_model::data::TradeTick {
+        trade_tick_at_ns(
+            instrument_id,
+            price,
+            size,
+            aggressor,
+            ts_ms.saturating_mul(NANOS_PER_MILLI_U64),
+        )
+    }
+
+    fn trade_tick_at_ns(
+        instrument_id: &str,
+        price: f64,
+        size: f64,
+        aggressor: nautilus_model::enums::AggressorSide,
+        ts_ns: u64,
+    ) -> nautilus_model::data::TradeTick {
         nautilus_model::data::TradeTick::new_checked(
             InstrumentId::from(instrument_id),
             Price::new(price, 2),
             Quantity::new(size, 0),
             aggressor,
-            nautilus_model::identifiers::TradeId::from("TRADE-TICK-001"),
-            nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
-            nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+            // Unique per event-time ns so a test pushing several trades through
+            // NT's event loop cannot collide on a single TradeId.
+            nautilus_model::identifiers::TradeId::from(format!("TRADE-{ts_ns}").as_str()),
+            nautilus_core::UnixNanos::from(ts_ns),
+            nautilus_core::UnixNanos::from(ts_ns),
         )
         .expect("test trade tick should be valid")
     }
@@ -13533,6 +13582,90 @@ mod tests {
     }
 
     #[test]
+    fn signed_trade_flow_samples_within_excludes_trades_after_the_caller_clock() {
+        // The point-in-time read must not surface trades that postdate the
+        // caller's clock (look-ahead). With trades at 1_000ms and 5_000ms and a
+        // wide window (so the lower bound is not the gate), a read "as of"
+        // 3_000ms sees only the earlier trade.
+        let mut config = test_strategy().config.clone();
+        config.trade_flow_window_secs = 600;
+        config.trade_flow_max_samples = 100;
+        let mut flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&config));
+
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.50,
+            1.0,
+            AggressorSide::Buyer,
+            1_000,
+        ));
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.51,
+            1.0,
+            AggressorSide::Buyer,
+            5_000,
+        ));
+
+        assert_eq!(
+            flow.samples_within(3_000)
+                .map(|trade| trade.ts_ms)
+                .collect::<Vec<_>>(),
+            vec![1_000],
+            "a read as of 3_000ms must not surface the 5_000ms trade (look-ahead)"
+        );
+    }
+
+    #[test]
+    fn signed_trade_flow_retains_multiple_trades_within_same_millisecond() {
+        // Trades are ordered on full ns event time, so several trades inside one
+        // millisecond (common in bursts) are all retained; only a trade at or
+        // before the latest accepted ns is dropped.
+        let mut config = test_strategy().config.clone();
+        config.trade_flow_window_secs = 600;
+        config.trade_flow_max_samples = 100;
+        let mut flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&config));
+
+        let base_ns = 1_000_u64.saturating_mul(NANOS_PER_MILLI_U64); // 1_000ms
+        flow.observe(&trade_tick_at_ns(
+            "condition-A-A-UP.POLYMARKET",
+            0.50,
+            1.0,
+            AggressorSide::Buyer,
+            base_ns,
+        ));
+        // Same millisecond, distinct at ns resolution: must be retained.
+        flow.observe(&trade_tick_at_ns(
+            "condition-A-A-UP.POLYMARKET",
+            0.51,
+            1.0,
+            AggressorSide::Seller,
+            base_ns + 250_000,
+        ));
+        // A truly duplicate ns is still rejected.
+        flow.observe(&trade_tick_at_ns(
+            "condition-A-A-UP.POLYMARKET",
+            0.52,
+            1.0,
+            AggressorSide::Buyer,
+            base_ns + 250_000,
+        ));
+
+        assert_eq!(
+            flow.len(),
+            2,
+            "same-millisecond but ns-distinct trades must both be retained"
+        );
+        assert_eq!(
+            flow.samples()
+                .iter()
+                .map(|trade| trade.ts_ms)
+                .collect::<Vec<_>>(),
+            vec![1_000, 1_000]
+        );
+    }
+
+    #[test]
     fn signed_trade_flow_evicts_by_window_then_caps_by_max_samples() {
         // Window eviction: a 10-second window drops trades older than now - window.
         let mut window_config = test_strategy().config.clone();
@@ -14408,6 +14541,59 @@ mod tests {
                 .blocked_by
                 .contains(&EntryBlockReason::BookCrossed),
             "locked bid==ask book must not trip the crossed-book guard"
+        );
+    }
+
+    #[test]
+    fn observe_reference_quote_drops_out_of_order_quote() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.pricing.fast_spot = None;
+        strategy.pricing.spike_until_ms = None;
+        let min_corr = strategy.config.lead_agreement_min_corr;
+        let max_jitter = strategy.config.lead_jitter_max_ms;
+        let threshold = strategy.config.spike_guard_return_threshold;
+        let cooldown = strategy.config.spike_guard_cooldown_secs;
+
+        // First in-order reference quote establishes fast_spot and the watermark.
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 100.0, 2_000),
+            min_corr,
+            max_jitter,
+            threshold,
+            cooldown,
+        );
+        assert_eq!(
+            strategy
+                .pricing
+                .fast_spot
+                .as_ref()
+                .map(|q| q.observed_ts_ms),
+            Some(2_000),
+            "the in-order reference quote should be accepted as fast_spot"
+        );
+
+        // An out-of-order quote at 1_500ms (<= the 2_000ms watermark) must be
+        // dropped: it must not overwrite fast_spot with the stale price, and the
+        // 30% move measured against the stale baseline must not arm the spike.
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 130.0, 1_500),
+            min_corr,
+            max_jitter,
+            threshold,
+            cooldown,
+        );
+        assert_eq!(
+            strategy
+                .pricing
+                .fast_spot
+                .as_ref()
+                .map(|q| (q.price, q.observed_ts_ms)),
+            Some((100.0, 2_000)),
+            "an out-of-order reference quote must not overwrite fast_spot"
+        );
+        assert_eq!(
+            strategy.pricing.spike_until_ms, None,
+            "an out-of-order reference quote must not arm the spike cooldown"
         );
     }
 

@@ -138,7 +138,12 @@ impl RealizedVolEstimator {
 
     pub fn current_vol_at(&self, now_ms: u64) -> Option<f64> {
         let last_ready_ts_ms = self.last_ready_ts_ms?;
-        if now_ms.saturating_sub(last_ready_ts_ms) <= self.bridge_valid_ms {
+        // Look-ahead guard: a query for a time *before* the vol was computed must
+        // not surface the future-derived value. `checked_sub` yields None when
+        // `now_ms < last_ready_ts_ms`; the bridge only holds a ready vol forward,
+        // never backward into the past.
+        let age_ms = now_ms.checked_sub(last_ready_ts_ms)?;
+        if age_ms <= self.bridge_valid_ms {
             self.last_ready_vol
         } else {
             None
@@ -243,17 +248,37 @@ mod tests {
         let mut estimator = estimator(60, 10, 1, 10);
 
         assert!(estimator.observe("bybit", 3_100.0, 1_000).is_none());
-        let ready_vol = estimator
-            .observe("bybit", 3_101.0, 2_000)
-            .expect("vol should be ready after min observations");
+        assert!(
+            estimator.observe("bybit", 3_101.0, 2_000).is_some(),
+            "vol should be ready after min observations"
+        );
         let sample_count = estimator.samples.len();
 
-        assert_eq!(estimator.observe("bybit", 3_200.0, 1_500), Some(ready_vol));
+        // The non-monotonic sample is ignored, and the read for its earlier
+        // timestamp must not leak the future-derived ready vol back into the past.
+        assert!(estimator.observe("bybit", 3_200.0, 1_500).is_none());
         assert_eq!(estimator.samples.len(), sample_count);
         assert_eq!(
             estimator.samples.back().map(|sample| sample.ts_ms),
             Some(2_000)
         );
         assert_eq!(estimator.last_ready_ts_ms, Some(2_000));
+    }
+
+    #[test]
+    fn current_vol_at_returns_none_for_query_before_last_ready_ts() {
+        let mut estimator = estimator(60, 10, 1, 10);
+
+        assert!(estimator.observe("bybit", 3_100.0, 1_000).is_none());
+        let ready_vol = estimator
+            .observe("bybit", 3_101.0, 2_000)
+            .expect("vol should be ready after min observations");
+
+        // Forward query within the bridge horizon still returns the ready vol.
+        assert_eq!(estimator.current_vol_at(2_500), Some(ready_vol));
+        // A query for a time *before* the vol was computed must not surface the
+        // future-derived value — that would be look-ahead and would inflate the
+        // backtest edge. The bridge only holds forward.
+        assert!(estimator.current_vol_at(1_999).is_none());
     }
 }

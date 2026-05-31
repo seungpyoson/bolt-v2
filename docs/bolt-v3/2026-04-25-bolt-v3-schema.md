@@ -1723,16 +1723,16 @@ For the current `binary_oracle_edge_taker` archetype:
 
 #### `order_notional_target`
 
-- type: decimal string
+- type: positive decimal string
 - required
 - strategy-local desired notional target used by the archetype's sizing logic
 - not the global hard cap
-- validation requires `order_notional_target <= root risk.default_max_notional_per_order`
+- validation requires `order_notional_target` is a positive decimal, `order_notional_target <= root risk.default_max_notional_per_order`, and `order_notional_target <= maximum_position_notional`
 - runtime sizing usage is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 7.3
 
 #### `maximum_position_notional`
 
-- type: decimal string
+- type: positive decimal string
 - required
 - maximum cumulative gross pUSD entry-cost exposure the strategy may target for the selected market
 - fees are not included in this cap
@@ -1796,7 +1796,9 @@ Must fail if:
 - a Binance reference-data `base_url_ws` uses NautilusTrader's Binance Spot JSON WebSocket host instead of an SBE endpoint or compatible SBE proxy
 - archetype-specific parameter sections contain fields not allowed for the declared `strategy_archetype`
 - archetype-specific order parameters contain any combination not explicitly allowed for that archetype
+- `order_notional_target` or `maximum_position_notional` is not a positive decimal
 - `order_notional_target` exceeds `root risk.default_max_notional_per_order`
+- `order_notional_target` exceeds `maximum_position_notional`
 - `binary_oracle_edge_taker` is missing `[reference_data.primary]`
 
 ### Live validation

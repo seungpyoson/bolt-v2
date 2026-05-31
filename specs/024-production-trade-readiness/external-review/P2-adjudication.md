@@ -116,3 +116,35 @@ Anchors use function name + file (line numbers approximate; re-locate by name).
 (re-read at current HEAD) → main session re-reproduced F2 (RED → GREEN) and F3
 (reproduction test) personally before any state change. This record is the missing
 P2 close-out: P3 / P4 / P5 / P6 / P7 / rate-limit had adjudication files, P2 did not.
+
+## External re-review (round 1) — HEAD 83c976a5 (F2 fix fcd1d33f on base 7c063d4c)
+
+6 models re-reviewed the F2 fix + this adjudication. **4 CLOSE-CONFIRMED** (DeepSeek,
+GLM, Gemini, Kimi); **2 STILL-OPEN** (GPT, Grok) — both HARDENING/doc, no live-money.
+All 6 confirmed: F2 fix correct & complete, fail-soft (not live-money), F1/F3/F5
+disproofs hold, no live-money hazard survives validation.
+
+Dissent disposition (head advances past fcd1d33f for round 2):
+- **GPT #1 (schema sizing-doc drift) — FIXED.** `order_notional_target` /
+  `maximum_position_notional` schema entries + the validation-rule summary now state
+  positive-decimal and the `order_target <= maximum_position_notional` ordering rule
+  (a loose end of the F2 fix — only `default_max`'s entry had been updated via F6c).
+- **Grok #2 (position_max ≫ default_max "nonsensical") — DISPROVEN** (Kimi): a position
+  cap above the per-order cap is a valid config (multiple orders fill the position).
+- **Grok #3 (chunk-count `min_observed=0` bypass) — DISPROVEN** (re-verified
+  personally): `required_observation_count` clamps `Some(_)` via `.clamp(1, ..)`, so a
+  zero-observation pass is structurally impossible on any path; the TOML path is
+  additionally rejected at `validate_readiness_probe_min_observed_targets`.
+- **Grok #1 (over-cap error prints `{venue}` not `provider=`) — DECLINED** (cosmetic;
+  renders the agnostic token "POLYMARKET"; the `(venue=` invariant holds; forcing
+  `provider=` into adjectival prose is awkward with no behavioral gain; 5/6 accept).
+- **GPT #2 / F6b (operator_evidence field table) — decline upheld 4-to-1** (Gemini /
+  GLM / Kimi endorsed "docs reference, don't restate"; the struct + gate is the owner).
+- **Grok #4 (positivity-error vs syntax-error wording) — NIT, declined.**
+
+New finding surfaced (out of P2 scope → tracked in P4 as **A-EDGE**): DeepSeek flagged
+`parameters.edge_threshold_basis_points` (i64) is never range-validated; a negative
+value makes the strategy enter at negative edge (guaranteed-loss trades).
+
+**Closure:** still NOT closed — the round-1 dissents (GPT/Grok) need a round-2
+re-confirm of the schema-doc fix + the disproofs before 6/6.

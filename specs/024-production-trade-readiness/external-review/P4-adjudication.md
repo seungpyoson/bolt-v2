@@ -60,6 +60,15 @@ new submit path. If a fix would require loosening anything, STOP and report inst
   FIX: reorder so evidence is recorded after the fallible build, or document partial-chain
   semantics.
 
+- **A-EDGE (surfaced in P2 re-review by DeepSeek, 2026-06-01)** `binary_oracle_edge_taker.rs`
+  (`parameters.edge_threshold_basis_points: i64`, never range-validated at load). A
+  NEGATIVE threshold makes the entry edge check (`expected_edge > threshold * theta`)
+  true for any/negative edge → the strategy enters guaranteed-loss trades. No live-fire
+  hazard without operator misconfig, but a nonsensical config must fail closed at load
+  (same class as F2 sizing bounds). FIX: reject `edge_threshold_basis_points < 0` (or
+  `<= 0` if a zero threshold is also nonsensical) in archetype parameter validation,
+  with a test. Verify the shipped fixture/prod value is positive before tightening.
+
 ## DISPROVEN (do NOT touch)
 A8 (fee>intent — fee-inclusive notional hard-capped by `max_notional_per_order` strict-`>`;
 `order_intent.notional` is pre-fee size, not the ceiling), A10 (negative fee — `max_fee_bps>=0`

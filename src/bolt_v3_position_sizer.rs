@@ -2,7 +2,8 @@ use rust_decimal::Decimal;
 
 use crate::bolt_v3_capital_reservation::{
     CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason, ReservationReleaseDecision,
-    ReservationRequest, ReservationRevalueDecision, ReservationRevalueRequest,
+    ReservationReleaseRequest, ReservationRequest, ReservationRevalueDecision,
+    ReservationRevalueRequest,
 };
 use crate::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, evaluate_loss_admission};
 use crate::bolt_v3_sizing_state::{
@@ -126,6 +127,41 @@ pub struct PositionSizingGateInputs<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PositionSizingLifecycleUpdate {
+    pub intent_id: String,
+    pub pool_id: String,
+    pub collateral_group_id: String,
+    pub remaining_liability: Decimal,
+    pub observed_at_ns: u64,
+    pub evidence_label: String,
+    pub kind: PositionSizingLifecycleKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionSizingLifecycleKind {
+    LiveResidual,
+    Terminal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionSizingLifecycleAction {
+    Revalued,
+    Released,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PositionSizingLifecycleDecision {
+    pub accepted: bool,
+    pub kind: PositionSizingLifecycleKind,
+    pub action: PositionSizingLifecycleAction,
+    pub reason: Option<ReservationRejectionReason>,
+    pub previous_liability: Option<Decimal>,
+    pub revalued_liability: Option<Decimal>,
+    pub released_liability: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PositionSizingRebuildDecision {
     pub accepted: bool,
     pub reason: Option<ReservationRejectionReason>,
@@ -210,10 +246,12 @@ impl PositionSizingAdmissionGate {
 
     pub fn release_pending_reservation(
         &mut self,
-        intent_id: &str,
-        evidence_label: &str,
+        pool: &CapitalPoolSnapshot,
+        request: &ReservationReleaseRequest,
+        now_ns: u64,
     ) -> ReservationReleaseDecision {
-        self.reservation_ledger.release(intent_id, evidence_label)
+        self.reservation_ledger
+            .release(pool, request, now_ns, pool.max_snapshot_age_ns)
     }
 
     /// Uses the capital-pool snapshot freshness bound for both pool and revalue evidence.
@@ -233,8 +271,98 @@ impl PositionSizingAdmissionGate {
         )
     }
 
+    pub fn apply_lifecycle_update(
+        &mut self,
+        pool: &CapitalPoolSnapshot,
+        update: &PositionSizingLifecycleUpdate,
+        now_ns: u64,
+        min_remaining_pool_balance: Option<Decimal>,
+    ) -> PositionSizingLifecycleDecision {
+        match update.kind {
+            PositionSizingLifecycleKind::Terminal => {
+                if update.remaining_liability != Decimal::ZERO {
+                    return rejected_lifecycle(
+                        update.kind,
+                        ReservationRejectionReason::InvalidRequest,
+                    );
+                }
+                let request = ReservationReleaseRequest {
+                    request_id: update.intent_id.clone(),
+                    pool_id: update.pool_id.clone(),
+                    collateral_group_id: update.collateral_group_id.clone(),
+                    observed_at_ns: update.observed_at_ns,
+                    evidence_label: update.evidence_label.clone(),
+                };
+                let decision = self.release_pending_reservation(pool, &request, now_ns);
+                PositionSizingLifecycleDecision {
+                    accepted: decision.accepted,
+                    kind: update.kind,
+                    action: if decision.accepted {
+                        PositionSizingLifecycleAction::Released
+                    } else {
+                        PositionSizingLifecycleAction::None
+                    },
+                    reason: decision.reason,
+                    previous_liability: None,
+                    revalued_liability: None,
+                    released_liability: decision.released_liability,
+                }
+            }
+            PositionSizingLifecycleKind::LiveResidual => {
+                if update.remaining_liability <= Decimal::ZERO {
+                    return rejected_lifecycle(
+                        update.kind,
+                        ReservationRejectionReason::InvalidRequest,
+                    );
+                }
+                let request = ReservationRevalueRequest {
+                    request_id: update.intent_id.clone(),
+                    pool_id: update.pool_id.clone(),
+                    collateral_group_id: update.collateral_group_id.clone(),
+                    liability: update.remaining_liability,
+                    observed_at_ns: update.observed_at_ns,
+                    evidence_label: update.evidence_label.clone(),
+                };
+                let decision = self.revalue_pending_reservation(
+                    pool,
+                    &request,
+                    now_ns,
+                    min_remaining_pool_balance,
+                );
+                PositionSizingLifecycleDecision {
+                    accepted: decision.accepted,
+                    kind: update.kind,
+                    action: if decision.accepted {
+                        PositionSizingLifecycleAction::Revalued
+                    } else {
+                        PositionSizingLifecycleAction::None
+                    },
+                    reason: decision.reason,
+                    previous_liability: decision.previous_liability,
+                    revalued_liability: decision.revalued_liability,
+                    released_liability: None,
+                }
+            }
+        }
+    }
+
     pub fn live_reserved_liability(&self, pool_id: &str) -> Decimal {
         self.reservation_ledger.live_reserved_liability(pool_id)
+    }
+}
+
+fn rejected_lifecycle(
+    kind: PositionSizingLifecycleKind,
+    reason: ReservationRejectionReason,
+) -> PositionSizingLifecycleDecision {
+    PositionSizingLifecycleDecision {
+        accepted: false,
+        kind,
+        action: PositionSizingLifecycleAction::None,
+        reason: Some(reason),
+        previous_liability: None,
+        revalued_liability: None,
+        released_liability: None,
     }
 }
 
@@ -665,8 +793,8 @@ mod tests {
     use rust_decimal::Decimal;
 
     use crate::bolt_v3_capital_reservation::{
-        CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason, ReservationRequest,
-        ReservationRevalueRequest,
+        CapitalPoolSnapshot, ReservationLedger, ReservationRejectionReason,
+        ReservationReleaseRequest, ReservationRequest, ReservationRevalueRequest,
     };
     use crate::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, LossSnapshot};
     use crate::bolt_v3_sizing_state::{
@@ -677,6 +805,7 @@ mod tests {
     use super::{
         FeeSlippagePolicy, IntentLiquidity, IntentOrderKind, IntentSide, LiabilityError,
         PositionSizingAdmissionGate, PositionSizingGateInputs, PositionSizingInputs,
+        PositionSizingLifecycleAction, PositionSizingLifecycleKind, PositionSizingLifecycleUpdate,
         PositionSizingRequest, PredictionMarketBinaryLiabilityCalculator,
         PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot, SizedAdmissionReason,
         SizingEvidenceKind, SizingMode, SizingPolicy, evaluate_position_sizing,
@@ -824,6 +953,47 @@ mod tests {
             liability,
             observed_at_ns,
             evidence_label: "nt_open_order_revalue".to_string(),
+        }
+    }
+
+    fn open_order_release(intent_id: &str, observed_at_ns: u64) -> ReservationReleaseRequest {
+        ReservationReleaseRequest {
+            request_id: intent_id.to_string(),
+            pool_id: "pool-1".to_string(),
+            collateral_group_id: "group-1".to_string(),
+            observed_at_ns,
+            evidence_label: "nt_order_terminal".to_string(),
+        }
+    }
+
+    fn terminal_lifecycle_update(
+        intent_id: &str,
+        observed_at_ns: u64,
+    ) -> PositionSizingLifecycleUpdate {
+        PositionSizingLifecycleUpdate {
+            intent_id: intent_id.to_string(),
+            pool_id: "pool-1".to_string(),
+            collateral_group_id: "group-1".to_string(),
+            remaining_liability: Decimal::ZERO,
+            observed_at_ns,
+            evidence_label: "nt_order_terminal".to_string(),
+            kind: PositionSizingLifecycleKind::Terminal,
+        }
+    }
+
+    fn live_residual_lifecycle_update(
+        intent_id: &str,
+        liability: Decimal,
+        observed_at_ns: u64,
+    ) -> PositionSizingLifecycleUpdate {
+        PositionSizingLifecycleUpdate {
+            intent_id: intent_id.to_string(),
+            pool_id: "pool-1".to_string(),
+            collateral_group_id: "group-1".to_string(),
+            remaining_liability: liability,
+            observed_at_ns,
+            evidence_label: "nt_order_live_residual".to_string(),
+            kind: PositionSizingLifecycleKind::LiveResidual,
         }
     }
 
@@ -1212,7 +1382,11 @@ mod tests {
         );
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
 
-        let release = gate.release_pending_reservation("intent-1", "nt-submit-rejected");
+        let release = gate.release_pending_reservation(
+            &capital_pool,
+            &open_order_release("intent-1", 1_050),
+            1_060,
+        );
         assert!(release.accepted);
         assert_eq!(release.released_liability, Some(Decimal::new(430, 2)));
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
@@ -1313,7 +1487,210 @@ mod tests {
     }
 
     #[test]
-    fn admission_gate_fails_closed_until_reconciled_and_rejects_unknown_release() {
+    fn lifecycle_terminal_zero_liability_releases_live_reservation() {
+        let capital_pool = single_order_capital_pool();
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[rebuilt_open_order_reservation("intent-open")],
+            1_000,
+            None,
+        );
+        assert!(rebuild.accepted);
+
+        let decision = gate.apply_lifecycle_update(
+            &capital_pool,
+            &terminal_lifecycle_update("intent-open", 1_050),
+            1_060,
+            None,
+        );
+
+        assert!(decision.accepted);
+        assert_eq!(decision.kind, PositionSizingLifecycleKind::Terminal);
+        assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
+        assert_eq!(decision.released_liability, Some(Decimal::new(430, 2)));
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
+    }
+
+    #[test]
+    fn lifecycle_live_residual_revalues_live_reservation() {
+        let capital_pool = single_order_capital_pool();
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[rebuilt_open_order_reservation("intent-open")],
+            1_000,
+            None,
+        );
+        assert!(rebuild.accepted);
+
+        let decision = gate.apply_lifecycle_update(
+            &capital_pool,
+            &live_residual_lifecycle_update("intent-open", Decimal::new(250, 2), 1_050),
+            1_060,
+            None,
+        );
+
+        assert!(decision.accepted);
+        assert_eq!(decision.kind, PositionSizingLifecycleKind::LiveResidual);
+        assert_eq!(decision.action, PositionSizingLifecycleAction::Revalued);
+        assert_eq!(decision.previous_liability, Some(Decimal::new(430, 2)));
+        assert_eq!(decision.revalued_liability, Some(Decimal::new(250, 2)));
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(250, 2));
+    }
+
+    #[test]
+    fn lifecycle_terminal_rejects_unreconciled_gate_without_mutation() {
+        let capital_pool = single_order_capital_pool();
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+
+        let decision = gate.apply_lifecycle_update(
+            &capital_pool,
+            &terminal_lifecycle_update("intent-open", 1_050),
+            1_060,
+            None,
+        );
+
+        assert!(!decision.accepted);
+        assert_eq!(decision.kind, PositionSizingLifecycleKind::Terminal);
+        assert_eq!(decision.action, PositionSizingLifecycleAction::None);
+        assert_eq!(
+            decision.reason,
+            Some(ReservationRejectionReason::ReconciliationRequired)
+        );
+        assert_eq!(decision.released_liability, None);
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
+    }
+
+    #[test]
+    fn lifecycle_terminal_stale_or_equal_timestamp_rejects_without_mutation() {
+        let capital_pool = single_order_capital_pool();
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[rebuilt_open_order_reservation("intent-open")],
+            1_000,
+            None,
+        );
+        assert!(rebuild.accepted);
+
+        let stale = gate.apply_lifecycle_update(
+            &capital_pool,
+            &terminal_lifecycle_update("intent-open", 1_000),
+            1_060,
+            None,
+        );
+
+        assert!(!stale.accepted);
+        assert_eq!(stale.reason, Some(ReservationRejectionReason::StaleRequest));
+        assert_eq!(stale.released_liability, None);
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
+    }
+
+    #[test]
+    fn lifecycle_live_residual_min_remaining_balance_rejects_without_mutation() {
+        let capital_pool = single_order_capital_pool();
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[rebuilt_open_order_reservation("intent-open")],
+            1_000,
+            None,
+        );
+        assert!(rebuild.accepted);
+
+        let decision = gate.apply_lifecycle_update(
+            &capital_pool,
+            &live_residual_lifecycle_update("intent-open", Decimal::new(250, 2), 1_050),
+            1_060,
+            Some(Decimal::new(6, 0)),
+        );
+
+        assert!(!decision.accepted);
+        assert_eq!(decision.kind, PositionSizingLifecycleKind::LiveResidual);
+        assert_eq!(decision.action, PositionSizingLifecycleAction::None);
+        assert_eq!(
+            decision.reason,
+            Some(ReservationRejectionReason::OverBudget)
+        );
+        assert_eq!(decision.revalued_liability, None);
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
+    }
+
+    #[test]
+    fn lifecycle_invalid_residual_shapes_reject_before_mutation() {
+        let capital_pool = single_order_capital_pool();
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[rebuilt_open_order_reservation("intent-open")],
+            1_000,
+            None,
+        );
+        assert!(rebuild.accepted);
+
+        let cases = [
+            live_residual_lifecycle_update("intent-open", Decimal::ZERO, 1_050),
+            live_residual_lifecycle_update("intent-open", Decimal::new(-1, 0), 1_050),
+            PositionSizingLifecycleUpdate {
+                remaining_liability: Decimal::new(1, 0),
+                ..terminal_lifecycle_update("intent-open", 1_050)
+            },
+            PositionSizingLifecycleUpdate {
+                remaining_liability: Decimal::new(-1, 0),
+                ..terminal_lifecycle_update("intent-open", 1_050)
+            },
+        ];
+
+        for update in cases {
+            let decision = gate.apply_lifecycle_update(&capital_pool, &update, 1_060, None);
+            assert!(!decision.accepted);
+            assert_eq!(decision.action, PositionSizingLifecycleAction::None);
+            assert_eq!(
+                decision.reason,
+                Some(ReservationRejectionReason::InvalidRequest)
+            );
+            assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
+        }
+    }
+
+    #[test]
+    fn lifecycle_terminal_then_live_residual_rejects_unknown_without_mutation() {
+        let capital_pool = single_order_capital_pool();
+        let mut gate = PositionSizingAdmissionGate::unreconciled();
+        let rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[rebuilt_open_order_reservation("intent-open")],
+            1_000,
+            None,
+        );
+        assert!(rebuild.accepted);
+
+        let terminal = gate.apply_lifecycle_update(
+            &capital_pool,
+            &terminal_lifecycle_update("intent-open", 1_050),
+            1_060,
+            None,
+        );
+        assert!(terminal.accepted);
+
+        let residual = gate.apply_lifecycle_update(
+            &capital_pool,
+            &live_residual_lifecycle_update("intent-open", Decimal::new(250, 2), 1_070),
+            1_080,
+            None,
+        );
+
+        assert!(!residual.accepted);
+        assert_eq!(
+            residual.reason,
+            Some(ReservationRejectionReason::UnknownReservation)
+        );
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
+    }
+
+    #[test]
+    fn admission_gate_fails_closed_until_reconciled_and_rejects_release() {
         let loss_snapshot = LossSnapshot {
             source: "nt_portfolio_snapshot".to_string(),
             observed_at_ns: 1_000,
@@ -1345,11 +1722,15 @@ mod tests {
         );
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
 
-        let release = gate.release_pending_reservation("intent-1", "nt-submit-rejected");
+        let release = gate.release_pending_reservation(
+            &capital_pool(),
+            &open_order_release("intent-1", 1_050),
+            1_060,
+        );
         assert!(!release.accepted);
         assert_eq!(
             release.reason,
-            Some(ReservationRejectionReason::UnknownRelease)
+            Some(ReservationRejectionReason::ReconciliationRequired)
         );
         assert_eq!(release.released_liability, None);
     }

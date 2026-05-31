@@ -30,6 +30,15 @@ pub struct ReservationRevalueRequest {
     pub evidence_label: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReservationReleaseRequest {
+    pub request_id: String,
+    pub pool_id: String,
+    pub collateral_group_id: String,
+    pub observed_at_ns: u64,
+    pub evidence_label: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReservationRejectionReason {
     MissingEvidence,
@@ -203,22 +212,48 @@ impl ReservationLedger {
 
     pub fn release(
         &mut self,
-        request_id: &str,
-        evidence_label: &str,
+        pool: &CapitalPoolSnapshot,
+        request: &ReservationReleaseRequest,
+        now_ns: u64,
+        max_snapshot_age_ns: u64,
     ) -> ReservationReleaseDecision {
-        if request_id.trim().is_empty() {
+        if !self.reconciliation_complete {
+            return rejected_release(ReservationRejectionReason::ReconciliationRequired);
+        }
+        if pool.pool_id != request.pool_id {
+            return rejected_release(ReservationRejectionReason::PoolMismatch);
+        }
+        if request.request_id.trim().is_empty()
+            || request.pool_id.trim().is_empty()
+            || request.collateral_group_id.trim().is_empty()
+        {
             return rejected_release(ReservationRejectionReason::InvalidRequest);
         }
-        if evidence_label.trim().is_empty() {
+        if pool.source.trim().is_empty() || request.evidence_label.trim().is_empty() {
             return rejected_release(ReservationRejectionReason::MissingEvidence);
+        }
+        if stale(pool.observed_at_ns, now_ns, max_snapshot_age_ns)
+            || stale(request.observed_at_ns, now_ns, max_snapshot_age_ns)
+            || request.observed_at_ns < pool.observed_at_ns
+        {
+            return rejected_release(ReservationRejectionReason::StaleRequest);
         }
         let Some(index) = self
             .live_reservations
             .iter()
-            .position(|reservation| reservation.request_id == request_id)
+            .position(|reservation| reservation.request_id == request.request_id)
         else {
             return rejected_release(ReservationRejectionReason::UnknownRelease);
         };
+        if self.live_reservations[index].pool_id != pool.pool_id {
+            return rejected_release(ReservationRejectionReason::PoolMismatch);
+        }
+        if self.live_reservations[index].collateral_group_id != request.collateral_group_id {
+            return rejected_release(ReservationRejectionReason::CollateralGroupMismatch);
+        }
+        if request.observed_at_ns <= self.live_reservations[index].observed_at_ns {
+            return rejected_release(ReservationRejectionReason::StaleRequest);
+        }
         let reservation = self.live_reservations.remove(index);
 
         ReservationReleaseDecision {
@@ -347,8 +382,41 @@ mod tests {
     use rust_decimal::Decimal;
 
     use super::{
-        CapitalPoolSnapshot, ReservationLedger, ReservationRequest, ReservationRevalueRequest,
+        CapitalPoolSnapshot, ReservationLedger, ReservationReleaseRequest, ReservationRequest,
+        ReservationRevalueRequest,
     };
+
+    fn pool() -> CapitalPoolSnapshot {
+        CapitalPoolSnapshot {
+            source: "nt_account_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            pool_id: "polymarket-live".to_string(),
+            max_pool_liability: Decimal::new(100, 0),
+            committed_liability: Decimal::ZERO,
+            max_snapshot_age_ns: 100,
+        }
+    }
+
+    fn reservation_request(request_id: &str) -> ReservationRequest {
+        ReservationRequest {
+            request_id: request_id.to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
+            liability: Decimal::new(40, 0),
+            observed_at_ns: 1_010,
+            evidence_label: "nt-account-and-allowance-snapshot".to_string(),
+        }
+    }
+
+    fn release_request(request_id: &str, observed_at_ns: u64) -> ReservationReleaseRequest {
+        ReservationReleaseRequest {
+            request_id: request_id.to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
+            observed_at_ns,
+            evidence_label: "nt-order-terminal".to_string(),
+        }
+    }
 
     #[test]
     fn fitting_reservation_is_accepted_and_recorded_with_remaining_budget_evidence() {
@@ -404,7 +472,15 @@ mod tests {
         let mut ledger = ReservationLedger::reconciled();
         assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
 
-        let release = ledger.release("request-2", "nt-order-terminal");
+        let release_request = ReservationReleaseRequest {
+            request_id: "request-2".to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
+            observed_at_ns: 1_030,
+            evidence_label: "nt-order-terminal".to_string(),
+        };
+
+        let release = ledger.release(&pool, &release_request, 1_040, 100);
 
         assert!(release.accepted);
         assert_eq!(release.reason, None);
@@ -414,7 +490,7 @@ mod tests {
             Decimal::ZERO
         );
 
-        let duplicate = ledger.release("request-2", "nt-order-terminal");
+        let duplicate = ledger.release(&pool, &release_request, 1_040, 100);
 
         assert!(!duplicate.accepted);
         assert_eq!(
@@ -422,6 +498,76 @@ mod tests {
             Some(super::ReservationRejectionReason::UnknownRelease)
         );
         assert_eq!(duplicate.released_liability, None);
+    }
+
+    #[test]
+    fn release_rejects_unreconciled_ledger_before_unknown_release() {
+        let pool = pool();
+        let mut ledger = ReservationLedger::unreconciled();
+        let release = ledger.release(
+            &pool,
+            &release_request("request-unknown", 1_030),
+            1_040,
+            100,
+        );
+
+        assert!(!release.accepted);
+        assert_eq!(
+            release.reason,
+            Some(super::ReservationRejectionReason::ReconciliationRequired)
+        );
+        assert_eq!(release.released_liability, None);
+    }
+
+    #[test]
+    fn stale_or_equal_timestamp_release_rejects_without_mutating_live_reservation() {
+        let pool = pool();
+        let request = reservation_request("request-stale-release");
+        let mut ledger = ReservationLedger::reconciled();
+        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+
+        let release = ledger.release(
+            &pool,
+            &release_request("request-stale-release", 1_010),
+            1_040,
+            100,
+        );
+
+        assert!(!release.accepted);
+        assert_eq!(
+            release.reason,
+            Some(super::ReservationRejectionReason::StaleRequest)
+        );
+        assert_eq!(release.released_liability, None);
+        assert_eq!(
+            ledger.live_reserved_liability("polymarket-live"),
+            Decimal::new(40, 0)
+        );
+    }
+
+    #[test]
+    fn release_rejects_collateral_group_mismatch_without_mutating_live_reservation() {
+        let pool = pool();
+        let request = reservation_request("request-collateral-release");
+        let mut ledger = ReservationLedger::reconciled();
+        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+        let release_request = ReservationReleaseRequest {
+            collateral_group_id: "wrong-group".to_string(),
+            ..release_request("request-collateral-release", 1_030)
+        };
+
+        let release = ledger.release(&pool, &release_request, 1_040, 100);
+
+        assert!(!release.accepted);
+        assert_eq!(
+            release.reason,
+            Some(super::ReservationRejectionReason::CollateralGroupMismatch)
+        );
+        assert_eq!(release.released_liability, None);
+        assert_eq!(
+            ledger.live_reserved_liability("polymarket-live"),
+            Decimal::new(40, 0)
+        );
     }
 
     #[test]

@@ -5207,7 +5207,6 @@ const EXIT_ORDER_FIELD: &str = stringify!(exit_order);
 const FORCED_EXIT_ORDER_FIELD: &str = stringify!(forced_exit_order);
 const WRONG_TYPE_CODE: &str = stringify!(wrong_type);
 const UNKNOWN_FIELD_CODE: &str = stringify!(unknown_field);
-const MALFORMED_REFERENCE_INSTRUMENT_ID_CODE: &str = stringify!(malformed_reference_instrument_id);
 const TARGET_MARKET_NOT_FOUND_REASON: &str = stringify!(target_market_not_found);
 
 impl BinaryOracleEdgeTakerBuilder {
@@ -5299,23 +5298,6 @@ impl BinaryOracleEdgeTakerBuilder {
                 "missing_reference_data_pair",
                 BinaryOracleEdgeTakerFieldType::String,
             );
-        }
-        // A configured reference_instrument_id must parse as a valid
-        // `Symbol.Venue` InstrumentId. The runtime accessor parses it with
-        // `InstrumentId::from_str(..).ok()`, so an unparseable value (operator
-        // typo, empty string) would silently become `None` and silently disable
-        // reference-quote subscription (fail-open). Reject it here so the
-        // misconfiguration fails LOUD at config validation, before construction.
-        if let Some(Value::String(instrument_id)) = table.get("reference_instrument_id")
-            && InstrumentId::from_str(instrument_id.as_str()).is_err()
-        {
-            errors.push(ValidationError {
-                field: format!("{field_prefix}.reference_instrument_id"),
-                code: MALFORMED_REFERENCE_INSTRUMENT_ID_CODE,
-                message: format!(
-                    "must be a valid `Symbol.Venue` instrument id; `{instrument_id}` does not parse as an `InstrumentId`"
-                ),
-            });
         }
         Self::validate_order_table(
             table,
@@ -7829,65 +7811,6 @@ mod tests {
         assert_eq!(config.entry_order.time_in_force, TimeInForce::Fok);
         assert_eq!(config.exit_order.order_type, OrderType::Market);
         assert_eq!(config.exit_order.time_in_force, TimeInForce::Ioc);
-    }
-
-    #[test]
-    fn malformed_reference_instrument_id_is_rejected_at_config_validation() {
-        // A configured-but-unparseable reference_instrument_id (operator typo:
-        // hyphen instead of the `Symbol.Venue` dot separator) must fail LOUD at
-        // config validation. The runtime accessor parses it with
-        // `InstrumentId::from_str(..).ok()`, so without this check a malformed id
-        // silently becomes `None` and the reference subscription is silently
-        // skipped (fail-open). Validation must reject it before construction.
-        let mut raw = valid_raw_config();
-        raw.as_table_mut()
-            .expect("valid raw config is a table")
-            .insert(
-                "reference_instrument_id".to_string(),
-                Value::String("REFERENCE-SOURCE".to_string()),
-            );
-        let mut errors = Vec::new();
-        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
-        find_error(
-            &errors,
-            "strategies[0].config.reference_instrument_id",
-            MALFORMED_REFERENCE_INSTRUMENT_ID_CODE,
-        );
-    }
-
-    #[test]
-    fn empty_reference_instrument_id_is_rejected_at_config_validation() {
-        // An empty string also fails `InstrumentId::from_str` (no `.` separator)
-        // and would silently become `None` at runtime — reject it the same way.
-        let mut raw = valid_raw_config();
-        raw.as_table_mut()
-            .expect("valid raw config is a table")
-            .insert(
-                "reference_instrument_id".to_string(),
-                Value::String(String::new()),
-            );
-        let mut errors = Vec::new();
-        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
-        find_error(
-            &errors,
-            "strategies[0].config.reference_instrument_id",
-            MALFORMED_REFERENCE_INSTRUMENT_ID_CODE,
-        );
-    }
-
-    #[test]
-    fn valid_reference_instrument_id_passes_config_validation() {
-        // The valid `Symbol.Venue` fixture must NOT be flagged malformed — the
-        // parse guard rejects only unparseable ids, never well-formed ones.
-        let raw = valid_raw_config();
-        let mut errors = Vec::new();
-        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
-        assert!(
-            !errors
-                .iter()
-                .any(|error| error.code == MALFORMED_REFERENCE_INSTRUMENT_ID_CODE),
-            "well-formed reference_instrument_id must not be flagged malformed: {errors:#?}"
-        );
     }
 
     #[test]

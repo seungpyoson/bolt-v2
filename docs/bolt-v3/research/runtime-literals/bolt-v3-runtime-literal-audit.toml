@@ -14799,11 +14799,3 @@ literal = '''"bolt-v3 submit admission refuses a market-style entry without a st
 context = '''"bolt-v3 submit admission refuses a market-style entry without a structural price ceiling for client_order_id={}",'''
 classification = '''diagnostic_template'''
 reason = '''Fail-closed diagnostic for a market-style entry lacking a structural price ceiling; the interpolated client_order_id is computed from the typed order, not an operator runtime value.'''
-
-[[allowed]]
-path = '''src/strategies/binary_oracle_edge_taker.rs'''
-kind = '''string'''
-literal = '''"reference_instrument_id"'''
-context = '''if let Some(Value::String(instrument_id)) = table.get("reference_instrument_id")'''
-classification = '''strategy_runtime_schema_field'''
-reason = '''This is an existing taker strategy config schema field name (the TOML key), read to validate that the configured reference_data instrument_id parses as an InstrumentId; not a runtime operator value.'''

@@ -783,6 +783,21 @@ fn configured_decision_reference(
     let resolution_identity =
         required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_identity")?
             .to_string();
+    // The source-owned decision_reference path binds this resolution_identity onto
+    // the strategy's `reference_instrument_id`, which the runtime accessor parses
+    // with `InstrumentId::from_str(..).ok()`. The path relies on a logical (non-NT)
+    // identity so the accessor yields `None` and the strategy does NOT subscribe to
+    // venue quotes -- its reference arrives via the readiness seed. A resolution_identity
+    // that parses as a valid NT instrument id would silently enable that subscription
+    // and could ingest the wrong reference data, so reject it LOUDLY here.
+    if resolution_identity.parse::<InstrumentId>().is_ok() {
+        return Err(BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            message: format!(
+                "decision_reference resolution_identity `{resolution_identity}` must be a logical gate identity, not a value that parses as an NT instrument id (which would make the source-owned reference path subscribe to venue quotes)"
+            ),
+        });
+    }
     Ok(Some(DecisionReferenceTarget {
         provider_id,
         resolution_identity,

@@ -483,6 +483,58 @@ fn binary_oracle_runtime_mapping_uses_target_resolution_mapping_without_chainlin
 }
 
 #[test]
+fn binary_oracle_runtime_mapping_rejects_decision_reference_resolution_identity_that_parses_as_instrument_id()
+ {
+    // P7 re-audit (GPT): the source-owned decision_reference path binds
+    // reference_instrument_id = decision_reference.resolution_identity, and the
+    // strategy accessor parses it with InstrumentId::from_str(..).ok(). The source-
+    // owned path relies on resolution_identity NOT being a valid NT instrument id
+    // so the accessor returns None and the strategy does not spuriously subscribe
+    // to venue quotes (its reference arrives via the readiness seed). Enforce that
+    // invariant at the archetype bridge: a decision_reference resolution_identity
+    // that parses as an InstrumentId must fail LOUD, not silently enable an NT
+    // reference subscription that could ingest the wrong reference data.
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy = loaded
+        .strategies
+        .iter_mut()
+        .find(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    let mapping = strategy
+        .config
+        .target
+        .as_table_mut()
+        .and_then(|target| target.get_mut("gate_subscriptions"))
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|subscriptions| subscriptions.get_mut("decision_reference"))
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|decision_reference| decision_reference.get_mut("market_mappings"))
+        .and_then(toml::Value::as_array_mut)
+        .and_then(|mappings| mappings.first_mut())
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture strategy should include a decision_reference gate mapping");
+    mapping.insert(
+        "resolution_identity".to_string(),
+        toml::Value::String("REFERENCE.SOURCE".to_string()),
+    );
+
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded).expect_err(
+        "a decision_reference resolution_identity that parses as an NT InstrumentId must be rejected",
+    );
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("resolution_identity") && rendered.contains("REFERENCE.SOURCE"),
+        "rejection should name the offending resolution_identity, got: {rendered}"
+    );
+}
+
+#[test]
 fn binary_oracle_runtime_mapping_preserves_post_only_gtc_entry_order() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

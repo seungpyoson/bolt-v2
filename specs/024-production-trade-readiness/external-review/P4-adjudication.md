@@ -76,3 +76,33 @@ enforced both sides), A11 (quantity constraints — `normalize_order_sizing` enf
 A16 (mutex `.expect` — intentional FAIL-LOUD), A17 (count-cap race — single lock spans
 evaluate+increment). A9 (blocks on zero admitted orders) is correct fail-closed for a bounded
 canary; leave unless an open-ended mode is intended (out of scope).
+
+## Fix-landing status (current head, 2026-06-01)
+
+Re-verified vs HEAD (verification workflow + personal reads of the live-fire gate):
+- **FIXED-IN-CODE (landed in `dfb4a44e`):** A4, A5, A6, A7, A12, A13, A14, A15.
+- **A-EDGE — FIXED (this slice):** negative `parameters.edge_threshold_basis_points`
+  rejected at load (`validate_parameter_bounds`); test in `tests/config_parsing.rs`.
+- **A1/A2 — FIXED (this slice):** the one-time operator approval is now durably one-time.
+  On consume, after the consumption marker is written, the process SPENDS the nonce —
+  `spend_phase8_approval_nonce` overwrites the operator nonce evidence file so it no longer
+  hashes to the approved `approval_nonce_sha256`. A deleted **or** host-auto-cleaned marker
+  therefore cannot re-arm: `validate_approval_nonce` fails on the spent nonce. This is the
+  single point where bolt-v3 writes operator evidence — by design, a nonce is single-use;
+  re-approval requires a fresh nonce. (A durable-path guard for the marker was considered
+  and dropped: it is redundant — the nonce-spend already defeats the temp-dir auto-cleanup
+  vector — and it conflicted with the temp-dir test harness.)
+- **A3 — DEFERRED (recorded plan; operator decision 2026-06-01):** the gate hash-binds the
+  order-intent file to the sealed envelope and checks the order's instrument is in
+  `gate_session.selected_market`, but never re-derives the selection from
+  `canary_proof_candidate_source_*` (those provenance fields stay dead). Residual gap: a
+  *different* market that is also in the session could pass. PLAN (dedicated PR): at the
+  gate (1) bind + sha-verify the candidate-source artifact to the envelope (as the
+  order-intent file already is), (2) parse the candidate pool, (3) re-run the deterministic
+  market selection against the gate clock, (4) reject if the fired instrument != the
+  re-derived winner. DEFERRED because it is a design-heavier change in the live-fire path
+  (new bound artifact, selection re-derivation, new failure modes + tests), best done
+  deliberately with its own review rather than rushed before T044. Tracked with #503.
+
+**Remaining open:** A3 (deferred with the plan above). A1/A2, A-EDGE, and the 8 `dfb4a44e`
+items are addressed; P4 is review-ready once A3's deferral is accepted by the re-review.

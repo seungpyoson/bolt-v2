@@ -1612,6 +1612,30 @@ fn phase8_reject_parent_dir(path: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+/// Spend the one-shot operator-approval nonce by overwriting the nonce evidence file once
+/// the approval is consumed (A1/A2). After this, `validate_approval_nonce` fails for that
+/// approval because the on-disk nonce no longer hashes to the approved
+/// `approval_nonce_sha256`, so even a deliberately-deleted consumption marker cannot re-arm
+/// the one-time approval. Re-approval requires the operator to mint a fresh nonce. This is
+/// the one point where bolt-v3 WRITES operator evidence — by design, a nonce is single-use.
+fn spend_phase8_approval_nonce(
+    nonce_path: &str,
+    approved_nonce_sha256: &str,
+    spent_unix_secs: i64,
+) -> Result<()> {
+    let spent = serde_json::json!({
+        "record_kind": "phase8_operator_approval_nonce_spent",
+        "spent_unix_secs": spent_unix_secs,
+        "consumed_approval_nonce_sha256": approved_nonce_sha256,
+    });
+    let bytes = serde_json::to_vec_pretty(&spent)
+        .map_err(|source| anyhow!("failed to serialize phase8 spent-nonce record: {source}"))?;
+    fs::write(nonce_path, &bytes).map_err(|source| {
+        anyhow!("failed to spend phase8 operator approval nonce `{nonce_path}`: {source}")
+    })?;
+    Ok(())
+}
+
 fn phase8_resolve_configured_path(root_path: &Path, configured: &str) -> PathBuf {
     let path = PathBuf::from(configured.trim());
     if path.is_absolute() {
@@ -1797,6 +1821,16 @@ impl Phase8OperatorApprovalEnvelope {
             canary_evidence_path,
             strategy_cancel_path,
             &approval_consumption_path,
+        )?;
+        // Spend the one-shot nonce AFTER the durable consumption marker is written, so a
+        // DELIBERATE removal of the marker inside the operator window cannot re-arm the
+        // approval: `validate_approval_nonce` then fails because the on-disk nonce no longer
+        // hashes to the approved `approval_nonce_sha256` (A1/A2). The durable marker already
+        // blocks the automatic re-arm; spending the nonce closes the deliberate-`rm` path.
+        spend_phase8_approval_nonce(
+            &self.approval_nonce_path,
+            &self.approval_nonce_sha256,
+            current_unix_secs,
         )
     }
 
@@ -3785,5 +3819,30 @@ mod tests {
         );
 
         assert_eq!(resolved, PathBuf::from("reports/no-submit-readiness.json"));
+    }
+
+    #[test]
+    fn spend_phase8_approval_nonce_rewrites_the_nonce_so_old_sha_no_longer_matches() {
+        // After consume, spending the nonce must overwrite the nonce file so a deliberately
+        // deleted consumption marker cannot re-arm: validate_approval_nonce compares the
+        // approved sha against the on-disk file, which now differs (A1/A2).
+        let dir = std::env::temp_dir().join(format!("bolt-nonce-spend-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let nonce_path = dir.join("approval-nonce.json");
+        std::fs::write(&nonce_path, b"original-operator-nonce-material").expect("seed nonce");
+
+        spend_phase8_approval_nonce(
+            nonce_path.to_str().expect("utf8 path"),
+            "deadbeef".repeat(8).as_str(),
+            1_700_000_000,
+        )
+        .expect("spending the nonce should succeed");
+
+        let after = std::fs::read_to_string(&nonce_path).expect("read nonce");
+        assert_ne!(
+            after, "original-operator-nonce-material",
+            "spending must overwrite the nonce so the approved sha256 no longer matches"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

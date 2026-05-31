@@ -170,10 +170,11 @@ impl PositionSizingAdmissionGate {
                 min_remaining_pool_balance,
             );
             if !decision.accepted {
+                let attempted_reservation_count = open_order_reservations[..=index].len();
                 return PositionSizingRebuildDecision {
                     accepted: false,
                     reason: decision.reason,
-                    attempted_reservation_count: index + 1,
+                    attempted_reservation_count,
                     rebuilt_reservation_count: index,
                     live_reserved_liability: self.live_reserved_liability(&pool.pool_id),
                 };

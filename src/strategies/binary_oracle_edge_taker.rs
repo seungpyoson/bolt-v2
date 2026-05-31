@@ -40,7 +40,12 @@ use crate::{
         BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot, compiled_order_price_source,
     },
     bolt_v3_market_families::{
-        self, MarketSelectionOutcome, MarketSelectionTarget, SelectedMarketSourceIdentity,
+        self, FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget,
+        SelectedMarketSourceIdentity,
+    },
+    bolt_v3_numeric::{
+        POWER_OF_TWO, SECONDS_PER_YEAR_F64, UNIT_F64, ZERO_F64, is_positive_finite,
+        sanitize_probability,
     },
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::{
@@ -2753,13 +2758,16 @@ impl BinaryOracleEdgeTaker {
 
     fn current_fair_probability_up_at(&self, now_ms: u64) -> Option<f64> {
         let inputs = self.current_entry_pricing_inputs_at(now_ms).ok()?;
-        compute_fair_probability_up(&FairProbabilityInputs {
-            spot_price: inputs.spot_price,
-            strike_price: inputs.strike_price,
-            seconds_to_expiry: inputs.seconds_to_expiry,
-            realized_vol: inputs.realized_vol,
-            pricing_kurtosis: self.config.pricing_kurtosis,
-        })
+        bolt_v3_market_families::fair_probability_up_for_family(
+            &self.config.rotating_market_family,
+            &FairProbabilityInputs {
+                spot_price: inputs.spot_price,
+                strike_price: inputs.strike_price,
+                seconds_to_expiry: inputs.seconds_to_expiry,
+                realized_vol: inputs.realized_vol,
+                pricing_kurtosis: self.config.pricing_kurtosis,
+            },
+        )
     }
 
     fn current_position_fast_spot(&self) -> Option<&FastSpotObservation> {
@@ -3496,13 +3504,16 @@ impl BinaryOracleEdgeTaker {
         let realized_vol = self
             .current_realized_vol_at(now_ms)
             .filter(|value| is_positive_finite(*value))?;
-        compute_fair_probability_up(&FairProbabilityInputs {
-            spot_price,
-            strike_price,
-            seconds_to_expiry,
-            realized_vol,
-            pricing_kurtosis: self.config.pricing_kurtosis,
-        })
+        bolt_v3_market_families::fair_probability_up_for_family(
+            &self.config.rotating_market_family,
+            &FairProbabilityInputs {
+                spot_price,
+                strike_price,
+                seconds_to_expiry,
+                realized_vol,
+                pricing_kurtosis: self.config.pricing_kurtosis,
+            },
+        )
     }
 
     fn current_position_uncertainty_band_probability_at(&self, now_ms: u64) -> Option<f64> {
@@ -3526,13 +3537,16 @@ impl BinaryOracleEdgeTaker {
         let realized_vol = self
             .current_realized_vol_at(now_ms)
             .filter(|value| is_positive_finite(*value))?;
-        let fair_probability_up = compute_fair_probability_up(&FairProbabilityInputs {
-            spot_price,
-            strike_price,
-            seconds_to_expiry,
-            realized_vol,
-            pricing_kurtosis: self.config.pricing_kurtosis,
-        })?;
+        let fair_probability_up = bolt_v3_market_families::fair_probability_up_for_family(
+            &self.config.rotating_market_family,
+            &FairProbabilityInputs {
+                spot_price,
+                strike_price,
+                seconds_to_expiry,
+                realized_vol,
+                pricing_kurtosis: self.config.pricing_kurtosis,
+            },
+        )?;
         let up_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Up)?;
         let down_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Down)?;
         let uncertainty_band_probability = self.uncertainty_band_probability_for_seconds(
@@ -5823,14 +5837,11 @@ fn refresh_fee_readiness_for_active(
         .is_some();
 }
 
-const ZERO_F64: f64 = 0.0;
-const UNIT_F64: f64 = 1.0;
 const INITIAL_COUNTER_U64: u64 = 0;
 const INITIAL_COUNTER_USIZE: usize = 0;
 const MIN_OBSERVATION_COUNT: u64 = 1;
 const COUNTER_INCREMENT: usize = 1;
 const COUNTER_INCREMENT_U64: u64 = 1;
-const POWER_OF_TWO: i32 = 2;
 const BPS_DENOMINATOR: f64 = 10_000.0;
 const MIDPOINT_DIVISOR_F64: f64 = 2.0;
 const QUADRATIC_RISK_DIVISOR: f64 = 2.0;
@@ -5838,21 +5849,6 @@ const MILLIS_PER_SECOND_U64: u64 = 1_000;
 const MILLIS_PER_SECOND_F64: f64 = 1_000.0;
 const NANOS_PER_MILLI_U64: u64 = 1_000_000;
 const NANOS_PER_SECOND_U64: u64 = 1_000_000_000;
-const DAYS_PER_YEAR_F64: f64 = 365.25;
-const HOURS_PER_DAY_F64: f64 = 24.0;
-const MINUTES_PER_HOUR_F64: f64 = 60.0;
-const SECONDS_PER_MINUTE_F64: f64 = 60.0;
-const SECONDS_PER_YEAR_F64: f64 =
-    DAYS_PER_YEAR_F64 * HOURS_PER_DAY_F64 * MINUTES_PER_HOUR_F64 * SECONDS_PER_MINUTE_F64;
-const KURTOSIS_NORMALIZATION: f64 = 6.0;
-const NORMAL_DENSITY_EXPONENT_DIVISOR: f64 = 2.0;
-const NORMAL_CDF_T_SCALE: f64 = 0.231_641_9;
-const NORMAL_CDF_DENSITY_SCALE: f64 = 0.398_942_3;
-const NORMAL_CDF_POLY_A1: f64 = 0.319_381_5;
-const NORMAL_CDF_POLY_A2: f64 = -0.356_563_8;
-const NORMAL_CDF_POLY_A3: f64 = 1.781_478;
-const NORMAL_CDF_POLY_A4: f64 = -1.821_256;
-const NORMAL_CDF_POLY_A5: f64 = 1.330_274;
 const CONFIG_FIELD_OMS_TYPE: &str = "oms_type";
 const CONFIG_FIELD_ENTRY_ORDER_SIDE: &str = "entry_order_side";
 const CONFIG_FIELD_ENTRY_ORDER_POSITION_SIDE: &str = "entry_order_position_side";
@@ -5905,10 +5901,6 @@ const EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID: &str = "exit_order_config_inv
 const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quantity_unsupported";
 const EXIT_BLOCK_REASON_EXIT_PRICE_MISSING: &str = "exit_price_missing";
 const EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE: &str = "exit_quantity_not_positive";
-
-fn is_positive_finite(value: f64) -> bool {
-    value.is_finite() && value > ZERO_F64
-}
 
 fn is_non_negative_finite(value: f64) -> bool {
     value.is_finite() && value >= ZERO_F64
@@ -6070,53 +6062,6 @@ struct WorstCaseEvInputs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct FairProbabilityInputs {
-    spot_price: f64,
-    strike_price: f64,
-    seconds_to_expiry: u64,
-    realized_vol: f64,
-    pricing_kurtosis: f64,
-}
-
-fn compute_fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
-    if !inputs.spot_price.is_finite()
-        || !is_positive_finite(inputs.spot_price)
-        || !is_positive_finite(inputs.strike_price)
-        || !is_positive_finite(inputs.realized_vol)
-        || !inputs.pricing_kurtosis.is_finite()
-    {
-        return None;
-    }
-
-    let sigma_eff =
-        inputs.realized_vol * (UNIT_F64 + inputs.pricing_kurtosis / KURTOSIS_NORMALIZATION);
-    if !is_positive_finite(sigma_eff) {
-        return None;
-    }
-
-    let time_to_expiry_years = inputs.seconds_to_expiry as f64 / SECONDS_PER_YEAR_F64;
-    if time_to_expiry_years <= ZERO_F64 {
-        return None;
-    }
-
-    let d2 = ((inputs.spot_price / inputs.strike_price).ln()
-        - (sigma_eff.powi(POWER_OF_TWO) / QUADRATIC_RISK_DIVISOR) * time_to_expiry_years)
-        / (sigma_eff * time_to_expiry_years.sqrt());
-    sanitize_probability(standard_normal_cdf(d2))
-}
-
-fn standard_normal_cdf(x: f64) -> f64 {
-    let t = UNIT_F64 / (UNIT_F64 + NORMAL_CDF_T_SCALE * x.abs());
-    let d = NORMAL_CDF_DENSITY_SCALE * (-x * x / NORMAL_DENSITY_EXPONENT_DIVISOR).exp();
-    let prob = d
-        * t
-        * (NORMAL_CDF_POLY_A1
-            + t * (NORMAL_CDF_POLY_A2
-                + t * (NORMAL_CDF_POLY_A3 + t * (NORMAL_CDF_POLY_A4 + t * NORMAL_CDF_POLY_A5))));
-    if x > ZERO_F64 { UNIT_F64 - prob } else { prob }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
 struct ThetaScalerInputs {
     seconds_to_expiry: u64,
     cadence_seconds: u64,
@@ -6221,14 +6166,6 @@ fn choose_robust_size(inputs: &RobustSizingInputs) -> f64 {
     }
 
     (inputs.expected_ev_per_notional / (QUADRATIC_RISK_DIVISOR * inputs.risk_lambda)).min(cap)
-}
-
-fn sanitize_probability(value: f64) -> Option<f64> {
-    if value.is_finite() && (ZERO_F64..=UNIT_F64).contains(&value) {
-        Some(value)
-    } else {
-        None
-    }
 }
 
 fn sanitize_non_negative(value: f64) -> f64 {
@@ -9916,61 +9853,6 @@ mod tests {
         assert_eq!(fields.realized_vol, Some(2.5));
         assert_eq!(fields.realized_vol_source_venue.as_deref(), Some("bybit"));
         assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
-    }
-
-    #[test]
-    fn fair_probability_helper_is_directional_and_fail_closed_on_invalid_inputs() {
-        let above = compute_fair_probability_up(&FairProbabilityInputs {
-            spot_price: 3_105.0,
-            strike_price: 3_100.0,
-            seconds_to_expiry: 60,
-            realized_vol: 0.45,
-            pricing_kurtosis: 0.0,
-        })
-        .expect("valid inputs should produce fair probability");
-        let below = compute_fair_probability_up(&FairProbabilityInputs {
-            spot_price: 3_095.0,
-            strike_price: 3_100.0,
-            seconds_to_expiry: 60,
-            realized_vol: 0.45,
-            pricing_kurtosis: 0.0,
-        })
-        .expect("valid inputs should produce fair probability");
-
-        assert!(
-            above > 0.5,
-            "above-strike spot should imply >50% up probability"
-        );
-        assert!(
-            below < 0.5,
-            "below-strike spot should imply <50% up probability"
-        );
-        assert!(above > below);
-        assert!(
-            compute_fair_probability_up(&FairProbabilityInputs {
-                spot_price: 3_100.0,
-                strike_price: 3_100.0,
-                seconds_to_expiry: 60,
-                realized_vol: 0.0,
-                pricing_kurtosis: 0.0,
-            })
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn fair_probability_helper_fails_closed_when_expired() {
-        assert!(
-            compute_fair_probability_up(&FairProbabilityInputs {
-                spot_price: 3_105.0,
-                strike_price: 3_100.0,
-                seconds_to_expiry: 0,
-                realized_vol: 0.45,
-                pricing_kurtosis: 0.0,
-            })
-            .is_none(),
-            "expired markets must not produce a step-function entry probability"
-        );
     }
 
     #[test]

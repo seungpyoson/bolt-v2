@@ -645,12 +645,76 @@ classification = "config_bundle_checksum_domain_separator"
 reason = "This domain separator pins the config-bundle checksum format used to bind no-submit readiness to the loaded TOML bundle."
 
 [[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"nt_portfolio_and_position_events"'''
+context = '''const BOLT_V3_LOSS_GOVERNOR_NT_SOURCE: &str = "nt_portfolio_and_position_events";'''
+classification = "loss_governor_snapshot_source_label"
+reason = "This is the source-attribution label recorded on NT-derived loss snapshots. It is evidence metadata, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"per_trade_loss_limit"'''
+context = '''Self::PerTradeLossLimit => "per_trade_loss_limit",'''
+classification = "loss_governor_halt_reason"
+reason = "This is a deterministic halt-reason code written to submit-admission evidence when a configured per-trade loss threshold is breached."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"daily_loss_limit"'''
+context = '''Self::DailyLossLimit => "daily_loss_limit",'''
+classification = "loss_governor_halt_reason"
+reason = "This is a deterministic halt-reason code written to submit-admission evidence when a configured daily/session loss threshold is breached."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"rolling_loss_limit"'''
+context = '''Self::RollingLossLimit => "rolling_loss_limit",'''
+classification = "loss_governor_halt_reason"
+reason = "This is a deterministic halt-reason code written to submit-admission evidence when a configured rolling loss threshold is breached."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"max_drawdown_limit"'''
+context = '''Self::MaxDrawdownLimit => "max_drawdown_limit",'''
+classification = "loss_governor_halt_reason"
+reason = "This is a deterministic halt-reason code written to submit-admission evidence when a configured max-drawdown threshold is breached."
+
+[[allowed]]
+path = "src/bolt_v3_loss_governor.rs"
+kind = "string"
+literal = '''"stale_loss_snapshot"'''
+context = '''Self::StaleLossSnapshot => "stale_loss_snapshot",'''
+classification = "loss_governor_halt_reason"
+reason = "This is a deterministic fail-closed halt-reason code written to submit-admission evidence when loss facts are missing, stale, unattributed, incomplete, or future-dated."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''","'''
+context = '''reasons.join(",")'''
+classification = "loss_governor_error_reason_separator"
+reason = "This delimiter joins already-recorded loss-governor halt reason codes for a typed submit-admission error display."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt-v3 submit admission loss governor halted new risk: {}"'''
+context = '''"bolt-v3 submit admission loss governor halted new risk: {}",'''
+classification = "submit_admission_loss_governor_error_message"
+reason = "This is the static display text for the typed submit-admission loss-governor rejection. Runtime policy values remain TOML-owned and are not embedded here."
+
+[[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''5'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 5;'''
+literal = '''6'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 6;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v5 combines compiled NT order-field evidence with strategy-input snapshot evidence; it is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v6 adds loss-governor halt outcomes and halt reasons to the submit-admission evidence contract; it is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"

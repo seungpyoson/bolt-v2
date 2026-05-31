@@ -6,6 +6,7 @@ use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3OrderIntentEvidence, BoltV3StrategyInputEvidenceSnapshot,
 };
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
+use bolt_v2::bolt_v3_loss_governor::{LossGovernorPolicy, LossSnapshot};
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderKind,
     BoltV3QuoteQuantityOrderSide, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
@@ -144,6 +145,102 @@ fn over_notional_cap_rejects_before_nt_submit_without_consuming_count() {
     ));
     assert_eq!(admission.admitted_order_count(), 0);
     assert!(!nt_submit_called, "NT submit must not be reached");
+}
+
+#[test]
+fn loss_governor_rejects_new_risk_without_fresh_snapshot_before_nt_submit() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+        writer.clone(),
+        loss_governor_policy(),
+    );
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(10, 0),
+        ))
+        .expect("valid gate report should arm admission");
+
+    let result = admission.admit_at(&submit_request(Decimal::new(1, 0)), 1_000);
+    let nt_submit_called = result.is_ok();
+    let error = result.expect_err("loss governor must fail closed before a fresh snapshot exists");
+
+    assert_eq!(
+        error,
+        BoltV3SubmitAdmissionError::LossGovernorHalted {
+            reasons: vec!["stale_loss_snapshot".to_string()]
+        }
+    );
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert!(!nt_submit_called, "NT submit must not be reached");
+    let decisions = writer.admission_decisions();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(
+        decisions[0].outcome,
+        BoltV3AdmissionOutcome::RejectedLossGovernorHalted
+    );
+    assert_eq!(
+        decisions[0].loss_halt_reasons,
+        vec!["stale_loss_snapshot".to_string()]
+    );
+}
+
+#[test]
+fn loss_governor_halts_entries_but_allows_risk_reducing_exits_within_count_cap() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+        writer.clone(),
+        loss_governor_policy(),
+    );
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            2,
+            Decimal::new(10, 0),
+        ))
+        .expect("valid gate report should arm admission");
+    admission.update_loss_snapshot(LossSnapshot {
+        source: "nt_portfolio_snapshot".to_string(),
+        observed_at_ns: 1_000,
+        per_trade_pnl: Some(Decimal::new(-6, 0)),
+        daily_pnl: Some(Decimal::new(-8, 0)),
+        rolling_pnl: Some(Decimal::new(-9, 0)),
+        current_equity: Some(Decimal::new(90, 0)),
+        peak_equity: Some(Decimal::new(100, 0)),
+    });
+
+    let entry = admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 1_100)
+        .expect_err("loss-limit breach must reject new entry risk");
+    let exit = admission.admit_at(
+        &submit_request_with_kind(Decimal::new(1, 0), BoltV3SubmitIntentKind::RiskReducingExit),
+        1_100,
+    );
+
+    assert_eq!(
+        entry,
+        BoltV3SubmitAdmissionError::LossGovernorHalted {
+            reasons: vec![
+                "per_trade_loss_limit".to_string(),
+                "daily_loss_limit".to_string(),
+                "rolling_loss_limit".to_string(),
+                "max_drawdown_limit".to_string()
+            ]
+        }
+    );
+    exit.expect("risk-reducing exit should remain admissible within the operator count cap");
+    assert_eq!(admission.admitted_order_count(), 1);
+    let outcomes: Vec<BoltV3AdmissionOutcome> = writer
+        .admission_decisions()
+        .into_iter()
+        .map(|decision| decision.outcome)
+        .collect();
+    assert_eq!(
+        outcomes,
+        vec![
+            BoltV3AdmissionOutcome::RejectedLossGovernorHalted,
+            BoltV3AdmissionOutcome::Admitted,
+        ]
+    );
 }
 
 #[test]
@@ -363,8 +460,13 @@ fn fresh_live_node_build_keeps_submit_admission_internal() {
     let temp = support::TempCaseDir::new("bolt-v3-submit-admission-build");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
 
-    let _runtime = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
         .expect("fixture v3 LiveNode should build");
+
+    assert!(
+        runtime.loss_governor_enabled(),
+        "live node build must pass configured loss-governor policy into submit admission"
+    );
 }
 
 #[test]
@@ -426,6 +528,16 @@ fn submit_request_with_kind_and_policy(
         notional,
         intent_kind,
         lifecycle_policy,
+    }
+}
+
+fn loss_governor_policy() -> LossGovernorPolicy {
+    LossGovernorPolicy {
+        max_snapshot_age_ns: 500,
+        max_per_trade_loss: Decimal::new(5, 0),
+        max_daily_loss: Decimal::new(7, 0),
+        max_rolling_loss: Decimal::new(8, 0),
+        max_drawdown: Decimal::new(10, 0),
     }
 }
 

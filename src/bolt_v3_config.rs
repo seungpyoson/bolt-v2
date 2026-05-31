@@ -15,7 +15,7 @@ use std::{
 use nautilus_common::enums::{Environment, LogLevel};
 use nautilus_model::{
     enums::OmsType,
-    identifiers::{ClientId, InstrumentId, TraderId, Venue},
+    identifiers::{AccountId, ClientId, InstrumentId, TraderId, Venue},
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -135,7 +135,21 @@ pub struct NautilusExecEngineBlock {
 #[serde(deny_unknown_fields)]
 pub struct RiskBlock {
     pub default_max_notional_per_order: String,
+    pub loss_governor: Option<LossGovernorBlock>,
     pub nautilus: NautilusRiskBlock,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LossGovernorBlock {
+    pub enabled: bool,
+    pub account_id: AccountId,
+    pub max_snapshot_age_ns: u64,
+    pub rolling_window_ns: u64,
+    pub max_per_trade_loss: Option<String>,
+    pub max_daily_loss: Option<String>,
+    pub max_rolling_loss: Option<String>,
+    pub max_drawdown: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

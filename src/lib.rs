@@ -6,6 +6,7 @@ pub mod bolt_v3_decision_evidence;
 pub mod bolt_v3_instrument_filters;
 pub mod bolt_v3_live_canary_gate;
 pub mod bolt_v3_live_node;
+pub mod bolt_v3_loss_governor;
 pub mod bolt_v3_market_families;
 pub mod bolt_v3_no_submit_readiness;
 pub mod bolt_v3_no_submit_readiness_schema;

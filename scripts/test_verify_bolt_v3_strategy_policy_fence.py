@@ -50,6 +50,15 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         self.assertIn("buy-only entry VWAP helper", labels)
         self.assertIn("buy-biased entry price block", labels)
 
+    def test_detects_strategy_owned_loss_governor_coupling(self) -> None:
+        labels = self.labels_for(
+            """
+            use crate::bolt_v3_loss_governor::LossGovernorPolicy;
+            """
+        )
+
+        self.assertIn("strategy-owned loss-governor coupling", labels)
+
     def test_identifier_rules_do_not_match_substrings(self) -> None:
         labels = self.labels_for(
             """

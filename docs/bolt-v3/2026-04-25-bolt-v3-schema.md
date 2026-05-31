@@ -608,11 +608,11 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - local decision-evidence JSONL path under `catalog_directory`
 - must remain relative so a root catalog move changes only one config location
 
-Decision-evidence JSONL records use `schema_version = 5` for `order_intent`, `admission_decision`, and `strategy_input_snapshot` envelopes.
+Decision-evidence JSONL records use `schema_version = 6` for `order_intent`, `admission_decision`, and `strategy_input_snapshot` envelopes.
 Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent`, `decision`, or `snapshot`.
 The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.
 `order_intent` payloads carry the configured strategy/order identity plus compiled NT order semantics under `order_fields`.
-`admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id`.
+`admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id`. Loss-governor halt decisions use `outcome = "rejected_loss_governor_halted"` and include deterministic `loss_halt_reasons` such as `daily_loss_limit` or `stale_loss_snapshot`.
 `strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
 
 `order_intent.order_fields` fields:

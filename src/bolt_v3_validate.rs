@@ -260,6 +260,77 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
             value = block.default_max_notional_per_order
         ));
     }
+    if let Some(loss_governor) = block.loss_governor.as_ref() {
+        if loss_governor.enabled && loss_governor.max_snapshot_age_ns == 0 {
+            errors.push(
+                "risk.loss_governor.max_snapshot_age_ns must be a positive integer".to_string(),
+            );
+        }
+        if loss_governor.enabled && loss_governor.rolling_window_ns == 0 {
+            errors.push(
+                "risk.loss_governor.rolling_window_ns must be a positive integer".to_string(),
+            );
+        }
+        if loss_governor.enabled {
+            for (label, threshold) in [
+                (
+                    "risk.loss_governor.max_per_trade_loss",
+                    loss_governor.max_per_trade_loss.as_deref(),
+                ),
+                (
+                    "risk.loss_governor.max_daily_loss",
+                    loss_governor.max_daily_loss.as_deref(),
+                ),
+                (
+                    "risk.loss_governor.max_rolling_loss",
+                    loss_governor.max_rolling_loss.as_deref(),
+                ),
+                (
+                    "risk.loss_governor.max_drawdown",
+                    loss_governor.max_drawdown.as_deref(),
+                ),
+            ] {
+                if threshold.is_none() {
+                    errors.push(format!("{label} must be configured when enabled"));
+                }
+            }
+        }
+        for (label, threshold) in [
+            (
+                "risk.loss_governor.max_per_trade_loss",
+                loss_governor.max_per_trade_loss.as_deref(),
+            ),
+            (
+                "risk.loss_governor.max_daily_loss",
+                loss_governor.max_daily_loss.as_deref(),
+            ),
+            (
+                "risk.loss_governor.max_rolling_loss",
+                loss_governor.max_rolling_loss.as_deref(),
+            ),
+            (
+                "risk.loss_governor.max_drawdown",
+                loss_governor.max_drawdown.as_deref(),
+            ),
+        ] {
+            let Some(value) = threshold else {
+                continue;
+            };
+            match parse_decimal_string(value) {
+                Ok(decimal) if decimal <= Decimal::ZERO => {
+                    errors.push(format!(
+                        "{label} must be a positive decimal string: `{value}`"
+                    ));
+                }
+                Ok(_) => {}
+                Err(reason) => {
+                    errors.push(format!(
+                        "{label} is not a valid decimal string ({reason}): `{value}`"
+                    ));
+                }
+            }
+        }
+    }
     if block.nautilus.bypass {
         errors.push("risk.nautilus.bypass must be false".to_string());
     }

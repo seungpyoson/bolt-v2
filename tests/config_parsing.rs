@@ -3735,6 +3735,79 @@ fn rejects_nt_risk_bypass_true() {
 }
 
 #[test]
+fn bolt_v3_loss_governor_config_uses_nt_account_id_and_configured_thresholds() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use nautilus_model::identifiers::AccountId;
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
+    let governor = loaded
+        .root
+        .risk
+        .loss_governor
+        .as_ref()
+        .expect("fixture should configure the loss governor");
+
+    assert!(governor.enabled);
+    assert_eq!(governor.account_id, AccountId::from("POLYMARKET-001"));
+    assert_eq!(governor.max_snapshot_age_ns, 5_000_000_000);
+    assert_eq!(governor.rolling_window_ns, 300_000_000_000);
+    assert_eq!(governor.max_per_trade_loss.as_deref(), Some("2.50"));
+    assert_eq!(governor.max_daily_loss.as_deref(), Some("7.50"));
+    assert_eq!(governor.max_rolling_loss.as_deref(), Some("10.00"));
+    assert_eq!(governor.max_drawdown.as_deref(), Some("15.00"));
+}
+
+#[test]
+fn rejects_invalid_loss_governor_runtime_values() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "max_snapshot_age_ns = 5000000000",
+        "max_snapshot_age_ns = 0",
+    )
+    .replace("rolling_window_ns = 300000000000", "rolling_window_ns = 0")
+    .replace("max_daily_loss = \"7.50\"", "max_daily_loss = \"0\"");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("invalid loss-governor fixture should parse");
+    let messages = validate_root_only(&root);
+
+    for needle in [
+        "risk.loss_governor.max_snapshot_age_ns must be a positive integer",
+        "risk.loss_governor.rolling_window_ns must be a positive integer",
+        "risk.loss_governor.max_daily_loss must be a positive decimal string",
+    ] {
+        assert!(
+            messages.iter().any(|m| m.contains(needle)),
+            "expected `{needle}` in validation messages, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_enabled_loss_governor_missing_any_required_threshold() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for (field, line) in [
+        ("max_per_trade_loss", "max_per_trade_loss = \"2.50\"\n"),
+        ("max_daily_loss", "max_daily_loss = \"7.50\"\n"),
+        ("max_rolling_loss", "max_rolling_loss = \"10.00\"\n"),
+        ("max_drawdown", "max_drawdown = \"15.00\"\n"),
+    ] {
+        let mutated = replace_in_fixture_root(line, "");
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("missing threshold fixture should parse");
+        let messages = validate_root_only(&root);
+        let expected = format!("risk.loss_governor.{field} must be configured when enabled");
+
+        assert!(
+            messages.iter().any(|message| message.contains(&expected)),
+            "expected `{expected}` validation message, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
 fn rejects_nt_risk_values_unsupported_by_rust_live_runtime() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

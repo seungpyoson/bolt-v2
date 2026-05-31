@@ -79,6 +79,16 @@ manage_own_order_books = false
 [risk]
 default_max_notional_per_order = "10.00"
 
+[risk.loss_governor]
+enabled = true
+account_id = "POLYMARKET-001"
+max_snapshot_age_ns = 5000000000
+rolling_window_ns = 300000000000
+max_per_trade_loss = "2.50"
+max_daily_loss = "7.50"
+max_rolling_loss = "10.00"
+max_drawdown = "15.00"
+
 [risk.nautilus]
 bypass = false
 max_order_submit_rate = "100/00:00:01"

@@ -11,7 +11,8 @@ use bolt_v2::{
         BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
         BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
         BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
-        decision_evidence_path, read_latest_entry_decision_evidence_chain,
+        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
+        read_latest_entry_decision_evidence_chain,
     },
     strategies::registry::FeeProvider,
     strategies::registry::StrategyBuildContext,
@@ -274,6 +275,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         notional: "0.50".to_string(),
         intent_kind: BoltV3SubmitIntentKind::Entry,
         outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+        loss_halt_reasons: Vec::new(),
     };
     [
         serde_json::json!({
@@ -345,6 +347,54 @@ fn decision_evidence_path_stays_under_configured_catalog_directory() {
     assert_eq!(
         path.strip_prefix(temp.path()).unwrap(),
         std::path::Path::new("bolt-v3/decision-evidence/order-intents.jsonl")
+    );
+}
+
+#[test]
+fn jsonl_admission_writer_records_loss_governor_halt_reasons_on_v6_schema() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-loss-governor-admission-evidence");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+
+    let writer =
+        JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(&loaded).expect("writer opens");
+    let decision = BoltV3AdmissionDecisionEvidence {
+        strategy_id: "strategy-one".to_string(),
+        client_order_id: "client-order-one".to_string(),
+        instrument_id: "instrument-one".to_string(),
+        notional: "1.0".to_string(),
+        intent_kind: BoltV3SubmitIntentKind::Entry,
+        outcome: BoltV3AdmissionOutcome::RejectedLossGovernorHalted,
+        loss_halt_reasons: vec![
+            "daily_loss_limit".to_string(),
+            "rolling_loss_limit".to_string(),
+        ],
+    };
+
+    writer
+        .record_admission_decision(&decision)
+        .expect("loss governor decision should write");
+
+    let evidence_path = decision_evidence_path(&loaded).expect("evidence path should resolve");
+    let body = std::fs::read_to_string(evidence_path).expect("decision evidence should read");
+    let line = body
+        .lines()
+        .next()
+        .expect("one decision line should be written");
+    let decoded: serde_json::Value =
+        serde_json::from_str(line).expect("decision evidence line should parse");
+
+    assert_eq!(decoded["schema_version"], 6);
+    assert_eq!(decoded["gate_id"], BOLT_V3_SUBMIT_ADMISSION_GATE_ID);
+    assert_eq!(decoded["kind"], "admission_decision");
+    assert_eq!(
+        decoded["decision"]["outcome"],
+        "rejected_loss_governor_halted"
+    );
+    assert_eq!(
+        decoded["decision"]["loss_halt_reasons"],
+        serde_json::json!(["daily_loss_limit", "rolling_loss_limit"])
     );
 }
 

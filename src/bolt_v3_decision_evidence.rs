@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_config::LoadedBoltV3Config;
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 5;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 6;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
@@ -193,6 +193,7 @@ pub enum BoltV3AdmissionOutcome {
     RejectedNonPositiveNotional,
     RejectedNotionalCapExceeded,
     RejectedCountCapExhausted,
+    RejectedLossGovernorHalted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +204,7 @@ pub struct BoltV3AdmissionDecisionEvidence {
     pub notional: String,
     pub intent_kind: BoltV3SubmitIntentKind,
     pub outcome: BoltV3AdmissionOutcome,
+    pub loss_halt_reasons: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -915,6 +917,7 @@ mod tests {
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+            BoltV3AdmissionOutcome::RejectedLossGovernorHalted,
         ] {
             let decision = BoltV3AdmissionDecisionEvidence {
                 strategy_id: "strategy-one".to_string(),
@@ -923,6 +926,7 @@ mod tests {
                 notional: "1.0".to_string(),
                 intent_kind: BoltV3SubmitIntentKind::Entry,
                 outcome: outcome.clone(),
+                loss_halt_reasons: Vec::new(),
             };
 
             let line = encode_admission_decision_line(&decision).expect("decision should encode");
@@ -963,6 +967,9 @@ mod tests {
                     "rejected_notional_cap_exceeded"
                 }
                 BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",
+                BoltV3AdmissionOutcome::RejectedLossGovernorHalted => {
+                    "rejected_loss_governor_halted"
+                }
             };
             assert_eq!(decision_field["outcome"], expected_outcome);
         }

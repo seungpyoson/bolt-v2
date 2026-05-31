@@ -70,6 +70,12 @@ FORBIDDEN_RULES: tuple[Rule, ...] = (
             re.MULTILINE,
         ),
     ),
+    Rule(
+        "strategy-owned loss-governor coupling",
+        re.compile(
+            r"\bbolt_v3_loss_governor\b"
+        ),
+    ),
 )
 
 

@@ -5,7 +5,7 @@
 
 ## Summary
 
-Build a Bolt-owned loss governor that consumes NT-derived loss/equity facts and evaluates admission against configured per-trade, daily, rolling-window, max-drawdown, and freshness policy. PR #507 implements the pure evaluator, positional-sizing core, and configured shared submit-admission loss gate; live NT runtime-feed derivation remains follow-up work.
+Build a Bolt-owned loss governor that consumes NT-derived loss/equity facts and evaluates admission against configured per-trade, daily, rolling-window, max-drawdown, and freshness policy. PR #507 implements the pure evaluator, positional-sizing core, configured shared submit-admission loss gate, and configured NT portfolio/position runtime feed.
 
 ## Technical Context
 
@@ -16,8 +16,8 @@ Build a Bolt-owned loss governor that consumes NT-derived loss/equity facts and 
 **Target Platform**: bolt-v3 pure Rust LiveNode path
 **Project Type**: Rust trading runtime and shared policy module
 **Performance Goals**: Bounded admission evaluation and bounded in-process rolling-window sample retention; no polling, adapter simulation, or venue calls
-**Constraints**: No hardcoded runtime thresholds, no alternate account truth, no cancel/flatten side effects, and no runtime-feed or NT trading-state claim from the submit-admission gate
-**Scale/Scope**: Shared policy module, TOML config binding, capital reservation, NT-derived sizing-state validation, configured submit-admission enforcement, and focused tests; later slices must add live NT event feed, positional-sizer live-path enforcement, and NT-routed halt actions
+**Constraints**: No hardcoded runtime thresholds, no alternate account truth, no cancel/flatten side effects, and no NT trading-state claim from the submit-admission gate
+**Scale/Scope**: Shared policy module, TOML config binding, capital reservation, NT-derived sizing-state validation, configured submit-admission enforcement, NT portfolio/position runtime feed, and focused tests; later slices must add positional-sizer live-path enforcement and NT-routed halt actions
 
 ## Constitution Check
 
@@ -56,10 +56,11 @@ src/
 ├── bolt_v3_capital_reservation.rs
 ├── bolt_v3_sizing_state.rs
 ├── bolt_v3_position_sizer.rs
+├── bolt_v3_loss_runtime_feed.rs
 └── lib.rs
 ```
 
-**Structure Decision**: Keep strategy code unchanged. Put policy math, reservation, sizing-state validation, and product liability calculation in shared pure modules. Submit-admission wiring, live snapshots from NT portfolio/position events, and NT runtime-capture topic integration remain later work.
+**Structure Decision**: Keep strategy code unchanged. Put policy math, reservation, sizing-state validation, product liability calculation, and NT portfolio/position feed derivation in shared modules. Positional-sizer live-path enforcement and NT-routed halt actions remain later work.
 
 ## Phase 0: Research
 
@@ -89,7 +90,7 @@ Design outputs:
 - Consume NT-derived snapshots only; do not build independent PnL/account truth.
 - Do not add runtime threshold defaults.
 - Do not touch `src/strategies/binary_oracle_edge_taker.rs`.
-- Do not claim runtime NT feed derivation, positional-sizer live-path enforcement, cancel/flatten, or NT risk-engine state changes from the current submit-admission slice.
+- Do not claim positional-sizer live-path enforcement, cancel/flatten, or NT risk-engine state changes from the current submit-admission/runtime-feed slice.
 
 ## Complexity Tracking
 

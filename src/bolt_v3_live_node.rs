@@ -43,7 +43,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     rc::Rc,
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -95,6 +95,10 @@ use crate::{
         current_build_head_sha,
     },
     bolt_v3_loss_governor::LossGovernorPolicy,
+    bolt_v3_loss_runtime_feed::{
+        LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
+        LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
+    },
     bolt_v3_providers,
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
@@ -120,6 +124,8 @@ pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     registration_summary: BoltV3RegistrationSummary,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    loss_runtime_feed: Option<Arc<Mutex<LossGovernorRuntimeFeed>>>,
+    loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -1597,12 +1603,16 @@ impl BoltV3LiveNodeRuntime {
         node: LiveNode,
         registration_summary: BoltV3RegistrationSummary,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
+        loss_runtime_feed: Option<Arc<Mutex<LossGovernorRuntimeFeed>>>,
+        loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
         redaction_values: Vec<Zeroizing<String>>,
     ) -> Self {
         Self {
             node,
             registration_summary,
             submit_admission,
+            loss_runtime_feed,
+            loss_runtime_feed_subscription,
             redaction_values,
         }
     }
@@ -1663,6 +1673,10 @@ impl BoltV3LiveNodeRuntime {
     pub fn loss_governor_configured(&self) -> bool {
         self.submit_admission.loss_governor_configured()
     }
+
+    pub fn loss_governor_runtime_feed_configured(&self) -> bool {
+        self.loss_runtime_feed.is_some() && self.loss_runtime_feed_subscription.is_some()
+    }
 }
 
 impl std::fmt::Debug for BoltV3LiveNodeRuntime {
@@ -1670,6 +1684,7 @@ impl std::fmt::Debug for BoltV3LiveNodeRuntime {
         f.debug_struct("BoltV3LiveNodeRuntime")
             .field("node", &"[redacted]")
             .field("submit_admission", &self.submit_admission)
+            .field("loss_runtime_feed", &self.loss_runtime_feed.is_some())
             .field("redaction_values", &"[redacted]")
             .finish()
     }
@@ -3264,6 +3279,18 @@ fn build_live_node_with_clients(
         ),
         None => BoltV3SubmitAdmissionState::new_unarmed(decision_evidence.clone()),
     });
+    let (loss_runtime_feed, loss_runtime_feed_subscription) =
+        match loss_governor_runtime_feed_config_from_loaded(loaded) {
+            Some(config) => {
+                let feed = Arc::new(Mutex::new(LossGovernorRuntimeFeed::new(
+                    config,
+                    submit_admission.clone(),
+                )));
+                let subscription = subscribe_loss_governor_runtime_feed(feed.clone());
+                (Some(feed), Some(subscription))
+            }
+            None => (None, None),
+        };
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
@@ -3311,10 +3338,22 @@ fn build_live_node_with_clients(
             node,
             summary.clone(),
             submit_admission,
+            loss_runtime_feed,
+            loss_runtime_feed_subscription,
             resolved.redaction_values(),
         ),
         summary,
     ))
+}
+
+fn loss_governor_runtime_feed_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Option<LossGovernorRuntimeFeedConfig> {
+    let block = loaded.root.risk.loss_governor.as_ref()?;
+    block.enabled.then_some(LossGovernorRuntimeFeedConfig {
+        account_id: block.account_id,
+        rolling_window_ns: block.rolling_window_ns,
+    })
 }
 
 fn loss_governor_policy_from_loaded(

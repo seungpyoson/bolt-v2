@@ -800,6 +800,22 @@ fn live_node_build_carries_configured_loss_governor_into_submit_admission() {
 }
 
 #[test]
+fn live_node_build_carries_configured_loss_governor_runtime_feed_subscription() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-submit-admission-loss-feed-build");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+        .expect("fixture v3 LiveNode should build");
+
+    assert!(
+        runtime.loss_governor_runtime_feed_configured(),
+        "live build must subscribe the configured loss governor to NT portfolio and position events"
+    );
+}
+
+#[test]
 fn strategy_build_context_carries_shared_submit_admission_handle() {
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),

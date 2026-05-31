@@ -5,7 +5,7 @@
 **Status**: Draft
 **Input**: Prompt `/Users/spson/Downloads/prompts/bolt-v2-circuit-breaker-goal.md`; GitHub issue #505.
 
-**PR #507 Scope Note**: This branch implements the pure loss-governor and positional-sizing core, plus the configured loss-governor gate in shared submit admission. It wires `[risk.loss_governor]` into `bolt_v3_live_node`, rejects entry/replace risk before NT submit on missing/stale/breached loss facts, leaves risk-reducing exits eligible under existing caps, and records schema-v6 halt evidence. It still does not wire the positional sizer into live submit admission, derive loss snapshots from live NT runtime feeds, cancel/flatten orders, or call NT `RiskEngine::set_trading_state`.
+**PR #507 Scope Note**: This branch implements the pure loss-governor and positional-sizing core, plus the configured loss-governor gate in shared submit admission. It wires `[risk.loss_governor]` into `bolt_v3_live_node`, subscribes a configured NT portfolio/position runtime feed that publishes loss snapshots to submit admission, rejects entry/replace risk before NT submit on missing/stale/breached loss facts, leaves risk-reducing exits eligible under existing caps, and records schema-v6 halt evidence. It still does not wire the positional sizer into live submit admission, cancel/flatten orders, or call NT `RiskEngine::set_trading_state`.
 
 ## User Scenarios & Testing
 
@@ -89,7 +89,7 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - **LossSnapshot**: Fresh NT-derived PnL/equity facts plus source attribution and timestamp.
 - **LossAdmissionDecision**: Accept/reject decision with deterministic halt evidence.
 - **LossHaltReason**: Public reason enum for per-trade, daily, rolling, max-drawdown, and stale snapshot failures.
-- **LossGovernorRuntimeFeed**: Planned live in-process feed that will derive governor snapshots from NT `PortfolioSnapshot` and `PositionEvent` messages for the configured account in a later runtime-feed slice.
+- **LossGovernorRuntimeFeed**: Live in-process feed that derives governor snapshots from NT `PortfolioSnapshot` and `PositionEvent` messages for the configured account.
 
 ## Success Criteria
 
@@ -107,4 +107,4 @@ As the operator, I need configured loss-governor policy to reach the live submit
 
 - Current pinned NautilusTrader revision is `6e059dcbb59ac1e582132fc431a581936c216c3c`.
 - Issue #505 is the tracking issue for this slice.
-- This PR wires configured submit-admission loss protection, but not the live NT runtime feed that will refresh snapshots. Positional-sizer live enforcement, cancel/flatten behavior, and explicit NT `RiskEngine::set_trading_state` side effects remain later work.
+- This PR wires configured submit-admission loss protection and the live NT runtime feed that refreshes snapshots. Positional-sizer live enforcement, cancel/flatten behavior, and explicit NT `RiskEngine::set_trading_state` side effects remain later work.

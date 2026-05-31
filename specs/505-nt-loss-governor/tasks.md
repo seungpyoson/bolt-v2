@@ -74,19 +74,19 @@
 
 **Independent Test**: Submit-admission/live-node tests prove missing/breached loss snapshots reject new risk before NT submit, fresh below-limit snapshots admit, risk-reducing exits remain possible under existing caps, and live builds carry policy into submit admission.
 
-**PR #507 status**: Partially implemented in this branch. PR #507 includes configured submit-admission loss protection and live-node policy wiring, but still does not include the live NT portfolio/position runtime feed or positional-sizer live-path enforcement.
+**PR #507 status**: Partially implemented in this branch. PR #507 includes configured submit-admission loss protection, live-node policy wiring, and a configured NT portfolio/position runtime feed that publishes loss snapshots from subscribed NT events. It still does not include positional-sizer live-path enforcement, cancel/flatten behavior, or NT `RiskEngine::set_trading_state` side effects.
 
 - [X] T023 [US3] Add failing submit-admission test for configured loss governor rejecting new risk without a fresh snapshot
 - [X] T024 [US3] Implement `BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor`, `update_loss_snapshot`, deterministic loss halt evidence, and `admit_at`
 - [X] T025 [US3] Add failing submit-admission test proving breached loss facts halt entries but allow risk-reducing exits within count cap
 - [X] T026 [US3] Add `[risk.loss_governor]` TOML schema, config validation, fixture/example values, and parsing tests
 - [X] T027 [US3] Wire configured policy into `build_live_node_with_clients` and assert live builds enable the shared submit-admission loss governor
-- [ ] T028 [US3] Add NT portfolio/position runtime feed that updates submit admission snapshots from subscribed NT events
-- [ ] T029 [US3] Add runtime-feed unit test for daily, rolling, per-trade, and drawdown facts derived from NT event types
+- [X] T028 [US3] Add NT portfolio/position runtime feed that updates submit admission snapshots from subscribed NT events
+- [X] T029 [US3] Add runtime-feed unit test for daily, rolling, per-trade, and drawdown facts derived from NT event types
 - [X] T030 [US3] Update `specs/505-nt-loss-governor/research.md` with implementation evidence and live-protection boundary
 - [X] T031 [US3] Require every enabled loss-governor threshold in config validation
 - [X] T032 [US3] Bump decision-evidence schema to v6 for loss-governor halt evidence
-- [ ] T033 [US3] Keep mixed NT feed snapshots fresh only to the oldest contributing fact timestamp
+- [X] T033 [US3] Keep mixed NT feed snapshots fresh only to the oldest contributing fact timestamp
 
 ---
 
@@ -102,6 +102,11 @@
 - [X] T039 Run `git diff --check`
 - [X] T040 Run `just source-fence`
 - [X] T041 Review changed files for scope drift and overclaim language
+- [X] T042 Re-run `cargo test --locked --test bolt_v3_loss_runtime_feed`
+- [X] T043 Re-run `cargo test --locked --test bolt_v3_submit_admission`
+- [X] T044 Re-run `cargo fmt --check`, `git diff --check`, and `just source-fence`
+- [X] T045 Run `cargo clippy --locked --lib -- -D warnings`
+- [X] T046 Run `cargo test --locked --lib`
 
 ## Dependencies & Execution Order
 

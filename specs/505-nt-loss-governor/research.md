@@ -76,12 +76,13 @@
 - Pure evaluator and tests in `src/bolt_v3_loss_governor.rs`, exported from `src/lib.rs`.
 - `[risk.loss_governor]` TOML schema and validation.
 - Configure policy wiring into shared submit admission during live-node build.
+- Configured NT portfolio/position runtime feed wiring into live-node build.
+- Loss snapshots derived from subscribed NT `PortfolioSnapshot` and `PositionEvent` messages for the configured account.
 - Reject entry/replace new risk in submit admission on missing, stale, or breached loss facts.
 - Emit decision evidence outcome `rejected_loss_governor_halted` plus `loss_halt_reasons`.
 
 **Planned follow-up**:
 
-- Feed NT `PortfolioSnapshot` plus `PositionEvent` facts into submit admission loss snapshots.
 - Wire positional-sizer decisions into the live submit path.
 
 **Out of scope**:
@@ -94,18 +95,19 @@
 
 ## PR #507 Implementation Evidence
 
-**Decision**: Implemented the pure loss-governor and positional-sizing core, plus configured submit-admission loss protection. Runtime NT feed derivation, positional-sizer live-path enforcement, cancel/flatten, and NT trading-state side effects remain out of scope.
+**Decision**: Implemented the pure loss-governor and positional-sizing core, plus configured submit-admission loss protection and configured NT portfolio/position runtime-feed derivation. Positional-sizer live-path enforcement, cancel/flatten, and NT trading-state side effects remain out of scope.
 
 **Evidence**:
 
 - `src/bolt_v3_loss_governor.rs`: adds config-derived `LossGovernorPolicy`, NT-derived `LossSnapshot`, `LossAdmissionDecision`, `LossHaltReason`, and `evaluate_loss_admission`.
-- `src/lib.rs`: exports `bolt_v3_loss_governor`.
+- `src/lib.rs`: exports `bolt_v3_loss_governor` and `bolt_v3_loss_runtime_feed`.
 - `src/bolt_v3_config.rs`, `src/bolt_v3_validate.rs`, `tests/config_parsing.rs`: add and validate `[risk.loss_governor]` fields, including configured account id, freshness, rolling window, and thresholds.
 - `src/bolt_v3_capital_reservation.rs`: adds the reservation ledger used by the sizer core.
 - `src/bolt_v3_sizing_state.rs`: validates NT-derived portfolio, order-lifecycle, product, reservation, and optional loss evidence.
 - `src/bolt_v3_position_sizer.rs`: composes policy, worst-case binary liability, loss evaluation, state freshness, and capital reservation into a pure admission decision.
 - `src/bolt_v3_submit_admission.rs`: carries optional configured loss-governor policy in shared submit admission, accepts explicit loss snapshots, rejects entry/replace risk before NT submit on missing/stale/breached facts, and leaves risk-reducing exits under existing lifecycle/count caps.
-- `src/bolt_v3_live_node.rs`: maps enabled `[risk.loss_governor]` TOML into the shared submit-admission state during live-node build.
+- `src/bolt_v3_loss_runtime_feed.rs`: subscribes to NT portfolio and position event topics, filters to the configured account, derives daily/session PnL, rolling PnL, per-trade PnL, current equity, and peak equity, and publishes a conservative `LossSnapshot` to submit admission.
+- `src/bolt_v3_live_node.rs`: maps enabled `[risk.loss_governor]` TOML into the shared submit-admission state and configured NT runtime feed during live-node build.
 - `src/bolt_v3_decision_evidence.rs`: bumps decision evidence to schema v6 and records `rejected_loss_governor_halted` plus deterministic `loss_halt_reasons`.
 - `config/root.example.toml`, `tests/fixtures/bolt_v3/root.toml`: add configured loss-governor and capital-pool policy values.
 - TDD red/green evidence:
@@ -121,5 +123,9 @@
   - `configured_loss_governor_admit_uses_runtime_clock_after_fresh_snapshot_update`: failed while the live-facing `admit()` path had no runtime clock, then passed after `admit()` evaluated snapshots against system time.
   - `breached_loss_governor_halts_entries_but_allows_risk_reducing_exit_within_count_cap`: proves deterministic multi-breach halt evidence while preserving risk-reducing exits.
   - `live_node_build_carries_configured_loss_governor_into_submit_admission`: proves live-node build carries enabled TOML policy into the shared submit-admission state.
+  - `nt_runtime_feed_publishes_oldest_observed_loss_snapshot_to_submit_admission`: failed before the runtime-feed API existed, then passed after NT portfolio and position facts published a complete submit-admission loss snapshot.
+  - `subscribed_nt_events_update_submit_admission_loss_snapshot`: failed before the subscription API existed, then passed after NT msgbus subscriptions fed the loss snapshot into submit admission.
+  - `rolling_window_and_drawdown_facts_use_oldest_contributing_nt_timestamp`: proves rolling-window eviction and drawdown facts preserve the oldest contributing NT event timestamp.
+  - `live_node_build_carries_configured_loss_governor_runtime_feed_subscription`: failed before live runtime owned the feed, then passed after enabled TOML created a subscribed runtime feed.
 
-**Live protection boundary**: This PR proves submit-admission loss protection only for configured policy plus explicit/missing snapshots. Enabled live builds now carry the policy and fail closed until snapshots are updated, but this PR does not subscribe to NT runtime feeds or derive `LossSnapshot` values from `PortfolioSnapshot`/`PositionEvent` messages. It does not call `RiskEngine::set_trading_state`, cancel orders, flatten positions, or wire the pure positional-sizer decision into the strategy submit path.
+**Live protection boundary**: This PR proves submit-admission loss protection for configured policy plus configured NT-derived runtime snapshots. Enabled live builds now carry the policy and subscribed runtime feed, and fail closed until enough configured-account NT facts are observed. It does not call `RiskEngine::set_trading_state`, cancel orders, flatten positions, or wire the pure positional-sizer decision into the strategy submit path.

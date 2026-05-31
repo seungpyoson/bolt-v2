@@ -7,7 +7,7 @@ Config-derived thresholds used by the evaluator. When enabled, live-node build c
 Fields:
 
 - `max_snapshot_age_ns`: maximum accepted age of NT-derived facts.
-- `[risk.loss_governor].rolling_window_ns`: config-owned rolling-window length planned for the live NT event feed.
+- `[risk.loss_governor].rolling_window_ns`: config-owned rolling-window length for the live NT event feed.
 - `max_per_trade_loss`: configured loss threshold for one trade.
 - `max_daily_loss`: configured session/day loss threshold.
 - `max_rolling_loss`: configured rolling-window loss threshold.
@@ -40,9 +40,9 @@ Validation:
 - Snapshot older than policy freshness fails closed.
 - Mixed NT event facts remain conservative: a fresh position event cannot refresh older portfolio PnL/equity facts, and a fresh portfolio snapshot cannot refresh older per-trade facts.
 
-## Planned LossGovernorRuntimeFeed
+## LossGovernorRuntimeFeed
 
-Future live in-process feed for the configured account. PR #507 does not implement this feed.
+Live in-process feed for the configured account.
 
 Inputs:
 

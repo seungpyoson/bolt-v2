@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Evaluate whether Bolt may admit new risk using only fresh NT-derived loss/equity facts and configured policy thresholds. PR #507 provides the pure evaluator, positional-sizing core, and configured enforcement at the shared submit-admission boundary. Live NT runtime-feed derivation remains follow-up work.
+Evaluate whether Bolt may admit new risk using only fresh NT-derived loss/equity facts and configured policy thresholds. PR #507 provides the pure evaluator, positional-sizing core, configured enforcement at the shared submit-admission boundary, and a configured NT portfolio/position runtime feed that publishes loss snapshots to submit admission.
 
 ## Public Behavior
 
@@ -40,9 +40,9 @@ When `[risk.loss_governor].enabled = true`:
 - risk-reducing exits bypass loss-threshold halt policy but still obey existing lifecycle and live-order count caps
 - decision evidence records `rejected_loss_governor_halted` and the deterministic `loss_halt_reasons`
 
-## Planned Live Feed Behavior
+## Live Feed Behavior
 
-A later live integration slice must subscribe to NT portfolio snapshot and position event topics for the configured account. The feed must derive:
+The live integration subscribes to NT portfolio snapshot and position event topics for the configured account. The feed derives:
 
 - per-trade PnL from NT position events
 - daily/session PnL from NT realized plus unrealized PnL in `PortfolioSnapshot`
@@ -58,7 +58,7 @@ When a published `LossSnapshot` combines facts observed at different NT event ti
 - No direct `RiskEngine::set_trading_state` side effect in this slice.
 - No independent PnL/account truth.
 - No venue-specific code.
-- No live NT runtime-feed derivation in PR #507.
+- No positional-sizer live-path enforcement in PR #507.
 
 ## Scope Guards
 

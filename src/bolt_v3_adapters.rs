@@ -520,17 +520,17 @@ mod tests {
 
     fn fixture_polymarket_secrets() -> ResolvedBoltV3PolymarketSecrets {
         ResolvedBoltV3PolymarketSecrets {
-            private_key: "fixture-poly-private-key".to_string(),
-            api_key: "fixture-poly-api-key".to_string(),
-            api_secret: "fixture-poly-api-secret".to_string(),
-            passphrase: "fixture-poly-passphrase".to_string(),
+            private_key: zeroize::Zeroizing::new("fixture-poly-private-key".to_string()),
+            api_key: zeroize::Zeroizing::new("fixture-poly-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new("fixture-poly-api-secret".to_string()),
+            passphrase: zeroize::Zeroizing::new("fixture-poly-passphrase".to_string()),
         }
     }
 
     fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
         ResolvedBoltV3BinanceSecrets {
-            api_key: "fixture-binance-api-key".to_string(),
-            api_secret: "fixture-binance-api-secret".to_string(),
+            api_key: zeroize::Zeroizing::new("fixture-binance-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new("fixture-binance-api-secret".to_string()),
         }
     }
 

@@ -1,62 +1,13 @@
-//! Configured target fields used to build NT `InstrumentFilter`s.
+//! Shared market-family target error surface.
 //!
-//! This module carries the TOML fields needed by provider bindings to
-//! set NT adapter instrument filters. The facts are derived once from
-//! validated strategy config and then passed through provider bindings
-//! without reparsing the TOML tree.
+//! This module owns the family-agnostic `InstrumentFilterError` enum and
+//! its operator-facing prefix formatter. Both are consumed by the market-
+//! family bindings under `crate::bolt_v3_market_families` so target
+//! deserialization, cadence, and dispatch failures render one consistent
+//! operator message regardless of family.
 //!
 //! Source-level guard tests keep provider-specific filter construction
 //! under `crate::bolt_v3_providers`.
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstrumentFilterConfig {
-    targets: Vec<InstrumentFilterTarget>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InstrumentFilterTarget {
-    pub strategy_instance_id: String,
-    pub family_key: &'static str,
-    pub configured_target_id: String,
-    pub execution_client_id: String,
-    pub underlying_asset: String,
-    pub cadence_seconds: i64,
-    pub cadence_slug_token: String,
-}
-
-pub struct InstrumentFilterTargetRef<'a> {
-    pub strategy_instance_id: &'a str,
-    pub family_key: &'static str,
-    pub configured_target_id: &'a str,
-    pub execution_client_id: &'a str,
-    pub underlying_asset: &'a str,
-    pub cadence_seconds: i64,
-    pub cadence_slug_token: &'a str,
-}
-
-impl InstrumentFilterConfig {
-    pub fn new(targets: Vec<InstrumentFilterTarget>) -> Self {
-        Self { targets }
-    }
-
-    pub fn empty() -> Self {
-        Self {
-            targets: Vec::new(),
-        }
-    }
-
-    pub fn target_refs(&self) -> impl Iterator<Item = InstrumentFilterTargetRef<'_>> {
-        self.targets.iter().map(|target| InstrumentFilterTargetRef {
-            strategy_instance_id: target.strategy_instance_id.as_str(),
-            family_key: target.family_key,
-            configured_target_id: target.configured_target_id.as_str(),
-            execution_client_id: target.execution_client_id.as_str(),
-            underlying_asset: target.underlying_asset.as_str(),
-            cadence_seconds: target.cadence_seconds,
-            cadence_slug_token: target.cadence_slug_token.as_str(),
-        })
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstrumentFilterError {

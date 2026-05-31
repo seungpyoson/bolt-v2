@@ -154,6 +154,23 @@ impl BoltV3SubmitAdmissionState {
             .expect("submit admission state mutex should not be poisoned")
             .admitted_order_count
     }
+
+    /// Gate-approved maximum reference-quote age (seconds) carried by the armed
+    /// gate report, or `None` when the state is not yet armed. This is the single
+    /// authoritative freshness bound for the armed live path (A5): the submit /
+    /// forced-flat stale check plumbs this value in so the gate-validated
+    /// freshness policy — not an independent strategy-config value — governs
+    /// whether a reference quote is fresh enough to keep trading. `None` (unarmed)
+    /// is irrelevant to live money because admission rejects every order until the
+    /// state is armed.
+    pub fn reference_quote_max_age_seconds(&self) -> Option<u64> {
+        self.inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .gate_report
+            .as_ref()
+            .map(BoltV3LiveCanaryGateReport::reference_quote_max_age_seconds)
+    }
 }
 
 #[derive(Debug)]
@@ -316,14 +333,29 @@ pub fn admission_base_notional_from_order(
             order_quantity,
         ));
     }
+    // Fail CLOSED on an inverse quote-quantity order at the SHARED admission
+    // helper (A6). An inverse instrument denominates the quote quantity in the
+    // QUOTE currency, not the settlement currency, so neither
+    // `calculate_notional_value` here nor the submitted-quote-quantity floor in
+    // [`conservative_quote_quantity_admission_notional`] yields a settlement-
+    // currency notional the per-order cap can be checked against — both would
+    // UNDERSTATE the real cash debit. This is the single, structural rejection
+    // point: returning `None` makes every caller (production strategy, canary
+    // proof executor) treat an inverse quote-quantity order as unvaluable and
+    // refuse it, rather than relying on a per-caller fallback to notice the
+    // inverse case. This system trades only non-inverse binary options; carrying
+    // currency-aware settlement notional would be the alternative, but the
+    // fail-closed reject is the conservative default until such an instrument is
+    // intentionally supported. Reachable only if an inverse instrument enters the
+    // universe (the market-family filters gate it out today), but the defense
+    // lives here so the cap can never be silently understated.
+    if instrument.is_inverse() {
+        return None;
+    }
     let last_px = last_price?;
     let effective_price =
         quote_quantity_effective_price(order, instrument, last_px, quote_reference_price);
-    let effective_quantity = if order.is_quote_quantity() && !instrument.is_inverse() {
-        instrument.calculate_base_quantity(order.quantity(), effective_price)
-    } else {
-        order.quantity()
-    };
+    let effective_quantity = instrument.calculate_base_quantity(order.quantity(), effective_price);
     let calculated_notional = instrument
         .calculate_notional_value(effective_quantity, last_px, Some(true))
         .as_decimal();

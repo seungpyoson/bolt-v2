@@ -37,6 +37,26 @@ pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
 pub const NO_REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[];
 pub const NO_SECRET_FIELD_NAMES: &[&str] = &[];
 
+/// Compile-time anchor for the data-only `*_CREDENTIAL_LOG_MODULES` constants
+/// below. Unlike the trading providers (polymarket/binance), these data-only
+/// adapters expose no credential type that bolt code otherwise imports, so the
+/// module-path strings would have no compile-time anchor and could silently
+/// drift if an NT rev bump relocated the module. Taking each public credential
+/// type at the exact path encoded in the matching constant makes the build fail
+/// before the constant can go stale; the NT rev itself is pinned in
+/// `Cargo.toml`, the single source of truth for the rev. The function is never
+/// called — it exists only so the type paths are checked by the compiler.
+#[allow(dead_code)]
+fn _credential_log_module_paths_exist(
+    _bitmex: &nautilus_bitmex::common::credential::Credential,
+    _bybit: &nautilus_bybit::common::credential::Credential,
+    _coinbase: &nautilus_coinbase::common::credential::CoinbaseCredential,
+    _deribit: &nautilus_deribit::common::credential::Credential,
+    _kraken: &nautilus_kraken::common::credential::KrakenCredential,
+    _okx: &nautilus_okx::common::credential::Credential,
+) {
+}
+
 pub const BITMEX_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_bitmex::common::credential"];
 pub const BYBIT_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_bybit::common::credential"];
 pub const COINBASE_CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_coinbase::common::credential"];
@@ -192,12 +212,35 @@ const KRAKEN_DATA_FIELDS: &[&str] = &[
     "max_requests_per_second",
     "transport_backend",
 ];
+/// Optional NT-side config invariant validator for a data-only provider.
+///
+/// Some pinned NT data-client configs expose a `validate()` method that
+/// enforces venue-specific invariants the bolt-v3 field/credential checks do
+/// not (e.g. Kraken's Spot/demo-environment rule). Threading it through the
+/// shared [`validate_data_only_client`] path keeps the `.validate()` call a
+/// uniform capability of the data-provider binding — a single dispatch path —
+/// instead of a per-venue special case. Providers whose NT config exposes no
+/// `validate()` method pass [`None`].
+type NtDataConfigValidator<T> = fn(&T) -> anyhow::Result<()>;
+
 pub fn validate_bitmex_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<BitmexDataClientConfig>(BITMEX_KEY, key, client, BITMEX_DATA_FIELDS)
+    validate_data_only_client::<BitmexDataClientConfig>(
+        BITMEX_KEY,
+        key,
+        client,
+        BITMEX_DATA_FIELDS,
+        None,
+    )
 }
 
 pub fn validate_bybit_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<BybitDataClientConfig>(BYBIT_KEY, key, client, BYBIT_DATA_FIELDS)
+    validate_data_only_client::<BybitDataClientConfig>(
+        BYBIT_KEY,
+        key,
+        client,
+        BYBIT_DATA_FIELDS,
+        None,
+    )
 }
 
 pub fn validate_coinbase_client(key: &str, client: &ClientBlock) -> Vec<String> {
@@ -206,6 +249,7 @@ pub fn validate_coinbase_client(key: &str, client: &ClientBlock) -> Vec<String> 
         key,
         client,
         COINBASE_DATA_FIELDS,
+        None,
     )
 }
 
@@ -215,27 +259,22 @@ pub fn validate_deribit_client(key: &str, client: &ClientBlock) -> Vec<String> {
         key,
         client,
         DERIBIT_DATA_FIELDS,
+        None,
     )
 }
 
 pub fn validate_okx_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    validate_data_only_client::<OKXDataClientConfig>(OKX_KEY, key, client, OKX_DATA_FIELDS)
+    validate_data_only_client::<OKXDataClientConfig>(OKX_KEY, key, client, OKX_DATA_FIELDS, None)
 }
 
 pub fn validate_kraken_client(key: &str, client: &ClientBlock) -> Vec<String> {
-    let mut errors = validate_data_only_client::<KrakenDataClientConfig>(
+    validate_data_only_client::<KrakenDataClientConfig>(
         KRAKEN_KEY,
         key,
         client,
         KRAKEN_DATA_FIELDS,
-    );
-    if let Some(data) = &client.data
-        && let Ok(parsed) = data.clone().try_into::<KrakenDataClientConfig>()
-        && let Err(error) = parsed.validate()
-    {
-        errors.push(format!("clients.{key}.data: {error}"));
-    }
-    errors
+        Some(KrakenDataClientConfig::validate),
+    )
 }
 
 fn validate_data_only_client<T>(
@@ -243,6 +282,7 @@ fn validate_data_only_client<T>(
     key: &str,
     client: &ClientBlock,
     allowed_fields: &[&str],
+    nt_validate: Option<NtDataConfigValidator<T>>,
 ) -> Vec<String>
 where
     T: DeserializeOwned,
@@ -276,7 +316,16 @@ where
         allowed_fields,
     ));
     match data.clone().try_into::<T>() {
-        Ok(_) => {}
+        Ok(parsed) => {
+            // Run the NT config's own invariant validator (where one exists)
+            // through the shared path so the `.validate()` call is uniform
+            // across every data provider rather than a per-venue add-on.
+            if let Some(nt_validate) = nt_validate
+                && let Err(error) = nt_validate(&parsed)
+            {
+                errors.push(format!("clients.{key}.data: {error}"));
+            }
+        }
         Err(message) => errors.push(format!("clients.{key}.data: {message}")),
     }
     errors

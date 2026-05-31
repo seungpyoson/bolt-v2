@@ -68,6 +68,21 @@ impl std::fmt::Display for ForbiddenEnvVarError {
 
 impl std::error::Error for ForbiddenEnvVarError {}
 
+/// Fails closed if any provider's forbidden credential environment variable is
+/// set, so NT can never silently fall back to env-var credentials behind the
+/// SSM-only bolt-v3 secret contract.
+///
+/// Soundness rests on a single-process, single-threaded *startup* invariant:
+/// bolt-v3 runs this check once at boot, before any NT client is constructed,
+/// and bolt-v3 itself never mutates the process environment. There is a
+/// theoretical time-of-check/time-of-use window — another thread or an
+/// out-of-process actor could `setenv` a forbidden variable between this check
+/// and NT client construction — but the bolt-v3 boot sequence does no
+/// concurrent environment mutation, so the window is not reachable in practice.
+/// Collapsing it entirely would require resolving credentials and constructing
+/// NT clients under a held environment lock, which NT's API does not expose; if
+/// bolt-v3 ever introduces concurrent boot work that touches `std::env`, this
+/// check must be re-derived against that new ordering.
 pub fn check_no_forbidden_credential_env_vars(
     config: &BoltV3RootConfig,
 ) -> Result<(), ForbiddenEnvVarError> {
@@ -461,16 +476,19 @@ transport_backend = "sockudo"
         let polymarket = resolved
             .get_as::<ResolvedBoltV3PolymarketSecrets>("polymarket_main")
             .expect("polymarket_main should resolve to Polymarket secrets");
-        assert_eq!(polymarket.private_key, SYNTHETIC_POLYMARKET_PRIVATE_KEY);
-        assert_eq!(polymarket.api_key, "poly-api-key");
-        assert_eq!(polymarket.api_secret, "YWJj");
-        assert_eq!(polymarket.passphrase, "poly-passphrase");
+        assert_eq!(
+            polymarket.private_key.as_str(),
+            SYNTHETIC_POLYMARKET_PRIVATE_KEY
+        );
+        assert_eq!(polymarket.api_key.as_str(), "poly-api-key");
+        assert_eq!(polymarket.api_secret.as_str(), "YWJj");
+        assert_eq!(polymarket.passphrase.as_str(), "poly-passphrase");
 
         let binance = resolved
             .get_as::<ResolvedBoltV3BinanceSecrets>("binance_reference")
             .expect("binance_reference should resolve to Binance secrets");
-        assert_eq!(binance.api_key, "binance-api-key");
-        assert_eq!(binance.api_secret, synthetic_binance_secret());
+        assert_eq!(binance.api_key.as_str(), "binance-api-key");
+        assert_eq!(binance.api_secret.as_str(), synthetic_binance_secret());
     }
 
     #[test]

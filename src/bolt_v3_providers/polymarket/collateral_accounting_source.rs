@@ -143,9 +143,9 @@ async fn materialize_clob_v2_collateral_accounting_source_from_configured_balanc
     })?;
     let polymarket_secrets = PolymarketSecrets::resolve(
         Some(secrets.private_key.as_str()),
-        Some(secrets.api_key.clone()),
-        Some(secrets.api_secret.clone()),
-        Some(secrets.passphrase.clone()),
+        Some(secrets.api_key.as_str().to_owned()),
+        Some(secrets.api_secret.as_str().to_owned()),
+        Some(secrets.passphrase.as_str().to_owned()),
         context.cfg.funder.clone(),
     )
     .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {

@@ -92,6 +92,57 @@ def discovered_binding_names(root: Path, directory: str) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
+# NautilusTrader framework/infra crates that are legitimately imported by
+# provider-neutral core code. Every other `nautilus-*` dependency is a concrete
+# venue/provider adapter crate that must never leak into the core assembly.
+# This allowlist is the single source of truth that distinguishes infra crates
+# from provider crates; it is intentionally narrow so a newly added venue crate
+# is denied by default (fail-closed) without editing this verifier.
+NT_INFRA_CRATE_STEMS: frozenset[str] = frozenset(
+    {
+        "common",
+        "core",
+        "data",
+        "execution",
+        "live",
+        "model",
+        "network",
+        "persistence",
+        "persistence_macros",
+        "portfolio",
+        "serialization",
+        "system",
+        "trading",
+    }
+)
+
+
+def discovered_nt_provider_crate_stems(root: Path) -> tuple[str, ...]:
+    """Return NT venue/provider crate stems that must not leak into core.
+
+    Authoritative source is the `nautilus-*` dependency set in `Cargo.toml`
+    (any declared adapter crate, registered with a Bolt binding or not), minus
+    the framework/infra allowlist. The registered binding names are unioned in
+    so fixture roots without a manifest still exercise the rule. Catching the
+    full Cargo dep set — not only the registered bindings — closes the gap where
+    an unregistered NT adapter crate import would otherwise be unguarded.
+    """
+
+    stems: set[str] = set()
+
+    manifest = root / "Cargo.toml"
+    if manifest.exists():
+        for match in re.finditer(
+            r"(?m)^\s*nautilus-([A-Za-z0-9-]+)\s*=", manifest.read_text(encoding="utf-8")
+        ):
+            stem = match.group(1).replace("-", "_")
+            if stem not in NT_INFRA_CRATE_STEMS:
+                stems.add(stem)
+
+    stems.update(discovered_binding_names(root, "bolt_v3_providers"))
+    return tuple(sorted(stems))
+
+
 def discovered_binding_key_names(path: Path) -> set[str]:
     text = path.read_text(encoding="utf-8")
     names: set[str] = set()
@@ -126,10 +177,26 @@ def rules_for_root(root: Path) -> list[Rule]:
     family_alt = alternation(family_names)
     family_type_alt = alternation(tuple(snake_to_pascal(name) for name in family_names))
 
+    # Denylist of NT venue/provider crate stems (Cargo deps minus infra),
+    # so unregistered adapter crates are caught alongside registered ones.
+    nt_provider_crate_alt = alternation(discovered_nt_provider_crate_stems(root))
+    # End the crate name on a non-identifier char so `nautilus_binance` does not
+    # also need to match a longer crate like `nautilus_binancex`.
+    crate_boundary = r"(?![A-Za-z0-9_])"
+    # Catch every import form of a concrete NT venue crate: a `nautilus_x::`
+    # path, a bare `use nautilus_x;`, an `as`-aliased `use nautilus_x as y;`,
+    # and `extern crate nautilus_x;`. The earlier regex only matched the `::`
+    # path form and silently missed bare/aliased/extern imports.
+    nt_provider_crate_pattern = re.compile(
+        rf"\bnautilus_(?:{nt_provider_crate_alt}){crate_boundary}::"
+        rf"|\b(?:pub\s+)?use\s+nautilus_(?:{nt_provider_crate_alt}){crate_boundary}"
+        rf"|\bextern\s+crate\s+nautilus_(?:{nt_provider_crate_alt}){crate_boundary}"
+    )
+
     return [
         *rules_for(
             core_files,
-            re.compile(rf"\bnautilus_(?:{provider_alt})::"),
+            nt_provider_crate_pattern,
             "concrete NT provider crate in core production code",
         ),
         *rules_for(

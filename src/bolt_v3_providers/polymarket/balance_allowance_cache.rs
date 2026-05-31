@@ -57,9 +57,9 @@ pub async fn sync_clob_v2_balance_allowance_cache_from_configured_account(
     })?;
     let polymarket_secrets = PolymarketSecrets::resolve(
         Some(secrets.private_key.as_str()),
-        Some(secrets.api_key.clone()),
-        Some(secrets.api_secret.clone()),
-        Some(secrets.passphrase.clone()),
+        Some(secrets.api_key.as_str().to_owned()),
+        Some(secrets.api_secret.as_str().to_owned()),
+        Some(secrets.passphrase.as_str().to_owned()),
         cfg.funder.clone(),
     )
     .map_err(|_| BoltV3OperatorArtifactError::PreRunClobV2SourceInvalid {

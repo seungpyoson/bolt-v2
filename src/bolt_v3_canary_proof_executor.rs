@@ -1,4 +1,4 @@
-use std::{num::NonZeroUsize, path::PathBuf, sync::Arc};
+use std::{num::NonZeroUsize, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
 use nautilus_common::actor::DataActor;
@@ -57,6 +57,11 @@ struct CanaryProofExecutorConfig {
     fee_provider: Arc<dyn FeeProvider>,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    // Maximum age, in nanoseconds, the submit-time top-of-book event may carry
+    // and still be admitted. Sourced from the SAME config-owned canary
+    // freshness bound (`live_canary.reference_quote_max_age_seconds`) the gate
+    // validates at startup — one freshness policy, no second source of truth.
+    submit_time_book_max_age_nanos: u128,
 }
 
 pub struct CanaryProofExecutor {
@@ -137,6 +142,19 @@ impl CanaryProofExecutor {
         else {
             return Ok(());
         };
+        // Bind the submit-time book to its event timestamp and reject if the
+        // top-of-book is stale relative to the gate-approved freshness bound.
+        // Fail CLOSED: a missing/zero event timestamp, a future timestamp
+        // (clock skew), or an age beyond the bound all suppress the submit —
+        // identical liveness-only suppression as the thin-book guard below.
+        let now_nanos = self.clock().timestamp_ns().as_u64();
+        if !submit_time_book_is_fresh(
+            top_of_book,
+            now_nanos,
+            self.config.submit_time_book_max_age_nanos,
+        ) {
+            return Ok(());
+        }
         // Evaluate the book/liquidity guard against the ROUNDED order so a
         // rounded-up quantity cannot pass a guard sized for the unrounded intent.
         if !submit_time_book_supports_limit(
@@ -320,6 +338,11 @@ pub fn register_canary_proof_executor_on_node(
         resolve_fee_provider(loaded, proof_policy.execution_client_id.as_str(), resolved)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
     let executor_strategy_id = StrategyId::from(proof_policy.executor_strategy_id.as_str());
+    // Single source of truth for canary freshness: the gate already validates
+    // `reference_quote_max_age_seconds` at startup, so the submit-time book
+    // staleness bound reuses that same config-owned value (GROUP-BY-CHANGE).
+    let submit_time_book_max_age_nanos =
+        Duration::from_secs(live_canary.reference_quote_max_age_seconds).as_nanos();
     node.add_strategy(CanaryProofExecutor::new(CanaryProofExecutorConfig {
         executor_strategy_id: proof_policy.executor_strategy_id.clone(),
         execution_client_id: proof_policy.execution_client_id.clone(),
@@ -335,6 +358,7 @@ pub fn register_canary_proof_executor_on_node(
         fee_provider,
         decision_evidence,
         submit_admission,
+        submit_time_book_max_age_nanos,
     }))?;
     Ok(Some(executor_strategy_id))
 }
@@ -459,6 +483,9 @@ fn proof_policy_time_in_force_to_nt(time_in_force: LiveCanaryProofTimeInForce) -
 struct SubmitTimeTopOfBook {
     price: Decimal,
     available_quantity: Decimal,
+    // UNIX nanoseconds of the last event applied to the book this top-of-book
+    // was read from. Carried so the submit path can reject a stale book.
+    ts_event_nanos: u64,
 }
 
 fn submit_time_top_of_book(
@@ -478,7 +505,26 @@ fn submit_time_top_of_book(
             quantity,
             "canary proof submit-time book quantity",
         )?,
+        ts_event_nanos: book.ts_last.as_u64(),
     }))
+}
+
+/// Returns `true` only when the submit-time top-of-book event is fresh enough
+/// to act on. Fail-closed: a zero/missing event timestamp and a future event
+/// timestamp (clock skew) are both treated as stale, and the event age must not
+/// exceed `max_age_nanos`.
+fn submit_time_book_is_fresh(
+    top_of_book: SubmitTimeTopOfBook,
+    now_nanos: u64,
+    max_age_nanos: u128,
+) -> bool {
+    if top_of_book.ts_event_nanos == 0 {
+        return false;
+    }
+    let Some(age_nanos) = now_nanos.checked_sub(top_of_book.ts_event_nanos) else {
+        return false;
+    };
+    u128::from(age_nanos) <= max_age_nanos
 }
 
 fn submit_time_book_supports_limit(
@@ -521,8 +567,31 @@ fn resolve_loaded_config_path(loaded: &LoadedBoltV3Config, configured_path: &str
 mod tests {
     use rust_decimal::Decimal;
 
-    use super::{SubmitTimeTopOfBook, submit_time_book_supports_limit};
+    use super::{SubmitTimeTopOfBook, submit_time_book_is_fresh, submit_time_book_supports_limit};
     use crate::bolt_v3_canary_proof_policy::CanaryProofOrderSide;
+
+    fn book_at(ts_event_nanos: u64) -> SubmitTimeTopOfBook {
+        SubmitTimeTopOfBook {
+            price: Decimal::new(25, 2),
+            available_quantity: Decimal::new(20, 0),
+            ts_event_nanos,
+        }
+    }
+
+    #[test]
+    fn submit_time_book_is_fresh_only_within_bound_and_fails_closed_on_bad_timestamps() {
+        let max_age_nanos = 10_u128;
+        // Exactly at the bound is admitted; one nanosecond past is rejected.
+        assert!(submit_time_book_is_fresh(book_at(90), 100, max_age_nanos));
+        assert!(!submit_time_book_is_fresh(book_at(89), 100, max_age_nanos));
+        // A zero/missing event timestamp is treated as stale.
+        assert!(!submit_time_book_is_fresh(book_at(0), 100, max_age_nanos));
+        // A future event timestamp (clock skew) is treated as stale.
+        assert!(!submit_time_book_is_fresh(book_at(101), 100, max_age_nanos));
+        // A zero max-age admits only a book stamped at the exact current instant.
+        assert!(submit_time_book_is_fresh(book_at(100), 100, 0));
+        assert!(!submit_time_book_is_fresh(book_at(99), 100, 0));
+    }
 
     #[test]
     fn submit_time_book_supports_buy_only_when_top_ask_can_fill_exact_order() {
@@ -533,6 +602,7 @@ mod tests {
             SubmitTimeTopOfBook {
                 price: Decimal::new(25, 2),
                 available_quantity: Decimal::new(20, 0),
+                ts_event_nanos: 1,
             },
         ));
 
@@ -543,6 +613,7 @@ mod tests {
             SubmitTimeTopOfBook {
                 price: Decimal::new(26, 2),
                 available_quantity: Decimal::new(20, 0),
+                ts_event_nanos: 1,
             },
         ));
 
@@ -553,6 +624,7 @@ mod tests {
             SubmitTimeTopOfBook {
                 price: Decimal::new(25, 2),
                 available_quantity: Decimal::new(1999, 2),
+                ts_event_nanos: 1,
             },
         ));
     }
@@ -566,6 +638,7 @@ mod tests {
             SubmitTimeTopOfBook {
                 price: Decimal::new(75, 2),
                 available_quantity: Decimal::new(10, 0),
+                ts_event_nanos: 1,
             },
         ));
 
@@ -576,6 +649,7 @@ mod tests {
             SubmitTimeTopOfBook {
                 price: Decimal::new(74, 2),
                 available_quantity: Decimal::new(10, 0),
+                ts_event_nanos: 1,
             },
         ));
 
@@ -586,6 +660,7 @@ mod tests {
             SubmitTimeTopOfBook {
                 price: Decimal::new(75, 2),
                 available_quantity: Decimal::new(999, 2),
+                ts_event_nanos: 1,
             },
         ));
     }

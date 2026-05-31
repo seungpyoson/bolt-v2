@@ -41,7 +41,7 @@ use nautilus_core::string::secret::REDACTED;
 use nautilus_network::websocket::TransportBackend;
 use serde::Deserialize;
 use url::Url;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{
     bolt_v3_adapters::{
@@ -63,12 +63,55 @@ pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecre
     consumer: "Binance reference-data client",
 }];
 pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_path", "api_secret_ssm_path"];
+/// NT module path(s) whose info-level logs can echo Binance credential
+/// metadata; the live-node builder installs `WARN` filters for these so secret
+/// material never reaches operator logs. The path is pinned to the NT revision
+/// declared by `nautilus-binance` in `Cargo.toml` (single source of truth for
+/// the rev) and is kept honest at compile time by the
+/// `use nautilus_binance::common::credential::Ed25519Credential` import above:
+/// if the NT rev moved this module, that import — and therefore the build —
+/// would fail before this string could silently drift.
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_binance::common::credential"];
+/// Every Binance credential environment variable that NT's
+/// `resolve_credentials` (and the Spot WebSocket trading client) can read as a
+/// secret fallback. Bolt always passes `Some(api_key)`/`Some(api_secret)` into
+/// NT, so this env path is currently dead, but the blocklist is verified empty
+/// at startup as defense-in-depth so a future regression that drops the
+/// `Some(...)` wiring cannot silently let NT resolve a trading secret from the
+/// operator's shell environment instead of SSM.
+///
+/// The set is verified against the pinned NT revision declared by
+/// `nautilus-binance` in `Cargo.toml`, in
+/// `nautilus_binance::common::credential::resolve_credentials`
+/// (`crates/adapters/binance/src/common/credential.rs`). That function selects
+/// the variable names by `BinanceEnvironment` and `BinanceProductType`:
+/// - Live: standard `BINANCE_API_KEY`/`BINANCE_API_SECRET` plus the deprecated
+///   `BINANCE_ED25519_*` pair (still read via `std::env::var` before the
+///   deprecation error).
+/// - Testnet (Spot/Margin/Options): `BINANCE_TESTNET_API_KEY`/`_API_SECRET`
+///   plus deprecated `BINANCE_TESTNET_ED25519_*`.
+/// - Futures testnet (UsdM/CoinM): `BINANCE_FUTURES_TESTNET_API_KEY`/`_API_SECRET`
+///   plus deprecated `BINANCE_FUTURES_TESTNET_ED25519_*`.
+/// - Demo (all product types): `BINANCE_DEMO_API_KEY`/`BINANCE_DEMO_API_SECRET`
+///   (NT defines no Demo `ED25519` pair — the deprecated names are empty).
+///
+/// Every name NT can read is listed; under-listing would reopen the
+/// defense-in-depth gap for the testnet/futures-testnet/demo environments.
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[
     "BINANCE_ED25519_API_KEY",
     "BINANCE_ED25519_API_SECRET",
     "BINANCE_API_KEY",
     "BINANCE_API_SECRET",
+    "BINANCE_TESTNET_API_KEY",
+    "BINANCE_TESTNET_API_SECRET",
+    "BINANCE_TESTNET_ED25519_API_KEY",
+    "BINANCE_TESTNET_ED25519_API_SECRET",
+    "BINANCE_FUTURES_TESTNET_API_KEY",
+    "BINANCE_FUTURES_TESTNET_API_SECRET",
+    "BINANCE_FUTURES_TESTNET_ED25519_API_KEY",
+    "BINANCE_FUTURES_TESTNET_ED25519_API_SECRET",
+    "BINANCE_DEMO_API_KEY",
+    "BINANCE_DEMO_API_SECRET",
 ];
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -120,8 +163,12 @@ pub struct BinanceSecretsConfig {
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct ResolvedBoltV3BinanceSecrets {
-    pub api_key: String,
-    pub api_secret: String,
+    /// Wrapped in [`Zeroizing`] so the individual secret bytes are scrubbed on
+    /// drop even when this field is moved out of the container — per-field
+    /// zeroize in addition to the container-level `ZeroizeOnDrop`. Derefs to
+    /// `String`; the redacting `Debug` impl below keeps it out of logs.
+    pub api_key: Zeroizing<String>,
+    pub api_secret: Zeroizing<String>,
 }
 
 impl std::fmt::Debug for ResolvedBoltV3BinanceSecrets {
@@ -313,8 +360,8 @@ pub fn resolve_secrets(
         resolver,
     )?;
     Ok(Arc::new(ResolvedBoltV3BinanceSecrets {
-        api_key,
-        api_secret,
+        api_key: Zeroizing::new(api_key),
+        api_secret: Zeroizing::new(api_secret),
     }))
 }
 
@@ -415,8 +462,8 @@ fn map_data(
         environment: nt_environment(cfg.environment),
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),
-        api_key: Some(secrets.api_key.clone()),
-        api_secret: Some(secrets.api_secret.clone()),
+        api_key: Some(secrets.api_key.as_str().to_owned()),
+        api_secret: Some(secrets.api_secret.as_str().to_owned()),
         instrument_status_poll_secs: cfg.instrument_status_poll_secs,
         transport_backend: cfg.transport_backend,
     })

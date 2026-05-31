@@ -36,6 +36,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    sync::Arc,
     time::Duration,
 };
 
@@ -48,7 +49,7 @@ use crate::{
         LoadedBoltV3Config, LoadedStrategy, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND,
         RESOLUTION_GATE_ROLE,
     },
-    bolt_v3_instrument_filters::{InstrumentFilterError, InstrumentFilterTarget},
+    bolt_v3_instrument_filters::{InstrumentFilterError, format_target_prefix},
     bolt_v3_market_families::{
         MarketFamilyValidationBinding, MarketIdentityPlan, MarketIdentityTarget,
         MarketSelectionCandidateWindow, MarketSelectionOutcome, MarketSelectionTarget,
@@ -61,6 +62,8 @@ use crate::{
 
 pub const KEY: &str = "updown";
 const BINARY_OPTION_MARKET_CLASS: &str = "binary_option";
+const TARGET_ENUM_SERIALIZE_FAILURE_MESSAGE: &str =
+    "updown target discriminator enum could not serialize to a string token";
 const NT_INSTRUMENT_METADATA_SOURCE_KIND: &str = "nt_instrument_metadata";
 const REQUIRED_UPDOWN_OUTCOME_INSTRUMENT_COUNT: usize = 2;
 const METADATA_CONDITION_ID_FIELD: &str = "condition_id";
@@ -77,7 +80,7 @@ pub fn validation_binding() -> MarketFamilyValidationBinding {
     MarketFamilyValidationBinding {
         key: KEY,
         validate_target: validate_target_block,
-        instrument_filter_target_for_strategy,
+        plan_strategy_target,
         target_runtime_fields,
         select_binary_option_market,
         market_selection_candidate_windows,
@@ -497,62 +500,6 @@ impl UpdownOutcomePair {
 }
 
 #[derive(Debug)]
-pub enum BoltV3InstrumentFilterError {
-    NonPositiveCadenceSeconds {
-        strategy_instance_id: Option<String>,
-        configured_target_id: Option<String>,
-        cadence_seconds: i64,
-    },
-    NegativeNowUnixSeconds {
-        now_unix_seconds: i64,
-    },
-    PeriodPairOverflow {
-        now_unix_seconds: i64,
-        cadence_seconds: i64,
-    },
-    TargetParseFailed {
-        strategy_instance_id: String,
-        message: String,
-    },
-}
-
-impl std::fmt::Display for BoltV3InstrumentFilterError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NonPositiveCadenceSeconds {
-                strategy_instance_id,
-                configured_target_id,
-                cadence_seconds,
-            } => write!(
-                f,
-                "{prefix}target.cadence_seconds must be a positive integer (got {cadence_seconds})",
-                prefix = format_target_prefix(strategy_instance_id, configured_target_id),
-            ),
-            Self::NegativeNowUnixSeconds { now_unix_seconds } => write!(
-                f,
-                "now_unix_seconds must be non-negative (got {now_unix_seconds})"
-            ),
-            Self::PeriodPairOverflow {
-                now_unix_seconds,
-                cadence_seconds,
-            } => write!(
-                f,
-                "updown period pair overflows i64 (now_unix_seconds={now_unix_seconds}, cadence_seconds={cadence_seconds})"
-            ),
-            Self::TargetParseFailed {
-                strategy_instance_id,
-                message,
-            } => write!(
-                f,
-                "strategy `{strategy_instance_id}`: target failed updown typed deserialization after validation: {message}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for BoltV3InstrumentFilterError {}
-
-#[derive(Debug)]
 pub enum BoltV3MarketIdentityError {
     NonPositiveCadenceSeconds {
         strategy_instance_id: Option<String>,
@@ -626,18 +573,6 @@ impl std::fmt::Display for BoltV3MarketIdentityError {
                 "strategy `{strategy_instance_id}`: target failed updown typed deserialization at planning time: {message}"
             ),
         }
-    }
-}
-
-fn format_target_prefix(
-    strategy_instance_id: &Option<String>,
-    configured_target_id: &Option<String>,
-) -> String {
-    match (strategy_instance_id, configured_target_id) {
-        (Some(strategy), Some(target)) => format!("strategy `{strategy}` target `{target}`: "),
-        (Some(strategy), None) => format!("strategy `{strategy}`: "),
-        (None, Some(target)) => format!("target `{target}`: "),
-        (None, None) => String::new(),
     }
 }
 
@@ -773,29 +708,21 @@ pub fn candidates_for_target(
     })
 }
 
-pub fn instrument_filter_target_for_strategy(
+/// Registry-routed market-identity projector for the updown family.
+/// The parent dispatcher
+/// (`crate::bolt_v3_market_families::market_identity_plan_from_config_with_bindings`)
+/// reads each strategy's `target.rotating_market_family` and only routes
+/// matching strategies here, so this never sees a non-updown strategy.
+/// Returns the projected target type-erased as `MarketIdentityTarget`
+/// so the shared plan builder owns the single projection path.
+pub fn plan_strategy_target(
     strategy: &LoadedStrategy,
-) -> Result<Option<InstrumentFilterTarget>, InstrumentFilterError> {
-    let target =
-        instrument_filter_target_from_strategy(strategy).map_err(instrument_filter_error)?;
-    Ok(target.map(|target| InstrumentFilterTarget {
-        strategy_instance_id: target.strategy_instance_id,
-        family_key: KEY,
-        configured_target_id: target.configured_target_id,
-        execution_client_id: target.execution_client_id,
-        underlying_asset: target.underlying_asset,
-        cadence_seconds: target.cadence_secs,
-        cadence_slug_token: target.cadence_slug_token,
-    }))
+) -> Result<Option<Arc<dyn MarketIdentityTarget>>, InstrumentFilterError> {
+    let target = plan_strategy_updown_target(strategy).map_err(plan_strategy_error)?;
+    Ok(target.map(|target| -> Arc<dyn MarketIdentityTarget> { Arc::new(target) }))
 }
 
-fn instrument_filter_target_from_strategy(
-    strategy: &LoadedStrategy,
-) -> Result<Option<UpdownTargetPlan>, BoltV3MarketIdentityError> {
-    plan_strategy_updown_target(strategy)
-}
-
-fn instrument_filter_error(error: BoltV3MarketIdentityError) -> InstrumentFilterError {
+fn plan_strategy_error(error: BoltV3MarketIdentityError) -> InstrumentFilterError {
     match error {
         BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
             strategy_instance_id,
@@ -850,27 +777,35 @@ pub fn target_runtime_fields(
     }
     Ok(TargetRuntimeFields {
         configured_target_id: target.configured_target_id,
-        target_kind: target_runtime_string(target.kind),
-        rotating_market_family: target_runtime_string(target.rotating_market_family),
+        target_kind: target_runtime_string(target.kind)?,
+        rotating_market_family: target_runtime_string(target.rotating_market_family)?,
         underlying_asset: target.underlying_asset,
         cadence_seconds: target.cadence_secs,
         cadence_seconds_source_field: "target.cadence_secs",
         cadence_slug_token: target.cadence_slug_token,
-        market_selection_rule: target_runtime_string(target.market_selection_rule),
+        market_selection_rule: target_runtime_string(target.market_selection_rule)?,
         retry_interval_seconds: target.retry_interval_secs,
         blocked_after_seconds: target.blocked_after_secs,
     })
 }
 
-fn target_runtime_string<T>(value: T) -> String
+/// Serialize a validated updown target discriminator enum to its TOML
+/// string token. Validated callers always pass an enum that serializes
+/// to a string, so this normally cannot fail; the fallible path replaces
+/// the prior pair of `.expect()` panics so a latent serialization
+/// mismatch surfaces as a fail-closed error instead of aborting the node.
+fn target_runtime_string<T>(value: T) -> Result<String, InstrumentFilterError>
 where
     T: serde::Serialize,
 {
     toml::Value::try_from(value)
-        .expect("validated updown target enum should serialize")
-        .as_str()
-        .expect("validated updown target enum should serialize to string")
-        .to_string()
+        .ok()
+        .as_ref()
+        .and_then(toml::Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| InstrumentFilterError::Other {
+            message: TARGET_ENUM_SERIALIZE_FAILURE_MESSAGE.to_string(),
+        })
 }
 
 pub fn select_market_from_instruments(
@@ -999,6 +934,15 @@ pub fn selected_market_requirement(
             "selected-market instrument_ids must include distinct up/down outcomes",
         ));
     }
+    // DEFERRED FAIL-CLOSED INVARIANT (P5-5, multi-venue): this guards only that
+    // the selected up/down outcomes share ONE venue (self-consistency). It does
+    // NOT yet assert that venue equals the strategy's configured EXECUTION venue
+    // (`root.clients[execution_client_id].venue`). Under the current single-venue
+    // (Polymarket-only) config a cross-venue collision cannot occur, so this is
+    // unreachable today. When a second venue's instruments can coexist in the NT
+    // cache, selection must be scoped to the execution venue AND this must assert
+    // the selected venue equals it (fail closed). Tracked for the multi-venue
+    // workstream; see specs/024-production-trade-readiness/external-review/P5-adjudication.md (P5-5).
     let up_venue = selected.up_instrument_id.venue.as_str();
     let down_venue = selected.down_instrument_id.venue.as_str();
     if up_venue != down_venue {

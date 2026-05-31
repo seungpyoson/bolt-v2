@@ -61,6 +61,7 @@ pub struct BoltV3LiveCanaryGateReport {
     no_submit_readiness_report_path: PathBuf,
     max_no_submit_readiness_report_bytes: u64,
     readiness_report_max_age_seconds: u64,
+    reference_quote_max_age_seconds: u64,
     max_live_order_count: u32,
     max_notional_per_order: Decimal,
     root_max_notional_per_order: Decimal,
@@ -83,6 +84,14 @@ impl BoltV3LiveCanaryGateReport {
         self.readiness_report_max_age_seconds
     }
 
+    /// Gate-approved maximum reference-quote age (seconds). This is the SINGLE
+    /// authoritative freshness bound for the armed live path: the gate validates
+    /// it at startup and the submit/stale path must enforce it (A5), rather than
+    /// running an independent strategy-config freshness policy.
+    pub fn reference_quote_max_age_seconds(&self) -> u64 {
+        self.reference_quote_max_age_seconds
+    }
+
     pub fn max_live_order_count(&self) -> u32 {
         self.max_live_order_count
     }
@@ -102,6 +111,7 @@ impl BoltV3LiveCanaryGateReport {
             no_submit_readiness_report_path: PathBuf::from("no-submit-readiness.json"),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: 60,
+            reference_quote_max_age_seconds: 10,
             max_live_order_count,
             max_notional_per_order,
             root_max_notional_per_order: max_notional_per_order,
@@ -792,6 +802,7 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
         no_submit_readiness_report_path: report_path,
         max_no_submit_readiness_report_bytes: block.max_no_submit_readiness_report_bytes,
         readiness_report_max_age_seconds: block.readiness_report_max_age_seconds,
+        reference_quote_max_age_seconds: block.reference_quote_max_age_seconds,
         max_live_order_count: block.max_live_order_count,
         max_notional_per_order,
         root_max_notional_per_order,

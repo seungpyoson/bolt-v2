@@ -4530,17 +4530,17 @@ mod tests {
         clients.insert(
             "polymarket_main".to_string(),
             Arc::new(ResolvedBoltV3PolymarketSecrets {
-                private_key: "fixture-poly-private-key".to_string(),
-                api_key: "fixture-poly-api-key".to_string(),
-                api_secret: "fixture-poly-api-secret".to_string(),
-                passphrase: "fixture-poly-passphrase".to_string(),
+                private_key: zeroize::Zeroizing::new("fixture-poly-private-key".to_string()),
+                api_key: zeroize::Zeroizing::new("fixture-poly-api-key".to_string()),
+                api_secret: zeroize::Zeroizing::new("fixture-poly-api-secret".to_string()),
+                passphrase: zeroize::Zeroizing::new("fixture-poly-passphrase".to_string()),
             }),
         );
         clients.insert(
             "binance_reference".to_string(),
             Arc::new(ResolvedBoltV3BinanceSecrets {
-                api_key: "fixture-binance-api-key".to_string(),
-                api_secret: "fixture-binance-api-secret".to_string(),
+                api_key: zeroize::Zeroizing::new("fixture-binance-api-key".to_string()),
+                api_secret: zeroize::Zeroizing::new("fixture-binance-api-secret".to_string()),
             }),
         );
         let resolved = ResolvedBoltV3Secrets { clients };

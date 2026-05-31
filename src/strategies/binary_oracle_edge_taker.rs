@@ -2566,13 +2566,38 @@ impl BinaryOracleEdgeTaker {
         EntryGateDecision { blocked_by }
     }
 
+    /// Single source of truth for the reference-quote freshness bound enforced
+    /// by the forced-flat stale check (A5). When the live canary gate is armed,
+    /// the gate-approved `[live_canary].reference_quote_max_age_seconds` is the
+    /// authoritative freshness policy for the live path, so it is plumbed in here
+    /// rather than letting the submit/stale path run an independent
+    /// strategy-config policy. The effective bound is the STRICTER (smaller) of
+    /// the gate-approved bound and the strategy's `forced_flat_stale_reference_ms`
+    /// so plumbing the gate value can only ever TIGHTEN the existing guard, never
+    /// loosen it (a larger gate bound never relaxes the strategy bound, and the
+    /// strategy bound never relaxes the gate's). Pre-arm there is no gate bound
+    /// and no order can be submitted anyway, so the strategy bound alone applies.
+    fn effective_stale_reference_after_ms(&self) -> u64 {
+        let config_bound_ms = self.config.forced_flat_stale_reference_ms;
+        match self
+            .context
+            .submit_admission()
+            .reference_quote_max_age_seconds()
+        {
+            Some(gate_seconds) => {
+                config_bound_ms.min(gate_seconds.saturating_mul(MILLIS_PER_SECOND_U64))
+            }
+            None => config_bound_ms,
+        }
+    }
+
     fn active_forced_flat_reasons_at(&self, now_ms: u64) -> Vec<ForcedFlatReason> {
         evaluate_forced_flat_predicates(&ForcedFlatInputs {
             phase: self.active.phase,
             metadata_matches_selection: self.active.books.metadata_matches_selection(),
             last_reference_ts_ms: self.active.last_reference_ts_ms,
             now_ms,
-            stale_reference_after_ms: self.config.forced_flat_stale_reference_ms,
+            stale_reference_after_ms: self.effective_stale_reference_after_ms(),
             liquidity_available: self.active.books.minimum_liquidity(),
             min_liquidity_required: self.config.forced_flat_thin_book_min_liquidity,
             fast_venue_incoherent: self.active.fast_venue_incoherent,
@@ -2591,7 +2616,7 @@ impl BinaryOracleEdgeTaker {
             metadata_matches_selection: open_position.book.metadata_matches_selection(),
             last_reference_ts_ms: self.active.last_reference_ts_ms,
             now_ms,
-            stale_reference_after_ms: self.config.forced_flat_stale_reference_ms,
+            stale_reference_after_ms: self.effective_stale_reference_after_ms(),
             liquidity_available: open_position.book.liquidity_available,
             min_liquidity_required: self.config.forced_flat_thin_book_min_liquidity,
             fast_venue_incoherent: self.active.fast_venue_incoherent,
@@ -2979,6 +3004,16 @@ impl BinaryOracleEdgeTaker {
     /// without populating the NT cache supply the bound through the
     /// `FeeProvider::fee_bps` map, matching the established `#[cfg(test)]`
     /// fallback in `entry_fee_bps_at_price`.
+    ///
+    /// SYMMETRIC-FEE ASSUMPTION (A12): both entry AND risk-reducing-exit
+    /// admission scale their notional by THIS entry-fee bound. Polymarket
+    /// charges the same fee on either leg, so the entry bound is the exact
+    /// exit bound today. Should a venue ever charge a strictly larger exit fee,
+    /// using the (smaller) entry bound here would UNDERSTATE an exit's
+    /// fee-inclusive notional. That direction fails OPEN for the cap, so a
+    /// venue with asymmetric (higher exit) fees MUST add an exit-fee bound and
+    /// route exits through it before being admitted — do not silently reuse the
+    /// entry bound for an asymmetric-fee venue.
     fn max_entry_fee_bps_for_admission(
         &self,
         instrument_id: InstrumentId,
@@ -3916,10 +3951,19 @@ impl BinaryOracleEdgeTaker {
         order: nautilus_model::orders::OrderAny,
         submit_context: SubmitContext,
     ) -> Result<()> {
+        // A15: build the (fallible) admission request BEFORE recording the
+        // order-intent evidence line. The request build can fail (e.g. a
+        // market-style order whose instrument declares no structural price
+        // ceiling, or an unresolvable fee bound), in which case the order never
+        // fires —
+        // recording the intent first would leave an orphan evidence line for an
+        // order that was never submitted. Recording after the build keeps the
+        // evidence chain truthful: an order-intent line exists only once the
+        // order is fully valued and about to enter admission.
+        let request = self.submit_admission_request_from_order(&intent, &order)?;
         self.context
             .decision_evidence()
             .record_order_intent(&intent)?;
-        let request = self.submit_admission_request_from_order(&intent, &order)?;
         let _permit = self.context.submit_admission().admit(&request)?;
         self.submit_order(
             order,
@@ -3960,9 +4004,11 @@ impl BinaryOracleEdgeTaker {
             let quote_reference_price = self.quote_quantity_reference_price_for_order(order);
             // Single source of truth: BOTH submit paths derive the admission base
             // notional from the built order through this shared helper. `None`
-            // means no reference price could be resolved for a quote-quantity
-            // order — fall back to the raw submitted quote quantity, exactly as
-            // before.
+            // means the helper could not produce a settlement-currency notional —
+            // either no reference price could be resolved, OR the instrument is
+            // inverse (A6: the helper fail-closes inverse quote-quantity orders).
+            // The fallback below fails CLOSED on the inverse case and otherwise
+            // falls back to the raw submitted quote quantity, exactly as before.
             match admission_base_notional_from_order(
                 order,
                 &instrument,
@@ -4000,29 +4046,39 @@ impl BinaryOracleEdgeTaker {
         // path checks fee-inclusive — admitting an order whose fee-inclusive
         // cost exceeds the intended per-order cap.
         let max_fee_bps = self.max_entry_fee_bps_for_admission(order.instrument_id(), price)?;
-        // An ENTRY order with NO firm limit price (Market / StopMarket /
+        // A base-quantity order with NO firm limit price (Market / StopMarket /
         // MarketIfTouched / TrailingStopMarket) carries no venue-enforced price
-        // bound: it can fill anywhere up to the instrument's structural price
-        // ceiling. Value its admission notional at that ceiling — the only price
-        // the venue cannot exceed — so the per-order cap is a HARD bound on the
-        // cash a base-quantity entry can commit, not an estimate. A configured
-        // slippage budget is an estimate, not a bound, and must never stand in
-        // for the cap. Quote-quantity orders commit a fixed quote amount (already
-        // floored); a firm-limit order can never fill past its own price; an exit
-        // reduces a position the entry cap already admitted and must never be
-        // blocked. Those keep their own notional. Fail CLOSED if the instrument
-        // declares no ceiling.
-        let notional = if matches!(intent.intent_kind, BoltV3OrderIntentKind::Entry)
-            && order.price().is_none()
-            && !order.is_quote_quantity()
-        {
+        // bound: it can fill, or settle, anywhere up to the instrument's
+        // structural price CEILING. Value its admission notional at that ceiling —
+        // the only price the venue physically cannot exceed — so the per-order cap
+        // is a HARD bound on the cash such an order can commit, not an estimate. A
+        // configured slippage budget is an estimate, not a bound, and must never
+        // stand in for the cap.
+        //
+        // The ceiling is used for EVERY market-style order regardless of side or
+        // intent (A4), because it is the only universally fail-closed bound:
+        //   - A BUY (entry opening a long, or exit buying back a short) can debit
+        //     up to qty * ceiling.
+        //   - A SELL ENTRY (opening a SHORT) carries a settlement liability up to
+        //     qty * ceiling — so a SELL is NOT automatically cheaper; valuing it
+        //     at a price floor would UNDERSTATE a short entry's worst case and
+        //     loosen the cap. The ceiling never understates any side or intent.
+        // This extends the bound to market-style EXITs, which previously skipped
+        // this branch and were valued at their reference/trigger price (the bug
+        // A4 closed). Because an admitted entry was itself capped at the ceiling
+        // and an exit never exceeds the entry quantity, a ceiling-valued exit can
+        // never be spuriously blocked by the cap the entry already cleared.
+        // Quote-quantity orders commit a fixed quote amount (already floored) and
+        // a firm-limit order can never fill past its own price, so those keep
+        // their own notional. Fail CLOSED if the instrument declares no ceiling.
+        let notional = if order.price().is_none() && !order.is_quote_quantity() {
             let price_ceiling = self
                 .current_instrument(order.instrument_id())
                 .and_then(|instrument| instrument.max_price())
                 .map(|ceiling| ceiling.as_decimal());
             market_style_admission_ceiling_notional(price_ceiling, quantity).with_context(|| {
                 format!(
-                    "bolt-v3 submit admission refuses a market-style entry without a structural price ceiling for client_order_id={}",
+                    "bolt-v3 submit admission refuses a market-style order without a structural price ceiling for client_order_id={}",
                     client_order_id
                 )
             })?
@@ -5320,6 +5376,40 @@ impl BinaryOracleEdgeTakerBuilder {
             concat!(stringify!(missing_), stringify!(forced_exit_order)),
             errors,
         );
+        Self::validate_rotating_market_family(table, field_prefix, errors);
+    }
+
+    /// Reject an unknown `rotating_market_family` at config-parse time (P5-10).
+    /// Startup market-identity construction already fails loud on an unknown
+    /// family, so this is defense-in-depth that converges parse-time validation
+    /// with the SINGLE registry source of truth
+    /// (`bolt_v3_market_families::validation_bindings`): a family the registry
+    /// does not bind can never be selected or traded, so it must be rejected here
+    /// rather than accepted and only caught later.
+    fn validate_rotating_market_family(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let field_name = stringify!(rotating_market_family);
+        let Some(value) = table.get(field_name) else {
+            // Presence/type is enforced by the generated field validator; an
+            // absent or non-string value is reported there, not here.
+            return;
+        };
+        let Some(family) = value.as_str() else {
+            return;
+        };
+        let is_known = bolt_v3_market_families::validation_bindings()
+            .iter()
+            .any(|binding| binding.key == family);
+        if !is_known {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{field_name}"),
+                code: stringify!(unknown_market_family),
+                message: format!("unknown market family `{family}`"),
+            });
+        }
     }
 
     fn validate_optional_string_field(
@@ -7110,7 +7200,12 @@ struct ForcedFlatInputs {
 
 fn evaluate_forced_flat_predicates(inputs: &ForcedFlatInputs) -> Vec<ForcedFlatReason> {
     let mut reasons = Vec::new();
-    let reference_stale = inputs.last_reference_ts_ms.is_some_and(|last_ts_ms| {
+    // Defense-in-depth (A14): a MISSING reference timestamp is the maximally
+    // stale condition — the strategy has never observed a reference quote — so
+    // it must classify as stale, not fresh. `is_none_or` returns `true` for the
+    // `None` case (no reference ever) AND for an observed-but-aged reference,
+    // and `false` only for a reference observed within the freshness bound.
+    let reference_stale = inputs.last_reference_ts_ms.is_none_or(|last_ts_ms| {
         inputs.now_ms.saturating_sub(last_ts_ms) > inputs.stale_reference_after_ms
     });
 
@@ -7152,19 +7247,20 @@ fn submit_admission_request_from_order(
     // Base-only test helper: it has no strategy cache/instrument context, so it
     // cannot size quote-quantity orders (that requires the full
     // `admission_base_notional_from_order` path with an instrument) and it cannot
-    // value a market-style ENTRY (production values that at the instrument's
-    // structural price ceiling via the strategy method). It is NOT a divergent
-    // copy of the notional math — for the shapes it DOES accept (base-quantity
-    // firm-limit orders, and exits, which production never ceilings) it reuses
-    // the shared base-quantity definition so the order is sized identically here,
-    // in the production strategy, and in the canary proof executor.
+    // value a market-style order — ENTRY OR EXIT (production values any price-less
+    // base-quantity order at the instrument's structural price ceiling via the
+    // strategy method). It is NOT a divergent copy of the notional
+    // math — for the shapes it DOES accept (base-quantity firm-limit orders) it
+    // reuses the shared base-quantity definition so the order is sized
+    // identically here, in the production strategy, and in the canary proof
+    // executor.
     anyhow::ensure!(
         !order.is_quote_quantity(),
         "test submit admission helper requires strategy cache context for quote-quantity orders"
     );
     anyhow::ensure!(
-        !(matches!(intent.intent_kind, BoltV3OrderIntentKind::Entry) && order.price().is_none()),
-        "test submit admission helper cannot value a market-style entry (no firm limit price): production values it at the instrument price ceiling — use `strategy.submit_admission_request_from_order` with a cache-seeded instrument"
+        order.price().is_some(),
+        "test submit admission helper cannot value a market-style order (no firm limit price): production values it at the instrument price ceiling — use `strategy.submit_admission_request_from_order` with a cache-seeded instrument"
     );
     let price_source = compiled_order_price_source(intent.price.clone(), order);
     let price = Decimal::from_str(price_source.trim()).with_context(|| {
@@ -8159,6 +8255,50 @@ mod tests {
             "test strategy is intentionally not registered with NT; reaching NT submit should panic"
         );
         assert_eq!(submit_admission.admitted_order_count(), 1);
+    }
+
+    #[test]
+    fn effective_stale_bound_uses_gate_freshness_as_single_source_when_armed() {
+        // A5: the gate-approved reference-quote freshness bound is the single
+        // authoritative source for the armed live path, plumbed into the
+        // forced-flat stale check as the STRICTER of (gate bound, strategy
+        // config bound) so arming can only tighten, never loosen.
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+
+        // Unarmed: no gate bound exists, so the strategy config bound applies.
+        strategy.config.forced_flat_stale_reference_ms = 1_500;
+        assert_eq!(strategy.effective_stale_reference_after_ms(), 1_500);
+
+        // Arm the gate. `for_test` carries reference_quote_max_age_seconds = 10
+        // (10_000 ms). With a LARGER strategy config bound the gate value wins
+        // (it tightens the stale check to the gate-approved freshness).
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
+            .expect("valid gate report should arm submit admission");
+        strategy.config.forced_flat_stale_reference_ms = 20_000;
+        assert_eq!(
+            strategy.effective_stale_reference_after_ms(),
+            10_000,
+            "armed gate freshness bound (10s) must tighten a looser strategy config bound (20s)"
+        );
+
+        // With a SMALLER strategy config bound the config value wins — arming
+        // never loosens the existing strategy guard.
+        strategy.config.forced_flat_stale_reference_ms = 1_500;
+        assert_eq!(
+            strategy.effective_stale_reference_after_ms(),
+            1_500,
+            "arming must never loosen a stricter strategy config freshness bound"
+        );
     }
 
     #[test]
@@ -9838,7 +9978,10 @@ mod tests {
             None,
             // max_price: a binary option's structural payout ceiling. Mirrors the
             // upstream NT Polymarket adapter (MAX_PRICE = "0.999") so the fixture
-            // declares the same hard price bound production instruments carry.
+            // declares the same hard price bound production instruments carry —
+            // the only price a market-style order (BUY or SELL, entry or exit) can
+            // ever fill or settle at, which the market-style admission valuation
+            // uses as the universal worst case.
             Some(Price::from("0.999")),
             None,
             None,
@@ -10235,6 +10378,47 @@ mod tests {
             e.field == "strategies[0].config.warmup_tick_count"
                 && e.code == "missing_required_integer"
         }));
+    }
+
+    #[test]
+    fn builder_rejects_unknown_rotating_market_family() {
+        // P5-10: a market family not bound by the registry must be rejected at
+        // parse, converging with the registry single source of truth.
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("valid config must be a table")
+            .insert(
+                "rotating_market_family".to_string(),
+                Value::String("not-a-real-family".to_string()),
+            );
+        let mut errors = Vec::new();
+
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        let error = find_error(
+            &errors,
+            "strategies[0].config.rotating_market_family",
+            "unknown_market_family",
+        );
+        assert_eq!(error.message, "unknown market family `not-a-real-family`");
+    }
+
+    #[test]
+    fn builder_accepts_registry_bound_rotating_market_family() {
+        // The valid fixture's family is registry-bound, so no unknown-family
+        // error is raised — the check must accept every family the registry
+        // binds, not just reject unknown ones.
+        let raw = valid_raw_config();
+        let mut errors = Vec::new();
+
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        assert!(
+            !errors
+                .iter()
+                .any(|error| error.code == "unknown_market_family"),
+            "registry-bound family must not raise an unknown-market-family error: {errors:?}"
+        );
     }
 
     #[test]
@@ -12570,16 +12754,24 @@ mod tests {
             )
             .expect("TrailingStopMarket exit order with explicit activation price should build");
 
-        let exit_admission = submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence::from_compiled_order(
-                strategy.config.strategy_id.clone(),
-                BoltV3OrderIntentKind::Exit,
-                exit_fallback_price.to_string(),
+        // A market-style (price-less) EXIT is valued at the instrument's
+        // structural price CEILING (`max_price`) — the universally fail-closed
+        // worst case for any side/intent — NOT at its reference/activation price.
+        // Valuing it at the activation price (as the pre-A4 code did) was a
+        // reference-price estimate, not a structural bound. This is the exit
+        // counterpart of the entry ceiling valuation above and must run through
+        // the strategy method that carries instrument context.
+        let exit_admission = strategy
+            .submit_admission_request_from_order(
+                &BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    BoltV3OrderIntentKind::Exit,
+                    exit_fallback_price.to_string(),
+                    &exit_order,
+                ),
                 &exit_order,
-            ),
-            &exit_order,
-        )
-        .expect("TrailingStopMarket activation-only exit admission should derive from compiled activation price");
+            )
+            .expect("market-style exit admission should derive from the instrument price ceiling");
 
         let OrderAny::TrailingStopMarket(exit_order) = exit_order else {
             panic!("TrailingStopMarket exit config should build an NT trailing-stop-market order");
@@ -12590,16 +12782,22 @@ mod tests {
         assert_eq!(exit_order.price(), None);
         assert_eq!(exit_order.trigger_price(), Some(Price::new(0.48, 2)));
         assert_eq!(exit_order.activation_price(), Some(Price::new(0.48, 2)));
-        let expected_exit_notional = Decimal::from_str(
-            exit_order
-                .activation_price()
-                .expect("activation-only trailing-stop exit should retain activation price")
-                .to_string()
-                .trim(),
-        )
-        .expect("activation price should parse")
-            * Decimal::from_str(quantity.to_string().trim()).expect("quantity should parse");
-        assert_eq!(exit_admission.notional, expected_exit_notional);
+        // The fixture instrument declares max_price = 0.999 (the production NT
+        // Polymarket adapter's ceiling), so the market-style exit cap is valued
+        // at the ceiling (0.999 * 2 = 1.998), strictly ABOVE the 0.48
+        // activation-price estimate it replaces (0.96).
+        assert_eq!(
+            exit_admission.notional,
+            Decimal::from_str("1.998").expect("expected decimal should parse"),
+            "a market-style exit must be valued at qty * the instrument price ceiling (2 * 0.999)"
+        );
+        assert!(
+            exit_admission.notional
+                > Decimal::from_str("0.48").expect("expected decimal should parse")
+                    * Decimal::from_str(quantity.to_string().trim())
+                        .expect("quantity should parse"),
+            "the ceiling valuation must bound strictly above the activation-price estimate it replaces"
+        );
         assert_eq!(exit_order.trigger_type(), Some(TriggerType::MarkPrice));
         assert_eq!(exit_order.trailing_offset(), Some(Decimal::new(3, 0)));
         assert_eq!(
@@ -15332,6 +15530,24 @@ mod tests {
         });
 
         assert_eq!(reasons, vec![ForcedFlatReason::ThinBook]);
+    }
+
+    #[test]
+    fn task5_missing_reference_timestamp_is_stale_reference() {
+        // A14: a never-observed reference (None timestamp) is the maximally
+        // stale condition and must classify as StaleReference, not as fresh.
+        let reasons = evaluate_forced_flat_predicates(&ForcedFlatInputs {
+            phase: SelectionPhase::Active,
+            metadata_matches_selection: true,
+            last_reference_ts_ms: None,
+            now_ms: 1_250,
+            stale_reference_after_ms: 1_500,
+            liquidity_available: Some(500.0),
+            min_liquidity_required: 100.0,
+            fast_venue_incoherent: false,
+        });
+
+        assert_eq!(reasons, vec![ForcedFlatReason::StaleReference]);
     }
 
     #[test]

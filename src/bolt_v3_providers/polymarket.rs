@@ -58,7 +58,7 @@ use nautilus_polymarket::{
     http::clob::PolymarketClobHttpClient,
 };
 use serde::Deserialize;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{
     bolt_v3_adapters::{
@@ -98,6 +98,14 @@ pub const SECRET_FIELD_NAMES: &[&str] = &[
     "api_secret_ssm_path",
     "passphrase_ssm_path",
 ];
+/// NT module path(s) whose info-level logs can echo Polymarket credential
+/// metadata; the live-node builder installs `WARN` filters for these so secret
+/// material never reaches operator logs. The path is pinned to the NT revision
+/// declared by `nautilus-polymarket` in `Cargo.toml` (single source of truth
+/// for the rev) and is kept honest at compile time by the
+/// `use nautilus_polymarket::common::credential::{..}` import above: if the NT
+/// rev moved this module, that import — and therefore the build — would fail
+/// before this string could silently drift.
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_polymarket::common::credential"];
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[
     "POLYMARKET_PK",
@@ -197,10 +205,23 @@ pub struct PolymarketSecretsConfig {
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct ResolvedBoltV3PolymarketSecrets {
-    pub private_key: String,
-    pub api_key: String,
-    pub api_secret: String,
-    pub passphrase: String,
+    /// Each secret field is wrapped in [`Zeroizing`] so the individual secret
+    /// bytes are scrubbed on drop even when a field is moved out of the
+    /// container — per-field zeroize in addition to the container-level
+    /// `ZeroizeOnDrop`. All four fields deref to `String`; the redacting
+    /// `Debug` impl below keeps them out of logs.
+    pub private_key: Zeroizing<String>,
+    pub api_key: Zeroizing<String>,
+    /// Canonical URL-safe base64 `api_secret` (padded) handed to the NT
+    /// Polymarket credential, which decodes it with the padded `URL_SAFE`
+    /// engine. The raw SSM value is canonicalized via
+    /// [`normalize_api_secret_padding`] before storage so NT never re-derives
+    /// padding silently. `normalize_api_secret_padding` only ever APPENDS `=`
+    /// padding and never rewrites the data characters, so the raw SSM byte
+    /// string is recoverable as this value with trailing `=` removed — see
+    /// [`redaction_values`](Self::redaction_values), which redacts both forms.
+    pub api_secret: Zeroizing<String>,
+    pub passphrase: Zeroizing<String>,
 }
 
 impl std::fmt::Debug for ResolvedBoltV3PolymarketSecrets {
@@ -224,10 +245,17 @@ impl ProviderResolvedSecrets for ResolvedBoltV3PolymarketSecrets {
     }
 
     fn redaction_values(&self) -> Vec<&str> {
+        // Redact BOTH the canonical (padded) `api_secret` and the raw SSM byte
+        // string so the post-run residue scan catches the secret in either
+        // representation. `normalize_api_secret_padding` only appends `=`
+        // padding, so the raw SSM value is exactly the stored value with its
+        // trailing `=` removed; callers dedup identical entries, so an
+        // already-canonical secret contributes a single redaction value.
         vec![
             self.private_key.as_str(),
             self.api_key.as_str(),
             self.api_secret.as_str(),
+            self.api_secret.trim_end_matches('='),
             self.passphrase.as_str(),
         ]
     }
@@ -491,6 +519,20 @@ pub fn resolve_secrets(
         resolver,
     )?;
     let api_secret = normalize_api_secret_padding(api_secret_raw);
+    // Symmetric with `validate_private_key_shape` (Polymarket) and
+    // `validate_binance_api_secret_shape` (Binance): reject api_secret material
+    // the NT Polymarket credential cannot decode BEFORE it is stored, so a
+    // malformed secret fails loud at SSM resolution rather than deep inside NT
+    // client construction.
+    if let Err(reason) = validate_api_secret_shape(&api_secret) {
+        return Err(BoltV3SecretError {
+            client_key: context.client_key.to_string(),
+            field: "api_secret_ssm_path".to_string(),
+            source: format!(
+                "resolved polymarket api_secret is not valid URL-safe base64 material accepted by the NautilusTrader polymarket adapter: {reason}"
+            ),
+        });
+    }
     let passphrase = resolve_field(
         context.client_key,
         "passphrase_ssm_path",
@@ -499,10 +541,10 @@ pub fn resolve_secrets(
         resolver,
     )?;
     Ok(Arc::new(ResolvedBoltV3PolymarketSecrets {
-        private_key,
-        api_key,
-        api_secret,
-        passphrase,
+        private_key: Zeroizing::new(private_key),
+        api_key: Zeroizing::new(api_key),
+        api_secret: Zeroizing::new(api_secret),
+        passphrase: Zeroizing::new(passphrase),
     }))
 }
 
@@ -565,6 +607,21 @@ fn normalize_api_secret_padding(mut api_secret: String) -> String {
     api_secret
 }
 
+/// Validates that the (padding-canonicalized) Polymarket `api_secret` decodes
+/// under the same padded `URL_SAFE` base64 engine the pinned NT Polymarket
+/// `Credential::new` uses, so an unusable secret is rejected at SSM resolution
+/// time rather than surfacing as an opaque NT client-construction failure
+/// later. Mirrors the resolve-time shape checks for `private_key`
+/// ([`validate_private_key_shape`]) and the Binance `api_secret`
+/// (`binance::validate_binance_api_secret_shape`).
+fn validate_api_secret_shape(api_secret: &str) -> Result<(), String> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE
+        .decode(api_secret)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 pub fn map_adapters(
     context: ProviderAdapterMapContext<'_>,
 ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
@@ -621,9 +678,9 @@ pub fn build_fee_provider(
     let secrets = secrets_for(client_key, resolved)?;
     let secrets = PolymarketSecrets::resolve(
         Some(secrets.private_key.as_str()),
-        Some(secrets.api_key.clone()),
-        Some(secrets.api_secret.clone()),
-        Some(secrets.passphrase.clone()),
+        Some(secrets.api_key.as_str().to_owned()),
+        Some(secrets.api_secret.as_str().to_owned()),
+        Some(secrets.passphrase.as_str().to_owned()),
         cfg.funder.clone(),
     )
     .map_err(|error| BoltV3AdapterMappingError::ValidationInvariant {
@@ -736,8 +793,14 @@ fn build_market_slug_filter(
                 updown_market_slug(&asset, &token, next),
             ],
             Err(error) => {
-                log::warn!(
-                    "bolt-v3 provider binding: skipping updown filter cycle (cadence={cadence}, now_unix_secs={now}): {error}"
+                // Fail closed: returning an empty slug set narrows the
+                // Polymarket instrument universe to zero for this cycle, which
+                // starves the strategy of tradeable instruments. That is the
+                // safe direction, but it must never be silent — emit at
+                // `error!` so an operator sees the data-starvation instead of a
+                // quiet warning that scrolls past.
+                log::error!(
+                    "bolt-v3 provider binding: failing closed on updown filter cycle (cadence={cadence}, now_unix_secs={now}); instrument universe narrowed to zero for this cycle: {error}"
                 );
                 Vec::new()
             }
@@ -771,10 +834,10 @@ fn map_execution(
     Ok(PolymarketExecClientConfig {
         trader_id: root.trader_id,
         account_id: cfg.account_id,
-        private_key: Some(secrets.private_key.clone()),
-        api_key: Some(secrets.api_key.clone()),
-        api_secret: Some(secrets.api_secret.clone()),
-        passphrase: Some(secrets.passphrase.clone()),
+        private_key: Some(secrets.private_key.as_str().to_owned()),
+        api_key: Some(secrets.api_key.as_str().to_owned()),
+        api_secret: Some(secrets.api_secret.as_str().to_owned()),
+        passphrase: Some(secrets.passphrase.as_str().to_owned()),
         funder: cfg.funder,
         signature_type: nt_signature_type(cfg.signature_type),
         base_url_http: Some(cfg.base_url_http),

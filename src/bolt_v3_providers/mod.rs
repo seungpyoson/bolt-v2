@@ -1133,10 +1133,10 @@ mod tests {
         clients.insert(
             "polymarket_main".to_string(),
             Arc::new(polymarket::ResolvedBoltV3PolymarketSecrets {
-                private_key: sentinel.to_string(),
-                api_key: "poly-api-key".to_string(),
-                api_secret: "YWJj".to_string(),
-                passphrase: "poly-passphrase".to_string(),
+                private_key: zeroize::Zeroizing::new(sentinel.to_string()),
+                api_key: zeroize::Zeroizing::new("poly-api-key".to_string()),
+                api_secret: zeroize::Zeroizing::new("YWJj".to_string()),
+                passphrase: zeroize::Zeroizing::new("poly-passphrase".to_string()),
             }) as ResolvedBoltV3ClientSecrets,
         );
         let resolved = ResolvedBoltV3Secrets { clients };

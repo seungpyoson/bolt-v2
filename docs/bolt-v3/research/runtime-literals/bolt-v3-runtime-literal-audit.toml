@@ -2091,14 +2091,6 @@ reason = '''This labels the TOML field that supplied cadence seconds when projec
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
-literal = "\"updown period pair overflows i64 (now_unix_seconds={now_unix_seconds}, cadence_seconds={cadence_seconds})\""
-context = "\"updown period pair overflows i64 (now_unix_seconds={now_unix_seconds}, cadence_seconds={cadence_seconds})\""
-classification = "diagnostic_template"
-reason = "This is an error-display template for period arithmetic overflow, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_market_families/updown.rs"
-kind = "string"
 literal = "\"updown period pair overflows i64 (now_unix_secs={now_unix_secs}, cadence_secs={cadence_secs})\""
 context = "\"updown period pair overflows i64 (now_unix_secs={now_unix_secs}, cadence_secs={cadence_secs})\""
 classification = "diagnostic_template"
@@ -2439,6 +2431,86 @@ literal = "\"BINANCE_ED25519_API_SECRET\""
 context = "\"BINANCE_ED25519_API_SECRET\","
 classification = "forbidden_environment_variable"
 reason = "Runtime contract Section 3 requires rejecting canonical Binance environment-variable secret fallbacks before NT client construction."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"BINANCE_TESTNET_API_KEY\""
+context = "\"BINANCE_TESTNET_API_KEY\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3: NT resolve_credentials reads this Spot/Margin/Options testnet key var (crates/adapters/binance/src/common/credential.rs); blocking it closes the testnet defense-in-depth gap."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"BINANCE_TESTNET_API_SECRET\""
+context = "\"BINANCE_TESTNET_API_SECRET\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3: NT resolve_credentials reads this Spot/Margin/Options testnet secret var (crates/adapters/binance/src/common/credential.rs); blocking it closes the testnet defense-in-depth gap."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"BINANCE_TESTNET_ED25519_API_KEY\""
+context = "\"BINANCE_TESTNET_ED25519_API_KEY\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3: NT resolve_credentials reads this deprecated testnet Ed25519 key var via std::env::var (crates/adapters/binance/src/common/credential.rs) before the deprecation error, so it must be rejected as a secret fallback."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"BINANCE_TESTNET_ED25519_API_SECRET\""
+context = "\"BINANCE_TESTNET_ED25519_API_SECRET\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3: NT resolve_credentials reads this deprecated testnet Ed25519 secret var via std::env::var (crates/adapters/binance/src/common/credential.rs) before the deprecation error, so it must be rejected as a secret fallback."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"BINANCE_FUTURES_TESTNET_API_KEY\""
+context = "\"BINANCE_FUTURES_TESTNET_API_KEY\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3: NT resolve_credentials reads this UsdM/CoinM futures-testnet key var (crates/adapters/binance/src/common/credential.rs); blocking it closes the futures-testnet defense-in-depth gap."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"BINANCE_FUTURES_TESTNET_API_SECRET\""
+context = "\"BINANCE_FUTURES_TESTNET_API_SECRET\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3: NT resolve_credentials reads this UsdM/CoinM futures-testnet secret var (crates/adapters/binance/src/common/credential.rs); blocking it closes the futures-testnet defense-in-depth gap."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"BINANCE_FUTURES_TESTNET_ED25519_API_KEY\""
+context = "\"BINANCE_FUTURES_TESTNET_ED25519_API_KEY\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3: NT resolve_credentials reads this deprecated futures-testnet Ed25519 key var via std::env::var (crates/adapters/binance/src/common/credential.rs) before the deprecation warning, so it must be rejected as a secret fallback."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"BINANCE_FUTURES_TESTNET_ED25519_API_SECRET\""
+context = "\"BINANCE_FUTURES_TESTNET_ED25519_API_SECRET\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3: NT resolve_credentials reads this deprecated futures-testnet Ed25519 secret var via std::env::var (crates/adapters/binance/src/common/credential.rs) before the deprecation warning, so it must be rejected as a secret fallback."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"BINANCE_DEMO_API_KEY\""
+context = "\"BINANCE_DEMO_API_KEY\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3: NT resolve_credentials reads this demo (all product types) key var (crates/adapters/binance/src/common/credential.rs); blocking it closes the demo defense-in-depth gap."
+
+[[allowed]]
+path = "src/bolt_v3_providers/binance.rs"
+kind = "string"
+literal = "\"BINANCE_DEMO_API_SECRET\""
+context = "\"BINANCE_DEMO_API_SECRET\","
+classification = "forbidden_environment_variable"
+reason = "Runtime contract Section 3: NT resolve_credentials reads this demo (all product types) secret var (crates/adapters/binance/src/common/credential.rs); blocking it closes the demo defense-in-depth gap."
 
 [[allowed]]
 path = "src/bolt_v3_providers/binance.rs"
@@ -14803,7 +14875,7 @@ reason = '''Fail-closed diagnostic for an inverse quote-quantity order; the inte
 [[allowed]]
 path = '''src/strategies/binary_oracle_edge_taker.rs'''
 kind = '''string'''
-literal = '''"bolt-v3 submit admission refuses a market-style entry without a structural price ceiling for client_order_id={}"'''
-context = '''"bolt-v3 submit admission refuses a market-style entry without a structural price ceiling for client_order_id={}",'''
+literal = '''"bolt-v3 submit admission refuses a market-style order without a structural price ceiling for client_order_id={}"'''
+context = '''"bolt-v3 submit admission refuses a market-style order without a structural price ceiling for client_order_id={}",'''
 classification = '''diagnostic_template'''
-reason = '''Fail-closed diagnostic for a market-style entry lacking a structural price ceiling; the interpolated client_order_id is computed from the typed order, not an operator runtime value.'''
+reason = '''Fail-closed diagnostic for a market-style order (entry or risk-reducing exit) lacking a structural price ceiling; the interpolated client_order_id is computed from the typed order, not an operator runtime value.'''

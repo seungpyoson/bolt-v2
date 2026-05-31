@@ -26,17 +26,17 @@ use nautilus_polymarket::{
 
 fn fixture_polymarket_secrets() -> ResolvedBoltV3PolymarketSecrets {
     ResolvedBoltV3PolymarketSecrets {
-        private_key: "regression-poly-private-key".to_string(),
-        api_key: "regression-poly-api-key".to_string(),
-        api_secret: "regression-poly-api-secret".to_string(),
-        passphrase: "regression-poly-passphrase".to_string(),
+        private_key: zeroize::Zeroizing::new("regression-poly-private-key".to_string()),
+        api_key: zeroize::Zeroizing::new("regression-poly-api-key".to_string()),
+        api_secret: zeroize::Zeroizing::new("regression-poly-api-secret".to_string()),
+        passphrase: zeroize::Zeroizing::new("regression-poly-passphrase".to_string()),
     }
 }
 
 fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
     ResolvedBoltV3BinanceSecrets {
-        api_key: "regression-binance-api-key".to_string(),
-        api_secret: "regression-binance-api-secret".to_string(),
+        api_key: zeroize::Zeroizing::new("regression-binance-api-key".to_string()),
+        api_secret: zeroize::Zeroizing::new("regression-binance-api-secret".to_string()),
     }
 }
 

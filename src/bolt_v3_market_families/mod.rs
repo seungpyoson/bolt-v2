@@ -13,9 +13,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
-    bolt_v3_instrument_filters::{
-        InstrumentFilterConfig, InstrumentFilterError, InstrumentFilterTarget,
-    },
+    bolt_v3_instrument_filters::InstrumentFilterError,
 };
 use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
 
@@ -31,19 +29,23 @@ struct TargetFamilyDispatch {
     rotating_market_family: String,
 }
 
+/// Per-strategy market-identity projector signature. The parent
+/// dispatcher (`market_identity_plan_from_config_with_bindings`) reads
+/// each strategy's `target.rotating_market_family` first and routes only
+/// the matching strategies into this function; family bindings never see
+/// strategies from a different family, so a future non-updown strategy
+/// cannot fail inside the updown binding's typed deserialization.
+/// Returns a type-erased `MarketIdentityTarget` so the shared plan
+/// builder owns the single projection path and no family is dispatched by
+/// a hardcoded call.
+pub type PlanStrategyTargetFn =
+    fn(&LoadedStrategy) -> Result<Option<Arc<dyn MarketIdentityTarget>>, InstrumentFilterError>;
+
 #[derive(Clone)]
 pub struct MarketFamilyValidationBinding {
     pub key: &'static str,
     pub validate_target: fn(&str, &toml::Value) -> Vec<String>,
-    /// Per-strategy projector. The parent dispatcher
-    /// (`instrument_filters_from_config_with_bindings`) reads each
-    /// strategy's `target.rotating_market_family` first and routes only
-    /// the matching strategies into this function; family bindings
-    /// never see strategies from a different family, so a future
-    /// non-updown strategy cannot fail inside the updown binding's
-    /// typed deserialization.
-    pub instrument_filter_target_for_strategy:
-        fn(&LoadedStrategy) -> Result<Option<InstrumentFilterTarget>, InstrumentFilterError>,
+    pub plan_strategy_target: PlanStrategyTargetFn,
     pub target_runtime_fields:
         fn(&toml::Value) -> Result<TargetRuntimeFields, InstrumentFilterError>,
     pub select_binary_option_market:
@@ -211,6 +213,10 @@ impl MarketIdentityPlan {
         self.targets.push(Arc::new(target));
     }
 
+    pub fn push_arc_target(&mut self, target: Arc<dyn MarketIdentityTarget>) {
+        self.targets.push(target);
+    }
+
     pub fn targets(&self) -> impl Iterator<Item = &dyn MarketIdentityTarget> {
         self.targets.iter().map(Arc::as_ref)
     }
@@ -230,7 +236,7 @@ impl MarketIdentityPlan {
 const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[MarketFamilyValidationBinding {
     key: updown::KEY,
     validate_target: updown::validate_target_block,
-    instrument_filter_target_for_strategy: updown::instrument_filter_target_for_strategy,
+    plan_strategy_target: updown::plan_strategy_target,
     target_runtime_fields: updown::target_runtime_fields,
     select_binary_option_market: updown::select_binary_option_market,
     market_selection_candidate_windows: updown::market_selection_candidate_windows,
@@ -244,21 +250,21 @@ pub fn validation_bindings() -> &'static [MarketFamilyValidationBinding] {
 pub fn market_identity_plan_from_config(
     loaded: &LoadedBoltV3Config,
 ) -> Result<MarketIdentityPlan, MarketIdentityPlanError> {
-    updown::plan_market_identity(loaded)
+    market_identity_plan_from_config_with_bindings(loaded, validation_bindings())
         .map_err(|error| MarketIdentityPlanError::new(error.to_string()))
 }
 
-pub fn instrument_filters_from_config(
-    loaded: &LoadedBoltV3Config,
-) -> Result<InstrumentFilterConfig, InstrumentFilterError> {
-    instrument_filters_from_config_with_bindings(loaded, validation_bindings())
-}
-
-pub fn instrument_filters_from_config_with_bindings(
+/// Build the market-identity plan by routing every configured strategy
+/// through the family registry. Each strategy's
+/// `target.rotating_market_family` selects the binding that owns its
+/// projection, so no family is dispatched by a hardcoded call and an
+/// unknown family fails loud as `UnsupportedFamily` (the same fail-loud
+/// policy the sibling target dispatchers use).
+pub fn market_identity_plan_from_config_with_bindings(
     loaded: &LoadedBoltV3Config,
     bindings: &[MarketFamilyValidationBinding],
-) -> Result<InstrumentFilterConfig, InstrumentFilterError> {
-    let mut targets = Vec::new();
+) -> Result<MarketIdentityPlan, InstrumentFilterError> {
+    let mut plan = MarketIdentityPlan::empty();
     for strategy in &loaded.strategies {
         let dispatch: TargetFamilyDispatch =
             strategy.config.target.clone().try_into().map_err(|error| {
@@ -278,11 +284,11 @@ pub fn instrument_filters_from_config_with_bindings(
                 family_key: dispatch.rotating_market_family.clone(),
                 supported: bindings.iter().map(|b| b.key).collect(),
             })?;
-        if let Some(target) = (binding.instrument_filter_target_for_strategy)(strategy)? {
-            targets.push(target);
+        if let Some(target) = (binding.plan_strategy_target)(strategy)? {
+            plan.push_arc_target(target);
         }
     }
-    Ok(InstrumentFilterConfig::new(targets))
+    Ok(plan)
 }
 
 pub fn target_runtime_fields_from_target(
@@ -593,39 +599,6 @@ pub(crate) fn selected_market_requirement_error(
     }
 }
 
-impl From<updown::BoltV3InstrumentFilterError> for InstrumentFilterError {
-    fn from(error: updown::BoltV3InstrumentFilterError) -> Self {
-        match error {
-            updown::BoltV3InstrumentFilterError::NonPositiveCadenceSeconds {
-                strategy_instance_id,
-                configured_target_id,
-                cadence_seconds,
-            } => Self::NonPositiveCadenceSeconds {
-                strategy_instance_id,
-                configured_target_id,
-                cadence_seconds,
-            },
-            updown::BoltV3InstrumentFilterError::NegativeNowUnixSeconds { now_unix_seconds } => {
-                Self::NegativeNowUnixSeconds { now_unix_seconds }
-            }
-            updown::BoltV3InstrumentFilterError::PeriodPairOverflow {
-                now_unix_seconds,
-                cadence_seconds,
-            } => Self::PeriodPairOverflow {
-                now_unix_seconds,
-                cadence_seconds,
-            },
-            updown::BoltV3InstrumentFilterError::TargetParseFailed {
-                strategy_instance_id,
-                message,
-            } => Self::TargetParseFailed {
-                strategy_instance_id,
-                message,
-            },
-        }
-    }
-}
-
 /// Target validation entry point used by core startup validation.
 /// Returns `(metadata, errors)`: the metadata is `None` when the raw
 /// `[target]` value cannot even produce a `configured_target_id` (in
@@ -684,16 +657,16 @@ mod tests {
         &[MarketFamilyValidationBinding {
             key: "fixture_family",
             validate_target: fake_validate_target,
-            instrument_filter_target_for_strategy: fake_instrument_filter_target_for_strategy,
+            plan_strategy_target: fake_plan_strategy_target,
             target_runtime_fields: fake_target_runtime_fields,
             select_binary_option_market: fake_select_binary_option_market,
             market_selection_candidate_windows: fake_market_selection_candidate_windows,
             selected_market_requirement: fake_selected_market_requirement,
         }];
 
-    fn fake_instrument_filter_target_for_strategy(
+    fn fake_plan_strategy_target(
         strategy: &LoadedStrategy,
-    ) -> Result<Option<InstrumentFilterTarget>, InstrumentFilterError> {
+    ) -> Result<Option<Arc<dyn MarketIdentityTarget>>, InstrumentFilterError> {
         Err(InstrumentFilterError::Other {
             message: format!(
                 "fixture_family binding invoked for strategy `{}`",
@@ -887,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn instrument_filters_use_injected_family_binding_without_parent_family_branch() {
+    fn market_identity_plan_uses_injected_family_binding_without_parent_family_branch() {
         let mut loaded = fixture_loaded_config();
         loaded
             .strategies
@@ -896,8 +869,9 @@ mod tests {
         // Production registry has only updown; a fixture_family
         // strategy must be rejected as UnsupportedFamily, not silently
         // dispatched to updown.
-        let production_error = instrument_filters_from_config(&loaded)
-            .expect_err("production registry must reject unknown family");
+        let production_error =
+            market_identity_plan_from_config_with_bindings(&loaded, validation_bindings())
+                .expect_err("production registry must reject unknown family");
         match &production_error {
             InstrumentFilterError::UnsupportedFamily { family_key, .. } => {
                 assert_eq!(family_key, "fixture_family");
@@ -909,7 +883,7 @@ mod tests {
         // strategy and returns its own error, proving the per-strategy
         // dispatcher routes by `target.rotating_market_family`.
         let injected_error =
-            instrument_filters_from_config_with_bindings(&loaded, FAKE_FAMILY_BINDINGS)
+            market_identity_plan_from_config_with_bindings(&loaded, FAKE_FAMILY_BINDINGS)
                 .expect_err("fake binding should own this dispatch and return its error");
         assert_eq!(
             injected_error.to_string(),
@@ -921,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn instrument_filters_dispatch_routes_each_strategy_to_its_family_binding() {
+    fn market_identity_plan_dispatch_routes_each_strategy_to_its_family_binding() {
         // Two strategies, one updown and one fixture_family. The
         // per-strategy dispatcher must read each strategy's
         // `target.rotating_market_family` and call only the matching
@@ -945,7 +919,7 @@ mod tests {
         // The dispatcher must surface that error, proving the fake
         // strategy was routed to the fake binding and not to updown.
         let dispatch_error =
-            instrument_filters_from_config_with_bindings(&loaded, &combined_bindings)
+            market_identity_plan_from_config_with_bindings(&loaded, &combined_bindings)
                 .expect_err("fake binding must reject the fixture_family strategy");
         match &dispatch_error {
             InstrumentFilterError::Other { message } => {
@@ -964,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn instrument_filters_dispatcher_rejects_strategy_with_missing_family_discriminator() {
+    fn market_identity_plan_dispatcher_rejects_strategy_with_missing_family_discriminator() {
         // The parent dispatcher reads `target.rotating_market_family`
         // from each strategy's raw TOML before routing to a family
         // binding. If the discriminator field is absent, the dispatcher
@@ -977,7 +951,7 @@ mod tests {
             .push(fixture_strategy_without_family_discriminator());
         let strategy_id = loaded.strategies[0].config.strategy_instance_id.clone();
 
-        match instrument_filters_from_config(&loaded) {
+        match market_identity_plan_from_config_with_bindings(&loaded, validation_bindings()) {
             Err(InstrumentFilterError::TargetParseFailed {
                 strategy_instance_id,
                 message,
@@ -1206,113 +1180,6 @@ mod tests {
             requirement.selected_market_key,
             canonical_json_sha256(&expected_input).expect("canonical BTreeMap should hash")
         );
-    }
-
-    #[test]
-    fn from_internal_preserves_typed_non_positive_cadence_seconds() {
-        let internal = updown::BoltV3InstrumentFilterError::NonPositiveCadenceSeconds {
-            strategy_instance_id: Some("alpha".to_string()),
-            configured_target_id: Some("target_a".to_string()),
-            cadence_seconds: -1,
-        };
-
-        let public: InstrumentFilterError = internal.into();
-
-        match public {
-            InstrumentFilterError::NonPositiveCadenceSeconds {
-                strategy_instance_id,
-                configured_target_id,
-                cadence_seconds,
-            } => {
-                assert_eq!(strategy_instance_id.as_deref(), Some("alpha"));
-                assert_eq!(configured_target_id.as_deref(), Some("target_a"));
-                assert_eq!(cadence_seconds, -1);
-            }
-            other => panic!("expected NonPositiveCadenceSeconds, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn display_for_non_positive_cadence_seconds_preserves_internal_operator_message() {
-        let strategy_instance_id = Some("alpha".to_string());
-        let configured_target_id = Some("target_a".to_string());
-        let cadence_seconds = -1;
-
-        let public = InstrumentFilterError::NonPositiveCadenceSeconds {
-            strategy_instance_id: strategy_instance_id.clone(),
-            configured_target_id: configured_target_id.clone(),
-            cadence_seconds,
-        };
-        let internal = updown::BoltV3InstrumentFilterError::NonPositiveCadenceSeconds {
-            strategy_instance_id,
-            configured_target_id,
-            cadence_seconds,
-        };
-        assert_eq!(public.to_string(), internal.to_string());
-    }
-
-    #[test]
-    fn from_internal_preserves_typed_negative_now_unix_seconds() {
-        let internal = updown::BoltV3InstrumentFilterError::NegativeNowUnixSeconds {
-            now_unix_seconds: -42,
-        };
-        let internal_message = internal.to_string();
-
-        let public: InstrumentFilterError = internal.into();
-
-        match &public {
-            InstrumentFilterError::NegativeNowUnixSeconds { now_unix_seconds } => {
-                assert_eq!(*now_unix_seconds, -42);
-            }
-            other => panic!("expected NegativeNowUnixSeconds, got {other:?}"),
-        }
-        assert_eq!(public.to_string(), internal_message);
-    }
-
-    #[test]
-    fn from_internal_preserves_typed_period_pair_overflow() {
-        let internal = updown::BoltV3InstrumentFilterError::PeriodPairOverflow {
-            now_unix_seconds: i64::MAX,
-            cadence_seconds: 60,
-        };
-        let internal_message = internal.to_string();
-
-        let public: InstrumentFilterError = internal.into();
-
-        match &public {
-            InstrumentFilterError::PeriodPairOverflow {
-                now_unix_seconds,
-                cadence_seconds,
-            } => {
-                assert_eq!(*now_unix_seconds, i64::MAX);
-                assert_eq!(*cadence_seconds, 60);
-            }
-            other => panic!("expected PeriodPairOverflow, got {other:?}"),
-        }
-        assert_eq!(public.to_string(), internal_message);
-    }
-
-    #[test]
-    fn from_internal_preserves_typed_target_parse_failed() {
-        let internal = updown::BoltV3InstrumentFilterError::TargetParseFailed {
-            strategy_instance_id: "alpha".to_string(),
-            message: "missing field `cadence_seconds`".to_string(),
-        };
-        let internal_message = internal.to_string();
-
-        let public: InstrumentFilterError = internal.into();
-
-        match &public {
-            InstrumentFilterError::TargetParseFailed {
-                strategy_instance_id,
-                message,
-            } => {
-                assert_eq!(strategy_instance_id, "alpha");
-                assert_eq!(message, "missing field `cadence_seconds`");
-            }
-            other => panic!("expected TargetParseFailed, got {other:?}"),
-        }
-        assert_eq!(public.to_string(), internal_message);
     }
 
     #[test]

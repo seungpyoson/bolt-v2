@@ -70,17 +70,17 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     clients.insert(
         "polymarket_main".to_string(),
         Arc::new(ResolvedBoltV3PolymarketSecrets {
-            private_key: "binding-poly-private-key".to_string(),
-            api_key: "binding-poly-api-key".to_string(),
-            api_secret: "binding-poly-api-secret".to_string(),
-            passphrase: "binding-poly-passphrase".to_string(),
+            private_key: zeroize::Zeroizing::new("binding-poly-private-key".to_string()),
+            api_key: zeroize::Zeroizing::new("binding-poly-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new("binding-poly-api-secret".to_string()),
+            passphrase: zeroize::Zeroizing::new("binding-poly-passphrase".to_string()),
         }),
     );
     clients.insert(
         "binance_reference".to_string(),
         Arc::new(ResolvedBoltV3BinanceSecrets {
-            api_key: "binding-binance-api-key".to_string(),
-            api_secret: "binding-binance-api-secret".to_string(),
+            api_key: zeroize::Zeroizing::new("binding-binance-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new("binding-binance-api-secret".to_string()),
         }),
     );
     for client_key in [
@@ -91,8 +91,8 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         clients.insert(
             client_key.to_string(),
             Arc::new(ResolvedBoltV3BinanceSecrets {
-                api_key: "binding-binance-api-key".to_string(),
-                api_secret: "binding-binance-api-secret".to_string(),
+                api_key: zeroize::Zeroizing::new("binding-binance-api-key".to_string()),
+                api_secret: zeroize::Zeroizing::new("binding-binance-api-secret".to_string()),
             }),
         );
     }

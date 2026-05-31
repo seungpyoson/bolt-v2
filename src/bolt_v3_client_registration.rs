@@ -192,18 +192,19 @@ mod tests {
             // 32-byte secp256k1 hex; the unit tests in this module never
             // reach NT factory.create, but downstream integration tests
             // use the same shape.
-            private_key: "0x4242424242424242424242424242424242424242424242424242424242424242"
-                .to_string(),
-            api_key: "fixture-poly-api-key".to_string(),
-            api_secret: "YWJj".to_string(),
-            passphrase: "fixture-poly-passphrase".to_string(),
+            private_key: zeroize::Zeroizing::new(
+                "0x4242424242424242424242424242424242424242424242424242424242424242".to_string(),
+            ),
+            api_key: zeroize::Zeroizing::new("fixture-poly-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new("YWJj".to_string()),
+            passphrase: zeroize::Zeroizing::new("fixture-poly-passphrase".to_string()),
         }
     }
 
     fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
         ResolvedBoltV3BinanceSecrets {
-            api_key: "fixture-binance-api-key".to_string(),
-            api_secret: "fixture-binance-api-secret".to_string(),
+            api_key: zeroize::Zeroizing::new("fixture-binance-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new("fixture-binance-api-secret".to_string()),
         }
     }
 

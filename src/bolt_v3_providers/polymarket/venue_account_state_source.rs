@@ -76,9 +76,9 @@ pub async fn materialize_venue_account_state_source_from_configured_account_quer
     })?;
     let polymarket_secrets = PolymarketSecrets::resolve(
         Some(secrets.private_key.as_str()),
-        Some(secrets.api_key.clone()),
-        Some(secrets.api_secret.clone()),
-        Some(secrets.passphrase.clone()),
+        Some(secrets.api_key.as_str().to_owned()),
+        Some(secrets.api_secret.as_str().to_owned()),
+        Some(secrets.passphrase.as_str().to_owned()),
         cfg.funder.clone(),
     )
     .map_err(

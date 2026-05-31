@@ -830,13 +830,36 @@ pub struct SignedTrade {
     pub size: f64,
 }
 
+/// Runtime view of the trade-flow buffer's window/cap knobs.
+///
+/// Plain runtime config view without a serde derive: the strategy owns TOML
+/// deserialization and projects the relevant fields here at the call site
+/// (mirroring [`RealizedVolConfig`] for the volatility estimator), so the buffer
+/// never depends on the strategy's config type and moves cleanly into a shared
+/// module when the W3 consumer is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignedTradeFlowConfig {
+    pub window_secs: u64,
+    pub max_samples: u64,
+}
+
+/// Project the strategy's trade-flow TOML knobs into the buffer's runtime config
+/// view. Single place that maps those fields onto [`SignedTradeFlowConfig`]
+/// (mirrors [`realized_vol_config`]).
+fn signed_trade_flow_config(config: &BinaryOracleEdgeTakerConfig) -> SignedTradeFlowConfig {
+    SignedTradeFlowConfig {
+        window_secs: config.trade_flow_window_secs,
+        max_samples: config.trade_flow_max_samples,
+    }
+}
+
 /// Bounded rolling buffer of signed trades for a single quoted instrument.
 ///
 /// Mirrors [`RealizedVolEstimator`]'s config-driven rolling-window shape: the
-/// retention window and hard sample cap both come from strategy config, and the
-/// buffer is bounded by time (`window_ms`) and count (`max_samples`). It only
-/// retains signed trade flow; the W3 stage reads it to compute adverse-selection
-/// signals.
+/// retention window and hard sample cap both come from a projected
+/// [`SignedTradeFlowConfig`], and the buffer is bounded by time (`window_ms`) and
+/// count (`max_samples`). It only retains signed trade flow; the W3 stage reads
+/// it to compute adverse-selection signals.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SignedTradeFlow {
     window_ms: u64,
@@ -845,12 +868,10 @@ pub struct SignedTradeFlow {
 }
 
 impl SignedTradeFlow {
-    fn from_config(config: &BinaryOracleEdgeTakerConfig) -> Self {
+    fn from_config(config: &SignedTradeFlowConfig) -> Self {
         Self {
-            window_ms: config
-                .trade_flow_window_secs
-                .saturating_mul(MILLIS_PER_SECOND_U64),
-            max_samples: config.trade_flow_max_samples as usize,
+            window_ms: config.window_secs.saturating_mul(MILLIS_PER_SECOND_U64),
+            max_samples: config.max_samples as usize,
             samples: VecDeque::new(),
         }
     }
@@ -901,8 +922,24 @@ impl SignedTradeFlow {
     }
 
     /// Retained signed trades, oldest first. Read seam for the W3 stage.
+    ///
+    /// These are evicted only as of the last [`observe`](Self::observe); in a
+    /// quiet market some may have aged out of the window. A point-in-time
+    /// consumer should read through [`samples_within`](Self::samples_within).
     pub fn samples(&self) -> &VecDeque<SignedTrade> {
         &self.samples
+    }
+
+    /// Signed trades still inside the retention window as of `now_ms`, oldest
+    /// first. Unlike [`samples`](Self::samples) this filters against the caller's
+    /// clock rather than the last `observe` timestamp, so a quiet market does not
+    /// surface trades that have aged out of the window. Read seam for the W3
+    /// stage's point-in-time adverse-selection reads.
+    pub fn samples_within(&self, now_ms: u64) -> impl Iterator<Item = &SignedTrade> {
+        let cutoff_ms = now_ms.saturating_sub(self.window_ms);
+        self.samples
+            .iter()
+            .filter(move |trade| trade.ts_ms >= cutoff_ms)
     }
 }
 
@@ -5091,9 +5128,29 @@ const TARGET_MARKET_NOT_FOUND_REASON: &str = stringify!(target_market_not_found)
 
 impl BinaryOracleEdgeTakerBuilder {
     fn parse_config(raw: &Value) -> Result<BinaryOracleEdgeTakerConfig> {
-        raw.clone()
+        let config: BinaryOracleEdgeTakerConfig = raw
+            .clone()
             .try_into()
-            .context("binary_oracle_edge_taker builder requires a valid config table")
+            .context("binary_oracle_edge_taker builder requires a valid config table")?;
+        // Fail loud at load: a non-positive spike_guard_return_threshold makes the
+        // spike guard's `relative_move >= threshold` test (relative_move is an
+        // abs(), always >= 0) always true, arming the cooldown on every reference
+        // quote and silently blocking all entry. The TOML type check accepts
+        // 0.0/negatives, so the range is validated here, matching the build-path
+        // `is_positive_finite` precedent (price_from_config / trailing_offset_from_config).
+        anyhow::ensure!(
+            is_positive_finite(config.spike_guard_return_threshold),
+            "spike_guard_return_threshold must be positive and finite"
+        );
+        // Fail loud at load: a zero trade-flow sample cap makes the count-cap
+        // evict every observation, permanently emptying the buffer and starving
+        // the W3 read seam. The TOML type check accepts 0, so the bound is checked
+        // here.
+        anyhow::ensure!(
+            config.trade_flow_max_samples > 0,
+            "trade_flow_max_samples must be positive"
+        );
+        Ok(config)
     }
 
     fn push_missing(
@@ -5545,7 +5602,7 @@ fn subscribe_new_books(
         strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
         #[cfg(not(test))]
         strategy.subscribe_trades(instrument_id, None, None);
-        let trade_flow = SignedTradeFlow::from_config(&strategy.config);
+        let trade_flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&strategy.config));
         strategy.active.trade_flow.insert(instrument_id, trade_flow);
         strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
     }
@@ -5556,7 +5613,7 @@ fn subscribe_new_books(
         strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
         #[cfg(not(test))]
         strategy.subscribe_trades(instrument_id, None, None);
-        let trade_flow = SignedTradeFlow::from_config(&strategy.config);
+        let trade_flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&strategy.config));
         strategy.active.trade_flow.insert(instrument_id, trade_flow);
         strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
     }
@@ -5567,7 +5624,7 @@ fn subscribe_new_books(
         strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
         #[cfg(not(test))]
         strategy.subscribe_trades(instrument_id, None, None);
-        let trade_flow = SignedTradeFlow::from_config(&strategy.config);
+        let trade_flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&strategy.config));
         strategy.active.trade_flow.insert(instrument_id, trade_flow);
         strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
     }
@@ -7027,6 +7084,50 @@ mod tests {
         let strategy = BinaryOracleEdgeTaker::new(config, context);
 
         assert_eq!(strategy.core.config.oms_type, Some(NtOmsType::Hedging));
+    }
+
+    #[test]
+    fn parse_config_rejects_non_positive_spike_guard_return_threshold() {
+        // A non-positive spike_guard_return_threshold makes the spike guard's
+        // `relative_move >= threshold` test (relative_move is an abs(), always
+        // >= 0) always true, arming the cooldown on every reference quote and
+        // silently blocking all entry. 0.0 and negatives are valid TOML floats so
+        // the type check cannot catch them; they must be rejected fail-loud at
+        // config load.
+        for bad in [0.0_f64, -0.01_f64] {
+            let mut raw = valid_raw_config();
+            raw.as_table_mut()
+                .expect("raw config should be a TOML table")
+                .insert(
+                    "spike_guard_return_threshold".to_string(),
+                    Value::Float(bad),
+                );
+            let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+                .expect_err("non-positive spike_guard_return_threshold must be rejected");
+            assert!(
+                err.to_string()
+                    .contains("spike_guard_return_threshold must be positive and finite"),
+                "expected positivity rejection for {bad}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_config_rejects_zero_trade_flow_max_samples() {
+        // A zero sample cap makes the count-cap evict every observation, leaving
+        // the buffer permanently empty. 0 is a valid TOML integer so the type
+        // check cannot catch it; it must be rejected fail-loud at config load.
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert("trade_flow_max_samples".to_string(), Value::Integer(0));
+        let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("zero trade_flow_max_samples must be rejected");
+        assert!(
+            err.to_string()
+                .contains("trade_flow_max_samples must be positive"),
+            "expected positivity rejection, got: {err}"
+        );
     }
 
     #[test]
@@ -13278,7 +13379,7 @@ mod tests {
         let mut config = test_strategy().config.clone();
         config.trade_flow_window_secs = 30;
         config.trade_flow_max_samples = 100;
-        let mut flow = SignedTradeFlow::from_config(&config);
+        let mut flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&config));
 
         flow.observe(&trade_tick_with_aggressor(
             "condition-A-A-UP.POLYMARKET",
@@ -13342,7 +13443,7 @@ mod tests {
         let mut config = test_strategy().config.clone();
         config.trade_flow_window_secs = 600;
         config.trade_flow_max_samples = 100;
-        let mut flow = SignedTradeFlow::from_config(&config);
+        let mut flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&config));
 
         flow.observe(&trade_tick_with_aggressor(
             "condition-A-A-UP.POLYMARKET",
@@ -13388,12 +13489,56 @@ mod tests {
     }
 
     #[test]
+    fn signed_trade_flow_samples_within_excludes_trades_aged_out_by_caller_clock() {
+        // Eviction only runs inside `observe`, so in a quiet market `samples()`
+        // can still hold trades that have aged out of the window. A point-in-time
+        // consumer reads through `samples_within(now)`, which filters against the
+        // caller's clock.
+        let mut config = test_strategy().config.clone();
+        config.trade_flow_window_secs = 10; // 10_000ms window
+        config.trade_flow_max_samples = 100;
+        let mut flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&config));
+
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.50,
+            1.0,
+            AggressorSide::Buyer,
+            1_000,
+        ));
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.51,
+            1.0,
+            AggressorSide::Buyer,
+            5_000,
+        ));
+
+        // observe-time eviction at 5_000ms (cutoff 5_000 - 10_000 saturates to 0)
+        // retains both; the raw buffer is not filtered by the caller's clock.
+        assert_eq!(flow.len(), 2);
+
+        // As of now = 20_000ms the window is [10_000, 20_000]; both trades have
+        // aged out, so a point-in-time read reports none.
+        assert!(flow.samples_within(20_000).next().is_none());
+
+        // As of now = 12_000ms the window is [2_000, 12_000]: the 5_000ms trade is
+        // in-window, the 1_000ms trade has aged out.
+        assert_eq!(
+            flow.samples_within(12_000)
+                .map(|trade| trade.ts_ms)
+                .collect::<Vec<_>>(),
+            vec![5_000]
+        );
+    }
+
+    #[test]
     fn signed_trade_flow_evicts_by_window_then_caps_by_max_samples() {
         // Window eviction: a 10-second window drops trades older than now - window.
         let mut window_config = test_strategy().config.clone();
         window_config.trade_flow_window_secs = 10;
         window_config.trade_flow_max_samples = 100;
-        let mut windowed = SignedTradeFlow::from_config(&window_config);
+        let mut windowed = SignedTradeFlow::from_config(&signed_trade_flow_config(&window_config));
 
         windowed.observe(&trade_tick_with_aggressor(
             "condition-A-A-UP.POLYMARKET",
@@ -13435,7 +13580,7 @@ mod tests {
         let mut cap_config = test_strategy().config.clone();
         cap_config.trade_flow_window_secs = 600;
         cap_config.trade_flow_max_samples = 2;
-        let mut capped = SignedTradeFlow::from_config(&cap_config);
+        let mut capped = SignedTradeFlow::from_config(&signed_trade_flow_config(&cap_config));
 
         for index in 0..4_u64 {
             capped.observe(&trade_tick_with_aggressor(

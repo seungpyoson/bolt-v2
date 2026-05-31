@@ -543,3 +543,88 @@ where
         }
     })
 }
+
+#[cfg(test)]
+mod forbidden_env_var_anchor_tests {
+    //! Anchors the data-only `*_FORBIDDEN_ENV_VARS` blocklists to the env-var names the pinned
+    //! NautilusTrader adapters actually read in their `credential_env_vars()` accessors. The
+    //! `check_no_forbidden_credential_env_vars` gate fails closed only on the names listed in
+    //! these constants; if an NT rev bump renamed or added a credential env var, the blocklist
+    //! would silently miss it and a stray env var could feed credentials into a data-only client.
+    //! This test fails in CI before that can happen. The NT rev is pinned in `Cargo.toml` (single
+    //! source of truth). This is the runtime-name counterpart to the compile-time
+    //! `_credential_log_module_paths_exist` anchor for the log-module-path strings.
+    use super::{
+        BITMEX_FORBIDDEN_ENV_VARS, BYBIT_FORBIDDEN_ENV_VARS, COINBASE_FORBIDDEN_ENV_VARS,
+        DERIBIT_FORBIDDEN_ENV_VARS, KRAKEN_FORBIDDEN_ENV_VARS, OKX_FORBIDDEN_ENV_VARS,
+    };
+
+    fn assert_blocklist_covers(blocklist: &[&str], names: &[&str], adapter: &str) {
+        for name in names {
+            assert!(
+                blocklist.contains(name),
+                "{adapter}_FORBIDDEN_ENV_VARS is missing the pinned NautilusTrader credential env \
+                 var `{name}`; the adapter reads it but the bolt blocklist does not fail closed on it"
+            );
+        }
+    }
+
+    #[test]
+    fn forbidden_env_vars_cover_nt_credential_env_vars() {
+        use nautilus_bitmex::common::{
+            credential::credential_env_vars as bitmex_env_vars, enums::BitmexEnvironment,
+        };
+        use nautilus_bybit::common::{
+            credential::credential_env_vars as bybit_env_vars, enums::BybitEnvironment,
+        };
+        use nautilus_coinbase::common::credential::credential_env_vars as coinbase_env_vars;
+        use nautilus_deribit::common::{
+            credential::credential_env_vars as deribit_env_vars, enums::DeribitEnvironment,
+        };
+        use nautilus_kraken::common::{
+            credential::credential_env_vars as kraken_env_vars,
+            enums::{KrakenEnvironment, KrakenProductType},
+        };
+        use nautilus_okx::common::credential::credential_env_vars as okx_env_vars;
+
+        let mut bitmex = Vec::new();
+        for env in [BitmexEnvironment::Testnet, BitmexEnvironment::Mainnet] {
+            let (key, secret) = bitmex_env_vars(env);
+            bitmex.extend([key, secret]);
+        }
+        assert_blocklist_covers(BITMEX_FORBIDDEN_ENV_VARS, &bitmex, "BITMEX");
+
+        let mut bybit = Vec::new();
+        for env in [
+            BybitEnvironment::Demo,
+            BybitEnvironment::Testnet,
+            BybitEnvironment::Mainnet,
+        ] {
+            let (key, secret) = bybit_env_vars(env);
+            bybit.extend([key, secret]);
+        }
+        assert_blocklist_covers(BYBIT_FORBIDDEN_ENV_VARS, &bybit, "BYBIT");
+
+        let (ck, cs) = coinbase_env_vars();
+        assert_blocklist_covers(COINBASE_FORBIDDEN_ENV_VARS, &[ck, cs], "COINBASE");
+
+        let mut deribit = Vec::new();
+        for env in [DeribitEnvironment::Testnet, DeribitEnvironment::Mainnet] {
+            let (key, secret) = deribit_env_vars(env);
+            deribit.extend([key, secret]);
+        }
+        assert_blocklist_covers(DERIBIT_FORBIDDEN_ENV_VARS, &deribit, "DERIBIT");
+
+        let (ok, os, op) = okx_env_vars();
+        assert_blocklist_covers(OKX_FORBIDDEN_ENV_VARS, &[ok, os, op], "OKX");
+
+        let mut kraken = Vec::new();
+        for product in [KrakenProductType::Spot, KrakenProductType::Futures] {
+            for env in [KrakenEnvironment::Live, KrakenEnvironment::Demo] {
+                let (key, secret) = kraken_env_vars(product, env);
+                kraken.extend([key, secret]);
+            }
+        }
+        assert_blocklist_covers(KRAKEN_FORBIDDEN_ENV_VARS, &kraken, "KRAKEN");
+    }
+}

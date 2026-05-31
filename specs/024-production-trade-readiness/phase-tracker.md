@@ -93,11 +93,13 @@ hardcode/config discipline, P7 = [verifiers/bindings]`.
 ---
 
 ## Add-on (outside the original P1–P7)
-- **Rate-limit / venue-egress reconciliation (Tier-1).** Align the NT submit/modify
-  throttle to the Polymarket REST egress cap (`HTTP_RATE_LIMIT`); fail-loud config
-  validation. Commits `d61e6098`, `146ac574` (+ Gemini cleanup `5cf96655`,
-  `0f5a5704`). CI green. You noted this was "just added," i.e. not one of P1–P7.
-  Tier-2 (full shared REST budget) tracked in #488.
+- **Rate-limit / venue-egress reconciliation (Tier-1).**  ✅ **CLOSED** — **6/6 CLOSE-CONFIRMED**
+  (round-1: DeepSeek, Gemini, Grok, Kimi; round-2 after the R12 fix: GLM, GPT).
+  Align the NT submit/modify throttle to the Polymarket REST egress cap (`HTTP_RATE_LIMIT`);
+  fail-loud config validation. Evidence: `external-review/rate-limit-adjudication.md`.
+  R1 (per-command fanout) + R12 (live-money: market+quote-qty entry = 3 REST) FIXED; fanout=2
+  re-verified as the provable worst-case at HEAD `19a3469d`. Order-template-aware fanout → #506;
+  full shared REST budget (Tier-2) → #501/#488.
 
 ---
 
@@ -123,7 +125,7 @@ the 5 open spec-kit tasks + closing the 4 open review phases.
 
 | # | Work | spec-kit task | review phase | autonomous now? |
 |---|---|---|---|---|
-| 1 | Adjudicate rate-limit/venue-egress external responses | (add-on) | add-on | **yes** (operator pastes outputs) |
+| 1 | Rate-limit/venue-egress — ✅ **CLOSED** (6/6 CLOSE-CONFIRMED; `rate-limit-adjudication.md`) | (add-on) | add-on | done |
 | 2 | Adversarial review — config — ✅ **CLOSED** (round-2 6/6 CLOSE-CONFIRMED; `P2-adjudication.md`) | — | **P2** | done |
 | 3 | Adversarial review — provider/secrets | — | **P3** | **yes** |
 | 4 | Adversarial review — strategy/policy | — | **P4** | **yes** |

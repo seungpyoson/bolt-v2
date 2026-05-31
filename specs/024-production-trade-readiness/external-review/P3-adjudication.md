@@ -70,3 +70,19 @@ Re-verified vs HEAD (verification workflow + personal spot-checks):
 - **F3 — DEFERRED (recorded):** the `ClobV2*` materialization types/fns are Polymarket-specific; an explicit ownership comment now sits on the declarations in `src/bolt_v3_providers/mod.rs` (preserves the fence intent). Full rename to `PolymarketClobV2*` is deferred to a dedicated PR (~7-file blast radius: `src/main.rs`, `src/bolt_v3_operator_artifacts.rs` ~85 refs, `polymarket/*` submodules).
 
 **No remaining unaddressed P3 finding.** Ready for external re-review (base `1f6ee056` → current head).
+
+## Coverage cross-check (2026-06-01) — finding in the raw 6-model outputs not captured above
+
+- **DeepSeek P3-F2 / Grok (data-only provider env-var blocklist completeness) — FIXED.** F5 completed and
+  NT-anchored the **Binance** `FORBIDDEN_ENV_VARS`, but the six **data-only** blocklists (Bitmex, Bybit,
+  Coinbase, Deribit, OKX, Kraken) in `src/bolt_v3_providers/market_data.rs:67-97` had no anchor tying their
+  string literals to the env vars the pinned NT adapters actually read — they could silently drift on an NT
+  rev bump (the existing `_credential_log_module_paths_exist` anchor covers only the log-module-path
+  strings, not the env-var names). Re-verified at HEAD: the lists are complete and correct against NT
+  `6e059dc`, but the `check_no_forbidden_credential_env_vars` gate fails closed only on the listed names, so
+  a renamed/added NT env var would slip through. Fix: added the CI test
+  `forbidden_env_vars_cover_nt_credential_env_vars` (`market_data.rs`, `#[cfg(test)] mod
+  forbidden_env_var_anchor_tests`) asserting each blocklist ⊇ the names returned by every adapter's pinned
+  `credential_env_vars()` accessor across all environment variants (Bitmex/Bybit/Deribit/Kraken envs,
+  Coinbase/OKX argless). Drift now fails CI. The env path is itself only reachable for data-only clients
+  passing `None` credentials; the blocklist is the fail-closed guard for that path.

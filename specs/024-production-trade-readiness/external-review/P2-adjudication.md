@@ -149,3 +149,15 @@ value makes the strategy enter at negative edge (guaranteed-loss trades).
 **Closure:** round-2 re-review (at `633ea9f0`, after the schema-doc fix) returned **6/6
 CLOSE-CONFIRMED** — GPT confirmed the schema fix; Grok accepted his #2/#3 disproofs and the
 cosmetic declines. P2 is CLOSED.
+
+## Cross-check (2026-06-01) — deferral inherited from P5-11 (tracking only)
+
+- **Family-neutral validation encapsulation (from P5 Gemini F6 / P5-11) — DEFERRED design-cleanup, tracked
+  here.** `validate_target_gate_provider_references` (`src/bolt_v3_validate.rs:1455`) and
+  `collect_chainlink_target_mapping_references` (`:1613`) hardcode structural traversal of family-specific
+  target shapes (`gate_subscriptions` / `market_mappings`) inside the family-neutral validation engine,
+  rather than dispatching the shape-aware traversal through the per-family binding modules. P5 deferred this
+  to P2 as out-of-P5-scope; it is recorded here so the deferral has a verified home. **Non-safety**
+  (validation-only; catches errors, never fires orders). It does not reopen P2 — P2's closed findings
+  (F1–F6) are unaffected; this is a layering/encapsulation cleanup for a future refactor PR, not a
+  fail-closed gap. No code change in this campaign.

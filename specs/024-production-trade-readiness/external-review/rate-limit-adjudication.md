@@ -131,3 +131,36 @@ STILL-OPEN** (GLM, GPT) on a new LIVE-MONEY finding, confirmed real against the 
 - **R4–R11:** re-verified clean at HEAD by the 6 models; no regression.
 
 **Closure:** R1 + R12 fixed; pending a round-2 re-review of the fix before close.
+
+## External re-review (round 2) — HEAD 19a3469d (R12 fix) — ✅ CLOSED
+
+Round-2 re-review addressed to the two round-1 dissenters (GLM, GPT). Both returned
+**RATE-LIMIT-CLOSE-CONFIRMED**. Combined consensus is **6/6 CLOSE-CONFIRMED**
+(round-1: DeepSeek, Gemini, Grok, Kimi; round-2: GLM, GPT).
+
+- **GLM:** exhaustive order-command audit against pinned NT `6e059dc` — limit entry=1, market
+  entry(base-qty)=2, **market entry(quote-qty)=3 → REJECTED**, market/limit/forced exit (SELL)=≤2
+  (SELLs skip `fetch_collateral_balance_pusd`), modify=0. No reachable command produces 3 REST;
+  fanout=2 is provable. R1–R11 remain fixed; no regression in `bolt_v3_validate.rs`.
+- **GPT:** R12 closed by inspection — entry guard at `binary_oracle_edge_taker.rs:1286`, exit
+  guard `:1296`, forced-exit `:1311`, position contract long-BUY/exit-SELL `:1339`; fanout comment
+  honest at `polymarket.rs:94`. (UNVERIFIED: did not run cargo/tests — verified by inspection.)
+
+**Main-session re-verification at HEAD `19a3469d` (not promoted from reviewer verdict):** entry
+guard present at `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs:1286`
+(`if entry.order_type == OrderType::Market && entry.is_quote_quantity`), exit guard `:1296`,
+forced-exit guard `:1311`. All three reject quote-quantity. fanout=2 worst-case confirmed.
+
+**Phase status: CLOSED.** Order-template-aware fanout deferred to #506; shared multi-call-type
+budget deferred to #501 (both out-of-Tier-1-scope, recorded).
+
+## Note (2026-06-01) — entry quote-qty guard broadened by P4 cross-check (fanout=2 unchanged)
+
+The R12 guard forbade `entry_order` `order_type=market` + `is_quote_quantity=true`. A P4 coverage
+cross-check (Gemini #3, sizing-tick freshness) led to broadening it: `check_entry_order_combination`
+now also rejects **limit** quote-quantity entries, so this archetype forbids **all** entry
+quote-quantity. This **strengthens** the rate-limit closure — the 3-REST collateral path
+(`side==Buy && is_quote_quantity`) is now unreachable for any entry shape, not just market — so
+`fanout = 2` remains the provable worst case (the R12 guard + test
+`bolt_v3_archetype_rejects_market_quote_quantity_entry_order` are unchanged). Order-template-aware
+fanout re-enablement (#506) now additionally requires a submit-time cache-tick freshness guard.

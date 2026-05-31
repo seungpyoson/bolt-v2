@@ -86,3 +86,18 @@ Re-verified vs HEAD (verification workflow + personal):
   cadence is config-validated positive and `now` is clock-sourced, so both are unreachable faults).
 
 **No remaining unaddressed P5 finding.** Ready for external re-review (base `1f6ee056` → current head).
+
+## Coverage cross-check (2026-06-01) — deferral tracking confirmed
+
+- **Gemini F6 / P5-11 (family-neutral validation encapsulation) — deferral now tracked in P2.** This record
+  classified P5-11 as SCOPE-DRIFT to P2 and took no P5 action, but the deferral target had never been shown
+  to capture it — a phase-boundary tracking gap. Re-verified at HEAD: `validate_target_gate_provider_references`
+  (`src/bolt_v3_validate.rs:1455`) and `collect_chainlink_target_mapping_references` (`:1613`) still traverse
+  family-specific target shapes (`gate_subscriptions` / `market_mappings`) in the family-neutral validation
+  engine. It is a non-safety design-cleanup item (validation-only; no real-money path). Now recorded under
+  "Cross-check (2026-06-01)" in `P2-adjudication.md` so it cannot fall through the crack.
+- **P5-5 (venue-unscoped selection) — remains DEFERRED-OK, not a fix.** Re-confirmed: `updown_outcome_instrument`
+  (`updown.rs`) still has no `binary.id.venue` check and the strategy feeds the whole global cache; the
+  deferral is correctly recorded (loud comment + operator sign-off + `up_venue == down_venue` self-consistency
+  guard) and is unreachable under the single-venue config. Flagged here only so the deferral is not mistaken
+  for a landed fix; venue-scoping stays with the multi-venue workstream.

@@ -304,6 +304,18 @@ fn validate_live_canary_proof_policy(
                 .to_string(),
         );
     }
+    if policy.enabled && policy.is_quote_quantity {
+        // The canary proof executor sizes the proof order from a base share quantity. With
+        // is_quote_quantity=true the pinned NT Polymarket adapter would (a) reinterpret that base
+        // share count as a quote-currency (collateral) amount, committing the wrong notional, and
+        // (b) issue an extra pre-submit collateral-balance REST request. Downstream admission fails
+        // closed on the resulting notional, but forbid the mode at load so the canary cannot be
+        // misconfigured into the broken quote-quantity path in the first place.
+        errors.push(
+            "live_canary.proof_policy.is_quote_quantity must be false: the canary proof executor sizes the proof order from a base share quantity, so a quote-quantity order would denominate that base quantity as a quote-currency amount and issue an extra venue collateral-balance REST request"
+                .to_string(),
+        );
+    }
 
     match (
         parse_decimal_string(&policy.proof_notional),

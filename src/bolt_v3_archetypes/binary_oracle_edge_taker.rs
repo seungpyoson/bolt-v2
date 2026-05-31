@@ -1287,6 +1287,18 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
         errors.push(format!(
             "{context}: parameters.entry_order combination order_type=market with is_quote_quantity=true is not supported because a market quote-quantity BUY issues an extra venue collateral-balance REST request (3 per command), over-driving the modeled egress fanout of 2"
         ));
+    } else if entry.is_quote_quantity {
+        // A non-market (limit) quote-quantity entry skips the extra collateral REST fetch, but
+        // quote-quantity sizing converts the quote amount to a base quantity off the top-of-book
+        // cache tick (quote_quantity_reference_price_for_order / market_order_cache_price_for_order),
+        // which carries no submit-time freshness bound — a stale tick can understate the per-order
+        // cash commitment and slip past the notional cap. This archetype always sizes from base
+        // quantity (exits and forced exits already reject is_quote_quantity), so forbid quote-quantity
+        // entries entirely. Re-enabling the mode requires BOTH the order-template-aware egress fanout
+        // model and a submit-time cache-tick freshness guard (tracked in #506).
+        errors.push(format!(
+            "{context}: parameters.entry_order with is_quote_quantity=true is not supported because quote-quantity sizing converts quote->base off an unguarded top-of-book cache tick with no submit-time freshness bound, which can understate the per-order cash commitment; size entries from base quantity (is_quote_quantity=false)"
+        ));
     }
     errors
 }

@@ -106,3 +106,59 @@ Re-verified vs HEAD (verification workflow + personal reads of the live-fire gat
 
 **Remaining open:** A3 (deferred with the plan above). A1/A2, A-EDGE, and the 8 `dfb4a44e`
 items are addressed; P4 is review-ready once A3's deferral is accepted by the re-review.
+
+## Coverage cross-check (2026-06-01) — findings in the raw 6-model outputs not captured above
+
+A re-read of all six raw P4 review outputs against this record surfaced four findings raised at
+round-1 that this adjudication had not separately dispositioned. Each re-verified personally at
+HEAD `19a3469d` (not promoted from any subagent verdict):
+
+- **Grok Finding 2 (HIGH) — main-taker per-submit envelope binding — DISPROVEN (live-money escape).**
+  Claim: the operator-approved envelope is hash-validated once at runner entry, but the main taker
+  re-derives decision inputs (`price_to_beat`, etc.) per submit and never re-binds them, so a drifted
+  input could fire an unapproved real order. Disproof, three anchors re-read at HEAD:
+  1. **The main taker cannot fire during the operator-approved canary.** `build_live_node_with_clients`
+     (`src/bolt_v3_live_node.rs:3242-3270`) registers **only** the canary proof executor when
+     `proof_executor_enabled`, with the production strategy summary set to `registered: Vec::new()`;
+     production mode registers the taker and disables the proof executor. The two are mutually
+     exclusive. Proven by the existing test
+     `bolt_v3_live_node_build_registers_only_generic_canary_proof_executor_when_enabled`
+     (`tests/bolt_v3_strategy_registration.rs:1419`) → `registered_strategy_ids() ==
+     ["canary-proof-executor-proof"]`.
+  2. **Every admitted order is bounded by the operator-sealed gate report.** `admit`
+     (`src/bolt_v3_submit_admission.rs:135,145`) hard-rejects `notional > max_notional_per_order()`
+     and `admitted_order_count >= max_live_order_count()` from the report armed once at
+     `run_bolt_v3_live_node` (`:2188`). Order **size** is config-driven (`order_notional_target`),
+     not derived from `price_to_beat`; the instrument is bound to `selected_market` via the
+     entry-verified `readiness_evidence` in the snapshot (`binary_oracle_edge_taker.rs:4263-4275`).
+  3. **On-disk evidence tamper is inert.** The per-submit snapshot reads the **in-memory**
+     `self.active.price_to_beat` (`binary_oracle_edge_taker.rs:4163`), set once from the
+     entry-SHA-verified seed (`:1973`; entry SHA-check at `tiny_canary_evidence.rs:1783`); the file
+     is not re-read per submit. `price_to_beat` drift can only change the entry/side **decision**, never
+     order magnitude, instrument, or count. A per-submit envelope re-hash is therefore defense-in-depth
+     against in-process memory tampering (outside the threat model). **DISPROVEN.**
+- **Gemini #3 (HIGH) — sizing-tick freshness — FIXED (by elimination).** `market_order_cache_price_for_order`
+  (`binary_oracle_edge_taker.rs:4120`) and `quote_quantity_reference_price_for_order` (`:4142`) read the
+  NT cache with no `ts_event` age check, and are reached **only** when `order.is_quote_quantity()` is true
+  (`:4104→4110`, `:4003→4004`). Exits/forced-exits already reject `is_quote_quantity`; R12 forbade market
+  quote-qty entry; the only residual reachable path was **limit quote-qty entry**. Fix: the archetype now
+  forbids **all** quote-quantity entries (`check_entry_order_combination`,
+  `src/bolt_v3_archetypes/binary_oracle_edge_taker.rs`), so `order.is_quote_quantity()` is unreachable for
+  any order this archetype produces → the stale-tick sizing path cannot fire. Production config is
+  unaffected (`is_quote_quantity = false` throughout). Test:
+  `bolt_v3_archetype_rejects_quote_quantity_limit_entry_order` (`tests/config_parsing.rs`). Re-enabling
+  quote-quantity (deferred **#506**) now carries BOTH the order-template fanout model AND a submit-time
+  cache-tick freshness guard as recorded requirements.
+- **Gemini #4 (HIGH) — canary quote-quantity denomination — FIXED (at load).** With
+  `proof_policy.is_quote_quantity = true` the executor passes a base share count to NT's
+  `order_factory().limit(.., Some(true), ..)`, which NT denominates as a quote-currency amount (wrong
+  notional). It failed closed downstream via `rounded_order_admission_notional`, but is now rejected at
+  load: `validate_live_canary_proof_policy` (`src/bolt_v3_validate.rs`) forbids
+  `is_quote_quantity = true`. Production canary config has `is_quote_quantity = false`. Test:
+  `bolt_v3_live_canary_proof_policy_rejects_quote_quantity` (`tests/config_parsing.rs`).
+- **Kimi F6 / A11 — DISPROVEN anchor re-confirmed VALID.** The cross-check flagged the A11 disproof for
+  citing `normalize_order_sizing` as non-existent. Re-verified at HEAD: `normalize_order_sizing` **exists**
+  at `src/bolt_v3_canary_proof_policy.rs:243`, is the sole sizing path
+  (`select_canary_proof_candidate`, `:239`), and enforces step-floor (`:256`), `min_quantity` (`:266`),
+  and `min_notional` (`:274`) fail-closed before the order-intent is built. The original A11 DISPROVEN
+  stands; the cross-check claim was the error.

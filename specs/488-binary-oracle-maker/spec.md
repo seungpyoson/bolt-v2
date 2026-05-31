@@ -1,8 +1,8 @@
-# Feature Specification: Binary Oracle Market-Maker (prove-first, venue/instrument-agnostic)
+# Feature Specification: Binary Oracle Market-Maker (robustness-gated, venue/instrument-agnostic)
 
 **Feature Branch**: `docs/488-mm-multi-venue-survey`
 **Created**: 2026-05-31
-**Status**: Draft — PROVE-FIRST. No strategy build until the P0 edge-proof passes its pre-registered gate.
+**Status**: Draft — ROBUSTNESS-GATED. Edge existence is assumed (the maker market is mature and competitive, so a capturable edge demonstrably exists); the open question is whether our *implementation* captures it without being adversely selected. The gate is robustness: every workstream fails closed, and the built maker must clear a **pre-live backtest** on real historical full-depth L2 (net of fees / adverse-selection / settlement) before any live capital.
 **Input**: Add a two-sided resting market-maker for Polymarket binary (YES/NO up/down) markets first, then fan out to perps/CEX behind a shared agnostic framework. NT-first, no-hardcode, no-dual-paths, pure-Rust. Tracking issue: #488. Supersedes the original #488 "port MM apparatus from market-maker-rs / A-S-GLFT" framing (overturned by an actual-code audit + an internal 5-lens adversarial review + a Codex adversarial review).
 
 ## Overview
@@ -11,24 +11,24 @@ bolt-v3 ships one strategy: a single-leg directional **taker** (`binary_oracle_e
 
 Two principles govern this spec:
 
-1. **Prove-first.** We have repeatedly built-first and proven-later. Not here. No strategy code lands until an offline replay proves a positive maker edge on real historical data, scored with production-equivalent accounting, against thresholds registered **before** the run.
-2. **Verify-everywhere.** Every workstream carries its own proof gate. Each gate fails closed.
+1. **Robustness-first.** The edge is not in question — the maker market is mature and competitive, so a capturable edge demonstrably exists. What is unproven is whether *our* implementation captures it without being picked off (adverse selection is the dominant cost). So the gate is robustness, not edge-existence: build proceeds workstream by workstream, each failing closed, and before any live capital the built maker must clear a backtest on real historical full-depth L2 — net of fees, adverse-selection, and settlement — against thresholds registered **before** the run.
+2. **Verify-everywhere.** Every workstream carries its own fail-closed proof gate; no advancement on assertion.
 
 ## User Scenarios & Testing *(mandatory)*
 
-### User Story 1 - Offline edge proof before any build (Priority: P0 — the gate)
+### User Story 1 - Backtest the built maker before live capital (Priority: the go-live gate)
 
-As the operator, before committing any maker build, I need an offline replay that proves or disproves a positive maker edge on real historical data — scored with the **same** settlement/fee/adverse-selection accounting production will use — against pre-registered numeric thresholds, so the decision to build is evidence-led.
+As the operator, before risking live capital, I need a backtest of the **actual built maker** on real historical full-depth L2 — scored with the **same** settlement/fee/adverse-selection accounting production will use — against pre-registered numeric thresholds, so going live is evidence-led. This validates *our implementation's* robustness; it is **not** an upfront proof that an edge exists (the mature, competitive maker market already establishes that).
 
-**Why this priority**: This is the entire premise. Every later workstream is gated on a PASS. A FAIL stops the initiative (or sends us to a different instrument/tenor) at near-zero build cost.
+**Why this priority**: Adverse selection is the dominant cost for a resting binary maker — a plausible-looking maker can still net-negative once pickoff and settlement are charged. The backtest is the last gate before capital, and it runs on the maker *as built* (W2/W3/W4), not on a strategy stub.
 
-**Independent Test**: Run the replay over the data-lake window + ground-truth resolutions using the **unbiased full-candidate corpus** (every market/tick/book/fair-value decision, including no-entry rows), with passive-fill simulation via NT's ExecutionModel and the shared settlement primitive. It emits net-edge metrics and a go/no-go verdict without any new strategy code.
+**Independent Test**: Replay the built maker over a real historical full-depth L2 corpus + ground-truth resolutions, using the **unbiased full-candidate corpus** (every market/tick/book state, including no-entry rows), passive-fill simulation via NT's ExecutionModel, and the shared settlement primitive. It emits net-edge metrics and a go/no-go verdict.
 
 **Acceptance Scenarios**:
 
-1. **Given** the unbiased replay corpus and the shared settlement/accounting primitive, **When** the edge proof runs, **Then** it reports net edge = captured-spread − fees − adverse-selection − settlement-loss against the pre-registered thresholds and renders PASS/FAIL.
-2. **Given** a FAIL verdict, **When** any downstream workstream (W1–W8) is attempted, **Then** it is blocked — no maker code proceeds on a failed or absent edge proof.
-3. **Given** the entry-only decision-evidence log (`calibration_check.py` corpus), **When** it is offered as the edge gate, **Then** it is rejected as selection-biased and only admitted as a diagnostic.
+1. **Given** the unbiased corpus and the shared settlement/accounting primitive, **When** the backtest runs the built maker, **Then** it reports net edge = captured-spread − fees − adverse-selection − settlement-loss against the pre-registered thresholds and renders PASS/FAIL.
+2. **Given** a FAIL verdict, **When** go-live is attempted, **Then** it is blocked — no live capital on a maker that has not cleared the backtest.
+3. **Given** the entry-only decision-evidence log (selection-biased), **When** it is offered as the backtest corpus, **Then** it is rejected and admitted only as a diagnostic.
 
 ### User Story 2 - Two-sided resting quotes that survive the venue's real mechanics (Priority: P1)
 
@@ -66,12 +66,12 @@ As the operator, when a market resolves I need held inventory to settle to its 0
 
 **Why this priority**: A resting maker is structurally left holding inventory into expiry; without settlement accounting, both live P&L and the backtest are systematically wrong.
 
-**Independent Test**: Feed a resolution event to the settlement module; assert the 0/1 payout is booked, the position closes, and the realized P&L matches the payout (not mark-to-mid). The **same** module is exercised by P0.
+**Independent Test**: Feed a resolution event to the settlement module; assert the 0/1 payout is booked, the position closes, and the realized P&L matches the payout (not mark-to-mid). The **same** module is exercised by the pre-live backtest.
 
 **Acceptance Scenarios**:
 
 1. **Given** a market-resolution event (`InstrumentStatus::Close`), **When** the maker holds inventory, **Then** the shared settlement primitive books the terminal 0/1 payout and closes the position.
-2. **Given** P0 and live both compute settlement, **When** either runs, **Then** they use the **same** settlement/accounting module (no dual settlement path).
+2. **Given** the backtest and live both compute settlement, **When** either runs, **Then** they use the **same** settlement/accounting module (no dual settlement path).
 
 ### User Story 5 - Safe under capital, then across many markets (Priority: P2)
 
@@ -128,11 +128,11 @@ As the maintainer, the maker must price from one fair-value path so there is no 
 
 ### Functional Requirements
 
-- **FR-001 (P0)**: The system MUST produce an offline edge proof scored as net = captured-spread − fees − adverse-selection − settlement-loss over the historical lake window, against thresholds registered before the run, with a PASS/FAIL verdict.
-- **FR-002 (P0)**: The edge-proof corpus MUST be the unbiased full-candidate set (every market/tick/book/fair-value decision incl. no-entry reasons, top-of-book, quote eligibility). The entry-only decision-evidence log MUST NOT be the gate.
-- **FR-003 (P0)**: The edge proof MUST use NT's ExecutionModel for fills; a custom fill model MUST NOT be introduced unless NT's is first source-proven insufficient (no dual fill truth).
-- **FR-004 (P0/W4)**: A single shared settlement/accounting primitive MUST exist before the edge gate and MUST be reused by both the edge proof and live (no dual settlement path).
-- **FR-005 (P0)**: Underlying spot for the lake window MUST be backfilled and point-in-time aligned to the oracle the strategy actually saw (look-ahead controlled), since the maker mid is the oracle fair value (a function of spot).
+- **FR-001 (BT, go-live gate)**: Before live capital, the system MUST produce a backtest of the **built maker** scored as net = captured-spread − fees − adverse-selection − settlement-loss over a real historical full-depth L2 window, against thresholds registered before the run, with a PASS/FAIL verdict.
+- **FR-002 (BT)**: The backtest corpus MUST be the unbiased full-candidate set (every market/tick/book state incl. no-entry reasons, full-depth book, quote eligibility). The entry-only decision-evidence log MUST NOT be the corpus.
+- **FR-003 (BT)**: The backtest MUST use NT's ExecutionModel for fills; a custom fill model MUST NOT be introduced unless NT's is first source-proven insufficient (no dual fill truth).
+- **FR-004 (BT/W4)**: A single shared settlement/accounting primitive MUST be reused by both the backtest and live (no dual settlement path).
+- **FR-005 (BT)**: Underlying spot for the backtest window MUST be backfilled and point-in-time aligned to the oracle the maker actually saw (look-ahead controlled), since the maker mid is the oracle fair value (a function of spot).
 - **FR-010 (W2)**: The quote-lifecycle controller MUST reprice via cancel+resubmit where the venue lacks order modification, tolerating the un-quoted gap and avoiding duplicate live quotes.
 - **FR-011 (W2)**: Requote rate MUST be throttled to the venue request budget, sourced from a capability variable (not a code constant).
 - **FR-012 (W2)**: The controller MUST track the full set of live resting quotes, reconcile against the venue's accepted-order truth (handle order-accepted + deferred-cancel), and cancel all resting quotes on kill.
@@ -152,8 +152,8 @@ As the maintainer, the maker must price from one fair-value path so there is no 
 
 ### Key Entities
 
-- **EdgeProofCorpus**: the unbiased full-candidate replay set (markets × ticks × book states × fair-value decisions × no-entry reasons × resolutions). Source of the P0 verdict.
-- **SettlementAccount**: shared primitive that books the 0/1 terminal payout for held inventory; used by both P0 and live.
+- **BacktestCorpus**: the unbiased full-candidate replay set (markets × ticks × full-depth book states × fair-value decisions × no-entry reasons × resolutions). Source of the pre-live backtest verdict.
+- **SettlementAccount**: shared primitive that books the 0/1 terminal payout for held inventory; used by both the backtest and live.
 - **VenueCapabilityContract**: extended `contracts/<venue>.toml` — adds typed execution / rate-limit / maintenance / fee / settlement sections to the current data-stream-only schema.
 - **MarketFamily**: instrument-type seam (`MarketIdentityTarget`/`family_key()`) carrying pricing + settlement + inventory math; binary first.
 - **QuoteSet**: the controller's model of all live resting quotes (per leg, per market) with accept/cancel/in-flight state.
@@ -163,11 +163,11 @@ As the maintainer, the maker must price from one fair-value path so there is no 
 
 ### Measurable Outcomes
 
-- **SC-001**: P0 renders a PASS/FAIL on net edge vs pre-registered thresholds using the unbiased corpus and production-equivalent accounting; no maker code merges before a PASS.
+- **SC-001**: The pre-live backtest of the built maker renders PASS/FAIL on net edge vs pre-registered thresholds using the unbiased corpus and production-equivalent accounting; no live capital before a PASS.
 - **SC-002**: 100% of generated quotes land in (ε, 1−ε), proven by a property test; zero self-crossing joint YES/NO quotes.
 - **SC-003**: Under a simulated venue at the real request budget, the controller breaches neither the rate budget nor leaves orphaned/duplicate quotes across reprice, kill, and reconnect.
 - **SC-004**: Kill predicates and the per-market reserved-collateral gate fire (fail closed) on synthetic adverse inputs in an NT backtest.
-- **SC-005**: Settlement P&L for held inventory matches the 0/1 payout (not mark-to-mid) in both P0 and live, via one module.
+- **SC-005**: Settlement P&L for held inventory matches the 0/1 payout (not mark-to-mid) in both the backtest and live, via one module.
 - **SC-006**: No dual paths — single fill-truth (NT ExecutionModel), single settlement module, single fair-value path; verified by review.
 - **SC-007**: No venue-name branch in maker logic; all venue facts resolve from the capability contract; verified by review/grep.
 
@@ -176,10 +176,10 @@ As the maintainer, the maker must price from one fair-value path so there is no 
 - **NT rev = whatever `Cargo.toml` pins** (the single source of truth — this doc deliberately does not restate the SHA, so it cannot drift). Source-proofs MUST read the NT checkout at the rev `Cargo.toml` currently pins. A separate hygiene issue tracks ~20 specs/docs that hard-code a now-stale rev — the reason for this rule.
 - Verified venue/runtime facts (read at the NT rev `Cargo.toml` pins): Polymarket adapter has **no order modify** (`execution/mod.rs:1272`) → cancel+resubmit; REST budget = **100/minute** (`rate_limits.rs` `Quota::per_minute`, `consts.rs:81`) vs bolt config `100/second` (`config/root.toml:84-85`); **`order_book_depths` disabled** (L2 deltas only, no per-order queue identity) (`contracts/polymarket.toml:20-23`); NT does **not auto-settle** — resolution emits only `InstrumentStatus::Close` (`data.rs:1052`) and the taker has **zero** resolution handling; strategy **does not subscribe to trades** (`AggressorSide` only in a test fixture) so GM/CG + VPIN are starved today; maintenance-restart status is **non-retryable** (`http/error.rs` `is_retryable` = `status>=500`).
 - The venue capability contract schema must be **extended** — `VenueContract` (`src/venue_contract.rs:68-72`) currently carries only `schema_version/venue/adapter_version/streams` and cannot hold the maker capability variables.
-- The data lake is **sparse** (~3 weeks, thin books), holds only 0–1 prices + ground-truth resolutions; underlying spot is **not** in the lake (backfill externally). Fill realism — not data volume — is the backtest's binding constraint.
+- Two backtest substrates exist: bolt's own S3 lake (~3 weeks, **mid/top-only**, no L2 queue) and — verified 2026-05-31 by downloading + inspecting a real file — the **free pmxt archive** (`r2v2.pmxt.dev`, hourly Parquet, ~Apr 20–May 25 2026) which carries genuine **tick-level full-depth L2 + trades-with-aggressor** for the up/down markets (BTC/ETH/SPX confirmed present). The pmxt feed **lifts the no-L2-queue limitation** and is the better backtest substrate; ingest it via BTE's `bte_ingest.rs` (raw→catalog). Underlying spot is in neither — backfill externally. Fill/queue realism, not data volume, is the binding constraint.
 - NT owns execution, position/PnL, pre-trade limits, backtest engine + returns analytics, and VPIN; per the accepted BTE spec, **no Bolt-owned fill simulator** unless NT is source-proven unable.
 - `binary_oracle_edge_taker` already provides composite-spot fair value, naive windowed RV, the `updown` YES/NO pair model, the forced-flat governor, decision-evidence/submit-admission gating, and the order-intent post-only limit build — reused, not rebuilt.
-- This is a planning/research artifact. DO NOT BUILD until P0 passes. Work lives on `docs/488-mm-multi-venue-survey`, not the disk-retention branch.
+- This is a planning/research artifact — no strategy code in the binary yet. Build proceeds robustness-first, workstream by workstream (each fail-closed); **live capital** is gated on the pre-live backtest of the built maker (US1), not on the build itself. Work lives on `docs/488-mm-multi-venue-survey`, not the disk-retention branch.
 
 ## References
 

@@ -13,10 +13,10 @@ found:** F2 is fail-SOFT (runtime triple-guarded — a bad order can never fire)
 and the two claimed hazards (F3 readiness fail-open, F5 operational-field load
 gap) are DISPROVEN — both fail closed before NT's runner loop.
 
-**Closure status: NOT CLOSED.** This is the *author's* adjudication, not phase
-closure. P2 closes only on an external 6-model adversarial re-review PASS of the
-F2 fix + this record — the same external gate that closed P6/P7. Self-adjudication
-is not closure.
+**Closure status: ✅ CLOSED (round-2 6/6 CLOSE-CONFIRMED at `633ea9f0`).** External
+consensus reached: round-1 = 4 confirm + 2 still-open (GPT/Grok); the schema-doc fix
+resolved GPT's dissent and Grok accepted his disproofs; round-2 = all 6 CLOSE-CONFIRMED —
+the same external gate that closed P6/P7.
 
 Anchors use function name + file (line numbers approximate; re-locate by name).
 **Every change preserves or TIGHTENS fail-closed — no guard loosened.**
@@ -146,5 +146,6 @@ New finding surfaced (out of P2 scope → tracked in P4 as **A-EDGE**): DeepSeek
 `parameters.edge_threshold_basis_points` (i64) is never range-validated; a negative
 value makes the strategy enter at negative edge (guaranteed-loss trades).
 
-**Closure:** still NOT closed — the round-1 dissents (GPT/Grok) need a round-2
-re-confirm of the schema-doc fix + the disproofs before 6/6.
+**Closure:** round-2 re-review (at `633ea9f0`, after the schema-doc fix) returned **6/6
+CLOSE-CONFIRMED** — GPT confirmed the schema fix; Grok accepted his #2/#3 disproofs and the
+cosmetic declines. P2 is CLOSED.

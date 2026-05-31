@@ -1612,6 +1612,16 @@ fn phase8_reject_parent_dir(path: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+/// Spent-nonce evidence written over the operator nonce file on consume. It carries no
+/// hardcoded record-kind string — its only job is to overwrite the nonce with content that no
+/// longer hashes to the approved `approval_nonce_sha256` (the serde field names are the keys;
+/// both values are runtime data). Nothing reads this record back.
+#[derive(serde::Serialize)]
+struct Phase8ApprovalNonceSpentEvidence<'a> {
+    spent_unix_secs: i64,
+    consumed_approval_nonce_sha256: &'a str,
+}
+
 /// Spend the one-shot operator-approval nonce by overwriting the nonce evidence file once
 /// the approval is consumed (A1/A2). After this, `validate_approval_nonce` fails for that
 /// approval because the on-disk nonce no longer hashes to the approved
@@ -1623,11 +1633,10 @@ fn spend_phase8_approval_nonce(
     approved_nonce_sha256: &str,
     spent_unix_secs: i64,
 ) -> Result<()> {
-    let spent = serde_json::json!({
-        "record_kind": "phase8_operator_approval_nonce_spent",
-        "spent_unix_secs": spent_unix_secs,
-        "consumed_approval_nonce_sha256": approved_nonce_sha256,
-    });
+    let spent = Phase8ApprovalNonceSpentEvidence {
+        spent_unix_secs,
+        consumed_approval_nonce_sha256: approved_nonce_sha256,
+    };
     let bytes = serde_json::to_vec_pretty(&spent)
         .map_err(|source| anyhow!("failed to serialize phase8 spent-nonce record: {source}"))?;
     fs::write(nonce_path, &bytes).map_err(|source| {
@@ -3611,8 +3620,9 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         Phase8CanaryBlockReason, Phase8StrategyInputEvidenceFile, Phase8StrategyInputSafetyAudit,
-        phase8_is_sha256_hex, phase8_resolve_configured_path, validate_phase8_env_path_value,
-        validate_phase8_sha256_env_value, validate_phase8_sha256_field,
+        phase8_is_sha256_hex, phase8_resolve_configured_path, spend_phase8_approval_nonce,
+        validate_phase8_env_path_value, validate_phase8_sha256_env_value,
+        validate_phase8_sha256_field,
     };
     use crate::bolt_v3_decision_evidence::BoltV3GateEvidenceIdentity;
     use std::collections::BTreeMap;

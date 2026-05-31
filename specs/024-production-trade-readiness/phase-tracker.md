@@ -54,17 +54,15 @@ PR #480 was decomposed as a **domain-layer MECE**. Transcript anchors:
 `P5=market family`, and `P1 = order-admission gate, P6 = bolt's own
 hardcode/config discipline, P7 = [verifiers/bindings]`.
 
-### P2 — TOML / config  ⬜ OPEN — adjudicated + fix landed, **pending external re-review**
+### P2 — TOML / config  ✅ CLOSED
 - Production-readiness review of the config layer (validation, schema, fixtures,
   operator TOML). Code: `src/bolt_v3_config.rs`, `src/bolt_v3_validate.rs`.
-- **Adjudicated; fix landed; NOT yet closed.** `external-review/P2-adjudication.md`
-  (6 models; reviews at `1f6ee056`, every finding re-verified vs HEAD). One real
-  fail-closed-at-load gap (F2 — non-positive / mis-ordered strategy sizing in
-  `validate_parameter_bounds`) FIXED + 3 tests (`fcd1d33f`); F1 already-fixed
-  (`f54181f0`); F3/F5 disproven as hazards (both fail closed before NT's runner
-  loop); F4/F6 nits (1 doc fix, rest declined).
-- **Closes only on external adversarial re-review PASS of the F2 fix + adjudication**
-  — same gate as P6/P7 (6-model sign-off). Self-adjudication is not closure.
+- **Evidence:** `external-review/P2-adjudication.md`. Two external review rounds:
+  round-1 (6 models) = 4 CLOSE-CONFIRMED + 2 STILL-OPEN (GPT/Grok, on schema-doc drift +
+  cosmetic nits); round-2 after the schema-doc fix (`633ea9f0`) = **6/6 CLOSE-CONFIRMED**.
+  One real fail-closed-at-load gap (F2 — non-positive / mis-ordered strategy sizing) FIXED
+  + tests; F1 already-fixed (`f54181f0`); F3/F5 disproven; F4/F6 nits declined. No
+  live-money hazard. (DeepSeek's `edge_threshold_basis_points` flag scoped to P4 as A-EDGE.)
 
 ### P3 — Provider / secrets  ⬜ OPEN
 - Provider bindings + secret resolution (SSM single source, zeroize, no-leak).
@@ -126,7 +124,7 @@ the 5 open spec-kit tasks + closing the 4 open review phases.
 | # | Work | spec-kit task | review phase | autonomous now? |
 |---|---|---|---|---|
 | 1 | Adjudicate rate-limit/venue-egress external responses | (add-on) | add-on | **yes** (operator pastes outputs) |
-| 2 | Adversarial review — config — adjudicated; F2 fix landed (`fcd1d33f`); **pending external re-review** (not closed) | — | **P2** | re-review out |
+| 2 | Adversarial review — config — ✅ **CLOSED** (round-2 6/6 CLOSE-CONFIRMED; `P2-adjudication.md`) | — | **P2** | done |
 | 3 | Adversarial review — provider/secrets | — | **P3** | **yes** |
 | 4 | Adversarial review — strategy/policy | — | **P4** | **yes** |
 | 5 | Adversarial review — market-family/instrument-filter | — | **P5** | **yes** |

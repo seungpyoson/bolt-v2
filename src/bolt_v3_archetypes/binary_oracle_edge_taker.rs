@@ -1275,6 +1275,19 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
             "{context}: parameters.entry_order.is_reduce_only must be false because `binary_oracle_edge_taker` entry orders open the managed position"
         ));
     }
+    // A market + quote-quantity entry is a BUY sized in pUSD, which makes the pinned NT
+    // Polymarket adapter issue an extra pre-submit collateral-balance REST fetch
+    // (submit_market_order calls fetch_collateral_balance_pusd when side==Buy &&
+    // is_quote_quantity) — 3 REST requests per command instead of 2. The venue egress
+    // reconciliation models the per-order-command REST fanout as 2 (market = get_book +
+    // post_order); a market quote-quantity entry would silently over-drive the Polymarket REST
+    // cap. Forbid the combination so the modeled fanout stays the provable worst-case. (Exits
+    // already reject is_quote_quantity; they are SELLs and never take the collateral path.)
+    if entry.order_type == OrderType::Market && entry.is_quote_quantity {
+        errors.push(format!(
+            "{context}: parameters.entry_order combination order_type=market with is_quote_quantity=true is not supported because a market quote-quantity BUY issues an extra venue collateral-balance REST request (3 per command), over-driving the modeled egress fanout of 2"
+        ));
+    }
     errors
 }
 

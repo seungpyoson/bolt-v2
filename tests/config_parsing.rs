@@ -1351,6 +1351,61 @@ fn bolt_v3_archetype_rejects_negative_edge_threshold_basis_points() {
 }
 
 #[test]
+fn bolt_v3_archetype_rejects_market_quote_quantity_entry_order() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let parameters = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table");
+    // Build a valid MARKET entry by cloning the fixture's market exit_order, then set
+    // is_quote_quantity=true (and is_reduce_only=false, since entries open the position). A
+    // market quote-quantity BUY entry costs an extra venue collateral-balance REST request, so
+    // it must fail closed at load for the modeled egress fanout (2) to stay the worst-case.
+    let mut entry_order = parameters
+        .get("exit_order")
+        .cloned()
+        .expect("fixture parameters should include a market exit_order");
+    let entry_table = entry_order
+        .as_table_mut()
+        .expect("exit_order fixture should be an order table");
+    entry_table.insert("is_quote_quantity".to_string(), toml::Value::Boolean(true));
+    entry_table.insert("is_reduce_only".to_string(), toml::Value::Boolean(false));
+    parameters.insert("entry_order".to_string(), entry_order);
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.entry_order")
+                && message.contains("order_type=market")
+                && message.contains("is_quote_quantity")
+        }),
+        "market quote-quantity entry must fail closed at load: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_archetype_rejects_reduce_only_entry_order() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},

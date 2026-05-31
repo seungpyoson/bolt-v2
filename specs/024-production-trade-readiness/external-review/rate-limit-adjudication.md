@@ -105,3 +105,29 @@ re-verification). All anchors below personally checked at HEAD / pinned NT sourc
 margin+#501, R3 docstring corrected in-fix + #501); 1 NIT accepted-by-design (R4); 7
 verified-clean (R5–R11), no action. Every prior-review actionable (overflow, silent-skip)
 confirmed FIXED at `f54181f0`.
+
+## External re-review (round 1) — HEAD 633ea9f0 (R1 fix `92480763` on base `f54181f0`)
+
+6 models re-reviewed the R1 fix. **4 CLOSE-CONFIRMED** (DeepSeek, Gemini, Grok, Kimi); **2
+STILL-OPEN** (GLM, GPT) on a new LIVE-MONEY finding, confirmed real against the pinned NT source.
+
+- **R12 (LIVE-MONEY) — CONFIRMED + FIXED.** A market + quote-quantity BUY issues a 3rd REST
+  request (`fetch_collateral_balance_pusd`, NT `6e059dc` `execution/mod.rs:559,586` — only when
+  `side==Buy && is_quote_quantity`), so `MAX_REST_REQUESTS_PER_ORDER_COMMAND = 2` under-counts.
+  The archetype rejects `is_quote_quantity` for exits/forced-exits but NOT for entries
+  (`check_entry_order_combination`), and entries are BUYs — so a config with
+  `entry_order = market + quote_qty` was a reachable over-drive (40/min × 3 = 120 > 100 cap).
+  Re-verified personally against NT `6e059dc`. **FIX (operator decision — Option A):** forbid
+  `entry_order` `order_type=market` + `is_quote_quantity=true` at load
+  (`check_entry_order_combination`), making fanout=2 the provable worst-case across allowed
+  configs; production (limit entry, 40/min) is unaffected. Test:
+  `bolt_v3_archetype_rejects_market_quote_quantity_entry_order` (config_parsing.rs). The
+  order-template-aware fanout (Option C — re-enable the mode by modeling fanout per order
+  shape) is filed as **#506**.
+- **HARDENING (DeepSeek H1/H2) — FIXED.** (H1) the `MAX_REST_REQUESTS_PER_ORDER_COMMAND` comment
+  now documents the excluded 3rd-REST collateral fetch and why fanout=2 stays correct (the entry
+  combo is forbidden; exits are SELLs). (H2) schema-doc example `max_order_submit/modify_rate`
+  updated 100 → 40/00:01:00 to match the derated config.
+- **R4–R11:** re-verified clean at HEAD by the 6 models; no regression.
+
+**Closure:** R1 + R12 fixed; pending a round-2 re-review of the fix before close.

@@ -14,6 +14,7 @@ pub const MINUTES_PER_HOUR_F64: f64 = 60.0;
 pub const SECONDS_PER_MINUTE_F64: f64 = 60.0;
 pub const SECONDS_PER_YEAR_F64: f64 =
     DAYS_PER_YEAR_F64 * HOURS_PER_DAY_F64 * MINUTES_PER_HOUR_F64 * SECONDS_PER_MINUTE_F64;
+pub const MILLIS_PER_SECOND_U64: u64 = 1_000;
 
 pub fn is_positive_finite(value: f64) -> bool {
     value.is_finite() && value > ZERO_F64

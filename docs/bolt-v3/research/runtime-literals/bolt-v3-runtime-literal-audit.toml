@@ -3577,12 +3577,28 @@ classification = "strategy_state_invariant"
 reason = "This is a named initial counter invariant for strategy state, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_volatility.rs"
 kind = "number"
 literal = '''0'''
 context = '''const INITIAL_COUNTER_USIZE: usize = 0;'''
 classification = "strategy_state_invariant"
-reason = "This is a named initial counter invariant for strategy state, not an operator runtime value."
+reason = "This is a named initial counter invariant for the realized-volatility estimator's accumulation loop, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_volatility.rs"
+kind = "number"
+literal = '''0'''
+context = '''const INITIAL_COUNTER_U64: u64 = 0;'''
+classification = "strategy_state_invariant"
+reason = "This is a named initial counter invariant for the realized-volatility estimator's accumulation loop, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_volatility.rs"
+kind = "number"
+literal = '''1'''
+context = '''const COUNTER_INCREMENT: usize = 1;'''
+classification = "strategy_state_invariant"
+reason = "This is a named counter increment invariant for the realized-volatility estimator's accumulation loop, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_numeric.rs"
@@ -3681,7 +3697,7 @@ classification = "strategy_state_invariant"
 reason = "This is a named counter increment invariant for strategy state, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_volatility.rs"
 kind = "number"
 literal = '''1'''
 context = '''const MIN_OBSERVATION_COUNT: u64 = 1;'''
@@ -3713,15 +3729,15 @@ classification = "financial_unit_conversion"
 reason = "This is the basis-points denominator for financial unit conversion, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''1_000'''
-context = '''const MILLIS_PER_SECOND_U64: u64 = 1_000;'''
+context = '''pub const MILLIS_PER_SECOND_U64: u64 = 1_000;'''
 classification = "time_unit_conversion"
 reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_volatility.rs"
 kind = "number"
 literal = '''1_000.0'''
 context = '''const MILLIS_PER_SECOND_F64: f64 = 1_000.0;'''

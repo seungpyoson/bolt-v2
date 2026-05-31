@@ -44,7 +44,7 @@ use crate::{
         SelectedMarketSourceIdentity,
     },
     bolt_v3_numeric::{
-        POWER_OF_TWO, SECONDS_PER_YEAR_F64, UNIT_F64, ZERO_F64, is_positive_finite,
+        MILLIS_PER_SECOND_U64, POWER_OF_TWO, UNIT_F64, ZERO_F64, is_positive_finite,
         sanitize_probability,
     },
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
@@ -57,6 +57,7 @@ use crate::{
         BoltV3QuoteQuantityOrderSide, BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind,
         BoltV3SubmitLifecyclePolicy, conservative_quote_quantity_admission_notional,
     },
+    bolt_v3_volatility::{RealizedVolConfig, RealizedVolEstimator},
     strategies::registry::{
         BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
     },
@@ -809,165 +810,10 @@ impl VenueTimingState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct VolatilitySample {
-    ts_ms: u64,
-    price: f64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ImpactCappedExecution {
     quantity: f64,
     vwap_price: f64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct RealizedVolEstimator {
-    window_ms: u64,
-    gap_reset_ms: u64,
-    min_observations: u64,
-    bridge_valid_ms: u64,
-    active_venue_name: Option<String>,
-    samples: VecDeque<VolatilitySample>,
-    last_ready_vol: Option<f64>,
-    last_ready_ts_ms: Option<u64>,
-}
-
-impl RealizedVolEstimator {
-    fn from_config(config: &BinaryOracleEdgeTakerConfig) -> Self {
-        Self {
-            window_ms: config.vol_window_secs.saturating_mul(MILLIS_PER_SECOND_U64),
-            gap_reset_ms: config
-                .vol_gap_reset_secs
-                .saturating_mul(MILLIS_PER_SECOND_U64),
-            min_observations: config.vol_min_observations,
-            bridge_valid_ms: config
-                .vol_bridge_valid_secs
-                .saturating_mul(MILLIS_PER_SECOND_U64),
-            active_venue_name: None,
-            samples: VecDeque::new(),
-            last_ready_vol: None,
-            last_ready_ts_ms: None,
-        }
-    }
-
-    fn empty_like(&self) -> Self {
-        Self {
-            window_ms: self.window_ms,
-            gap_reset_ms: self.gap_reset_ms,
-            min_observations: self.min_observations,
-            bridge_valid_ms: self.bridge_valid_ms,
-            active_venue_name: None,
-            samples: VecDeque::new(),
-            last_ready_vol: None,
-            last_ready_ts_ms: None,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.active_venue_name = None;
-        self.samples.clear();
-        self.last_ready_vol = None;
-        self.last_ready_ts_ms = None;
-    }
-
-    fn observe(&mut self, sample: &FastSpotObservation) -> Option<f64> {
-        if !is_positive_finite(sample.price) {
-            return None;
-        }
-
-        if self.active_venue_name.as_deref() != Some(sample.venue_name.as_str()) {
-            self.reset();
-            self.active_venue_name = Some(sample.venue_name.clone());
-        }
-
-        if let Some(previous) = self.samples.back() {
-            if sample.observed_ts_ms <= previous.ts_ms {
-                return self.current_vol_at(sample.observed_ts_ms);
-            }
-            if sample.observed_ts_ms.saturating_sub(previous.ts_ms) > self.gap_reset_ms {
-                self.reset();
-                self.active_venue_name = Some(sample.venue_name.clone());
-            }
-        }
-
-        self.samples.push_back(VolatilitySample {
-            ts_ms: sample.observed_ts_ms,
-            price: sample.price,
-        });
-        self.evict_old_samples(sample.observed_ts_ms);
-
-        if let Some(vol) = self.compute_ready_vol() {
-            self.last_ready_vol = Some(vol);
-            self.last_ready_ts_ms = Some(sample.observed_ts_ms);
-        }
-
-        self.current_vol_at(sample.observed_ts_ms)
-    }
-
-    fn current_vol_at(&self, now_ms: u64) -> Option<f64> {
-        let last_ready_ts_ms = self.last_ready_ts_ms?;
-        if now_ms.saturating_sub(last_ready_ts_ms) <= self.bridge_valid_ms {
-            self.last_ready_vol
-        } else {
-            None
-        }
-    }
-
-    fn evict_old_samples(&mut self, now_ms: u64) {
-        let cutoff_ms = now_ms.saturating_sub(self.window_ms);
-        while self.samples.len() > 1
-            && self
-                .samples
-                .front()
-                .is_some_and(|sample| sample.ts_ms < cutoff_ms)
-        {
-            let _ = self.samples.pop_front();
-        }
-    }
-
-    fn compute_ready_vol(&self) -> Option<f64> {
-        let min_observations = self.min_observations.max(MIN_OBSERVATION_COUNT) as usize;
-        let mut observation_count = INITIAL_COUNTER_USIZE;
-        let mut elapsed_ms = INITIAL_COUNTER_U64;
-        let mut sum_squared_returns = ZERO_F64;
-
-        let mut iter = self.samples.iter();
-        let mut previous = iter.next()?;
-        for current in iter {
-            let dt_ms = current.ts_ms.saturating_sub(previous.ts_ms);
-            if dt_ms == 0 {
-                previous = current;
-                continue;
-            }
-            if !is_positive_finite(current.price) || !is_positive_finite(previous.price) {
-                return None;
-            }
-
-            let log_return = (current.price / previous.price).ln();
-            if !log_return.is_finite() {
-                return None;
-            }
-
-            sum_squared_returns += log_return.powi(POWER_OF_TWO);
-            elapsed_ms = elapsed_ms.saturating_add(dt_ms);
-            observation_count += COUNTER_INCREMENT;
-            previous = current;
-        }
-
-        if observation_count < min_observations || elapsed_ms == 0 {
-            return None;
-        }
-
-        let elapsed_secs = elapsed_ms as f64 / MILLIS_PER_SECOND_F64;
-        let annualized_variance = (sum_squared_returns / elapsed_secs) * SECONDS_PER_YEAR_F64;
-        let vol = annualized_variance.sqrt();
-        if is_positive_finite(vol) {
-            Some(vol)
-        } else {
-            None
-        }
-    }
 }
 
 /// A single signed trade retained for downstream adverse-selection / VPIN analysis.
@@ -1419,12 +1265,24 @@ fn managed_position_effective_entry_cost(
         .filter(|effective_cost| is_positive_finite(*effective_cost))
 }
 
+/// Project the strategy's volatility-window TOML knobs into the foundational
+/// estimator's runtime config view. The strategy owns deserialization; this is
+/// the single place that maps those fields onto [`RealizedVolConfig`].
+fn realized_vol_config(config: &BinaryOracleEdgeTakerConfig) -> RealizedVolConfig {
+    RealizedVolConfig {
+        window_secs: config.vol_window_secs,
+        gap_reset_secs: config.vol_gap_reset_secs,
+        min_observations: config.vol_min_observations,
+        bridge_valid_secs: config.vol_bridge_valid_secs,
+    }
+}
+
 impl PricingState {
     fn from_config(config: &BinaryOracleEdgeTakerConfig) -> Self {
         Self {
             last_reference_fair_value: None,
             fast_spot: None,
-            realized_vol: RealizedVolEstimator::from_config(config),
+            realized_vol: RealizedVolEstimator::from_config(&realized_vol_config(config)),
             realized_vol_source_venue: None,
             realized_vol_by_venue: BTreeMap::new(),
             venue_timing: BTreeMap::new(),
@@ -1472,7 +1330,7 @@ impl PricingState {
                     .realized_vol_by_venue
                     .entry(quote.venue_name.clone())
                     .or_insert_with(|| estimator_template.clone());
-                let _ = estimator.observe(quote);
+                let _ = estimator.observe(&quote.venue_name, quote.price, quote.observed_ts_ms);
                 estimator.clone()
             };
             self.realized_vol = selected_realized_vol;
@@ -1629,11 +1487,7 @@ impl PricingState {
                 .realized_vol_by_venue
                 .entry(candidate.venue_name.clone())
                 .or_insert_with(|| estimator_template.clone());
-            let _ = estimator.observe(&FastSpotObservation {
-                venue_name: candidate.venue_name.clone(),
-                price,
-                observed_ts_ms,
-            });
+            let _ = estimator.observe(&candidate.venue_name, price, observed_ts_ms);
         }
     }
 
@@ -5838,15 +5692,11 @@ fn refresh_fee_readiness_for_active(
 }
 
 const INITIAL_COUNTER_U64: u64 = 0;
-const INITIAL_COUNTER_USIZE: usize = 0;
-const MIN_OBSERVATION_COUNT: u64 = 1;
 const COUNTER_INCREMENT: usize = 1;
 const COUNTER_INCREMENT_U64: u64 = 1;
 const BPS_DENOMINATOR: f64 = 10_000.0;
 const MIDPOINT_DIVISOR_F64: f64 = 2.0;
 const QUADRATIC_RISK_DIVISOR: f64 = 2.0;
-const MILLIS_PER_SECOND_U64: u64 = 1_000;
-const MILLIS_PER_SECOND_F64: f64 = 1_000.0;
 const NANOS_PER_MILLI_U64: u64 = 1_000_000;
 const NANOS_PER_SECOND_U64: u64 = 1_000_000_000;
 const CONFIG_FIELD_OMS_TYPE: &str = "oms_type";
@@ -9485,70 +9335,6 @@ mod tests {
         assert_eq!(state.best_bid, None);
         assert_eq!(state.best_ask, Some(0.45));
         assert_eq!(state.liquidity_available, Some(12.0));
-    }
-
-    #[test]
-    fn realized_vol_estimator_warms_bridges_and_resets_after_gap() {
-        let mut config = test_strategy().config.clone();
-        config.vol_window_secs = 60;
-        config.vol_gap_reset_secs = 10;
-        config.vol_min_observations = 3;
-        config.vol_bridge_valid_secs = 10;
-        let mut estimator = RealizedVolEstimator::from_config(&config);
-
-        assert!(estimator.observe(&fast_spot("bybit", 3_100.0, 0)).is_none());
-        assert!(
-            estimator
-                .observe(&fast_spot("bybit", 3_101.0, 1_000))
-                .is_none()
-        );
-        assert!(
-            estimator
-                .observe(&fast_spot("bybit", 3_099.5, 2_000))
-                .is_none()
-        );
-        let ready_vol = estimator
-            .observe(&fast_spot("bybit", 3_102.0, 3_000))
-            .expect("vol should be ready after min observations");
-        assert!(ready_vol > 0.0);
-        assert_eq!(estimator.current_vol_at(12_000), Some(ready_vol));
-        assert!(estimator.current_vol_at(13_001).is_none());
-
-        assert!(
-            estimator
-                .observe(&fast_spot("bybit", 3_103.0, 20_000))
-                .is_none()
-        );
-        assert_eq!(estimator.samples.len(), 1);
-        assert!(estimator.last_ready_vol.is_none());
-    }
-
-    #[test]
-    fn realized_vol_estimator_ignores_non_monotonic_samples_within_same_venue() {
-        let mut config = test_strategy().config.clone();
-        config.vol_min_observations = 1;
-        let mut estimator = RealizedVolEstimator::from_config(&config);
-
-        assert!(
-            estimator
-                .observe(&fast_spot("bybit", 3_100.0, 1_000))
-                .is_none()
-        );
-        let ready_vol = estimator
-            .observe(&fast_spot("bybit", 3_101.0, 2_000))
-            .expect("vol should be ready after min observations");
-        let sample_count = estimator.samples.len();
-
-        assert_eq!(
-            estimator.observe(&fast_spot("bybit", 3_200.0, 1_500)),
-            Some(ready_vol)
-        );
-        assert_eq!(estimator.samples.len(), sample_count);
-        assert_eq!(
-            estimator.samples.back().map(|sample| sample.ts_ms),
-            Some(2_000)
-        );
-        assert_eq!(estimator.last_ready_ts_ms, Some(2_000));
     }
 
     #[test]

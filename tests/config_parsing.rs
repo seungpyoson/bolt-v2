@@ -5429,7 +5429,7 @@ fn fails_closed_on_execution_client_for_unmodeled_egress_venue() {
         messages
             .iter()
             .any(|m| m.contains("clients.binance_reference")
-                && m.contains("venue=`BINANCE`")
+                && m.contains("(provider=BINANCE)")
                 && m.contains("models no REST egress cap")
                 && m.contains("fail closed")),
         "an execution client on an unmodeled egress venue must fail closed: {messages:#?}"

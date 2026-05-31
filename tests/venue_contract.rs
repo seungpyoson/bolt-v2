@@ -11,7 +11,8 @@ use bolt_v2::{
     lake_batch::convert_live_spool_to_parquet,
     nt_runtime_capture,
     venue_contract::{
-        Capability, CompletenessReport, Policy, Provenance, StreamContract, VenueContract,
+        Capability, CompletenessReport, Policy, Provenance, SettlementKind, StreamContract,
+        VenueContract,
     },
 };
 mod support;
@@ -129,12 +130,53 @@ fn base_polymarket_streams() -> BTreeMap<String, StreamContract> {
 }
 
 fn make_contract(streams: BTreeMap<String, StreamContract>) -> VenueContract {
-    VenueContract {
-        schema_version: 1,
-        venue: "test".to_string(),
-        adapter_version: "bolt-v2".to_string(),
-        streams,
+    support::sample_contract_with_streams(streams)
+}
+
+/// Read the first shipped contract's text and remove the field or table named by
+/// `prefix`, asserting the removal happened so a negative test can never silently
+/// pass if the contract text drifts. Removes by key/table-header regardless of the
+/// field's value, so it stays venue-agnostic, and is line-oriented so it is robust
+/// to CRLF checkouts. Comment lines never match; a key `prefix` matches only a real
+/// `prefix = ...` assignment (not a longer key name); and for a `[table]` prefix the
+/// whole table body is excised, not just the header, so no orphan keys survive (the
+/// error stays `missing field`, robust to a future `deny_unknown_fields`).
+fn contract_text_without_line(prefix: &str) -> String {
+    let text = std::fs::read_to_string(support::first_contract_path()).unwrap();
+    let removing_table = prefix.starts_with('[');
+    let mut kept = Vec::new();
+    let mut removed = false;
+    let mut dropping_table_body = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if dropping_table_body {
+            if trimmed.starts_with('[') {
+                dropping_table_body = false; // next table header: stop excising
+            } else {
+                continue; // drop the removed table's body lines
+            }
+        }
+        let name_match = if removing_table {
+            trimmed.starts_with(prefix)
+        } else {
+            trimmed
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        };
+        if !removed && name_match && !trimmed.starts_with('#') {
+            removed = true;
+            dropping_table_body = removing_table;
+            continue;
+        }
+        kept.push(line);
     }
+    assert!(
+        removed,
+        "no `{prefix}` field/table in the shipped contract; negative test would silently pass"
+    );
+    let mut out = kept.join("\n");
+    out.push('\n');
+    out
 }
 
 #[test]
@@ -144,17 +186,22 @@ fn loads_polymarket_contract() {
             .expect("polymarket contract should load");
 
     assert_eq!(contract.venue, "polymarket");
-    assert_eq!(contract.schema_version, 1);
+    assert_eq!(contract.schema_version, 2);
     assert_eq!(contract.streams.len(), 7);
+
+    // Execution-capability facts (sourced from the NT Polymarket adapter).
+    assert!(!contract.supports_modify);
+    assert_eq!(contract.settlement_kind, SettlementKind::Binary);
+    assert_eq!(contract.rate_budget.clob_per_minute, 100);
+    assert_eq!(contract.rate_budget.gamma_per_minute, 100);
+    assert_eq!(contract.rate_budget.batch_submit_limit, 15);
 }
 
 #[test]
 fn rejects_contract_missing_stream_provenance() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("missing-provenance.toml");
-    let fixture = std::fs::read_to_string("contracts/polymarket.toml").unwrap();
-    let mutated = fixture.replacen("provenance = \"native\"\n", "", 1);
-    std::fs::write(&path, mutated).unwrap();
+    std::fs::write(&path, contract_text_without_line("provenance")).unwrap();
 
     let err = VenueContract::load_and_validate(&path).unwrap_err();
     assert!(
@@ -233,6 +280,66 @@ fn rejects_wrong_schema_version() {
         err.to_string()
             .contains("unsupported contract schema_version"),
         "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn rejects_zero_rate_budget() {
+    fn assert_zero_rejected(zero_field: impl FnOnce(&mut VenueContract), name: &str) {
+        let mut contract = make_contract(base_polymarket_streams());
+        zero_field(&mut contract);
+        let err = contract.validate().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(&format!("rate_budget.{name} must be positive")),
+            "expected positivity error for {name}, got: {err}"
+        );
+    }
+
+    assert_zero_rejected(|c| c.rate_budget.clob_per_minute = 0, "clob_per_minute");
+    assert_zero_rejected(|c| c.rate_budget.gamma_per_minute = 0, "gamma_per_minute");
+    assert_zero_rejected(
+        |c| c.rate_budget.batch_submit_limit = 0,
+        "batch_submit_limit",
+    );
+}
+
+#[test]
+fn rejects_contract_missing_supports_modify() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("missing-supports-modify.toml");
+    std::fs::write(&path, contract_text_without_line("supports_modify")).unwrap();
+
+    let err = VenueContract::load_and_validate(&path).unwrap_err();
+    assert!(
+        err.to_string().contains("missing field `supports_modify`"),
+        "supports_modify must be explicit, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_contract_missing_settlement_kind() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("missing-settlement-kind.toml");
+    std::fs::write(&path, contract_text_without_line("settlement_kind")).unwrap();
+
+    let err = VenueContract::load_and_validate(&path).unwrap_err();
+    assert!(
+        err.to_string().contains("missing field `settlement_kind`"),
+        "settlement_kind must be explicit, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_contract_missing_rate_budget() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("missing-rate-budget.toml");
+    std::fs::write(&path, contract_text_without_line("[rate_budget]")).unwrap();
+
+    let err = VenueContract::load_and_validate(&path).unwrap_err();
+    assert!(
+        err.to_string().contains("missing field `rate_budget`"),
+        "rate_budget must be explicit, got: {err}"
     );
 }
 

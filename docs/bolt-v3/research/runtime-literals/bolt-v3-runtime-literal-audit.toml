@@ -4227,10 +4227,34 @@ reason = "This is a stable evidence reason code for missing uncertainty-band inp
 [[allowed]]
 path = "src/venue_contract.rs"
 kind = "number"
-literal = '''1'''
-context = '''pub const CURRENT_SCHEMA_VERSION: u32 = 1;'''
+literal = '''2'''
+context = '''pub const CURRENT_SCHEMA_VERSION: u32 = 2;'''
 classification = "venue_contract_schema_version"
 reason = "This is the venue contract schema version accepted by the parser, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "number"
+literal = '''0'''
+context = '''self.rate_budget.clob_per_minute > 0,'''
+classification = "venue_contract_rate_budget_floor"
+reason = "This is the inclusive zero floor of a fail-closed validation check requiring the CLOB rate budget to be positive, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "number"
+literal = '''0'''
+context = '''self.rate_budget.gamma_per_minute > 0,'''
+classification = "venue_contract_rate_budget_floor"
+reason = "This is the inclusive zero floor of a fail-closed validation check requiring the Gamma rate budget to be positive, not an operator runtime value."
+
+[[allowed]]
+path = "src/venue_contract.rs"
+kind = "number"
+literal = '''0'''
+context = '''self.rate_budget.batch_submit_limit > 0,'''
+classification = "venue_contract_rate_budget_floor"
+reason = "This is the inclusive zero floor of a fail-closed validation check requiring the batch submit limit to be positive, not an operator runtime value."
 
 [[allowed]]
 path = "src/venue_contract.rs"

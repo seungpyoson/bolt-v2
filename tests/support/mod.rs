@@ -181,6 +181,42 @@ pub fn repo_text(relative: &str) -> String {
         .unwrap_or_else(|error| panic!("repo text `{relative}` should read: {error}"))
 }
 
+/// Path of the lexically-first venue contract under the repo's `contracts/`
+/// directory. Venue-agnostic: no venue name is written here. It is an arbitrary
+/// valid envelope for machinery/negative tests; a second contract that sorts
+/// earlier would be picked, so tests asserting venue-specific facts load their
+/// contract explicitly rather than relying on this selection.
+pub fn first_contract_path() -> PathBuf {
+    let dir = repo_path("contracts");
+    let mut paths: Vec<PathBuf> = fs::read_dir(&dir)
+        .unwrap_or_else(|error| panic!("contracts dir {} must be readable: {error}", dir.display()))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("toml"))
+        .collect();
+    paths.sort();
+    paths.into_iter().next().unwrap_or_else(|| {
+        panic!(
+            "at least one venue contract must ship under {}",
+            dir.display()
+        )
+    })
+}
+
+/// Integration-test contract fixture: load the first shipped venue contract via
+/// the production loader, then swap in caller-supplied `streams`. No venue name,
+/// budget value, settlement kind, or policy is written here — the envelope is
+/// sourced entirely from the shipped config (the single source of truth). Mirrors
+/// the in-crate `venue_contract::sample_contract_with_streams`.
+pub fn sample_contract_with_streams(
+    streams: std::collections::BTreeMap<String, bolt_v2::venue_contract::StreamContract>,
+) -> bolt_v2::venue_contract::VenueContract {
+    let path = first_contract_path();
+    let mut contract = bolt_v2::venue_contract::VenueContract::load_and_validate(&path)
+        .unwrap_or_else(|error| panic!("shipped contract {} must load: {error}", path.display()));
+    contract.streams = streams;
+    contract
+}
+
 pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock {
     let case_dir = live_canary_operator_evidence_case_dir();
     let now = current_unix_seconds() as i64;

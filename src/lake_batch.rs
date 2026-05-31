@@ -735,7 +735,7 @@ fn paths_overlap(left: &Path, right: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::venue_contract::{Capability, Policy, Provenance, StreamContract, VenueContract};
+    use crate::venue_contract::{Capability, Policy, Provenance, StreamContract};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
@@ -777,11 +777,8 @@ mod tests {
     #[test]
     fn completeness_report_keeps_optional_unconverted_spool_nonfatal() {
         let source_root = tempdir().expect("tempdir should exist");
-        let contract = VenueContract {
-            schema_version: 1,
-            venue: "test".to_string(),
-            adapter_version: "bolt-v2".to_string(),
-            streams: [(
+        let contract = crate::venue_contract::sample_contract_with_streams(
+            [(
                 "quotes".to_string(),
                 StreamContract {
                     capability: Capability::Supported,
@@ -793,7 +790,7 @@ mod tests {
             )]
             .into_iter()
             .collect(),
-        };
+        );
         let class_files =
             BTreeMap::from([("quotes", vec![source_root.path().join("quotes_0.feather")])]);
 

@@ -498,7 +498,7 @@ This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTra
 
 #### `default_max_notional_per_order`
 
-- type: decimal string
+- type: positive decimal string
 - required: yes
 - root-level entity per-order notional cap
 - enforced by bolt-v3 strategy validation: each strategy file's `parameters.order_notional_target` must be `<=` this value

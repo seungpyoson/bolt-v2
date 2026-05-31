@@ -1208,12 +1208,34 @@ fn validate_parameter_bounds(
             None
         }
     };
-    if let Err(reason) =
-        crate::bolt_v3_validate::parse_decimal_string(&parameters.maximum_position_notional)
+    let position_max_decimal = match crate::bolt_v3_validate::parse_decimal_string(
+        &parameters.maximum_position_notional,
+    ) {
+        Ok(value) => Some(value),
+        Err(reason) => {
+            errors.push(format!(
+                "{context}: parameters.maximum_position_notional is not a valid decimal string ({reason}): `{}`",
+                parameters.maximum_position_notional
+            ));
+            None
+        }
+    };
+    // Both sizing caps must be strictly positive at load. A zero/negative cap is
+    // nonsensical config: the runtime sizing path clamps it to zero and the
+    // strategy silently never submits (fail-soft), so the misconfiguration must
+    // fail closed here instead of at the first dead trading session.
+    if let Some(order_target) = order_target_decimal.as_ref()
+        && *order_target <= Decimal::ZERO
     {
         errors.push(format!(
-            "{context}: parameters.maximum_position_notional is not a valid decimal string ({reason}): `{}`",
-            parameters.maximum_position_notional
+            "{context}: parameters.order_notional_target ({order_target}) must be a positive decimal"
+        ));
+    }
+    if let Some(position_max) = position_max_decimal.as_ref()
+        && *position_max <= Decimal::ZERO
+    {
+        errors.push(format!(
+            "{context}: parameters.maximum_position_notional ({position_max}) must be a positive decimal"
         ));
     }
     if let (Some(order_target), Some(default_max)) =
@@ -1222,6 +1244,16 @@ fn validate_parameter_bounds(
     {
         errors.push(format!(
             "{context}: parameters.order_notional_target ({order_target}) must be <= root risk.default_max_notional_per_order ({default_max})"
+        ));
+    }
+    // The per-order target cannot exceed the maximum total position notional; such a
+    // target is unsatisfiable (the position cap would always bind first).
+    if let (Some(order_target), Some(position_max)) =
+        (order_target_decimal.as_ref(), position_max_decimal.as_ref())
+        && order_target > position_max
+    {
+        errors.push(format!(
+            "{context}: parameters.order_notional_target ({order_target}) must be <= parameters.maximum_position_notional ({position_max})"
         ));
     }
     errors

@@ -133,25 +133,46 @@ fn make_contract(streams: BTreeMap<String, StreamContract>) -> VenueContract {
     support::sample_contract_with_streams(streams)
 }
 
-/// Read the first shipped contract's text and drop the first line whose trimmed
-/// content starts with `prefix`, asserting the drop actually happened so a
-/// negative test can never silently pass if the contract text drifts. Removes by
-/// key/table-header regardless of the field's value, so it stays venue-agnostic,
-/// and is line-oriented so it is robust to CRLF checkouts.
+/// Read the first shipped contract's text and remove the field or table named by
+/// `prefix`, asserting the removal happened so a negative test can never silently
+/// pass if the contract text drifts. Removes by key/table-header regardless of the
+/// field's value, so it stays venue-agnostic, and is line-oriented so it is robust
+/// to CRLF checkouts. Comment lines never match; a key `prefix` matches only a real
+/// `prefix = ...` assignment (not a longer key name); and for a `[table]` prefix the
+/// whole table body is excised, not just the header, so no orphan keys survive (the
+/// error stays `missing field`, robust to a future `deny_unknown_fields`).
 fn contract_text_without_line(prefix: &str) -> String {
     let text = std::fs::read_to_string(support::first_contract_path()).unwrap();
+    let removing_table = prefix.starts_with('[');
     let mut kept = Vec::new();
     let mut removed = false;
+    let mut dropping_table_body = false;
     for line in text.lines() {
-        if !removed && line.trim_start().starts_with(prefix) {
+        let trimmed = line.trim_start();
+        if dropping_table_body {
+            if trimmed.starts_with('[') {
+                dropping_table_body = false; // next table header: stop excising
+            } else {
+                continue; // drop the removed table's body lines
+            }
+        }
+        let name_match = if removing_table {
+            trimmed.starts_with(prefix)
+        } else {
+            trimmed
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        };
+        if !removed && name_match && !trimmed.starts_with('#') {
             removed = true;
+            dropping_table_body = removing_table;
             continue;
         }
         kept.push(line);
     }
     assert!(
         removed,
-        "no line starting with `{prefix}` in the shipped contract; negative test would silently pass"
+        "no `{prefix}` field/table in the shipped contract; negative test would silently pass"
     );
     let mut out = kept.join("\n");
     out.push('\n');

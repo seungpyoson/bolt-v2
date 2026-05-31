@@ -181,9 +181,11 @@ pub fn repo_text(relative: &str) -> String {
         .unwrap_or_else(|error| panic!("repo text `{relative}` should read: {error}"))
 }
 
-/// Path of the first venue contract discovered under the repo's `contracts/`
-/// directory. Venue-agnostic: no venue name is written here, so tests track
-/// whatever ships and adapt when more venues are added.
+/// Path of the lexically-first venue contract under the repo's `contracts/`
+/// directory. Venue-agnostic: no venue name is written here. It is an arbitrary
+/// valid envelope for machinery/negative tests; a second contract that sorts
+/// earlier would be picked, so tests asserting venue-specific facts load their
+/// contract explicitly rather than relying on this selection.
 pub fn first_contract_path() -> PathBuf {
     let dir = repo_path("contracts");
     let mut paths: Vec<PathBuf> = fs::read_dir(&dir)

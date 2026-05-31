@@ -249,8 +249,10 @@ pub struct CompletenessReport {
 /// the repo's `contracts/` directory, load the first via the production loader,
 /// then swap in caller-supplied `streams`. No venue name, budget value,
 /// settlement kind, or policy is written here — the envelope is sourced entirely
-/// from the shipped config (the single source of truth), so machinery tests track
-/// that config and adapt automatically when more venues are added. Integration
+/// from the shipped config (the single source of truth), so the fixtures carry no
+/// literals. It selects the lexically-first contract under `contracts/` as an
+/// arbitrary valid envelope; tests that assert venue-specific facts load their
+/// contract explicitly rather than relying on this selection. Integration
 /// tests use the mirror in `tests/support`; Rust's lib/integration-test boundary
 /// forces the two copies of this discovery logic (it carries no config values,
 /// only the lookup).

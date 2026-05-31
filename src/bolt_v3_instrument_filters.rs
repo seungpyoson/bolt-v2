@@ -2,9 +2,9 @@
 //!
 //! This module owns the family-agnostic `InstrumentFilterError` enum and
 //! its operator-facing prefix formatter. Both are consumed by the market-
-//! family bindings under `crate::bolt_v3_market_families` so target
-//! deserialization, cadence, and dispatch failures render one consistent
-//! operator message regardless of family.
+//! family target bindings so target deserialization, cadence, and
+//! dispatch failures render one consistent operator message regardless
+//! of family.
 //!
 //! Source-level guard tests keep provider-specific filter construction
 //! under `crate::bolt_v3_providers`.

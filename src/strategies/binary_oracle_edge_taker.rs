@@ -15304,6 +15304,7 @@ mod tests {
                 EntryBlockReason::RecoveryMode,
                 EntryBlockReason::MarketCoolingDown,
                 EntryBlockReason::ForcedFlat(ForcedFlatReason::Freeze),
+                EntryBlockReason::ForcedFlat(ForcedFlatReason::StaleReference),
                 EntryBlockReason::ForcedFlat(ForcedFlatReason::ThinBook),
                 EntryBlockReason::OnePositionInvariant(ExposureOccupancy::EntryReconcilePending),
             ]

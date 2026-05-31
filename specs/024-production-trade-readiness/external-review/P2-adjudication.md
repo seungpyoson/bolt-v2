@@ -13,6 +13,11 @@ found:** F2 is fail-SOFT (runtime triple-guarded — a bad order can never fire)
 and the two claimed hazards (F3 readiness fail-open, F5 operational-field load
 gap) are DISPROVEN — both fail closed before NT's runner loop.
 
+**Closure status: NOT CLOSED.** This is the *author's* adjudication, not phase
+closure. P2 closes only on an external 6-model adversarial re-review PASS of the
+F2 fix + this record — the same external gate that closed P6/P7. Self-adjudication
+is not closure.
+
 Anchors use function name + file (line numbers approximate; re-locate by name).
 **Every change preserves or TIGHTENS fail-closed — no guard loosened.**
 

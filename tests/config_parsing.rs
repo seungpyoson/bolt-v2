@@ -5344,6 +5344,78 @@ fn accepts_nt_order_rates_at_polymarket_egress_cap() {
 }
 
 #[test]
+fn rejects_nt_rate_limit_string_whose_interval_overflows_u64() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // `hours` here fits in u64 but `hours * 3600` overflows it. The interval
+    // computation is checked, so this must surface a loud validation message
+    // instead of panicking (debug) or wrapping to a bogus interval (release).
+    let mutated = replace_in_fixture_root(
+        "max_order_submit_rate = \"100/00:01:00\"",
+        "max_order_submit_rate = \"1/9999999999999999999:00:00\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("overflowing-interval fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m
+            .contains("risk.nautilus.max_order_submit_rate is not a valid Nautilus rate limit")
+            && m.contains("interval seconds overflow u64")),
+        "an interval that overflows u64 must fail loud, not panic or wrap: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_nt_submit_rate_above_egress_cap_under_dual_u64_saturation() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // Hand-verified dual-saturation vector: limit = 5e17, interval_seconds =
+    // 51388888888889 * 3600 = 185000000000000400 (~1.85e17, fits u64). The true
+    // rate is 5e17 * 60 / 1.85e17 ≈ 162/min, above the 100/min POLYMARKET cap.
+    // Under the old u64-saturating comparison both sides saturate to u64::MAX
+    // (5e17*60 = 3e19 and 100*1.85e17 = 1.85e19 both exceed u64::MAX), so
+    // MAX > MAX is false and the over-cap rate was wrongly accepted. The u128
+    // comparison computes the true products (3e19 > 1.85e19) and rejects it.
+    let mutated = replace_in_fixture_root(
+        "max_order_submit_rate = \"100/00:01:00\"",
+        "max_order_submit_rate = \"500000000000000000/51388888888889:00:00\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("dual-saturation submit-rate fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("max_order_submit_rate")
+            && m.contains("POLYMARKET")
+            && m.contains("REST egress cap")),
+        "an over-cap rate that saturates both sides of the old u64 check must still fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn fails_closed_on_execution_client_for_unmodeled_egress_venue() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // An [execution] block on a venue whose REST egress ceiling bolt-v3 does not
+    // model must fail closed rather than be silently skipped: a skipped venue
+    // leaves the submit rate unreconciled. The config is also rejected for
+    // declaring execution on a data-only provider; we only assert OUR error.
+    let fixture = fixture_root_with_binance_reference_client();
+    let mutated = format!("{fixture}\n[clients.binance_reference.execution]\nnot_allowed = true\n");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("unmodeled-egress execution mutation should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("clients.binance_reference")
+                && m.contains("venue=`BINANCE`")
+                && m.contains("models no REST egress cap")
+                && m.contains("fail closed")),
+        "an execution client on an unmodeled egress venue must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_invalid_nt_risk_max_notional_map_entries() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

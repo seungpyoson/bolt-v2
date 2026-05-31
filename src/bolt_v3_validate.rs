@@ -887,6 +887,11 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
     errors
 }
 
+/// Seconds in one hour / one minute, named so the `HH:MM:SS` interval
+/// computation reads as a time conversion rather than bare magic numbers.
+const SECONDS_PER_HOUR: u64 = 3600;
+const SECONDS_PER_MINUTE: u64 = 60;
+
 /// Validates an NT `limit/HH:MM:SS` rate-limit string and returns the parsed
 /// `(limit, interval_seconds)` so callers can reconcile the rate against a
 /// venue REST egress ceiling without re-parsing.
@@ -923,7 +928,15 @@ fn validate_rate_limit_string(value: &str) -> Result<(u64, u64), String> {
         return Err("interval must be greater than zero".to_string());
     }
 
-    let interval_seconds = hours * 3600 + minutes * 60 + seconds;
+    // Checked so a large `hours` value returns an Err instead of panicking
+    // (debug) or wrapping to a bogus/zero interval (release). `minutes` is
+    // bounded < 60 above so `minutes * SECONDS_PER_MINUTE` cannot overflow, but
+    // it is kept inside the checked chain for a single readable expression.
+    let interval_seconds = hours
+        .checked_mul(SECONDS_PER_HOUR)
+        .and_then(|h| h.checked_add(minutes * SECONDS_PER_MINUTE))
+        .and_then(|s| s.checked_add(seconds))
+        .ok_or_else(|| "interval seconds overflow u64".to_string())?;
     Ok((limit, interval_seconds))
 }
 
@@ -942,16 +955,31 @@ fn validate_rate_limit_string(value: &str) -> Result<(u64, u64), String> {
 /// probes) is the venue-capability contract tracked in #488.
 fn validate_order_rate_within_venue_egress(root: &BoltV3RootConfig) -> Vec<String> {
     let mut errors = Vec::new();
-    let tightest = root
-        .clients
-        .values()
-        .filter(|client| client.execution.is_some())
-        .filter_map(|client| {
-            crate::bolt_v3_providers::venue_rest_egress_cap_per_minute(client.venue.as_str())
-                .map(|cap| (client.venue.as_str(), cap))
-        })
-        .min_by_key(|(_, cap)| *cap);
+    // Fail closed on any execution venue whose REST egress ceiling bolt-v3 does
+    // not model: skipping it silently would let an unbounded submit rate through
+    // on a venue we cannot reconcile against. Iterate the keyed client map so the
+    // error can name the offending `clients.<id>`.
+    let mut tightest: Option<(&str, u32)> = None;
+    for (key, client) in &root.clients {
+        if client.execution.is_none() {
+            continue;
+        }
+        let venue = client.venue.as_str();
+        match crate::bolt_v3_providers::venue_rest_egress_cap_per_minute(venue) {
+            Some(cap) => {
+                if tightest.is_none_or(|(_, tightest_cap)| cap < tightest_cap) {
+                    tightest = Some((venue, cap));
+                }
+            }
+            None => errors.push(format!(
+                "clients.{key} (venue=`{venue}`) declares an [execution] block but bolt-v3 \
+                 models no REST egress cap for it; cannot reconcile order rates — fail closed"
+            )),
+        }
+    }
     let Some((venue, cap_per_minute)) = tightest else {
+        // No modeled execution venue to reconcile against; `errors` may already
+        // carry fail-closed messages for unmodeled execution venues above.
         return errors;
     };
     for (label, value) in [
@@ -970,10 +998,12 @@ fn validate_order_rate_within_venue_egress(root: &BoltV3RootConfig) -> Vec<Strin
             continue;
         };
         // The rate exceeds the cap iff limit/interval_seconds > cap/60, i.e.
-        // limit * 60 > cap * interval_seconds. Compared in integer space to
-        // avoid rounding.
-        if interval_seconds > 0
-            && limit.saturating_mul(60) > u64::from(cap_per_minute).saturating_mul(interval_seconds)
+        // limit * SECONDS_PER_MINUTE > cap * interval_seconds. Compared in u128
+        // so neither product can saturate to u64::MAX and let an over-cap rate
+        // slip through (MAX > MAX is false). validate_rate_limit_string
+        // guarantees interval_seconds >= 1, so no zero-interval guard is needed.
+        if (limit as u128) * (SECONDS_PER_MINUTE as u128)
+            > (cap_per_minute as u128) * (interval_seconds as u128)
         {
             errors.push(format!(
                 "{label} = `{value}` exceeds the {venue} REST egress cap of \

@@ -3324,25 +3324,17 @@ reason = "The schema version is a structural compatibility gate, not an operator
 path = "src/bolt_v3_validate.rs"
 kind = "number"
 literal = "3600"
-context = "let interval_seconds = hours * 3600 + minutes * 60 + seconds;"
+context = "const SECONDS_PER_HOUR: u64 = 3600;"
 classification = "time_unit_conversion"
-reason = "Seconds-per-hour constant converting an HH:MM:SS rate-limit interval into whole seconds for the venue egress reconciliation; a fixed unit conversion, not an operator runtime value."
+reason = "Seconds-per-hour named constant converting an HH:MM:SS rate-limit interval into whole seconds for the venue egress reconciliation; a fixed unit conversion, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "number"
 literal = "60"
-context = "let interval_seconds = hours * 3600 + minutes * 60 + seconds;"
+context = "const SECONDS_PER_MINUTE: u64 = 60;"
 classification = "time_unit_conversion"
-reason = "Seconds-per-minute constant converting an HH:MM:SS rate-limit interval into whole seconds for the venue egress reconciliation; a fixed unit conversion, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_validate.rs"
-kind = "number"
-literal = "60"
-context = "&& limit.saturating_mul(60) > u64::from(cap_per_minute).saturating_mul(interval_seconds)"
-classification = "time_unit_conversion"
-reason = "Seconds-per-minute constant scaling the per-minute REST egress cap to compare against a per-second order rate; a fixed unit conversion, not an operator runtime value."
+reason = "Seconds-per-minute named constant converting an HH:MM:SS rate-limit interval into whole seconds and scaling the per-minute REST egress cap; a fixed unit conversion, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
@@ -7108,17 +7100,9 @@ reason = "This is a fail-closed diagnostic template for operator-artifact read i
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = '''0o600'''
-context = '''options.mode(0o600).custom_flags(libc::O_NOFOLLOW);'''
+context = '''pub(crate) const PRIVATE_ARTIFACT_FILE_MODE: u32 = 0o600;'''
 classification = "operator_artifact_file_permission"
-reason = "This is the private file mode for generated operator-evidence artifacts on Unix; it constrains artifact exposure and does not configure trading behavior."
-
-[[allowed]]
-path = "src/bolt_v3_decision_evidence.rs"
-kind = "number"
-literal = '''0o600'''
-context = '''options.mode(0o600).custom_flags(libc::O_NOFOLLOW);'''
-classification = "decision_evidence_file_permission"
-reason = "This is the private file mode for generated decision-evidence JSONL on Unix; it constrains artifact exposure and does not configure trading behavior."
+reason = "Single source of truth for the private Unix file mode of generated operator-evidence artifacts and decision-evidence JSONL (both writers reference it via PRIVATE_ARTIFACT_FILE_MODE); it constrains artifact exposure and does not configure trading behavior."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

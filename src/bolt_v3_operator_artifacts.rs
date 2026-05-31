@@ -207,6 +207,7 @@ const REALIZED_VOLATILITY_SOURCE_RECORD_KIND: &str = "bolt_v3.realized_volatilit
 pub(crate) const ENTRY_DECISION_FEE_RATE_SOURCE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const ENTRY_DECISION_FEE_RATE_SOURCE_RECORD_KIND: &str =
     "bolt_v3.entry_decision_fee_rate_source.v1";
+pub(crate) const PRIVATE_ARTIFACT_FILE_MODE: u32 = 0o600;
 const ENTRY_DECISION_WARMUP_COUNT_FIELD: &str = "warmup_tick_count";
 const ENTRY_DECISION_UP_BOOK_LABEL: &str = "up";
 const ENTRY_DECISION_DOWN_BOOK_LABEL: &str = "down";
@@ -16541,7 +16542,9 @@ where
 fn configure_private_artifact_create_options(options: &mut fs::OpenOptions) {
     use std::os::unix::fs::OpenOptionsExt;
 
-    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    options
+        .mode(PRIVATE_ARTIFACT_FILE_MODE)
+        .custom_flags(libc::O_NOFOLLOW);
 }
 
 #[cfg(not(unix))]

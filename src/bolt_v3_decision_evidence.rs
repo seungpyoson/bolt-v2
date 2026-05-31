@@ -11,6 +11,7 @@ use nautilus_model::orders::{Order, OrderAny};
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_config::LoadedBoltV3Config;
+use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
 
 pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 5;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -554,7 +555,9 @@ fn open_decision_evidence_append_new_no_follow(path: &Path) -> std::io::Result<f
 fn configure_decision_evidence_append_options(options: &mut OpenOptions) {
     use std::os::unix::fs::OpenOptionsExt;
 
-    options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    options
+        .mode(PRIVATE_ARTIFACT_FILE_MODE)
+        .custom_flags(libc::O_NOFOLLOW);
 }
 
 #[cfg(not(unix))]

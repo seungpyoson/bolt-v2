@@ -34,6 +34,7 @@ fn terminal_nt_order_event_releases_committed_submit_reservation() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
     admission.update_position_sizing_state(fresh_sizing_state(900));
+    rebuild_empty_position_sizer(&admission);
     admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
@@ -74,6 +75,7 @@ fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
     admission.update_position_sizing_state(fresh_sizing_state(900));
+    rebuild_empty_position_sizer(&admission);
     admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
@@ -110,6 +112,7 @@ fn denied_nt_order_event_without_account_releases_matching_committed_submit_rese
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
     admission.update_position_sizing_state(fresh_sizing_state(900));
+    rebuild_empty_position_sizer(&admission);
     admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
@@ -162,6 +165,7 @@ fn account_bound_terminal_nt_order_event_for_other_account_is_ignored() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
     admission.update_position_sizing_state(fresh_sizing_state(900));
+    rebuild_empty_position_sizer(&admission);
     admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
@@ -194,6 +198,7 @@ fn account_less_non_denied_terminal_nt_order_event_is_ignored() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
     admission.update_position_sizing_state(fresh_sizing_state(900));
+    rebuild_empty_position_sizer(&admission);
     admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
@@ -225,6 +230,7 @@ fn assert_terminal_event_releases(client_order_id: &str, event: OrderEventAny) {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
     admission.update_position_sizing_state(fresh_sizing_state(900));
+    rebuild_empty_position_sizer(&admission);
     admission
         .admit_at(&sized_submit_request(client_order_id), 1_000)
         .expect("fresh sizing state should admit")
@@ -286,6 +292,15 @@ fn arm_default(admission: &BoltV3SubmitAdmissionState) {
             Decimal::new(10, 0),
         ))
         .expect("valid gate report should arm admission");
+}
+
+fn rebuild_empty_position_sizer(admission: &BoltV3SubmitAdmissionState) {
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+    assert!(
+        rebuild.accepted,
+        "test startup rebuild should open submit admission"
+    );
+    assert_eq!(admission.position_sizer_reconciled(), Some(true));
 }
 
 fn sized_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {

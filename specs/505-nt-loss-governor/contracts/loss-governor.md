@@ -51,6 +51,10 @@ The live runner subscribes to NT portfolio snapshot and position event topics fo
 
 When a published `LossSnapshot` combines facts observed at different NT event timestamps, its `observed_at_ns` is the oldest contributing timestamp. This makes freshness fail closed when any currently required fact goes stale.
 
+Per-trade PnL is current open-position context. Position adjustments update the stored position PnL; position closes remove that position from per-trade tracking. Closed losses remain represented by NT portfolio PnL facts.
+
+Rolling PnL is published only when the feed has a baseline sample inside the configured rolling window. If no in-window baseline exists, the rolling field is missing and admission fails closed for enabled rolling-loss policy.
+
 ## Non-Goals
 
 - No strategy-local risk logic.

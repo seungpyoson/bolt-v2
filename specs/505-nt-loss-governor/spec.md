@@ -59,6 +59,8 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - Negative PnL values are represented as losses; non-loss values must not trip loss thresholds.
 - Missing enabled policy threshold must fail config validation instead of creating a hardcoded default.
 - Mixed NT facts must use the oldest contributing fact timestamp so a fresh event cannot refresh unrelated stale facts.
+- Current-trade PnL must evict closed positions so closed losses do not permanently stale or poison per-trade admission.
+- Rolling-window PnL must be missing when the live feed has no baseline sample inside the configured rolling window.
 - Multiple breach reasons must be reported deterministically.
 - Risk-reducing exits must not be blocked by loss halt policy; existing operator count and lifecycle caps still apply.
 

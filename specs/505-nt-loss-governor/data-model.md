@@ -27,7 +27,7 @@ Fields:
 
 - `source`: non-empty attribution to the NT source or capture path.
 - `observed_at_ns`: oldest timestamp among the currently combined NT-derived loss/equity facts.
-- `per_trade_pnl`: optional PnL for current trade context.
+- `per_trade_pnl`: optional PnL for the current open-position trade context.
 - `daily_pnl`: optional day/session PnL from NT realized plus unrealized PnL facts.
 - `rolling_pnl`: optional rolling-window PnL from the configured live feed window.
 - `current_equity`: optional current equity.
@@ -47,13 +47,15 @@ Live in-process feed for the configured account.
 Inputs:
 
 - NT `PortfolioSnapshot`: supplies realized PnL, unrealized PnL, total equity, account id, and event timestamp.
-- NT `PositionEvent`: supplies per-trade PnL facts from opened/changed/closed/adjusted position events.
+- NT `PositionEvent`: supplies per-trade PnL facts from opened/changed/adjusted position events for currently open positions. Closed position events remove the position from the current-trade context; closed realized losses flow through NT portfolio PnL facts.
 
 Rules:
 
 - Ignore events for other accounts.
 - Use configured `rolling_window_ns`; no hardcoded window.
+- Publish `rolling_pnl` only when a baseline sample exists inside the configured rolling window; otherwise leave it missing so admission fails closed.
 - Track peak equity from observed NT total-equity snapshots.
+- Preserve the prior peak equity across invalid portfolio snapshots, while publishing missing portfolio fields for that invalid snapshot.
 - Publish a `LossSnapshot` to submit admission whenever enough NT-derived facts exist.
 
 ## LossAdmissionDecision

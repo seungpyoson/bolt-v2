@@ -64,28 +64,33 @@ pub fn evaluate_loss_admission(
         return rejected(LossHaltReason::StaleLossSnapshot);
     }
 
-    if let (Some(limit), Some(pnl)) = (policy.max_per_trade_loss, snapshot.per_trade_pnl)
-        && loss_breaches(pnl, limit)
-    {
-        halt_reasons.push(LossHaltReason::PerTradeLossLimit);
+    match (policy.max_per_trade_loss, snapshot.per_trade_pnl) {
+        (Some(limit), Some(pnl)) if loss_breaches(pnl, limit) => {
+            halt_reasons.push(LossHaltReason::PerTradeLossLimit);
+        }
+        _ => {}
     }
-    if let (Some(limit), Some(pnl)) = (policy.max_daily_loss, snapshot.daily_pnl)
-        && loss_breaches(pnl, limit)
-    {
-        halt_reasons.push(LossHaltReason::DailyLossLimit);
+    match (policy.max_daily_loss, snapshot.daily_pnl) {
+        (Some(limit), Some(pnl)) if loss_breaches(pnl, limit) => {
+            halt_reasons.push(LossHaltReason::DailyLossLimit);
+        }
+        _ => {}
     }
-    if let (Some(limit), Some(pnl)) = (policy.max_rolling_loss, snapshot.rolling_pnl)
-        && loss_breaches(pnl, limit)
-    {
-        halt_reasons.push(LossHaltReason::RollingLossLimit);
+    match (policy.max_rolling_loss, snapshot.rolling_pnl) {
+        (Some(limit), Some(pnl)) if loss_breaches(pnl, limit) => {
+            halt_reasons.push(LossHaltReason::RollingLossLimit);
+        }
+        _ => {}
     }
-    if let (Some(limit), Some(current), Some(peak)) = (
+    match (
         policy.max_drawdown,
         snapshot.current_equity,
         snapshot.peak_equity,
-    ) && drawdown_breaches(current, peak, limit)
-    {
-        halt_reasons.push(LossHaltReason::MaxDrawdownLimit);
+    ) {
+        (Some(limit), Some(current), Some(peak)) if drawdown_breaches(current, peak, limit) => {
+            halt_reasons.push(LossHaltReason::MaxDrawdownLimit);
+        }
+        _ => {}
     }
 
     LossAdmissionDecision {

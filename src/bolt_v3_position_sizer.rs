@@ -489,45 +489,52 @@ pub fn evaluate_position_sizing(inputs: PositionSizingInputs<'_>) -> SizedAdmiss
         }
     };
 
-    if let Some(max_order_liability) = inputs.policy.max_order_liability
-        && liability_quote.liability_after_sizing > max_order_liability
-    {
-        match inputs.policy.mode {
-            SizingMode::RejectOnly => {
-                return rejected_sizing_with_liability(
-                    original_quantity,
-                    pool_id,
-                    liability_quote.liability_before_sizing,
-                    liability_quote.liability_after_sizing,
-                    admission_evidence(&state_evidence, inputs.request.now_ns, &liability_quote),
-                    vec![SizedAdmissionReason::OverMaxOrderLiability],
-                );
-            }
-            SizingMode::ExplicitClipToAvailable => {
-                liability_quote = match clipped_liability_quote(
-                    inputs.request,
-                    inputs.policy,
-                    &liability_quote,
-                    max_order_liability,
-                ) {
-                    Ok(clipped_quote) => clipped_quote,
-                    Err(reason) => {
-                        return rejected_sizing_with_liability(
-                            original_quantity,
-                            pool_id,
-                            liability_quote.liability_before_sizing,
-                            liability_quote.liability_after_sizing,
-                            admission_evidence(
-                                &state_evidence,
-                                inputs.request.now_ns,
-                                &liability_quote,
-                            ),
-                            vec![reason],
-                        );
-                    }
-                };
+    match inputs.policy.max_order_liability {
+        Some(max_order_liability)
+            if liability_quote.liability_after_sizing > max_order_liability =>
+        {
+            match inputs.policy.mode {
+                SizingMode::RejectOnly => {
+                    return rejected_sizing_with_liability(
+                        original_quantity,
+                        pool_id,
+                        liability_quote.liability_before_sizing,
+                        liability_quote.liability_after_sizing,
+                        admission_evidence(
+                            &state_evidence,
+                            inputs.request.now_ns,
+                            &liability_quote,
+                        ),
+                        vec![SizedAdmissionReason::OverMaxOrderLiability],
+                    );
+                }
+                SizingMode::ExplicitClipToAvailable => {
+                    liability_quote = match clipped_liability_quote(
+                        inputs.request,
+                        inputs.policy,
+                        &liability_quote,
+                        max_order_liability,
+                    ) {
+                        Ok(clipped_quote) => clipped_quote,
+                        Err(reason) => {
+                            return rejected_sizing_with_liability(
+                                original_quantity,
+                                pool_id,
+                                liability_quote.liability_before_sizing,
+                                liability_quote.liability_after_sizing,
+                                admission_evidence(
+                                    &state_evidence,
+                                    inputs.request.now_ns,
+                                    &liability_quote,
+                                ),
+                                vec![reason],
+                            );
+                        }
+                    };
+                }
             }
         }
+        _ => {}
     }
 
     let reservation_request = ReservationRequest {
@@ -705,7 +712,9 @@ fn clipped_liability_quote(
         return Err(SizedAdmissionReason::OverMaxOrderLiability);
     }
 
-    let candidate_quantity = available_base_liability / liability_factor;
+    let candidate_quantity = available_base_liability
+        .checked_div(liability_factor)
+        .ok_or(SizedAdmissionReason::OverMaxOrderLiability)?;
     if candidate_quantity <= Decimal::ZERO {
         return Err(SizedAdmissionReason::OverMaxOrderLiability);
     }
@@ -1325,6 +1334,32 @@ mod tests {
         assert_eq!(decision.evidence.original_quantity, Decimal::new(10, 0));
         assert_eq!(decision.evidence.sized_quantity, Some(Decimal::new(925, 2)));
         assert_eq!(ledger.live_reserved_liability("pool-1"), Decimal::new(4, 0));
+    }
+
+    #[test]
+    fn explicit_clip_rejects_decimal_division_overflow() {
+        let mut clipping_policy = policy();
+        clipping_policy.mode = SizingMode::ExplicitClipToAvailable;
+        let mut tiny_factor_request = request(IntentSide::Buy, IntentLiquidity::Taker);
+        tiny_factor_request.limit_price = Decimal::from_i128_with_scale(1, 28);
+        let quote = super::LiabilityQuote {
+            original_quantity: tiny_factor_request.quantity,
+            sized_quantity: tiny_factor_request.quantity,
+            liability_before_sizing: Decimal::MAX,
+            liability_after_sizing: Decimal::MAX,
+            evidence_label: "test_liability_quote".to_string(),
+        };
+
+        assert_eq!(
+            super::clipped_liability_quote(
+                &tiny_factor_request,
+                &clipping_policy,
+                &quote,
+                Decimal::MAX,
+            )
+            .expect_err("overflowing candidate quantity must fail closed"),
+            SizedAdmissionReason::OverMaxOrderLiability
+        );
     }
 
     #[test]

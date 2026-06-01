@@ -14982,3 +14982,24 @@ literal = '''2.0'''
 context = '''const SIGMA_SQUARED_HALF_DIVISOR: f64 = 2.0;'''
 classification = "pricing_formula_constant"
 reason = "This is the named sigma-squared-over-two divisor in the updown family's fair-probability formula, not an operator runtime value."
+[[allowed]]
+path = '''src/bolt_v3_live_canary_gate.rs'''
+kind = '''string'''
+literal = '''"no_submit_readiness_report_sha256"'''
+context = '''"no_submit_readiness_report_sha256",'''
+classification = '''no_submit_readiness_operator_evidence_field'''
+reason = '''This names a TOML-owned operator-evidence hash field that binds the no-submit readiness report to the approval envelope, consumed by the live gate; the value remains config-owned.'''
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''string'''
+literal = '''"no_submit_readiness_report_path"'''
+context = '''validate_operator_evidence_toml_path("no_submit_readiness_report_path", configured_path)?;'''
+classification = '''no_submit_readiness_operator_evidence_field'''
+reason = '''This labels validation for a TOML-owned no-submit readiness-report artifact path; the path value remains config-owned.'''
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''run_classification_ok && canary_proof_executor_enabled && admitted_order_count == 0'''
+classification = '''blocked_before_submit_zero_admitted_sentinel'''
+reason = '''Structural check that a canary/proof run admitted zero live orders (blocked-before-submit outcome); the operator order-count cap comes from the validated live canary gate report.'''

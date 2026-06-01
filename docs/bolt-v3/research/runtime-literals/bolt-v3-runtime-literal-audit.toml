@@ -6083,8 +6083,8 @@ reason = "This marker verifies the successful submit return path for the NT-acce
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"fn mark_exit_order_terminal(&mut self, client_order_id: ClientOrderId)"'''
-context = '''"fn mark_exit_order_terminal(&mut self, client_order_id: ClientOrderId)";'''
+literal = '''"mark_exit_order_terminal"'''
+context = '''"mark_exit_order_terminal";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies the production terminal-handler function for the NT-accepted venue-pending abort proof; it is source evidence, not an operator runtime value."
 
@@ -6095,6 +6095,14 @@ literal = '''"exit_pending.pending_exit.client_order_id != client_order_id"'''
 context = '''"exit_pending.pending_exit.client_order_id != client_order_id";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies client-order correlation before terminal handling in the abort proof; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"self.event_instrument_matches_held_exposure(event_instrument_id)"'''
+context = '''"self.event_instrument_matches_held_exposure(event_instrument_id)";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies terminal events are guarded by the held exposure instrument before state mutation; it is source evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -6115,8 +6123,8 @@ reason = "This marker verifies terminal state reduction in the NT-accepted venue
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"self.mark_exit_order_terminal(event.client_order_id);"'''
-context = '''"self.mark_exit_order_terminal(event.client_order_id);";'''
+literal = '''"self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);"'''
+context = '''"self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies terminal event handlers call the terminal transition helper; it is source evidence, not an operator runtime value."
 
@@ -6471,6 +6479,14 @@ literal = '''"terminal_client_order_match"'''
 context = '''"terminal_client_order_match",'''
 classification = "operator_source_proof_diagnostic_field"
 reason = "This field names the missing terminal client-order correlation marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"terminal_event_instrument_guard"'''
+context = '''"terminal_event_instrument_guard",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing terminal instrument guard marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

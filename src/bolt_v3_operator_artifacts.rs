@@ -330,16 +330,18 @@ const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_RESTORE_MANAGED_MARKER: &str =
     "self.exposure = ExposureState::Managed(managed_position);";
 const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_RETURN_ERROR_MARKER: &str = "return Err(error);";
 const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_OK_MARKER: &str = "Ok(Some(client_order_id))";
-const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_FUNCTION_MARKER: &str =
-    "fn mark_exit_order_terminal(&mut self, client_order_id: ClientOrderId)";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_FUNCTION_NAME: &str =
+    "mark_exit_order_terminal";
 const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_CLIENT_MATCH_MARKER: &str =
     "exit_pending.pending_exit.client_order_id != client_order_id";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_INSTRUMENT_GUARD_MARKER: &str =
+    "self.event_instrument_matches_held_exposure(event_instrument_id)";
 const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_RECEIVED_MARKER: &str =
     "exit_pending.pending_exit.terminal_received = true";
 const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_STATE_UPDATE_MARKER: &str =
     "self.exposure = exit_pending.into_state_after_exit_update();";
 const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_HANDLER_MARKER: &str =
-    "self.mark_exit_order_terminal(event.client_order_id);";
+    "self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);";
 const ABORT_PLAN_PARTIAL_FILL_SOURCE_PROOF_SCHEMA_VERSION: u32 = 1;
 const ABORT_PLAN_PARTIAL_FILL_SOURCE_PROOF_RECORD_KIND: &str =
     "bolt_v3.abort_plan_partial_fill_source_proof.v1";
@@ -12137,20 +12139,25 @@ fn abort_plan_nt_accepted_venue_pending_scoped_marker_indexes(
 fn require_abort_plan_nt_accepted_venue_pending_terminal_contract(
     code_source: &str,
 ) -> Result<(), BoltV3OperatorArtifactError> {
-    let terminal_function = abort_plan_cancel_if_open_scoped_marker_occurrences(
+    let terminal_scope = abort_plan_nt_accepted_venue_pending_single_function_scope(
         code_source,
-        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_FUNCTION_MARKER,
-    );
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_FUNCTION_NAME,
+        "mark_exit_order_terminal_function",
+    )?;
     let terminal_client_match = abort_plan_cancel_if_open_scoped_marker_occurrences(
-        code_source,
+        terminal_scope,
         ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_CLIENT_MATCH_MARKER,
     );
+    let terminal_instrument_guard = abort_plan_cancel_if_open_scoped_marker_occurrences(
+        terminal_scope,
+        ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_INSTRUMENT_GUARD_MARKER,
+    );
     let terminal_received = abort_plan_cancel_if_open_scoped_marker_occurrences(
-        code_source,
+        terminal_scope,
         ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_RECEIVED_MARKER,
     );
     let terminal_state_update = abort_plan_cancel_if_open_scoped_marker_occurrences(
-        code_source,
+        terminal_scope,
         ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_STATE_UPDATE_MARKER,
     );
     let terminal_handlers = abort_plan_cancel_if_open_scoped_marker_occurrences(
@@ -12158,13 +12165,13 @@ fn require_abort_plan_nt_accepted_venue_pending_terminal_contract(
         ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_HANDLER_MARKER,
     );
 
-    let terminal_function = abort_plan_nt_accepted_venue_pending_single_marker_index(
-        &terminal_function,
-        "mark_exit_order_terminal_function",
-    )?;
     let terminal_client_match = abort_plan_nt_accepted_venue_pending_single_marker_index(
         &terminal_client_match,
         "terminal_client_order_match",
+    )?;
+    let terminal_instrument_guard = abort_plan_nt_accepted_venue_pending_single_marker_index(
+        &terminal_instrument_guard,
+        "terminal_event_instrument_guard",
     )?;
     let terminal_received = abort_plan_nt_accepted_venue_pending_single_marker_index(
         &terminal_received,
@@ -12181,8 +12188,8 @@ fn require_abort_plan_nt_accepted_venue_pending_terminal_contract(
             },
         );
     }
-    if terminal_function < terminal_client_match
-        && terminal_client_match < terminal_received
+    if terminal_client_match < terminal_instrument_guard
+        && terminal_instrument_guard < terminal_received
         && terminal_received < terminal_state_update
     {
         Ok(())
@@ -12193,6 +12200,25 @@ fn require_abort_plan_nt_accepted_venue_pending_terminal_contract(
             },
         )
     }
+}
+
+fn abort_plan_nt_accepted_venue_pending_single_function_scope<'a>(
+    code_source: &'a str,
+    function_name: &'static str,
+    field: &'static str,
+) -> Result<&'a str, BoltV3OperatorArtifactError> {
+    let mut scopes = abort_plan_cancel_if_open_function_scopes(code_source)
+        .into_iter()
+        .filter(|scope| {
+            abort_plan_source_scope_matches_function(&code_source[scope.clone()], function_name)
+        })
+        .collect::<Vec<_>>();
+    let [scope] = scopes.as_mut_slice() else {
+        return Err(
+            BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceInvalid { field },
+        );
+    };
+    Ok(&code_source[scope.clone()])
 }
 
 fn require_abort_plan_partial_fill_waits_for_position_close(

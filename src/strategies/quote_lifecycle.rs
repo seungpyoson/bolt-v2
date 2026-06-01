@@ -14,11 +14,12 @@
 //! by the `supports_modify` capability fact (a `bool` sourced from the venue
 //! contract), never by a venue name.
 //!
-//! Scope (W2 slices 1–2): a single leg on both requote paths — cancel+resubmit
+//! Scope (W2 slices 1–3): both requote paths per leg — cancel+resubmit
 //! (Polymarket binary; the adapter has no order-modify) and modify-in-place
-//! (modify-capable venues), with a modify-reject degrade back to cancel+resubmit.
-//! The second YES/NO leg, cancel-scope, the requote throttle, reconnect resync,
-//! and the NT handler translation arrive in later W2 slices.
+//! (modify-capable venues, with a modify-reject degrade) — plus the two-leg
+//! (YES/NO) market controller with explicit cancel scope (single-leg, both-leg
+//! drain, one-side). The requote throttle, reconnect resync, and the NT handler
+//! translation arrive in later W2 slices.
 
 /// Lifecycle state of a single quote leg.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +36,9 @@ pub enum LegState {
     /// An in-place modify has been emitted; awaiting the modify confirmation
     /// (modify-capable venues). A modify reject degrades to cancel+resubmit.
     ModifyPending,
+    /// An unconditional (governor / wind-down) cancel has been emitted; the leg
+    /// will NOT resubmit when it confirms — distinct from `RequotePending`.
+    CancelPending,
 }
 
 /// Events that drive a leg.
@@ -165,11 +169,161 @@ impl QuoteLeg {
                 self.state = LegState::RequotePending;
                 Some(LifecycleAction::Cancel)
             }
+            // T8-confirm: an unconditional (wind-down) cancel confirmed -> Idle.
+            // Unlike T5 there is no resubmit.
+            (LegState::CancelPending, LegEvent::Canceled) => {
+                self.state = LegState::Idle;
+                None
+            }
             // Everything else is a no-op: a no-move trigger while Resting, any
             // trigger while a command is in flight, or an event that does not
             // match the current state.
             _ => None,
         }
+    }
+
+    /// Request an unconditional cancel of this leg's working order (governor /
+    /// wind-down driven), with NO resubmit when it confirms — distinct from the
+    /// requote cancel (T4), which resubmits at a fresh price. A leg with no
+    /// working order (Idle), or one already cancelling, is a no-op.
+    pub fn request_cancel(&mut self) -> Option<LifecycleAction> {
+        match self.state {
+            LegState::Idle | LegState::CancelPending => None,
+            // A resting or otherwise in-flight leg is cancelled and will not
+            // resubmit; the wind-down supersedes any in-flight submit/requote.
+            _ => {
+                self.state = LegState::CancelPending;
+                Some(LifecycleAction::Cancel)
+            }
+        }
+    }
+}
+
+/// The two sides of a binary market the maker quotes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leg {
+    /// The YES (e.g. up) outcome token.
+    Yes,
+    /// The NO (e.g. down) outcome token.
+    No,
+}
+
+/// Aggregate quoting state across a market's two legs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarketState {
+    /// Neither leg has a working or resting order.
+    Idle,
+    /// At least one leg is actively quoting (working toward, at, or requoting a
+    /// resting order); the market is not purely winding down.
+    Quoting,
+    /// Every still-working leg is being cancelled with no resubmit — the market
+    /// is winding down (a drain / both-leg cancel).
+    Draining,
+}
+
+/// A market-level action the strategy layer executes against NautilusTrader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarketAction {
+    /// Drive one leg's single order (submit / cancel / modify that leg). Maps to
+    /// a per-order NT call for that leg's client order id.
+    Leg { leg: Leg, action: LifecycleAction },
+    /// Cancel every working order for the instrument, both legs — the drain /
+    /// reduce-only path. Maps to `cancel_all_orders(instrument, None)`.
+    CancelAllBothLegs,
+    /// Cancel every working order on one side only. Maps to
+    /// `cancel_all_orders(instrument, Some(side))`.
+    CancelAllOneSide { leg: Leg },
+}
+
+/// A market's two quote legs (YES/NO) and the cancel-scope controller over them.
+///
+/// Per-leg pricing/order events are routed to the matching [`QuoteLeg`]; governor
+/// and wind-down decisions act at the market level with explicit cancel scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarketQuote {
+    yes: QuoteLeg,
+    no: QuoteLeg,
+}
+
+impl MarketQuote {
+    /// A fresh market with both legs idle. `supports_modify` is the venue
+    /// capability fact shared by both legs.
+    pub fn new(supports_modify: bool) -> Self {
+        Self {
+            yes: QuoteLeg::new(supports_modify),
+            no: QuoteLeg::new(supports_modify),
+        }
+    }
+
+    fn leg_mut(&mut self, leg: Leg) -> &mut QuoteLeg {
+        match leg {
+            Leg::Yes => &mut self.yes,
+            Leg::No => &mut self.no,
+        }
+    }
+
+    /// The lifecycle state of one leg.
+    pub fn leg_state(&self, leg: Leg) -> LegState {
+        match leg {
+            Leg::Yes => self.yes.state(),
+            Leg::No => self.no.state(),
+        }
+    }
+
+    /// The aggregate market quoting state.
+    pub fn market_state(&self) -> MarketState {
+        let states = [self.yes.state(), self.no.state()];
+        let any_active = states.iter().any(|state| {
+            matches!(
+                state,
+                LegState::SubmitPending
+                    | LegState::Resting
+                    | LegState::RequotePending
+                    | LegState::ModifyPending
+            )
+        });
+        if any_active {
+            MarketState::Quoting
+        } else if states
+            .iter()
+            .any(|state| matches!(state, LegState::CancelPending))
+        {
+            MarketState::Draining
+        } else {
+            MarketState::Idle
+        }
+    }
+
+    /// Route a per-leg pricing/order event to one leg, wrapping the leg's intent
+    /// with its leg id.
+    pub fn on_leg_event(&mut self, leg: Leg, event: LegEvent) -> Option<MarketAction> {
+        self.leg_mut(leg)
+            .on_event(event)
+            .map(|action| MarketAction::Leg { leg, action })
+    }
+
+    /// T8 — cancel exactly one leg (e.g. a one-sided inventory/skew breach),
+    /// leaving the other leg resting. Per-order `cancel_order` for that leg only.
+    pub fn cancel_leg(&mut self, leg: Leg) -> Option<MarketAction> {
+        self.leg_mut(leg)
+            .request_cancel()
+            .map(|action| MarketAction::Leg { leg, action })
+    }
+
+    /// T9 — drain the whole market: cancel every working order on both legs with
+    /// no resubmit, via one `cancel_all_orders(instrument, None)` call.
+    pub fn drain(&mut self) -> Option<MarketAction> {
+        let yes = self.yes.request_cancel().is_some();
+        let no = self.no.request_cancel().is_some();
+        (yes || no).then_some(MarketAction::CancelAllBothLegs)
+    }
+
+    /// T9a — cancel one side of the market (e.g. a one-sided exposure cap),
+    /// leaving the other side, via `cancel_all_orders(instrument, Some(side))`.
+    pub fn cancel_one_side(&mut self, leg: Leg) -> Option<MarketAction> {
+        self.leg_mut(leg)
+            .request_cancel()
+            .map(|_| MarketAction::CancelAllOneSide { leg })
     }
 }
 
@@ -325,5 +479,104 @@ mod tests {
             );
             assert_eq!(leg.state(), LegState::Resting);
         }
+    }
+
+    // --- W2 slice 3: two-leg market controller + cancel scope ---
+
+    fn resting_market(supports_modify: bool) -> MarketQuote {
+        let mut market = MarketQuote::new(supports_modify);
+        for leg in [Leg::Yes, Leg::No] {
+            market.on_leg_event(
+                leg,
+                LegEvent::QuoteTrigger {
+                    requote_needed: false,
+                },
+            );
+            market.on_leg_event(leg, LegEvent::Accepted);
+            assert_eq!(market.leg_state(leg), LegState::Resting);
+        }
+        market
+    }
+
+    #[test]
+    fn fresh_market_is_idle() {
+        let market = MarketQuote::new(false);
+        assert_eq!(market.market_state(), MarketState::Idle);
+    }
+
+    #[test]
+    fn both_legs_resting_is_quoting() {
+        let market = resting_market(false);
+        assert_eq!(market.market_state(), MarketState::Quoting);
+    }
+
+    #[test]
+    fn on_leg_event_wraps_action_with_leg_id_and_isolates_legs() {
+        let mut market = MarketQuote::new(false);
+        assert_eq!(
+            market.on_leg_event(
+                Leg::Yes,
+                LegEvent::QuoteTrigger {
+                    requote_needed: false
+                }
+            ),
+            Some(MarketAction::Leg {
+                leg: Leg::Yes,
+                action: LifecycleAction::Submit,
+            })
+        );
+        // The other leg is untouched.
+        assert_eq!(market.leg_state(Leg::No), LegState::Idle);
+    }
+
+    #[test]
+    fn cancel_one_leg_leaves_the_other_resting() {
+        let mut market = resting_market(false);
+        let action = market.cancel_leg(Leg::Yes);
+        assert_eq!(
+            action,
+            Some(MarketAction::Leg {
+                leg: Leg::Yes,
+                action: LifecycleAction::Cancel,
+            })
+        );
+        assert_eq!(market.leg_state(Leg::Yes), LegState::CancelPending);
+        // The NO leg is left resting; the market still quotes one side.
+        assert_eq!(market.leg_state(Leg::No), LegState::Resting);
+        assert_eq!(market.market_state(), MarketState::Quoting);
+        // The single-leg cancel does not resubmit on confirmation.
+        assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Canceled), None);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::Idle);
+    }
+
+    #[test]
+    fn drain_cancels_both_legs_and_is_draining() {
+        let mut market = resting_market(false);
+        assert_eq!(market.drain(), Some(MarketAction::CancelAllBothLegs));
+        assert_eq!(market.leg_state(Leg::Yes), LegState::CancelPending);
+        assert_eq!(market.leg_state(Leg::No), LegState::CancelPending);
+        assert_eq!(market.market_state(), MarketState::Draining);
+        // Neither leg resubmits; both wind down to Idle on confirmation.
+        market.on_leg_event(Leg::Yes, LegEvent::Canceled);
+        market.on_leg_event(Leg::No, LegEvent::Canceled);
+        assert_eq!(market.market_state(), MarketState::Idle);
+    }
+
+    #[test]
+    fn drain_with_no_working_orders_emits_nothing() {
+        let mut market = MarketQuote::new(false);
+        assert_eq!(market.drain(), None);
+    }
+
+    #[test]
+    fn cancel_one_side_maps_to_scoped_cancel_all() {
+        let mut market = resting_market(false);
+        assert_eq!(
+            market.cancel_one_side(Leg::No),
+            Some(MarketAction::CancelAllOneSide { leg: Leg::No })
+        );
+        assert_eq!(market.leg_state(Leg::No), LegState::CancelPending);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::Resting);
+        assert_eq!(market.market_state(), MarketState::Quoting);
     }
 }

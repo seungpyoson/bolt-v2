@@ -76,14 +76,14 @@ impl KillSwitchManualResetEvidence {
         evidence_sha256: impl Into<String>,
         requested_at_unix_nanos: u64,
     ) -> Result<Self, KillSwitchManualResetEvidenceError> {
-        let operator_id = operator_id.into();
-        let evidence_path = evidence_path.into();
-        let evidence_sha256 = evidence_sha256.into();
+        let operator_id = operator_id.into().trim().to_string();
+        let evidence_path = evidence_path.into().trim().to_string();
+        let evidence_sha256 = evidence_sha256.into().trim().to_string();
 
-        if operator_id.trim().is_empty() {
+        if operator_id.is_empty() {
             return Err(KillSwitchManualResetEvidenceError::MissingOperatorId);
         }
-        let evidence_path_value = Path::new(evidence_path.trim());
+        let evidence_path_value = Path::new(&evidence_path);
         if evidence_path_value.as_os_str().is_empty()
             || evidence_path_value.is_absolute()
             || evidence_path_value

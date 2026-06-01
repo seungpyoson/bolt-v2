@@ -290,6 +290,24 @@ fn manual_reset_event_carries_operator_identity_evidence_path_and_hash() {
 }
 
 #[test]
+fn manual_reset_evidence_stores_trimmed_identity_path_and_hash() {
+    let evidence = KillSwitchManualResetEvidence::new(
+        " operator-primary ",
+        " reset/operator-primary.json ",
+        " aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ",
+        1,
+    )
+    .expect("trimmed manual reset evidence should be valid");
+
+    assert_eq!(evidence.operator_id(), "operator-primary");
+    assert_eq!(evidence.evidence_path(), "reset/operator-primary.json");
+    assert_eq!(
+        evidence.evidence_sha256(),
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+}
+
+#[test]
 fn reconciliation_requires_fresh_proof_and_no_remaining_risk_before_flat() {
     let halted = KillSwitchState::Halted {
         halt_id: "halt-1".to_string(),

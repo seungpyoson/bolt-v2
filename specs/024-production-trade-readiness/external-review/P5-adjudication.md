@@ -136,5 +136,56 @@ CLOSE-CONFIRMED, P5-5 deferral judged acceptable). Codex raised P5-5 as a **No-s
      is selected. Production carries no venue literal — only the unit-test fixtures pin POLYMARKET (centralized in
      `fixture_execution_venue()`), matching their `...POLYMARKET` instruments.
 
-**P5 status:** all actionable findings FIXED (P5-1..P5-10) or DISPROVEN; **P5-5 is now FIXED** (venue guard
-landed), superseding the prior deferral. Pending a confirmation re-review of the venue-guard fix.
+## Recovery-path venue scoping (2026-06-01, Round 2)
+
+**Adversarial claim (Codex P5 Round 2):** `bootstrap_recovery_from_cache` probes
+`cache.positions_open(None, None, Some(&strategy_id), None, None)` with **no venue filter**
+(`None` = any venue). A foreign-venue cached position with a supported side/contract shape is
+accepted into `ExposureState::Managed`; `try_submit_exit_order` then builds/submits an exit
+order using `open_position.instrument_id` with no additional venue gate.
+
+**Verdict: VALID — gap in the P5-5 entry-path fix.** The entry-path venue guard (landed in
+`8e49d0e7`) scopes `refresh_selection_from_cache` to the execution venue, preventing NEW
+foreign-venue positions from being opened. But `bootstrap_recovery_from_cache` (called at
+`on_start` before selection) remained unscoped, so a foreign-venue position from a prior
+session (`load_state = true`), an administrative/manual order, or a pre-fix deployment could
+still be recovered into `Managed` and reach the exit submit path.
+
+**Fix landed at HEAD (`25d0e32b` → current):** two complementary layers, defense in depth.
+1. **Cache-probe scope (primary):** `bootstrap_recovery_from_cache`
+   (`src/strategies/binary_oracle_edge_taker.rs`) resolves
+   `execution_venue = self.context.execution_venue()` and passes `Some(&execution_venue)` as the
+   venue filter to `positions_open(...)`, so a foreign-venue position is never returned by the
+   recovery probe.
+2. **Adoption guard (defense in depth):** the single-position adoption decision is extracted into
+   `bootstrapped_exposure_for(&self, OpenPositionState, Venue) -> ExposureState`, which asserts
+   `open_position.instrument_id.venue == execution_venue` BEFORE any contract check and quarantines a
+   mismatch to `ExposureState::BlindRecovery { reason: ForeignVenuePosition { .. } }` (new
+   `BlindRecoveryReason` variant). The venue invariant therefore holds at the adoption point even if
+   the probe scope ever regresses, and the decision is unit-testable.
+3. Loud code comments document the invariant and its relation to the P5-5 entry-path fix.
+4. Regression tests (all passing; each fails on the pre-fix any-venue code):
+   - `recovery_bootstrap_quarantines_foreign_venue_position` (unit): holds venue as the ONLY
+     difference — execution-venue → `Managed`, foreign-venue → `BlindRecovery::ForeignVenuePosition`.
+   - `bootstrap_recovery_from_cache_ignores_foreign_venue_position` (integration): a foreign-venue
+     (HYPERLIQUID) position seeded in the unscoped cache is NOT recovered; strategy stays `Flat`.
+   - `bootstrap_recovery_from_cache_loads_execution_venue_position` (integration baseline):
+     execution-venue (POLYMARKET) position IS recovered into `Managed` with `RecoveryBootstrap`
+     origin — proves the filter does not over-reject.
+
+**P5 status:** P5-5 is FIXED for BOTH entry and recovery paths (probe scope + adoption guard).
+Confirmed VALID by the full external P5 Round-2 panel (Grok / GPT / Gemini = BLOCKER; DeepSeek /
+GLM = HIGH; Kimi = VALID) plus the in-session adjudication workflow.
+
+### Open P5 siblings surfaced by the Round-2 panel (lower severity, to adjudicate)
+- **`fair_probability_up_for_family_with_bindings` silent `None`** (DeepSeek,
+  `bolt_v3_market_families/mod.rs:390`): an unknown family key returns `None` rather than an
+  `UnsupportedFamily` error, unlike the sibling dispatch fns — a fail-loud consistency gap.
+- **MetadataMismatch livelock** (Gemini): a recovered foreign-venue position whose data feed is
+  active could clear `MetadataMismatch` and be held indefinitely. Largely MITIGATED by this fix
+  (foreign positions are quarantined before `Managed`, so they never reach exit evaluation); to
+  re-confirm against the combined fix.
+- **`build_market_slug_filter` empty-vec** (GLM, `bolt_v3_providers/polymarket.rs:798`): on a
+  period-pair error the filter returns `Vec::new()`, which NT treats as "no filter" (cache not
+  narrowed) rather than failing closed. Defense-in-depth only; mitigated by the selection venue
+  filter.

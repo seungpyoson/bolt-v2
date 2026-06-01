@@ -1099,6 +1099,10 @@ enum BlindRecoveryReason {
         entry_order_side: OrderSide,
         side: Option<PositionSide>,
     },
+    ForeignVenuePosition {
+        instrument_venue: Venue,
+        execution_venue: Venue,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2385,11 +2389,17 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn bootstrap_recovery_from_cache(&mut self) {
+        // Scope recovery to the configured execution venue. The shared NT cache can hold positions
+        // from every registered execution client; a foreign-venue position must never be accepted
+        // into Managed state because the exit path would build/submit an order for it with no
+        // additional venue gate. Filtering the cache read by execution venue makes a wrong-venue
+        // recovery structurally impossible and fails closed (P5-5 / Codex P5).
         let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
+        let execution_venue = self.context.execution_venue();
         let cached_positions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let cache = self.cache();
             cache
-                .positions_open(None, None, Some(&strategy_id), None, None)
+                .positions_open(Some(&execution_venue), None, Some(&strategy_id), None, None)
                 .into_iter()
                 .map(|position| OpenPositionState {
                     market_id: None,
@@ -2447,6 +2457,40 @@ impl BinaryOracleEdgeTaker {
             .into_iter()
             .next()
             .expect("checked non-empty recovery position set");
+        let exposure = self.bootstrapped_exposure_for(open_position, execution_venue);
+        self.exposure = exposure;
+    }
+
+    /// Classify a single recovered open position into the exposure state to adopt.
+    ///
+    /// The recovery probe already scopes the cache read to the execution venue, so a
+    /// foreign-venue position should never reach here in production. This is the single
+    /// fail-closed adoption decision and re-asserts the venue invariant structurally
+    /// (defense in depth) BEFORE any contract check: the exit path would otherwise
+    /// build/submit an order for a wrong-venue position with no further venue gate
+    /// (P5-5 / Codex P5). A foreign-venue position is quarantined to blind recovery and
+    /// is never managed.
+    fn bootstrapped_exposure_for(
+        &self,
+        open_position: OpenPositionState,
+        execution_venue: Venue,
+    ) -> ExposureState {
+        if open_position.instrument_id.venue != execution_venue {
+            log::error!(
+                "binary_oracle_edge_taker recovery bootstrap quarantined foreign-venue cached position: strategy_id={} position_id={} instrument_id={} instrument_venue={} execution_venue={}",
+                self.config.strategy_id,
+                open_position.position_id,
+                open_position.instrument_id,
+                open_position.instrument_id.venue,
+                execution_venue,
+            );
+            return ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::ForeignVenuePosition {
+                    instrument_venue: open_position.instrument_id.venue,
+                    execution_venue,
+                },
+            });
+        }
         if self
             .configured_position_contract()
             .ok()
@@ -2458,11 +2502,6 @@ impl BinaryOracleEdgeTaker {
                 )
             })
         {
-            self.exposure = ExposureState::Managed(ManagedPositionState {
-                position: open_position.clone(),
-                origin: ManagedPositionOrigin::RecoveryBootstrap,
-                pending_entry: None,
-            });
             log::warn!(
                 "binary_oracle_edge_taker recovery bootstrap loaded cached open position: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?} quantity={} avg_px_open={}",
                 self.config.strategy_id,
@@ -2473,11 +2512,12 @@ impl BinaryOracleEdgeTaker {
                 open_position.quantity,
                 open_position.avg_px_open,
             );
+            ExposureState::Managed(ManagedPositionState {
+                position: open_position,
+                origin: ManagedPositionOrigin::RecoveryBootstrap,
+                pending_entry: None,
+            })
         } else if is_observed_open_side(open_position.side) {
-            self.exposure = ExposureState::UnsupportedObserved(UnsupportedObservedState {
-                observed: open_position.clone(),
-                reason: UnsupportedObservedReason::BootstrappedUnsupportedContract,
-            });
             log::error!(
                 "binary_oracle_edge_taker recovery bootstrap quarantined unsupported cached position: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?} quantity={} avg_px_open={}",
                 self.config.strategy_id,
@@ -2488,13 +2528,11 @@ impl BinaryOracleEdgeTaker {
                 open_position.quantity,
                 open_position.avg_px_open,
             );
+            ExposureState::UnsupportedObserved(UnsupportedObservedState {
+                observed: open_position,
+                reason: UnsupportedObservedReason::BootstrappedUnsupportedContract,
+            })
         } else {
-            self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::InvalidBootstrappedPosition {
-                    entry_order_side: open_position.entry_order_side,
-                    side: open_position.side,
-                },
-            });
             log::error!(
                 "binary_oracle_edge_taker recovery bootstrap received invalid cached position side: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?}",
                 self.config.strategy_id,
@@ -2503,6 +2541,12 @@ impl BinaryOracleEdgeTaker {
                 open_position.entry_order_side,
                 open_position.side,
             );
+            ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::InvalidBootstrappedPosition {
+                    entry_order_side: open_position.entry_order_side,
+                    side: open_position.side,
+                },
+            })
         }
     }
 
@@ -7438,6 +7482,7 @@ mod tests {
         identifiers::{Symbol, TraderId},
         instruments::BinaryOption,
         orders::{Order, OrderAny},
+        position::Position,
         types::{Currency, Price, Quantity},
     };
     use nautilus_portfolio::portfolio::Portfolio;
@@ -15533,6 +15578,53 @@ mod tests {
     }
 
     #[test]
+    fn recovery_bootstrap_quarantines_foreign_venue_position() {
+        // P5-5 / Codex P5 — RECOVERY-PATH regression lock. The entry path is venue-scoped, but
+        // recovery bootstrap previously adopted any-venue cached positions, and the exit path would
+        // then build/submit a real order on the foreign-venue instrument. `bootstrapped_exposure_for`
+        // is the single fail-closed adoption decision and must quarantine a foreign-venue position
+        // BEFORE the contract check. This test holds the venue as the ONLY difference between a managed
+        // and a quarantined position, proving the venue guard is what diverts it.
+        let mut strategy = ready_to_trade_strategy();
+        let execution_venue = fixture_execution_venue();
+        let instrument_id = configured_outcome_instruments(&strategy)
+            .into_iter()
+            .next()
+            .expect("ready-to-trade fixture should expose a configured instrument");
+        let supported = configured_position_probe(&mut strategy, instrument_id);
+        assert_eq!(
+            supported.instrument_id.venue, execution_venue,
+            "probe should produce an execution-venue position",
+        );
+
+        // Control: an execution-venue, supported-side position is adopted into Managed.
+        let managed = strategy.bootstrapped_exposure_for(supported.clone(), execution_venue);
+        assert!(
+            matches!(managed, ExposureState::Managed(_)),
+            "execution-venue supported position must be managed, got {managed:?}",
+        );
+
+        // Same position on a foreign venue (only the venue differs) must be quarantined, never managed.
+        let foreign_instrument =
+            InstrumentId::new(supported.instrument_id.symbol, Venue::from("HYPERLIQUID"));
+        let foreign = OpenPositionState {
+            instrument_id: foreign_instrument,
+            book: OutcomeBookState::from_instrument_id(foreign_instrument),
+            ..supported.clone()
+        };
+        let quarantined = strategy.bootstrapped_exposure_for(foreign, execution_venue);
+        assert!(
+            matches!(
+                quarantined,
+                ExposureState::BlindRecovery(BlindRecoveryState {
+                    reason: BlindRecoveryReason::ForeignVenuePosition { .. }
+                })
+            ),
+            "foreign-venue position must be quarantined to blind recovery, got {quarantined:?}",
+        );
+    }
+
+    #[test]
     fn refresh_selection_from_cache_filters_foreign_venue_in_production_path() {
         // P5-5 / Codex P5 — PRODUCTION-PATH regression lock. The sibling test
         // `strategy_refuses_foreign_venue_market_even_when_slug_matches_the_target` proves the
@@ -15634,6 +15726,133 @@ mod tests {
                 .as_deref(),
             Some("token-down.POLYMARKET"),
             "production refresh must select the execution-venue Down outcome from a mixed-venue cache",
+        );
+    }
+
+    #[test]
+    fn bootstrap_recovery_from_cache_ignores_foreign_venue_position() {
+        // P5-5 / Codex P5 — RECOVERY-PATH regression lock. The entry path scopes selection to the
+        // execution venue; the recovery path must do the same. A foreign-venue cached position with
+        // a supported contract shape must NOT be accepted into Managed state, because the exit
+        // submission path uses the position's instrument_id directly with no additional venue gate.
+        let mut strategy = test_strategy();
+        assert_eq!(
+            strategy.context.execution_venue(),
+            fixture_execution_venue(),
+            "harness precondition: production execution venue must be the POLYMARKET fixture",
+        );
+        let cache = register_test_strategy(&mut strategy);
+
+        // Foreign-venue (HYPERLIQUID) instrument and position
+        let foreign_instrument = updown_binary_option(
+            "token-up.HYPERLIQUID",
+            "foreign-market",
+            "market-foreign",
+            "Up",
+            1_000,
+            2_000,
+        );
+        let foreign_fill = order_filled_event_with_details(
+            ClientOrderId::from("FOREIGN-ORDER-001"),
+            foreign_instrument.id(),
+            Some(PositionId::from("POS-FOREIGN-001")),
+            OrderSide::Buy,
+        );
+        let foreign_position = Position::new(&foreign_instrument, foreign_fill);
+
+        // Seed the cache with the foreign-venue instrument and position
+        {
+            let mut cache_mut = cache.borrow_mut();
+            cache_mut
+                .add_instrument(foreign_instrument.clone())
+                .expect("test cache should accept the seeded instrument");
+            cache_mut
+                .add_position(&foreign_position, NtOmsType::Netting)
+                .expect("test cache should accept the seeded position");
+        }
+
+        // Verify the position is present when querying WITHOUT venue scoping
+        assert_eq!(
+            cache
+                .borrow()
+                .positions_open(
+                    None,
+                    None,
+                    Some(&StrategyId::from("BINARYORACLEEDGETAKER-001")),
+                    None,
+                    None,
+                )
+                .len(),
+            1,
+            "foreign position must exist in the unscoped cache",
+        );
+
+        strategy.bootstrap_recovery_from_cache();
+
+        // The foreign-venue position must be ignored; strategy stays Flat.
+        assert!(
+            matches!(strategy.exposure, ExposureState::Flat),
+            "a foreign-venue cached position must NOT be recovered into Managed state: got {:?}",
+            strategy.exposure,
+        );
+    }
+
+    #[test]
+    fn bootstrap_recovery_from_cache_loads_execution_venue_position() {
+        // Baseline: an execution-venue position matching the strategy contract IS recovered into
+        // Managed state. This ensures the venue filter does not over-reject.
+        let mut strategy = test_strategy();
+        assert_eq!(
+            strategy.context.execution_venue(),
+            fixture_execution_venue(),
+            "harness precondition: production execution venue must be the POLYMARKET fixture",
+        );
+        let cache = register_test_strategy(&mut strategy);
+
+        let execution_instrument = updown_binary_option(
+            "token-up.POLYMARKET",
+            "execution-market",
+            "market-execution",
+            "Up",
+            1_000,
+            2_000,
+        );
+        let execution_fill = order_filled_event_with_details(
+            ClientOrderId::from("EXEC-ORDER-001"),
+            execution_instrument.id(),
+            Some(PositionId::from("POS-EXEC-001")),
+            OrderSide::Buy,
+        );
+        let execution_position = Position::new(&execution_instrument, execution_fill);
+
+        {
+            let mut cache_mut = cache.borrow_mut();
+            cache_mut
+                .add_instrument(execution_instrument.clone())
+                .expect("test cache should accept the seeded instrument");
+            cache_mut
+                .add_position(&execution_position, NtOmsType::Netting)
+                .expect("test cache should accept the seeded position");
+        }
+
+        strategy.bootstrap_recovery_from_cache();
+
+        let managed = strategy
+            .managed_position()
+            .expect("execution-venue position must be recovered into Managed state");
+        assert_eq!(
+            managed.position.instrument_id.to_string(),
+            "token-up.POLYMARKET",
+            "recovered position must be the execution-venue instrument",
+        );
+        assert_eq!(
+            managed.position.position_id.to_string(),
+            "POS-EXEC-001",
+            "recovered position must carry the correct position id",
+        );
+        assert!(
+            matches!(managed.origin, ManagedPositionOrigin::RecoveryBootstrap),
+            "recovered position must carry RecoveryBootstrap origin",
         );
     }
 

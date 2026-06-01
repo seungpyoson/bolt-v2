@@ -16,10 +16,11 @@ use bolt_v2::bolt_v3_sizing_state::{
 };
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
-    BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind, BoltV3SubmitAdmissionRequest,
-    BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-    BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingNtComponents,
-    BoltV3SubmitPositionSizingOpenOrderReservation, PredictionMarketOutcomeSide,
+    BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind, BoltV3PositionSizerRejectReason,
+    BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
+    BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, BoltV3SubmitPositionSizerConfig,
+    BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderReservation,
+    PredictionMarketOutcomeSide,
 };
 use nautilus_common::msgbus::{
     TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
@@ -466,6 +467,63 @@ fn account_bound_live_order_events_update_open_order_count() {
 }
 
 #[test]
+fn live_order_event_for_submit_owned_reservation_keeps_second_submit_open() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            50.0
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(Vec::<String>::new(), 1_120)
+            .is_some()
+    );
+    rebuild_empty_position_sizer(&admission);
+
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_150)
+        .expect("first fresh submit should admit")
+        .commit_submitted();
+    let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
+        "client-order-1",
+        1_200,
+        AccountId::from("ACCOUNT-001"),
+    )));
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("submitted event should publish lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
+
+    admission
+        .admit_at(&sized_submit_request("client-order-2"), 1_250)
+        .expect("submit-owned live order must not close admission for the next order")
+        .commit_submitted();
+
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(86, 1))
+    );
+}
+
+#[test]
 fn partial_fill_event_revalues_residual_reservation() {
     let (admission, mut feed) = committed_submit_runtime_feed();
     feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
@@ -538,6 +596,85 @@ fn full_fill_event_releases_reservation_and_closes_live_order_count() {
         .expect("full fill should publish lifecycle");
     assert_eq!(state.order_lifecycle.open_order_count, 0);
     assert_eq!(feed.latest_terminal_observed_at_ns(), Some(1_100));
+}
+
+#[test]
+fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut config = runtime_feed_config();
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut config.product_state;
+    product.conditional_token_allowance = Decimal::new(10, 0);
+    let mut feed = PositionSizerRuntimeFeed::new(config, admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_cache_snapshot(
+            Vec::<String>::new(),
+            Decimal::new(10, 0),
+            Decimal::ZERO,
+            1_000
+        )
+        .is_some()
+    );
+    rebuild_empty_position_sizer(&admission);
+
+    admission
+        .admit_at(&sized_sell_submit_request("client-order-1"), 1_010)
+        .expect("sell within seeded YES inventory should admit")
+        .commit_submitted();
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(10),
+            OrderSide::Sell,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("matching sell fill should release the first order");
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("sell fill should publish updated inventory");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_order_fill");
+    assert_eq!(product.observed_at_ns, 1_100);
+    assert_eq!(product.yes_position, Decimal::ZERO);
+    assert_eq!(product.conditional_token_allowance, Decimal::ZERO);
+
+    let second = admission
+        .admit_at(&sized_sell_submit_request("client-order-2"), 1_150)
+        .expect_err("sell above post-fill inventory should reject");
+    assert_eq!(
+        second,
+        BoltV3SubmitAdmissionError::PositionSizingRejected {
+            reason: BoltV3PositionSizerRejectReason::SizingRejected,
+        }
+    );
 }
 
 #[test]
@@ -624,6 +761,60 @@ fn fill_event_for_rebuilt_reservation_revalues_residual() {
         Some(Decimal::new(27, 1))
     );
     assert_eq!(feed.latest_terminal_observed_at_ns(), None);
+}
+
+#[test]
+fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(vec!["client-order-1".to_string()], 1_000)
+            .is_some()
+    );
+
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+        vec![open_order_reservation(
+            "client-order-1",
+            "client-order-1#rebuilt",
+            Decimal::new(43, 1),
+        )],
+        1_000,
+    );
+    assert!(rebuild.accepted);
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("attributed rebuild should retain NT state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
+
+    admission
+        .admit_at(&sized_submit_request("client-order-2"), 1_100)
+        .expect("attributed startup order should not close later submits")
+        .commit_submitted();
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(86, 1))
+    );
 }
 
 #[test]
@@ -1179,6 +1370,16 @@ fn sized_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
             prediction_market_outcome: Some(PredictionMarketOutcomeSide::Yes),
         }),
     }
+}
+
+fn sized_sell_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
+    let mut request = sized_submit_request(client_order_id);
+    request
+        .position_sizing
+        .as_mut()
+        .expect("sized request should carry evidence")
+        .side = BoltV3CompiledOrderSide::Sell;
+    request
 }
 
 fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 
@@ -58,7 +58,7 @@ pub struct PositionSizerRuntimeFeedSubscription {
 struct PositionSizerRuntimeComponentBuilder {
     latest_account_free_collateral: Option<(Decimal, u64)>,
     latest_portfolio: Option<PortfolioSizingSnapshot>,
-    live_order_ids: BTreeSet<String>,
+    live_order_attribution: BTreeMap<String, bool>,
     terminal_order_ids_seen: BTreeSet<String>,
     order_lifecycle: OrderLifecycleSizingSnapshot,
     product_state: ProductSizingSnapshot,
@@ -258,8 +258,13 @@ impl PositionSizerRuntimeFeed {
             if account_id != self.config.account_id {
                 return None;
             }
+            let client_order_id = event.client_order_id().to_string();
+            let submit_owned = self
+                .submit_admission
+                .position_sizer_has_live_reservation(&client_order_id);
             self.component_builder.record_live_order_event(
-                event.client_order_id().to_string(),
+                client_order_id,
+                submit_owned,
                 event.ts_event().as_u64(),
             );
             self.publish_components_if_ready();
@@ -317,7 +322,7 @@ impl PositionSizerRuntimeFeed {
             BoltV3SubmitPositionSizingFillUpdate {
                 client_order_id: fill.client_order_id.to_string(),
                 trade_id: fill.trade_id.to_string(),
-                instrument_id,
+                instrument_id: instrument_id.clone(),
                 side,
                 fill_quantity: fill.last_qty.as_decimal(),
                 observed_at_ns,
@@ -329,12 +334,28 @@ impl PositionSizerRuntimeFeed {
         if decision.unknown_reservation {
             return None;
         }
+        let fill_changes_position = decision.accepted
+            && matches!(
+                decision.action,
+                crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Revalued
+                    | crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Released
+            );
+        if fill_changes_position {
+            self.component_builder.record_fill_position_delta(
+                &instrument_id,
+                side,
+                fill.last_qty.as_decimal(),
+                observed_at_ns,
+            );
+        }
         if decision.action == crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Released
         {
             self.component_builder
                 .record_terminal_order_event(fill.client_order_id.to_string(), observed_at_ns);
-            self.publish_components_if_ready();
             self.latest_terminal_observed_at_ns = Some(observed_at_ns);
+        }
+        if fill_changes_position {
+            self.publish_components_if_ready();
         }
         Some(decision)
     }
@@ -357,7 +378,7 @@ impl PositionSizerRuntimeComponentBuilder {
         Self {
             latest_account_free_collateral: None,
             latest_portfolio: None,
-            live_order_ids: BTreeSet::new(),
+            live_order_attribution: BTreeMap::new(),
             terminal_order_ids_seen: BTreeSet::new(),
             order_lifecycle: OrderLifecycleSizingSnapshot {
                 source: "nt_order_lifecycle_seed".to_string(),
@@ -379,19 +400,31 @@ impl PositionSizerRuntimeComponentBuilder {
         I: IntoIterator<Item = String>,
     {
         let cache_open_ids = client_order_ids.into_iter().collect::<BTreeSet<_>>();
-        let merged_live_order_ids = cache_open_ids
-            .union(&self.live_order_ids)
+        let existing_live_order_ids = self
+            .live_order_attribution
+            .keys()
             .cloned()
             .collect::<BTreeSet<_>>();
-        self.live_order_ids = merged_live_order_ids
-            .difference(&self.terminal_order_ids_seen)
+        let merged_live_order_ids = cache_open_ids
+            .union(&existing_live_order_ids)
             .cloned()
+            .collect::<BTreeSet<_>>();
+        self.live_order_attribution = merged_live_order_ids
+            .difference(&self.terminal_order_ids_seen)
+            .map(|client_order_id| {
+                let attributed = self
+                    .live_order_attribution
+                    .get(client_order_id)
+                    .copied()
+                    .unwrap_or(false);
+                (client_order_id.clone(), attributed)
+            })
             .collect();
         self.order_lifecycle = OrderLifecycleSizingSnapshot {
             source: "nt_open_order_cache".to_string(),
             observed_at_ns,
-            open_order_count: self.live_order_ids.len(),
-            all_open_orders_attributed: self.live_order_ids.is_empty(),
+            open_order_count: self.live_order_attribution.len(),
+            all_open_orders_attributed: self.all_live_orders_attributed(),
         };
         match &mut self.product_state {
             ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
@@ -403,16 +436,24 @@ impl PositionSizerRuntimeComponentBuilder {
         }
     }
 
-    fn record_live_order_event(&mut self, client_order_id: String, observed_at_ns: u64) {
+    fn record_live_order_event(
+        &mut self,
+        client_order_id: String,
+        attributed: bool,
+        observed_at_ns: u64,
+    ) {
         if !self.terminal_order_ids_seen.contains(&client_order_id) {
-            self.live_order_ids.insert(client_order_id);
+            self.live_order_attribution
+                .entry(client_order_id)
+                .and_modify(|existing| *existing = *existing || attributed)
+                .or_insert(attributed);
         }
         self.refresh_order_lifecycle_from_event(observed_at_ns);
     }
 
     fn record_terminal_order_event(&mut self, client_order_id: String, observed_at_ns: u64) {
         self.terminal_order_ids_seen.insert(client_order_id.clone());
-        self.live_order_ids.remove(&client_order_id);
+        self.live_order_attribution.remove(&client_order_id);
         self.refresh_order_lifecycle_from_event(observed_at_ns);
     }
 
@@ -420,9 +461,51 @@ impl PositionSizerRuntimeComponentBuilder {
         self.order_lifecycle = OrderLifecycleSizingSnapshot {
             source: "nt_order_event".to_string(),
             observed_at_ns,
-            open_order_count: self.live_order_ids.len(),
-            all_open_orders_attributed: self.live_order_ids.is_empty(),
+            open_order_count: self.live_order_attribution.len(),
+            all_open_orders_attributed: self.all_live_orders_attributed(),
         };
+    }
+
+    fn all_live_orders_attributed(&self) -> bool {
+        self.live_order_attribution
+            .values()
+            .all(|attributed| *attributed)
+    }
+
+    fn record_fill_position_delta(
+        &mut self,
+        instrument_id: &str,
+        side: BoltV3CompiledOrderSide,
+        fill_quantity: Decimal,
+        observed_at_ns: u64,
+    ) {
+        let ProductSizingSnapshot::PredictionMarketBinary(snapshot) = &mut self.product_state;
+        let outcome_position = if instrument_id == snapshot.yes_instrument_id {
+            &mut snapshot.yes_position
+        } else if instrument_id == snapshot.no_instrument_id {
+            &mut snapshot.no_position
+        } else {
+            return;
+        };
+        match side {
+            BoltV3CompiledOrderSide::Buy => {
+                *outcome_position += fill_quantity;
+                snapshot.conditional_token_allowance += fill_quantity;
+            }
+            BoltV3CompiledOrderSide::Sell => {
+                *outcome_position = outcome_position
+                    .checked_sub(fill_quantity)
+                    .filter(|position| *position > Decimal::ZERO)
+                    .unwrap_or(Decimal::ZERO);
+                snapshot.conditional_token_allowance = snapshot
+                    .conditional_token_allowance
+                    .checked_sub(fill_quantity)
+                    .filter(|allowance| *allowance > Decimal::ZERO)
+                    .unwrap_or(Decimal::ZERO);
+            }
+        }
+        snapshot.source = "nt_order_fill".to_string();
+        snapshot.observed_at_ns = observed_at_ns;
     }
 
     fn components(

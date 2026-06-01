@@ -15654,6 +15654,14 @@ classification = "position_sizer_evidence_source_label"
 reason = "This labels authoritative NT fill events before submit admission revalues or releases the matching Bolt-owned reservation."
 
 [[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_order_fill"'''
+context = '''snapshot.source = "nt_order_fill".to_string();'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels product inventory state derived from an accepted authoritative NT fill event for a matching Bolt-owned reservation."
+
+[[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"bolt_known_reservation_metadata"'''

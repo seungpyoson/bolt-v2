@@ -314,6 +314,15 @@ impl BoltV3SubmitAdmissionState {
         )
     }
 
+    pub fn position_sizer_has_live_reservation(&self, client_order_id: &str) -> bool {
+        let inner = lock_inner(&self.inner);
+        inner.position_sizer.as_ref().is_some_and(|position_sizer| {
+            position_sizer
+                .client_order_reservations
+                .contains_key(client_order_id)
+        })
+    }
+
     pub fn position_sizer_reconciled(&self) -> Option<bool> {
         let inner = lock_inner(&self.inner);
         let position_sizer = inner.position_sizer.as_ref()?;
@@ -482,6 +491,12 @@ impl BoltV3SubmitAdmissionState {
         snapshot: BoltV3SubmitPositionSizingOpenOrderSnapshot,
         now_ns: u64,
     ) -> BoltV3SubmitPositionSizingRebuildDecision {
+        let rebuilt_order_lifecycle = OrderLifecycleSizingSnapshot {
+            source: snapshot.evidence_label.clone(),
+            observed_at_ns: snapshot.observed_at_ns,
+            open_order_count: snapshot.observed_open_order_count,
+            all_open_orders_attributed: snapshot.all_open_orders_attributed,
+        };
         let audit_context = BoltV3SubmitPositionSizingRebuildAuditContext {
             observed_at_ns: snapshot.observed_at_ns,
             source: snapshot.evidence_label.clone(),
@@ -500,6 +515,12 @@ impl BoltV3SubmitAdmissionState {
             };
         };
         if !snapshot.all_open_orders_attributed {
+            if snapshot.observed_open_order_count > 0
+                && let Some(state) = position_sizer.state.as_mut()
+            {
+                state.observed_at_ns = state.observed_at_ns.max(snapshot.observed_at_ns);
+                state.order_lifecycle = rebuilt_order_lifecycle;
+            }
             position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
             position_sizer.client_order_reservations.clear();
             refresh_position_sizer_reservation_snapshot_with_source(
@@ -618,6 +639,12 @@ impl BoltV3SubmitAdmissionState {
         );
         if decision.accepted {
             position_sizer.client_order_reservations = rebuilt_index;
+            if snapshot.observed_open_order_count > 0
+                && let Some(state) = position_sizer.state.as_mut()
+            {
+                state.observed_at_ns = state.observed_at_ns.max(now_ns);
+                state.order_lifecycle = rebuilt_order_lifecycle;
+            }
             refresh_position_sizer_reservation_snapshot(position_sizer, now_ns);
         }
 

@@ -25,11 +25,11 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
     BoltV3SubmitLifecyclePolicy, BoltV3SubmitPositionSizerConfig,
     BoltV3SubmitPositionSizingFillUpdate, BoltV3SubmitPositionSizingLifecycleUpdate,
-    BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderReservation,
-    BoltV3SubmitPositionSizingOpenOrderSnapshot, BoltV3SubmitPositionSizingRebuildDecision,
-    PredictionMarketOutcomeSide, conservative_quote_quantity_admission_notional,
-    fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
-    rounded_order_admission_notional,
+    BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderEvidence,
+    BoltV3SubmitPositionSizingOpenOrderReservation, BoltV3SubmitPositionSizingOpenOrderSnapshot,
+    BoltV3SubmitPositionSizingRebuildDecision, PredictionMarketOutcomeSide,
+    conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
+    market_style_admission_ceiling_notional, rounded_order_admission_notional,
 };
 use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
@@ -1173,6 +1173,156 @@ fn configured_submit_sizer_rebuilds_open_order_reservation_for_terminal_release(
 }
 
 #[test]
+fn configured_submit_sizer_rebuilt_reservation_partial_fill_revalues_residual() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+        vec![open_order_reservation(
+            "client-order-1",
+            "client-order-1#rebuilt",
+            Decimal::new(43, 1),
+        )],
+        1_000,
+    );
+
+    assert!(rebuild.accepted);
+
+    let decision = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            fill_quantity: Decimal::new(4, 0),
+            observed_at_ns: 1_100,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_100,
+    );
+
+    assert!(decision.accepted);
+    assert!(!decision.unknown_reservation);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Revalued);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(27, 1))
+    );
+}
+
+#[test]
+fn configured_submit_sizer_open_order_evidence_builds_rebuild_reservation() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+
+    let reservation = admission
+        .position_sizing_open_order_reservation_from_evidence(
+            BoltV3SubmitPositionSizingOpenOrderEvidence {
+                client_order_id: "client-order-1".to_string(),
+                instrument_id: "instrument-yes.VENUE-A".to_string(),
+                side: BoltV3CompiledOrderSide::Buy,
+                open_quantity: Decimal::new(10, 0),
+                limit_price: Decimal::new(4, 1),
+                observed_at_ns: 1_000,
+                evidence_label: "nt_open_order_cache".to_string(),
+            },
+        )
+        .expect("configured binary open order should build a rebuild reservation");
+
+    assert_eq!(reservation.client_order_id, "client-order-1");
+    assert_eq!(reservation.submit_reservation_id, "client-order-1#1000");
+    assert_eq!(reservation.collateral_group_id, "group-1");
+    assert_eq!(reservation.liability, Decimal::new(43, 1));
+    assert_eq!(reservation.instrument_id, "instrument-yes.VENUE-A");
+    assert_eq!(reservation.side, BoltV3CompiledOrderSide::Buy);
+    assert_eq!(reservation.open_quantity, Decimal::new(10, 0));
+    assert_eq!(reservation.liability_factor, Decimal::new(4, 1));
+    assert_eq!(reservation.additive_liability, Decimal::new(3, 1));
+    assert_eq!(reservation.observed_at_ns, 1_000);
+    assert_eq!(reservation.evidence_label, "nt_open_order_cache");
+}
+
+#[test]
+fn configured_submit_sizer_rejects_open_order_evidence_for_unconfigured_contract() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+
+    let reservation = admission.position_sizing_open_order_reservation_from_evidence(
+        BoltV3SubmitPositionSizingOpenOrderEvidence {
+            client_order_id: "client-order-1".to_string(),
+            instrument_id: "instrument-other.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            open_quantity: Decimal::new(10, 0),
+            limit_price: Decimal::new(4, 1),
+            observed_at_ns: 1_000,
+            evidence_label: "nt_open_order_cache".to_string(),
+        },
+    );
+
+    assert!(reservation.is_none());
+}
+
+#[test]
+fn configured_submit_sizer_open_order_evidence_uses_zero_additive_without_fee_policy() {
+    let admission = position_sized_admission_without_fee_slippage_policy();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+
+    let reservation = admission
+        .position_sizing_open_order_reservation_from_evidence(
+            BoltV3SubmitPositionSizingOpenOrderEvidence {
+                client_order_id: "client-order-1".to_string(),
+                instrument_id: "instrument-yes.VENUE-A".to_string(),
+                side: BoltV3CompiledOrderSide::Buy,
+                open_quantity: Decimal::new(10, 0),
+                limit_price: Decimal::new(4, 1),
+                observed_at_ns: 1_000,
+                evidence_label: "nt_open_order_cache".to_string(),
+            },
+        )
+        .expect("configured binary open order should build without fee policy");
+
+    assert_eq!(reservation.additive_liability, Decimal::ZERO);
+    assert_eq!(reservation.liability, Decimal::new(4, 0));
+}
+
+#[test]
+fn configured_submit_sizer_rejects_rebuilt_reservation_liability_mismatch() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+        vec![open_order_reservation(
+            "client-order-1",
+            "client-order-1#rebuilt",
+            Decimal::new(44, 1),
+        )],
+        1_000,
+    );
+
+    assert_eq!(
+        rebuild,
+        BoltV3SubmitPositionSizingRebuildDecision {
+            accepted: false,
+            reason: Some(ReservationRejectionReason::MissingEvidence),
+            attempted_reservation_count: 1,
+            rebuilt_reservation_count: 0,
+            live_reserved_liability: Decimal::ZERO,
+        }
+    );
+    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+}
+
+#[test]
 fn configured_submit_sizer_failed_rebuild_clears_stale_client_order_index_and_closes_gate() {
     let admission = position_sized_admission();
     arm_default(&admission);
@@ -1740,7 +1890,7 @@ fn configured_submit_sizer_revalues_sell_residual_liability_from_fill_metadata()
 }
 
 #[test]
-fn configured_submit_sizer_rejects_fill_for_rebuilt_reservation_without_metadata() {
+fn configured_submit_sizer_rebuilt_reservation_full_fill_releases_reservation() {
     let admission = position_sized_admission();
     arm_default(&admission);
     admission.update_position_sizing_nt_components(fresh_components(900));
@@ -1760,18 +1910,18 @@ fn configured_submit_sizer_rejects_fill_for_rebuilt_reservation_without_metadata
             trade_id: "trade-1".to_string(),
             instrument_id: "instrument-yes.VENUE-A".to_string(),
             side: BoltV3CompiledOrderSide::Buy,
-            fill_quantity: Decimal::new(4, 0),
+            fill_quantity: Decimal::new(10, 0),
             observed_at_ns: 1_100,
             evidence_label: "nt_order_fill".to_string(),
         },
         1_100,
     );
 
-    assert!(decision.unknown_reservation);
-    assert_eq!(decision.action, PositionSizingLifecycleAction::None);
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
-        Some(Decimal::new(43, 1))
+        Some(Decimal::ZERO)
     );
 }
 
@@ -2058,8 +2208,25 @@ fn position_sized_admission() -> BoltV3SubmitAdmissionState {
     position_sized_admission_with_pool_observed_at(900)
 }
 
+fn position_sized_admission_without_fee_slippage_policy() -> BoltV3SubmitAdmissionState {
+    position_sized_admission_with_policy(900, None)
+}
+
 fn position_sized_admission_with_pool_observed_at(
     pool_observed_at_ns: u64,
+) -> BoltV3SubmitAdmissionState {
+    position_sized_admission_with_policy(
+        pool_observed_at_ns,
+        Some(FeeSlippagePolicy {
+            max_fee_liability: Decimal::new(10, 2),
+            max_slippage_liability: Decimal::new(20, 2),
+        }),
+    )
+}
+
+fn position_sized_admission_with_policy(
+    pool_observed_at_ns: u64,
+    fee_slippage_policy: Option<FeeSlippagePolicy>,
 ) -> BoltV3SubmitAdmissionState {
     BoltV3SubmitAdmissionState::new_unarmed_with_position_sizer(
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
@@ -2080,10 +2247,7 @@ fn position_sized_admission_with_pool_observed_at(
                 mode: SizingMode::RejectOnly,
                 max_order_liability: Some(Decimal::new(10, 0)),
                 min_remaining_pool_balance: None,
-                fee_slippage_policy: Some(FeeSlippagePolicy {
-                    max_fee_liability: Decimal::new(10, 2),
-                    max_slippage_liability: Decimal::new(20, 2),
-                }),
+                fee_slippage_policy,
             },
         },
     )
@@ -2123,6 +2287,11 @@ fn open_order_reservation(
         submit_reservation_id: submit_reservation_id.to_string(),
         collateral_group_id: "group-1".to_string(),
         liability,
+        instrument_id: "instrument-yes.VENUE-A".to_string(),
+        side: BoltV3CompiledOrderSide::Buy,
+        open_quantity: Decimal::new(10, 0),
+        liability_factor: Decimal::new(4, 1),
+        additive_liability: Decimal::new(3, 1),
         observed_at_ns: 900,
         evidence_label: "nt_open_order_rebuild".to_string(),
     }

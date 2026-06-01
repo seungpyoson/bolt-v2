@@ -115,6 +115,11 @@ pub struct BoltV3SubmitPositionSizingOpenOrderReservation {
     pub submit_reservation_id: String,
     pub collateral_group_id: String,
     pub liability: Decimal,
+    pub instrument_id: String,
+    pub side: BoltV3CompiledOrderSide,
+    pub open_quantity: Decimal,
+    pub liability_factor: Decimal,
+    pub additive_liability: Decimal,
     pub observed_at_ns: u64,
     pub evidence_label: String,
 }
@@ -125,6 +130,17 @@ pub struct BoltV3SubmitPositionSizingOpenOrderSnapshot {
     pub evidence_label: String,
     pub all_open_orders_attributed: bool,
     pub reservations: Vec<BoltV3SubmitPositionSizingOpenOrderReservation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3SubmitPositionSizingOpenOrderEvidence {
+    pub client_order_id: String,
+    pub instrument_id: String,
+    pub side: BoltV3CompiledOrderSide,
+    pub open_quantity: Decimal,
+    pub limit_price: Decimal,
+    pub observed_at_ns: u64,
+    pub evidence_label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,6 +303,64 @@ impl BoltV3SubmitAdmissionState {
         Some(position_sizer.gate.is_reconciled())
     }
 
+    pub fn position_sizing_open_order_reservation_from_evidence(
+        &self,
+        evidence: BoltV3SubmitPositionSizingOpenOrderEvidence,
+    ) -> Option<BoltV3SubmitPositionSizingOpenOrderReservation> {
+        if evidence.client_order_id.trim().is_empty()
+            || evidence.instrument_id.trim().is_empty()
+            || evidence.evidence_label.trim().is_empty()
+            || evidence.open_quantity <= Decimal::ZERO
+            || evidence.limit_price < Decimal::ZERO
+            || evidence.limit_price > Decimal::ONE
+        {
+            return None;
+        }
+        let inner = lock_inner(&self.inner);
+        let position_sizer = inner.position_sizer.as_ref()?;
+        let state = position_sizer.state.as_ref()?;
+        let ProductSizingSnapshot::PredictionMarketBinary(product) = &state.product_state;
+        if evidence.instrument_id != product.yes_instrument_id
+            && evidence.instrument_id != product.no_instrument_id
+        {
+            return None;
+        }
+        let additive_liability = position_sizer
+            .policy
+            .fee_slippage_policy
+            .as_ref()
+            .map(|policy| policy.max_fee_liability + policy.max_slippage_liability)
+            .unwrap_or(Decimal::ZERO);
+        if additive_liability < Decimal::ZERO {
+            return None;
+        }
+        let liability_factor = match evidence.side.to_position_sizer() {
+            IntentSide::Buy => evidence.limit_price,
+            IntentSide::Sell => Decimal::ONE - evidence.limit_price,
+        };
+        if liability_factor < Decimal::ZERO || liability_factor > Decimal::ONE {
+            return None;
+        }
+        let liability = evidence.open_quantity * liability_factor + additive_liability;
+        Some(BoltV3SubmitPositionSizingOpenOrderReservation {
+            client_order_id: evidence.client_order_id.clone(),
+            // Rebuilt IDs are deliberately namespaced away from submit-time reservation IDs.
+            submit_reservation_id: format!(
+                "{}#{}",
+                evidence.client_order_id, evidence.observed_at_ns
+            ),
+            collateral_group_id: product.collateral_coupled_group_id.clone(),
+            liability,
+            instrument_id: evidence.instrument_id,
+            side: evidence.side,
+            open_quantity: evidence.open_quantity,
+            liability_factor,
+            additive_liability,
+            observed_at_ns: evidence.observed_at_ns,
+            evidence_label: evidence.evidence_label,
+        })
+    }
+
     pub fn rebuild_position_sizing_open_order_reservations(
         &self,
         open_order_reservations: Vec<BoltV3SubmitPositionSizingOpenOrderReservation>,
@@ -370,15 +444,44 @@ impl BoltV3SubmitAdmissionState {
                         .live_reserved_liability(&position_sizer.capital_pool.pool_id),
                 };
             }
+            if !rebuilt_open_order_reservation_metadata_valid(&reservation) {
+                position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
+                position_sizer.client_order_reservations.clear();
+                return BoltV3SubmitPositionSizingRebuildDecision {
+                    accepted: false,
+                    reason: Some(ReservationRejectionReason::MissingEvidence),
+                    attempted_reservation_count: index + 1,
+                    rebuilt_reservation_count: 0,
+                    live_reserved_liability: position_sizer
+                        .gate
+                        .live_reserved_liability(&position_sizer.capital_pool.pool_id),
+                };
+            }
 
             let submit_reservation_id = reservation.submit_reservation_id;
             let collateral_group_id = reservation.collateral_group_id;
+            let instrument_id = reservation.instrument_id;
+            let side = reservation.side;
+            let open_quantity = reservation.open_quantity;
+            let liability_factor = reservation.liability_factor;
+            let additive_liability = reservation.additive_liability;
+            let observed_at_ns = reservation.observed_at_ns;
             rebuilt_index.insert(
                 reservation.client_order_id,
                 BoltV3SubmitReservationIndex {
                     submit_reservation_id: submit_reservation_id.clone(),
                     collateral_group_id: collateral_group_id.clone(),
-                    fill_metadata: None,
+                    fill_metadata: Some(BoltV3SubmitReservationFillMetadata {
+                        // NT cache leaves quantity is the residual from this rebuild point forward.
+                        instrument_id,
+                        side,
+                        original_quantity: open_quantity,
+                        filled_quantity: Decimal::ZERO,
+                        liability_factor,
+                        additive_liability,
+                        last_lifecycle_observed_at_ns: observed_at_ns,
+                        seen_trade_ids: BTreeSet::new(),
+                    }),
                 },
             );
             reservation_requests.push(ReservationRequest {
@@ -386,7 +489,7 @@ impl BoltV3SubmitAdmissionState {
                 pool_id: position_sizer.capital_pool.pool_id.clone(),
                 collateral_group_id,
                 liability: reservation.liability,
-                observed_at_ns: reservation.observed_at_ns,
+                observed_at_ns,
                 evidence_label: reservation.evidence_label,
             });
         }
@@ -1717,6 +1820,21 @@ fn refresh_position_sizer_reservation_snapshot_with_source(
     state.reservation_snapshot.all_live_reservations_attributed = all_live_reservations_attributed;
     state.observed_at_ns = state.observed_at_ns.max(observed_at_ns);
     position_sizer.state = Some(state);
+}
+
+fn rebuilt_open_order_reservation_metadata_valid(
+    reservation: &BoltV3SubmitPositionSizingOpenOrderReservation,
+) -> bool {
+    if reservation.instrument_id.trim().is_empty()
+        || reservation.open_quantity <= Decimal::ZERO
+        || reservation.liability_factor < Decimal::ZERO
+        || reservation.liability_factor > Decimal::ONE
+        || reservation.additive_liability < Decimal::ZERO
+    {
+        return false;
+    }
+    reservation.liability
+        == reservation.open_quantity * reservation.liability_factor + reservation.additive_liability
 }
 
 fn compose_position_sizing_state_from_components(

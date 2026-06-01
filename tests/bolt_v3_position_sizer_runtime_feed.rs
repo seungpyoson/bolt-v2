@@ -574,7 +574,7 @@ fn fill_event_account_or_instrument_mismatch_is_non_mutating() {
 }
 
 #[test]
-fn fill_event_for_rebuilt_reservation_without_submit_metadata_is_non_mutating() {
+fn fill_event_for_rebuilt_reservation_revalues_residual() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
     let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
@@ -606,8 +606,8 @@ fn fill_event_for_rebuilt_reservation_without_submit_metadata_is_non_mutating() 
     );
     assert!(rebuild.accepted);
 
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
             "client-order-1",
             "trade-1",
             1_100,
@@ -616,13 +616,77 @@ fn fill_event_for_rebuilt_reservation_without_submit_metadata_is_non_mutating() 
             OrderSide::Buy,
             InstrumentId::from("instrument-yes.VENUE-A"),
         )))
-        .is_none()
-    );
+        .expect("rebuilt reservation metadata should support residual revalue");
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Revalued);
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
-        Some(Decimal::new(43, 1))
+        Some(Decimal::new(27, 1))
     );
     assert_eq!(feed.latest_terminal_observed_at_ns(), None);
+}
+
+#[test]
+fn full_fill_event_for_rebuilt_reservation_releases_and_closes_live_order_count() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(vec!["client-order-1".to_string()], 1_000)
+            .is_some()
+    );
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+        vec![open_order_reservation(
+            "client-order-1",
+            "client-order-1#rebuilt",
+            Decimal::new(43, 1),
+        )],
+        1_000,
+    );
+    assert!(rebuild.accepted);
+
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(10),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("rebuilt reservation full fill should release");
+
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    assert_eq!(feed.latest_terminal_observed_at_ns(), Some(1_100));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("fill release should publish updated lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
 }
 
 #[test]
@@ -1046,6 +1110,11 @@ fn open_order_reservation(
         submit_reservation_id: submit_reservation_id.to_string(),
         collateral_group_id: "group-1".to_string(),
         liability,
+        instrument_id: "instrument-yes.VENUE-A".to_string(),
+        side: BoltV3CompiledOrderSide::Buy,
+        open_quantity: Decimal::new(10, 0),
+        liability_factor: Decimal::new(4, 1),
+        additive_liability: Decimal::new(3, 1),
         observed_at_ns: 1_000,
         evidence_label: "nt_open_order_cache".to_string(),
     }

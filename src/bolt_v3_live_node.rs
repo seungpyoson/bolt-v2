@@ -67,10 +67,10 @@ use nautilus_live::{
 };
 use nautilus_model::{
     data::{OrderBookDeltas, QuoteTick, TradeTick},
-    enums::{BarIntervalType, BookType},
+    enums::{BarIntervalType, BookType, OrderSide, OrderType},
     identifiers::{ActorId, ClientId, InstrumentId, StrategyId, Venue},
     instruments::Instrument,
-    orders::Order,
+    orders::{Order, OrderAny},
 };
 use rust_decimal::Decimal;
 use ustr::Ustr;
@@ -120,7 +120,8 @@ use crate::{
         register_bolt_v3_strategies_on_node_with_bindings,
     },
     bolt_v3_submit_admission::{
-        BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState, BoltV3SubmitPositionSizerConfig,
+        BoltV3CompiledOrderSide, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState,
+        BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingOpenOrderEvidence,
         BoltV3SubmitPositionSizingOpenOrderSnapshot, BoltV3SubmitPositionSizingRebuildDecision,
     },
     bolt_v3_tiny_canary_evidence::{
@@ -1726,18 +1727,22 @@ impl BoltV3LiveNodeRuntime {
         };
         let cache = self.node.kernel().cache();
         let cache = cache.borrow();
-        let open_client_order_ids = match account_id.as_ref() {
+        let open_order_snapshots = match account_id.as_ref() {
             Some(account_id) => cache
                 .orders_open(None, None, None, Some(account_id), None)
                 .into_iter()
-                .map(|order| order.client_order_id().to_string())
+                .map(|order| order.cloned())
                 .collect::<Vec<_>>(),
             None => cache
                 .orders_open(None, None, None, None, None)
                 .into_iter()
-                .map(|order| order.client_order_id().to_string())
+                .map(|order| order.cloned())
                 .collect::<Vec<_>>(),
         };
+        let open_client_order_ids = open_order_snapshots
+            .iter()
+            .map(|order| order.client_order_id().to_string())
+            .collect::<Vec<_>>();
         let (yes_position, no_position) =
             match (account_id.as_ref(), binary_instrument_ids.as_ref()) {
                 (Some(account_id), Some((yes_instrument_id, no_instrument_id))) => {
@@ -1757,6 +1762,7 @@ impl BoltV3LiveNodeRuntime {
             };
         drop(cache);
 
+        // Seed live NT order and position state before rebuilding reservations from the same snapshot.
         if let Some(feed) = self.position_sizer_runtime_feed.as_ref() {
             feed.lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1768,17 +1774,68 @@ impl BoltV3LiveNodeRuntime {
                 );
         }
 
+        let mut reservations = Vec::with_capacity(open_order_snapshots.len());
+        let mut all_open_orders_attributed = true;
+        for order in &open_order_snapshots {
+            let Some(evidence) = nt_open_order_evidence_from_order(order, now_ns) else {
+                all_open_orders_attributed = false;
+                break;
+            };
+            let Some(reservation) = self
+                .submit_admission
+                .position_sizing_open_order_reservation_from_evidence(evidence)
+            else {
+                all_open_orders_attributed = false;
+                break;
+            };
+            reservations.push(reservation);
+        }
+        if !all_open_orders_attributed {
+            reservations.clear();
+        }
+
         self.submit_admission
             .rebuild_position_sizing_open_order_snapshot(
                 BoltV3SubmitPositionSizingOpenOrderSnapshot {
                     observed_at_ns: now_ns,
                     evidence_label: "nt_open_order_cache".to_string(),
-                    all_open_orders_attributed: open_client_order_ids.is_empty(),
-                    reservations: Vec::new(),
+                    all_open_orders_attributed,
+                    reservations,
                 },
                 now_ns,
             )
     }
+}
+
+fn nt_open_order_evidence_from_order(
+    order: &OrderAny,
+    observed_at_ns: u64,
+) -> Option<BoltV3SubmitPositionSizingOpenOrderEvidence> {
+    if order.order_type() != OrderType::Limit {
+        return None;
+    }
+    let side = match order.order_side() {
+        OrderSide::Buy => BoltV3CompiledOrderSide::Buy,
+        OrderSide::Sell => BoltV3CompiledOrderSide::Sell,
+        _ => return None,
+    };
+    let limit_price = order.price()?.as_decimal();
+    if !(Decimal::ZERO..=Decimal::ONE).contains(&limit_price) {
+        return None;
+    }
+    let open_quantity = order.leaves_qty().as_decimal();
+    if open_quantity <= Decimal::ZERO {
+        return None;
+    }
+    Some(BoltV3SubmitPositionSizingOpenOrderEvidence {
+        client_order_id: order.client_order_id().to_string(),
+        instrument_id: order.instrument_id().to_string(),
+        side,
+        open_quantity,
+        limit_price,
+        observed_at_ns,
+        evidence_label: "nt_open_order_cache".to_string(),
+    })
 }
 
 impl std::fmt::Debug for BoltV3LiveNodeRuntime {
@@ -3997,9 +4054,11 @@ mod tests {
         DataClientReadinessProbeQuoteTargetSource, LiveCanaryProofPolicyBlock,
         LiveCanaryProofTimeInForce, ReferenceDataBlock,
     };
+    use nautilus_core::{UUID4, UnixNanos};
     use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
-    use nautilus_model::enums::{BookAction, OrderSide};
-    use nautilus_model::identifiers::TraderId;
+    use nautilus_model::enums::{BookAction, OrderSide, TimeInForce};
+    use nautilus_model::identifiers::{ClientOrderId, TraderId};
+    use nautilus_model::orders::{LimitOrder, MarketOrder, OrderAny};
     use nautilus_model::types::{Price, Quantity};
 
     #[test]
@@ -4635,6 +4694,111 @@ mod tests {
             !runtime_source.contains(".record_quote(quote, self.timestamp_ns().as_u64())"),
             "actor timestamp is not strong enough evidence for quote receive time"
         );
+    }
+
+    #[test]
+    fn nt_limit_order_snapshot_maps_to_generic_open_order_evidence() {
+        let order = generic_limit_order(
+            "client-order-1",
+            "instrument-yes.VENUE-A",
+            OrderSide::Buy,
+            Quantity::from(10),
+            Price::from("0.40"),
+        );
+
+        let evidence = nt_open_order_evidence_from_order(&order, 1_000)
+            .expect("bounded NT limit order should produce generic open-order evidence");
+
+        assert_eq!(evidence.client_order_id, "client-order-1");
+        assert_eq!(evidence.instrument_id, "instrument-yes.VENUE-A");
+        assert_eq!(evidence.side, BoltV3CompiledOrderSide::Buy);
+        assert_eq!(evidence.open_quantity, Decimal::new(10, 0));
+        assert_eq!(evidence.limit_price, Decimal::new(4, 1));
+        assert_eq!(evidence.observed_at_ns, 1_000);
+        assert_eq!(evidence.evidence_label, "nt_open_order_cache");
+    }
+
+    #[test]
+    fn nt_non_limit_order_snapshot_is_not_sizing_evidence() {
+        let order = generic_market_order(
+            "client-order-1",
+            "instrument-yes.VENUE-A",
+            OrderSide::Buy,
+            Quantity::from(10),
+        );
+
+        assert!(nt_open_order_evidence_from_order(&order, 1_000).is_none());
+    }
+
+    fn generic_limit_order(
+        client_order_id: &str,
+        instrument_id: &str,
+        order_side: OrderSide,
+        quantity: Quantity,
+        price: Price,
+    ) -> OrderAny {
+        OrderAny::Limit(
+            LimitOrder::new_checked(
+                TraderId::from("TRADER-001"),
+                StrategyId::from("strategy-a"),
+                InstrumentId::from(instrument_id),
+                ClientOrderId::from(client_order_id),
+                order_side,
+                quantity,
+                price,
+                TimeInForce::Gtc,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                UUID4::default(),
+                UnixNanos::from(1),
+            )
+            .expect("generic limit order should be valid"),
+        )
+    }
+
+    fn generic_market_order(
+        client_order_id: &str,
+        instrument_id: &str,
+        order_side: OrderSide,
+        quantity: Quantity,
+    ) -> OrderAny {
+        OrderAny::Market(
+            MarketOrder::new_checked(
+                TraderId::from("TRADER-001"),
+                StrategyId::from("strategy-a"),
+                InstrumentId::from(instrument_id),
+                ClientOrderId::from(client_order_id),
+                order_side,
+                quantity,
+                TimeInForce::Ioc,
+                UUID4::default(),
+                UnixNanos::from(1),
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("generic market order should be valid"),
+        )
     }
 
     #[test]

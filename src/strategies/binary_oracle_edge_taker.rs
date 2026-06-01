@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     rc::Rc,
     str::FromStr,
     sync::Arc,
@@ -20,8 +20,8 @@ use nautilus_model::{
 };
 use nautilus_model::{
     enums::{
-        AggressorSide, BookAction, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce,
-        TrailingOffsetType, TriggerType,
+        BookAction, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce, TrailingOffsetType,
+        TriggerType,
     },
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId, Venue},
     instruments::{Instrument, InstrumentAny},
@@ -52,8 +52,8 @@ use crate::{
         SelectedMarketSourceIdentity,
     },
     bolt_v3_numeric::{
-        MILLIS_PER_SECOND_U64, POWER_OF_TWO, UNIT_F64, ZERO_F64, is_positive_finite,
-        sanitize_probability,
+        MILLIS_PER_SECOND_U64, NANOS_PER_MILLI_U64, POWER_OF_TWO, UNIT_F64, ZERO_F64,
+        is_positive_finite, sanitize_probability,
     },
     bolt_v3_operator_artifacts::{EntryReadinessGateSession, GateSatisfaction},
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
@@ -825,32 +825,12 @@ struct ImpactCappedExecution {
     vwap_price: f64,
 }
 
-/// A single signed trade retained for downstream adverse-selection / VPIN analysis.
-///
-/// This is the per-trade element stored by [`SignedTradeFlow`]; the signed
-/// aggressor side, price, and size are the inputs the W3 Glosten-Milgrom / VPIN
-/// stage will read. Fields are public because this struct is the read seam for
-/// that later stage.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SignedTrade {
-    pub ts_ms: u64,
-    pub aggressor: AggressorSide,
-    pub price: f64,
-    pub size: f64,
-}
-
-/// Runtime view of the trade-flow buffer's window/cap knobs.
-///
-/// Plain runtime config view without a serde derive: the strategy owns TOML
-/// deserialization and projects the relevant fields here at the call site
-/// (mirroring [`RealizedVolConfig`] for the volatility estimator), so the buffer
-/// never depends on the strategy's config type and moves cleanly into a shared
-/// module when the W3 consumer is built.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SignedTradeFlowConfig {
-    pub window_secs: u64,
-    pub max_samples: u64,
-}
+/// Signed-trade-flow buffer types — hoisted to the shared
+/// [`crate::bolt_v3_trade_flow`] module so the taker and the binary maker reuse
+/// one buffer instead of each owning a copy (NO DUAL PATHS). Re-exported here so
+/// existing references in this strategy resolve unchanged; the W3
+/// Glosten-Milgrom / VPIN stage is the buffer's read consumer.
+pub use crate::bolt_v3_trade_flow::{SignedTrade, SignedTradeFlow, SignedTradeFlowConfig};
 
 /// Project the strategy's trade-flow TOML knobs into the buffer's runtime config
 /// view. Single place that maps those fields onto [`SignedTradeFlowConfig`]
@@ -859,96 +839,6 @@ fn signed_trade_flow_config(config: &BinaryOracleEdgeTakerConfig) -> SignedTrade
     SignedTradeFlowConfig {
         window_secs: config.trade_flow_window_secs,
         max_samples: config.trade_flow_max_samples,
-    }
-}
-
-/// Bounded rolling buffer of signed trades for a single quoted instrument.
-///
-/// Mirrors [`RealizedVolEstimator`]'s config-driven rolling-window shape: the
-/// retention window and hard sample cap both come from a projected
-/// [`SignedTradeFlowConfig`], and the buffer is bounded by time (`window_ms`) and
-/// count (`max_samples`). It only retains signed trade flow; the W3 stage reads
-/// it to compute adverse-selection signals.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SignedTradeFlow {
-    window_ms: u64,
-    max_samples: usize,
-    samples: VecDeque<SignedTrade>,
-}
-
-impl SignedTradeFlow {
-    fn from_config(config: &SignedTradeFlowConfig) -> Self {
-        Self {
-            window_ms: config.window_secs.saturating_mul(MILLIS_PER_SECOND_U64),
-            max_samples: config.max_samples as usize,
-            samples: VecDeque::new(),
-        }
-    }
-
-    fn observe(&mut self, trade: &TradeTick) {
-        let ts_ms = trade.ts_event.as_u64() / NANOS_PER_MILLI_U64;
-        // Reject non-monotonic observations, mirroring `RealizedVolEstimator`: a
-        // timestamp at or before the latest retained sample would break the
-        // oldest-first ordering and the time-window eviction cutoff.
-        if self
-            .samples
-            .back()
-            .is_some_and(|previous| ts_ms <= previous.ts_ms)
-        {
-            return;
-        }
-        self.samples.push_back(SignedTrade {
-            ts_ms,
-            aggressor: trade.aggressor_side,
-            price: trade.price.as_f64(),
-            size: trade.size.as_f64(),
-        });
-        self.evict(ts_ms);
-    }
-
-    fn evict(&mut self, now_ms: u64) {
-        let cutoff_ms = now_ms.saturating_sub(self.window_ms);
-        while self
-            .samples
-            .front()
-            .is_some_and(|trade| trade.ts_ms < cutoff_ms)
-        {
-            let _ = self.samples.pop_front();
-        }
-        while self.samples.len() > self.max_samples {
-            let _ = self.samples.pop_front();
-        }
-    }
-
-    /// Number of signed trades currently retained. Read seam for the W3 stage.
-    pub fn len(&self) -> usize {
-        self.samples.len()
-    }
-
-    /// Whether the buffer currently holds no retained trades.
-    pub fn is_empty(&self) -> bool {
-        self.samples.is_empty()
-    }
-
-    /// Retained signed trades, oldest first. Read seam for the W3 stage.
-    ///
-    /// These are evicted only as of the last [`observe`](Self::observe); in a
-    /// quiet market some may have aged out of the window. A point-in-time
-    /// consumer should read through [`samples_within`](Self::samples_within).
-    pub fn samples(&self) -> &VecDeque<SignedTrade> {
-        &self.samples
-    }
-
-    /// Signed trades still inside the retention window as of `now_ms`, oldest
-    /// first. Unlike [`samples`](Self::samples) this filters against the caller's
-    /// clock rather than the last `observe` timestamp, so a quiet market does not
-    /// surface trades that have aged out of the window. Read seam for the W3
-    /// stage's point-in-time adverse-selection reads.
-    pub fn samples_within(&self, now_ms: u64) -> impl Iterator<Item = &SignedTrade> {
-        let cutoff_ms = now_ms.saturating_sub(self.window_ms);
-        self.samples
-            .iter()
-            .filter(move |trade| trade.ts_ms >= cutoff_ms)
     }
 }
 
@@ -6817,7 +6707,6 @@ const COUNTER_INCREMENT_U64: u64 = 1;
 const BPS_DENOMINATOR: f64 = 10_000.0;
 const MIDPOINT_DIVISOR_F64: f64 = 2.0;
 const QUADRATIC_RISK_DIVISOR: f64 = 2.0;
-const NANOS_PER_MILLI_U64: u64 = 1_000_000;
 const NANOS_PER_SECOND_U64: u64 = 1_000_000_000;
 const CONFIG_FIELD_OMS_TYPE: &str = "oms_type";
 const CONFIG_FIELD_ENTRY_ORDER_SIDE: &str = "entry_order_side";
@@ -7613,7 +7502,7 @@ mod tests {
     };
     use nautilus_core::{Params, UnixNanos};
     use nautilus_model::{
-        enums::AssetClass,
+        enums::{AggressorSide, AssetClass},
         identifiers::{Symbol, TraderId},
         instruments::BinaryOption,
         orders::{Order, OrderAny},

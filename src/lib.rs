@@ -21,6 +21,7 @@ pub mod bolt_v3_secrets;
 pub mod bolt_v3_strategy_registration;
 pub mod bolt_v3_submit_admission;
 pub mod bolt_v3_tiny_canary_evidence;
+pub mod bolt_v3_trade_flow;
 pub mod bolt_v3_validate;
 pub mod bolt_v3_volatility;
 mod bounded_config_read;

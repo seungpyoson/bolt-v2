@@ -4361,10 +4361,10 @@ classification = "time_unit_conversion"
 reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''1_000_000'''
-context = '''const NANOS_PER_MILLI_U64: u64 = 1_000_000;'''
+context = '''pub const NANOS_PER_MILLI_U64: u64 = 1_000_000;'''
 classification = "time_unit_conversion"
 reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
 

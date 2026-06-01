@@ -99,6 +99,11 @@ enforce_submit_admission = false
 max_pool_liability = "25.00"
 max_snapshot_age_ns = 5000000000
 
+[risk.capital_pools.prediction_market_binary]
+yes_instrument_id = "condition-fixture-yes.POLYMARKET"
+no_instrument_id = "condition-fixture-no.POLYMARKET"
+collateral_coupled_group_id = "condition-fixture"
+
 [risk.capital_pools.sizing_policy]
 mode = "reject_only"
 max_order_liability = "5.00"

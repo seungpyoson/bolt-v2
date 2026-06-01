@@ -18,18 +18,28 @@
 - [x] Reject submit-admission enforcement with `explicit_clip_to_available`.
 - [x] Start configured submit sizing unreconciled and reject entry reservations until explicit open-order rebuild succeeds.
 - [x] Add a submit-level open-order reservation rebuild API that atomically rebuilds the reservation ledger and client-order release index.
+- [x] Add configured prediction-market binary YES/NO product metadata for submit-enforced capital pools.
+- [x] Route direct sizing-state updates through submit-admission composition so caller-supplied reservation evidence is discarded.
+- [x] Subscribe the position-sizer runtime feed to NT account, portfolio, order, and position events.
+- [x] Map matching NT account/portfolio events into submit-admission component state without letting the feed own the reservation ledger.
+- [x] Add live-node startup/reconnect cache rebuild entrypoint that reads only `self.node.kernel().cache()`.
+- [x] Keep the sizer unreconciled when cache reports unattributed open orders.
+- [x] Seed open-order lifecycle count and configured YES/NO inventory from NT cache.
+- [x] Use set semantics for cache and live order events so concurrent/stale snapshots do not double count or resurrect terminal orders.
+- [x] Track account-bound submitted/accepted order ids and remove them on terminal events.
+- [x] Keep partial fills non-mutating until residual-liability metadata is available.
 
 ## Remaining For Production Grade
 
-- [ ] Build the live NT-derived sizing-state feed from account, portfolio, position, and open-order state.
-- [ ] Wire non-terminal NT order lifecycle and partial-fill events into reservation revalue/residual-liability updates.
+- [ ] Revalue residual liability from partial fills using authoritative NT order/fill state or submit-time liability metadata.
 - [ ] Release or revalue fully filled orders from authoritative NT fill/order-state evidence.
-- [ ] Rebuild pre-existing NT/exchange committed liability into the capital pool before admission can open.
-- [ ] Wire live startup/reconnect to call the explicit reservation rebuild API from authoritative NT open-order cache state.
+- [ ] Rebuild non-empty pre-existing NT/exchange committed liability into the capital pool when cache orders can be attributed to known Bolt reservations.
 - [ ] Emit durable rebuild audit evidence with recovered reservation count, liability, source, and observation time.
 - [ ] Add configured halt actions for threshold breach: stop entries, cancel orders, and optional flatten.
 - [ ] Document and implement a safe replace-submit model before enabling `ReplaceSubmit`.
-- [ ] Replace strategy-local prediction-market outcome derivation with configured YES/NO market metadata.
+- [ ] Replace static configured prediction-market metadata with dynamic market-selection metadata when rotating markets.
+- [ ] Add adapter/venue evidence for PUSD spendability and conditional-token allowance.
 - [ ] Add maker/post-only quote-set reservation metadata before enabling maker submit enforcement.
 - [ ] Add non-binary product calculators before enabling spot leverage, futures/perps, or options.
+- [ ] Add reconnect/runtime tests against the actual NT path beyond unit-level cache entrypoint coverage.
 - [ ] Run external review after the exact PR head is pushed and CI is green.

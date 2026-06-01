@@ -15248,6 +15248,14 @@ reason = "This is a supported TOML schema discriminator for the first capital-po
 [[allowed]]
 path = "src/bolt_v3_validate.rs"
 kind = "string"
+literal = '''"prediction_market_binary"'''
+context = '''if pool.enforce_submit_admission && pool.product_kind == "prediction_market_binary" {'''
+classification = "capital_pool_config_enum_value"
+reason = "This compares against the supported TOML schema discriminator that requires binary-product metadata when submit admission is enabled; the pool assignment remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
 literal = '''"reject_only"'''
 context = '''"reject_only" | "explicit_clip_to_available"'''
 classification = "capital_pool_config_enum_value"
@@ -15272,10 +15280,82 @@ reason = "This is a Debug field label reporting whether the position-sizer runti
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
+literal = '''"bolt_configured_binary_product"'''
+context = '''source: "bolt_configured_binary_product".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels binary-product state derived from TOML configuration; the YES/NO instrument ids and collateral group remain config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"nt_open_order_cache"'''
+context = '''evidence_label: "nt_open_order_cache".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels open-order reservation evidence rebuilt from NT cache state; the open orders and account facts come from NT."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
 literal = '''"explicit_clip_to_available"'''
 context = '''"explicit_clip_to_available" => SizingMode::ExplicitClipToAvailable,'''
 classification = "capital_pool_config_enum_value"
 reason = "This maps a TOML sizing-policy discriminator into the internal enum; the selected sizing mode remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "number"
+literal = '''0'''
+context = '''open_order_count: 0,'''
+classification = "position_sizer_order_lifecycle_identity"
+reason = "This initializes an empty live-order count before NT cache or order-event evidence arrives; admission remains fail-closed until the composed state is reconciled."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_open_order_cache"'''
+context = '''source: "nt_open_order_cache".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels order-lifecycle state seeded from NT cache open-order ids; the count itself comes from NT cache contents."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_order_event"'''
+context = '''source: "nt_order_event".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels order-lifecycle state derived from NT order events; the live order ids come from NT event payloads."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_order_lifecycle_seed"'''
+context = '''source: "nt_order_lifecycle_seed".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels the empty startup seed before NT cache/live order evidence is applied; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_portfolio_snapshot"'''
+context = '''source: "nt_portfolio_snapshot".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels portfolio/account sizing components derived from NT account and portfolio events; balances and equity remain NT-owned facts."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_position_cache"'''
+context = '''snapshot.source = "nt_position_cache".to_string();'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels configured YES/NO inventory seeded from NT cache positions; quantities remain NT-owned facts."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_position_sizer_runtime_components"'''
+context = '''source: "nt_position_sizer_runtime_components".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels the composed NT-derived component packet before submit admission combines it with the Bolt-owned reservation ledger."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -15292,6 +15372,30 @@ literal = '''1'''
 context = '''position_sizer.next_sequence += 1;'''
 classification = "position_sizer_reservation_sequence_increment"
 reason = "Each accepted submit reservation advances the in-memory sequence by one to produce a unique request id under the configured pool."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt_recovered_open_order_reservations"'''
+context = '''evidence_label: "bolt_recovered_open_order_reservations".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels reservations rebuilt from attributed open orders during startup/reconnect reconciliation; the actual open-order set comes from NT."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt_reservation_ledger"'''
+context = '''"bolt_reservation_ledger".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels the Bolt-owned reservation ledger snapshot that submit admission composes with NT-derived state."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"bolt_reservation_ledger"'''
+context = '''source: "bolt_reservation_ledger".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels the Bolt-owned reservation ledger snapshot that prevents runtime feeds from injecting ledger attribution."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"

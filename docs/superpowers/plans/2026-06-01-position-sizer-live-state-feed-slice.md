@@ -12,7 +12,7 @@
 
 ## Approval Status
 
-This plan is not approved for implementation yet.
+This plan is approved for implementation.
 
 - Gemini custom-review job `d04d72ec-a1c9-43c7-b966-59842380af3d` returned `REQUEST_CHANGES`.
 - This revision addresses Gemini's blockers by adding explicit subscriptions, moving reservation-snapshot ownership into submit admission, seeding runtime feed state from cache, removing unimplementable residual-liability work from this slice, and requiring configured YES/NO metadata before live wiring.
@@ -20,7 +20,8 @@ This plan is not approved for implementation yet.
 - This revision also addresses Claude's blockers: the old direct state API must be removed or routed through composition, NT symbols and field mappings are pinned, unsupported open orders get a concrete fail-closed rebuild input, cache/live event ordering is set-based, subscription drop behavior is tested, and empty-ledger timestamp semantics are explicit.
 - Claude custom-review job `a66f16b7-84f2-46a9-bcd1-46b58ea9df22` returned `REQUEST_CHANGES`.
 - This revision addresses that review by preserving `client_order_id` in startup/reconnect rebuilt reservations, labeling NT free-balance-as-allowance as a remaining production gap, and pinning the remaining test/API/timestamp details before implementation.
-- Implementation must wait for Claude plan approval or explicit user waiver.
+- Claude custom-review job `088384b1-1c26-4bd5-a9b1-44999fd9f997` returned `APPROVE` at PR head `537b49eb066ec156d4f095744e98071ed5b845f1`.
+- Implementation may proceed under TDD; final implementation still needs CI and external review before merge readiness.
 
 ## Current Verified State
 
@@ -86,7 +87,7 @@ These remain production gaps after this slice:
 - Modify: `tests/fixtures/bolt_v3/root.toml`
 - Test: `tests/config_parsing.rs`
 
-- [ ] **Step 1: RED parse configured binary product metadata**
+- [x] **Step 1: RED parse configured binary product metadata**
 
 Add a test proving each submit-enforced `prediction_market_binary` capital pool requires product metadata:
 
@@ -113,7 +114,7 @@ cargo test --locked --test config_parsing capital_pool_prediction_market_binary_
 
 Expected before implementation: FAIL because `CapitalPoolBlock` has no `prediction_market_binary` field.
 
-- [ ] **Step 2: GREEN add config shape and validation**
+- [x] **Step 2: GREEN add config shape and validation**
 
 Add:
 
@@ -142,7 +143,7 @@ no_instrument_id = "condition-fixture-no.POLYMARKET"
 collateral_coupled_group_id = "condition-fixture"
 ```
 
-- [ ] **Step 3: RED live-node config carries product snapshot**
+- [x] **Step 3: RED live-node config carries product snapshot**
 
 Add a test for `position_sizer_runtime_feed_config_from_loaded(...)` asserting it carries venue id, account id, collateral currency, and a `ProductSizingSnapshot::PredictionMarketBinary` whose YES/NO ids come from TOML.
 
@@ -156,7 +157,7 @@ cargo test --locked --lib position_sizer_runtime_feed_config_carries_configured_
 
 Expected before implementation: FAIL because the feed config carries only `account_id`.
 
-- [ ] **Step 4: GREEN extend runtime feed config**
+- [x] **Step 4: GREEN extend runtime feed config**
 
 Change `PositionSizerRuntimeFeedConfig` to:
 
@@ -186,7 +187,7 @@ Update every construction site in the same slice:
 - Modify: `src/bolt_v3_sizing_state.rs`
 - Test: `tests/bolt_v3_submit_admission.rs`
 
-- [ ] **Step 1: RED direct state update cannot inject ledger evidence**
+- [x] **Step 1: RED direct state update cannot inject ledger evidence**
 
 Add `direct_state_update_discards_hostile_reservation_evidence`.
 
@@ -217,7 +218,7 @@ cargo test --locked --test bolt_v3_submit_admission direct_state_update_discards
 
 Expected before implementation: FAIL because `update_position_sizing_state(NtDerivedSizingState)` currently trusts the caller-supplied reservation snapshot and can mark the stored state attributed.
 
-- [ ] **Step 2: RED component update cannot clobber ledger evidence**
+- [x] **Step 2: RED component update cannot clobber ledger evidence**
 
 Add:
 
@@ -241,7 +242,7 @@ cargo test --locked --test bolt_v3_submit_admission nt_component_update_preserve
 
 Expected before implementation: FAIL because component update APIs and state accessors do not exist.
 
-- [ ] **Step 3: GREEN add component API and sanitize legacy state update**
+- [x] **Step 3: GREEN add component API and sanitize legacy state update**
 
 Add:
 
@@ -293,7 +294,7 @@ rg -n "state\\.reservation_snapshot|reservation_snapshot: state|reservation_snap
 
 Expected after implementation: no matches showing direct caller-supplied reservation evidence copied into stored sizing state.
 
-- [ ] **Step 4: RED rebuild flips reservation snapshot attribution**
+- [x] **Step 4: RED rebuild flips reservation snapshot attribution**
 
 Add a test proving `rebuild_position_sizing_open_order_reservations(Vec::new(), now)` refreshes the stored state so `reservation_snapshot.all_live_reservations_attributed == true` after accepted rebuild.
 
@@ -305,11 +306,11 @@ cargo test --locked --test bolt_v3_submit_admission rebuild_refreshes_submit_own
 
 Expected before implementation: FAIL because rebuild does not refresh the stored state snapshot.
 
-- [ ] **Step 5: GREEN refresh state after rebuild and lifecycle mutations**
+- [x] **Step 5: GREEN refresh state after rebuild and lifecycle mutations**
 
 After successful rebuild, terminal release, rollback, or accepted revalue paths that already exist in this module, update only the submit-owned reservation snapshot fields on the stored state. Do not let feed-provided state supply reservation evidence. Track `latest_reservation_mutation_observed_at_ns: Option<u64>` inside the submit-admission position-sizer state; set it only from accepted rebuild/lifecycle mutations, never from feed components.
 
-- [ ] **Step 6: GREEN migrate tests away from arbitrary state injection**
+- [x] **Step 6: GREEN migrate tests away from arbitrary state injection**
 
 Replace existing test setup calls to `admission.update_position_sizing_state(fresh_sizing_state(...))` with a helper that builds `BoltV3SubmitPositionSizingNtComponents` and calls `update_position_sizing_nt_components(...)`. The only remaining direct-state test should be `direct_state_update_discards_hostile_reservation_evidence`.
 
@@ -320,7 +321,7 @@ Replace existing test setup calls to `admission.update_position_sizing_state(fre
 - Modify: `src/bolt_v3_position_sizer_runtime_feed.rs`
 - Test: `tests/bolt_v3_position_sizer_runtime_feed.rs`
 
-- [ ] **Step 1: RED compile against the exact NT subscription surface**
+- [x] **Step 1: RED compile against the exact NT subscription surface**
 
 Add `runtime_feed_uses_verified_nt_msgbus_symbols`.
 
@@ -367,7 +368,7 @@ cargo test --locked --test bolt_v3_position_sizer_runtime_feed runtime_feed_uses
 
 Expected before implementation: FAIL to compile or fail behaviorally because the runtime feed imports and subscribes only `OrderEventAny`.
 
-- [ ] **Step 2: RED subscription handles account and portfolio topics**
+- [x] **Step 2: RED subscription handles account and portfolio topics**
 
 Add `subscribed_account_and_portfolio_events_publish_sizing_components`.
 
@@ -386,7 +387,7 @@ cargo test --locked --test bolt_v3_position_sizer_runtime_feed subscribed_accoun
 
 Expected before implementation: FAIL because the feed only subscribes to order events.
 
-- [ ] **Step 3: GREEN wire explicit subscriptions**
+- [x] **Step 3: GREEN wire explicit subscriptions**
 
 Make `account_states_pattern()` public within the crate in `src/nt_runtime_capture.rs`:
 
@@ -420,7 +421,7 @@ unsubscribe_account_state(account_states_pattern(), &account_states);
 unsubscribe_portfolio_snapshot(portfolio_snapshots_pattern(), &portfolio_snapshots);
 ```
 
-- [ ] **Step 4: RED subscription drop unsubscribes every handler**
+- [x] **Step 4: RED subscription drop unsubscribes every handler**
 
 Add `position_sizer_runtime_subscription_drop_unsubscribes_all_handlers`.
 
@@ -438,7 +439,7 @@ cargo test --locked --test bolt_v3_position_sizer_runtime_feed position_sizer_ru
 
 Expected before implementation: FAIL because only order-event subscription drop exists today.
 
-- [ ] **Step 5: RED partial account/portfolio evidence does not publish**
+- [x] **Step 5: RED partial account/portfolio evidence does not publish**
 
 Add `feed_waits_for_matching_account_and_portfolio_before_publish`.
 
@@ -455,7 +456,7 @@ Run:
 cargo test --locked --test bolt_v3_position_sizer_runtime_feed feed_waits_for_matching_account_and_portfolio_before_publish -- --nocapture
 ```
 
-- [ ] **Step 6: GREEN field-by-field account/portfolio mapping**
+- [x] **Step 6: GREEN field-by-field account/portfolio mapping**
 
 Add a feed-owned builder with only non-ledger components:
 
@@ -487,7 +488,7 @@ Map NT account and portfolio events exactly:
 
 When both matching account and portfolio evidence are present, call `update_position_sizing_nt_components(...)`. Set `pusd_allowance = matching_account_balance.free.as_decimal()` only as this slice's explicit approximation from NT-reported free collateral. This is not proof of separate on-chain allowance or venue spendability; final production readiness still needs adapter/venue allowance evidence or a fail-closed zero allowance until proven. Conditional token allowance remains zero unless later proven by NT.
 
-- [ ] **Step 7: RED account currency mismatch remains closed**
+- [x] **Step 7: RED account currency mismatch remains closed**
 
 Add `feed_ignores_account_state_for_other_collateral_currency`.
 
@@ -516,7 +517,7 @@ Task boundary:
 - direct submit-admission rebuild semantics are tested in `tests/bolt_v3_submit_admission.rs`;
 - the live-node NT cache reader is added only after the direct snapshot API is pinned, then tested through the live-node entrypoint.
 
-- [ ] **Step 1: RED direct rebuild stays closed without component state**
+- [x] **Step 1: RED direct rebuild stays closed without component state**
 
 Add `position_sizer_direct_rebuild_keeps_gate_closed_without_components`.
 
@@ -526,7 +527,7 @@ Behavior:
 - Assert rebuild rejected with `MissingEvidence`.
 - Assert `position_sizer_reconciled() == Some(false)`.
 
-- [ ] **Step 2: GREEN explicit rebuild entrypoint**
+- [x] **Step 2: GREEN explicit rebuild entrypoint**
 
 Add:
 
@@ -536,7 +537,7 @@ pub fn rebuild_position_sizer_from_nt_cache(&self, now_ns: u64) -> BoltV3SubmitP
 
 The method reads NT cache only through `self.node.kernel().cache()` and calls `rebuild_position_sizing_open_order_snapshot(...)` after the direct API is added below. It must not open admission if component state is absent.
 
-- [ ] **Step 3: RED unattributed cache open order fails closed**
+- [x] **Step 3: RED unattributed cache open order fails closed**
 
 Add `unattributed_cache_open_order_keeps_position_sizer_unreconciled`.
 
@@ -567,7 +568,7 @@ Behavior:
 
 Expected before implementation: FAIL because the snapshot API does not exist yet; it must prove rebuild preserves the client-order index used by terminal release.
 
-- [ ] **Step 4: GREEN add explicit open-order snapshot API**
+- [x] **Step 4: GREEN add explicit open-order snapshot API**
 
 Add this submit-admission input type. Use the existing `BoltV3SubmitPositionSizingOpenOrderReservation` type inside the snapshot so rebuilt reservations preserve `client_order_id` and `submit_reservation_id`.
 
@@ -596,7 +597,7 @@ Rules:
 - otherwise rebuild from `snapshot.reservations`, converting each item into the internal reservation request while preserving `client_order_id` in `client_order_reservations`;
 - keep existing `rebuild_position_sizing_open_order_reservations(Vec<BoltV3SubmitPositionSizingOpenOrderReservation>, now_ns)` as a delegating helper with `all_open_orders_attributed = true` and `evidence_label = "bolt_recovered_open_order_reservations"`.
 
-- [ ] **Step 5: RED cache seed populates open-order lifecycle before rebuild**
+- [x] **Step 5: RED cache seed populates open-order lifecycle before rebuild**
 
 Add `position_sizer_cache_seed_updates_open_order_lifecycle_and_rebuilds_empty`.
 
@@ -606,7 +607,7 @@ Behavior:
 - Call the rebuild entrypoint.
 - Assert accepted rebuild, reconciled gate, and state evidence showing open_order_count `0` with source `nt_open_order_cache`.
 
-- [ ] **Step 6: GREEN seed feed from cache**
+- [x] **Step 6: GREEN seed feed from cache**
 
 Before calling submit-admission rebuild, seed the feed builder from NT cache:
 - current open-order count for the configured account/venue;
@@ -614,7 +615,7 @@ Before calling submit-admission rebuild, seed the feed builder from NT cache:
 - otherwise YES/NO positions remain zero;
 - if any open order cannot be attributed to a known client order id and configured product metadata, call rebuild with an unsupported reservation marker that fails closed.
 
-- [ ] **Step 7: RED cache seed and live event order is idempotent**
+- [x] **Step 7: RED cache seed and live event order is idempotent**
 
 Add `cache_seed_and_concurrent_order_event_do_not_double_count`.
 
@@ -634,7 +635,7 @@ cargo test --locked --test bolt_v3_position_sizer_runtime_feed cache_seed_and_co
 
 Expected before implementation: FAIL because cache seed and live event ordering is not represented.
 
-- [ ] **Step 8: GREEN deterministic cache/live ordering**
+- [x] **Step 8: GREEN deterministic cache/live ordering**
 
 Use set semantics:
 
@@ -667,7 +668,7 @@ Implement the above with normal `BTreeSet` operations; do not rely on event arri
 - Modify: `src/bolt_v3_position_sizer_runtime_feed.rs`
 - Test: `tests/bolt_v3_position_sizer_runtime_feed.rs`
 
-- [ ] **Step 1: RED account-bound live order events update open count**
+- [x] **Step 1: RED account-bound live order events update open count**
 
 Add `account_bound_live_order_events_update_open_order_count`.
 
@@ -677,11 +678,11 @@ Behavior:
 - Send terminal event for the same client order id.
 - Assert open count returns to `0` and existing terminal reservation release behavior still works.
 
-- [ ] **Step 2: GREEN order lifecycle map**
+- [x] **Step 2: GREEN order lifecycle map**
 
 Track account-bound live client order ids in the feed. Terminal events remove matching entries after existing reservation-release logic runs. Account-less non-denied events must not mutate the map or published components.
 
-- [ ] **Step 3: REGRESSION partial fill is explicitly ignored without liability metadata**
+- [x] **Step 3: REGRESSION partial fill is explicitly ignored without liability metadata**
 
 Add `partial_fill_without_liability_metadata_does_not_revalue_reservation`.
 
@@ -698,7 +699,7 @@ cargo test --locked --test bolt_v3_position_sizer_runtime_feed partial_fill_with
 
 Expected before implementation: this may already pass because current code ignores partial fills. Keep it as a regression lock, not a RED gate.
 
-- [ ] **Step 4: GREEN keep residual revalue out of scope**
+- [x] **Step 4: GREEN keep residual revalue out of scope**
 
 Do not infer residual liability from fill deltas. Add a code comment at the early return that says residual revalue requires cached order details or submit-time liability metadata and is intentionally fail-closed in this slice.
 
@@ -708,13 +709,13 @@ Do not infer residual liability from fill deltas. Add a code comment at the earl
 - Modify: `specs/506-nt-position-sizer-submit/spec.md`
 - Modify: `specs/506-nt-position-sizer-submit/tasks.md`
 
-- [ ] **Step 1: Update docs without production overclaim**
+- [x] **Step 1: Update docs without production overclaim**
 
 Docs must say this slice adds live NT component feed plus startup/reconnect rebuild, but does not complete production-grade sizing.
 
-- [ ] **Step 2: Focused local verification**
+- [x] **Step 2: Focused local verification**
 
-Run only focused tests before the single push:
+Focused tests run before the single push:
 
 ```bash
 cargo test --locked --test config_parsing capital_pool_prediction_market_binary_metadata_parses -- --nocapture
@@ -726,6 +727,8 @@ cargo clippy --locked --lib -- -D warnings
 cargo fmt --check
 just source-fence
 ```
+
+All commands above passed locally. `cargo clippy --locked --lib -- -D warnings` initially refused under local disk-pressure preflight; after deleting the stale main-checkout `target/` build cache, it passed. `just source-fence` initially found unclassified new runtime literals from this slice; after adding audit classifications for the new position-sizer evidence labels and schema discriminator, `python3 scripts/test_verify_bolt_v3_runtime_literals.py` and full `just source-fence` passed.
 
 - [ ] **Step 3: Push once and use CI as source of truth**
 

@@ -5754,6 +5754,37 @@ fn bolt_v3_capital_pool_config_uses_explicit_account_product_and_sizing_policy()
 }
 
 #[test]
+fn capital_pool_prediction_market_binary_metadata_parses() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
+    let pool = loaded
+        .root
+        .risk
+        .capital_pools
+        .as_ref()
+        .expect("fixture should configure capital pools")
+        .iter()
+        .find(|pool| pool.pool_id == "polymarket-prediction-live")
+        .expect("fixture should include prediction-market pool");
+    let product = pool
+        .prediction_market_binary
+        .as_ref()
+        .expect("prediction-market pool should configure binary product metadata");
+
+    assert_eq!(
+        product.yes_instrument_id.to_string(),
+        "condition-fixture-yes.POLYMARKET"
+    );
+    assert_eq!(
+        product.no_instrument_id.to_string(),
+        "condition-fixture-no.POLYMARKET"
+    );
+    assert_eq!(product.collateral_coupled_group_id, "condition-fixture");
+}
+
+#[test]
 fn rejects_invalid_capital_pool_sizing_runtime_values() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
@@ -5849,6 +5880,56 @@ max_slippage_liability = "0.20"
         )),
         "expected single-enforced-pool validation message, got: {messages:#?}"
     );
+}
+
+#[test]
+fn rejects_invalid_prediction_market_binary_metadata() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    const PRODUCT_BLOCK: &str = r#"[risk.capital_pools.prediction_market_binary]
+yes_instrument_id = "condition-fixture-yes.POLYMARKET"
+no_instrument_id = "condition-fixture-no.POLYMARKET"
+collateral_coupled_group_id = "condition-fixture"
+
+"#;
+
+    let missing_product = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    )
+    .replace(PRODUCT_BLOCK, "");
+    let root: BoltV3RootConfig =
+        toml::from_str(&missing_product).expect("missing product metadata fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| message.contains(
+            "risk.capital_pools[polymarket-prediction-live].prediction_market_binary is required when prediction-market submit admission is enforced"
+        )),
+        "expected missing product metadata validation message, got: {messages:#?}"
+    );
+
+    let invalid_product = replace_in_fixture_root(
+        "no_instrument_id = \"condition-fixture-no.POLYMARKET\"",
+        "no_instrument_id = \"condition-fixture-yes.POLYMARKET\"",
+    )
+    .replace(
+        "collateral_coupled_group_id = \"condition-fixture\"",
+        "collateral_coupled_group_id = \"\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&invalid_product).expect("invalid product metadata fixture should parse");
+    let messages = validate_root_only(&root);
+
+    for needle in [
+        "risk.capital_pools[polymarket-prediction-live].prediction_market_binary.yes_instrument_id and no_instrument_id must differ",
+        "risk.capital_pools[polymarket-prediction-live].prediction_market_binary.collateral_coupled_group_id must be a non-empty string",
+    ] {
+        assert!(
+            messages.iter().any(|message| message.contains(needle)),
+            "expected `{needle}` validation message, got: {messages:#?}"
+        );
+    }
 }
 
 #[test]

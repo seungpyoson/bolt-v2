@@ -24,8 +24,8 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
     BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
     BoltV3SubmitLifecyclePolicy, BoltV3SubmitPositionSizerConfig,
-    BoltV3SubmitPositionSizingLifecycleUpdate,
-    BoltV3SubmitPositionSizingOpenOrderReservation,
+    BoltV3SubmitPositionSizingLifecycleUpdate, BoltV3SubmitPositionSizingNtComponents,
+    BoltV3SubmitPositionSizingOpenOrderReservation, BoltV3SubmitPositionSizingOpenOrderSnapshot,
     BoltV3SubmitPositionSizingRebuildDecision, PredictionMarketOutcomeSide,
     conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
     market_style_admission_ceiling_notional, rounded_order_admission_notional,
@@ -859,6 +859,38 @@ fn live_node_build_carries_single_enabled_position_sizer_into_submit_admission()
 }
 
 #[test]
+fn live_node_position_sizer_cache_rebuild_stays_closed_without_components() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded
+        .root
+        .risk
+        .capital_pools
+        .as_mut()
+        .expect("fixture should configure capital pools")[0]
+        .enforce_submit_admission = true;
+    let temp = support::TempCaseDir::new("bolt-v3-position-sizer-cache-rebuild-no-components");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+        .expect("fixture v3 LiveNode should build");
+
+    let rebuild = runtime.rebuild_position_sizer_from_nt_cache(1_000);
+
+    assert_eq!(
+        rebuild,
+        BoltV3SubmitPositionSizingRebuildDecision {
+            accepted: false,
+            reason: Some(ReservationRejectionReason::MissingEvidence),
+            attempted_reservation_count: 0,
+            rebuilt_reservation_count: 0,
+            live_reserved_liability: Decimal::ZERO,
+        }
+    );
+    assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+}
+
+#[test]
 fn strategy_build_context_carries_shared_submit_admission_handle() {
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
@@ -903,7 +935,7 @@ fn configured_submit_sizer_rejects_entry_without_nt_state_before_nt_submit() {
 fn configured_submit_sizer_rejects_before_startup_rebuild_even_with_fresh_nt_state() {
     let admission = position_sized_admission();
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
 
     let error = admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
@@ -922,10 +954,65 @@ fn configured_submit_sizer_rejects_before_startup_rebuild_even_with_fresh_nt_sta
 }
 
 #[test]
+fn direct_state_update_discards_hostile_reservation_evidence() {
+    let admission = position_sized_admission();
+    let mut hostile_state = fresh_sizing_state(1_000);
+    hostile_state.reservation_snapshot.source = "hostile_feed".to_string();
+    hostile_state.reservation_snapshot.observed_at_ns = 9_999;
+    hostile_state
+        .reservation_snapshot
+        .all_live_reservations_attributed = true;
+
+    admission.update_position_sizing_state(hostile_state);
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("component state should be retained");
+    assert_eq!(state.reservation_snapshot.source, "bolt_reservation_ledger");
+    assert_eq!(state.reservation_snapshot.observed_at_ns, 1_000);
+    assert!(!state.reservation_snapshot.all_live_reservations_attributed);
+    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+}
+
+#[test]
+fn nt_component_update_preserves_submit_owned_reservation_snapshot() {
+    let admission = position_sized_admission();
+
+    admission.update_position_sizing_nt_components(fresh_components(1_000));
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("component state should be retained");
+    assert_eq!(state.reservation_snapshot.source, "bolt_reservation_ledger");
+    assert_eq!(state.reservation_snapshot.observed_at_ns, 1_000);
+    assert!(!state.reservation_snapshot.all_live_reservations_attributed);
+    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+}
+
+#[test]
+fn position_sizer_direct_rebuild_keeps_gate_closed_without_components() {
+    let admission = position_sized_admission();
+
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+
+    assert_eq!(
+        rebuild,
+        BoltV3SubmitPositionSizingRebuildDecision {
+            accepted: false,
+            reason: Some(ReservationRejectionReason::MissingEvidence),
+            attempted_reservation_count: 0,
+            rebuilt_reservation_count: 0,
+            live_reserved_liability: Decimal::ZERO,
+        }
+    );
+    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+}
+
+#[test]
 fn configured_submit_sizer_empty_startup_rebuild_opens_admission() {
     let admission = position_sized_admission();
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
 
     let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
 
@@ -953,10 +1040,97 @@ fn configured_submit_sizer_empty_startup_rebuild_opens_admission() {
 }
 
 #[test]
+fn rebuild_refreshes_submit_owned_reservation_snapshot() {
+    let admission = position_sized_admission();
+    admission.update_position_sizing_nt_components(fresh_components(900));
+
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+
+    assert!(rebuild.accepted);
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("component state should still be available");
+    assert_eq!(state.reservation_snapshot.source, "bolt_reservation_ledger");
+    assert_eq!(state.reservation_snapshot.observed_at_ns, 1_000);
+    assert!(state.reservation_snapshot.all_live_reservations_attributed);
+}
+
+#[test]
+fn unattributed_cache_open_order_keeps_position_sizer_unreconciled() {
+    let admission = position_sized_admission();
+    let mut components = fresh_components(900);
+    components.order_lifecycle.open_order_count = 1;
+    components.order_lifecycle.all_open_orders_attributed = false;
+    admission.update_position_sizing_nt_components(components);
+
+    let rebuild = admission.rebuild_position_sizing_open_order_snapshot(
+        BoltV3SubmitPositionSizingOpenOrderSnapshot {
+            observed_at_ns: 1_000,
+            evidence_label: "nt_open_order_cache".to_string(),
+            all_open_orders_attributed: false,
+            reservations: Vec::new(),
+        },
+        1_000,
+    );
+
+    assert_eq!(
+        rebuild.reason,
+        Some(ReservationRejectionReason::MissingEvidence)
+    );
+    assert!(!rebuild.accepted);
+    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("component state should remain available for diagnostics");
+    assert_eq!(state.reservation_snapshot.source, "nt_open_order_cache");
+    assert_eq!(state.reservation_snapshot.observed_at_ns, 1_000);
+    assert!(!state.reservation_snapshot.all_live_reservations_attributed);
+}
+
+#[test]
+fn rebuild_snapshot_preserves_client_order_id_for_terminal_release() {
+    let admission = position_sized_admission();
+    admission.update_position_sizing_nt_components(fresh_components(900));
+
+    let rebuild = admission.rebuild_position_sizing_open_order_snapshot(
+        BoltV3SubmitPositionSizingOpenOrderSnapshot {
+            observed_at_ns: 1_000,
+            evidence_label: "nt_open_order_cache".to_string(),
+            all_open_orders_attributed: true,
+            reservations: vec![open_order_reservation(
+                "client-1",
+                "reservation-1",
+                Decimal::new(43, 1),
+            )],
+        },
+        1_000,
+    );
+
+    assert!(rebuild.accepted);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+
+    let release = admission.apply_position_sizing_terminal_order_event(
+        "client-1".to_string(),
+        1_100,
+        "nt_order_terminal".to_string(),
+    );
+
+    assert!(release.accepted);
+    assert!(!release.unknown_reservation);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+}
+
+#[test]
 fn configured_submit_sizer_rebuilds_open_order_reservation_for_terminal_release() {
     let admission = position_sized_admission();
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
 
     let rebuild = admission.rebuild_position_sizing_open_order_reservations(
         vec![open_order_reservation(
@@ -1001,7 +1175,7 @@ fn configured_submit_sizer_rebuilds_open_order_reservation_for_terminal_release(
 fn configured_submit_sizer_failed_rebuild_clears_stale_client_order_index_and_closes_gate() {
     let admission = position_sized_admission();
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
     rebuild_empty_position_sizer(&admission);
     admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
@@ -1055,7 +1229,7 @@ fn configured_submit_sizer_failed_rebuild_clears_stale_client_order_index_and_cl
 fn configured_submit_sizer_reserves_entry_from_compiled_order_values() {
     let admission = position_sized_admission();
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
     rebuild_empty_position_sizer(&admission);
 
     let permit = admission
@@ -1078,7 +1252,7 @@ fn configured_submit_sizer_reserves_entry_from_compiled_order_values() {
 fn configured_submit_sizer_refreshes_bootstrap_pool_snapshot_from_nt_state() {
     let admission = position_sized_admission_with_pool_observed_at(0);
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
     rebuild_empty_position_sizer(&admission);
 
     admission
@@ -1090,7 +1264,7 @@ fn configured_submit_sizer_refreshes_bootstrap_pool_snapshot_from_nt_state() {
 fn configured_submit_sizer_reserves_no_outcome_buy_when_instrument_matches_nt_state() {
     let admission = position_sized_admission();
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
     rebuild_empty_position_sizer(&admission);
 
     let mut request = sized_submit_request("client-order-1");
@@ -1120,7 +1294,7 @@ fn configured_submit_sizer_uses_no_inventory_for_no_outcome_sell() {
     let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut state.product_state;
     product.yes_position = Decimal::ZERO;
     product.no_position = Decimal::new(10, 0);
-    admission.update_position_sizing_state(state);
+    admission.update_position_sizing_nt_components(components_from_state(state));
     rebuild_empty_position_sizer(&admission);
 
     let mut request = sized_submit_request("client-order-1");
@@ -1151,7 +1325,8 @@ fn configured_submit_sizer_allows_no_outcome_risk_reducing_exit_without_reservat
     let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut state.product_state;
     product.yes_position = Decimal::ZERO;
     product.no_position = Decimal::new(10, 0);
-    admission.update_position_sizing_state(state);
+    admission.update_position_sizing_nt_components(components_from_state(state));
+    rebuild_empty_position_sizer(&admission);
 
     let mut request = sized_submit_request("client-order-1");
     request.intent_kind = BoltV3SubmitIntentKind::RiskReducingExit;
@@ -1178,7 +1353,7 @@ fn configured_submit_sizer_allows_no_outcome_risk_reducing_exit_without_reservat
 fn configured_submit_sizer_keeps_committed_reservation_until_terminal_lifecycle_release() {
     let admission = position_sized_admission();
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
     rebuild_empty_position_sizer(&admission);
 
     admission
@@ -1214,7 +1389,7 @@ fn configured_submit_sizer_keeps_committed_reservation_until_terminal_lifecycle_
 fn configured_submit_sizer_rejects_duplicate_client_order_id_without_mutating_ledger() {
     let admission = position_sized_admission();
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
     rebuild_empty_position_sizer(&admission);
 
     admission
@@ -1263,7 +1438,8 @@ fn configured_submit_sizer_unknown_lifecycle_client_order_id_returns_noop_outcom
 fn configured_submit_sizer_rejects_outcome_instrument_mismatch() {
     let admission = position_sized_admission();
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
 
     let mut mismatch = sized_submit_request("client-order-2");
     mismatch.instrument_id = "other.POLYMARKET".to_string();
@@ -1284,7 +1460,7 @@ fn configured_submit_sizer_rejects_collateral_mismatch_from_nt_state() {
     arm_default(&admission);
     let mut state = fresh_sizing_state(900);
     state.portfolio.collateral_currency = "USDC".to_string();
-    admission.update_position_sizing_state(state);
+    admission.update_position_sizing_nt_components(components_from_state(state));
 
     let error = admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
@@ -1304,7 +1480,7 @@ fn configured_submit_sizer_rejects_account_mismatch_from_nt_state() {
     arm_default(&admission);
     let mut state = fresh_sizing_state(900);
     state.portfolio.account_id = "POLYMARKET-002".to_string();
-    admission.update_position_sizing_state(state);
+    admission.update_position_sizing_nt_components(components_from_state(state));
 
     let error = admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
@@ -1594,6 +1770,21 @@ fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
             all_live_reservations_attributed: true,
         },
         loss_snapshot: None,
+    }
+}
+
+fn fresh_components(observed_at_ns: u64) -> BoltV3SubmitPositionSizingNtComponents {
+    components_from_state(fresh_sizing_state(observed_at_ns))
+}
+
+fn components_from_state(state: NtDerivedSizingState) -> BoltV3SubmitPositionSizingNtComponents {
+    BoltV3SubmitPositionSizingNtComponents {
+        source: state.source,
+        observed_at_ns: state.observed_at_ns,
+        portfolio: state.portfolio,
+        order_lifecycle: state.order_lifecycle,
+        product_state: state.product_state,
+        loss_snapshot: state.loss_snapshot,
     }
 }
 

@@ -70,6 +70,7 @@ use nautilus_model::{
     enums::{BarIntervalType, BookType},
     identifiers::{ActorId, ClientId, InstrumentId, StrategyId, Venue},
     instruments::Instrument,
+    orders::Order,
 };
 use rust_decimal::Decimal;
 use ustr::Ustr;
@@ -100,7 +101,10 @@ use crate::{
         LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
         LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
     },
-    bolt_v3_position_sizer::{FeeSlippagePolicy, ProductKind, SizingMode, SizingPolicy},
+    bolt_v3_position_sizer::{
+        FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
+        SizingMode, SizingPolicy,
+    },
     bolt_v3_position_sizer_runtime_feed::{
         PositionSizerRuntimeFeed, PositionSizerRuntimeFeedConfig,
         PositionSizerRuntimeFeedSubscription, subscribe_position_sizer_runtime_feed,
@@ -117,6 +121,7 @@ use crate::{
     },
     bolt_v3_submit_admission::{
         BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState, BoltV3SubmitPositionSizerConfig,
+        BoltV3SubmitPositionSizingOpenOrderSnapshot, BoltV3SubmitPositionSizingRebuildDecision,
     },
     bolt_v3_tiny_canary_evidence::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
@@ -1699,6 +1704,80 @@ impl BoltV3LiveNodeRuntime {
     pub fn position_sizer_runtime_feed_configured(&self) -> bool {
         self.position_sizer_runtime_feed.is_some()
             && self.position_sizer_runtime_feed_subscription.is_some()
+    }
+
+    pub fn position_sizer_reconciled(&self) -> Option<bool> {
+        self.submit_admission.position_sizer_reconciled()
+    }
+
+    pub fn rebuild_position_sizer_from_nt_cache(
+        &self,
+        now_ns: u64,
+    ) -> BoltV3SubmitPositionSizingRebuildDecision {
+        let (account_id, binary_instrument_ids) = match self.position_sizer_runtime_feed.as_ref() {
+            Some(feed) => {
+                let feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                (
+                    Some(feed.configured_account_id()),
+                    feed.configured_binary_instrument_ids(),
+                )
+            }
+            None => (None, None),
+        };
+        let cache = self.node.kernel().cache();
+        let cache = cache.borrow();
+        let open_client_order_ids = match account_id.as_ref() {
+            Some(account_id) => cache
+                .orders_open(None, None, None, Some(account_id), None)
+                .into_iter()
+                .map(|order| order.client_order_id().to_string())
+                .collect::<Vec<_>>(),
+            None => cache
+                .orders_open(None, None, None, None, None)
+                .into_iter()
+                .map(|order| order.client_order_id().to_string())
+                .collect::<Vec<_>>(),
+        };
+        let (yes_position, no_position) =
+            match (account_id.as_ref(), binary_instrument_ids.as_ref()) {
+                (Some(account_id), Some((yes_instrument_id, no_instrument_id))) => {
+                    let mut yes_position = Decimal::ZERO;
+                    let mut no_position = Decimal::ZERO;
+                    for position in cache.positions_open(None, None, None, Some(account_id), None) {
+                        let instrument_id = position.instrument_id.to_string();
+                        if instrument_id == *yes_instrument_id {
+                            yes_position += position.signed_decimal_qty();
+                        } else if instrument_id == *no_instrument_id {
+                            no_position += position.signed_decimal_qty();
+                        }
+                    }
+                    (yes_position, no_position)
+                }
+                _ => (Decimal::ZERO, Decimal::ZERO),
+            };
+        drop(cache);
+
+        if let Some(feed) = self.position_sizer_runtime_feed.as_ref() {
+            feed.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .seed_cache_snapshot(
+                    open_client_order_ids.clone(),
+                    yes_position,
+                    no_position,
+                    now_ns,
+                );
+        }
+
+        self.submit_admission
+            .rebuild_position_sizing_open_order_snapshot(
+                BoltV3SubmitPositionSizingOpenOrderSnapshot {
+                    observed_at_ns: now_ns,
+                    evidence_label: "nt_open_order_cache".to_string(),
+                    all_open_orders_attributed: open_client_order_ids.is_empty(),
+                    reservations: Vec::new(),
+                },
+                now_ns,
+            )
     }
 }
 
@@ -3300,7 +3379,9 @@ fn build_live_node_with_clients(
         };
     let loss_policy = loss_governor_policy_from_loaded(loaded)?;
     let position_sizer = position_sizer_config_from_loaded(loaded)?;
-    let position_sizer_runtime_feed_config = position_sizer_runtime_feed_config_from_loaded(loaded);
+    let startup_observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
+    let position_sizer_runtime_feed_config =
+        position_sizer_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
     let submit_admission = Arc::new(match (loss_policy, position_sizer) {
         (Some(policy), Some(position_sizer)) => {
             BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor_and_position_sizer(
@@ -3414,11 +3495,29 @@ fn loss_governor_runtime_feed_config_from_loaded(
 
 fn position_sizer_runtime_feed_config_from_loaded(
     loaded: &LoadedBoltV3Config,
+    startup_observed_at_ns: u64,
 ) -> Option<PositionSizerRuntimeFeedConfig> {
     let pools = loaded.root.risk.capital_pools.as_ref()?;
     let pool = pools.iter().find(|pool| pool.enforce_submit_admission)?;
+    let product = pool.prediction_market_binary.as_ref()?;
     Some(PositionSizerRuntimeFeedConfig {
+        venue_id: pool.venue_id.clone(),
         account_id: pool.account_id,
+        collateral_currency: pool.collateral_currency.clone(),
+        product_state: ProductSizingSnapshot::PredictionMarketBinary(
+            PredictionMarketSizingSnapshot {
+                source: "bolt_configured_binary_product".to_string(),
+                observed_at_ns: startup_observed_at_ns,
+                yes_instrument_id: product.yes_instrument_id.to_string(),
+                no_instrument_id: product.no_instrument_id.to_string(),
+                yes_position: Decimal::ZERO,
+                no_position: Decimal::ZERO,
+                pusd_allowance: Decimal::ZERO,
+                conditional_token_allowance: Decimal::ZERO,
+                collateral_coupled_group_id: product.collateral_coupled_group_id.clone(),
+            },
+        ),
+        startup_observed_at_ns,
     })
 }
 
@@ -4798,6 +4897,50 @@ mod tests {
         );
         assert_eq!(runtime_loaded.root.clients.len(), 1);
         assert!(runtime_loaded.root.clients.contains_key("polymarket_main"));
+    }
+
+    #[test]
+    fn position_sizer_runtime_feed_config_carries_configured_binary_product() {
+        use crate::bolt_v3_position_sizer::ProductSizingSnapshot;
+        use rust_decimal::Decimal;
+
+        let mut loaded = fixture_loaded_config();
+        let account_id = {
+            let pool = loaded
+                .root
+                .risk
+                .capital_pools
+                .as_mut()
+                .expect("fixture should configure capital pools")
+                .first_mut()
+                .expect("fixture should include capital pool");
+            pool.enforce_submit_admission = true;
+            pool.account_id
+        };
+
+        let config = position_sizer_runtime_feed_config_from_loaded(&loaded, 1_234)
+            .expect("enabled position sizer should configure runtime feed");
+
+        assert_eq!(config.venue_id, "POLYMARKET");
+        assert_eq!(config.account_id, account_id);
+        assert_eq!(config.collateral_currency, "PUSD");
+        assert_eq!(config.startup_observed_at_ns, 1_234);
+        match config.product_state {
+            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+                assert_eq!(snapshot.source, "bolt_configured_binary_product");
+                assert_eq!(snapshot.observed_at_ns, 1_234);
+                assert_eq!(
+                    snapshot.yes_instrument_id,
+                    "condition-fixture-yes.POLYMARKET"
+                );
+                assert_eq!(snapshot.no_instrument_id, "condition-fixture-no.POLYMARKET");
+                assert_eq!(snapshot.yes_position, Decimal::ZERO);
+                assert_eq!(snapshot.no_position, Decimal::ZERO);
+                assert_eq!(snapshot.pusd_allowance, Decimal::ZERO);
+                assert_eq!(snapshot.conditional_token_allowance, Decimal::ZERO);
+                assert_eq!(snapshot.collateral_coupled_group_id, "condition-fixture");
+            }
+        }
     }
 
     #[test]

@@ -194,7 +194,16 @@ pub struct CapitalPoolBlock {
     pub enforce_submit_admission: bool,
     pub max_pool_liability: String,
     pub max_snapshot_age_ns: u64,
+    pub prediction_market_binary: Option<PredictionMarketBinaryProductBlock>,
     pub sizing_policy: CapitalPoolSizingPolicyBlock,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PredictionMarketBinaryProductBlock {
+    pub yes_instrument_id: InstrumentId,
+    pub no_instrument_id: InstrumentId,
+    pub collateral_coupled_group_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

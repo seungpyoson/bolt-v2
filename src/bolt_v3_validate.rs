@@ -1081,6 +1081,7 @@ fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
                 "{label}.product_kind must be `prediction_market_binary`"
             ));
         }
+        validate_prediction_market_binary_product_metadata(pool, &label, &mut errors);
         validate_positive_decimal(
             &format!("{label}.max_pool_liability"),
             &pool.max_pool_liability,
@@ -1141,6 +1142,37 @@ fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
     }
 
     errors
+}
+
+fn validate_prediction_market_binary_product_metadata(
+    pool: &CapitalPoolBlock,
+    label: &str,
+    errors: &mut Vec<String>,
+) {
+    let Some(product) = pool.prediction_market_binary.as_ref() else {
+        if pool.enforce_submit_admission && pool.product_kind == "prediction_market_binary" {
+            errors.push(format!(
+                "{label}.prediction_market_binary is required when prediction-market submit admission is enforced"
+            ));
+        }
+        return;
+    };
+
+    if pool.product_kind != "prediction_market_binary" {
+        errors.push(format!(
+            "{label}.prediction_market_binary is only supported for prediction_market_binary pools"
+        ));
+    }
+    if product.yes_instrument_id == product.no_instrument_id {
+        errors.push(format!(
+            "{label}.prediction_market_binary.yes_instrument_id and no_instrument_id must differ"
+        ));
+    }
+    if product.collateral_coupled_group_id.trim().is_empty() {
+        errors.push(format!(
+            "{label}.prediction_market_binary.collateral_coupled_group_id must be a non-empty string"
+        ));
+    }
 }
 
 fn validate_positive_decimal(label: &str, value: &str, errors: &mut Vec<String>) {

@@ -13,27 +13,36 @@ Submit admission may enable exactly one capital pool with `enforce_submit_admiss
 When enabled, submit admission must:
 
 - reject before NT submit if no fresh NT-derived sizing state exists;
+- compose sizing state only inside submit admission from NT-derived components plus the Bolt-owned reservation ledger;
 - start with its reservation ledger unreconciled and reject entry reservations until startup/open-order reconciliation succeeds;
-- accept an explicit open-order reservation rebuild as the only way to open a clean submit sizer;
+- accept an explicit open-order reservation rebuild from live-node NT cache as the only way to open a clean submit sizer;
+- keep startup/reconnect admission closed when cache reports open orders that cannot be attributed to known reservations;
 - reject duplicate `client_order_id` reservations;
 - reject compiled-order evidence that does not match configured venue, account, product kind, or collateral currency;
 - reject prediction-market orders whose YES/NO outcome does not match the instrument state;
 - reserve liability before NT submit and roll it back if evidence recording or submit handoff fails;
 - block on admission-lock contention when rolling back an uncommitted reservation;
 - keep submitted reservations live until terminal lifecycle evidence releases them;
-- subscribe the live runtime to NT terminal order events so cancel/reject/expire/deny releases committed reservations by client order id;
+- subscribe the live runtime to NT account, portfolio, position, and order events for the configured capital pool;
+- publish account/portfolio/product/order-lifecycle components without allowing the feed to inject reservation-ledger evidence;
+- seed order-lifecycle count and configured YES/NO inventory from NT cache at startup/reconnect;
+- track account-bound submitted/accepted order ids with set semantics so cache snapshots and live events cannot double count;
+- keep stale cache snapshots from resurrecting a client order id after terminal evidence;
+- release committed reservations on terminal order events so cancel/reject/expire/deny releases committed reservations by client order id;
 - release matching account-less NT `OrderDenied` events by client order id, because NT does not attach an account id to that event type.
+- leave partial fills non-mutating until authoritative residual-liability metadata exists.
 
 Only `prediction_market_binary` is implemented in this slice. The compiled order kind is explicit, but only `Limit` exists in the current sizing interface.
 
 ## Production Caveat
 
-This slice is not production-grade by itself. `enforce_submit_admission = true` is not safe for live deployment until the remaining runtime feeds are connected:
+This slice is not production-grade by itself. It adds the live NT component feed and startup/reconnect cache rebuild boundary, but `enforce_submit_admission = true` is not safe for full production deployment until the remaining liability and operations gaps are closed:
 
-- NT account/portfolio state feed updates `NtDerivedSizingState`;
-- NT open-order, non-terminal fill, and full-fill lifecycle events revalue or release live reservations;
-- pre-existing NT/exchange committed liability is rebuilt into the capital pool before admission opens;
-- the live runtime calls the explicit startup and reconnect rebuild API from authoritative NT/open-order state before opening admission;
+- residual liability from partial fills is revalued from authoritative NT order/fill state or submit-time liability metadata;
+- non-empty pre-existing NT/exchange open orders can be rebuilt only when their liability is attributable to known Bolt reservations;
+- PUSD spendability and conditional-token allowance are proven by adapter/venue evidence instead of approximated from NT account free balance;
+- safe replace/amend transitions are implemented before `ReplaceSubmit` is enabled;
+- maker quote sets reserve simultaneous adverse fills;
 - halt actions cancel or flatten when configured loss/capital thresholds are breached.
 
-Until those feeds exist, this code is a submit-admission integration slice, not a complete live positional sizer.
+Until those items exist, this code is a submit-admission and live-state-feed slice, not a complete production-grade positional sizer.

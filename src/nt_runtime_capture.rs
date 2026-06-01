@@ -353,7 +353,7 @@ pub(crate) fn position_events_pattern() -> MStr<nautilus_common::msgbus::Pattern
     MStr::pattern(POSITION_EVENTS_PATTERN)
 }
 
-fn account_states_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
+pub(crate) fn account_states_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern(ACCOUNT_STATES_PATTERN)
 }
 

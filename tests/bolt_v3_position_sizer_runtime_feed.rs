@@ -18,22 +18,485 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
     BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind, BoltV3SubmitAdmissionRequest,
     BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-    BoltV3SubmitPositionSizerConfig, PredictionMarketOutcomeSide,
+    BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingNtComponents,
+    PredictionMarketOutcomeSide,
 };
-use nautilus_common::msgbus::{publish_order_event, switchboard};
+use nautilus_common::msgbus::{
+    TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
+    publish_position_event, subscribe_account_state, subscribe_order_events,
+    subscribe_portfolio_snapshot, subscribe_position_events, switchboard,
+    unsubscribe_account_state, unsubscribe_order_events, unsubscribe_portfolio_snapshot,
+    unsubscribe_position_events,
+};
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
-    events::{OrderCanceled, OrderDenied, OrderEventAny, OrderExpired, OrderRejected},
-    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
+    enums::{
+        AccountType, CurrencyType, LiquiditySide, OrderSide, OrderType, PositionAdjustmentType,
+    },
+    events::{
+        AccountState, OrderAccepted, OrderCanceled, OrderDenied, OrderEventAny, OrderExpired,
+        OrderFilled, OrderRejected, OrderSubmitted, PortfolioSnapshot, PositionAdjusted,
+        PositionEvent,
+    },
+    identifiers::{
+        AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId, TraderId,
+        VenueOrderId,
+    },
+    types::{AccountBalance, Currency, Money, Price, Quantity},
 };
 use rust_decimal::Decimal;
 use ustr::Ustr;
 
 #[test]
+fn runtime_feed_uses_verified_nt_msgbus_symbols() {
+    let _ = subscribe_account_state;
+    let _ = subscribe_order_events;
+    let _ = subscribe_portfolio_snapshot;
+    let _ = subscribe_position_events;
+    let _ = unsubscribe_account_state;
+    let _ = unsubscribe_order_events;
+    let _ = unsubscribe_portfolio_snapshot;
+    let _ = unsubscribe_position_events;
+    let _ = std::any::type_name::<TypedHandler<AccountState>>();
+    let _ = std::any::type_name::<TypedHandler<OrderEventAny>>();
+    let _ = std::any::type_name::<TypedHandler<PortfolioSnapshot>>();
+    let _ = std::any::type_name::<TypedHandler<PositionEvent>>();
+
+    let source = support::repo_text("src/bolt_v3_position_sizer_runtime_feed.rs");
+    for needle in [
+        "subscribe_account_state",
+        "subscribe_order_events",
+        "subscribe_portfolio_snapshot",
+        "subscribe_position_events",
+        "unsubscribe_account_state",
+        "unsubscribe_order_events",
+        "unsubscribe_portfolio_snapshot",
+        "unsubscribe_position_events",
+    ] {
+        assert!(source.contains(needle), "runtime feed must use `{needle}`");
+    }
+}
+
+#[test]
+fn subscribed_account_and_portfolio_events_publish_sizing_components() {
+    let admission = Arc::new(position_sized_admission());
+    let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+        runtime_feed_config(),
+        admission.clone(),
+    )));
+    let mut subscription = subscribe_position_sizer_runtime_feed(feed);
+
+    publish_account_state(
+        "events.account.POLYMARKET-001".into(),
+        &account_state(AccountId::from("POLYMARKET-001"), "PUSD", 1_000, 45.0),
+    );
+    publish_portfolio_snapshot(
+        "events.portfolio.POLYMARKET-001".into(),
+        &portfolio_snapshot(AccountId::from("POLYMARKET-001"), "PUSD", 1_100, 50.0),
+    );
+    subscription.unsubscribe_all();
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("matching account and portfolio events should publish components");
+    assert_eq!(admission.position_sizer_state_observed_at_ns(), Some(1_100));
+    assert_eq!(admission.position_sizer_reconciled(), Some(false));
+    assert_eq!(state.portfolio.free_collateral, Decimal::new(45, 0));
+    assert_eq!(state.portfolio.total_equity, Decimal::new(50, 0));
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.pusd_allowance, Decimal::new(45, 0));
+}
+
+#[test]
+fn position_sizer_runtime_subscription_drop_unsubscribes_all_handlers() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+
+    let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+        runtime_feed_config(),
+        admission.clone(),
+    )));
+    let mut subscription = subscribe_position_sizer_runtime_feed(feed.clone());
+    subscription.unsubscribe_all();
+
+    publish_account_state(
+        "events.account.POLYMARKET-001".into(),
+        &account_state(AccountId::from("POLYMARKET-001"), "PUSD", 2_000, 80.0),
+    );
+    publish_portfolio_snapshot(
+        "events.portfolio.POLYMARKET-001".into(),
+        &portfolio_snapshot(AccountId::from("POLYMARKET-001"), "PUSD", 2_100, 90.0),
+    );
+    publish_position_event(
+        "events.position.POLYMARKET-001".into(),
+        &adjusted_position_event(AccountId::from("POLYMARKET-001"), 2_200),
+    );
+    publish_order_event(
+        switchboard::get_event_orders_topic(StrategyId::from("strategy-a")),
+        &OrderEventAny::Canceled(order_canceled_event("client-order-1", 2_300)),
+    );
+
+    assert_eq!(admission.position_sizer_state_observed_at_ns(), Some(1_000));
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    assert_eq!(
+        feed.lock()
+            .expect("feed mutex should not be poisoned")
+            .latest_terminal_observed_at_ns(),
+        None
+    );
+}
+
+#[test]
+fn feed_waits_for_matching_account_and_portfolio_before_publish() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("POLYMARKET-001"),
+            "PUSD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("POLYMARKET-001"),
+            "PUSD",
+            1_100,
+            50.0
+        ))
+        .is_none()
+    );
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("OTHER-ACCOUNT"),
+            "PUSD",
+            1_200,
+            45.0
+        ))
+        .is_none()
+    );
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("POLYMARKET-001"),
+            "USD",
+            1_300,
+            45.0
+        ))
+        .is_none()
+    );
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("POLYMARKET-001"),
+            "USD",
+            1_400,
+            50.0
+        ))
+        .is_none()
+    );
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+}
+
+#[test]
+fn feed_ignores_account_state_for_other_collateral_currency() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("POLYMARKET-001"),
+            "PUSD",
+            1_000,
+            50.0
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("POLYMARKET-001"),
+            "USD",
+            1_100,
+            45.0
+        ))
+        .is_none()
+    );
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+}
+
+#[test]
+fn position_sizer_cache_seed_updates_open_order_lifecycle_and_rebuilds_empty() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("POLYMARKET-001"),
+            "PUSD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("POLYMARKET-001"),
+            "PUSD",
+            1_100,
+            50.0
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(Vec::<String>::new(), 1_200)
+            .is_some()
+    );
+
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_200);
+
+    assert!(rebuild.accepted);
+    assert_eq!(admission.position_sizer_reconciled(), Some(true));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("cache seed should publish sizing components");
+    assert_eq!(state.order_lifecycle.source, "nt_open_order_cache");
+    assert_eq!(state.order_lifecycle.observed_at_ns, 1_200);
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
+}
+
+#[test]
+fn position_sizer_cache_seed_updates_configured_yes_no_inventory() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("POLYMARKET-001"),
+            "PUSD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("POLYMARKET-001"),
+            "PUSD",
+            1_100,
+            50.0
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_cache_snapshot(
+            Vec::<String>::new(),
+            Decimal::new(7, 0),
+            Decimal::new(2, 0),
+            1_200
+        )
+        .is_some()
+    );
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("cache seed should publish configured product inventory");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_position_cache");
+    assert_eq!(product.observed_at_ns, 1_200);
+    assert_eq!(product.yes_position, Decimal::new(7, 0));
+    assert_eq!(product.no_position, Decimal::new(2, 0));
+}
+
+#[test]
+fn cache_seed_and_concurrent_order_event_do_not_double_count() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("POLYMARKET-001"),
+            "PUSD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("POLYMARKET-001"),
+            "PUSD",
+            1_100,
+            50.0
+        ))
+        .is_some()
+    );
+
+    let _ = feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-A",
+        1_200,
+        AccountId::from("POLYMARKET-001"),
+    )));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("live order event should publish lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+
+    assert!(
+        feed.seed_open_order_cache(vec!["client-order-A".to_string()], 1_300)
+            .is_some()
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("cache seed should keep lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+
+    let _ = feed.on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+        "client-order-A",
+        1_400,
+    )));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("terminal event should publish lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+
+    assert!(
+        feed.seed_open_order_cache(vec!["client-order-A".to_string()], 1_500)
+            .is_some()
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("stale cache seed should not resurrect terminal order");
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+}
+
+#[test]
+fn account_bound_live_order_events_update_open_order_count() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("POLYMARKET-001"),
+            "PUSD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("POLYMARKET-001"),
+            "PUSD",
+            1_100,
+            50.0
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(Vec::<String>::new(), 1_120)
+            .is_some()
+    );
+    rebuild_empty_position_sizer(&admission);
+    let mut request = sized_submit_request("client-order-1");
+    request.instrument_id = "condition-fixture-yes.POLYMARKET".to_string();
+    admission
+        .admit_at(&request, 1_150)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+
+    let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
+        "client-order-1",
+        1_200,
+        AccountId::from("POLYMARKET-001"),
+    )));
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("submitted event should publish lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+
+    let decision = feed
+        .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+            "client-order-1",
+            1_300,
+        )))
+        .expect("terminal event should release matching reservation");
+
+    assert!(decision.accepted);
+    assert!(!decision.unknown_reservation);
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("terminal event should publish lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+}
+
+#[test]
+fn partial_fill_without_liability_metadata_does_not_revalue_reservation() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event(
+            "client-order-1",
+            1_100,
+            AccountId::from("POLYMARKET-001"),
+        )))
+        .is_none()
+    );
+
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+}
+
+#[test]
 fn terminal_nt_order_event_releases_committed_submit_reservation() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
     rebuild_empty_position_sizer(&admission);
     admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
@@ -44,12 +507,7 @@ fn terminal_nt_order_event_releases_committed_submit_reservation() {
         Some(Decimal::new(43, 1))
     );
 
-    let mut feed = PositionSizerRuntimeFeed::new(
-        PositionSizerRuntimeFeedConfig {
-            account_id: AccountId::from("POLYMARKET-001"),
-        },
-        admission.clone(),
-    );
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let decision = feed
         .on_order_event(&OrderEventAny::Canceled(order_canceled_event(
             "client-order-1",
@@ -74,7 +532,7 @@ fn terminal_nt_order_event_releases_committed_submit_reservation() {
 fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
     rebuild_empty_position_sizer(&admission);
     admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
@@ -82,9 +540,7 @@ fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
         .commit_submitted();
 
     let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
-        PositionSizerRuntimeFeedConfig {
-            account_id: AccountId::from("POLYMARKET-001"),
-        },
+        runtime_feed_config(),
         admission.clone(),
     )));
     let mut subscription = subscribe_position_sizer_runtime_feed(feed.clone());
@@ -111,19 +567,14 @@ fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
 fn denied_nt_order_event_without_account_releases_matching_committed_submit_reservation() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
     rebuild_empty_position_sizer(&admission);
     admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
-    let mut feed = PositionSizerRuntimeFeed::new(
-        PositionSizerRuntimeFeedConfig {
-            account_id: AccountId::from("POLYMARKET-001"),
-        },
-        admission.clone(),
-    );
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let decision = feed
         .on_order_event(&OrderEventAny::Denied(order_denied_event(
             "client-order-1",
@@ -164,19 +615,14 @@ fn rejected_and_expired_nt_order_events_release_matching_committed_submit_reserv
 fn account_bound_terminal_nt_order_event_for_other_account_is_ignored() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
     rebuild_empty_position_sizer(&admission);
     admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
-    let mut feed = PositionSizerRuntimeFeed::new(
-        PositionSizerRuntimeFeedConfig {
-            account_id: AccountId::from("POLYMARKET-001"),
-        },
-        admission.clone(),
-    );
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
         feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
@@ -197,19 +643,14 @@ fn account_bound_terminal_nt_order_event_for_other_account_is_ignored() {
 fn account_less_non_denied_terminal_nt_order_event_is_ignored() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
     rebuild_empty_position_sizer(&admission);
     admission
         .admit_at(&sized_submit_request("client-order-1"), 1_000)
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
-    let mut feed = PositionSizerRuntimeFeed::new(
-        PositionSizerRuntimeFeedConfig {
-            account_id: AccountId::from("POLYMARKET-001"),
-        },
-        admission.clone(),
-    );
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
     assert!(
         feed.on_order_event(&OrderEventAny::Expired(order_expired_event(
@@ -229,7 +670,7 @@ fn account_less_non_denied_terminal_nt_order_event_is_ignored() {
 fn assert_terminal_event_releases(client_order_id: &str, event: OrderEventAny) {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
-    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission.update_position_sizing_nt_components(fresh_components(900));
     rebuild_empty_position_sizer(&admission);
     admission
         .admit_at(&sized_submit_request(client_order_id), 1_000)
@@ -237,12 +678,7 @@ fn assert_terminal_event_releases(client_order_id: &str, event: OrderEventAny) {
         .commit_submitted();
 
     let observed_at_ns = event.ts_event().as_u64();
-    let mut feed = PositionSizerRuntimeFeed::new(
-        PositionSizerRuntimeFeedConfig {
-            account_id: AccountId::from("POLYMARKET-001"),
-        },
-        admission.clone(),
-    );
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
     let decision = feed
         .on_order_event(&event)
         .expect("terminal event should release matching committed reservation");
@@ -254,6 +690,98 @@ fn assert_terminal_event_releases(client_order_id: &str, event: OrderEventAny) {
         Some(Decimal::ZERO)
     );
     assert_eq!(feed.latest_terminal_observed_at_ns(), Some(observed_at_ns));
+}
+
+fn runtime_feed_config() -> PositionSizerRuntimeFeedConfig {
+    PositionSizerRuntimeFeedConfig {
+        venue_id: "POLYMARKET".to_string(),
+        account_id: AccountId::from("POLYMARKET-001"),
+        collateral_currency: "PUSD".to_string(),
+        product_state: ProductSizingSnapshot::PredictionMarketBinary(
+            PredictionMarketSizingSnapshot {
+                source: "bolt_configured_binary_product".to_string(),
+                observed_at_ns: 900,
+                yes_instrument_id: "condition-fixture-yes.POLYMARKET".to_string(),
+                no_instrument_id: "condition-fixture-no.POLYMARKET".to_string(),
+                yes_position: Decimal::ZERO,
+                no_position: Decimal::ZERO,
+                pusd_allowance: Decimal::ZERO,
+                conditional_token_allowance: Decimal::ZERO,
+                collateral_coupled_group_id: "condition-fixture".to_string(),
+            },
+        ),
+        startup_observed_at_ns: 900,
+    }
+}
+
+fn account_state(
+    account_id: AccountId,
+    currency_code: &str,
+    ts_event: u64,
+    free_collateral: f64,
+) -> AccountState {
+    let currency = test_currency(currency_code);
+    AccountState::new(
+        account_id,
+        AccountType::Cash,
+        vec![AccountBalance::new(
+            Money::new(free_collateral, currency),
+            Money::new(0.0, currency),
+            Money::new(free_collateral, currency),
+        )],
+        vec![],
+        true,
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+        Some(currency),
+    )
+}
+
+fn portfolio_snapshot(
+    account_id: AccountId,
+    currency_code: &str,
+    ts_event: u64,
+    total_equity: f64,
+) -> PortfolioSnapshot {
+    let currency = test_currency(currency_code);
+    PortfolioSnapshot::new(
+        account_id,
+        AccountType::Cash,
+        Some(currency),
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![Money::new(total_equity, currency)],
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+    )
+}
+
+fn adjusted_position_event(account_id: AccountId, ts_event: u64) -> PositionEvent {
+    PositionEvent::PositionAdjusted(PositionAdjusted::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("condition-yes.POLYMARKET"),
+        PositionId::from("position-1"),
+        account_id,
+        PositionAdjustmentType::Commission,
+        None,
+        Some(Money::new(0.0, test_currency("PUSD"))),
+        None,
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+    ))
+}
+
+fn test_currency(currency_code: &str) -> Currency {
+    if currency_code == "PUSD" {
+        return Currency::new("PUSD", 2, 0, "Polymarket USD", CurrencyType::Fiat);
+    }
+    Currency::from(currency_code)
 }
 
 fn position_sized_admission() -> BoltV3SubmitAdmissionState {
@@ -366,6 +894,18 @@ fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
     }
 }
 
+fn fresh_components(observed_at_ns: u64) -> BoltV3SubmitPositionSizingNtComponents {
+    let state = fresh_sizing_state(observed_at_ns);
+    BoltV3SubmitPositionSizingNtComponents {
+        source: state.source,
+        observed_at_ns: state.observed_at_ns,
+        portfolio: state.portfolio,
+        order_lifecycle: state.order_lifecycle,
+        product_state: state.product_state,
+        loss_snapshot: state.loss_snapshot,
+    }
+}
+
 fn order_canceled_event(client_order_id: &str, ts_event: u64) -> OrderCanceled {
     OrderCanceled::new(
         TraderId::from("TRADER-001"),
@@ -378,6 +918,66 @@ fn order_canceled_event(client_order_id: &str, ts_event: u64) -> OrderCanceled {
         false,
         Some(VenueOrderId::from("venue-order-1")),
         Some(AccountId::from("POLYMARKET-001")),
+    )
+}
+
+fn order_accepted_event(
+    client_order_id: &str,
+    ts_event: u64,
+    account_id: AccountId,
+) -> OrderAccepted {
+    OrderAccepted::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("condition-yes.POLYMARKET"),
+        ClientOrderId::from(client_order_id),
+        VenueOrderId::from("venue-order-1"),
+        account_id,
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+        false,
+    )
+}
+
+fn order_submitted_event(
+    client_order_id: &str,
+    ts_event: u64,
+    account_id: AccountId,
+) -> OrderSubmitted {
+    OrderSubmitted::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("condition-yes.POLYMARKET"),
+        ClientOrderId::from(client_order_id),
+        account_id,
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+    )
+}
+
+fn order_filled_event(client_order_id: &str, ts_event: u64, account_id: AccountId) -> OrderFilled {
+    OrderFilled::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("condition-yes.POLYMARKET"),
+        ClientOrderId::from(client_order_id),
+        VenueOrderId::from("venue-order-1"),
+        account_id,
+        TradeId::from("trade-1"),
+        OrderSide::Buy,
+        OrderType::Limit,
+        Quantity::from(1),
+        Price::from("0.40"),
+        test_currency("PUSD"),
+        LiquiditySide::Taker,
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+        false,
+        Some(PositionId::from("position-1")),
+        None,
     )
 }
 

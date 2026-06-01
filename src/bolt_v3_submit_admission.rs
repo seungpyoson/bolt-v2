@@ -540,6 +540,8 @@ impl Drop for BoltV3SubmitAdmissionPermit {
         let Some(rollback) = self.rollback.as_ref() else {
             return;
         };
+        // Invariant: callers must not drop an uncommitted permit while already
+        // holding the admission lock; rollback is deliberately fail-closed.
         let mut inner = lock_inner(&self.inner);
         rollback_position_sizer_reservation(&mut inner, rollback);
     }

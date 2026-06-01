@@ -80,6 +80,9 @@ impl PositionSizerRuntimeFeed {
         if !is_terminal_order_event(event) {
             return None;
         }
+        if event.account_id().is_none() && !matches!(event, OrderEventAny::Denied(_)) {
+            return None;
+        }
         if let Some(account_id) = event.account_id()
             && account_id != self.config.account_id
         {

@@ -189,6 +189,38 @@ fn account_bound_terminal_nt_order_event_for_other_account_is_ignored() {
     assert_eq!(feed.latest_terminal_observed_at_ns(), None);
 }
 
+#[test]
+fn account_less_non_denied_terminal_nt_order_event_is_ignored() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+
+    let mut feed = PositionSizerRuntimeFeed::new(
+        PositionSizerRuntimeFeedConfig {
+            account_id: AccountId::from("POLYMARKET-001"),
+        },
+        admission.clone(),
+    );
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Expired(order_expired_event(
+            "client-order-1",
+            1_100,
+            None,
+        )))
+        .is_none()
+    );
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    assert_eq!(feed.latest_terminal_observed_at_ns(), None);
+}
+
 fn assert_terminal_event_releases(client_order_id: &str, event: OrderEventAny) {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);

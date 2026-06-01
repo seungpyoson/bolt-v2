@@ -1799,6 +1799,7 @@ impl BoltV3LiveNodeRuntime {
                 BoltV3SubmitPositionSizingOpenOrderSnapshot {
                     observed_at_ns: now_ns,
                     evidence_label: "nt_open_order_cache".to_string(),
+                    observed_open_order_count: open_order_snapshots.len(),
                     all_open_orders_attributed,
                     reservations,
                 },
@@ -1912,6 +1913,10 @@ pub enum BoltV3LiveNodeError {
     /// The validated live canary gate report could not arm the shared
     /// submit-admission state before `LiveNode::run` was invoked.
     SubmitAdmission(BoltV3SubmitAdmissionError),
+    /// Startup found pre-existing NT cache open orders, but Bolt could
+    /// not reconcile them into submit-admission reservations before
+    /// arming the submit path.
+    StartupPositionSizerRebuild(BoltV3SubmitPositionSizingRebuildDecision),
     /// NT returned an error from `LiveNode::run` after the live canary
     /// gate accepted the loaded config and readiness report.
     Run(anyhow::Error),
@@ -2057,6 +2062,17 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                     "bolt-v3 submit admission rejected runtime start: {error}"
                 )
             }
+            BoltV3LiveNodeError::StartupPositionSizerRebuild(rebuild) => {
+                write!(
+                    f,
+                    "bolt-v3 startup position-sizer rebuild rejected runtime start: \
+                     reason={:?} attempted={} rebuilt={} live_reserved_liability={}",
+                    rebuild.reason,
+                    rebuild.attempted_reservation_count,
+                    rebuild.rebuilt_reservation_count,
+                    rebuild.live_reserved_liability
+                )
+            }
             BoltV3LiveNodeError::Run(error) => write!(f, "LiveNode run failed: {error}"),
             BoltV3LiveNodeError::RuntimeCaptureWire(error) => {
                 write!(f, "NT runtime capture wiring failed: {error}")
@@ -2190,7 +2206,8 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::NoSubmitReferenceProbeFailed { .. }
             | BoltV3LiveNodeError::NoSubmitDataClientProbeFailed { .. }
             | BoltV3LiveNodeError::NoSubmitStopTimeout { .. }
-            | BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow => None,
+            | BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow
+            | BoltV3LiveNodeError::StartupPositionSizerRebuild(_) => None,
             BoltV3LiveNodeError::DisconnectFailed(error)
             | BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(error)
             | BoltV3LiveNodeError::NoSubmitStartFailed(error)
@@ -2371,8 +2388,16 @@ pub async fn run_bolt_v3_live_node(
         .map_err(BoltV3LiveNodeError::LiveCanaryGate)?;
     let startup_rebuild_observed_at_ns =
         current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
-    let _startup_rebuild =
+    let startup_rebuild =
         runtime.rebuild_position_sizer_from_nt_cache(startup_rebuild_observed_at_ns);
+    // No-open-order startup may need NT to run before account/portfolio
+    // components arrive. Pre-existing open orders are different: they must
+    // be reconciled before submit admission can arm.
+    if !startup_rebuild.accepted && startup_rebuild.attempted_reservation_count > 0 {
+        return Err(BoltV3LiveNodeError::StartupPositionSizerRebuild(
+            startup_rebuild,
+        ));
+    }
     runtime
         .submit_admission
         .arm(gate_report)

@@ -128,6 +128,7 @@ pub struct BoltV3SubmitPositionSizingOpenOrderReservation {
 pub struct BoltV3SubmitPositionSizingOpenOrderSnapshot {
     pub observed_at_ns: u64,
     pub evidence_label: String,
+    pub observed_open_order_count: usize,
     pub all_open_orders_attributed: bool,
     pub reservations: Vec<BoltV3SubmitPositionSizingOpenOrderReservation>,
 }
@@ -370,6 +371,7 @@ impl BoltV3SubmitAdmissionState {
             BoltV3SubmitPositionSizingOpenOrderSnapshot {
                 observed_at_ns: now_ns,
                 evidence_label: "bolt_recovered_open_order_reservations".to_string(),
+                observed_open_order_count: open_order_reservations.len(),
                 all_open_orders_attributed: true,
                 reservations: open_order_reservations,
             },
@@ -382,7 +384,7 @@ impl BoltV3SubmitAdmissionState {
         snapshot: BoltV3SubmitPositionSizingOpenOrderSnapshot,
         now_ns: u64,
     ) -> BoltV3SubmitPositionSizingRebuildDecision {
-        let attempted_reservation_count = snapshot.reservations.len();
+        let attempted_reservation_count = snapshot.observed_open_order_count;
         let mut inner = lock_inner(&self.inner);
         let Some(position_sizer) = inner.position_sizer.as_mut() else {
             return BoltV3SubmitPositionSizingRebuildDecision {

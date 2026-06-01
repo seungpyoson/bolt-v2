@@ -589,6 +589,9 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
     let report_index = live_run_body
         .find("build_bolt_v3_live_submit_admission_report_from_config(loaded)")
         .expect("run wrapper must derive submit-admission bounds from config");
+    let position_sizer_rebuild_index = live_run_body
+        .find("runtime.rebuild_position_sizer_from_nt_cache")
+        .expect("run wrapper must reconcile NT cache state before arming submit admission");
     let submit_admission_index = live_run_body
         .find(".arm(gate_report)")
         .expect("run wrapper must arm submit admission from the config-derived report");
@@ -607,10 +610,11 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
         "submit-admission config report must be built before NT LiveNode::run"
     );
     assert!(
-        report_index < submit_admission_index
+        report_index < position_sizer_rebuild_index
+            && position_sizer_rebuild_index < submit_admission_index
             && submit_admission_index < capture_index
             && capture_index < live_run_index,
-        "submit admission must be armed before NT runtime capture and LiveNode::run"
+        "submit admission must be armed after startup reconciliation and before NT runtime capture and LiveNode::run"
     );
     assert!(
         !live_run_body.contains("consume_bolt_v3_live_runner_approval"),

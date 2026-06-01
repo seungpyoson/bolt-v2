@@ -114,13 +114,23 @@ fn live_node_runner_arms_submit_admission_from_config_before_nt_run() {
     let rebuild_index = runner
         .find("rebuild_position_sizer_from_nt_cache")
         .expect("live runner must reconcile NT cache state before arming submit admission");
+    let rebuild_reject_index = runner
+        .find("BoltV3LiveNodeError::StartupPositionSizerRebuild")
+        .expect("live runner must reject unreconciled cache open orders before arming");
     let run_index = runner
         .find("let run_future = node.run();")
         .expect("live runner should enter NT run after submit admission is armed");
 
     assert!(
-        report_index < rebuild_index && rebuild_index < arm_index && arm_index < run_index,
-        "live runner must derive admission bounds, reconcile NT cache, arm submit admission, then enter NT run"
+        report_index < rebuild_index
+            && rebuild_index < rebuild_reject_index
+            && rebuild_reject_index < arm_index
+            && arm_index < run_index,
+        "live runner must derive admission bounds, reconcile NT cache, reject unreconciled cache open orders, arm submit admission, then enter NT run"
+    );
+    assert!(
+        !runner.contains("let _startup_rebuild"),
+        "live runner must not discard the startup rebuild outcome"
     );
     assert!(
         !runner.contains("consume_bolt_v3_live_runner_approval"),
@@ -1071,6 +1081,7 @@ fn unattributed_cache_open_order_keeps_position_sizer_unreconciled() {
         BoltV3SubmitPositionSizingOpenOrderSnapshot {
             observed_at_ns: 1_000,
             evidence_label: "nt_open_order_cache".to_string(),
+            observed_open_order_count: 1,
             all_open_orders_attributed: false,
             reservations: Vec::new(),
         },
@@ -1082,6 +1093,7 @@ fn unattributed_cache_open_order_keeps_position_sizer_unreconciled() {
         Some(ReservationRejectionReason::MissingEvidence)
     );
     assert!(!rebuild.accepted);
+    assert_eq!(rebuild.attempted_reservation_count, 1);
     assert_eq!(admission.position_sizer_reconciled(), Some(false));
     let state = admission
         .position_sizer_state_snapshot()
@@ -1100,6 +1112,7 @@ fn rebuild_snapshot_preserves_client_order_id_for_terminal_release() {
         BoltV3SubmitPositionSizingOpenOrderSnapshot {
             observed_at_ns: 1_000,
             evidence_label: "nt_open_order_cache".to_string(),
+            observed_open_order_count: 1,
             all_open_orders_attributed: true,
             reservations: vec![open_order_reservation(
                 "client-1",

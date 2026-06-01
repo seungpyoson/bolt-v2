@@ -3,6 +3,7 @@ use anyhow::Result;
 pub mod binary_oracle_edge_taker;
 pub mod quote_lifecycle;
 pub mod registry;
+pub mod requote_budget;
 
 use registry::StrategyRegistry;
 

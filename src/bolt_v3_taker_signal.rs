@@ -43,7 +43,7 @@ pub fn uncertainty_band_probability(inputs: &UncertaintyBandInputs) -> Option<f6
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThetaScalerInputs {
-    pub seconds_to_expiry: u64,
+    pub seconds_to_market_end: u64,
     pub cadence_seconds: u64,
     pub theta_decay_factor: f64,
 }
@@ -59,7 +59,7 @@ pub fn compute_theta_scaler(inputs: &ThetaScalerInputs) -> Option<f64> {
         return None;
     }
 
-    let ratio = clamp_probability(inputs.seconds_to_expiry as f64 / inputs.cadence_seconds as f64);
+    let ratio = clamp_probability(inputs.seconds_to_market_end as f64 / inputs.cadence_seconds as f64);
     Some(UNIT_F64 + inputs.theta_decay_factor * (UNIT_F64 - ratio).powi(POWER_OF_TWO))
 }
 
@@ -101,13 +101,13 @@ mod tests {
     #[test]
     fn theta_scaler_helper_increases_near_expiry_and_can_be_disabled() {
         let start = compute_theta_scaler(&ThetaScalerInputs {
-            seconds_to_expiry: 300,
+            seconds_to_market_end: 300,
             cadence_seconds: 300,
             theta_decay_factor: 1.5,
         })
         .expect("valid theta inputs should compute");
         let near_expiry = compute_theta_scaler(&ThetaScalerInputs {
-            seconds_to_expiry: 30,
+            seconds_to_market_end: 30,
             cadence_seconds: 300,
             theta_decay_factor: 1.5,
         })
@@ -117,7 +117,7 @@ mod tests {
         assert!(near_expiry > start);
         assert_eq!(
             compute_theta_scaler(&ThetaScalerInputs {
-                seconds_to_expiry: 30,
+                seconds_to_market_end: 30,
                 cadence_seconds: 300,
                 theta_decay_factor: 0.0,
             }),
@@ -125,7 +125,7 @@ mod tests {
         );
         assert!(
             compute_theta_scaler(&ThetaScalerInputs {
-                seconds_to_expiry: 30,
+                seconds_to_market_end: 30,
                 cadence_seconds: 0,
                 theta_decay_factor: 1.5,
             })

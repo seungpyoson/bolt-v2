@@ -2846,7 +2846,7 @@ impl BinaryOracleEdgeTaker {
 
         let theta_scaled_min_edge_bps = seconds_to_expiry.and_then(|seconds_to_expiry| {
             compute_theta_scaler(&ThetaScalerInputs {
-                seconds_to_expiry,
+                seconds_to_market_end: seconds_to_expiry,
                 cadence_seconds: self.config.cadence_seconds,
                 theta_decay_factor: self.config.theta_decay_factor,
             })
@@ -2899,7 +2899,7 @@ impl BinaryOracleEdgeTaker {
 
     fn current_scaled_min_edge_bps_at(&self, now_ms: u64) -> Option<f64> {
         compute_theta_scaler(&ThetaScalerInputs {
-            seconds_to_expiry: self.current_seconds_to_expiry_at(now_ms)?,
+            seconds_to_market_end: self.current_seconds_to_expiry_at(now_ms)?,
             cadence_seconds: self.config.cadence_seconds,
             theta_decay_factor: self.config.theta_decay_factor,
         })

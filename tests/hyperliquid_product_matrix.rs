@@ -4,12 +4,20 @@
 //! product" and "we may submit live orders". Discovery evidence must not open
 //! submit.
 
+mod support;
+
+use std::{collections::BTreeMap, sync::Arc};
+
+use bolt_v2::bolt_v3_adapters::{BoltV3AdapterMappingError, map_bolt_v3_adapters};
+use bolt_v2::bolt_v3_config::{ClientBlock, LoadedBoltV3Config, load_bolt_v3_config};
 use bolt_v2::bolt_v3_operator_artifacts::write_hyperliquid_product_matrix_artifact;
 use bolt_v2::bolt_v3_providers::hyperliquid::{
     HyperliquidDiscoveryStatus, HyperliquidProductMatrixEntry, HyperliquidProductSurface,
-    HyperliquidSubmitStatus, hyperliquid_product_matrix,
+    HyperliquidSubmitStatus, ResolvedBoltV3HyperliquidSecrets, hyperliquid_product_matrix,
 };
+use bolt_v2::bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets};
 use nautilus_hyperliquid::http::query::InfoRequest;
+use zeroize::Zeroizing;
 
 fn assert_info_request_type(request: InfoRequest, expected_type: &str, context: &str) {
     let request_json = serde_json::to_value(&request).expect(context);
@@ -51,6 +59,91 @@ fn assert_fail_closed(entry: &HyperliquidProductMatrixEntry, missing_proof: &str
             .any(|proof| proof == &missing_proof),
         "matrix missing fail-closed proof gap {missing_proof}"
     );
+}
+
+fn hyperliquid_execution_client_for_surface(surface: &str) -> ClientBlock {
+    toml::from_str(&format!(
+        r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["{surface}"]
+live_submit_approval_id = "hl-unproven-surface-approval"
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#
+    ))
+    .expect("Hyperliquid unproven surface client should parse")
+}
+
+fn loaded_config_for_surface(surface: &str) -> LoadedBoltV3Config {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.clear();
+    loaded.strategies.clear();
+    loaded.root.clients.insert(
+        "hyperliquid_unproven_surface".to_string(),
+        hyperliquid_execution_client_for_surface(surface),
+    );
+    loaded
+}
+
+fn resolved_hyperliquid_secrets() -> ResolvedBoltV3Secrets {
+    let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
+    clients.insert(
+        "hyperliquid_unproven_surface".to_string(),
+        Arc::new(ResolvedBoltV3HyperliquidSecrets {
+            private_key: Zeroizing::new(
+                "0x4242424242424242424242424242424242424242424242424242424242424242".to_string(),
+            ),
+            account_address: Zeroizing::new(
+                "0x1111111111111111111111111111111111111111".to_string(),
+            ),
+            vault_address: None,
+        }),
+    );
+    ResolvedBoltV3Secrets { clients }
+}
+
+fn assert_unproven_surface_rejects_live_submit(surface: &str, expected_missing_proof: &str) {
+    let loaded = loaded_config_for_surface(surface);
+    let resolved = resolved_hyperliquid_secrets();
+
+    let error = map_bolt_v3_adapters(&loaded, &resolved)
+        .expect_err("unproven Hyperliquid surface must fail closed before live submit");
+
+    match error {
+        BoltV3AdapterMappingError::ValidationInvariant {
+            client_key,
+            field,
+            message,
+        } => {
+            assert_eq!(client_key, "hyperliquid_unproven_surface");
+            assert_eq!(field, "execution.product_surfaces");
+            assert!(
+                message.contains(expected_missing_proof),
+                "surface rejection must name missing proof `{expected_missing_proof}`: {message}"
+            );
+        }
+        other => panic!("expected unproven-surface validation invariant, got {other}"),
+    }
 }
 
 #[test]
@@ -139,6 +232,27 @@ fn hip4_outcomes_product_matrix_records_nt_discovery_and_fail_closed_submit() {
     );
     assert_fail_closed(
         hip4,
+        "HIP-4 outcome order/fill/rounding/fee/settlement/userOutcome proof",
+    );
+}
+
+#[test]
+fn spot_live_submit_enablement_rejects_with_product_specific_missing_proof() {
+    assert_unproven_surface_rejects_live_submit("spot", "spot order/fill/rounding/fee proof");
+}
+
+#[test]
+fn hip3_live_submit_enablement_rejects_with_product_specific_missing_proof() {
+    assert_unproven_surface_rejects_live_submit(
+        "hip3_builder_perps",
+        "HIP-3 asset-id/order/fill/rounding/fee proof",
+    );
+}
+
+#[test]
+fn hip4_live_submit_enablement_rejects_with_product_specific_missing_proof() {
+    assert_unproven_surface_rejects_live_submit(
+        "hip4_outcomes",
         "HIP-4 outcome order/fill/rounding/fee/settlement/userOutcome proof",
     );
 }

@@ -647,9 +647,7 @@ fn validate_standard_perps_live_submit_approval(
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             client_key: client_key.to_string(),
             field: "execution.product_surfaces",
-            message:
-                "standard-perps is the only Hyperliquid live-submit surface enabled in this slice"
-                    .to_string(),
+            message: unproven_surface_live_submit_rejection(&cfg.product_surfaces),
         });
     }
     let Some(expected_approval_id) = cfg.live_submit_approval_id.as_deref() else {
@@ -678,6 +676,37 @@ fn validate_standard_perps_live_submit_approval(
         });
     }
     Ok(())
+}
+
+fn unproven_surface_live_submit_rejection(surfaces: &[HyperliquidProductSurface]) -> String {
+    let surface_names = surfaces
+        .iter()
+        .map(|surface| product_surface_name(*surface))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let missing_proofs = surfaces
+        .iter()
+        .flat_map(|surface| match surface {
+            HyperliquidProductSurface::StandardPerps => STANDARD_PERPS_MISSING_SUBMIT_PROOF,
+            HyperliquidProductSurface::Spot => SPOT_MISSING_SUBMIT_PROOF,
+            HyperliquidProductSurface::Hip3BuilderPerps => HIP3_MISSING_SUBMIT_PROOF,
+            HyperliquidProductSurface::Hip4Outcomes => HIP4_MISSING_SUBMIT_PROOF,
+        })
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Hyperliquid live submit for product_surfaces=[{surface_names}] remains fail-closed; missing product-specific proof: {missing_proofs}"
+    )
+}
+
+fn product_surface_name(surface: HyperliquidProductSurface) -> &'static str {
+    match surface {
+        HyperliquidProductSurface::StandardPerps => "standard_perps",
+        HyperliquidProductSurface::Spot => "spot",
+        HyperliquidProductSurface::Hip3BuilderPerps => "hip3_builder_perps",
+        HyperliquidProductSurface::Hip4Outcomes => "hip4_outcomes",
+    }
 }
 
 fn secrets_for<'a>(

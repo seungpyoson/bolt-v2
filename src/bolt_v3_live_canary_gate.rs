@@ -1326,8 +1326,7 @@ fn validate_operator_no_submit_readiness_report_binding(
     }
     if let Some(envelope_no_submit_readiness_report_sha256) =
         envelope_no_submit_readiness_report_sha256
-        && validated_no_submit_readiness_report_sha256
-            != envelope_no_submit_readiness_report_sha256
+        && validated_no_submit_readiness_report_sha256 != envelope_no_submit_readiness_report_sha256
     {
         return Err(
             BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch {
@@ -3344,8 +3343,7 @@ mod tests {
                     serde_json::json!(sha256_hex(strategy_cancel_path.as_bytes())),
                 );
         }
-        if let Some(no_submit_readiness_report_sha256) =
-            &evidence.no_submit_readiness_report_sha256
+        if let Some(no_submit_readiness_report_sha256) = &evidence.no_submit_readiness_report_sha256
         {
             envelope
                 .as_object_mut()

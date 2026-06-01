@@ -31,10 +31,18 @@
 //! (workstream WG) — it is NOT live-tradeable. Pure: no NT type, no hardcoded
 //! literal (probability/price bounds and the two/half divisor come from
 //! [`crate::bolt_v3_numeric`]).
+//!
+//! ## Offset composition (W3 slice 3 — FR-022)
+//!
+//! The binary family does not hand-roll its offset stack: it delegates to
+//! [`crate::strategies::maker_offsets::compose_binary_legs`], which owns the
+//! defined precedence (band → time-widening → inventory skew → reward-shaping →
+//! terminal clamp/prune) and clamps every emitted leg into the OPEN interval
+//! `(ε, 1−ε)` (SC-002). That module reuses this module's [`resolve_band`], so the
+//! band discipline still lives in exactly one place.
 
-use crate::bolt_v3_numeric::{
-    TWO_F64, UNIT_F64, ZERO_F64, is_positive_finite, sanitize_probability,
-};
+use crate::bolt_v3_numeric::{TWO_F64, ZERO_F64, is_positive_finite, sanitize_probability};
+use crate::strategies::maker_offsets::compose_binary_legs;
 
 /// The side a quote leg rests on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +99,24 @@ pub struct FamilyQuoteInputs {
     /// The maximum half-spread. A reservation wider than this is degenerate
     /// (stale or toxic) and yields no quote this tick.
     pub max_half_spread: f64,
+    /// The open-interval collar (config-sourced). Every emitted binary leg must
+    /// land strictly inside `(eps, 1 − eps)` (FR-022 / SC-002); a leg at or
+    /// outside the collar is degenerate and fails closed. Required `0 < eps < 0.5`
+    /// (enforced by [`crate::bolt_v3_numeric::sanitize_open_probability`]). Unused
+    /// by the perp family, whose legs are prices, not probabilities.
+    pub eps: f64,
+    /// Current time-to-expiry `τ` in the configured unit (same unit as the
+    /// governor's `tau_floor`). Drives the binary time-widening multiplier — a
+    /// binary's variance blows up `~1/√τ` into expiry, so the maker widens as `τ`
+    /// shrinks. Unused by the perp family.
+    pub tau: f64,
+    /// The reference time-to-expiry horizon (config-sourced): at or above it the
+    /// time-widening factor is `1.0` (no widening); below it the factor grows.
+    /// Unused by the perp family.
+    pub reference_tau: f64,
+    /// The cap on the time-widening factor (config-sourced, `≥ 1.0`): bounds the
+    /// near-expiry `1/√τ` blowup. Unused by the perp family.
+    pub time_widen_cap: f64,
 }
 
 /// The single source of the fail-closed reservation band, shared by every
@@ -172,51 +198,34 @@ pub struct BinaryFamily;
 
 impl MakerFamily for BinaryFamily {
     fn quote_targets(&self, inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
-        // The binary fair value and reservation are probabilities.
+        // Guard the fair-value INPUT on the closed [0, 1] (a fair value may sit at
+        // a boundary); the OPEN-interval (eps, 1−eps) clamp applies to the emitted
+        // quote legs and is enforced inside compose_binary_legs.
         let p_up = sanitize_probability(inputs.fair)?;
-        let (resolved_bid, resolved_ask) = resolve_band(
+        // The full FR-022 offset precedence (band → time-widening → inventory skew
+        // → reward-shaping → terminal open-interval clamp + non-self-crossing
+        // prune) lives in compose_binary_legs, which reuses this module's
+        // resolve_band — there is no second copy of the stack here.
+        let legs = compose_binary_legs(
             p_up,
             inputs.reservation_bid,
             inputs.reservation_ask,
             inputs.half_spread_floor,
             inputs.max_half_spread,
+            inputs.tau,
+            inputs.reference_tau,
+            inputs.time_widen_cap,
+            inputs.inventory_skew,
+            inputs.eps,
         )?;
-        // Lay out two BIDS: YES around the resolved bid, NO around 1 − resolved
-        // ask. A positive inventory skew (net long YES) lowers the YES bid and
-        // raises the NO bid, leaning the pair toward the lighter side.
-        let yes_price = sanitize_probability(resolved_bid - inputs.inventory_skew)?;
-        let no_price = sanitize_probability((UNIT_F64 - resolved_ask) + inputs.inventory_skew)?;
-        if !is_positive_finite(yes_price) || !is_positive_finite(no_price) {
-            return None;
-        }
-        // Positive-edge net: a YES bid + NO bid summing to ≥ 1 is a guaranteed
-        // loss (exactly one token resolves to 1). NOTE the skew cancels in this
-        // sum — yes + no = 1 − (resolved_ask − resolved_bid) — so this guard only
-        // proves the band still has positive width; it is NOT a post-skew bracket
-        // check and gives no protection against the skew sliding the pair off fair.
-        if yes_price + no_price >= UNIT_F64 {
-            return None;
-        }
-        // Post-skew bracket guard (the binary analogue of the perp guard): the
-        // implied YES market is [yes_price, UNIT_F64 − no_price]. Inventory skew
-        // may lean the pair but must not slide its whole market to one side of the
-        // fair p_up — a |skew| larger than the half-spread otherwise rests a quote
-        // entirely above or below fair (e.g. p_up 0.50, band [0.40, 0.60], skew
-        // 0.20 → YES market [0.20, 0.40], wholly below fair), which the sum guard
-        // above cannot catch. Reducing inventory past this point is the job of the
-        // graduated reduce-only / hard-flat states, not the two-sided skew term.
-        let yes_ask = UNIT_F64 - no_price;
-        if !(yes_price <= p_up && p_up <= yes_ask) {
-            return None;
-        }
         Some(QuoteTargets {
             leg_a: QuoteTargetLeg {
                 side: QuoteSide::Buy,
-                price: yes_price,
+                price: legs.yes_price,
             },
             leg_b: QuoteTargetLeg {
                 side: QuoteSide::Buy,
-                price: no_price,
+                price: legs.no_price,
             },
         })
     }
@@ -272,14 +281,24 @@ impl MakerFamily for LinearPerpFamily {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bolt_v3_numeric::UNIT_F64;
     use crate::strategies::maker_model::gm_binary_quote;
 
     /// Tolerance for closed-form float comparisons.
     const EPSILON: f64 = 1e-9;
+    /// A small but non-degenerate open-interval collar for the layout tests.
+    const TEST_EPS: f64 = 1e-6;
+    /// Reference time-to-expiry horizon; an equal `tau` gives a widening factor of
+    /// exactly 1.0, so the layout-geometry tests are isolated from time-widening.
+    const TEST_REF_TAU: f64 = 3_600.0;
+    /// A permissive widening cap that never binds in the geometry tests.
+    const TEST_WIDEN_CAP: f64 = 10.0;
 
     /// Build inputs with a symmetric reservation band of `half_spread` around
     /// `fair` and a permissive `[0, 1]` floor/cap, for the layout tests that only
-    /// exercise the geometry (not the floor/cap gates).
+    /// exercise the geometry (not the floor/cap gates). `tau == reference_tau`
+    /// gives a time-widening factor of exactly 1.0 (no widening), and a tiny `eps`
+    /// keeps the existing exact-price assertions interior to `(eps, 1−eps)`.
     fn symmetric_inputs(fair: f64, half_spread: f64, skew: f64) -> FamilyQuoteInputs {
         FamilyQuoteInputs {
             fair,
@@ -288,6 +307,10 @@ mod tests {
             inventory_skew: skew,
             half_spread_floor: 0.0,
             max_half_spread: 1.0,
+            eps: TEST_EPS,
+            tau: TEST_REF_TAU,
+            reference_tau: TEST_REF_TAU,
+            time_widen_cap: TEST_WIDEN_CAP,
         }
     }
 
@@ -501,6 +524,10 @@ mod tests {
             inventory_skew: 0.0,
             half_spread_floor: 0.0,
             max_half_spread: 1.0,
+            eps: TEST_EPS,
+            tau: TEST_REF_TAU,
+            reference_tau: TEST_REF_TAU,
+            time_widen_cap: TEST_WIDEN_CAP,
         };
         let targets = BinaryFamily.quote_targets(inputs).expect("gm band quotes");
         // YES rests at the GM bid; NO rests at 1 − GM ask. (gm.bid=2/11, gm.ask=2/3.)
@@ -524,6 +551,10 @@ mod tests {
             inventory_skew: 0.0,
             half_spread_floor: 0.0,
             max_half_spread: 1.0,
+            eps: TEST_EPS,
+            tau: TEST_REF_TAU,
+            reference_tau: TEST_REF_TAU,
+            time_widen_cap: TEST_WIDEN_CAP,
         };
         assert!(
             BinaryFamily.quote_targets(crossed).is_none(),
@@ -546,6 +577,10 @@ mod tests {
             inventory_skew: 0.0,
             half_spread_floor: 0.0,
             max_half_spread: 1.0,
+            eps: TEST_EPS,
+            tau: TEST_REF_TAU,
+            reference_tau: TEST_REF_TAU,
+            time_widen_cap: TEST_WIDEN_CAP,
         };
         assert!(BinaryFamily.quote_targets(zero_edge).is_none());
     }
@@ -561,6 +596,10 @@ mod tests {
             inventory_skew: 0.0,
             half_spread_floor: 0.02,
             max_half_spread: 1.0,
+            eps: TEST_EPS,
+            tau: TEST_REF_TAU,
+            reference_tau: TEST_REF_TAU,
+            time_widen_cap: TEST_WIDEN_CAP,
         };
         let targets = BinaryFamily
             .quote_targets(floored)
@@ -569,5 +608,105 @@ mod tests {
         // Symmetric at fair 0.50: each bid is 0.48.
         assert!((targets.leg_a.price - 0.48).abs() < EPSILON);
         assert!((targets.leg_b.price - 0.48).abs() < EPSILON);
+    }
+
+    // ---- W3 slice 3: FR-022 / SC-002 — every admitted binary quote is open ----
+
+    #[test]
+    fn binary_time_widening_widens_the_quote_into_expiry() {
+        // Identical model band, two horizons: far from expiry (factor 1) vs near
+        // expiry (tau = reference/4 -> factor 2). Widening must push both bids
+        // strictly lower while keeping them inside the open interval.
+        let calm = BinaryFamily
+            .quote_targets(symmetric_inputs(0.50, 0.04, 0.0))
+            .expect("calm band quotes");
+        let mut near = symmetric_inputs(0.50, 0.04, 0.0);
+        near.tau = TEST_REF_TAU / 4.0;
+        let near = BinaryFamily
+            .quote_targets(near)
+            .expect("widened band still quotes");
+        assert!(
+            near.leg_a.price < calm.leg_a.price,
+            "widening lowers the YES bid"
+        );
+        assert!(
+            near.leg_b.price < calm.leg_b.price,
+            "widening lowers the NO bid"
+        );
+    }
+
+    #[test]
+    fn binary_rejects_a_leg_at_the_open_interval_boundary() {
+        // With eps = 0.1, the model band [0.40, 0.60] composes both legs at 0.40,
+        // which is interior -> quotes. Tightening the collar to eps = 0.45 swallows
+        // that leg -> the SC-002 fail-closed prune (the closed-interval sanitizer
+        // would have admitted the same 0.40 leg).
+        let mut inside = symmetric_inputs(0.50, 0.10, 0.0);
+        inside.eps = 0.1;
+        assert!(BinaryFamily.quote_targets(inside).is_some());
+        let mut collared = symmetric_inputs(0.50, 0.10, 0.0);
+        collared.eps = 0.45;
+        assert!(BinaryFamily.quote_targets(collared).is_none());
+    }
+
+    /// SC-002: 100% of *admitted* binary quotes land strictly inside `(eps, 1−eps)`
+    /// and never self-cross. Swept across a grid of fair / skew / tau, every quote
+    /// the family returns must satisfy the open-interval and bracket invariants —
+    /// the property the spec requires a test to prove.
+    #[test]
+    fn sc_002_every_admitted_binary_quote_is_strictly_open_and_non_crossing() {
+        let eps = 0.01;
+        // Fair values spanning the interior, model half-spreads, inventory skews
+        // (including ones large enough to be pruned), and tau from deep-out to
+        // near-expiry (exercising the full widening range).
+        let fairs = [0.05, 0.20, 0.50, 0.80, 0.95];
+        let half_spreads = [0.0, 0.01, 0.05, 0.20, 0.45];
+        let skews = [-0.30, -0.05, 0.0, 0.05, 0.30];
+        let taus = [TEST_REF_TAU * 4.0, TEST_REF_TAU, TEST_REF_TAU / 64.0];
+        let mut admitted = 0_u32;
+        for &fair in &fairs {
+            for &hs in &half_spreads {
+                for &skew in &skews {
+                    for &tau in &taus {
+                        let inputs = FamilyQuoteInputs {
+                            fair,
+                            reservation_bid: fair - hs,
+                            reservation_ask: fair + hs,
+                            inventory_skew: skew,
+                            half_spread_floor: 0.0,
+                            max_half_spread: 1.0,
+                            eps,
+                            tau,
+                            reference_tau: TEST_REF_TAU,
+                            time_widen_cap: TEST_WIDEN_CAP,
+                        };
+                        if let Some(targets) = BinaryFamily.quote_targets(inputs) {
+                            admitted += 1;
+                            let yes = targets.leg_a.price;
+                            let no = targets.leg_b.price;
+                            // SC-002: strictly inside the open interval (eps, 1−eps).
+                            assert!(
+                                yes > eps && yes < UNIT_F64 - eps,
+                                "YES {yes} escaped (eps, 1−eps) at fair {fair}, skew {skew}, tau {tau}"
+                            );
+                            assert!(
+                                no > eps && no < UNIT_F64 - eps,
+                                "NO {no} escaped (eps, 1−eps) at fair {fair}, skew {skew}, tau {tau}"
+                            );
+                            // Non-self-crossing: positive joint edge and the implied
+                            // YES market [yes, 1−no] still brackets fair.
+                            assert!(yes + no < UNIT_F64, "zero/negative joint edge admitted");
+                            let yes_ask = UNIT_F64 - no;
+                            assert!(
+                                yes <= fair && fair <= yes_ask,
+                                "implied market [{yes}, {yes_ask}] does not bracket fair {fair}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // The sweep must actually admit quotes (otherwise the invariants are vacuous).
+        assert!(admitted > 0, "the SC-002 sweep admitted no quotes");
     }
 }

@@ -3635,6 +3635,14 @@ reason = "This is the named two/half-spread divisor invariant shared by the make
 [[allowed]]
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
+literal = '''0.5'''
+context = '''pub const HALF_F64: f64 = 0.5;'''
+classification = "shared_numeric_math_invariant"
+reason = "This is the named one-half invariant: the midpoint/half-spread divisor in the maker offset composition and the upper bound of the open-interval eps collar (0 < eps < 0.5) in sanitize_open_probability, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
 literal = '''2'''
 context = '''pub const POWER_OF_TWO: i32 = 2;'''
 classification = "shared_numeric_math_invariant"
@@ -6071,3 +6079,11 @@ literal = '''2.0'''
 context = '''const SIGMA_SQUARED_HALF_DIVISOR: f64 = 2.0;'''
 classification = "pricing_formula_constant"
 reason = "This is the named sigma-squared-over-two divisor in the updown family's fair-probability formula, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/requote_budget.rs"
+kind = "number"
+literal = '''0'''
+context = '''window_cost: 0,'''
+classification = "structural_zero_initializer"
+reason = "This initializes the requote-budget u64 spend accumulator to its additive identity (an empty window); the budget ceiling itself is the config-bound max_cost_per_window, so this is a structural zero, not an operator runtime value."

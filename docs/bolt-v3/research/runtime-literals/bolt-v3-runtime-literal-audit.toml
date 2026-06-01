@@ -4345,12 +4345,12 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''10_000.0'''
-context = '''const BPS_DENOMINATOR: f64 = 10_000.0;'''
+context = '''pub const BPS_DENOMINATOR: f64 = 10_000.0;'''
 classification = "financial_unit_conversion"
-reason = "This is the basis-points denominator for financial unit conversion, not an operator runtime value."
+reason = "This is the basis-points denominator for financial unit conversion, not an operator runtime value. Consolidated into the shared numeric module in #522 A1."
 
 [[allowed]]
 path = "src/bolt_v3_numeric.rs"
@@ -4377,12 +4377,12 @@ classification = "time_unit_conversion"
 reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''2.0'''
-context = '''const MIDPOINT_DIVISOR_F64: f64 = 2.0;'''
+context = '''pub const MIDPOINT_DIVISOR_F64: f64 = 2.0;'''
 classification = "strategy_math_invariant"
-reason = "This is the named divisor for midpoint calculation, not an operator runtime value."
+reason = "This is the named divisor for midpoint calculation, not an operator runtime value. Consolidated into the shared numeric module in #522 A1."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -4393,12 +4393,12 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''2.0'''
-context = '''const QUADRATIC_RISK_DIVISOR: f64 = 2.0;'''
+context = '''pub const QUADRATIC_RISK_DIVISOR: f64 = 2.0;'''
 classification = "pricing_formula_constant"
-reason = "This is a named coefficient in the strategy sizing formula, not an operator runtime value."
+reason = "This is a named coefficient in the strategy sizing formula, not an operator runtime value. Consolidated into the shared numeric module in #522 A1."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"

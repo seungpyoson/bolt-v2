@@ -621,8 +621,8 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
     );
     assert_eq!(
         source.matches("let run_future = node.run();").count(),
-        2,
-        "bolt-v3 live node may reference NT run only in the gated production wrapper and the strategy-free no-submit proof helper"
+        3,
+        "bolt-v3 live node may reference NT run only in the gated production wrapper and the strategy-free no-submit proof helpers"
     );
     assert_eq!(
         source.matches("let start = node.start();").count(),

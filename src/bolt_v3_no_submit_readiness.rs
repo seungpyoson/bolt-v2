@@ -15,7 +15,9 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::{
-    bolt_v3_config::{LoadedBoltV3Config, resolve_root_relative_path},
+    bolt_v3_config::{
+        DECISION_REFERENCE_GATE_ROLE, LoadedBoltV3Config, resolve_root_relative_path,
+    },
     bolt_v3_live_node::{
         BoltV3LiveNodeError, BoltV3LiveNodeRuntime, BoltV3NoSubmitReferenceCacheEvidence,
         BoltV3NoSubmitReferenceQuote, BoltV3NoSubmitReferenceQuoteEvidence,
@@ -490,6 +492,74 @@ fn latest_reference_quotes_by_key(
     latest
 }
 
+/// Verifies every configured reference requirement class fails closed.
+///
+/// A strategy bundle may configure NT `reference_data` requirements, source-owned
+/// `decision_reference` requirements, or BOTH. When both are present, both classes
+/// must pass: a satisfied `reference_data` class must NOT short-circuit
+/// `decision_reference` verification (and vice versa). Errors from every configured
+/// class are accumulated so a single satisfied class can never mask another class's
+/// unmet readiness. Single source of truth, fail closed: any unmet class — or no
+/// configured class at all — fails readiness.
+pub fn reference_readiness_from_no_submit_evidence(
+    loaded: &LoadedBoltV3Config,
+    evidence: &BoltV3NoSubmitReferenceQuoteEvidence,
+) -> Result<(), String> {
+    let has_reference_data = has_configured_reference_data(loaded);
+    let has_decision_reference = has_configured_decision_reference(loaded);
+
+    if !has_reference_data && !has_decision_reference {
+        return Err("no configured reference_data requirements or source-owned decision_reference requirements found".to_string());
+    }
+
+    let mut failures = Vec::new();
+
+    if has_reference_data {
+        let reference_data_readiness = match evidence.observed_at_unix_nanos() {
+            Some(observed_at_unix_nanos) => {
+                reference_readiness_from_quote_evidence(loaded, evidence, observed_at_unix_nanos)
+            }
+            None => Err("no live reference quote evidence was captured".to_string()),
+        };
+        if let Err(error) = reference_data_readiness {
+            failures.push(error);
+        }
+    }
+
+    if has_decision_reference
+        && let Err(error) = crate::bolt_v3_operator_artifacts::verify_source_owned_reference_readiness_from_operator_evidence(loaded)
+    {
+        failures.push(format!(
+            "source-owned decision_reference readiness is invalid: {error}"
+        ));
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
+}
+
+fn has_configured_reference_data(loaded: &LoadedBoltV3Config) -> bool {
+    loaded
+        .strategies
+        .iter()
+        .any(|strategy| !strategy.config.reference_data.is_empty())
+}
+
+fn has_configured_decision_reference(loaded: &LoadedBoltV3Config) -> bool {
+    loaded.strategies.iter().any(|strategy| {
+        strategy
+            .config
+            .target
+            .as_table()
+            .and_then(|target| target.get("gate_subscriptions"))
+            .and_then(toml::Value::as_table)
+            .is_some_and(|subscriptions| subscriptions.contains_key(DECISION_REFERENCE_GATE_ROLE))
+    })
+}
+
 pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
@@ -498,10 +568,7 @@ pub async fn run_bolt_v3_no_submit_readiness_on_runtime(
 ) -> Result<BoltV3NoSubmitReadinessReport, BoltV3NoSubmitReadinessError> {
     let (connect, reference, disconnect) =
         controlled_no_submit_readiness(runtime, loaded, |_runtime, quote_evidence| {
-            let observed_at_unix_nanos = quote_evidence
-                .observed_at_unix_nanos()
-                .ok_or_else(|| "no live reference quote evidence was captured".to_string())?;
-            reference_readiness_from_quote_evidence(loaded, quote_evidence, observed_at_unix_nanos)
+            reference_readiness_from_no_submit_evidence(loaded, quote_evidence)
         })
         .await;
     let generated_at_unix_seconds = current_unix_seconds()?;

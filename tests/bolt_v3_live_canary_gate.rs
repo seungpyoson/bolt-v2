@@ -2,11 +2,14 @@ mod support;
 
 use bolt_v2::{
     bolt_v3_config::{
-        LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config, load_bolt_v3_config,
+        DataClientReadinessProbeBookType, LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock,
+        LiveCanaryProofPolicyBlock, LiveCanaryProofTimeInForce, LoadedBoltV3Config,
+        load_bolt_v3_config,
     },
     bolt_v3_live_canary_gate::{
         BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_gate,
         check_bolt_v3_live_canary_pre_consumption_gate,
+        pre_consumption_operator_evidence_bounded_read_paths,
     },
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness_schema::{
@@ -67,11 +70,15 @@ async fn live_canary_gate_rejects_empty_approval_id() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -99,11 +106,15 @@ async fn live_canary_gate_rejects_empty_readiness_report_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -131,11 +142,15 @@ async fn live_canary_gate_rejects_parent_dir_readiness_report_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -170,11 +185,15 @@ async fn live_canary_gate_rejects_missing_operator_evidence_before_reading_repor
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: None,
         },
     );
@@ -186,6 +205,102 @@ async fn live_canary_gate_rejects_missing_operator_evidence_before_reading_repor
     assert!(
         matches!(error, BoltV3LiveCanaryGateError::MissingOperatorEvidence),
         "missing operator_evidence must fail before reading report, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_missing_gate_session_binding_before_reading_report() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut operator_evidence = valid_operator_evidence();
+    operator_evidence.gate_session_path = None;
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-read-before-gate-session-check.json".to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("missing gate session binding must fail closed before report read");
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
+                field: "gate_session_path"
+            }
+        ),
+        "expected missing gate session path rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_cross_market_gate_session_before_reading_report() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let mut operator_evidence = valid_operator_evidence();
+    let gate_session_path = std::path::PathBuf::from(
+        operator_evidence
+            .gate_session_path
+            .as_ref()
+            .expect("valid operator evidence should bind gate session"),
+    );
+    let mut gate_session: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&gate_session_path).expect("gate session should read"),
+    )
+    .expect("gate session should parse");
+    gate_session["selected_market"]["selected_market_key"] = serde_json::json!("c".repeat(64));
+    let gate_session_bytes =
+        serde_json::to_vec(&gate_session).expect("gate session should serialize");
+    std::fs::write(&gate_session_path, &gate_session_bytes).expect("gate session should rewrite");
+    operator_evidence.expected_gate_session_sha256 = Some(sha256_hex(&gate_session_bytes));
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "not-read-before-gate-session-check.json".to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("cross-market gate session must fail closed before report read");
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveCanaryGateError::OperatorGateSessionInvalid { .. }
+        ),
+        "expected invalid gate session rejection, got {error:?}"
     );
 }
 
@@ -204,11 +319,15 @@ async fn live_canary_gate_rejects_parent_dir_operator_evidence_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -245,11 +364,15 @@ async fn live_canary_gate_rejects_parent_dir_strategy_cancel_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -286,11 +409,15 @@ async fn live_canary_gate_rejects_malformed_operator_evidence_hash_shape() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -326,11 +453,15 @@ async fn live_canary_gate_rejects_uppercase_operator_evidence_hash_shape() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -368,11 +499,15 @@ async fn live_canary_gate_rejects_operator_evidence_file_hash_mismatch() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -411,11 +546,15 @@ async fn live_canary_gate_rejects_approval_envelope_hash_mismatch() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -478,11 +617,15 @@ async fn live_canary_gate_rejects_approval_envelope_circular_fields() {
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-                reference_quote_max_age_seconds: 10,
+                reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
                 reference_quote_wait_timeout_seconds: 10,
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
                 reference_quote_probe_log_commands: true,
+                egress_identity_observed_path: None,
+                egress_identity_observed_max_bytes: None,
+                approved_egress_identity_sha256: None,
+                proof_policy: None,
                 operator_evidence: Some(operator_evidence),
             },
         );
@@ -528,11 +671,15 @@ async fn live_canary_gate_rejects_approval_envelope_toml_drift_after_hash_match(
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -556,7 +703,62 @@ async fn live_canary_gate_accepts_non_circular_approval_envelope_schema() {
     let report_path = tempdir.path().join("no-submit-readiness.json");
     write_no_submit_report(&report_path, &[]);
     let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine readiness-report hash into the envelope: the report
+    // binding is mandatory on the production (proof-disabled) path too.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let report = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("non-circular approval envelope should pass");
+
+    assert_eq!(report.approval_id(), "operator-approved-canary-001");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_accepts_envelope_bound_gate_session() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine readiness-report hash into the evidence first: the report
+    // binding is mandatory on the production (proof-disabled) path too, so the
+    // self-declared TOML hash must be present before the envelope is sealed.
+    let report_bytes = std::fs::read(&report_path).expect("readiness report should read");
+    operator_evidence.no_submit_readiness_report_sha256 = Some(sha256_hex(&report_bytes));
+    // Seal the gate-session hash into the envelope (production behavior) and
+    // confirm the gate accepts a gate-session file whose content matches the
+    // sealed envelope value.
     let envelope = valid_approval_envelope_value(&operator_evidence);
+    assert!(
+        envelope
+            .get("expected_gate_session_sha256")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        "envelope fixture must seal expected_gate_session_sha256"
+    );
     bind_approval_envelope_value(&mut operator_evidence, envelope);
     let loaded = loaded_with_live_canary(
         loaded,
@@ -567,18 +769,746 @@ async fn live_canary_gate_accepts_non_circular_approval_envelope_schema() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
 
     let report = check_bolt_v3_live_canary_gate(&loaded)
         .await
-        .expect("non-circular approval envelope should pass");
+        .expect("envelope-bound gate session should pass");
+
+    assert_eq!(report.approval_id(), "operator-approved-canary-001");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_gate_session_swap_after_toml_self_hash_update() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the original gate-session hash into the envelope, mirroring an
+    // operator approval of the original gate session.
+    let envelope = valid_approval_envelope_value(&operator_evidence);
+    bind_approval_envelope_value(&mut operator_evidence, envelope);
+
+    // Adversary swaps the gate-session file after approval and updates ONLY the
+    // self-declared TOML hash to match the swapped file. The envelope still
+    // carries the original gate-session hash, so the swap must be rejected.
+    let gate_session_path = std::path::PathBuf::from(
+        operator_evidence
+            .gate_session_path
+            .as_ref()
+            .expect("valid operator evidence should bind gate session"),
+    );
+    let mut gate_session: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&gate_session_path).expect("gate session should read"),
+    )
+    .expect("gate session should parse");
+    gate_session["selected_market"]["selected_at_ms"] = serde_json::json!(987_654_321_u64);
+    let swapped_gate_session_bytes =
+        serde_json::to_vec(&gate_session).expect("gate session should serialize");
+    std::fs::write(&gate_session_path, &swapped_gate_session_bytes)
+        .expect("gate session should rewrite");
+    let swapped_gate_session_sha256 = sha256_hex(&swapped_gate_session_bytes);
+    assert_ne!(
+        Some(&swapped_gate_session_sha256),
+        operator_evidence.expected_gate_session_sha256.as_ref(),
+        "swapped gate session must change the file hash"
+    );
+    // Update only the TOML self-hash so the self-declared check passes; the
+    // envelope hash is intentionally left bound to the original gate session.
+    operator_evidence.expected_gate_session_sha256 = Some(swapped_gate_session_sha256);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("post-approval gate-session swap must fail closed on envelope binding");
+
+    match error {
+        BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch { field, .. } => {
+            assert_eq!(
+                field, "expected_gate_session_sha256",
+                "gate-session swap must be rejected by the envelope binding, got {field}"
+            );
+        }
+        other => panic!("expected approval-envelope gate-session binding rejection, got {other:?}"),
+    }
+}
+
+/// Proof-policy block matching the shared operator-evidence gate session so the
+/// proof-policy path of the live canary gate can be exercised end to end.
+fn proof_policy_for_support_gate_session() -> LiveCanaryProofPolicyBlock {
+    LiveCanaryProofPolicyBlock {
+        enabled: true,
+        policy_kind: "least_bad_strategy_candidate".to_string(),
+        proof_claim: "proof_only".to_string(),
+        executor_strategy_id: "canary-proof-executor-proof".to_string(),
+        strategy_instance_id: "configured_updown_main".to_string(),
+        execution_client_id: "polymarket_main".to_string(),
+        book_type: DataClientReadinessProbeBookType::L2Mbp,
+        book_snapshot_interval_millis: 1_000,
+        time_in_force: LiveCanaryProofTimeInForce::Fok,
+        is_post_only: false,
+        is_reduce_only: false,
+        is_quote_quantity: false,
+        notional_mode: "fixed".to_string(),
+        proof_notional: "1.00".to_string(),
+        candidate_score_source: "proof_source".to_string(),
+        allow_negative_expected_ev: true,
+        rotation_observation_enabled: false,
+        rotation_min_distinct_markets: 1,
+        rotation_max_attempts: 1,
+    }
+}
+
+/// Configures the shared operator-evidence fixture for the proof-policy path:
+/// refreshes the gate-session `created_at_ms` so it passes freshness, writes a
+/// canary proof order-intent that binds the gate session, sets the TOML
+/// self-declared hashes, and rebuilds the approval envelope sealing both the
+/// gate-session and order-intent file hashes (production producer behavior).
+fn configure_proof_policy_evidence(
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    report_path: &std::path::Path,
+) {
+    // Seal the no-submit readiness-report file hash. The report binding is
+    // MANDATORY on the proof-policy path, so the self-declared TOML hash and the
+    // envelope must both carry the genuine report-file hash. The caller writes
+    // the report before invoking this helper.
+    let report_bytes = std::fs::read(report_path).expect("readiness report should read");
+    operator_evidence.no_submit_readiness_report_sha256 = Some(sha256_hex(&report_bytes));
+
+    // Refresh the gate-session file so its freshness check passes on the proof
+    // path, then re-bind the self-declared TOML hash to the refreshed file.
+    let gate_session_path = std::path::PathBuf::from(
+        operator_evidence
+            .gate_session_path
+            .as_ref()
+            .expect("valid operator evidence should bind gate session"),
+    );
+    let mut gate_session: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&gate_session_path).expect("gate session should read"),
+    )
+    .expect("gate session should parse");
+    let now_ms = current_unix_seconds_for_test().saturating_mul(1_000);
+    gate_session["created_at_ms"] = serde_json::json!(now_ms);
+    let gate_session_bytes =
+        serde_json::to_vec(&gate_session).expect("gate session should serialize");
+    std::fs::write(&gate_session_path, &gate_session_bytes).expect("gate session should rewrite");
+    operator_evidence.expected_gate_session_sha256 = Some(sha256_hex(&gate_session_bytes));
+
+    // Write a canary proof order-intent bound to the gate session and matching
+    // the proof policy, then bind its self-declared TOML hash.
+    let order_intent_path = gate_session_path
+        .parent()
+        .expect("gate session path should have a parent")
+        .join("canary-proof-order-intent.json");
+    let order_intent = serde_json::json!({
+        "record_kind": "bolt_v3_canary_proof_order_intent",
+        "proof_claim": "proof_only",
+        "strategy_instance_id": "configured_updown_main",
+        "execution_client_id": "polymarket_main",
+        "instrument_id": "configured-condition-UP.POLYMARKET",
+        "order_side": "Buy",
+        "notional": "1.00",
+        "quantity": "2.00",
+        "source_refs": ["a".repeat(64)]
+    });
+    let order_intent_bytes =
+        serde_json::to_vec(&order_intent).expect("order intent should serialize");
+    std::fs::write(&order_intent_path, &order_intent_bytes)
+        .expect("order intent should be written");
+    operator_evidence.canary_proof_order_intent_path =
+        Some(order_intent_path.to_string_lossy().to_string());
+    operator_evidence.canary_proof_order_intent_sha256 = Some(sha256_hex(&order_intent_bytes));
+
+    // Rebuild the envelope so it seals both the refreshed gate-session hash and
+    // the order-intent hash, then rebind the envelope file + consumption proof.
+    let envelope = valid_approval_envelope_value(operator_evidence);
+    bind_approval_envelope_value(operator_evidence, envelope);
+}
+
+/// Seals the genuine no-submit readiness-report file hash into the operator
+/// evidence for a NON-proof (production strategy run) fixture: sets the
+/// self-declared TOML hash and rebuilds the approval envelope so it carries the
+/// same hash, then rebinds the envelope file + consumption proof.
+///
+/// The no-submit report binding is mandatory on EVERY arming path — the
+/// proof-disabled production run reads the report and arms `submit_admission`
+/// just like the proof canary — so a legitimate production-path fixture must
+/// seal the report hash into the envelope exactly as the production producer
+/// does. The caller writes the report file before invoking this helper.
+fn seal_no_submit_readiness_report_into_production_evidence(
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    report_path: &std::path::Path,
+) {
+    let report_bytes = std::fs::read(report_path).expect("readiness report should read");
+    operator_evidence.no_submit_readiness_report_sha256 = Some(sha256_hex(&report_bytes));
+    let envelope = valid_approval_envelope_value(operator_evidence);
+    bind_approval_envelope_value(operator_evidence, envelope);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_accepts_envelope_bound_canary_proof_order_intent() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    configure_proof_policy_evidence(&mut operator_evidence, &report_path);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(proof_policy_for_support_gate_session()),
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let report = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("envelope-bound canary proof order intent should pass on the proof path");
+
+    assert_eq!(report.approval_id(), "operator-approved-canary-001");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_canary_proof_order_intent_swap_after_toml_self_hash_update() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    configure_proof_policy_evidence(&mut operator_evidence, &report_path);
+
+    // Adversary swaps the canary proof order-intent file after approval and
+    // updates ONLY the self-declared TOML hash. The envelope still seals the
+    // original order-intent hash, so the swap must be rejected.
+    let order_intent_path = std::path::PathBuf::from(
+        operator_evidence
+            .canary_proof_order_intent_path
+            .as_ref()
+            .expect("proof policy evidence should bind order intent"),
+    );
+    let mut order_intent: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&order_intent_path).expect("order intent should read"),
+    )
+    .expect("order intent should parse");
+    // Redirect the order to the other side of the market while keeping it a
+    // structurally valid, gate-session-bound proof order intent.
+    order_intent["instrument_id"] = serde_json::json!("configured-condition-DOWN.POLYMARKET");
+    let swapped_order_intent_bytes =
+        serde_json::to_vec(&order_intent).expect("order intent should serialize");
+    std::fs::write(&order_intent_path, &swapped_order_intent_bytes)
+        .expect("order intent should rewrite");
+    let swapped_order_intent_sha256 = sha256_hex(&swapped_order_intent_bytes);
+    assert_ne!(
+        Some(&swapped_order_intent_sha256),
+        operator_evidence.canary_proof_order_intent_sha256.as_ref(),
+        "swapped order intent must change the file hash"
+    );
+    operator_evidence.canary_proof_order_intent_sha256 = Some(swapped_order_intent_sha256);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(proof_policy_for_support_gate_session()),
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("post-approval order-intent swap must fail closed on envelope binding");
+
+    match error {
+        BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch { field, .. } => {
+            assert_eq!(
+                field, "canary_proof_order_intent_sha256",
+                "order-intent swap must be rejected by the envelope binding, got {field}"
+            );
+        }
+        other => {
+            panic!("expected approval-envelope order-intent binding rejection, got {other:?}")
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_missing_envelope_order_intent_binding_on_proof_path() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    configure_proof_policy_evidence(&mut operator_evidence, &report_path);
+
+    // Strip the order-intent binding from the envelope (a legacy/forged
+    // envelope) while keeping the self-declared TOML hash. The proof path must
+    // fail closed because the envelope binding is mandatory there.
+    let mut envelope = valid_approval_envelope_value(&operator_evidence);
+    envelope
+        .as_object_mut()
+        .expect("approval envelope should be an object")
+        .remove("canary_proof_order_intent_sha256");
+    bind_approval_envelope_value(&mut operator_evidence, envelope);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(proof_policy_for_support_gate_session()),
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("missing envelope order-intent binding must fail closed on the proof path");
+
+    match error {
+        BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field } => {
+            assert_eq!(
+                field, "canary_proof_order_intent_sha256",
+                "missing envelope order-intent binding must fail closed, got {field}"
+            );
+        }
+        other => panic!("expected missing envelope order-intent binding rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_accepts_envelope_bound_no_submit_readiness_report() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seals the genuine readiness-report file hash into the envelope (and the
+    // self-declared TOML hash) alongside the gate-session and order-intent
+    // bindings — production producer behavior.
+    configure_proof_policy_evidence(&mut operator_evidence, &report_path);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(proof_policy_for_support_gate_session()),
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let report = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("envelope-bound no-submit readiness report should pass on the proof path");
+
+    assert_eq!(report.approval_id(), "operator-approved-canary-001");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_no_submit_readiness_report_swap_after_toml_self_hash_update() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the ORIGINAL readiness-report hash into the envelope, mirroring an
+    // operator approval of the probe-produced report.
+    configure_proof_policy_evidence(&mut operator_evidence, &report_path);
+
+    // Adversary replaces the readiness report at the configured path with a
+    // hand-written, still-all-satisfied report whose linkage fields are forged
+    // to pass the content check, then updates ONLY the self-declared TOML hash
+    // to match the forged file. The envelope still seals the original report
+    // hash, so the swap must be rejected.
+    let original_report_sha256 = operator_evidence
+        .no_submit_readiness_report_sha256
+        .clone()
+        .expect("proof policy evidence should bind readiness report");
+    // Forge a still-fresh, still-all-satisfied report with a different
+    // generated_at so its content (hence sha256) differs from the approved one.
+    write_no_submit_report_at(
+        &report_path,
+        &[],
+        current_unix_seconds_for_test().saturating_sub(1),
+    );
+    let forged_report_bytes = std::fs::read(&report_path).expect("forged report should read");
+    let forged_report_sha256 = sha256_hex(&forged_report_bytes);
+    assert_ne!(
+        forged_report_sha256, original_report_sha256,
+        "forged readiness report must change the file hash"
+    );
+    // Update only the TOML self-hash so the self-declared check passes; the
+    // envelope hash is intentionally left bound to the original report.
+    operator_evidence.no_submit_readiness_report_sha256 = Some(forged_report_sha256);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(proof_policy_for_support_gate_session()),
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("post-approval readiness-report swap must fail closed on envelope binding");
+
+    match error {
+        BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch { field, .. } => {
+            assert_eq!(
+                field, "no_submit_readiness_report_sha256",
+                "readiness-report swap must be rejected by the envelope binding, got {field}"
+            );
+        }
+        other => {
+            panic!("expected approval-envelope readiness-report binding rejection, got {other:?}")
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_missing_envelope_no_submit_readiness_report_binding_on_proof_path()
+ {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    configure_proof_policy_evidence(&mut operator_evidence, &report_path);
+
+    // Strip the readiness-report binding from the envelope (a legacy/forged
+    // envelope) while keeping the self-declared TOML hash. The proof path must
+    // fail closed because the envelope binding is mandatory there.
+    let mut envelope = valid_approval_envelope_value(&operator_evidence);
+    envelope
+        .as_object_mut()
+        .expect("approval envelope should be an object")
+        .remove("no_submit_readiness_report_sha256");
+    bind_approval_envelope_value(&mut operator_evidence, envelope);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(proof_policy_for_support_gate_session()),
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("missing envelope readiness-report binding must fail closed on the proof path");
+
+    match error {
+        BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field } => {
+            assert_eq!(
+                field, "no_submit_readiness_report_sha256",
+                "missing envelope readiness-report binding must fail closed, got {field}"
+            );
+        }
+        other => {
+            panic!("expected missing envelope readiness-report binding rejection, got {other:?}")
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_no_submit_readiness_report_swap_after_toml_self_hash_update_on_production_path()
+ {
+    // P4 forge attack on the PRODUCTION (proof-disabled) path: the no-submit
+    // readiness report is read and consumed to arm submit_admission on the
+    // proof-disabled production strategy run too, so its envelope binding is
+    // mandatory there. An adversary who replaces the report at the configured
+    // path with a hand-written all-satisfied report and updates ONLY the
+    // self-declared TOML hash must still be rejected by the operator-sealed
+    // envelope. Pre-fix this swap armed real orders; post-fix it fails closed.
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the ORIGINAL readiness-report hash into the envelope (and TOML),
+    // mirroring an operator approval of the probe-produced report, with proof
+    // policy DISABLED.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
+    let original_report_sha256 = operator_evidence
+        .no_submit_readiness_report_sha256
+        .clone()
+        .expect("production evidence should bind readiness report");
+
+    // Forge a still-fresh, still-all-satisfied report with a different
+    // generated_at so its content (hence sha256) differs from the approved one.
+    write_no_submit_report_at(
+        &report_path,
+        &[],
+        current_unix_seconds_for_test().saturating_sub(1),
+    );
+    let forged_report_bytes = std::fs::read(&report_path).expect("forged report should read");
+    let forged_report_sha256 = sha256_hex(&forged_report_bytes);
+    assert_ne!(
+        forged_report_sha256, original_report_sha256,
+        "forged readiness report must change the file hash"
+    );
+    // Update only the TOML self-hash so the self-declared check passes; the
+    // envelope hash is intentionally left bound to the original report.
+    operator_evidence.no_submit_readiness_report_sha256 = Some(forged_report_sha256);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("post-approval readiness-report swap must fail closed on the production path");
+
+    match error {
+        BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch { field, .. } => {
+            assert_eq!(
+                field, "no_submit_readiness_report_sha256",
+                "production-path readiness-report swap must be rejected by the envelope binding, got {field}"
+            );
+        }
+        other => {
+            panic!(
+                "expected production-path approval-envelope readiness-report binding rejection, got {other:?}"
+            )
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_missing_envelope_no_submit_readiness_report_binding_on_production_path()
+ {
+    // On the production (proof-disabled) path the report binding is mandatory
+    // too, so an envelope that OMITS no_submit_readiness_report_sha256 (a
+    // legacy/forged envelope) must fail closed even though the self-declared
+    // TOML hash is present.
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine report hash into the TOML evidence, then build an envelope
+    // that omits the report binding while keeping the self-declared TOML hash.
+    let report_bytes = std::fs::read(&report_path).expect("readiness report should read");
+    operator_evidence.no_submit_readiness_report_sha256 = Some(sha256_hex(&report_bytes));
+    let mut envelope = valid_approval_envelope_value(&operator_evidence);
+    envelope
+        .as_object_mut()
+        .expect("approval envelope should be an object")
+        .remove("no_submit_readiness_report_sha256");
+    bind_approval_envelope_value(&mut operator_evidence, envelope);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded).await.expect_err(
+        "missing envelope readiness-report binding must fail closed on the production path",
+    );
+
+    match error {
+        BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field } => {
+            assert_eq!(
+                field, "no_submit_readiness_report_sha256",
+                "missing envelope readiness-report binding must fail closed on production, got {field}"
+            );
+        }
+        other => {
+            panic!(
+                "expected missing envelope readiness-report binding rejection on production, got {other:?}"
+            )
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_accepts_envelope_bound_no_submit_readiness_report_on_production_path() {
+    // A legitimate production (proof-disabled) run with the genuine report hash
+    // sealed into both the self-declared TOML evidence and the operator-approval
+    // envelope must still pass the gate.
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine readiness-report file hash into the envelope (and the
+    // self-declared TOML hash) — production producer behavior, proof DISABLED.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let report = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("envelope-bound no-submit readiness report should pass on the production path");
 
     assert_eq!(report.approval_id(), "operator-approved-canary-001");
 }
@@ -605,11 +1535,15 @@ async fn live_canary_gate_rejects_approval_consumption_hash_mismatch() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -656,11 +1590,15 @@ async fn live_canary_gate_rejects_approval_consumption_strategy_cancel_path_hash
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -699,11 +1637,15 @@ async fn live_canary_gate_rejects_approval_consumption_missing_head_sha() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -743,11 +1685,15 @@ async fn live_canary_gate_rejects_approval_consumption_head_sha_mismatch() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -787,11 +1733,15 @@ async fn live_canary_gate_rejects_stale_self_consistent_head_sha() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -831,11 +1781,15 @@ async fn live_canary_gate_rejects_malformed_operator_evidence_head_sha() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -894,11 +1848,15 @@ async fn live_canary_gate_rejects_approval_consumption_root_toml_sha256_mismatch
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -943,11 +1901,15 @@ async fn live_canary_gate_rejects_stale_approval_consumption_beyond_configured_m
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1026,10 +1988,8 @@ async fn live_canary_gate_rejects_oversized_operator_evidence_file_before_hashin
 #[tokio::test(flavor = "current_thread")]
 async fn live_canary_gate_rejects_oversized_approval_consumption_before_reading_to_eof() {
     let mut operator_evidence = valid_operator_evidence();
-    let approval_envelope_len = std::fs::metadata(&operator_evidence.approval_envelope_path)
-        .expect("approval envelope should exist")
-        .len();
-    operator_evidence.max_operator_evidence_file_bytes = approval_envelope_len + 1;
+    operator_evidence.max_operator_evidence_file_bytes =
+        largest_pre_consumption_operator_evidence_file_len(&operator_evidence) + 1;
     std::fs::write(
         &operator_evidence.approval_consumption_path,
         vec![b' '; operator_evidence.max_operator_evidence_file_bytes as usize + 1],
@@ -1048,6 +2008,26 @@ async fn live_canary_gate_rejects_oversized_approval_consumption_before_reading_
         }
         other => panic!("expected oversized approval consumption read rejection, got {other:?}"),
     }
+}
+
+fn largest_pre_consumption_operator_evidence_file_len(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> u64 {
+    // Derive the size bound from the production gate's single source of truth so
+    // a newly-added bounded read (e.g. the `decision_evidence_path` chain) can
+    // never desync the test's size bound from the gate's read accounting and let
+    // a non-consumption file exceed the limit ahead of the consumption read.
+    pre_consumption_operator_evidence_bounded_read_paths(evidence)
+        .into_iter()
+        .map(|path| {
+            std::fs::metadata(path)
+                .unwrap_or_else(|error| {
+                    panic!("operator evidence file `{path}` should exist: {error}")
+                })
+                .len()
+        })
+        .max()
+        .expect("operator evidence should include pre-consumption files")
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1099,6 +2079,73 @@ async fn live_canary_pre_consumption_gate_accepts_without_pre_run_order_id_hashe
         .expect("pre-consumption gate must not require order IDs before live runner entry");
 
     assert_eq!(report.approval_id(), "operator-approved-canary-001");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pre_consumption_gate_rejects_stale_source_owned_strategy_input_before_approval() {
+    let mut loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(
+        1,
+        rust_decimal::Decimal::new(25, 2),
+    );
+    let reference_quote_max_age_seconds = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should include live_canary")
+        .reference_quote_max_age_seconds;
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|block| block.operator_evidence.as_mut())
+        .expect("fixture should include operator evidence");
+    make_strategy_input_reference_quote_stale(
+        operator_evidence,
+        reference_quote_max_age_seconds + 1,
+    );
+    std::fs::remove_file(&operator_evidence.approval_consumption_path)
+        .expect("fixture should start with removable approval consumption proof");
+
+    let error = check_bolt_v3_live_canary_pre_consumption_gate(&loaded)
+        .await
+        .expect_err(
+            "stale source-owned strategy_input reference quote must fail before approval consumption",
+        );
+
+    assert!(
+        error.to_string().contains("strategy_input_evidence")
+            && error
+                .to_string()
+                .contains("reference_quote_max_age_seconds"),
+        "expected stale source-owned strategy_input rejection, got {error:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pre_consumption_gate_rejects_source_order_notional_above_live_cap_before_approval() {
+    let mut loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(
+        1,
+        rust_decimal::Decimal::new(100, 2),
+    );
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|block| block.operator_evidence.as_mut())
+        .expect("fixture should include operator evidence");
+    make_latest_decision_evidence_notional(operator_evidence, "1.01");
+    std::fs::remove_file(&operator_evidence.approval_consumption_path)
+        .expect("fixture should start with removable approval consumption proof");
+
+    let error = check_bolt_v3_live_canary_pre_consumption_gate(&loaded)
+        .await
+        .expect_err("source-owned order notional above canary cap must fail before approval");
+
+    assert!(
+        error.to_string().contains("decision_evidence")
+            && error.to_string().contains("max_notional_per_order"),
+        "expected source-owned notional cap rejection, got {error:?}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1166,11 +2213,15 @@ async fn live_canary_gate_rejects_symlinked_readiness_report_path() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1204,11 +2255,15 @@ async fn live_canary_gate_rejects_zero_order_count() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1239,11 +2294,15 @@ async fn live_canary_gate_rejects_zero_report_byte_cap() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 0,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1274,11 +2333,15 @@ async fn live_canary_gate_rejects_zero_readiness_report_max_age() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: 0,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1315,6 +2378,10 @@ async fn live_canary_gate_rejects_zero_reference_quote_max_age() {
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1346,11 +2413,15 @@ async fn live_canary_gate_rejects_zero_reference_quote_wait_timeout() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 0,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1382,11 +2453,15 @@ async fn live_canary_gate_rejects_blank_reference_quote_probe_actor_id() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: " ".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -1423,11 +2498,15 @@ async fn live_canary_gate_rejects_malformed_reference_quote_probe_actor_id() {
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-                reference_quote_max_age_seconds: 10,
+                reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
                 reference_quote_wait_timeout_seconds: 10,
                 reference_quote_probe_actor_id: actor_id.to_string(),
                 reference_quote_probe_log_events: true,
                 reference_quote_probe_log_commands: true,
+                egress_identity_observed_path: None,
+                egress_identity_observed_max_bytes: None,
+                approved_egress_identity_sha256: None,
+                proof_policy: None,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -1506,11 +2585,15 @@ async fn live_canary_gate_rejects_invalid_canary_notional_values() {
                 max_notional_per_order: candidate.to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-                reference_quote_max_age_seconds: 10,
+                reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
                 reference_quote_wait_timeout_seconds: 10,
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
                 reference_quote_probe_log_commands: true,
+                egress_identity_observed_path: None,
+                egress_identity_observed_max_bytes: None,
+                approved_egress_identity_sha256: None,
+                proof_policy: None,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -1546,11 +2629,15 @@ async fn live_canary_gate_rejects_invalid_root_notional_values() {
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-                reference_quote_max_age_seconds: 10,
+                reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
                 reference_quote_wait_timeout_seconds: 10,
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
                 reference_quote_probe_log_commands: true,
+                egress_identity_observed_path: None,
+                egress_identity_observed_max_bytes: None,
+                approved_egress_identity_sha256: None,
+                proof_policy: None,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -1577,6 +2664,10 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
     write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine readiness-report hash into the envelope: the report
+    // binding is mandatory on the production (proof-disabled) path too.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
 
     let loaded = loaded_with_live_canary(
         loaded,
@@ -1587,12 +2678,16 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
             max_notional_per_order: " 1.00 ".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
-            operator_evidence: Some(valid_operator_evidence()),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
         },
     );
 
@@ -1621,6 +2716,10 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
     write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine readiness-report hash into the envelope: the report
+    // binding is mandatory on the production (proof-disabled) path too.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
 
     let loaded = loaded_with_live_canary(
         loaded,
@@ -1631,12 +2730,16 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
             max_notional_per_order: "10.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
-            operator_evidence: Some(valid_operator_evidence()),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
         },
     );
 
@@ -1666,11 +2769,15 @@ async fn live_canary_gate_rejects_report_expired_at_late_gate_timestamp() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence_for_window(
                 now as i64 - 10,
                 now as i64 + 3600,
@@ -1712,11 +2819,15 @@ async fn live_canary_gate_rejects_operator_window_expired_at_gate_timestamp() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: 3_600,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence_for_window(
                 now as i64 - 120,
                 now as i64 - 60,
@@ -1845,11 +2956,15 @@ async fn live_canary_gate_rejects_operator_evidence_window_without_positive_dura
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1890,11 +3005,15 @@ async fn live_canary_gate_rejects_operator_evidence_window_before_current_time()
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1936,11 +3055,15 @@ async fn live_canary_gate_rejects_operator_evidence_window_after_current_time() 
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -1984,11 +3107,15 @@ async fn live_canary_gate_rejects_stale_no_submit_linkage_fields() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2035,11 +3162,15 @@ async fn live_canary_gate_rejects_no_submit_report_missing_generated_at() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2078,11 +3209,15 @@ async fn live_canary_gate_rejects_expired_no_submit_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2120,11 +3255,15 @@ async fn live_canary_gate_uses_toml_owned_readiness_report_max_age_seconds() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: configured_max_age_seconds,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2181,11 +3320,15 @@ async fn live_canary_gate_rejects_missing_wrong_or_non_string_schema_version() {
                 max_notional_per_order: "1.00".to_string(),
                 max_no_submit_readiness_report_bytes: 4096,
                 readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-                reference_quote_max_age_seconds: 10,
+                reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
                 reference_quote_wait_timeout_seconds: 10,
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
                 reference_quote_probe_log_commands: true,
+                egress_identity_observed_path: None,
+                egress_identity_observed_max_bytes: None,
+                approved_egress_identity_sha256: None,
+                proof_policy: None,
                 operator_evidence: Some(valid_operator_evidence()),
             },
         );
@@ -2221,11 +3364,15 @@ async fn live_canary_gate_rejects_notional_above_root_risk_cap() {
             max_notional_per_order: "11.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2259,11 +3406,15 @@ async fn live_canary_gate_rejects_empty_stage_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2299,11 +3450,15 @@ async fn live_canary_gate_rejects_report_missing_stages_key() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2341,11 +3496,15 @@ async fn live_canary_gate_rejects_unsatisfied_no_submit_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2383,11 +3542,15 @@ async fn live_canary_gate_reports_each_unsatisfied_required_stage_once() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2426,11 +3589,15 @@ async fn live_canary_gate_rejects_missing_no_submit_report() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2462,11 +3629,15 @@ async fn live_canary_gate_rejects_malformed_no_submit_report_json() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2494,6 +3665,12 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
     let report_len = std::fs::metadata(&report_path)
         .expect("report metadata should be readable")
         .len();
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine readiness-report hash into the envelope: the report
+    // binding is mandatory on the production (proof-disabled) path too. Sealing
+    // rewrites only the envelope + consumption proof, not the report file, so
+    // the captured report_len byte cap still matches the on-disk report exactly.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -2503,12 +3680,16 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: report_len,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
-            operator_evidence: Some(valid_operator_evidence()),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
         },
     );
 
@@ -2533,11 +3714,15 @@ async fn live_canary_gate_rejects_no_submit_report_above_configured_byte_cap() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 1,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2572,11 +3757,15 @@ async fn live_canary_gate_distinguishes_non_object_report_from_missing_stages() 
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2620,11 +3809,15 @@ async fn live_canary_gate_distinguishes_non_array_stages_from_missing_stages() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2662,11 +3855,15 @@ async fn live_canary_gate_rejects_name_only_stage_field() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(valid_operator_evidence()),
         },
     );
@@ -2709,6 +3906,10 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
         STAGE_KEY,
         &[(CONTROLLED_CONNECT_STAGE, "SATISFIED")],
     );
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine readiness-report hash into the envelope: the report
+    // binding is mandatory on the production (proof-disabled) path too.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -2718,12 +3919,16 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
-            operator_evidence: Some(valid_operator_evidence()),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
         },
     );
 
@@ -2781,11 +3986,15 @@ async fn check_operator_evidence_rejection(
             max_notional_per_order: "1.00".to_string(),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
-            reference_quote_max_age_seconds: 10,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
             reference_quote_wait_timeout_seconds: 10,
             reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
             reference_quote_probe_log_events: true,
             reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: Some(operator_evidence),
         },
     );
@@ -2919,6 +4128,59 @@ fn bind_approval_envelope_value(
     write_valid_approval_consumption_proof(evidence);
 }
 
+fn make_strategy_input_reference_quote_stale(
+    evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    stale_by_seconds: u64,
+) {
+    let path = std::path::Path::new(&evidence.strategy_input_evidence_path);
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).expect("strategy input should read"))
+            .expect("strategy input should parse");
+    let one_second_ms: u64 = std::time::Duration::from_secs(1)
+        .as_millis()
+        .try_into()
+        .expect("one second should fit in u64 milliseconds");
+    let stale_reference_quote_ts_ms = current_unix_seconds_for_test()
+        .saturating_sub(stale_by_seconds)
+        .saturating_mul(one_second_ms);
+    value
+        .as_object_mut()
+        .expect("strategy input should be an object")
+        .insert(
+            "reference_quote_ts_event".to_string(),
+            serde_json::json!(stale_reference_quote_ts_ms),
+        );
+    let bytes = serde_json::to_vec(&value).expect("strategy input should serialize");
+    std::fs::write(path, &bytes).expect("strategy input should rewrite");
+    evidence.strategy_input_evidence_sha256 = sha256_hex(&bytes);
+    let envelope = valid_approval_envelope_value(evidence);
+    bind_approval_envelope_value(evidence, envelope);
+}
+
+fn make_latest_decision_evidence_notional(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    notional: &str,
+) {
+    let path = std::path::Path::new(&evidence.decision_evidence_path);
+    let text = std::fs::read_to_string(path).expect("decision evidence should read");
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let mut value: serde_json::Value =
+            serde_json::from_str(line).expect("decision evidence line should parse");
+        if value.get("kind").and_then(serde_json::Value::as_str) == Some("admission_decision") {
+            value
+                .get_mut("decision")
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("admission decision should be an object")
+                .insert("notional".to_string(), serde_json::json!(notional));
+        }
+        lines.push(serde_json::to_string(&value).expect("decision evidence should serialize"));
+    }
+    let mut rewritten = lines.join("\n");
+    rewritten.push('\n');
+    std::fs::write(path, rewritten).expect("decision evidence should rewrite");
+}
+
 fn valid_approval_envelope_value(evidence: &LiveCanaryOperatorEvidenceBlock) -> serde_json::Value {
     let mut envelope = serde_json::json!({
         "schema_version": 1,
@@ -2935,6 +4197,32 @@ fn valid_approval_envelope_value(evidence: &LiveCanaryOperatorEvidenceBlock) -> 
         "approval_not_after_unix_secs": evidence.approval_not_after_unix_seconds,
         "canary_evidence_path_hash": sha256_hex(evidence.canary_evidence_path.as_bytes()),
     });
+    // Seal the operator-approved gate-session and canary proof order-intent
+    // file-content hashes into the envelope whenever the TOML evidence binds
+    // them, mirroring the production producer. This exercises the gate's
+    // envelope-binding check (the envelope, not just the self-declared TOML
+    // hash, must match the live file content).
+    let envelope_object = envelope
+        .as_object_mut()
+        .expect("approval envelope should be an object");
+    if let Some(expected_gate_session_sha256) = &evidence.expected_gate_session_sha256 {
+        envelope_object.insert(
+            "expected_gate_session_sha256".to_string(),
+            serde_json::json!(expected_gate_session_sha256),
+        );
+    }
+    if let Some(canary_proof_order_intent_sha256) = &evidence.canary_proof_order_intent_sha256 {
+        envelope_object.insert(
+            "canary_proof_order_intent_sha256".to_string(),
+            serde_json::json!(canary_proof_order_intent_sha256),
+        );
+    }
+    if let Some(no_submit_readiness_report_sha256) = &evidence.no_submit_readiness_report_sha256 {
+        envelope_object.insert(
+            "no_submit_readiness_report_sha256".to_string(),
+            serde_json::json!(no_submit_readiness_report_sha256),
+        );
+    }
     if let Some(strategy_cancel_path) = &evidence.strategy_cancel_path {
         envelope
             .as_object_mut()

@@ -24,7 +24,15 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
-    bolt_v3_config::{LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config},
+    bolt_v3_canary_proof_policy::{CANARY_PROOF_CLAIM, CanaryProofOrderIntentArtifact},
+    bolt_v3_config::{
+        DECISION_REFERENCE_GATE_ROLE, LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock,
+        LoadedBoltV3Config,
+    },
+    bolt_v3_decision_evidence::{
+        BoltV3ReadinessGateEvidenceSnapshot, read_latest_entry_decision_evidence_chain,
+        validate_readiness_gate_evidence_snapshot,
+    },
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
@@ -33,10 +41,12 @@ use crate::{
         REFERENCE_READINESS_STAGE, REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE,
         STAGE_KEY, STAGES_KEY, STATUS_KEY, STATUS_SATISFIED,
     },
+    bolt_v3_operator_artifacts::EntryReadinessGateSession,
 };
 
 pub const APPROVAL_ENVELOPE_SCHEMA_VERSION: i64 = 1;
 pub const APPROVAL_ENVELOPE_RECORD_KIND: &str = "phase8_operator_approval_envelope";
+const MILLIS_PER_SECOND_U64: u64 = 1_000;
 
 /// Successful live canary gate evaluation.
 ///
@@ -51,6 +61,7 @@ pub struct BoltV3LiveCanaryGateReport {
     no_submit_readiness_report_path: PathBuf,
     max_no_submit_readiness_report_bytes: u64,
     readiness_report_max_age_seconds: u64,
+    reference_quote_max_age_seconds: u64,
     max_live_order_count: u32,
     max_notional_per_order: Decimal,
     root_max_notional_per_order: Decimal,
@@ -73,6 +84,14 @@ impl BoltV3LiveCanaryGateReport {
         self.readiness_report_max_age_seconds
     }
 
+    /// Gate-approved maximum reference-quote age (seconds). This is the SINGLE
+    /// authoritative freshness bound for the armed live path: the gate validates
+    /// it at startup and the submit/stale path must enforce it (A5), rather than
+    /// running an independent strategy-config freshness policy.
+    pub fn reference_quote_max_age_seconds(&self) -> u64 {
+        self.reference_quote_max_age_seconds
+    }
+
     pub fn max_live_order_count(&self) -> u32 {
         self.max_live_order_count
     }
@@ -92,6 +111,7 @@ impl BoltV3LiveCanaryGateReport {
             no_submit_readiness_report_path: PathBuf::from("no-submit-readiness.json"),
             max_no_submit_readiness_report_bytes: 4096,
             readiness_report_max_age_seconds: 60,
+            reference_quote_max_age_seconds: 10,
             max_live_order_count,
             max_notional_per_order,
             root_max_notional_per_order: max_notional_per_order,
@@ -167,6 +187,26 @@ pub enum BoltV3LiveCanaryGateError {
     OperatorEvidenceHashMismatch {
         field: &'static str,
         path: PathBuf,
+    },
+    OperatorGateSessionParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    OperatorGateSessionInvalid {
+        path: PathBuf,
+        reason: String,
+    },
+    OperatorStrategyInputEvidenceParse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    OperatorStrategyInputEvidenceInvalid {
+        path: PathBuf,
+        reason: String,
+    },
+    OperatorDecisionEvidenceInvalid {
+        path: PathBuf,
+        reason: String,
     },
     OperatorApprovalEnvelopeRead {
         path: PathBuf,
@@ -363,6 +403,37 @@ impl std::fmt::Display for BoltV3LiveCanaryGateError {
                 "bolt-v3 live canary `[live_canary].operator_evidence.{field}` does not match {}",
                 path.display()
             ),
+            BoltV3LiveCanaryGateError::OperatorGateSessionParse { path, source } => write!(
+                f,
+                "failed to parse bolt-v3 live canary gate session {}: {source}",
+                path.display()
+            ),
+            BoltV3LiveCanaryGateError::OperatorGateSessionInvalid { path, reason } => write!(
+                f,
+                "bolt-v3 live canary gate session {} is invalid: {reason}",
+                path.display()
+            ),
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceParse { path, source } => {
+                write!(
+                    f,
+                    "failed to parse bolt-v3 live canary strategy_input_evidence {}: {source}",
+                    path.display()
+                )
+            }
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid { path, reason } => {
+                write!(
+                    f,
+                    "bolt-v3 live canary strategy_input_evidence {} is invalid: {reason}",
+                    path.display()
+                )
+            }
+            BoltV3LiveCanaryGateError::OperatorDecisionEvidenceInvalid { path, reason } => {
+                write!(
+                    f,
+                    "bolt-v3 live canary decision_evidence {} is invalid: {reason}",
+                    path.display()
+                )
+            }
             BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeRead { path, source } => write!(
                 f,
                 "failed to read bolt-v3 live canary approval envelope {}: {source}",
@@ -533,7 +604,15 @@ impl std::error::Error for BoltV3LiveCanaryGateError {
 }
 
 /// Validate the loaded config's `[live_canary]` section and referenced
-/// no-submit readiness report before NT's runner loop is entered.
+/// no-submit readiness report.
+///
+/// This is the **post-consumption** variant (`ApprovalConsumptionExpectation::MustExistAndBeValid`):
+/// it requires the approval-consumption proof to already exist and accepts a validly-*spent*
+/// approval nonce. It is therefore an audit / verification entry point used by tests and post-run
+/// checks — **it must never gate a live submit**. The production live-runner arming path uses
+/// [`check_bolt_v3_live_canary_pre_consumption_gate`] (`DeferredUntilLiveRunnerEntry`), which keeps
+/// the strict un-spent-nonce hash check and rejects an already-existing consumption proof, so a
+/// spent nonce cannot re-arm a run.
 ///
 /// The gate is read-only: it does not connect, subscribe, submit,
 /// cancel, or mutate NT state. Relative readiness report paths resolve
@@ -654,12 +733,14 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
 
     let initial_unix_seconds = unix_seconds()?;
     validate_operator_evidence(
-        &loaded.root_path,
+        loaded,
         block,
         approval_id,
+        max_notional_per_order,
         initial_unix_seconds,
         initial_unix_seconds,
         approval_consumption_expectation,
+        None,
     )
     .await?;
 
@@ -667,6 +748,7 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
     let report_bytes =
         read_report_bytes_with_limit(&report_path, block.max_no_submit_readiness_report_bytes)
             .await?;
+    let report_sha256 = sha256_hex(&report_bytes);
     let report: Value = serde_json::from_slice(&report_bytes).map_err(|source| {
         BoltV3LiveCanaryGateError::ReadinessReportParse {
             path: report_path.clone(),
@@ -715,12 +797,14 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
     // between-check artifact mutation fails closed. Operators must size the
     // approval window to cover both evidence validation rounds plus report I/O.
     validate_operator_evidence(
-        &loaded.root_path,
+        loaded,
         block,
         approval_id,
+        max_notional_per_order,
         late_unix_seconds,
         initial_unix_seconds,
         approval_consumption_expectation,
+        Some(report_sha256.as_str()),
     )
     .await?;
 
@@ -729,6 +813,7 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
         no_submit_readiness_report_path: report_path,
         max_no_submit_readiness_report_bytes: block.max_no_submit_readiness_report_bytes,
         readiness_report_max_age_seconds: block.readiness_report_max_age_seconds,
+        reference_quote_max_age_seconds: block.reference_quote_max_age_seconds,
         max_live_order_count: block.max_live_order_count,
         max_notional_per_order,
         root_max_notional_per_order,
@@ -804,14 +889,28 @@ fn parse_positive_decimal(
     Ok(decimal)
 }
 
+// Eight distinct, individually-required inputs (config, live-canary block,
+// approval id, notional cap, the round's approval-window clock, the
+// consumption-freshness clock, the consumption expectation, and the
+// content-validated readiness-report SHA when available) that do not form a
+// meaningful group; the 7-arg threshold is a heuristic, so it is allowed here
+// rather than bundled into a synthetic struct that would not improve clarity.
+#[allow(clippy::too_many_arguments)]
 async fn validate_operator_evidence(
-    root_path: &Path,
+    loaded: &LoadedBoltV3Config,
     block: &LiveCanaryBlock,
     approval_id: &str,
+    max_notional_per_order: Decimal,
     approval_window_unix_seconds: u64,
     approval_consumption_freshness_unix_seconds: u64,
     approval_consumption_expectation: ApprovalConsumptionExpectation,
+    // The no-submit readiness report-to-operator-envelope binding must run
+    // AFTER the gate's dedicated report read + content/size validation. Passing
+    // the SHA from those exact bytes keeps the report read-once while still
+    // binding the content the gate validated.
+    validated_report_sha256: Option<&str>,
 ) -> Result<(), BoltV3LiveCanaryGateError> {
+    let root_path = &loaded.root_path;
     let evidence = block
         .operator_evidence
         .as_ref()
@@ -871,8 +970,63 @@ async fn validate_operator_evidence(
         });
     }
 
-    validate_operator_evidence_file_hashes(root_path, evidence).await?;
-    validate_operator_approval_envelope(root_path, evidence, approval_id).await?;
+    let validated_file_hashes = validate_operator_evidence_file_hashes(
+        root_path,
+        evidence,
+        approval_consumption_expectation,
+    )
+    .await?;
+    // Parse and validate the operator-approval envelope before the
+    // gate-session and canary proof order-intent bindings so those
+    // validators can re-check the live file content against the hashes the
+    // operator sealed into the envelope, not only the self-declared TOML
+    // hash. The envelope is the single authoritative binding of the approval
+    // to the exact order that fires.
+    let proof_policy_enabled = live_canary_proof_policy_enabled(block);
+    let approval_envelope = validate_operator_approval_envelope(
+        &validated_file_hashes.approval_envelope_path,
+        &validated_file_hashes.approval_envelope_bytes,
+        evidence,
+        approval_id,
+    )?;
+    let gate_session = validate_operator_gate_session_binding(
+        loaded,
+        root_path,
+        evidence,
+        &approval_envelope,
+        proof_policy_enabled,
+    )
+    .await?;
+    if proof_policy_enabled {
+        validate_operator_gate_session_freshness(
+            &gate_session,
+            block.reference_quote_max_age_seconds,
+            approval_window_unix_seconds,
+        )?;
+        validate_operator_canary_proof_order_intent(
+            root_path,
+            block,
+            evidence,
+            &gate_session,
+            max_notional_per_order,
+            &approval_envelope,
+        )
+        .await?;
+    } else {
+        validate_operator_strategy_input_freshness(
+            loaded,
+            root_path,
+            evidence,
+            block.reference_quote_max_age_seconds,
+            approval_window_unix_seconds,
+        )
+        .await?;
+        validate_operator_decision_notional_within_canary_cap(
+            root_path,
+            evidence,
+            max_notional_per_order,
+        )?;
+    }
     validate_operator_approval_consumption(
         root_path,
         evidence,
@@ -882,7 +1036,577 @@ async fn validate_operator_evidence(
         approval_consumption_expectation,
     )
     .await?;
+    // Anti-forgery seal check, mandatory on EVERY live-node arming path (the
+    // readiness report is read and consumed to arm submit_admission whether or
+    // not the proof policy is enabled). Run it only on the post-content
+    // re-validation round so the dedicated report read + content/size checks
+    // and the approval-consumption check surface their precise errors first;
+    // here it binds the already-read report content to the operator-sealed
+    // envelope hash so a forged all-satisfied report cannot arm real orders on
+    // the production (proof-disabled) path.
+    if let Some(validated_report_sha256) = validated_report_sha256 {
+        validate_operator_no_submit_readiness_report_binding(
+            root_path,
+            block,
+            evidence,
+            &approval_envelope,
+            validated_report_sha256,
+        )?;
+    }
+    Ok(())
+}
 
+fn live_canary_proof_policy_enabled(block: &LiveCanaryBlock) -> bool {
+    block
+        .proof_policy
+        .as_ref()
+        .is_some_and(|proof_policy| proof_policy.enabled)
+}
+
+fn validate_operator_decision_notional_within_canary_cap(
+    root_path: &Path,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    max_notional_per_order: Decimal,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let path = resolve_configured_path(
+        root_path,
+        "decision_evidence_path",
+        &evidence.decision_evidence_path,
+    )?;
+    let chain =
+        read_latest_entry_decision_evidence_chain(&path, evidence.max_operator_evidence_file_bytes)
+            .map_err(
+                |source| BoltV3LiveCanaryGateError::OperatorDecisionEvidenceInvalid {
+                    path: path.clone(),
+                    reason: source.to_string(),
+                },
+            )?;
+    let notional = Decimal::from_str(chain.admission.notional.trim()).map_err(|source| {
+        BoltV3LiveCanaryGateError::OperatorDecisionEvidenceInvalid {
+            path: path.clone(),
+            reason: format!("entry order notional is not a decimal: {source}"),
+        }
+    })?;
+    if notional <= Decimal::ZERO {
+        return Err(BoltV3LiveCanaryGateError::OperatorDecisionEvidenceInvalid {
+            path,
+            reason: "entry order notional must be positive".to_string(),
+        });
+    }
+    if notional > max_notional_per_order {
+        return Err(BoltV3LiveCanaryGateError::OperatorDecisionEvidenceInvalid {
+            path,
+            reason: format!(
+                "source-owned entry order notional {notional} exceeds [live_canary].max_notional_per_order={max_notional_per_order}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct OperatorStrategyInputFreshness {
+    reference_quote_ts_event: Option<u64>,
+}
+
+async fn validate_operator_strategy_input_freshness(
+    loaded: &LoadedBoltV3Config,
+    root_path: &Path,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    reference_quote_max_age_seconds: u64,
+    current_unix_seconds: u64,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    if !loaded_has_source_owned_decision_reference(loaded) {
+        return Ok(());
+    }
+    let path = resolve_configured_path(
+        root_path,
+        "strategy_input_evidence_path",
+        &evidence.strategy_input_evidence_path,
+    )?;
+    let bytes = read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes)
+        .await
+        .map_err(|source| BoltV3LiveCanaryGateError::OperatorEvidenceRead {
+            field: "strategy_input_evidence_sha256",
+            path: path.clone(),
+            source,
+        })?;
+    let input: OperatorStrategyInputFreshness =
+        serde_json::from_slice(&bytes).map_err(|source| {
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceParse {
+                path: path.clone(),
+                source,
+            }
+        })?;
+    let Some(reference_quote_ts_event) = input.reference_quote_ts_event else {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "reference_quote_ts_event is missing".to_string(),
+            },
+        );
+    };
+    if reference_quote_ts_event == 0 {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "reference_quote_ts_event is invalid".to_string(),
+            },
+        );
+    }
+    let Some(current_unix_ms) = current_unix_seconds.checked_mul(MILLIS_PER_SECOND_U64) else {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "current_unix_seconds is invalid: overflows milliseconds".to_string(),
+            },
+        );
+    };
+    if reference_quote_ts_event > current_unix_ms {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: format!(
+                    "reference_quote_ts_event is invalid: {reference_quote_ts_event} is in the future relative to current_unix_ms {current_unix_ms}"
+                ),
+            },
+        );
+    }
+    let Some(max_age_ms) = reference_quote_max_age_seconds.checked_mul(MILLIS_PER_SECOND_U64)
+    else {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: format!(
+                    "reference_quote_max_age_seconds is invalid: {reference_quote_max_age_seconds} overflows milliseconds"
+                ),
+            },
+        );
+    };
+    let age_ms = current_unix_ms.saturating_sub(reference_quote_ts_event);
+    if age_ms > max_age_ms {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: format!(
+                    "reference_quote_ts_event is invalid: age_ms={age_ms} exceeds [live_canary].reference_quote_max_age_seconds={reference_quote_max_age_seconds}"
+                ),
+            },
+        );
+    }
+    Ok(())
+}
+
+fn loaded_has_source_owned_decision_reference(loaded: &LoadedBoltV3Config) -> bool {
+    loaded.strategies.iter().any(|strategy| {
+        strategy
+            .config
+            .target
+            .as_table()
+            .and_then(|target| target.get("gate_subscriptions"))
+            .and_then(toml::Value::as_table)
+            .is_some_and(|subscriptions| subscriptions.contains_key(DECISION_REFERENCE_GATE_ROLE))
+    })
+}
+
+async fn validate_operator_gate_session_binding(
+    loaded: &LoadedBoltV3Config,
+    root_path: &Path,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    approval_envelope: &Phase8OperatorApprovalEnvelopeFile,
+    proof_policy_enabled: bool,
+) -> Result<EntryReadinessGateSession, BoltV3LiveCanaryGateError> {
+    let gate_session_path = required_optional_operator_evidence_field(
+        "gate_session_path",
+        evidence.gate_session_path.as_deref(),
+    )?;
+    let expected_gate_session_sha256 = required_optional_operator_evidence_field(
+        "expected_gate_session_sha256",
+        evidence.expected_gate_session_sha256.as_deref(),
+    )?;
+    if !is_sha256_hex(expected_gate_session_sha256) {
+        return Err(
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape {
+                field: "expected_gate_session_sha256",
+            },
+        );
+    }
+    // Bind the gate-session file to the operator-approval envelope. The
+    // envelope hash is sealed at approval time and re-validated via the
+    // approval-consumption record; checking the live file content against it
+    // rejects a post-approval gate-session swap even when the self-declared
+    // TOML hash above is updated to match the swapped file. On the
+    // proof-policy path (the path that fires the live canary order) the
+    // envelope binding MUST be present, so the gate fails closed on absence.
+    let envelope_gate_session_sha256 = approval_envelope_bound_sha256(
+        approval_envelope.expected_gate_session_sha256.as_deref(),
+        "expected_gate_session_sha256",
+        proof_policy_enabled,
+    )?;
+
+    let path = resolve_configured_path(root_path, "gate_session_path", gate_session_path)?;
+    let bytes = read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes)
+        .await
+        .map_err(|source| BoltV3LiveCanaryGateError::OperatorEvidenceRead {
+            field: "gate_session_path",
+            path: path.clone(),
+            source,
+        })?;
+    let actual_gate_session_sha256 = sha256_hex(&bytes);
+    if actual_gate_session_sha256 != expected_gate_session_sha256 {
+        return Err(BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch {
+            field: "expected_gate_session_sha256",
+            path,
+        });
+    }
+    if let Some(envelope_gate_session_sha256) = envelope_gate_session_sha256
+        && actual_gate_session_sha256 != envelope_gate_session_sha256
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch {
+                path,
+                field: "expected_gate_session_sha256",
+            },
+        );
+    }
+    let session: EntryReadinessGateSession = serde_json::from_slice(&bytes).map_err(|source| {
+        BoltV3LiveCanaryGateError::OperatorGateSessionParse {
+            path: path.clone(),
+            source,
+        }
+    })?;
+    validate_live_canary_gate_session(loaded, &session).map_err(|reason| {
+        BoltV3LiveCanaryGateError::OperatorGateSessionInvalid {
+            path: path.clone(),
+            reason,
+        }
+    })?;
+    Ok(session)
+}
+
+fn validate_operator_no_submit_readiness_report_binding(
+    root_path: &Path,
+    block: &LiveCanaryBlock,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    approval_envelope: &Phase8OperatorApprovalEnvelopeFile,
+    validated_no_submit_readiness_report_sha256: &str,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let expected_no_submit_readiness_report_sha256 = required_optional_operator_evidence_field(
+        "no_submit_readiness_report_sha256",
+        evidence.no_submit_readiness_report_sha256.as_deref(),
+    )?;
+    if !is_sha256_hex(expected_no_submit_readiness_report_sha256) {
+        return Err(
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape {
+                field: "no_submit_readiness_report_sha256",
+            },
+        );
+    }
+    // Bind the content-validated no-submit readiness report bytes to the
+    // operator-approval envelope. The envelope hash is sealed at approval time
+    // and re-validated via the approval-consumption record; checking the report
+    // content the gate already parsed rejects a hand-written all-satisfied
+    // report even when the self-declared TOML hash above is updated to match
+    // the forged file. The report is consumed to arm submit_admission on EVERY
+    // arming path, so the envelope binding is ALWAYS mandatory.
+    let envelope_no_submit_readiness_report_sha256 = approval_envelope_bound_sha256(
+        approval_envelope
+            .no_submit_readiness_report_sha256
+            .as_deref(),
+        "no_submit_readiness_report_sha256",
+        true,
+    )?;
+
+    let path = resolve_report_path(root_path, block)?;
+    if validated_no_submit_readiness_report_sha256 != expected_no_submit_readiness_report_sha256 {
+        return Err(BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch {
+            field: "no_submit_readiness_report_sha256",
+            path,
+        });
+    }
+    if let Some(envelope_no_submit_readiness_report_sha256) =
+        envelope_no_submit_readiness_report_sha256
+        && validated_no_submit_readiness_report_sha256 != envelope_no_submit_readiness_report_sha256
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch {
+                path,
+                field: "no_submit_readiness_report_sha256",
+            },
+        );
+    }
+    Ok(())
+}
+
+fn validate_operator_gate_session_freshness(
+    session: &EntryReadinessGateSession,
+    reference_quote_max_age_seconds: u64,
+    current_unix_seconds: u64,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let Some(current_unix_ms) = current_unix_seconds.checked_mul(MILLIS_PER_SECOND_U64) else {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path: PathBuf::from("gate_session_path"),
+                reason: "current_unix_seconds is invalid: overflows milliseconds".to_string(),
+            },
+        );
+    };
+    if session.created_at_ms > current_unix_ms {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path: PathBuf::from("gate_session_path"),
+                reason: format!(
+                    "gate session created_at_ms is invalid: {} is in the future relative to current_unix_ms {current_unix_ms}",
+                    session.created_at_ms
+                ),
+            },
+        );
+    }
+    let Some(max_age_ms) = reference_quote_max_age_seconds.checked_mul(MILLIS_PER_SECOND_U64)
+    else {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path: PathBuf::from("gate_session_path"),
+                reason: format!(
+                    "reference_quote_max_age_seconds is invalid: {reference_quote_max_age_seconds} overflows milliseconds"
+                ),
+            },
+        );
+    };
+    let age_ms = current_unix_ms.saturating_sub(session.created_at_ms);
+    if age_ms > max_age_ms {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path: PathBuf::from("gate_session_path"),
+                reason: format!(
+                    "gate session created_at_ms is invalid: age_ms={age_ms} exceeds [live_canary].reference_quote_max_age_seconds={reference_quote_max_age_seconds}"
+                ),
+            },
+        );
+    }
+    Ok(())
+}
+
+async fn validate_operator_canary_proof_order_intent(
+    root_path: &Path,
+    block: &LiveCanaryBlock,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    gate_session: &EntryReadinessGateSession,
+    max_notional_per_order: Decimal,
+    approval_envelope: &Phase8OperatorApprovalEnvelopeFile,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let proof_policy = block.proof_policy.as_ref().ok_or(
+        BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
+            field: "live_canary.proof_policy",
+        },
+    )?;
+    let path_value = required_optional_operator_evidence_field(
+        "canary_proof_order_intent_path",
+        evidence.canary_proof_order_intent_path.as_deref(),
+    )?;
+    let expected_sha256 = required_optional_operator_evidence_field(
+        "canary_proof_order_intent_sha256",
+        evidence.canary_proof_order_intent_sha256.as_deref(),
+    )?;
+    validate_configured_path_shape("canary_proof_order_intent_path", path_value)?;
+    if !is_sha256_hex(expected_sha256) {
+        return Err(
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape {
+                field: "canary_proof_order_intent_sha256",
+            },
+        );
+    }
+    // Bind the canary proof order-intent file — the live order that fires — to
+    // the operator-approval envelope. This validator only runs on the
+    // proof-policy path, so the envelope MUST carry the sealed hash; a missing
+    // value fails closed. Re-checking the live file content against the sealed
+    // hash rejects a post-approval order-intent swap even when the
+    // self-declared TOML hash above is updated to match the swapped file.
+    let envelope_order_intent_sha256 = approval_envelope_bound_sha256(
+        approval_envelope
+            .canary_proof_order_intent_sha256
+            .as_deref(),
+        "canary_proof_order_intent_sha256",
+        true,
+    )?
+    .ok_or(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
+        field: "canary_proof_order_intent_sha256",
+    })?;
+    let path = resolve_configured_path(root_path, "canary_proof_order_intent_path", path_value)?;
+    let bytes = read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes)
+        .await
+        .map_err(|source| BoltV3LiveCanaryGateError::OperatorEvidenceRead {
+            field: "canary_proof_order_intent_sha256",
+            path: path.clone(),
+            source,
+        })?;
+    let actual_order_intent_sha256 = sha256_hex(&bytes);
+    if actual_order_intent_sha256 != expected_sha256 {
+        return Err(BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch {
+            field: "canary_proof_order_intent_sha256",
+            path,
+        });
+    }
+    if actual_order_intent_sha256 != envelope_order_intent_sha256 {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch {
+                path,
+                field: "canary_proof_order_intent_sha256",
+            },
+        );
+    }
+    let order_intent: CanaryProofOrderIntentArtifact =
+        serde_json::from_slice(&bytes).map_err(|source| {
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceParse {
+                path: path.clone(),
+                source,
+            }
+        })?;
+    if order_intent.proof_claim != CANARY_PROOF_CLAIM
+        || order_intent.proof_claim != proof_policy.proof_claim
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "canary proof order intent proof_claim is invalid".to_string(),
+            },
+        );
+    }
+    if order_intent.strategy_instance_id != gate_session.strategy_instance_id
+        || order_intent.strategy_instance_id != proof_policy.strategy_instance_id
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "canary proof order intent strategy_instance_id is invalid".to_string(),
+            },
+        );
+    }
+    if order_intent.execution_client_id != proof_policy.execution_client_id {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "canary proof order intent execution_client_id is invalid".to_string(),
+            },
+        );
+    }
+    if !gate_session
+        .selected_market
+        .instrument_ids
+        .contains(&order_intent.instrument_id)
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "canary proof order intent instrument_id is outside selected market"
+                    .to_string(),
+            },
+        );
+    }
+    if !order_intent
+        .source_refs
+        .contains(&gate_session.session_hash)
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "canary proof order intent source_refs does not bind gate session"
+                    .to_string(),
+            },
+        );
+    }
+    if order_intent.notional <= Decimal::ZERO || order_intent.quantity <= Decimal::ZERO {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: "canary proof order intent notional and quantity must be positive"
+                    .to_string(),
+            },
+        );
+    }
+    if order_intent.notional > max_notional_per_order {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorStrategyInputEvidenceInvalid {
+                path,
+                reason: format!(
+                    "canary proof order intent notional {} exceeds [live_canary].max_notional_per_order={max_notional_per_order}",
+                    order_intent.notional
+                ),
+            },
+        );
+    }
+    Ok(())
+}
+
+fn required_optional_operator_evidence_field<'a>(
+    field: &'static str,
+    value: Option<&'a str>,
+) -> Result<&'a str, BoltV3LiveCanaryGateError> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field })
+}
+
+/// Resolve an operator-approval-envelope-bound SHA-256 that the gate must
+/// re-check the live file content against.
+///
+/// When the proof policy is enabled — the path that fires the live canary
+/// order — the envelope MUST carry the binding hash, so a missing value fails
+/// closed. On the non-proof path the binding is optional and an absent value
+/// yields `None` (the self-declared TOML hash check still applies). A present
+/// value must be a well-formed SHA-256 hex digest.
+fn approval_envelope_bound_sha256(
+    value: Option<&str>,
+    field: &'static str,
+    proof_policy_enabled: bool,
+) -> Result<Option<String>, BoltV3LiveCanaryGateError> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => {
+            if !is_sha256_hex(value) {
+                return Err(BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape { field });
+            }
+            Ok(Some(value.to_string()))
+        }
+        None if proof_policy_enabled => {
+            Err(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field })
+        }
+        None => Ok(None),
+    }
+}
+
+fn validate_live_canary_gate_session(
+    loaded: &LoadedBoltV3Config,
+    session: &EntryReadinessGateSession,
+) -> Result<(), String> {
+    let snapshot = BoltV3ReadinessGateEvidenceSnapshot::from_entry_readiness_gate_session(session);
+    validate_readiness_gate_evidence_snapshot(&snapshot).map_err(|error| error.to_string())?;
+
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == session.strategy_instance_id)
+        .ok_or_else(|| {
+            "gate session strategy_instance_id does not match loaded config".to_string()
+        })?;
+    let target = strategy
+        .config
+        .target
+        .as_table()
+        .ok_or_else(|| "gate session strategy target is not a table".to_string())?;
+    let configured_target_id = target
+        .get("configured_target_id")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| {
+            "gate session strategy target configured_target_id is missing".to_string()
+        })?;
+    if configured_target_id != session.configured_target_id
+        || configured_target_id != session.selected_market.configured_target_id
+    {
+        return Err(
+            "gate session configured_target_id does not match loaded strategy target".to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -923,131 +1647,237 @@ pub struct Phase8OperatorApprovalEnvelopeFile {
     pub approval_not_before_unix_secs: i64,
     pub approval_not_after_unix_secs: i64,
     pub canary_evidence_path_hash: String,
+    /// SHA-256 of the entry-readiness gate-session file content that the
+    /// operator approved. This binds the order's market selection to the
+    /// approval: a post-approval gate-session swap is rejected because this
+    /// sealed hash no longer matches the swapped file, even when the
+    /// self-declared `[live_canary.operator_evidence]` TOML hash is updated.
+    /// Mandatory on the proof-policy path; the gate fails closed on absence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_gate_session_sha256: Option<String>,
+    /// SHA-256 of the canary proof order-intent file content that the
+    /// operator approved. This binds the live canary order itself to the
+    /// approval: a post-approval order-intent swap is rejected because this
+    /// sealed hash no longer matches the swapped file, even when the
+    /// self-declared `[live_canary.operator_evidence]` TOML hash is updated.
+    /// Mandatory on the proof-policy path; the gate fails closed on absence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_order_intent_sha256: Option<String>,
+    /// SHA-256 of the no-submit readiness-report file content that the operator
+    /// approved. This binds the probe-produced readiness report to the approval:
+    /// a hand-written all-satisfied report placed at the configured path is
+    /// rejected because this sealed hash no longer matches the live file, even
+    /// when the report's self-declared linkage fields (approval-id hash,
+    /// executable identity, config-bundle checksum, freshness, satisfied stages)
+    /// are all forged to pass the content check. Mandatory on the proof-policy
+    /// path; the gate fails closed on absence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_submit_readiness_report_sha256: Option<String>,
     pub strategy_cancel_path_hash: Option<String>,
+}
+
+struct ValidatedOperatorEvidenceFileHashes {
+    approval_envelope_path: PathBuf,
+    approval_envelope_bytes: Vec<u8>,
 }
 
 async fn validate_operator_evidence_file_hashes(
     root_path: &Path,
     evidence: &LiveCanaryOperatorEvidenceBlock,
-) -> Result<(), BoltV3LiveCanaryGateError> {
+    approval_consumption_expectation: ApprovalConsumptionExpectation,
+) -> Result<ValidatedOperatorEvidenceFileHashes, BoltV3LiveCanaryGateError> {
+    let mut validated_approval_envelope = None;
     for binding in operator_evidence_file_hash_bindings(evidence) {
         let path = resolve_configured_path(root_path, binding.path_field, binding.path)?;
-        let actual = sha256_file(
-            &path,
-            binding.hash_field,
-            evidence.max_operator_evidence_file_bytes,
-        )
-        .await?;
+        let (actual, hashed_bytes) = if binding.hash_field == "approval_envelope_sha256" {
+            let bytes = read_operator_evidence_file_for_hash(
+                &path,
+                binding.hash_field,
+                evidence.max_operator_evidence_file_bytes,
+            )
+            .await?;
+            (sha256_hex(&bytes), Some(bytes))
+        } else {
+            (
+                sha256_file(
+                    &path,
+                    binding.hash_field,
+                    evidence.max_operator_evidence_file_bytes,
+                )
+                .await?,
+                None,
+            )
+        };
         if actual != binding.expected_sha256 {
+            // The approval nonce is a one-shot CONSUMABLE token, not an immutable artifact: the
+            // live runner SPENDS it on consume by overwriting the file with a spent-nonce record
+            // (A1/A2 durable one-time). In `DeferredUntilLiveRunnerEntry` (pre-consumption) the
+            // nonce MUST still hash to the approved value — a spent nonce there correctly rejects a
+            // re-armed run, which is the durable one-time guard. In `MustExistAndBeValid`
+            // (post-consumption) the nonce is EXPECTED to be spent, so a hash mismatch is acceptable
+            // iff the file is a valid spent-nonce record bound to the approved nonce sha. The
+            // consumption marker (validated separately) independently records the approved nonce sha.
+            if binding.is_consumable_nonce
+                && approval_consumption_expectation
+                    == ApprovalConsumptionExpectation::MustExistAndBeValid
+                && approval_nonce_is_validly_spent(
+                    &path,
+                    binding.expected_sha256,
+                    evidence.max_operator_evidence_file_bytes,
+                )
+                .await?
+            {
+                continue;
+            }
             return Err(BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch {
                 field: binding.hash_field,
                 path,
             });
         }
+        if let Some(bytes) = hashed_bytes {
+            validated_approval_envelope = Some(ValidatedOperatorEvidenceFileHashes {
+                approval_envelope_path: path,
+                approval_envelope_bytes: bytes,
+            });
+        }
     }
-    Ok(())
+    validated_approval_envelope.ok_or(BoltV3LiveCanaryGateError::MissingOperatorEvidenceField {
+        field: "approval_envelope_path",
+    })
 }
 
-async fn validate_operator_approval_envelope(
-    root_path: &Path,
+/// True iff the on-disk approval-nonce file is a valid *spent-nonce* record whose
+/// `consumed_approval_nonce_sha256` binds to the operator-approved `approved_nonce_sha256`.
+///
+/// The live runner spends the one-shot nonce on consume by overwriting it with this record
+/// (`spend_phase8_approval_nonce`), so in post-consumption validation a hash mismatch against the
+/// original nonce is the *expected* state. This confirms the mismatch is a legitimate spend bound
+/// to this approval — not a deleted, truncated, or substituted nonce — and is fail-closed: any read
+/// error, parse error, or missing/incorrect binding returns `false`, which keeps the strict
+/// hash-mismatch rejection. Production one-time enforcement does not rely on this branch: it lives
+/// in the pre-consumption gate, which keeps the strict un-spent hash check.
+async fn approval_nonce_is_validly_spent(
+    path: &Path,
+    approved_nonce_sha256: &str,
+    max_bytes: u64,
+) -> Result<bool, BoltV3LiveCanaryGateError> {
+    let Ok(bytes) = read_regular_file_bounded(path, max_bytes).await else {
+        return Ok(false);
+    };
+    Ok(spent_nonce_bytes_bind_to(&bytes, approved_nonce_sha256))
+}
+
+/// True iff `bytes` is an exact spent-nonce record bound to `approved_nonce_sha256`.
+///
+/// Strict parse (serde-generated field names, not runtime literals) mirroring the exact
+/// `Phase8ApprovalNonceSpentEvidence` record the runner writes when it spends the nonce.
+/// `deny_unknown_fields` plus the two required typed fields reject an un-spent, partially-forged,
+/// padded, or extra-field nonce file: only an exact spent record with a positive spend timestamp
+/// AND `consumed_approval_nonce_sha256` equal to the approved sha is accepted. Pure + sync so the
+/// acceptance rule is unit-tested directly.
+fn spent_nonce_bytes_bind_to(bytes: &[u8], approved_nonce_sha256: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct SpentNonceRecord {
+        spent_unix_secs: i64,
+        consumed_approval_nonce_sha256: String,
+    }
+
+    let Ok(record) = serde_json::from_slice::<SpentNonceRecord>(bytes) else {
+        return false;
+    };
+    record.spent_unix_secs.is_positive()
+        && record.consumed_approval_nonce_sha256 == approved_nonce_sha256
+}
+
+fn validate_operator_approval_envelope(
+    path: &Path,
+    bytes: &[u8],
     evidence: &LiveCanaryOperatorEvidenceBlock,
     approval_id: &str,
-) -> Result<(), BoltV3LiveCanaryGateError> {
-    let path = resolve_configured_path(
-        root_path,
-        "approval_envelope_path",
-        &evidence.approval_envelope_path,
-    )?;
-    let bytes = read_regular_file_bounded(&path, evidence.max_operator_evidence_file_bytes)
-        .await
-        .map_err(
-            |source| BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeRead {
-                path: path.clone(),
-                source,
-            },
-        )?;
+) -> Result<Phase8OperatorApprovalEnvelopeFile, BoltV3LiveCanaryGateError> {
     let envelope: Phase8OperatorApprovalEnvelopeFile =
-        serde_json::from_slice(&bytes).map_err(|source| {
+        serde_json::from_slice(bytes).map_err(|source| {
             BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeParse {
-                path: path.clone(),
+                path: path.to_path_buf(),
                 source,
             }
         })?;
 
     validate_approval_envelope_i64_field(
-        &path,
+        path,
         "schema_version",
         envelope.schema_version,
         APPROVAL_ENVELOPE_SCHEMA_VERSION,
     )?;
     validate_approval_envelope_string_field(
-        &path,
+        path,
         "record_kind",
         &envelope.record_kind,
         APPROVAL_ENVELOPE_RECORD_KIND,
     )?;
     validate_approval_envelope_string_field(
-        &path,
+        path,
         "head_sha",
         &envelope.head_sha,
         &evidence.head_sha,
     )?;
     validate_approval_envelope_string_field(
-        &path,
+        path,
         "ssm_manifest_sha256",
         &envelope.ssm_manifest_sha256,
         &evidence.ssm_manifest_sha256,
     )?;
     validate_approval_envelope_string_field(
-        &path,
+        path,
         "strategy_input_evidence_sha256",
         &envelope.strategy_input_evidence_sha256,
         &evidence.strategy_input_evidence_sha256,
     )?;
     validate_approval_envelope_string_field(
-        &path,
+        path,
         "financial_envelope_sha256",
         &envelope.financial_envelope_sha256,
         &evidence.financial_envelope_sha256,
     )?;
     validate_approval_envelope_string_field(
-        &path,
+        path,
         "pre_run_state_sha256",
         &envelope.pre_run_state_sha256,
         &evidence.pre_run_state_sha256,
     )?;
     validate_approval_envelope_string_field(
-        &path,
+        path,
         "abort_plan_sha256",
         &envelope.abort_plan_sha256,
         &evidence.abort_plan_sha256,
     )?;
     validate_approval_envelope_string_field(
-        &path,
+        path,
         "approval_id_hash",
         &envelope.approval_id_hash,
         &sha256_hex(approval_id.as_bytes()),
     )?;
     validate_approval_envelope_string_field(
-        &path,
+        path,
         "approval_nonce_sha256",
         &envelope.approval_nonce_sha256,
         &evidence.approval_nonce_sha256,
     )?;
     validate_approval_envelope_string_field(
-        &path,
+        path,
         "canary_evidence_path_hash",
         &envelope.canary_evidence_path_hash,
         &sha256_hex(evidence.canary_evidence_path.as_bytes()),
     )?;
     validate_approval_envelope_i64_field(
-        &path,
+        path,
         "approval_not_before_unix_secs",
         envelope.approval_not_before_unix_secs,
         evidence.approval_not_before_unix_seconds,
     )?;
     validate_approval_envelope_i64_field(
-        &path,
+        path,
         "approval_not_after_unix_secs",
         envelope.approval_not_after_unix_secs,
         evidence.approval_not_after_unix_seconds,
@@ -1058,7 +1888,7 @@ async fn validate_operator_approval_envelope(
         &envelope.strategy_cancel_path_hash,
     ) {
         (Some(strategy_cancel_path), Some(actual)) => validate_approval_envelope_string_field(
-            &path,
+            path,
             "strategy_cancel_path_hash",
             actual,
             &sha256_hex(strategy_cancel_path.as_bytes()),
@@ -1066,7 +1896,7 @@ async fn validate_operator_approval_envelope(
         (Some(_), None) | (None, Some(_)) => {
             return Err(
                 BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch {
-                    path,
+                    path: path.to_path_buf(),
                     field: "strategy_cancel_path_hash",
                 },
             );
@@ -1074,7 +1904,7 @@ async fn validate_operator_approval_envelope(
         (None, None) => {}
     }
 
-    Ok(())
+    Ok(envelope)
 }
 
 fn validate_approval_envelope_string_field(
@@ -1346,21 +2176,22 @@ async fn sha256_file(
     field: &'static str,
     max_bytes: u64,
 ) -> Result<String, BoltV3LiveCanaryGateError> {
-    let mut file = open_regular_file_bounded(path, max_bytes)
-        .await
-        .map_err(|source| BoltV3LiveCanaryGateError::OperatorEvidenceRead {
-            field,
-            path: path.to_path_buf(),
-            source,
-        })?;
-    let bytes = read_to_vec_with_cap(&mut file, max_bytes)
-        .await
-        .map_err(|source| BoltV3LiveCanaryGateError::OperatorEvidenceRead {
-            field,
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let bytes = read_operator_evidence_file_for_hash(path, field, max_bytes).await?;
     Ok(sha256_hex(&bytes))
+}
+
+async fn read_operator_evidence_file_for_hash(
+    path: &Path,
+    field: &'static str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, BoltV3LiveCanaryGateError> {
+    read_regular_file_bounded(path, max_bytes)
+        .await
+        .map_err(|source| BoltV3LiveCanaryGateError::OperatorEvidenceRead {
+            field,
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 async fn read_regular_file_bounded(path: &Path, max_bytes: u64) -> std::io::Result<Vec<u8>> {
@@ -1547,6 +2378,43 @@ fn operator_evidence_path_fields(
     ]
 }
 
+/// Single source of truth for every operator-evidence file the gate reads
+/// under the per-file `max_operator_evidence_file_bytes` bound *before* the
+/// approval-consumption read in [`validate_operator_evidence`].
+///
+/// The approval-consumption read is the last bounded read in the sequence and
+/// is intentionally excluded so callers can size that file independently to
+/// exercise the consumption-specific oversize rejection. Every other bounded
+/// read — the seven hash-binding files (which also cover
+/// `strategy_input_evidence_path`, re-read later in the freshness checks; the
+/// approval envelope is parsed from its hash-validation bytes), the optional
+/// `gate_session_path`, the `decision_evidence_path` chain, and the proof-policy
+/// `canary_proof_order_intent_path` — is enumerated here.
+///
+/// Both the production gate's bounded reads and any test that needs to bound a
+/// non-consumption file below the limit must derive their path set from this
+/// function. Adding a new bounded read elsewhere in the gate without adding it
+/// here is the class of desync that previously let the
+/// `decision_evidence_path` chain exceed the limit ahead of the consumption
+/// read and surface the wrong error variant.
+pub fn pre_consumption_operator_evidence_bounded_read_paths(
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+) -> Vec<&str> {
+    let mut paths: Vec<&str> = operator_evidence_file_hash_bindings(evidence)
+        .into_iter()
+        .map(|binding| binding.path)
+        .collect();
+    if let Some(gate_session_path) = evidence.gate_session_path.as_deref() {
+        paths.push(gate_session_path);
+    }
+    if let Some(canary_proof_order_intent_path) = evidence.canary_proof_order_intent_path.as_deref()
+    {
+        paths.push(canary_proof_order_intent_path);
+    }
+    paths.push(&evidence.decision_evidence_path);
+    paths
+}
+
 fn operator_evidence_hash_fields(
     evidence: &LiveCanaryOperatorEvidenceBlock,
 ) -> [(&'static str, &str); 7] {
@@ -1575,6 +2443,10 @@ struct OperatorEvidenceFileHashBinding<'a> {
     path: &'a str,
     hash_field: &'static str,
     expected_sha256: &'a str,
+    /// The approval nonce is a one-shot CONSUMABLE token (spent on consume), unlike the six
+    /// immutable operator artifacts. Post-consumption validation accepts its validly-spent form
+    /// instead of the original hash; the other bindings are always strict-hash.
+    is_consumable_nonce: bool,
 }
 
 fn operator_evidence_file_hash_bindings(
@@ -1586,42 +2458,49 @@ fn operator_evidence_file_hash_bindings(
             path: &evidence.approval_envelope_path,
             hash_field: "approval_envelope_sha256",
             expected_sha256: &evidence.approval_envelope_sha256,
+            is_consumable_nonce: false,
         },
         OperatorEvidenceFileHashBinding {
             path_field: "ssm_manifest_path",
             path: &evidence.ssm_manifest_path,
             hash_field: "ssm_manifest_sha256",
             expected_sha256: &evidence.ssm_manifest_sha256,
+            is_consumable_nonce: false,
         },
         OperatorEvidenceFileHashBinding {
             path_field: "strategy_input_evidence_path",
             path: &evidence.strategy_input_evidence_path,
             hash_field: "strategy_input_evidence_sha256",
             expected_sha256: &evidence.strategy_input_evidence_sha256,
+            is_consumable_nonce: false,
         },
         OperatorEvidenceFileHashBinding {
             path_field: "financial_envelope_path",
             path: &evidence.financial_envelope_path,
             hash_field: "financial_envelope_sha256",
             expected_sha256: &evidence.financial_envelope_sha256,
+            is_consumable_nonce: false,
         },
         OperatorEvidenceFileHashBinding {
             path_field: "pre_run_state_path",
             path: &evidence.pre_run_state_path,
             hash_field: "pre_run_state_sha256",
             expected_sha256: &evidence.pre_run_state_sha256,
+            is_consumable_nonce: false,
         },
         OperatorEvidenceFileHashBinding {
             path_field: "abort_plan_path",
             path: &evidence.abort_plan_path,
             hash_field: "abort_plan_sha256",
             expected_sha256: &evidence.abort_plan_sha256,
+            is_consumable_nonce: false,
         },
         OperatorEvidenceFileHashBinding {
             path_field: "approval_nonce_path",
             path: &evidence.approval_nonce_path,
             hash_field: "approval_nonce_sha256",
             expected_sha256: &evidence.approval_nonce_sha256,
+            is_consumable_nonce: true,
         },
     ]
 }
@@ -1856,28 +2735,81 @@ const REQUIRED_NO_SUBMIT_READINESS_STAGES: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
         fs,
         path::{Path, PathBuf},
     };
 
     use crate::{
         bolt_v3_config::{
-            LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LoadedBoltV3Config,
-            load_bolt_v3_config,
+            DECISION_REFERENCE_GATE_ROLE, LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock,
+            LoadedBoltV3Config, load_bolt_v3_config,
+        },
+        bolt_v3_decision_evidence::{
+            BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+            BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
+            BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID, BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+            BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3GateEvidenceIdentity,
+            BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields,
+            BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
         },
         bolt_v3_live_canary_gate::{
             APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
             APPROVAL_ENVELOPE_RECORD_KIND, APPROVAL_ENVELOPE_SCHEMA_VERSION, APPROVAL_ID_HASH_KEY,
             ApprovalConsumptionExpectation, BoltV3LiveCanaryGateError, CONFIG_BUNDLE_CHECKSUM_KEY,
             CONTROLLED_CONNECT_STAGE, CONTROLLED_DISCONNECT_STAGE, EXECUTABLE_IDENTITY_KEY,
-            GENERATED_AT_UNIX_SECONDS_KEY, LIVE_NODE_BUILD_STAGE,
+            GENERATED_AT_UNIX_SECONDS_KEY, LIVE_NODE_BUILD_STAGE, MILLIS_PER_SECOND_U64,
             NO_SUBMIT_READINESS_SCHEMA_VERSION, OPERATOR_APPROVAL_STAGE, REFERENCE_READINESS_STAGE,
             REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
             STATUS_KEY, STATUS_SATISFIED, check_bolt_v3_live_canary_gate_with_clock,
             current_build_head_sha, executable_identity, read_to_vec_with_cap, resolve_report_path,
-            sha256_hex, validate_operator_approval_consumption,
+            sha256_hex, spent_nonce_bytes_bind_to, validate_operator_approval_consumption,
         },
     };
+
+    #[test]
+    fn spent_nonce_bytes_bind_to_accepts_only_exact_records_bound_to_the_approved_sha() {
+        let approved = "a".repeat(64);
+        let other = "b".repeat(64);
+        // Valid spent record bound to the approved sha -> accepted.
+        assert!(spent_nonce_bytes_bind_to(
+            format!(r#"{{"spent_unix_secs":1,"consumed_approval_nonce_sha256":"{approved}"}}"#)
+                .as_bytes(),
+            &approved,
+        ));
+        // Spent record bound to a DIFFERENT approval -> rejected.
+        assert!(!spent_nonce_bytes_bind_to(
+            format!(r#"{{"spent_unix_secs":1,"consumed_approval_nonce_sha256":"{other}"}}"#)
+                .as_bytes(),
+            &approved,
+        ));
+        // Un-spent (original) nonce shape -> rejected (missing required fields + unknown fields).
+        assert!(!spent_nonce_bytes_bind_to(
+            br#"{"record_kind":"x","nonce_hash":"deadbeef"}"#,
+            &approved,
+        ));
+        // Missing spent_unix_secs -> rejected.
+        assert!(!spent_nonce_bytes_bind_to(
+            format!(r#"{{"consumed_approval_nonce_sha256":"{approved}"}}"#).as_bytes(),
+            &approved,
+        ));
+        // Non-positive spend timestamp -> rejected.
+        assert!(!spent_nonce_bytes_bind_to(
+            format!(r#"{{"spent_unix_secs":0,"consumed_approval_nonce_sha256":"{approved}"}}"#)
+                .as_bytes(),
+            &approved,
+        ));
+        // Extra unknown field -> rejected (deny_unknown_fields).
+        assert!(!spent_nonce_bytes_bind_to(
+            format!(
+                r#"{{"spent_unix_secs":1,"consumed_approval_nonce_sha256":"{approved}","extra":1}}"#
+            )
+            .as_bytes(),
+            &approved,
+        ));
+        // Malformed JSON -> rejected.
+        assert!(!spent_nonce_bytes_bind_to(b"not json", &approved));
+    }
 
     #[test]
     fn relative_report_path_without_root_parent_matches_config_loader_fallback() {
@@ -1893,6 +2825,10 @@ mod tests {
             reference_quote_probe_log_commands: true,
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: None,
         };
 
@@ -1917,6 +2853,10 @@ mod tests {
             reference_quote_probe_log_commands: true,
             max_live_order_count: 1,
             max_notional_per_order: "1.00".to_string(),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
             operator_evidence: None,
         };
 
@@ -1983,6 +2923,8 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             strategy_input_evidence_sha256: "b".repeat(64),
+            gate_session_path: None,
+            expected_gate_session_sha256: None,
             financial_envelope_path: tempdir
                 .path()
                 .join("financial-envelope.json")
@@ -2001,6 +2943,11 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             abort_plan_sha256: "e".repeat(64),
+            canary_proof_candidate_source_path: None,
+            canary_proof_candidate_source_sha256: None,
+            canary_proof_order_intent_path: None,
+            canary_proof_order_intent_sha256: None,
+            no_submit_readiness_report_sha256: None,
             canary_evidence_path,
             approval_not_before_unix_seconds: 900,
             approval_not_after_unix_seconds: 1_300,
@@ -2085,15 +3032,18 @@ mod tests {
         let initial_unix_seconds = 1_000_u64;
         let late_unix_seconds = 1_200_u64;
         let report_path = tempdir.path().join("no-submit-readiness.json");
-        let operator_evidence = live_canary_operator_evidence_for_test(
-            tempdir.path(),
-            &fixture_root_path,
-            approval_id,
-            900,
-            1_100,
-            initial_unix_seconds as i64,
-            500,
-        );
+        let operator_evidence =
+            live_canary_operator_evidence_for_test(LiveCanaryOperatorEvidenceFixture {
+                dir: tempdir.path(),
+                root_path: &fixture_root_path,
+                approval_id,
+                approval_not_before_unix_seconds: 900,
+                approval_not_after_unix_seconds: 1_100,
+                reference_quote_unix_seconds: initial_unix_seconds,
+                consumed_unix_secs: initial_unix_seconds as i64,
+                approval_consumption_max_age_seconds: 500,
+                no_submit_readiness_report_sha256: None,
+            });
         write_no_submit_readiness_report_for_test(
             &report_path,
             approval_id,
@@ -2117,6 +3067,10 @@ mod tests {
                 reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
                 reference_quote_probe_log_events: true,
                 reference_quote_probe_log_commands: true,
+                egress_identity_observed_path: None,
+                egress_identity_observed_max_bytes: None,
+                approved_egress_identity_sha256: None,
+                proof_policy: None,
                 operator_evidence: Some(operator_evidence),
             },
         );
@@ -2142,6 +3096,83 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn gate_reuses_already_read_readiness_report_sha_for_late_binding() {
+        let fixture_root_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bolt_v3/root.toml");
+        let loaded = load_bolt_v3_config(&fixture_root_path)
+            .expect("fixture bolt-v3 root config should load");
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let approval_id = "operator-approved-canary-001";
+        let initial_unix_seconds = 1_000_u64;
+        let late_unix_seconds = 1_005_u64;
+        let report_path = tempdir.path().join("no-submit-readiness.json");
+        write_no_submit_readiness_report_for_test(
+            &report_path,
+            approval_id,
+            &executable_identity()
+                .await
+                .expect("test executable identity should resolve"),
+            &loaded.config_bundle_checksum,
+            initial_unix_seconds,
+        );
+        let report_sha256 = sha256_hex(
+            &fs::read(&report_path).expect("written readiness report should be readable"),
+        );
+        let operator_evidence =
+            live_canary_operator_evidence_for_test(LiveCanaryOperatorEvidenceFixture {
+                dir: tempdir.path(),
+                root_path: &fixture_root_path,
+                approval_id,
+                approval_not_before_unix_seconds: 900,
+                approval_not_after_unix_seconds: 1_100,
+                reference_quote_unix_seconds: initial_unix_seconds,
+                consumed_unix_secs: initial_unix_seconds as i64,
+                approval_consumption_max_age_seconds: 500,
+                no_submit_readiness_report_sha256: Some(&report_sha256),
+            });
+        let loaded = loaded_with_live_canary_for_test(
+            loaded,
+            LiveCanaryBlock {
+                approval_id: approval_id.to_string(),
+                no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+                max_live_order_count: 1,
+                max_notional_per_order: "1.00".to_string(),
+                max_no_submit_readiness_report_bytes: 4096,
+                readiness_report_max_age_seconds: 500,
+                reference_quote_max_age_seconds: 10,
+                reference_quote_wait_timeout_seconds: 10,
+                reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+                reference_quote_probe_log_events: true,
+                reference_quote_probe_log_commands: true,
+                egress_identity_observed_path: None,
+                egress_identity_observed_max_bytes: None,
+                approved_egress_identity_sha256: None,
+                proof_policy: None,
+                operator_evidence: Some(operator_evidence),
+            },
+        );
+        let mut ticks = [initial_unix_seconds, late_unix_seconds].into_iter();
+        let mut mutated_after_report_read = false;
+
+        let report = check_bolt_v3_live_canary_gate_with_clock(&loaded, || {
+            let current = ticks.next().unwrap_or(late_unix_seconds);
+            if current == late_unix_seconds && !mutated_after_report_read {
+                write_json_value(
+                    &report_path,
+                    serde_json::json!({ SCHEMA_VERSION_KEY: "mutated-after-read" }),
+                );
+                mutated_after_report_read = true;
+            }
+            Ok(current)
+        })
+        .await
+        .expect("late binding must use the already-read report bytes");
+
+        assert_eq!(report.no_submit_readiness_report_path, report_path);
+        assert!(mutated_after_report_read);
+    }
+
     fn loaded_with_live_canary_for_test(
         loaded: LoadedBoltV3Config,
         live_canary: LiveCanaryBlock,
@@ -2151,15 +3182,32 @@ mod tests {
         LoadedBoltV3Config { root, ..loaded }
     }
 
-    fn live_canary_operator_evidence_for_test(
-        dir: &Path,
-        root_path: &Path,
-        approval_id: &str,
+    struct LiveCanaryOperatorEvidenceFixture<'a> {
+        dir: &'a Path,
+        root_path: &'a Path,
+        approval_id: &'a str,
         approval_not_before_unix_seconds: i64,
         approval_not_after_unix_seconds: i64,
+        reference_quote_unix_seconds: u64,
         consumed_unix_secs: i64,
         approval_consumption_max_age_seconds: u64,
+        no_submit_readiness_report_sha256: Option<&'a str>,
+    }
+
+    fn live_canary_operator_evidence_for_test(
+        fixture: LiveCanaryOperatorEvidenceFixture<'_>,
     ) -> LiveCanaryOperatorEvidenceBlock {
+        let LiveCanaryOperatorEvidenceFixture {
+            dir,
+            root_path,
+            approval_id,
+            approval_not_before_unix_seconds,
+            approval_not_after_unix_seconds,
+            reference_quote_unix_seconds,
+            consumed_unix_secs,
+            approval_consumption_max_age_seconds,
+            no_submit_readiness_report_sha256,
+        } = fixture;
         let approval_envelope_path = dir
             .join("approval-envelope.json")
             .to_string_lossy()
@@ -2167,7 +3215,9 @@ mod tests {
         let (ssm_manifest_path, ssm_manifest_sha256) =
             write_json_file_with_sha256(dir, "ssm-manifest.json", "ssm_manifest");
         let (strategy_input_evidence_path, strategy_input_evidence_sha256) =
-            write_json_file_with_sha256(dir, "strategy-input.json", "strategy_input");
+            write_strategy_input_file_with_sha256(dir, reference_quote_unix_seconds);
+        let (gate_session_path, expected_gate_session_sha256) =
+            write_gate_session_file_with_sha256(dir);
         let (financial_envelope_path, financial_envelope_sha256) =
             write_json_file_with_sha256(dir, "financial-envelope.json", "financial_envelope");
         let (pre_run_state_path, pre_run_state_sha256) =
@@ -2181,6 +3231,8 @@ mod tests {
             .join("canary-evidence.json")
             .to_string_lossy()
             .to_string();
+        let decision_evidence_path =
+            write_entry_decision_evidence_file_for_test(dir, reference_quote_unix_seconds);
         let mut evidence = LiveCanaryOperatorEvidenceBlock {
             head_sha: current_build_head_sha()
                 .expect("build head sha should be compiled for gate tests")
@@ -2193,22 +3245,27 @@ mod tests {
             ssm_manifest_sha256,
             strategy_input_evidence_path,
             strategy_input_evidence_sha256,
+            gate_session_path: Some(gate_session_path),
+            expected_gate_session_sha256: Some(expected_gate_session_sha256),
             financial_envelope_path,
             financial_envelope_sha256,
             pre_run_state_path,
             pre_run_state_sha256,
             abort_plan_path,
             abort_plan_sha256,
+            canary_proof_candidate_source_path: None,
+            canary_proof_candidate_source_sha256: None,
+            canary_proof_order_intent_path: None,
+            canary_proof_order_intent_sha256: None,
+            no_submit_readiness_report_sha256: no_submit_readiness_report_sha256
+                .map(str::to_string),
             canary_evidence_path: canary_evidence_path.clone(),
             approval_not_before_unix_seconds,
             approval_not_after_unix_seconds,
             approval_nonce_path,
             approval_nonce_sha256,
             approval_consumption_path: approval_consumption_path.to_string_lossy().to_string(),
-            decision_evidence_path: dir
-                .join("decision-evidence.jsonl")
-                .to_string_lossy()
-                .to_string(),
+            decision_evidence_path,
             nt_submit_event_path: dir
                 .join("nt-submit-event.json")
                 .to_string_lossy()
@@ -2286,6 +3343,16 @@ mod tests {
                     serde_json::json!(sha256_hex(strategy_cancel_path.as_bytes())),
                 );
         }
+        if let Some(no_submit_readiness_report_sha256) = &evidence.no_submit_readiness_report_sha256
+        {
+            envelope
+                .as_object_mut()
+                .expect("approval envelope should be an object")
+                .insert(
+                    "no_submit_readiness_report_sha256".to_string(),
+                    serde_json::json!(no_submit_readiness_report_sha256),
+                );
+        }
         envelope
     }
 
@@ -2298,6 +3365,208 @@ mod tests {
         let value = serde_json::json!({ "record_kind": record_kind });
         let bytes = serde_json::to_vec(&value).expect("test evidence should serialize");
         fs::write(&path, &bytes).expect("test evidence should be written");
+        (path.to_string_lossy().to_string(), sha256_hex(&bytes))
+    }
+
+    fn write_strategy_input_file_with_sha256(
+        dir: &Path,
+        reference_quote_unix_seconds: u64,
+    ) -> (String, String) {
+        let path = dir.join("strategy-input.json");
+        let reference_quote_ts_event = reference_quote_unix_seconds
+            .checked_mul(MILLIS_PER_SECOND_U64)
+            .expect("test reference quote timestamp should fit in milliseconds");
+        let value = serde_json::json!({
+            "record_kind": "strategy_input",
+            "reference_quote_ts_event": reference_quote_ts_event,
+        });
+        let bytes = serde_json::to_vec(&value).expect("test evidence should serialize");
+        fs::write(&path, &bytes).expect("test evidence should be written");
+        (path.to_string_lossy().to_string(), sha256_hex(&bytes))
+    }
+
+    fn write_entry_decision_evidence_file_for_test(
+        dir: &Path,
+        reference_quote_unix_seconds: u64,
+    ) -> String {
+        let path = dir.join("decision-evidence.jsonl");
+        let reference_quote_ts_event = reference_quote_unix_seconds
+            .checked_mul(MILLIS_PER_SECOND_U64)
+            .expect("test reference quote timestamp should fit in milliseconds");
+        let snapshot_recorded_at_utc_ns = i64::try_from(reference_quote_ts_event)
+            .expect("test reference quote timestamp should fit in i64 nanosecond field");
+        let intent_recorded_at_utc_ns = snapshot_recorded_at_utc_ns
+            .checked_add(1)
+            .expect("test order intent timestamp should fit in i64");
+        let admission_recorded_at_utc_ns = intent_recorded_at_utc_ns
+            .checked_add(1)
+            .expect("test admission timestamp should fit in i64");
+        let strategy_id = "operator-canary-strategy".to_string();
+        let client_order_id = "operator-canary-entry-001".to_string();
+        let instrument_id = "operator-canary-instrument".to_string();
+        let selected_market_key = "operator-canary-market-key".to_string();
+        let submission_order_side = "BUY".to_string();
+        let submission_price = "0.50".to_string();
+        let submission_quantity = "1".to_string();
+        let mut gate_evidence = BTreeMap::new();
+        gate_evidence.insert(
+            DECISION_REFERENCE_GATE_ROLE.to_string(),
+            BoltV3GateEvidenceIdentity {
+                satisfaction_kind: "no_resolution".to_string(),
+                selected_market_key: selected_market_key.clone(),
+                provider_id: None,
+                provider_kind: None,
+                value_kind: None,
+                normalized_value_sha256: None,
+                provider_provenance_sha256: None,
+                artifact_sha256s: Vec::new(),
+                resolution_identity: Some("operator-canary-resolution".to_string()),
+            },
+        );
+        let snapshot = BoltV3StrategyInputEvidenceSnapshot {
+            strategy_id: strategy_id.clone(),
+            configured_target_id: "operator-canary-target".to_string(),
+            market_selection_ruleset_id: "operator-canary-ruleset".to_string(),
+            gate_session_hash: "operator-canary-gate-session".to_string(),
+            selected_market_key: selected_market_key.clone(),
+            gate_evidence,
+            market_selection_outcome: BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT
+                .to_string(),
+            market_id: None,
+            polymarket_condition_id: None,
+            polymarket_market_slug: None,
+            polymarket_question_id: None,
+            up_instrument_id: None,
+            down_instrument_id: None,
+            market_selection_timestamp_ms: Some(reference_quote_ts_event),
+            selected_market_observed_timestamp_ms: Some(reference_quote_ts_event),
+            polymarket_market_start_timestamp_ms: None,
+            polymarket_market_end_timestamp_ms: None,
+            price_to_beat_source: "operator-canary-reference".to_string(),
+            price_to_beat_value: submission_price.clone(),
+            reference_quote_ts_event,
+            spot_price: submission_price.clone(),
+            reference_fair_value: None,
+            realized_volatility: "0".to_string(),
+            seconds_to_market_end: 1,
+            pricing_kurtosis: "0".to_string(),
+            theta_decay_factor: "1".to_string(),
+            theta_scaled_min_edge_bps: "1".to_string(),
+            fair_probability_up: "0.50".to_string(),
+            uncertainty_band_probability: "0.01".to_string(),
+            expected_edge_basis_points: "1".to_string(),
+            worst_case_edge_basis_points: "1".to_string(),
+            fee_rate_basis_points: "0".to_string(),
+            selected_side: Some(submission_order_side.clone()),
+            submission_instrument_id: instrument_id.clone(),
+            submission_order_side: submission_order_side.clone(),
+            submission_price: submission_price.clone(),
+            submission_quantity: submission_quantity.clone(),
+            client_order_id: client_order_id.clone(),
+        };
+        let intent = BoltV3OrderIntentEvidence {
+            strategy_id: strategy_id.clone(),
+            intent_kind: BoltV3OrderIntentKind::Entry,
+            instrument_id: instrument_id.clone(),
+            client_order_id: client_order_id.clone(),
+            order_side: submission_order_side,
+            price: submission_price.clone(),
+            quantity: submission_quantity,
+            canary_proof_claim: None,
+            order_fields: BoltV3OrderIntentOrderFields {
+                order_type: "LIMIT".to_string(),
+                time_in_force: "GTC".to_string(),
+                price: Some(submission_price.clone()),
+                trigger_price: None,
+                activation_price: None,
+                trigger_type: None,
+                trigger_instrument_id: None,
+                trailing_offset: None,
+                trailing_offset_type: None,
+                expire_time_unix_nanos: None,
+                is_post_only: true,
+                is_reduce_only: false,
+                is_quote_quantity: false,
+            },
+        };
+        let admission = BoltV3AdmissionDecisionEvidence {
+            strategy_id,
+            client_order_id,
+            instrument_id,
+            notional: "0.50".to_string(),
+            intent_kind: BoltV3SubmitIntentKind::Entry,
+            outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+        };
+        let lines = [
+            serde_json::json!({
+                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "recorded_at_utc_ns": snapshot_recorded_at_utc_ns,
+                "gate_id": BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+                "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+                "kind": "strategy_input_snapshot",
+                "snapshot": snapshot,
+            }),
+            serde_json::json!({
+                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "recorded_at_utc_ns": intent_recorded_at_utc_ns,
+                "gate_id": BOLT_V3_ORDER_INTENT_GATE_ID,
+                "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+                "kind": "order_intent",
+                "intent": intent,
+            }),
+            serde_json::json!({
+                "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+                "recorded_at_utc_ns": admission_recorded_at_utc_ns,
+                "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+                "kind": "admission_decision",
+                "decision": admission,
+            }),
+        ];
+        let mut jsonl = String::new();
+        for line in lines {
+            jsonl.push_str(&serde_json::to_string(&line).expect("decision evidence should encode"));
+            jsonl.push('\n');
+        }
+        fs::write(&path, jsonl).expect("decision evidence should write");
+        path.to_string_lossy().to_string()
+    }
+
+    fn write_gate_session_file_with_sha256(dir: &Path) -> (String, String) {
+        let path = dir.join("entry-readiness-gate-session.json");
+        let selected_market_key = "b".repeat(64);
+        let value = serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.entry_readiness_gate_session.v1",
+            "strategy_instance_id": "configured_updown_main",
+            "configured_target_id": "configured_updown_target",
+            "selected_market": {
+                "configured_target_id": "configured_updown_target",
+                "venue": "polymarket",
+                "family_key": "updown",
+                "market_id": "configured-condition",
+                "instrument_ids": ["configured-condition-DOWN.POLYMARKET", "configured-condition-UP.POLYMARKET"],
+                "market_class": "binary_option",
+                "resolution_kind": "price",
+                "resolution_identity": "configured-reference-price",
+                "value_kind": "scalar_price",
+                "metadata_provenance_sha256": "f".repeat(64),
+                "selected_market_key": selected_market_key,
+                "selected_at_ms": 1234567890_u64
+            },
+            "created_at_ms": 1234567890_u64,
+            "satisfied_roles": {
+                "resolution": {
+                    "satisfaction_kind": "no_resolution",
+                    "selected_market_key": selected_market_key,
+                    "resolution_identity": "configured-reference-price"
+                }
+            },
+            "session_hash": "a".repeat(64),
+            "artifact_refs": []
+        });
+        let bytes = serde_json::to_vec(&value).expect("test gate session should serialize");
+        fs::write(&path, &bytes).expect("test gate session should be written");
         (path.to_string_lossy().to_string(), sha256_hex(&bytes))
     }
 

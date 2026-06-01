@@ -401,6 +401,10 @@ mod tests {
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }
+
+        fn redaction_values(&self) -> Vec<&str> {
+            Vec::new()
+        }
     }
 
     fn validate_fake_provider_client(
@@ -461,6 +465,8 @@ mod tests {
         configured_secret_paths: configured_fake_provider_secret_paths,
         map_adapters: map_fake_provider_adapters,
         build_fee_provider: None,
+        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     };
 
     static FAKE_UNSUPPORTED_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
@@ -475,6 +481,8 @@ mod tests {
         configured_secret_paths: configured_fake_provider_secret_paths,
         map_adapters: map_fake_provider_adapters,
         build_fee_provider: None,
+        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     };
 
     static FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING: ProviderBinding = ProviderBinding {
@@ -489,6 +497,8 @@ mod tests {
         configured_secret_paths: configured_fake_provider_secret_paths,
         map_adapters: map_fake_no_target_provider_adapters,
         build_fee_provider: None,
+        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     };
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
@@ -496,19 +506,35 @@ mod tests {
             .expect("fixture config bundle should load")
     }
 
+    fn binance_reference_client() -> crate::bolt_v3_config::ClientBlock {
+        toml::from_str(include_str!(
+            "../tests/fixtures/bolt_v3/binance_reference_client.toml"
+        ))
+        .expect("binance provider fixture client should parse")
+    }
+
+    fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
+        let mut loaded = fixture_loaded_config();
+        loaded
+            .root
+            .clients
+            .insert("binance_reference".to_string(), binance_reference_client());
+        loaded
+    }
+
     fn fixture_polymarket_secrets() -> ResolvedBoltV3PolymarketSecrets {
         ResolvedBoltV3PolymarketSecrets {
-            private_key: "fixture-poly-private-key".to_string(),
-            api_key: "fixture-poly-api-key".to_string(),
-            api_secret: "fixture-poly-api-secret".to_string(),
-            passphrase: "fixture-poly-passphrase".to_string(),
+            private_key: zeroize::Zeroizing::new("fixture-poly-private-key".to_string()),
+            api_key: zeroize::Zeroizing::new("fixture-poly-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new("fixture-poly-api-secret".to_string()),
+            passphrase: zeroize::Zeroizing::new("fixture-poly-passphrase".to_string()),
         }
     }
 
     fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
         ResolvedBoltV3BinanceSecrets {
-            api_key: "fixture-binance-api-key".to_string(),
-            api_secret: "fixture-binance-api-secret".to_string(),
+            api_key: zeroize::Zeroizing::new("fixture-binance-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new("fixture-binance-api-secret".to_string()),
         }
     }
 
@@ -544,9 +570,9 @@ mod tests {
             strategy_instance_id: "fake-strategy".to_string(),
             configured_target_id: "fake-updown".to_string(),
             execution_client_id: "polymarket_main".to_string(),
-            underlying_asset: "BTC".to_string(),
+            underlying_asset: "ASSET".to_string(),
             cadence_secs: 300,
-            cadence_slug_token: "5m".to_string(),
+            cadence_slug_token: "window".to_string(),
         });
         let resolved = ResolvedBoltV3Secrets {
             clients: BTreeMap::new(),
@@ -595,9 +621,9 @@ mod tests {
             strategy_instance_id: "fake-strategy".to_string(),
             configured_target_id: "fake-updown".to_string(),
             execution_client_id: "polymarket_main".to_string(),
-            underlying_asset: "BTC".to_string(),
+            underlying_asset: "ASSET".to_string(),
             cadence_secs: 300,
-            cadence_slug_token: "5m".to_string(),
+            cadence_slug_token: "window".to_string(),
         });
         let resolved = ResolvedBoltV3Secrets {
             clients: BTreeMap::new(),
@@ -773,7 +799,7 @@ mod tests {
 
     #[test]
     fn maps_binance_client_data_block_from_fixture() {
-        let loaded = fixture_loaded_config();
+        let loaded = fixture_loaded_config_with_binance_reference();
         let resolved = fixture_resolved_secrets();
 
         let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
@@ -814,15 +840,9 @@ mod tests {
     #[test]
     fn missing_resolved_secrets_for_polymarket_execution_is_a_mapping_error() {
         let loaded = fixture_loaded_config();
-        // Provide the binance_reference secret entry so map iteration
-        // reaches `polymarket_main` (which is alphabetically later in
-        // the BTreeMap) and trips on the missing polymarket secrets.
-        let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
-        clients.insert(
-            "binance_reference".to_string(),
-            Arc::new(fixture_binance_secrets()),
-        );
-        let resolved = ResolvedBoltV3Secrets { clients };
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::new(),
+        };
 
         let error = map_bolt_v3_adapters(&loaded, &resolved)
             .expect_err("missing resolved secrets must surface as a mapper error");
@@ -844,7 +864,7 @@ mod tests {
 
     #[test]
     fn missing_resolved_secrets_for_binance_data_is_a_mapping_error() {
-        let loaded = fixture_loaded_config();
+        let loaded = fixture_loaded_config_with_binance_reference();
         // Provide only polymarket_main so iteration succeeds for it and
         // fails when it reaches `binance_reference` with no entry. This
         // pairs with the polymarket case so neither alphabetical
@@ -906,7 +926,7 @@ mod tests {
 
     #[test]
     fn binance_adapter_debug_redacts_resolved_api_credentials() {
-        let loaded = fixture_loaded_config();
+        let loaded = fixture_loaded_config_with_binance_reference();
         let resolved = fixture_resolved_secrets();
         let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map");
         let debug = format!("{configs:?}");

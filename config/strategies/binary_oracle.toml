@@ -1,5 +1,5 @@
 schema_version = 2
-strategy_instance_id = "bitcoin_updown_main"
+strategy_instance_id = "configured_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
@@ -17,18 +17,47 @@ log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
 
 [target]
-configured_target_id = "btc_updown_5m"
+configured_target_id = "configured_updown_target"
 kind = "rotating_market"
 rotating_market_family = "updown"
-underlying_asset = "BTC"
+underlying_asset = "CONFIGURED_ASSET"
 cadence_secs = 300
+cadence_slug_token = "configuredwindow"
 market_selection_rule = "active_or_next"
 retry_interval_secs = 5
 blocked_after_secs = 60
 
-[reference_data.primary]
-data_client_id = "binance_reference"
-instrument_id = "BTCUSDT.BINANCE"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_kinds = ["chainlink_data_streams", "pyth", "exchange_index", "venue_native", "hyperliquid_hip4", "deribit_index", "outcome_oracle"]
+allowed_value_kinds = ["price", "outcome"]
+provider_preference = ["resolution_oracle_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+
+[target.gate_subscriptions.decision_reference]
+required = true
+allowed_provider_kinds = ["chainlink_data_streams", "pyth", "exchange_index", "venue_native", "hyperliquid_hip4", "deribit_index", "outcome_oracle"]
+allowed_value_kinds = ["price", "outcome"]
+provider_preference = ["resolution_oracle_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.decision_reference.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+
+[reference_data]
 
 [parameters.runtime]
 reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-001"
@@ -45,10 +74,8 @@ trade_flow_window_secs = 60
 trade_flow_max_samples = 2000
 spike_guard_return_threshold = 0.02
 spike_guard_cooldown_secs = 30
-price_to_beat_source = "chainlink_data_streams.report_at_boundary"
 pricing_kurtosis = 3.0
 theta_decay_factor = 1.0
-forced_flat_stale_chainlink_ms = 10000
 forced_flat_thin_book_min_liquidity = 5.0
 lead_agreement_min_corr = 0.8
 lead_jitter_max_ms = 250

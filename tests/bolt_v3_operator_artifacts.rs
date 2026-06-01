@@ -1,33 +1,84 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use rust_decimal::{Decimal, prelude::ToPrimitive};
 use sha2::{Digest, Sha256};
 
 use bolt_v2::{
-    bolt_v3_config::{LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, load_bolt_v3_config},
-    bolt_v3_decision_evidence::{
-        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitIntentKind,
+    bolt_v3_archetypes::{
+        ArchetypeGateRequirement, GateRole, GateValueKind, binary_oracle_edge_taker,
     },
-    bolt_v3_market_families::updown::updown_market_slug,
-    bolt_v3_operator_artifacts::{WrittenOperatorArtifact, build_redacted_ssm_manifest},
+    bolt_v3_client_registration::{BoltV3RegisteredClient, BoltV3RegistrationSummary},
+    bolt_v3_config::{
+        BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
+        DataClientReadinessProbeBlock, DataClientReadinessProbeBookType,
+        DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetBlock,
+        DataClientReadinessProbeQuoteTargetSource, GateProviderBlock, GateProviderFreshnessBlock,
+        LiveCanaryBlock, LiveCanaryOperatorEvidenceBlock, LiveCanaryProofPolicyBlock,
+        LoadedBoltV3Config, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND, PRICE_GATE_VALUE_KIND,
+        RESOLUTION_GATE_ROLE, ReferenceDataBlock, load_bolt_v3_config,
+    },
+    bolt_v3_decision_evidence::{
+        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3GateEvidenceIdentity,
+        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields,
+        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind, decision_evidence_path,
+        read_latest_entry_decision_evidence_chain,
+    },
+    bolt_v3_live_node::{
+        BoltV3NoSubmitBookDeltas, BoltV3NoSubmitBookDeltasEvidence,
+        BoltV3NoSubmitDataClientMetadata, BoltV3NoSubmitDataClientMetadataEvidence,
+        BoltV3NoSubmitDataClientReadinessEvidence, BoltV3NoSubmitReferenceQuote,
+        BoltV3NoSubmitReferenceQuoteEvidence, BoltV3NoSubmitTrade, BoltV3NoSubmitTradeEvidence,
+    },
+    bolt_v3_market_families::{SelectedMarketRequirement, updown::updown_market_slug},
+    bolt_v3_operator_artifacts::{
+        ChainlinkReferencePriceReportSourceFile,
+        ChainlinkReferenceQuoteObservationsSourceMaterializationRequest,
+        DataClientProductionReadinessMatrixSourceFileRequest,
+        EntryDecisionProofSourceMaterializationRequest, EntryDecisionSourceBookSideInput,
+        EntryDecisionSourceCollectionRequest, EntryDecisionSourceInputRequest,
+        EntryDecisionSourceMarketInputs, EntryReadinessGateEvidenceSourceFileRequest,
+        EntryReadinessGateSessionRequest, GateArtifactRef, GateEvidenceCollectionStatus,
+        GateEvidenceInput, GateSatisfaction, WrittenOperatorArtifact,
+        build_entry_readiness_gate_session, build_redacted_ssm_manifest,
+        collect_entry_decision_source_inputs_from_configured_provider,
+        collect_entry_readiness_gate_evidence_from_source_file, normalize_gate_evidence,
+        selected_entry_decision_market_attempts,
+        write_chainlink_reference_quote_observations_source_from_report_files,
+        write_data_client_behavior_observation_artifact_from_source_file,
+        write_data_client_behavior_observation_source_from_probe_events,
+        write_data_client_behavior_observation_source_from_probe_events_and_policy_source,
+        write_data_client_behavior_probe_events_from_no_submit_evidence,
+        write_data_client_behavior_probe_events_from_no_submit_readiness_evidence,
+        write_data_client_live_node_mapping_source_artifact_from_config,
+        write_data_client_nt_source_capability_artifact_from_config,
+        write_data_client_policy_behavior_source_artifact_from_nt_sources,
+        write_data_client_production_readiness_matrix_artifact_from_source_files,
+        write_data_client_readiness_source_artifact_from_config,
+        write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence,
+        write_entry_decision_source_inputs_from_selected_source_files,
+        write_entry_readiness_gate_session_artifact_from_decision_source_file,
+        write_reference_quote_observations_source_from_no_submit_evidence,
+    },
     bolt_v3_tiny_canary_evidence::{
-        Phase8AbortPlanSourceProofs, Phase8OperatorApprovalEnvelope, Phase8PreRunStateSourceProofs,
+        Phase8AbortPlanSourceProofs, Phase8FinancialEnvelopeEvidenceFile,
+        Phase8OperatorApprovalEnvelope, Phase8PreRunStateSourceProofs,
         Phase8StrategyInputSafetyAudit,
     },
 };
 use nautilus_core::Params;
 use nautilus_model::{
     enums::AssetClass,
-    identifiers::{InstrumentId, Symbol},
+    identifiers::{ClientId, InstrumentId, Symbol},
     instruments::{BinaryOption, InstrumentAny},
     types::{Currency, Price, Quantity},
 };
 
 mod support;
-use support::repo_path;
+use support::{repo_path, valid_entry_readiness_gate_session_json};
 
 // Test-only updown fixture values mirror tests/fixtures/bolt_v3/strategies/binary_oracle.toml.
-const TEST_MARKET_SELECTION_UNDERLYING_ASSET: &str = "BTC";
-const TEST_MARKET_SELECTION_CADENCE_SLUG: &str = "5m";
+const TEST_MARKET_SELECTION_UNDERLYING_ASSET: &str = "CONFIGURED_ASSET";
+const TEST_MARKET_SELECTION_CADENCE_SLUG: &str = "configuredwindow";
 const TEST_MARKET_SELECTION_CURRENT_START_SECONDS: i64 = 600;
 const TEST_MARKET_SELECTION_NOW_MS: u64 = 600_000;
 const TEST_MARKET_SELECTION_START_MS: u64 = 600_000;
@@ -40,8 +91,1067 @@ const TEST_CONDITION_ID: &str = "condition-current";
 const TEST_QUESTION_ID: &str = "question-current";
 const TEST_UP_OUTCOME: &str = "Up";
 const TEST_DOWN_OUTCOME: &str = "Down";
-const TEST_BINARY_OPTION_PRICE_INCREMENT: &str = "0.001";
 const TEST_BINARY_OPTION_SIZE_INCREMENT: &str = "0.01";
+const TEST_EXECUTION_CLIENT_ID: &str = "polymarket_main";
+const TEST_REFERENCE_DATA_CLIENT_ID: &str = "reference_data_client";
+const TEST_REFERENCE_INSTRUMENT_ID: &str = "REFERENCE.SOURCE";
+const TEST_DATA_CLIENT_PROBE_TARGET_ID: &str = "configured_quote_probe";
+const TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID: &str = "REFERENCE.POLYMARKET";
+const TEST_STRATEGY_INSTANCE_ID: &str = "configured_updown_main";
+const TEST_CONFIGURED_TARGET_ID: &str = "configured_updown_target";
+const TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.configured-reference-price";
+const TEST_PRICE_TO_BEAT_FEED_ID: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
+const TEST_SECONDARY_CHAINLINK_TESTNET_FEED_ID: &str =
+    "0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782";
+const TEST_ALT_CHAINLINK_FEED_ID: &str =
+    "0x1111111111111111111111111111111111111111111111111111111111111111";
+const TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION: u64 = 3;
+const TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE: u64 = 18;
+const TEST_PRICE_TO_BEAT_REPORT_SHA256: &str =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const TEST_GATE_SELECTED_MARKET_KEY: &str =
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const TEST_GATE_METADATA_PROVENANCE_SHA256: &str =
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const TEST_GATE_ARTIFACT_SHA256: &str =
+    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+const TEST_GATE_SESSION_ARTIFACT_SHA256: &str =
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const TEST_GATE_FRESHNESS_MAX_AGE_MS: u64 = 300_000;
+const TEST_GATE_COLLECTOR_OBSERVED_AT_MS: u64 = 1_000;
+const TEST_GATE_SOURCE_OBSERVED_AT_MS: u64 = 995;
+const TEST_GATE_CREATED_AT_MS: u64 = 1_100;
+const TEST_HYPERLIQUID_HIP4_PROVIDER_KIND: &str = "hyperliquid_hip4";
+const TEST_METADATA_VALUE_KIND: &str = "metadata";
+const TEST_PYTH_PROVIDER_KIND: &str = "pyth";
+const TEST_EXCHANGE_INDEX_PROVIDER_KIND: &str = "exchange_index";
+const TEST_DERIBIT_INDEX_PROVIDER_KIND: &str = "deribit_index";
+const TEST_OUTCOME_ORACLE_PROVIDER_KIND: &str = "outcome_oracle";
+const TEST_INDEX_VALUE_KIND: &str = "index";
+const TEST_OUTCOME_VALUE_KIND: &str = "outcome";
+
+#[test]
+fn gate_evidence_normalization_rejects_timeout_partial_and_default_evidence() {
+    for collection_status in [
+        GateEvidenceCollectionStatus::Timeout,
+        GateEvidenceCollectionStatus::Partial,
+        GateEvidenceCollectionStatus::Error,
+        GateEvidenceCollectionStatus::Default,
+    ] {
+        let mut input = fixture_gate_evidence_input(TEST_GATE_SELECTED_MARKET_KEY);
+        input.collection_status = collection_status;
+        let error = normalize_gate_evidence(input)
+            .expect_err("non-complete provider collection must not synthesize gate evidence");
+        assert!(
+            error.to_string().contains("collection_status"),
+            "expected collection_status rejection, got: {error}"
+        );
+    }
+}
+
+#[test]
+fn entry_readiness_gate_session_binds_normalized_resolution_evidence() {
+    let loaded = load_fixture_with_live_canary();
+    let selected_market = fixture_selected_market_requirement();
+    let evidence = normalize_gate_evidence(fixture_gate_evidence_input(
+        &selected_market.selected_market_key,
+    ))
+    .expect("fixture gate evidence should normalize");
+    let evidence_items = vec![evidence];
+    let requirements = binary_oracle_edge_taker::gate_requirements();
+
+    let session = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &evidence_items,
+    ))
+    .expect("matching provider evidence should satisfy entry readiness");
+
+    assert_eq!(session.schema_version, 1);
+    assert_eq!(session.strategy_instance_id, TEST_STRATEGY_INSTANCE_ID);
+    assert_eq!(session.configured_target_id, TEST_CONFIGURED_TARGET_ID);
+    assert_eq!(
+        session.selected_market.selected_market_key,
+        TEST_GATE_SELECTED_MARKET_KEY
+    );
+    assert!(is_lowercase_sha256(&session.session_hash));
+    match session
+        .satisfied_roles
+        .get(RESOLUTION_GATE_ROLE)
+        .expect("resolution role should be satisfied")
+    {
+        GateSatisfaction::Evidence { evidence } => {
+            assert_eq!(evidence.provider_id, "resolution_oracle_primary");
+            assert_eq!(evidence.provider_kind, CHAINLINK_DATA_STREAMS_PROVIDER_KIND);
+            assert_eq!(evidence.value_kind, PRICE_GATE_VALUE_KIND);
+            assert!(is_lowercase_sha256(&evidence.normalized_value_sha256));
+            assert!(is_lowercase_sha256(&evidence.provider_provenance_sha256));
+        }
+        GateSatisfaction::NoResolution { .. } => {
+            panic!("binary-oracle fixture must require provider evidence")
+        }
+    }
+
+    let repeated = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &evidence_items,
+    ))
+    .expect("same inputs should rebuild the same session");
+    assert_eq!(session.session_hash, repeated.session_hash);
+}
+
+#[test]
+fn entry_readiness_gate_session_fails_closed_on_wrong_market_or_stale_evidence() {
+    let loaded = load_fixture_with_live_canary();
+    let selected_market = fixture_selected_market_requirement();
+    let requirements = binary_oracle_edge_taker::gate_requirements();
+
+    let wrong_market_evidence =
+        normalize_gate_evidence(fixture_gate_evidence_input(&"f".repeat(64)))
+            .expect("wrong-market evidence is structurally valid");
+    let wrong_market_items = vec![wrong_market_evidence];
+    let wrong_market_error = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &wrong_market_items,
+    ))
+    .expect_err("previous-market evidence must not satisfy current selected market");
+    assert!(
+        wrong_market_error
+            .to_string()
+            .contains("no provider evidence satisfied role"),
+        "expected selected-market binding rejection, got: {wrong_market_error}"
+    );
+
+    let stale_evidence = normalize_gate_evidence(fixture_gate_evidence_input(
+        &selected_market.selected_market_key,
+    ))
+    .expect("fixture gate evidence should normalize");
+    let stale_items = vec![stale_evidence];
+    let stale_error = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
+        created_at_ms: TEST_GATE_COLLECTOR_OBSERVED_AT_MS + TEST_GATE_FRESHNESS_MAX_AGE_MS + 1,
+        ..fixture_gate_session_request(&loaded, &selected_market, &requirements, &stale_items)
+    })
+    .expect_err("stale evidence must fail closed");
+    assert!(
+        stale_error
+            .to_string()
+            .contains("no provider evidence satisfied role"),
+        "expected stale evidence rejection, got: {stale_error}"
+    );
+}
+
+#[test]
+fn entry_readiness_gate_session_uses_provider_preference_for_multiple_matches() {
+    let mut loaded = load_fixture_with_live_canary();
+    add_backup_resolution_provider(&mut loaded);
+    let selected_market = fixture_selected_market_requirement();
+    let primary = normalize_gate_evidence(fixture_gate_evidence_input(
+        &selected_market.selected_market_key,
+    ))
+    .expect("primary evidence should normalize");
+    let mut backup_input = fixture_gate_evidence_input(&selected_market.selected_market_key);
+    backup_input.provider_id = "backup_resolution_oracle".to_string();
+    backup_input.artifact_refs[0].path = "backup-price-report.json".to_string();
+    let backup = normalize_gate_evidence(backup_input).expect("backup evidence should normalize");
+    let evidence_items = vec![backup, primary];
+    let requirements = binary_oracle_edge_taker::gate_requirements();
+
+    let session = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &evidence_items,
+    ))
+    .expect("provider_preference should select the primary evidence");
+    match session
+        .satisfied_roles
+        .get(RESOLUTION_GATE_ROLE)
+        .expect("resolution role should be satisfied")
+    {
+        GateSatisfaction::Evidence { evidence } => {
+            assert_eq!(evidence.provider_id, "resolution_oracle_primary");
+        }
+        GateSatisfaction::NoResolution { .. } => panic!("expected evidence satisfaction"),
+    }
+
+    remove_resolution_provider_preference(&mut loaded);
+    let error = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &evidence_items,
+    ))
+    .expect_err("multiple matching providers without preference must fail closed");
+    assert!(
+        error.to_string().contains("provider_preference"),
+        "expected deterministic preference rejection, got: {error}"
+    );
+}
+
+#[test]
+fn entry_readiness_gate_session_supports_explicit_no_resolution_only_when_allowed() {
+    let mut loaded = load_fixture_with_live_canary();
+    enable_no_resolution_subscription(&mut loaded);
+    let selected_market = fixture_no_resolution_selected_market_requirement();
+    let requirements = vec![ArchetypeGateRequirement {
+        role: GateRole::Resolution,
+        required: true,
+        accepted_value_kinds: BTreeSet::from([GateValueKind::Outcome]),
+        allow_no_resolution: true,
+    }];
+    let evidence_items = Vec::new();
+
+    let session = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &evidence_items,
+    ))
+    .expect("explicit no-resolution-compatible requirement should satisfy without evidence");
+    assert!(is_lowercase_sha256(&session.session_hash));
+    match session
+        .satisfied_roles
+        .get(RESOLUTION_GATE_ROLE)
+        .expect("resolution role should be present")
+    {
+        GateSatisfaction::NoResolution {
+            selected_market_key,
+            resolution_identity,
+        } => {
+            assert_eq!(selected_market_key, TEST_GATE_SELECTED_MARKET_KEY);
+            assert_eq!(resolution_identity, "none");
+        }
+        GateSatisfaction::Evidence { .. } => panic!("no-resolution should not need evidence"),
+    }
+
+    let rejecting_requirements = vec![ArchetypeGateRequirement {
+        allow_no_resolution: false,
+        ..requirements[0].clone()
+    }];
+    let error = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &rejecting_requirements,
+        &evidence_items,
+    ))
+    .expect_err("archetype must explicitly allow no-resolution");
+    assert!(
+        error.to_string().contains("does not allow no_resolution"),
+        "expected no-resolution rejection, got: {error}"
+    );
+}
+
+#[test]
+fn entry_readiness_gate_session_keeps_decision_reference_separate_from_resolution() {
+    let mut loaded = load_fixture_with_live_canary();
+    add_decision_reference_subscription(&mut loaded);
+    add_reference_value_capability(&mut loaded, "resolution_oracle_primary");
+    let selected_market = fixture_selected_market_requirement();
+    let resolution_evidence = normalize_gate_evidence(fixture_gate_evidence_input(
+        &selected_market.selected_market_key,
+    ))
+    .expect("resolution evidence should normalize");
+    let requirements = vec![ArchetypeGateRequirement {
+        role: GateRole::DecisionReference,
+        required: true,
+        accepted_value_kinds: BTreeSet::from([GateValueKind::Price]),
+        allow_no_resolution: false,
+    }];
+    let resolution_items = vec![resolution_evidence];
+
+    let error = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &resolution_items,
+    ))
+    .expect_err("resolution evidence must not satisfy decision-reference readiness");
+    assert!(
+        error
+            .to_string()
+            .contains("no provider evidence satisfied role"),
+        "expected role-separation rejection, got: {error}"
+    );
+
+    let mut reference_input = fixture_gate_evidence_input(&selected_market.selected_market_key);
+    reference_input.role = "decision_reference".to_string();
+    reference_input.normalized_value = serde_json::json!({
+        "reference_value": "50000.00",
+        "decimal_scale": TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+    });
+    reference_input.artifact_refs[0].path = "decision-reference-source.json".to_string();
+    let reference_evidence =
+        normalize_gate_evidence(reference_input).expect("reference evidence should normalize");
+    let reference_items = vec![reference_evidence];
+
+    let session = build_entry_readiness_gate_session(fixture_gate_session_request(
+        &loaded,
+        &selected_market,
+        &requirements,
+        &reference_items,
+    ))
+    .expect("decision-reference evidence should satisfy its own role");
+    assert!(matches!(
+        session
+            .satisfied_roles
+            .get("decision_reference")
+            .expect("decision_reference role should be satisfied"),
+        GateSatisfaction::Evidence { .. }
+    ));
+}
+
+#[test]
+fn entry_readiness_evidence_collection_dispatches_chainlink_from_selected_provider_kind() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let selected_market = fixture_selected_market_requirement();
+
+    let evidence = collect_entry_readiness_gate_evidence_from_source_file(
+        &loaded,
+        TEST_STRATEGY_INSTANCE_ID,
+        EntryReadinessGateEvidenceSourceFileRequest {
+            role: RESOLUTION_GATE_ROLE,
+            provider_id: "resolution_oracle_primary",
+            selected_market: &selected_market,
+            source_path: &paths.price_source_path,
+            max_source_bytes: 100_000,
+            expected_source_sha256: &sha256_file(&paths.price_source_path),
+            artifact_ref_path: "source-bound-price.json",
+            collector_observed_at_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+        },
+    )
+    .expect("configured Chainlink source should collect readiness evidence");
+
+    assert_eq!(evidence.provider_id, "resolution_oracle_primary");
+    assert_eq!(evidence.provider_kind, CHAINLINK_DATA_STREAMS_PROVIDER_KIND);
+    assert_eq!(evidence.value_kind, PRICE_GATE_VALUE_KIND);
+    assert_eq!(evidence.selected_market_key, TEST_GATE_SELECTED_MARKET_KEY);
+    assert_eq!(
+        evidence.normalized_value["price_to_beat_value"],
+        serde_json::json!(3100.0)
+    );
+    assert!(
+        evidence
+            .artifact_refs
+            .iter()
+            .any(|artifact| artifact.sha256 == sha256_file(&paths.price_source_path))
+    );
+}
+
+#[test]
+fn entry_readiness_evidence_collection_rejects_provider_not_selected_by_market_mapping() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let mut selected_market = fixture_selected_market_requirement();
+    selected_market.resolution_kind = TEST_HYPERLIQUID_HIP4_PROVIDER_KIND.to_string();
+    selected_market.value_kind = TEST_METADATA_VALUE_KIND.to_string();
+
+    let error = collect_entry_readiness_gate_evidence_from_source_file(
+        &loaded,
+        TEST_STRATEGY_INSTANCE_ID,
+        EntryReadinessGateEvidenceSourceFileRequest {
+            role: RESOLUTION_GATE_ROLE,
+            provider_id: "resolution_oracle_primary",
+            selected_market: &selected_market,
+            source_path: &paths.price_source_path,
+            max_source_bytes: 100_000,
+            expected_source_sha256: &sha256_file(&paths.price_source_path),
+            artifact_ref_path: "source-bound-price.json",
+            collector_observed_at_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+        },
+    )
+    .expect_err("configured provider kind must match selected-market requirements");
+
+    assert!(
+        error.to_string().contains("provider_kind"),
+        "expected provider-kind binding rejection, got: {error}"
+    );
+}
+
+#[test]
+fn entry_readiness_evidence_collection_dispatches_hip4_metadata_source_when_required() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    replace_resolution_provider_mapping(
+        &mut loaded,
+        "hip4_metadata_primary",
+        TEST_HYPERLIQUID_HIP4_PROVIDER_KIND,
+        TEST_METADATA_VALUE_KIND,
+    );
+    add_metadata_gate_provider(
+        &mut loaded,
+        "hip4_metadata_primary",
+        TEST_HYPERLIQUID_HIP4_PROVIDER_KIND,
+    );
+    let mut selected_market = fixture_selected_market_requirement();
+    selected_market.resolution_kind = TEST_HYPERLIQUID_HIP4_PROVIDER_KIND.to_string();
+    selected_market.value_kind = TEST_METADATA_VALUE_KIND.to_string();
+    let source_path = temp.path().join("hip4-metadata-source.json");
+    std::fs::write(
+        &source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.normalized_readiness_gate_source.v1",
+            "provider_kind": TEST_HYPERLIQUID_HIP4_PROVIDER_KIND,
+            "value_kind": TEST_METADATA_VALUE_KIND,
+            "source_observed_at_ms": TEST_MARKET_SELECTION_NOW_MS + 1_000,
+            "normalized_value": {
+                "metadata_scope": "asset_universe",
+                "resolution_identity": selected_market.resolution_identity
+            },
+            "provider_provenance": {
+                "provider_kind": TEST_HYPERLIQUID_HIP4_PROVIDER_KIND,
+                "metadata_scope": "asset_universe"
+            }
+        }))
+        .expect("metadata source should serialize"),
+    )
+    .expect("metadata source should write");
+
+    let evidence = collect_entry_readiness_gate_evidence_from_source_file(
+        &loaded,
+        TEST_STRATEGY_INSTANCE_ID,
+        EntryReadinessGateEvidenceSourceFileRequest {
+            role: RESOLUTION_GATE_ROLE,
+            provider_id: "hip4_metadata_primary",
+            selected_market: &selected_market,
+            source_path: &source_path,
+            max_source_bytes: 100_000,
+            expected_source_sha256: &sha256_file(&source_path),
+            artifact_ref_path: "hip4-metadata-source.json",
+            collector_observed_at_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+        },
+    )
+    .expect("configured HIP-4 metadata source should collect readiness evidence");
+
+    assert_eq!(evidence.provider_id, "hip4_metadata_primary");
+    assert_eq!(evidence.provider_kind, TEST_HYPERLIQUID_HIP4_PROVIDER_KIND);
+    assert_eq!(evidence.value_kind, TEST_METADATA_VALUE_KIND);
+    assert_eq!(
+        evidence.normalized_value["metadata_scope"],
+        serde_json::json!("asset_universe")
+    );
+}
+
+#[test]
+fn entry_readiness_gate_session_rotates_provider_kinds_without_global_chainlink_requirement() {
+    for case in [
+        (
+            "pyth_resolution_primary",
+            TEST_PYTH_PROVIDER_KIND,
+            PRICE_GATE_VALUE_KIND,
+            GateValueKind::Price,
+        ),
+        (
+            "exchange_index_primary",
+            TEST_EXCHANGE_INDEX_PROVIDER_KIND,
+            TEST_INDEX_VALUE_KIND,
+            GateValueKind::Index,
+        ),
+        (
+            "deribit_index_primary",
+            TEST_DERIBIT_INDEX_PROVIDER_KIND,
+            TEST_INDEX_VALUE_KIND,
+            GateValueKind::Index,
+        ),
+        (
+            "outcome_oracle_primary",
+            TEST_OUTCOME_ORACLE_PROVIDER_KIND,
+            TEST_OUTCOME_VALUE_KIND,
+            GateValueKind::Outcome,
+        ),
+        (
+            "test_double_primary",
+            "test_double",
+            TEST_OUTCOME_VALUE_KIND,
+            GateValueKind::Outcome,
+        ),
+    ] {
+        let (provider_id, provider_kind, value_kind, gate_value_kind) = case;
+        let mut loaded = load_fixture_with_live_canary();
+        loaded
+            .root
+            .gate_providers
+            .as_mut()
+            .expect("fixture root should have gate providers")
+            .remove("resolution_oracle_primary");
+        replace_resolution_provider_mapping(&mut loaded, provider_id, provider_kind, value_kind);
+        add_rotation_gate_provider(&mut loaded, provider_id, provider_kind);
+        let selected_market = fixture_selected_market_requirement_with(provider_kind, value_kind);
+        let evidence = normalize_gate_evidence(rotation_gate_evidence_input(
+            provider_id,
+            provider_kind,
+            value_kind,
+            &selected_market.selected_market_key,
+        ))
+        .expect("rotation gate evidence should normalize");
+        let requirements = vec![ArchetypeGateRequirement {
+            role: GateRole::Resolution,
+            required: true,
+            accepted_value_kinds: BTreeSet::from([gate_value_kind]),
+            allow_no_resolution: false,
+        }];
+        let evidence_items = vec![evidence];
+
+        let session = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
+            loaded: &loaded,
+            strategy_instance_id: TEST_STRATEGY_INSTANCE_ID,
+            selected_market: &selected_market,
+            requirements: &requirements,
+            provider_evidence: &evidence_items,
+            created_at_ms: TEST_GATE_CREATED_AT_MS,
+            artifact_refs: vec![GateArtifactRef {
+                path: format!("{provider_kind}-readiness-session.json"),
+                sha256: TEST_GATE_SESSION_ARTIFACT_SHA256.to_string(),
+            }],
+        })
+        .unwrap_or_else(|error| {
+            panic!("{provider_kind} should satisfy readiness without global Chainlink: {error}")
+        });
+
+        match session
+            .satisfied_roles
+            .get(RESOLUTION_GATE_ROLE)
+            .expect("resolution role should be satisfied")
+        {
+            GateSatisfaction::Evidence { evidence } => {
+                assert_eq!(evidence.provider_id, provider_id);
+                assert_eq!(evidence.provider_kind, provider_kind);
+                assert_eq!(evidence.value_kind, value_kind);
+            }
+            GateSatisfaction::NoResolution { .. } => panic!("expected evidence satisfaction"),
+        }
+    }
+}
+
+#[test]
+fn entry_readiness_gate_session_rejects_global_provider_when_mapping_selects_other_kind() {
+    let mut loaded = load_fixture_with_live_canary();
+    replace_resolution_provider_mapping(
+        &mut loaded,
+        "pyth_resolution_primary",
+        TEST_PYTH_PROVIDER_KIND,
+        PRICE_GATE_VALUE_KIND,
+    );
+    add_rotation_gate_provider(
+        &mut loaded,
+        "pyth_resolution_primary",
+        TEST_PYTH_PROVIDER_KIND,
+    );
+    let selected_market =
+        fixture_selected_market_requirement_with(TEST_PYTH_PROVIDER_KIND, PRICE_GATE_VALUE_KIND);
+    let chainlink_evidence = normalize_gate_evidence(rotation_gate_evidence_input(
+        "resolution_oracle_primary",
+        CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
+        PRICE_GATE_VALUE_KIND,
+        &selected_market.selected_market_key,
+    ))
+    .expect("global Chainlink evidence should normalize");
+    let requirements = vec![ArchetypeGateRequirement {
+        role: GateRole::Resolution,
+        required: true,
+        accepted_value_kinds: BTreeSet::from([GateValueKind::Price]),
+        allow_no_resolution: false,
+    }];
+    let evidence_items = vec![chainlink_evidence];
+
+    let error = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
+        loaded: &loaded,
+        strategy_instance_id: TEST_STRATEGY_INSTANCE_ID,
+        selected_market: &selected_market,
+        requirements: &requirements,
+        provider_evidence: &evidence_items,
+        created_at_ms: TEST_GATE_CREATED_AT_MS,
+        artifact_refs: vec![GateArtifactRef {
+            path: "entry-readiness-gate-session.json".to_string(),
+            sha256: TEST_GATE_SESSION_ARTIFACT_SHA256.to_string(),
+        }],
+    })
+    .expect_err("unselected global Chainlink evidence must not satisfy Pyth mapping");
+
+    assert!(
+        error
+            .to_string()
+            .contains("no provider evidence satisfied role"),
+        "expected selected-provider rejection, got: {error}"
+    );
+}
+
+#[test]
+fn entry_readiness_gate_session_accepts_no_resolution_without_global_gate_provider() {
+    let mut loaded = load_fixture_with_live_canary();
+    loaded.root.gate_providers = None;
+    enable_no_resolution_subscription(&mut loaded);
+    let selected_market = fixture_no_resolution_selected_market_requirement();
+    let requirements = vec![ArchetypeGateRequirement {
+        role: GateRole::Resolution,
+        required: true,
+        accepted_value_kinds: BTreeSet::from([GateValueKind::Outcome]),
+        allow_no_resolution: true,
+    }];
+
+    let session = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
+        loaded: &loaded,
+        strategy_instance_id: TEST_STRATEGY_INSTANCE_ID,
+        selected_market: &selected_market,
+        requirements: &requirements,
+        provider_evidence: &[],
+        created_at_ms: TEST_GATE_CREATED_AT_MS,
+        artifact_refs: vec![GateArtifactRef {
+            path: "entry-readiness-gate-session.json".to_string(),
+            sha256: TEST_GATE_SESSION_ARTIFACT_SHA256.to_string(),
+        }],
+    })
+    .expect("no-resolution readiness should not require a global gate provider");
+
+    assert!(matches!(
+        session
+            .satisfied_roles
+            .get(RESOLUTION_GATE_ROLE)
+            .expect("resolution role should be satisfied"),
+        GateSatisfaction::NoResolution { .. }
+    ));
+}
+
+fn fixture_selected_market_requirement() -> SelectedMarketRequirement {
+    SelectedMarketRequirement {
+        configured_target_id: TEST_CONFIGURED_TARGET_ID.to_string(),
+        venue: "POLYMARKET".to_string(),
+        family_key: "updown".to_string(),
+        market_id: TEST_MARKET_ID.to_string(),
+        instrument_ids: vec![
+            TEST_DOWN_INSTRUMENT_ID.to_string(),
+            TEST_UP_INSTRUMENT_ID.to_string(),
+        ],
+        market_class: "binary_option".to_string(),
+        resolution_kind: CHAINLINK_DATA_STREAMS_PROVIDER_KIND.to_string(),
+        resolution_identity: "configured-reference-price".to_string(),
+        value_kind: PRICE_GATE_VALUE_KIND.to_string(),
+        metadata_provenance_sha256: TEST_GATE_METADATA_PROVENANCE_SHA256.to_string(),
+        selected_market_key: TEST_GATE_SELECTED_MARKET_KEY.to_string(),
+        selected_at_ms: TEST_MARKET_SELECTION_NOW_MS,
+    }
+}
+
+fn fixture_selected_market_requirement_with(
+    provider_kind: &str,
+    value_kind: &str,
+) -> SelectedMarketRequirement {
+    SelectedMarketRequirement {
+        resolution_kind: provider_kind.to_string(),
+        value_kind: value_kind.to_string(),
+        ..fixture_selected_market_requirement()
+    }
+}
+
+fn fixture_no_resolution_selected_market_requirement() -> SelectedMarketRequirement {
+    SelectedMarketRequirement {
+        resolution_kind: NO_RESOLUTION_KIND.to_string(),
+        resolution_identity: "none".to_string(),
+        value_kind: NO_RESOLUTION_VALUE_KIND.to_string(),
+        ..fixture_selected_market_requirement()
+    }
+}
+
+fn rotation_gate_evidence_input(
+    provider_id: &str,
+    provider_kind: &str,
+    value_kind: &str,
+    selected_market_key: &str,
+) -> GateEvidenceInput {
+    GateEvidenceInput {
+        role: RESOLUTION_GATE_ROLE.to_string(),
+        provider_id: provider_id.to_string(),
+        provider_kind: provider_kind.to_string(),
+        selected_market_key: selected_market_key.to_string(),
+        collector_observed_at_ms: TEST_GATE_COLLECTOR_OBSERVED_AT_MS,
+        source_observed_at_ms: TEST_GATE_SOURCE_OBSERVED_AT_MS,
+        freshness_max_age_ms: TEST_GATE_FRESHNESS_MAX_AGE_MS,
+        value_kind: value_kind.to_string(),
+        normalized_value: serde_json::json!({
+            "value_kind": value_kind,
+            "resolution_value": "fixture-rotation-value",
+        }),
+        provider_provenance: serde_json::json!({
+            "provider_kind": provider_kind,
+            "fixture_provider_id": provider_id,
+        }),
+        artifact_refs: vec![GateArtifactRef {
+            path: format!("{provider_kind}-source.json"),
+            sha256: TEST_GATE_ARTIFACT_SHA256.to_string(),
+        }],
+        collection_status: GateEvidenceCollectionStatus::Complete,
+    }
+}
+
+fn fixture_gate_evidence_input(selected_market_key: &str) -> GateEvidenceInput {
+    GateEvidenceInput {
+        role: RESOLUTION_GATE_ROLE.to_string(),
+        provider_id: "resolution_oracle_primary".to_string(),
+        provider_kind: CHAINLINK_DATA_STREAMS_PROVIDER_KIND.to_string(),
+        selected_market_key: selected_market_key.to_string(),
+        collector_observed_at_ms: TEST_GATE_COLLECTOR_OBSERVED_AT_MS,
+        source_observed_at_ms: TEST_GATE_SOURCE_OBSERVED_AT_MS,
+        freshness_max_age_ms: TEST_GATE_FRESHNESS_MAX_AGE_MS,
+        value_kind: PRICE_GATE_VALUE_KIND.to_string(),
+        normalized_value: serde_json::json!({
+            "price": "50000.00",
+            "decimal_scale": TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+        }),
+        provider_provenance: serde_json::json!({
+            "provider_kind": CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
+            "feed_id": TEST_PRICE_TO_BEAT_FEED_ID,
+            "report_schema_version": TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION,
+        }),
+        artifact_refs: vec![GateArtifactRef {
+            path: "price-report.json".to_string(),
+            sha256: TEST_GATE_ARTIFACT_SHA256.to_string(),
+        }],
+        collection_status: GateEvidenceCollectionStatus::Complete,
+    }
+}
+
+fn fixture_gate_session_request<'a>(
+    loaded: &'a LoadedBoltV3Config,
+    selected_market: &'a SelectedMarketRequirement,
+    requirements: &'a [ArchetypeGateRequirement],
+    evidence_items: &'a [bolt_v2::bolt_v3_operator_artifacts::GateEvidence],
+) -> EntryReadinessGateSessionRequest<'a> {
+    EntryReadinessGateSessionRequest {
+        loaded,
+        strategy_instance_id: TEST_STRATEGY_INSTANCE_ID,
+        selected_market,
+        requirements,
+        provider_evidence: evidence_items,
+        created_at_ms: TEST_GATE_CREATED_AT_MS,
+        artifact_refs: vec![GateArtifactRef {
+            path: "entry-readiness-gate-session.json".to_string(),
+            sha256: TEST_GATE_SESSION_ARTIFACT_SHA256.to_string(),
+        }],
+    }
+}
+
+fn add_rotation_gate_provider(
+    loaded: &mut LoadedBoltV3Config,
+    provider_id: &str,
+    provider_kind: &str,
+) {
+    loaded
+        .root
+        .gate_providers
+        .as_mut()
+        .expect("fixture root should have gate providers")
+        .insert(
+            provider_id.to_string(),
+            GateProviderBlock {
+                provider_kind: Some(provider_kind.to_string()),
+                capabilities: Some(vec!["resolution_value".to_string()]),
+                client_id: None,
+                freshness: Some(GateProviderFreshnessBlock {
+                    max_age_ms: Some(TEST_GATE_FRESHNESS_MAX_AGE_MS),
+                    max_clock_skew_ms: Some(5_000),
+                }),
+                provider_config: BTreeMap::from([(
+                    provider_kind.to_string(),
+                    toml::Value::Table(toml::map::Map::new()),
+                )]),
+            },
+        );
+}
+
+fn add_decision_reference_subscription(loaded: &mut LoadedBoltV3Config) {
+    let subscription = resolution_subscription_mut(loaded).clone();
+    loaded.strategies[0]
+        .config
+        .target
+        .as_table_mut()
+        .expect("target should be a table")
+        .get_mut("gate_subscriptions")
+        .expect("gate subscriptions should exist")
+        .as_table_mut()
+        .expect("gate subscriptions should be a table")
+        .insert(
+            "decision_reference".to_string(),
+            toml::Value::Table(subscription),
+        );
+}
+
+fn add_reference_value_capability(loaded: &mut LoadedBoltV3Config, provider_id: &str) {
+    let provider = loaded
+        .root
+        .gate_providers
+        .as_mut()
+        .expect("fixture root should have gate providers")
+        .get_mut(provider_id)
+        .expect("provider should exist");
+    let capabilities = provider
+        .capabilities
+        .as_mut()
+        .expect("provider should carry capabilities");
+    if !capabilities
+        .iter()
+        .any(|capability| capability == "reference_value")
+    {
+        capabilities.push("reference_value".to_string());
+    }
+}
+
+fn configure_reference_data(loaded: &mut LoadedBoltV3Config) {
+    loaded.strategies[0]
+        .config
+        .target
+        .as_table_mut()
+        .expect("target should be a table")
+        .get_mut("gate_subscriptions")
+        .expect("gate subscriptions should exist")
+        .as_table_mut()
+        .expect("gate subscriptions should be a table")
+        .remove(DECISION_REFERENCE_GATE_ROLE);
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    loaded.strategies[0].config.reference_data.insert(
+        "primary".to_string(),
+        ReferenceDataBlock {
+            data_client_id: ClientId::from(TEST_REFERENCE_DATA_CLIENT_ID),
+            instrument_id: InstrumentId::from(TEST_REFERENCE_INSTRUMENT_ID),
+        },
+    );
+}
+
+fn configure_data_client_readiness_quote_probe(loaded: &mut LoadedBoltV3Config) {
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::Configured,
+        max_metadata_quote_targets: None,
+        allow_metadata_target_sampling: None,
+        min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
+        quote_targets: Some(BTreeMap::from([(
+            TEST_DATA_CLIENT_PROBE_TARGET_ID.to_string(),
+            DataClientReadinessProbeQuoteTargetBlock {
+                instrument_id: InstrumentId::from(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID),
+            },
+        )])),
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+}
+
+fn registration_summary_for_loaded(loaded: &LoadedBoltV3Config) -> BoltV3RegistrationSummary {
+    BoltV3RegistrationSummary {
+        clients: loaded
+            .root
+            .clients
+            .iter()
+            .map(|(client_key, client)| {
+                (
+                    client_key.clone(),
+                    BoltV3RegisteredClient {
+                        data: client.data.is_some(),
+                        execution: client.execution.is_some(),
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+fn add_metadata_gate_provider(
+    loaded: &mut LoadedBoltV3Config,
+    provider_id: &str,
+    provider_kind: &str,
+) {
+    loaded
+        .root
+        .gate_providers
+        .as_mut()
+        .expect("fixture root should have gate providers")
+        .insert(
+            provider_id.to_string(),
+            GateProviderBlock {
+                provider_kind: Some(provider_kind.to_string()),
+                capabilities: Some(vec![
+                    "resolution_value".to_string(),
+                    "market_metadata".to_string(),
+                ]),
+                client_id: None,
+                freshness: Some(GateProviderFreshnessBlock {
+                    max_age_ms: Some(TEST_GATE_FRESHNESS_MAX_AGE_MS),
+                    max_clock_skew_ms: Some(5_000),
+                }),
+                provider_config: BTreeMap::from([(
+                    provider_kind.to_string(),
+                    toml::Value::Table(toml::map::Map::from_iter([(
+                        "metadata_scope".to_string(),
+                        toml::Value::String("asset_universe".to_string()),
+                    )])),
+                )]),
+            },
+        );
+}
+
+fn replace_resolution_provider_mapping(
+    loaded: &mut LoadedBoltV3Config,
+    provider_id: &str,
+    provider_kind: &str,
+    value_kind: &str,
+) {
+    let subscription = resolution_subscription_mut(loaded);
+    subscription.insert(
+        "allowed_value_kinds".to_string(),
+        toml::Value::Array(vec![toml::Value::String(value_kind.to_string())]),
+    );
+    subscription.insert(
+        "allowed_provider_kinds".to_string(),
+        toml::Value::Array(vec![toml::Value::String(provider_kind.to_string())]),
+    );
+    subscription.insert(
+        "provider_preference".to_string(),
+        toml::Value::Array(vec![toml::Value::String(provider_id.to_string())]),
+    );
+    let mapping = resolution_market_mappings_mut(loaded)
+        .first_mut()
+        .expect("fixture should have resolution mapping")
+        .as_table_mut()
+        .expect("mapping should be a table");
+    mapping.insert(
+        "resolution_kind".to_string(),
+        toml::Value::String(provider_kind.to_string()),
+    );
+    mapping.insert(
+        "value_kind".to_string(),
+        toml::Value::String(value_kind.to_string()),
+    );
+    mapping.insert(
+        "provider_id".to_string(),
+        toml::Value::String(provider_id.to_string()),
+    );
+}
+
+fn add_backup_resolution_provider(loaded: &mut LoadedBoltV3Config) {
+    let providers = loaded
+        .root
+        .gate_providers
+        .as_mut()
+        .expect("fixture root should have gate providers");
+    let primary = providers
+        .get("resolution_oracle_primary")
+        .expect("fixture should have primary resolution provider")
+        .clone();
+    providers.insert("backup_resolution_oracle".to_string(), primary);
+
+    let mapping = resolution_market_mappings_mut(loaded)[0].clone();
+    let mut backup_mapping = mapping;
+    backup_mapping
+        .as_table_mut()
+        .expect("mapping should be a table")
+        .insert(
+            "provider_id".to_string(),
+            toml::Value::String("backup_resolution_oracle".to_string()),
+        );
+    resolution_market_mappings_mut(loaded).push(backup_mapping);
+}
+
+fn remove_resolution_provider_preference(loaded: &mut LoadedBoltV3Config) {
+    resolution_subscription_mut(loaded)
+        .remove("provider_preference")
+        .expect("fixture should have provider preference");
+}
+
+fn enable_no_resolution_subscription(loaded: &mut LoadedBoltV3Config) {
+    let subscription = resolution_subscription_mut(loaded);
+    subscription.insert(
+        "allow_no_resolution".to_string(),
+        toml::Value::Boolean(true),
+    );
+    subscription.insert(
+        "allowed_value_kinds".to_string(),
+        toml::Value::Array(vec![toml::Value::String(
+            NO_RESOLUTION_VALUE_KIND.to_string(),
+        )]),
+    );
+    let mapping = resolution_market_mappings_mut(loaded)
+        .first_mut()
+        .expect("fixture should have a resolution mapping")
+        .as_table_mut()
+        .expect("mapping should be a table");
+    mapping.insert(
+        "resolution_kind".to_string(),
+        toml::Value::String(NO_RESOLUTION_KIND.to_string()),
+    );
+    mapping.insert(
+        "resolution_identity".to_string(),
+        toml::Value::String("none".to_string()),
+    );
+    mapping.insert(
+        "value_kind".to_string(),
+        toml::Value::String(NO_RESOLUTION_VALUE_KIND.to_string()),
+    );
+    mapping.remove("provider_id");
+}
+
+fn resolution_subscription_mut(
+    loaded: &mut LoadedBoltV3Config,
+) -> &mut toml::map::Map<String, toml::Value> {
+    loaded.strategies[0]
+        .config
+        .target
+        .as_table_mut()
+        .expect("target should be a table")
+        .get_mut("gate_subscriptions")
+        .expect("gate subscriptions should exist")
+        .as_table_mut()
+        .expect("gate subscriptions should be a table")
+        .get_mut(RESOLUTION_GATE_ROLE)
+        .expect("resolution subscription should exist")
+        .as_table_mut()
+        .expect("resolution subscription should be a table")
+}
+
+fn resolution_market_mappings_mut(loaded: &mut LoadedBoltV3Config) -> &mut Vec<toml::Value> {
+    resolution_subscription_mut(loaded)
+        .get_mut("market_mappings")
+        .expect("market mappings should exist")
+        .as_array_mut()
+        .expect("market mappings should be an array")
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+}
 
 #[test]
 fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
@@ -58,7 +1168,7 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
         loaded.config_bundle_checksum
     );
     assert_eq!(manifest.aws_region, loaded.root.aws.region);
-    assert_eq!(manifest.entries.len(), 6);
+    assert_eq!(manifest.entries.len(), 4);
 
     let manifest_json =
         serde_json::to_string(&manifest).expect("manifest should serialize for redaction check");
@@ -67,8 +1177,6 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
         "/bolt/polymarket_main/api_key",
         "/bolt/polymarket_main/api_secret",
         "/bolt/polymarket_main/passphrase",
-        "/bolt/binance_reference/api_key",
-        "/bolt/binance_reference/api_secret",
     ] {
         assert!(
             !manifest_json.contains(raw_path),
@@ -109,18 +1217,2672 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
         "POLYMARKET",
         "passphrase_ssm_path",
     );
-    assert_manifest_entry(
-        &manifest,
-        "binance_reference",
-        "BINANCE",
-        "api_key_ssm_path",
+}
+
+#[test]
+fn data_client_behavior_observation_source_materializes_probe_events_without_raw_values() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str();
+    let temp = support::TempCaseDir::new("data-client-behavior-observation-source");
+    let client_key_hash = sha256_text(client_key);
+    let expected_configured_max_age_millis = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should include live canary")
+        .reference_quote_max_age_seconds
+        * 1_000;
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let event = |event_kind: &str,
+                 observed_at_unix_millis: u64,
+                 age_millis: Option<u64>,
+                 latency_millis: Option<u64>,
+                 recovered: Option<bool>,
+                 fail_closed: Option<bool>| {
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.data_client_behavior_probe_event.v1",
+            "client_key_hash": client_key_hash,
+            "provider_key": provider_key,
+            "observed_at_unix_millis": observed_at_unix_millis,
+            "event_kind": event_kind,
+            "supported_by_nt_source": true,
+            "observed_through_live_node": true,
+            "age_millis": age_millis,
+            "latency_millis": latency_millis,
+            "recovered": recovered,
+            "fail_closed": fail_closed,
+            "evidence_sha256": sha256_text(event_kind),
+            "unsupported_disposition": null
+        })
+    };
+    let unsupported_ticker = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.data_client_behavior_probe_event.v1",
+        "client_key_hash": client_key_hash,
+        "provider_key": provider_key,
+        "observed_at_unix_millis": 1_777_000_000_500_u64,
+        "event_kind": "ticker",
+        "supported_by_nt_source": false,
+        "observed_through_live_node": false,
+        "age_millis": null,
+        "latency_millis": null,
+        "recovered": null,
+        "fail_closed": null,
+        "evidence_sha256": null,
+        "unsupported_disposition": "ticker_subscription_source_marker_missing"
+    });
+    let lines = [
+        event(
+            "metadata",
+            1_777_000_000_000,
+            Some(400),
+            Some(80),
+            None,
+            None,
+        ),
+        event("quote", 1_777_000_000_100, Some(450), Some(90), None, None),
+        event("book", 1_777_000_000_200, Some(500), Some(100), None, None),
+        unsupported_ticker,
+    ]
+    .into_iter()
+    .map(|value| serde_json::to_string(&value).expect("event should serialize"))
+    .collect::<Vec<_>>()
+    .join("\n");
+    std::fs::write(&probe_events_path, format!("{lines}\n")).expect("probe events should write");
+    let output_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+
+    let written = write_data_client_behavior_observation_source_from_probe_events(
+        &loaded,
+        client_key,
+        &probe_events_path,
+        16_384,
+        &output_path,
+    )
+    .expect("behavior observation source should write");
+
+    let source_bytes = std::fs::read(&written.path).expect("behavior source should read");
+    let rendered_source =
+        String::from_utf8(source_bytes.clone()).expect("behavior source should be utf8");
+    let source: serde_json::Value =
+        serde_json::from_slice(&source_bytes).expect("behavior source should parse");
+    assert_eq!(
+        source["record_kind"],
+        "bolt_v3.data_client_behavior_observation_source.v1"
     );
-    assert_manifest_entry(
-        &manifest,
-        "binance_reference",
-        "BINANCE",
-        "api_secret_ssm_path",
+    assert_eq!(source["schema_version"], 1);
+    assert_eq!(
+        source["client_key_hash"].as_str(),
+        Some(client_key_hash.as_str())
     );
+    assert_eq!(source["provider_key"].as_str(), Some(provider_key));
+    assert_eq!(
+        source["metadata_behavior"]["sample_count"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(source["quote_behavior"]["observed_through_live_node"], true);
+    assert_eq!(source["book_behavior"]["observed_through_live_node"], true);
+    assert_eq!(
+        source["ticker_behavior"]["unsupported_disposition"].as_str(),
+        Some("ticker_subscription_source_marker_missing")
+    );
+    assert_eq!(
+        source["freshness"]["configured_max_age_millis"].as_u64(),
+        Some(expected_configured_max_age_millis)
+    );
+    assert_eq!(
+        source["freshness"]["max_observed_age_millis"].as_u64(),
+        Some(500)
+    );
+    assert_eq!(
+        source["freshness"]["latency_p95_millis"].as_u64(),
+        Some(100)
+    );
+    assert_eq!(source["freshness"]["within_configured_bound"], true);
+    assert_eq!(source["reconnect"]["behavior_observed"], false);
+    assert_eq!(source["rate_limit"]["behavior_observed"], false);
+    assert_eq!(source["parse_error"]["behavior_observed"], false);
+    assert!(!rendered_source.contains(client_key));
+    assert!(!rendered_source.contains("probe-events.jsonl"));
+    assert!(!rendered_source.contains(&temp.path().display().to_string()));
+}
+
+#[test]
+fn data_client_behavior_observation_source_accepts_source_owned_policy_proof() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str();
+    let client_key_hash = sha256_text(client_key);
+    let temp = support::TempCaseDir::new("data-client-source-owned-policy-proof");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let surface_event = |event_kind: &str, observed_at_unix_millis: u64| {
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.data_client_behavior_probe_event.v1",
+            "client_key_hash": client_key_hash,
+            "provider_key": provider_key,
+            "observed_at_unix_millis": observed_at_unix_millis,
+            "event_kind": event_kind,
+            "supported_by_nt_source": true,
+            "observed_through_live_node": true,
+            "age_millis": 500,
+            "latency_millis": 100,
+            "recovered": null,
+            "fail_closed": null,
+            "evidence_sha256": sha256_text(event_kind),
+            "unsupported_disposition": null
+        })
+    };
+    let probe_lines = [
+        surface_event("metadata", 1_777_000_000_000),
+        surface_event("quote", 1_777_000_000_100),
+    ]
+    .into_iter()
+    .map(|value| serde_json::to_string(&value).expect("event should serialize"))
+    .collect::<Vec<_>>()
+    .join("\n");
+    std::fs::write(&probe_events_path, format!("{probe_lines}\n"))
+        .expect("probe events should write");
+
+    let nt_policy_source_path = temp.path().join("nt-policy-source.rs");
+    std::fs::write(
+        &nt_policy_source_path,
+        r#"
+        fn reconnect_and_restore_subscriptions() {
+            reconnect();
+            restore_subscriptions();
+        }
+
+        fn rate_limit_policy() {
+            if response_status == 429 {
+                retry_with_backoff();
+            }
+        }
+
+        fn parse_error_policy() -> Result<(), Error> {
+            parse_frame().map_err(|error| fail_closed(error))?;
+            Ok(())
+        }
+        "#,
+    )
+    .expect("NT policy source should write");
+    let policy_source_path = temp.path().join("data-client-policy-behavior-source.json");
+    let written_policy = write_data_client_policy_behavior_source_artifact_from_nt_sources(
+        &loaded,
+        client_key,
+        std::slice::from_ref(&nt_policy_source_path),
+        16_384,
+        &policy_source_path,
+    )
+    .expect("source-owned policy proof should write");
+    let policy_artifact: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&written_policy.path).expect("policy should read"))
+            .expect("policy should parse");
+    assert_eq!(
+        policy_artifact["record_kind"],
+        "bolt_v3.data_client_policy_behavior_source.v1"
+    );
+    assert_eq!(policy_artifact["reconnect"]["behavior_observed"], true);
+    assert_eq!(policy_artifact["rate_limit"]["behavior_observed"], true);
+    assert_eq!(policy_artifact["parse_error"]["behavior_observed"], true);
+
+    let behavior_source_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+    let written_source =
+        write_data_client_behavior_observation_source_from_probe_events_and_policy_source(
+            &loaded,
+            client_key,
+            &probe_events_path,
+            16_384,
+            &written_policy.path,
+            16_384,
+            &behavior_source_path,
+        )
+        .expect("behavior source should accept source-owned policy proof");
+    let source: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&written_source.path).expect("source should read"))
+            .expect("source should parse");
+    assert_eq!(
+        source["policy_source_sha256"].as_str(),
+        Some(sha256_file(&written_policy.path).as_str())
+    );
+    assert_eq!(source["reconnect"]["behavior_observed"], true);
+    assert_eq!(source["rate_limit"]["behavior_observed"], true);
+    assert_eq!(source["parse_error"]["behavior_observed"], true);
+
+    let behavior_observation_path = temp.path().join("data-client-behavior-observation.json");
+    write_data_client_behavior_observation_artifact_from_source_file(
+        &loaded,
+        client_key,
+        &written_source.path,
+        16_384,
+        &behavior_observation_path,
+    )
+    .expect("behavior observation should write");
+    let observation: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&behavior_observation_path).expect("observation should read"),
+    )
+    .expect("observation should parse");
+    assert_eq!(observation["behavior_observation_complete"], true);
+    assert!(
+        observation["missing_behavior_proofs"]
+            .as_array()
+            .expect("missing proofs should be an array")
+            .is_empty()
+    );
+}
+
+#[test]
+fn data_client_behavior_observation_source_rejects_unowned_policy_probe_events() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str();
+    let temp = support::TempCaseDir::new("data-client-behavior-unowned-policy-events");
+    let client_key_hash = sha256_text(client_key);
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let output_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+    let surface_event = |event_kind: &str, observed_at_unix_millis: u64| {
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.data_client_behavior_probe_event.v1",
+            "client_key_hash": client_key_hash,
+            "provider_key": provider_key,
+            "observed_at_unix_millis": observed_at_unix_millis,
+            "event_kind": event_kind,
+            "supported_by_nt_source": true,
+            "observed_through_live_node": true,
+            "age_millis": 100,
+            "latency_millis": 50,
+            "recovered": null,
+            "fail_closed": null,
+            "evidence_sha256": sha256_text(event_kind),
+            "unsupported_disposition": null
+        })
+    };
+    let policy_event = |event_kind: &str, observed_at_unix_millis: u64| {
+        serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.data_client_behavior_probe_event.v1",
+            "client_key_hash": client_key_hash,
+            "provider_key": provider_key,
+            "observed_at_unix_millis": observed_at_unix_millis,
+            "event_kind": event_kind,
+            "supported_by_nt_source": true,
+            "observed_through_live_node": true,
+            "age_millis": null,
+            "latency_millis": null,
+            "recovered": true,
+            "fail_closed": true,
+            "evidence_sha256": sha256_text(event_kind),
+            "unsupported_disposition": null
+        })
+    };
+    let lines = [
+        surface_event("metadata", 1_777_000_000_100),
+        surface_event("quote", 1_777_000_000_200),
+        policy_event("reconnect", 1_777_000_000_300),
+        policy_event("rate_limit", 1_777_000_000_400),
+        policy_event("parse_error", 1_777_000_000_500),
+    ]
+    .into_iter()
+    .map(|value| serde_json::to_string(&value).expect("event should serialize"))
+    .collect::<Vec<_>>()
+    .join("\n");
+    std::fs::write(&probe_events_path, format!("{lines}\n")).expect("probe events should write");
+
+    let error = write_data_client_behavior_observation_source_from_probe_events(
+        &loaded,
+        client_key,
+        &probe_events_path,
+        16_384,
+        &output_path,
+    )
+    .expect_err(
+        "policy events must require a source-owned policy collector, not hand-authored JSONL",
+    );
+
+    assert!(
+        error.to_string().contains("probe_event.event_kind"),
+        "error should name the rejected policy event kind: {error}"
+    );
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_uses_no_submit_reference_quotes_without_raw_values() {
+    let mut loaded = load_fixture_with_live_canary();
+    configure_data_client_readiness_quote_probe(&mut loaded);
+    let temp = support::TempCaseDir::new("data-client-behavior-probe-events-source");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let behavior_source_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+    let behavior_observation_path = temp.path().join("data-client-behavior-observation.json");
+    let evidence = BoltV3NoSubmitReferenceQuoteEvidence {
+        quotes: vec![BoltV3NoSubmitReferenceQuote {
+            data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+            instrument_id: TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string(),
+            bid_price: 3299.0,
+            ask_price: 3301.0,
+            ts_event_unix_nanos: 600_000_000_000,
+            ts_init_unix_nanos: 600_100_000_000,
+            captured_at_unix_nanos: 600_500_000_000,
+        }],
+    };
+
+    let written_probe_events = write_data_client_behavior_probe_events_from_no_submit_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect("source-owned no-submit reference quotes should write probe events");
+
+    let rendered_events =
+        std::fs::read_to_string(&written_probe_events.path).expect("probe events should read");
+    let events = rendered_events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0]["record_kind"],
+        serde_json::json!("bolt_v3.data_client_behavior_probe_event.v1")
+    );
+    assert_eq!(events[0]["event_kind"], serde_json::json!("quote"));
+    assert_eq!(events[0]["supported_by_nt_source"], true);
+    assert_eq!(events[0]["observed_through_live_node"], true);
+    assert_eq!(events[0]["age_millis"], serde_json::json!(500));
+    assert_eq!(events[0]["latency_millis"], serde_json::json!(400));
+    assert_eq!(
+        events[0]["client_key_hash"].as_str(),
+        Some(sha256_text(TEST_REFERENCE_DATA_CLIENT_ID).as_str())
+    );
+    assert!(is_lowercase_sha256(
+        events[0]["evidence_sha256"]
+            .as_str()
+            .expect("event should include evidence hash")
+    ));
+    assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_TARGET_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID));
+    assert!(!rendered_events.contains("3299"));
+    assert!(!rendered_events.contains("3301"));
+
+    write_data_client_behavior_observation_source_from_probe_events(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &probe_events_path,
+        16_384,
+        &behavior_source_path,
+    )
+    .expect("partial source-owned probe evidence should still materialize missing proofs");
+    let written_observation = write_data_client_behavior_observation_artifact_from_source_file(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &behavior_source_path,
+        16_384,
+        &behavior_observation_path,
+    )
+    .expect("partial behavior source should write a non-production observation artifact");
+    let observation: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written_observation.path).expect("observation should read"),
+    )
+    .expect("observation should parse");
+    assert_eq!(
+        observation["quote_behavior"]["observed_through_live_node"],
+        true
+    );
+    assert_eq!(
+        observation["metadata_behavior"]["unsupported_disposition"].as_str(),
+        Some("metadata_probe_event_missing")
+    );
+    assert_eq!(observation["reconnect"]["behavior_observed"], false);
+    assert_eq!(observation["rate_limit"]["behavior_observed"], false);
+    assert_eq!(observation["parse_error"]["behavior_observed"], false);
+    assert_eq!(observation["behavior_observation_complete"], false);
+    assert_eq!(observation["production_usable"], false);
+    let missing = observation["missing_behavior_proofs"]
+        .as_array()
+        .expect("missing proofs should be an array");
+    assert!(missing.contains(&serde_json::json!("metadata_behavior")));
+    assert!(missing.contains(&serde_json::json!("reconnect_behavior")));
+    assert!(missing.contains(&serde_json::json!("rate_limit_behavior")));
+    assert!(missing.contains(&serde_json::json!("parse_error_behavior")));
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_records_future_quote_clock_skew() {
+    let mut loaded = load_fixture_with_live_canary();
+    configure_data_client_readiness_quote_probe(&mut loaded);
+    let temp = support::TempCaseDir::new("data-client-behavior-future-quote-clock-skew");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitReferenceQuoteEvidence {
+        quotes: vec![BoltV3NoSubmitReferenceQuote {
+            data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+            instrument_id: TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string(),
+            bid_price: 3299.0,
+            ask_price: 3301.0,
+            ts_event_unix_nanos: 601_000_000_000,
+            ts_init_unix_nanos: 600_100_000_000,
+            captured_at_unix_nanos: 600_500_000_000,
+        }],
+    };
+
+    let written_probe_events = write_data_client_behavior_probe_events_from_no_submit_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect("future quote event time should be recorded as source clock skew");
+
+    let rendered_events =
+        std::fs::read_to_string(&written_probe_events.path).expect("probe events should read");
+    let event: serde_json::Value =
+        serde_json::from_str(&rendered_events).expect("single event should parse");
+    assert_eq!(event["event_kind"], serde_json::json!("quote"));
+    assert_eq!(event["age_millis"], serde_json::json!(0));
+    assert_eq!(event["event_clock_skew_millis"], serde_json::json!(500));
+    assert_eq!(event["latency_millis"], serde_json::json!(400));
+    assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID));
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_records_metadata_without_raw_instruments() {
+    let mut loaded = load_fixture_with_live_canary();
+    configure_data_client_readiness_quote_probe(&mut loaded);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let raw_metadata_instruments = vec![
+        "CONFIGURED-ALPHA.SOURCE".to_string(),
+        "CONFIGURED-BRAVO.SOURCE".to_string(),
+    ];
+    let temp = support::TempCaseDir::new("data-client-behavior-metadata-probe-events-source");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let behavior_source_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+    let behavior_observation_path = temp.path().join("data-client-behavior-observation.json");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: raw_metadata_instruments.clone(),
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence {
+            quotes: vec![BoltV3NoSubmitReferenceQuote {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                instrument_id: TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string(),
+                bid_price: 3299.0,
+                ask_price: 3301.0,
+                ts_event_unix_nanos: 600_000_000_000,
+                ts_init_unix_nanos: 600_100_000_000,
+                captured_at_unix_nanos: 600_500_000_000,
+            }],
+        },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
+    };
+
+    let written_probe_events =
+        write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+            &loaded,
+            TEST_REFERENCE_DATA_CLIENT_ID,
+            &evidence,
+            &probe_events_path,
+        )
+        .expect("source-owned no-submit readiness evidence should write probe events");
+
+    let rendered_events =
+        std::fs::read_to_string(&written_probe_events.path).expect("probe events should read");
+    let events = rendered_events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 2);
+    let metadata_event = events
+        .iter()
+        .find(|event| event["event_kind"] == serde_json::json!("metadata"))
+        .expect("metadata event should be present");
+    let quote_event = events
+        .iter()
+        .find(|event| event["event_kind"] == serde_json::json!("quote"))
+        .expect("quote event should be present");
+    assert_eq!(
+        metadata_event["record_kind"],
+        serde_json::json!("bolt_v3.data_client_behavior_probe_event.v1")
+    );
+    assert_eq!(metadata_event["supported_by_nt_source"], true);
+    assert_eq!(metadata_event["observed_through_live_node"], true);
+    assert_eq!(metadata_event["age_millis"], serde_json::json!(400));
+    assert_eq!(metadata_event["latency_millis"], serde_json::json!(400));
+    assert_eq!(
+        metadata_event["client_key_hash"].as_str(),
+        Some(sha256_text(TEST_REFERENCE_DATA_CLIENT_ID).as_str())
+    );
+    assert!(is_lowercase_sha256(
+        metadata_event["evidence_sha256"]
+            .as_str()
+            .expect("metadata event should include evidence hash")
+    ));
+    assert_eq!(quote_event["event_kind"], serde_json::json!("quote"));
+    assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_TARGET_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID));
+    for instrument_id in &raw_metadata_instruments {
+        assert!(
+            !rendered_events.contains(instrument_id),
+            "raw metadata instrument id must not be rendered"
+        );
+    }
+    assert!(!rendered_events.contains("3299"));
+    assert!(!rendered_events.contains("3301"));
+
+    write_data_client_behavior_observation_source_from_probe_events(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &probe_events_path,
+        16_384,
+        &behavior_source_path,
+    )
+    .expect("metadata and quote probe evidence should materialize missing proofs");
+    let written_observation = write_data_client_behavior_observation_artifact_from_source_file(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &behavior_source_path,
+        16_384,
+        &behavior_observation_path,
+    )
+    .expect("partial behavior source should write a non-production observation artifact");
+    let observation: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written_observation.path).expect("observation should read"),
+    )
+    .expect("observation should parse");
+    assert_eq!(
+        observation["metadata_behavior"]["observed_through_live_node"],
+        true
+    );
+    assert_eq!(
+        observation["quote_behavior"]["observed_through_live_node"],
+        true
+    );
+    assert_eq!(observation["production_usable"], false);
+    let missing = observation["missing_behavior_proofs"]
+        .as_array()
+        .expect("missing proofs should be an array");
+    assert!(!missing.contains(&serde_json::json!("metadata_behavior")));
+    assert!(!missing.contains(&serde_json::json!("quote_behavior")));
+    assert!(missing.contains(&serde_json::json!("reconnect_behavior")));
+    assert!(missing.contains(&serde_json::json!("rate_limit_behavior")));
+    assert!(missing.contains(&serde_json::json!("parse_error_behavior")));
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_accepts_metadata_response_quote_targets() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: Some(2),
+        allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
+        quote_targets: None,
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let temp = support::TempCaseDir::new("data-client-behavior-metadata-response-quotes");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string()],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence {
+            quotes: vec![BoltV3NoSubmitReferenceQuote {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                instrument_id: TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string(),
+                bid_price: 3299.0,
+                ask_price: 3301.0,
+                ts_event_unix_nanos: 600_000_000_000,
+                ts_init_unix_nanos: 600_100_000_000,
+                captured_at_unix_nanos: 600_500_000_000,
+            }],
+        },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
+    };
+
+    let written_probe_events =
+        write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+            &loaded,
+            TEST_REFERENCE_DATA_CLIENT_ID,
+            &evidence,
+            &probe_events_path,
+        )
+        .expect("metadata-response quote targets should write source-owned probe events");
+
+    let rendered_events =
+        std::fs::read_to_string(&written_probe_events.path).expect("probe events should read");
+    let events = rendered_events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().any(|event| event["event_kind"] == "metadata"));
+    assert!(events.iter().any(|event| event["event_kind"] == "quote"));
+    assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID));
+    assert!(!rendered_events.contains("3299"));
+    assert!(!rendered_events.contains("3301"));
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_accepts_metadata_response_book_targets() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
+        book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: Some(2),
+        allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
+        quote_targets: None,
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let temp = support::TempCaseDir::new("data-client-behavior-metadata-response-books");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string()],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        books: BoltV3NoSubmitBookDeltasEvidence {
+            deltas: vec![BoltV3NoSubmitBookDeltas {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                instrument_id: TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string(),
+                delta_count: 2,
+                ts_event_unix_nanos: 600_000_000_000,
+                ts_init_unix_nanos: 600_100_000_000,
+                captured_at_unix_nanos: 600_500_000_000,
+            }],
+        },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
+    };
+
+    let written_probe_events =
+        write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+            &loaded,
+            TEST_REFERENCE_DATA_CLIENT_ID,
+            &evidence,
+            &probe_events_path,
+        )
+        .expect("metadata-response book targets should write source-owned probe events");
+
+    let rendered_events =
+        std::fs::read_to_string(&written_probe_events.path).expect("probe events should read");
+    let events = rendered_events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().any(|event| event["event_kind"] == "metadata"));
+    assert!(events.iter().any(|event| event["event_kind"] == "book"));
+    assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID));
+    assert!(!rendered_events.contains("600000000000"));
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_accepts_metadata_response_trade_targets() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Trade,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: Some(2),
+        allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
+        quote_targets: None,
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let temp = support::TempCaseDir::new("data-client-behavior-metadata-response-trades");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string()],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence {
+            trades: vec![BoltV3NoSubmitTrade {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                instrument_id: TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string(),
+                price: 101.5,
+                size: 3.0,
+                ts_event_unix_nanos: 600_000_000_000,
+                ts_init_unix_nanos: 600_100_000_000,
+                captured_at_unix_nanos: 600_500_000_000,
+            }],
+        },
+    };
+
+    let written_probe_events =
+        write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+            &loaded,
+            TEST_REFERENCE_DATA_CLIENT_ID,
+            &evidence,
+            &probe_events_path,
+        )
+        .expect("metadata-response trade targets should write source-owned probe events");
+
+    let rendered_events =
+        std::fs::read_to_string(&written_probe_events.path).expect("probe events should read");
+    let events = rendered_events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().any(|event| event["event_kind"] == "metadata"));
+    assert!(events.iter().any(|event| event["event_kind"] == "trade"));
+    assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
+    assert!(!rendered_events.contains(TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID));
+    assert!(!rendered_events.contains("101.5"));
+    assert!(!rendered_events.contains("600000000000"));
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_requires_trades_for_all_metadata_response_targets() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Trade,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: Some(2),
+        allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
+        quote_targets: None,
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let observed_instrument = format!("CONFIGURED-FIRST.{provider_key}");
+    let unobserved_instrument = format!("CONFIGURED-SECOND.{provider_key}");
+    let temp = support::TempCaseDir::new("data-client-behavior-metadata-response-trades-strict");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![observed_instrument.clone(), unobserved_instrument.clone()],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence {
+            trades: vec![BoltV3NoSubmitTrade {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                instrument_id: observed_instrument.clone(),
+                price: 101.5,
+                size: 3.0,
+                ts_event_unix_nanos: 600_000_000_000,
+                ts_init_unix_nanos: 600_100_000_000,
+                captured_at_unix_nanos: 600_500_000_000,
+            }],
+        },
+    };
+
+    let error = write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect_err(
+        "strict default must reject a metadata-response trade probe missing a sampled target",
+    );
+    assert!(
+        format!("{error}").contains("metadata.instrument_ids.trades"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_accepts_trade_chunk_count_when_m_markets_trade() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Trade,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: None,
+        allow_metadata_target_sampling: None,
+        min_observed_targets: Some(2),
+        chunk_size: Some(200),
+        chunk_observation_window_seconds: Some(45),
+        quote_targets: None,
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let first = format!("AAA.{provider_key}");
+    let second = format!("BBB.{provider_key}");
+    let temp = support::TempCaseDir::new("data-client-behavior-trade-chunk-count");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![first.clone(), second.clone()],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence {
+            trades: vec![
+                BoltV3NoSubmitTrade {
+                    data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                    instrument_id: first.clone(),
+                    price: 101.5,
+                    size: 3.0,
+                    ts_event_unix_nanos: 600_000_000_000,
+                    ts_init_unix_nanos: 600_100_000_000,
+                    captured_at_unix_nanos: 600_500_000_000,
+                },
+                BoltV3NoSubmitTrade {
+                    data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                    instrument_id: second.clone(),
+                    price: 202.5,
+                    size: 4.0,
+                    ts_event_unix_nanos: 600_000_000_000,
+                    ts_init_unix_nanos: 600_100_000_000,
+                    captured_at_unix_nanos: 600_500_000_000,
+                },
+            ],
+        },
+    };
+
+    let written = write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect("trade chunk-count probe reaching m distinct firing markets should write probe events");
+
+    let rendered = std::fs::read_to_string(&written.path).expect("probe events should read");
+    let events = rendered
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["event_kind"] == "trade")
+            .count(),
+        2,
+        "each firing market is recorded as trade evidence: {rendered}"
+    );
+    assert!(events.iter().any(|event| event["event_kind"] == "metadata"));
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_fails_trade_chunk_count_below_m_markets() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Trade,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: None,
+        allow_metadata_target_sampling: None,
+        min_observed_targets: Some(2),
+        chunk_size: Some(200),
+        chunk_observation_window_seconds: Some(45),
+        quote_targets: None,
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let first = format!("AAA.{provider_key}");
+    let second = format!("BBB.{provider_key}");
+    let temp = support::TempCaseDir::new("data-client-behavior-trade-chunk-count-fail");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![first.clone(), second.clone()],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence {
+            trades: vec![BoltV3NoSubmitTrade {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                instrument_id: first.clone(),
+                price: 101.5,
+                size: 3.0,
+                ts_event_unix_nanos: 600_000_000_000,
+                ts_init_unix_nanos: 600_100_000_000,
+                captured_at_unix_nanos: 600_500_000_000,
+            }],
+        },
+    };
+
+    let error = write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect_err("a trade chunk-count probe below m distinct firing markets must fail closed");
+    assert!(
+        format!("{error}").contains("metadata.instrument_ids.trades"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_accepts_explicit_metadata_response_sampling() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
+        book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: Some(3),
+        allow_metadata_target_sampling: Some(true),
+        min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
+        quote_targets: None,
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let a_instrument = format!("CONFIGURED-A.{provider_key}");
+    let b_instrument = format!("CONFIGURED-B.{provider_key}");
+    let c_instrument = format!("CONFIGURED-C.{provider_key}");
+    let d_instrument = format!("CONFIGURED-D.{provider_key}");
+    let e_instrument = format!("CONFIGURED-E.{provider_key}");
+    let temp = support::TempCaseDir::new("data-client-behavior-metadata-response-sampling");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![
+                    c_instrument.clone(),
+                    a_instrument.clone(),
+                    e_instrument.clone(),
+                    b_instrument.clone(),
+                    d_instrument.clone(),
+                ],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        books: BoltV3NoSubmitBookDeltasEvidence {
+            deltas: vec![
+                BoltV3NoSubmitBookDeltas {
+                    data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                    instrument_id: a_instrument.clone(),
+                    delta_count: 2,
+                    ts_event_unix_nanos: 600_000_000_000,
+                    ts_init_unix_nanos: 600_100_000_000,
+                    captured_at_unix_nanos: 600_500_000_000,
+                },
+                BoltV3NoSubmitBookDeltas {
+                    data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                    instrument_id: c_instrument.clone(),
+                    delta_count: 3,
+                    ts_event_unix_nanos: 601_000_000_000,
+                    ts_init_unix_nanos: 601_100_000_000,
+                    captured_at_unix_nanos: 601_500_000_000,
+                },
+                BoltV3NoSubmitBookDeltas {
+                    data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                    instrument_id: e_instrument.clone(),
+                    delta_count: 4,
+                    ts_event_unix_nanos: 602_000_000_000,
+                    ts_init_unix_nanos: 602_100_000_000,
+                    captured_at_unix_nanos: 602_500_000_000,
+                },
+            ],
+        },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
+    };
+
+    let written_probe_events =
+        write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+            &loaded,
+            TEST_REFERENCE_DATA_CLIENT_ID,
+            &evidence,
+            &probe_events_path,
+        )
+        .expect("explicit metadata-response sampling should use source-owned targets");
+
+    let rendered_events =
+        std::fs::read_to_string(&written_probe_events.path).expect("probe events should read");
+    let events = rendered_events
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("event should parse"))
+        .collect::<Vec<_>>();
+    assert_eq!(events.len(), 4);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["event_kind"] == "book")
+            .count(),
+        3
+    );
+    assert!(!rendered_events.contains(TEST_REFERENCE_DATA_CLIENT_ID));
+    assert!(!rendered_events.contains(&a_instrument));
+    assert!(!rendered_events.contains(&b_instrument));
+    assert!(!rendered_events.contains(&c_instrument));
+    assert!(!rendered_events.contains(&d_instrument));
+    assert!(!rendered_events.contains(&e_instrument));
+}
+
+#[test]
+fn data_client_readiness_target_candidates_source_records_nt_metadata_instruments() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str();
+    let temp = support::TempCaseDir::new("data-client-readiness-target-candidates");
+    let first_instrument = format!("CONFIGURED-FIRST.{provider_key}");
+    let second_instrument = format!("CONFIGURED-SECOND.{provider_key}");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![
+                BoltV3NoSubmitDataClientMetadata {
+                    data_client_id: client_key.to_string(),
+                    venue: provider_key.to_string(),
+                    instrument_ids: vec![
+                        second_instrument.clone(),
+                        first_instrument.clone(),
+                        second_instrument.clone(),
+                    ],
+                    ts_init_unix_nanos: 1_777_000_000_000_000_000,
+                    captured_at_unix_nanos: 1_777_000_000_100_000_000,
+                },
+                BoltV3NoSubmitDataClientMetadata {
+                    data_client_id: "other_data_client".to_string(),
+                    venue: provider_key.to_string(),
+                    instrument_ids: vec![format!("OTHER.{provider_key}")],
+                    ts_init_unix_nanos: 1_777_000_000_000_000_000,
+                    captured_at_unix_nanos: 1_777_000_000_100_000_000,
+                },
+            ],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
+    };
+    let output_path = temp.path().join("target-candidates.json");
+    let written = write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(
+        &loaded,
+        client_key,
+        &evidence,
+        &output_path,
+    )
+    .expect("target candidates should write");
+    let artifact: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&written.path).expect("artifact should read"))
+            .expect("artifact should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.data_client_readiness_target_candidates.v1"
+    );
+    assert_eq!(artifact["client_key_hash"], sha256_text(client_key));
+    assert_eq!(artifact["provider_key"], provider_key);
+    assert_eq!(artifact["metadata_response_count"], 1);
+    assert_eq!(artifact["instrument_count"], 2);
+    assert_eq!(
+        artifact["instrument_ids"],
+        serde_json::json!([first_instrument, second_instrument])
+    );
+    assert!(
+        artifact["instrument_ids_sha256"]
+            .as_str()
+            .is_some_and(|hash| hash.len() == 64)
+    );
+}
+
+#[test]
+fn data_client_readiness_target_candidates_source_rejects_selected_client_wrong_venue() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str();
+    let temp = support::TempCaseDir::new("data-client-readiness-target-candidates-wrong-venue");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![
+                BoltV3NoSubmitDataClientMetadata {
+                    data_client_id: client_key.to_string(),
+                    venue: provider_key.to_string(),
+                    instrument_ids: vec![format!("CONFIGURED.{provider_key}")],
+                    ts_init_unix_nanos: 1_777_000_000_000_000_000,
+                    captured_at_unix_nanos: 1_777_000_000_100_000_000,
+                },
+                BoltV3NoSubmitDataClientMetadata {
+                    data_client_id: client_key.to_string(),
+                    venue: "OTHER_VENUE".to_string(),
+                    instrument_ids: vec!["CONFIGURED.OTHER_VENUE".to_string()],
+                    ts_init_unix_nanos: 1_777_000_000_000_000_000,
+                    captured_at_unix_nanos: 1_777_000_000_100_000_000,
+                },
+            ],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
+    };
+    let output_path = temp.path().join("target-candidates.json");
+    let error = write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(
+        &loaded,
+        client_key,
+        &evidence,
+        &output_path,
+    )
+    .expect_err("selected-client metadata from another venue must fail closed");
+    assert!(
+        error.to_string().contains("metadata.responses.venue"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_rejects_metadata_response_target_truncation() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: Some(2),
+        allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
+        quote_targets: None,
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let temp = support::TempCaseDir::new("data-client-behavior-metadata-response-truncation");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![
+                    format!("CONFIGURED-FIRST.{provider_key}"),
+                    format!("CONFIGURED-SECOND.{provider_key}"),
+                    format!("CONFIGURED-THIRD.{provider_key}"),
+                ],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
+    };
+
+    let error = write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect_err(
+        "metadata-response behavior evidence must fail closed instead of truncating targets",
+    );
+
+    assert!(
+        error.to_string().contains("max_metadata_quote_targets"),
+        "error should name the TOML-owned metadata bound: {error}"
+    );
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_requires_quotes_for_all_metadata_response_targets() {
+    let mut loaded = load_fixture_with_live_canary();
+    let mut reference_client = loaded
+        .root
+        .clients
+        .get(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should expose a data-capable execution client")
+        .clone();
+    reference_client.execution = None;
+    reference_client.secrets = None;
+    reference_client.readiness_probe = Some(DataClientReadinessProbeBlock {
+        market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+        book_type: None,
+        quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+        max_metadata_quote_targets: Some(2),
+        allow_metadata_target_sampling: Some(false),
+        min_observed_targets: None,
+        chunk_size: None,
+        chunk_observation_window_seconds: None,
+        quote_targets: None,
+    });
+    loaded
+        .root
+        .clients
+        .insert(TEST_REFERENCE_DATA_CLIENT_ID.to_string(), reference_client);
+    let client = loaded
+        .root
+        .clients
+        .get(TEST_REFERENCE_DATA_CLIENT_ID)
+        .expect("reference data client should be configured");
+    let provider_key = client.venue.as_str().to_string();
+    let first_instrument = format!("CONFIGURED-FIRST.{provider_key}");
+    let second_instrument = format!("CONFIGURED-SECOND.{provider_key}");
+    let temp = support::TempCaseDir::new("data-client-behavior-metadata-response-all-targets");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: vec![BoltV3NoSubmitDataClientMetadata {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                venue: provider_key.clone(),
+                instrument_ids: vec![first_instrument.clone(), second_instrument],
+                ts_init_unix_nanos: 700_100_000_000,
+                captured_at_unix_nanos: 700_500_000_000,
+            }],
+        },
+        quotes: BoltV3NoSubmitReferenceQuoteEvidence {
+            quotes: vec![BoltV3NoSubmitReferenceQuote {
+                data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+                instrument_id: first_instrument,
+                bid_price: 3299.0,
+                ask_price: 3301.0,
+                ts_event_unix_nanos: 600_000_000_000,
+                ts_init_unix_nanos: 600_100_000_000,
+                captured_at_unix_nanos: 600_500_000_000,
+            }],
+        },
+        books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+        trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
+    };
+
+    let error = write_data_client_behavior_probe_events_from_no_submit_readiness_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect_err("metadata-response behavior evidence must observe every metadata target");
+
+    assert!(
+        error.to_string().contains("metadata.instrument_ids.quotes"),
+        "error should name missing metadata-target quote evidence: {error}"
+    );
+}
+
+#[test]
+fn data_client_behavior_probe_events_source_requires_client_owned_probe_targets() {
+    let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
+    let temp = support::TempCaseDir::new("data-client-behavior-probe-target-required");
+    let probe_events_path = temp.path().join("probe-events.jsonl");
+    let evidence = BoltV3NoSubmitReferenceQuoteEvidence {
+        quotes: vec![BoltV3NoSubmitReferenceQuote {
+            data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+            instrument_id: TEST_REFERENCE_INSTRUMENT_ID.to_string(),
+            bid_price: 3299.0,
+            ask_price: 3301.0,
+            ts_event_unix_nanos: 600_000_000_000,
+            ts_init_unix_nanos: 600_100_000_000,
+            captured_at_unix_nanos: 600_500_000_000,
+        }],
+    };
+
+    let error = write_data_client_behavior_probe_events_from_no_submit_evidence(
+        &loaded,
+        TEST_REFERENCE_DATA_CLIENT_ID,
+        &evidence,
+        &probe_events_path,
+    )
+    .expect_err("strategy reference_data must not be a second data-client behavior probe path");
+
+    assert!(
+        error
+            .to_string()
+            .contains("clients.<id>.readiness_probe.quote_targets"),
+        "error should name the missing client-owned probe target config: {error}"
+    );
+}
+
+#[test]
+fn data_client_production_readiness_matrix_fails_closed_without_source_owned_policy_proofs() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str();
+    let temp = support::TempCaseDir::new("data-client-production-readiness-matrix");
+    let max_source_bytes = 1_000_000;
+
+    let readiness_source_path = temp.path().join("data-client-readiness-source.json");
+    write_data_client_readiness_source_artifact_from_config(&loaded, &readiness_source_path)
+        .expect("readiness source should write");
+
+    let live_node_source_path = temp.path().join("live-node-source.rs");
+    let adapter_mapping_source_path = temp.path().join("adapter-mapping-source.rs");
+    let provider_registry_source_path = temp.path().join("provider-registry-source.rs");
+    std::fs::write(
+        &live_node_source_path,
+        "fn build_source() { map_bolt_v3_adapters(); register_bolt_v3_clients(); }",
+    )
+    .expect("LiveNode source fixture should write");
+    std::fs::write(
+        &adapter_mapping_source_path,
+        "fn map_source() { for client in loaded.root.clients {} binding_for_provider_key(); binding.map_adapters(); }",
+    )
+    .expect("adapter mapping source fixture should write");
+    std::fs::write(
+        &provider_registry_source_path,
+        "pub fn binding_for_provider_key() {}",
+    )
+    .expect("provider registry source fixture should write");
+    let live_node_mapping_source_path = temp
+        .path()
+        .join("data-client-live-node-mapping-source.json");
+    let registration_summary = registration_summary_for_loaded(&loaded);
+    write_data_client_live_node_mapping_source_artifact_from_config(
+        &loaded,
+        &registration_summary,
+        &live_node_source_path,
+        &adapter_mapping_source_path,
+        &provider_registry_source_path,
+        max_source_bytes,
+        &live_node_mapping_source_path,
+    )
+    .expect("LiveNode mapping source should write");
+
+    let nt_source_path = temp.path().join("nt-adapter-source.rs");
+    std::fs::write(
+        &nt_source_path,
+        "fn request_instruments() {} fn request_instrument() {} fn subscribe_quote() {} fn subscribe_book() {}",
+    )
+    .expect("NT source fixture should write");
+    let nt_source_capability_path = temp.path().join("data-client-nt-source-capability.json");
+    write_data_client_nt_source_capability_artifact_from_config(
+        &loaded,
+        client_key,
+        &nt_source_path,
+        max_source_bytes,
+        &nt_source_capability_path,
+    )
+    .expect("NT source capability should write");
+
+    let observed_at_unix_millis = 1_777_000_000_000_u64;
+    let configured_max_age_millis = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should include live canary")
+        .reference_quote_max_age_seconds
+        * 1_000;
+    let surface = |evidence_label: &str| {
+        serde_json::json!({
+            "supported_by_nt_source": true,
+            "observed_through_live_node": true,
+            "sample_count": 1,
+            "first_observed_at_unix_millis": observed_at_unix_millis - 1_000,
+            "last_observed_at_unix_millis": observed_at_unix_millis,
+            "evidence_sha256": sha256_text(evidence_label),
+            "unsupported_disposition": null
+        })
+    };
+    let policy = |evidence_label: &str| {
+        serde_json::json!({
+            "behavior_observed": true,
+            "recovered": true,
+            "fail_closed": true,
+            "evidence_sha256": sha256_text(evidence_label)
+        })
+    };
+    let behavior_source = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.data_client_behavior_observation_source.v1",
+        "client_key_hash": sha256_text(client_key),
+        "provider_key": provider_key,
+        "observed_at_unix_millis": observed_at_unix_millis,
+        "observation_window_millis": 5_000,
+        "metadata_behavior": surface("metadata-observation"),
+        "quote_behavior": surface("quote-observation"),
+        "book_behavior": surface("book-observation"),
+        "ticker_behavior": surface("ticker-observation"),
+        "trade_behavior": surface("trade-observation"),
+        "freshness": {
+            "configured_max_age_millis": configured_max_age_millis,
+            "max_observed_age_millis": 1_000,
+            "latency_sample_count": 3,
+            "latency_p95_millis": 200,
+            "latency_max_millis": 300,
+            "within_configured_bound": true,
+            "evidence_sha256": sha256_text("freshness-observation")
+        },
+        "reconnect": policy("reconnect-observation"),
+        "rate_limit": policy("rate-limit-observation"),
+        "parse_error": policy("parse-error-observation")
+    });
+    let behavior_source_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+    std::fs::write(
+        &behavior_source_path,
+        serde_json::to_vec_pretty(&behavior_source).expect("source should serialize"),
+    )
+    .expect("behavior source should write");
+    let behavior_observation_path = temp.path().join("data-client-behavior-observation.json");
+    write_data_client_behavior_observation_artifact_from_source_file(
+        &loaded,
+        client_key,
+        &behavior_source_path,
+        max_source_bytes,
+        &behavior_observation_path,
+    )
+    .expect("behavior observation should write");
+
+    let output_path = temp
+        .path()
+        .join("data-client-production-readiness-matrix.json");
+    let written = write_data_client_production_readiness_matrix_artifact_from_source_files(
+        DataClientProductionReadinessMatrixSourceFileRequest {
+            loaded: &loaded,
+            readiness_source_path: &readiness_source_path,
+            live_node_mapping_source_path: &live_node_mapping_source_path,
+            nt_source_capability_paths: std::slice::from_ref(&nt_source_capability_path),
+            target_candidate_paths: &[],
+            behavior_observation_paths: std::slice::from_ref(&behavior_observation_path),
+            max_source_bytes,
+            output_path: &output_path,
+        },
+    )
+    .expect("production readiness matrix should write");
+
+    let artifact: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&written.path).expect("matrix artifact should read"))
+            .expect("matrix artifact should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.data_client_production_readiness_matrix.v1"
+    );
+    assert_eq!(artifact["schema_version"], 1);
+    assert_eq!(
+        artifact["config_bundle_checksum"].as_str(),
+        Some(loaded.config_bundle_checksum.as_str())
+    );
+    assert_eq!(
+        artifact["readiness_source_sha256"].as_str(),
+        Some(sha256_file(&readiness_source_path).as_str())
+    );
+    assert_eq!(
+        artifact["live_node_mapping_source_sha256"].as_str(),
+        Some(sha256_file(&live_node_mapping_source_path).as_str())
+    );
+    assert_eq!(
+        artifact["nt_source_capability_sha256s"]
+            .as_array()
+            .expect("NT source capability hashes should be an array"),
+        &vec![serde_json::json!(sha256_file(&nt_source_capability_path))]
+    );
+    assert_eq!(
+        artifact["behavior_observation_sha256s"]
+            .as_array()
+            .expect("behavior observation hashes should be an array"),
+        &vec![serde_json::json!(sha256_file(&behavior_observation_path))]
+    );
+
+    let client_key_hash = sha256_text(client_key);
+    let clients = artifact["clients"]
+        .as_array()
+        .expect("clients should be an array");
+    let row = clients
+        .iter()
+        .find(|row| row["client_key_hash"].as_str() == Some(client_key_hash.as_str()))
+        .expect("configured data client should be recorded");
+    assert_eq!(row["provider_key"].as_str(), Some(provider_key));
+    assert_eq!(row["has_data"], true);
+    assert_eq!(row["readiness_required"], true);
+    assert_eq!(row["config_inventory_present"], true);
+    assert_eq!(row["live_node_mapping_present"], true);
+    assert_eq!(row["nt_source_capability_present"], true);
+    assert_eq!(row["behavior_observation_complete"], false);
+    assert_eq!(row["production_usable"], false);
+    assert_eq!(
+        row["readiness_status"].as_str(),
+        Some("data_client_t043a_matrix_missing_proofs")
+    );
+    assert!(
+        row["missing_proofs"]
+            .as_array()
+            .expect("missing proofs should be an array")
+            .contains(&serde_json::json!("behavior_observation"))
+    );
+}
+
+#[test]
+fn data_client_production_readiness_matrix_requires_source_owned_quote_target_binding() {
+    let mut loaded = load_fixture_with_live_canary();
+    configure_data_client_readiness_quote_probe(&mut loaded);
+    let client_key = TEST_REFERENCE_DATA_CLIENT_ID;
+    let provider_key = loaded
+        .root
+        .clients
+        .get(client_key)
+        .expect("configured probe client should exist")
+        .venue
+        .as_str();
+    let temp = support::TempCaseDir::new("data-client-matrix-target-binding");
+    let max_source_bytes = 1_000_000;
+
+    let readiness_source_path = temp.path().join("data-client-readiness-source.json");
+    write_data_client_readiness_source_artifact_from_config(&loaded, &readiness_source_path)
+        .expect("readiness source should write");
+
+    let live_node_source_path = temp.path().join("live-node-source.rs");
+    let adapter_mapping_source_path = temp.path().join("adapter-mapping-source.rs");
+    let provider_registry_source_path = temp.path().join("provider-registry-source.rs");
+    std::fs::write(
+        &live_node_source_path,
+        "fn build_source() { map_bolt_v3_adapters(); register_bolt_v3_clients(); }",
+    )
+    .expect("LiveNode source fixture should write");
+    std::fs::write(
+        &adapter_mapping_source_path,
+        "fn map_source() { for client in loaded.root.clients {} binding_for_provider_key(); binding.map_adapters(); }",
+    )
+    .expect("adapter mapping source fixture should write");
+    std::fs::write(
+        &provider_registry_source_path,
+        "pub fn binding_for_provider_key() {}",
+    )
+    .expect("provider registry source fixture should write");
+    let live_node_mapping_source_path = temp
+        .path()
+        .join("data-client-live-node-mapping-source.json");
+    let registration_summary = registration_summary_for_loaded(&loaded);
+    write_data_client_live_node_mapping_source_artifact_from_config(
+        &loaded,
+        &registration_summary,
+        &live_node_source_path,
+        &adapter_mapping_source_path,
+        &provider_registry_source_path,
+        max_source_bytes,
+        &live_node_mapping_source_path,
+    )
+    .expect("LiveNode mapping source should write");
+
+    let nt_source_path = temp.path().join("nt-adapter-source.rs");
+    std::fs::write(
+        &nt_source_path,
+        "fn request_instruments() {} fn subscribe_quote() {} fn subscribe_book() {}",
+    )
+    .expect("NT source fixture should write");
+    let nt_source_capability_path = temp.path().join("data-client-nt-source-capability.json");
+    write_data_client_nt_source_capability_artifact_from_config(
+        &loaded,
+        client_key,
+        &nt_source_path,
+        max_source_bytes,
+        &nt_source_capability_path,
+    )
+    .expect("NT source capability should write");
+
+    let observed_at_unix_millis = 1_777_000_000_000_u64;
+    let configured_max_age_millis = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should include live canary")
+        .reference_quote_max_age_seconds
+        * 1_000;
+    let surface = |evidence_label: &str| {
+        serde_json::json!({
+            "supported_by_nt_source": true,
+            "observed_through_live_node": true,
+            "sample_count": 1,
+            "first_observed_at_unix_millis": observed_at_unix_millis - 1_000,
+            "last_observed_at_unix_millis": observed_at_unix_millis,
+            "evidence_sha256": sha256_text(evidence_label),
+            "unsupported_disposition": null
+        })
+    };
+    let policy = |evidence_label: &str| {
+        serde_json::json!({
+            "behavior_observed": true,
+            "recovered": true,
+            "fail_closed": true,
+            "evidence_sha256": sha256_text(evidence_label)
+        })
+    };
+    let behavior_source = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.data_client_behavior_observation_source.v1",
+        "client_key_hash": sha256_text(client_key),
+        "provider_key": provider_key,
+        "policy_source_sha256": sha256_text("policy-source"),
+        "observed_at_unix_millis": observed_at_unix_millis,
+        "observation_window_millis": 5_000,
+        "metadata_behavior": surface("metadata-observation"),
+        "quote_behavior": surface("quote-observation"),
+        "book_behavior": surface("book-observation"),
+        "ticker_behavior": surface("ticker-observation"),
+        "trade_behavior": surface("trade-observation"),
+        "freshness": {
+            "configured_max_age_millis": configured_max_age_millis,
+            "max_observed_age_millis": 1_000,
+            "latency_sample_count": 3,
+            "latency_p95_millis": 200,
+            "latency_max_millis": 300,
+            "within_configured_bound": true,
+            "evidence_sha256": sha256_text("freshness-observation")
+        },
+        "reconnect": policy("reconnect-observation"),
+        "rate_limit": policy("rate-limit-observation"),
+        "parse_error": policy("parse-error-observation")
+    });
+    let behavior_source_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+    std::fs::write(
+        &behavior_source_path,
+        serde_json::to_vec_pretty(&behavior_source).expect("source should serialize"),
+    )
+    .expect("behavior source should write");
+    let behavior_observation_path = temp.path().join("data-client-behavior-observation.json");
+    write_data_client_behavior_observation_artifact_from_source_file(
+        &loaded,
+        client_key,
+        &behavior_source_path,
+        max_source_bytes,
+        &behavior_observation_path,
+    )
+    .expect("behavior observation should write");
+
+    let output_path = temp
+        .path()
+        .join("data-client-production-readiness-matrix.json");
+    let written = write_data_client_production_readiness_matrix_artifact_from_source_files(
+        DataClientProductionReadinessMatrixSourceFileRequest {
+            loaded: &loaded,
+            readiness_source_path: &readiness_source_path,
+            live_node_mapping_source_path: &live_node_mapping_source_path,
+            nt_source_capability_paths: std::slice::from_ref(&nt_source_capability_path),
+            target_candidate_paths: &[],
+            behavior_observation_paths: std::slice::from_ref(&behavior_observation_path),
+            max_source_bytes,
+            output_path: &output_path,
+        },
+    )
+    .expect("production readiness matrix should write");
+
+    let artifact: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&written.path).expect("matrix artifact should read"))
+            .expect("matrix artifact should parse");
+    let row = artifact["clients"]
+        .as_array()
+        .expect("clients should be an array")
+        .iter()
+        .find(|row| row["client_key_hash"].as_str() == Some(sha256_text(client_key).as_str()))
+        .expect("configured data client should be recorded");
+    assert_eq!(row["behavior_observation_complete"], true);
+    assert_eq!(row["source_owned_target_binding_present"], false);
+    assert_eq!(row["production_usable"], false);
+    assert!(
+        row["missing_proofs"]
+            .as_array()
+            .expect("missing proofs should be an array")
+            .contains(&serde_json::json!("source_owned_target_binding")),
+        "complete behavior evidence must not bypass source-owned target binding"
+    );
+
+    let target_candidates_path = temp
+        .path()
+        .join("data-client-readiness-target-candidates.json");
+    write_data_client_readiness_target_candidates_from_no_submit_readiness_evidence(
+        &loaded,
+        client_key,
+        &BoltV3NoSubmitDataClientReadinessEvidence {
+            metadata: BoltV3NoSubmitDataClientMetadataEvidence {
+                responses: vec![BoltV3NoSubmitDataClientMetadata {
+                    data_client_id: client_key.to_string(),
+                    venue: provider_key.to_string(),
+                    instrument_ids: vec![TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID.to_string()],
+                    ts_init_unix_nanos: 600_000_000_000,
+                    captured_at_unix_nanos: 600_100_000_000,
+                }],
+            },
+            quotes: BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+            books: BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+            trades: BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
+        },
+        &target_candidates_path,
+    )
+    .expect("target candidates should write");
+    let bound_output_path = temp
+        .path()
+        .join("data-client-production-readiness-matrix-bound.json");
+    let bound_written = write_data_client_production_readiness_matrix_artifact_from_source_files(
+        DataClientProductionReadinessMatrixSourceFileRequest {
+            loaded: &loaded,
+            readiness_source_path: &readiness_source_path,
+            live_node_mapping_source_path: &live_node_mapping_source_path,
+            nt_source_capability_paths: std::slice::from_ref(&nt_source_capability_path),
+            target_candidate_paths: std::slice::from_ref(&target_candidates_path),
+            behavior_observation_paths: std::slice::from_ref(&behavior_observation_path),
+            max_source_bytes,
+            output_path: &bound_output_path,
+        },
+    )
+    .expect("bound production readiness matrix should write");
+
+    let bound_artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&bound_written.path).expect("bound matrix artifact should read"),
+    )
+    .expect("bound matrix artifact should parse");
+    assert_eq!(
+        bound_artifact["target_candidate_sha256s"]
+            .as_array()
+            .expect("target candidate hashes should be an array"),
+        &vec![serde_json::json!(sha256_file(&target_candidates_path))]
+    );
+    let bound_row = bound_artifact["clients"]
+        .as_array()
+        .expect("clients should be an array")
+        .iter()
+        .find(|row| row["client_key_hash"].as_str() == Some(sha256_text(client_key).as_str()))
+        .expect("configured data client should be recorded");
+    assert_eq!(bound_row["source_owned_target_binding_present"], true);
+    assert_eq!(bound_row["production_usable"], true);
+    assert!(
+        bound_row["missing_proofs"]
+            .as_array()
+            .expect("missing proofs should be an array")
+            .is_empty()
+    );
+}
+
+#[test]
+fn data_client_behavior_observation_source_records_observed_data_path_as_unproven() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str();
+    let temp = support::TempCaseDir::new("data-client-behavior-observation");
+    let observed_at_unix_millis = 1_777_000_000_000_u64;
+    let observed_first = observed_at_unix_millis - 2_000;
+    let observed_last = observed_at_unix_millis - 500;
+    let configured_max_age_millis = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should include live canary")
+        .reference_quote_max_age_seconds
+        * 1_000;
+    let surface = |evidence_label: &str| {
+        serde_json::json!({
+            "supported_by_nt_source": true,
+            "observed_through_live_node": true,
+            "sample_count": 3,
+            "first_observed_at_unix_millis": observed_first,
+            "last_observed_at_unix_millis": observed_last,
+            "evidence_sha256": sha256_text(evidence_label),
+            "unsupported_disposition": null
+        })
+    };
+    let unsupported_surface = serde_json::json!({
+        "supported_by_nt_source": false,
+        "observed_through_live_node": false,
+        "sample_count": 0,
+        "first_observed_at_unix_millis": null,
+        "last_observed_at_unix_millis": null,
+        "evidence_sha256": null,
+        "unsupported_disposition": "ticker_subscription_source_marker_missing"
+    });
+    let policy = |evidence_label: &str| {
+        serde_json::json!({
+            "behavior_observed": true,
+            "recovered": true,
+            "fail_closed": true,
+            "evidence_sha256": sha256_text(evidence_label)
+        })
+    };
+    let source = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.data_client_behavior_observation_source.v1",
+        "client_key_hash": sha256_text(client_key),
+        "provider_key": provider_key,
+        "observed_at_unix_millis": observed_at_unix_millis,
+        "observation_window_millis": 5_000,
+        "metadata_behavior": surface("metadata-observation"),
+        "quote_behavior": surface("quote-observation"),
+        "book_behavior": surface("book-observation"),
+        "ticker_behavior": unsupported_surface.clone(),
+        "trade_behavior": unsupported_surface,
+        "freshness": {
+            "configured_max_age_millis": configured_max_age_millis,
+            "max_observed_age_millis": 1_500,
+            "latency_sample_count": 6,
+            "latency_p95_millis": 350,
+            "latency_max_millis": 450,
+            "within_configured_bound": true,
+            "evidence_sha256": sha256_text("freshness-observation")
+        },
+        "reconnect": policy("reconnect-observation"),
+        "rate_limit": policy("rate-limit-observation"),
+        "parse_error": policy("parse-error-observation")
+    });
+    let source_path = temp
+        .path()
+        .join("data-client-behavior-observation-source.json");
+    std::fs::write(
+        &source_path,
+        serde_json::to_vec_pretty(&source).expect("source should serialize"),
+    )
+    .expect("behavior source should write");
+    let output_path = temp.path().join("data-client-behavior-observation.json");
+
+    let written = write_data_client_behavior_observation_artifact_from_source_file(
+        &loaded,
+        client_key,
+        &source_path,
+        4096,
+        &output_path,
+    )
+    .expect("behavior observation artifact should write");
+
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.path).expect("behavior artifact should read"),
+    )
+    .expect("behavior artifact should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.data_client_behavior_observation.v1"
+    );
+    assert_eq!(artifact["schema_version"], 1);
+    assert_eq!(
+        artifact["config_bundle_checksum"].as_str(),
+        Some(loaded.config_bundle_checksum.as_str())
+    );
+    assert_eq!(
+        artifact["client_key_hash"].as_str(),
+        Some(sha256_text(client_key).as_str())
+    );
+    assert_eq!(artifact["provider_key"].as_str(), Some(provider_key));
+    assert_eq!(
+        artifact["behavior_source_sha256"].as_str(),
+        Some(sha256_file(&source_path).as_str())
+    );
+    assert!(is_lowercase_sha256(
+        artifact["behavior_source_path_hash"]
+            .as_str()
+            .expect("source path hash should be a string")
+    ));
+    assert_eq!(artifact["behavior_observation_complete"], false);
+    let missing = artifact["missing_behavior_proofs"]
+        .as_array()
+        .expect("missing behavior proofs should be an array");
+    assert!(missing.contains(&serde_json::json!("reconnect_behavior")));
+    assert!(missing.contains(&serde_json::json!("rate_limit_behavior")));
+    assert!(missing.contains(&serde_json::json!("parse_error_behavior")));
+    assert_eq!(
+        artifact["metadata_behavior"]["observed_through_live_node"],
+        true
+    );
+    assert_eq!(
+        artifact["quote_behavior"]["observed_through_live_node"],
+        true
+    );
+    assert_eq!(
+        artifact["ticker_behavior"]["unsupported_disposition"].as_str(),
+        Some("ticker_subscription_source_marker_missing")
+    );
+    assert_eq!(artifact["freshness"]["within_configured_bound"], true);
+    assert_eq!(artifact["reconnect"]["behavior_observed"], true);
+    assert_eq!(artifact["rate_limit"]["behavior_observed"], true);
+    assert_eq!(artifact["parse_error"]["behavior_observed"], true);
+    assert_eq!(artifact["production_usable"], false);
+    assert_eq!(
+        artifact["readiness_status"].as_str(),
+        Some("behavior_observation_final_matrix_missing")
+    );
+    let rendered =
+        serde_json::to_string(&artifact).expect("behavior artifact should render to string");
+    let source_path_text = source_path.to_string_lossy();
+    assert!(
+        !rendered.contains(source_path_text.as_ref()),
+        "behavior artifact should hash source paths instead of printing them: {rendered}"
+    );
+}
+
+#[test]
+fn data_client_live_node_mapping_source_records_normal_adapter_path_as_unproven() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let temp = support::TempCaseDir::new("data-client-live-node-mapping-source");
+    let live_node_source = r#"
+fn build_source() {
+    let adapters = map_bolt_v3_adapters(loaded, resolved)?;
+    register_bolt_v3_clients(builder, adapters)?;
+}
+"#;
+    let adapter_mapping_source = r#"
+fn map_source() {
+    for (client_key, client) in &loaded.root.clients {
+        let binding = binding_for_provider_key(client.venue.as_str())?;
+        binding.map_adapters(context_for(client_key, client))?;
+    }
+}
+"#;
+    let provider_registry_source = r#"
+pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
+    provider_bindings().iter().find(|binding| binding.key == key)
+}
+"#;
+    let live_node_source_path = temp.path().join("live-node-source.rs");
+    let adapter_mapping_source_path = temp.path().join("adapter-mapping-source.rs");
+    let provider_registry_source_path = temp.path().join("provider-registry-source.rs");
+    std::fs::write(&live_node_source_path, live_node_source)
+        .expect("LiveNode source fixture should write");
+    std::fs::write(&adapter_mapping_source_path, adapter_mapping_source)
+        .expect("adapter mapping source fixture should write");
+    std::fs::write(&provider_registry_source_path, provider_registry_source)
+        .expect("provider registry source fixture should write");
+    let output_path = temp
+        .path()
+        .join("data-client-live-node-mapping-source.json");
+    let registration_summary = registration_summary_for_loaded(&loaded);
+
+    let written = write_data_client_live_node_mapping_source_artifact_from_config(
+        &loaded,
+        &registration_summary,
+        &live_node_source_path,
+        &adapter_mapping_source_path,
+        &provider_registry_source_path,
+        4096,
+        &output_path,
+    )
+    .expect("LiveNode mapping source artifact should write");
+
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.path).expect("mapping source artifact should read"),
+    )
+    .expect("mapping source artifact should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.data_client_live_node_mapping_source.v1"
+    );
+    assert_eq!(artifact["schema_version"], 1);
+    assert_eq!(
+        artifact["config_bundle_checksum"].as_str(),
+        Some(loaded.config_bundle_checksum.as_str())
+    );
+    assert_eq!(
+        artifact["live_node_source_sha256"].as_str(),
+        Some(hex::encode(Sha256::digest(live_node_source.as_bytes())).as_str())
+    );
+    assert_eq!(
+        artifact["adapter_mapping_source_sha256"].as_str(),
+        Some(hex::encode(Sha256::digest(adapter_mapping_source.as_bytes())).as_str())
+    );
+    assert_eq!(
+        artifact["provider_registry_source_sha256"].as_str(),
+        Some(hex::encode(Sha256::digest(provider_registry_source.as_bytes())).as_str())
+    );
+    assert_eq!(artifact["live_node_calls_adapter_mapping"], true);
+    assert_eq!(artifact["live_node_registers_mapped_clients"], true);
+    assert_eq!(artifact["adapter_mapping_iterates_loaded_clients"], true);
+    assert_eq!(
+        artifact["adapter_mapping_dispatches_provider_binding"],
+        true
+    );
+    assert_eq!(artifact["adapter_mapping_uses_provider_lookup"], true);
+    assert_eq!(artifact["provider_registry_exposes_binding_lookup"], true);
+    assert!(
+        artifact["unsupported_dispositions"]
+            .as_array()
+            .expect("unsupported dispositions should be an array")
+            .is_empty(),
+        "complete source markers should not produce unsupported mapping dispositions"
+    );
+
+    let client_key_hash = sha256_text(client_key);
+    let clients = artifact["clients"]
+        .as_array()
+        .expect("clients should be an array");
+    let recorded = clients
+        .iter()
+        .find(|recorded| recorded["client_key_hash"].as_str() == Some(client_key_hash.as_str()))
+        .expect("configured client should be recorded");
+    assert_eq!(
+        recorded["provider_key"].as_str(),
+        Some(client.venue.as_str())
+    );
+    assert_eq!(recorded["has_data"], client.data.is_some());
+    assert_eq!(recorded["has_execution"], client.execution.is_some());
+    assert_eq!(recorded["provider_binding_registered"], true);
+    assert_eq!(
+        recorded["data_block_flows_through_mapping_source"],
+        client.data.is_some()
+    );
+    assert_eq!(
+        recorded["data_client_registered_through_live_node"],
+        client.data.is_some()
+    );
+    assert_eq!(
+        recorded["execution_block_flows_through_mapping_source"],
+        client.execution.is_some()
+    );
+    assert_eq!(
+        recorded["execution_client_registered_through_live_node"],
+        client.execution.is_some()
+    );
+    assert_eq!(recorded["production_usable"], false);
+    assert_eq!(
+        recorded["readiness_status"].as_str(),
+        Some("live_node_mapping_source_only_behavior_probe_missing")
+    );
+
+    let rendered = serde_json::to_string(&artifact).expect("mapping source artifact should render");
+    for path in [
+        &live_node_source_path,
+        &adapter_mapping_source_path,
+        &provider_registry_source_path,
+    ] {
+        let path_text = path.to_string_lossy();
+        assert!(
+            !rendered.contains(path_text.as_ref()),
+            "mapping source artifact should hash source paths instead of printing them: {rendered}"
+        );
+    }
+}
+
+#[test]
+fn data_client_nt_source_capability_records_configured_client_source_markers_as_unproven() {
+    let loaded = load_fixture_with_live_canary();
+    let (client_key, client) = loaded
+        .root
+        .clients
+        .iter()
+        .find(|(_, client)| client.data.is_some())
+        .expect("fixture should include a configured data client");
+    let provider_key = client.venue.as_str().to_string();
+    let temp = support::TempCaseDir::new("data-client-nt-source-capability");
+    let nt_source = r#"
+pub async fn request_instruments(&self) {}
+pub async fn request_instrument(&self) {}
+fn subscribe_quote() {}
+struct SubscribeOrderBook;
+"#;
+    let source_path = temp.path().join("nt-adapter-source.rs");
+    std::fs::write(&source_path, nt_source).expect("NT source fixture should write");
+    let output_path = temp.path().join("data-client-nt-source-capability.json");
+
+    let written = write_data_client_nt_source_capability_artifact_from_config(
+        &loaded,
+        client_key,
+        &source_path,
+        4096,
+        &output_path,
+    )
+    .expect("NT source capability artifact should write");
+
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.path).expect("source capability artifact should read"),
+    )
+    .expect("source capability artifact should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.data_client_nt_source_capability.v1"
+    );
+    assert_eq!(artifact["schema_version"], 1);
+    assert_eq!(
+        artifact["config_bundle_checksum"].as_str(),
+        Some(loaded.config_bundle_checksum.as_str())
+    );
+    assert_eq!(
+        artifact["client_key_hash"].as_str(),
+        Some(sha256_text(client_key).as_str())
+    );
+    assert_eq!(
+        artifact["provider_key"].as_str(),
+        Some(provider_key.as_str())
+    );
+    assert_eq!(
+        artifact["nt_source_sha256"].as_str(),
+        Some(hex::encode(Sha256::digest(nt_source.as_bytes())).as_str())
+    );
+    assert_eq!(
+        artifact["nt_source_byte_len"].as_u64(),
+        Some(nt_source.len() as u64)
+    );
+    assert!(is_lowercase_sha256(
+        artifact["nt_source_path_hash"]
+            .as_str()
+            .expect("source path hash should be a string")
+    ));
+    assert_eq!(
+        artifact["metadata_request_instruments_surface_present"],
+        true
+    );
+    assert_eq!(
+        artifact["metadata_request_instrument_surface_present"],
+        true
+    );
+    assert_eq!(artifact["quote_subscription_surface_present"], true);
+    assert_eq!(artifact["book_subscription_surface_present"], true);
+    assert_eq!(artifact["ticker_subscription_surface_present"], false);
+    assert_eq!(
+        artifact["unsupported_dispositions"]
+            .as_array()
+            .expect("unsupported dispositions should be an array"),
+        &vec![serde_json::json!(
+            "ticker_subscription_source_marker_missing"
+        )]
+    );
+    assert_eq!(artifact["production_usable"], false);
+    assert_eq!(
+        artifact["readiness_status"].as_str(),
+        Some("nt_source_capability_only_behavior_probe_missing")
+    );
+    let rendered = serde_json::to_string(&artifact)
+        .expect("source capability artifact should render to string");
+    let source_path_text = source_path.to_string_lossy();
+    assert!(
+        !rendered.contains(source_path_text.as_ref()),
+        "source capability artifact should hash the source path instead of printing it: {rendered}"
+    );
+}
+
+#[test]
+fn data_client_readiness_source_records_data_only_clients_as_unproven() {
+    let temp = support::TempCaseDir::new("data-client-readiness-source");
+    let strategy_dir = temp.path().join("strategies");
+    std::fs::create_dir_all(&strategy_dir).expect("strategy dir should create");
+    std::fs::copy(
+        repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        strategy_dir.join("binary_oracle.toml"),
+    )
+    .expect("strategy fixture should copy");
+
+    let root_fixture = std::fs::read_to_string(repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("root fixture should read");
+    let root_path = temp.path().join("root.toml");
+    std::fs::write(
+        &root_path,
+        format!(
+            r#"{root_fixture}
+
+[clients.bybit_data]
+venue = "BYBIT"
+
+[clients.bybit_data.data]
+product_types = ["spot", "linear"]
+environment = "testnet"
+http_timeout_secs = 10
+max_retries = 2
+instrument_status_poll_secs = 60
+transport_backend = "sockudo"
+"#
+        ),
+    )
+    .expect("root fixture with data-only client should write");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture config should load");
+    let output_path = temp.path().join("data-client-readiness-source.json");
+
+    let written = write_data_client_readiness_source_artifact_from_config(&loaded, &output_path)
+        .expect("readiness source should write");
+
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.path).expect("readiness artifact should read"),
+    )
+    .expect("readiness artifact should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.data_client_readiness_source.v1"
+    );
+    assert_eq!(artifact["schema_version"], 1);
+    assert_eq!(
+        artifact["config_bundle_checksum"].as_str(),
+        Some(loaded.config_bundle_checksum.as_str())
+    );
+
+    let rendered =
+        serde_json::to_string(&artifact).expect("readiness artifact should render to string");
+    assert!(
+        !rendered.contains("/bolt/"),
+        "readiness artifact must not print SSM paths or secret values: {rendered}"
+    );
+
+    let clients = artifact["clients"]
+        .as_array()
+        .expect("clients should be an array");
+    let bybit = clients
+        .iter()
+        .find(|client| client["provider_key"] == "BYBIT")
+        .expect("Bybit data client should be recorded");
+    let bybit_client_key_hash = sha256_text("bybit_data");
+    assert_eq!(
+        bybit["client_key_hash"].as_str(),
+        Some(bybit_client_key_hash.as_str())
+    );
+    assert_eq!(bybit["has_data"], true);
+    assert_eq!(bybit["has_execution"], false);
+    assert_eq!(bybit["has_secrets"], false);
+    assert_eq!(bybit["data_only_scope"], true);
+    assert_eq!(bybit["strategy_routed"], false);
+    assert_eq!(bybit["production_usable"], false);
+    assert_eq!(
+        bybit["readiness_status"].as_str(),
+        Some("not_production_usable_metadata_or_config_only")
+    );
+    assert!(
+        bybit["data_config_field_names"]
+            .as_array()
+            .expect("field names should be an array")
+            .contains(&serde_json::json!("product_types")),
+        "Bybit data config fields should be captured without treating product values as canonical"
+    );
+    let data_config_field_fingerprints = bybit["data_config_field_fingerprints"]
+        .as_array()
+        .expect("data config field fingerprints should be an array");
+    let product_types_fingerprint = data_config_field_fingerprints
+        .iter()
+        .find(|fingerprint| fingerprint["field_name"] == "product_types")
+        .expect("product_types fingerprint should be recorded");
+    assert_eq!(
+        product_types_fingerprint["value_kind"].as_str(),
+        Some("array")
+    );
+    assert_eq!(
+        product_types_fingerprint["value_item_count"].as_u64(),
+        Some(2)
+    );
+    assert!(is_lowercase_sha256(
+        product_types_fingerprint["value_sha256"]
+            .as_str()
+            .expect("value hash should be a string")
+    ));
+    let environment_fingerprint = data_config_field_fingerprints
+        .iter()
+        .find(|fingerprint| fingerprint["field_name"] == "environment")
+        .expect("environment fingerprint should be recorded");
+    assert_eq!(
+        environment_fingerprint["value_kind"].as_str(),
+        Some("string")
+    );
+    assert_eq!(
+        bybit["market_coverage_config_values"]["product_types"]
+            .as_array()
+            .expect("configured product coverage should be an array"),
+        &vec![serde_json::json!("spot"), serde_json::json!("linear")]
+    );
+    let coverage_fingerprints = bybit["market_coverage_config_field_fingerprints"]
+        .as_array()
+        .expect("market coverage fingerprints should be an array");
+    assert!(
+        coverage_fingerprints
+            .iter()
+            .any(|fingerprint| fingerprint["field_name"] == "product_types"),
+        "market coverage field fingerprints should include product_types"
+    );
+    for raw_config_value in ["testnet", "sockudo"] {
+        assert!(
+            !rendered.contains(raw_config_value),
+            "readiness artifact should not print non-coverage configured values like `{raw_config_value}`: {rendered}"
+        );
+    }
+    assert!(
+        bybit["timeout_policy_field_names"]
+            .as_array()
+            .expect("timeout policy fields should be an array")
+            .contains(&serde_json::json!("http_timeout_secs")),
+        "timeout policy field names should be classified from TOML"
+    );
+    assert!(
+        bybit["retry_policy_field_names"]
+            .as_array()
+            .expect("retry policy fields should be an array")
+            .contains(&serde_json::json!("max_retries")),
+        "retry policy field names should be classified from TOML"
+    );
+    assert!(
+        bybit["freshness_policy_field_names"]
+            .as_array()
+            .expect("freshness policy fields should be an array")
+            .contains(&serde_json::json!("instrument_status_poll_secs")),
+        "freshness policy field names should be classified from TOML"
+    );
+    assert!(
+        bybit["reconnect_policy_field_names"]
+            .as_array()
+            .expect("reconnect policy fields should be an array")
+            .is_empty(),
+        "reconnect behavior must come from source-owned observation, not invented TOML fields"
+    );
+    let missing_behavior_proofs = bybit["missing_behavior_proofs"]
+        .as_array()
+        .expect("missing behavior proofs should be an array");
+    assert_eq!(
+        missing_behavior_proofs,
+        &vec![
+            serde_json::json!("metadata_behavior"),
+            serde_json::json!("quote_or_book_behavior"),
+            serde_json::json!("freshness_latency"),
+            serde_json::json!("reconnect_rate_limit_error")
+        ]
+    );
+
+    let polymarket = clients
+        .iter()
+        .find(|client| client["provider_key"] == "POLYMARKET")
+        .expect("Polymarket client should be recorded");
+    assert_eq!(polymarket["has_data"], true);
+    assert_eq!(polymarket["has_execution"], true);
+    assert_eq!(polymarket["has_secrets"], true);
+    assert_eq!(polymarket["strategy_routed"], true);
+    assert_eq!(polymarket["production_usable"], false);
+    assert!(
+        !polymarket["market_identity_targets"]
+            .as_array()
+            .expect("market identity targets should be an array")
+            .is_empty(),
+        "Polymarket should be marked as strategy-routed through the configured target"
+    );
+}
+
+#[test]
+fn data_client_readiness_source_records_client_owned_quote_probe_targets() {
+    let temp = support::TempCaseDir::new("data-client-readiness-probe-targets");
+    let strategy_dir = temp.path().join("strategies");
+    std::fs::create_dir_all(&strategy_dir).expect("strategy dir should create");
+    std::fs::copy(
+        repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        strategy_dir.join("binary_oracle.toml"),
+    )
+    .expect("strategy fixture should copy");
+
+    let root_fixture = std::fs::read_to_string(repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("root fixture should read");
+    let root_path = temp.path().join("root.toml");
+    std::fs::write(
+        &root_path,
+        format!(
+            r#"{root_fixture}
+
+[clients.bybit_data]
+venue = "BYBIT"
+
+[clients.bybit_data.data]
+product_types = ["spot", "linear"]
+environment = "testnet"
+http_timeout_secs = 10
+max_retries = 2
+instrument_status_poll_secs = 60
+transport_backend = "sockudo"
+
+[clients.bybit_data.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "configured"
+
+[clients.bybit_data.readiness_probe.quote_targets.configured_quote_probe]
+instrument_id = "CONFIGURED-PROBE.BYBIT"
+"#
+        ),
+    )
+    .expect("root fixture with data-only probe target should write");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture config should load");
+    let output_path = temp.path().join("data-client-readiness-source.json");
+
+    let written = write_data_client_readiness_source_artifact_from_config(&loaded, &output_path)
+        .expect("readiness source should write");
+
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.path).expect("readiness artifact should read"),
+    )
+    .expect("readiness artifact should parse");
+    let rendered =
+        serde_json::to_string(&artifact).expect("readiness artifact should render to string");
+    let clients = artifact["clients"]
+        .as_array()
+        .expect("clients should be an array");
+    let bybit = clients
+        .iter()
+        .find(|client| client["provider_key"] == "BYBIT")
+        .expect("Bybit data client should be recorded");
+    let targets = bybit["readiness_probe_targets"]
+        .as_array()
+        .expect("readiness probe targets should be an array");
+    assert_eq!(targets.len(), 1);
+    assert_eq!(
+        targets[0]["configured_target_id_hash"].as_str(),
+        Some(sha256_text("configured_quote_probe").as_str())
+    );
+    assert_eq!(targets[0]["event_kind"].as_str(), Some("book"));
+    assert_eq!(
+        targets[0]["instrument_id_hash"].as_str(),
+        Some(sha256_text("CONFIGURED-PROBE.BYBIT").as_str())
+    );
+    assert!(!rendered.contains("configured_quote_probe"));
+    assert!(!rendered.contains("CONFIGURED-PROBE.BYBIT"));
 }
 
 #[test]
@@ -299,6 +4061,7 @@ fn abort_plan_writer_emits_config_bound_artifact_from_source_proofs() {
             .and_then(|value| value.as_str())
             .expect("fixture target should have configured_target_id")
     );
+    assert_eq!(json["source_collector_derived"], false);
     assert_eq!(json["cancel_if_open_defined"], true);
     assert_eq!(json["nt_accepted_venue_pending_abort_defined"], true);
     assert_eq!(json["partial_fill_abort_defined"], true);
@@ -320,6 +4083,104 @@ fn abort_plan_writer_emits_config_bound_artifact_from_source_proofs() {
     assert_eq!(
         json["panic_gate_trip_abort_evidence_hash"],
         proof_hashes.panic_gate
+    );
+}
+
+#[test]
+fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let abort_plan_path = temp.path().join("abort-plan.json");
+    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+    let submit_admission_source_path = repo_path("src/bolt_v3_submit_admission.rs");
+
+    let cancel_if_open =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            1_000_000,
+        )
+        .expect("cancel-if-open source proof should collect");
+    let venue_pending = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
+        &strategy_source_path,
+        1_000_000,
+    )
+    .expect("NT-accepted venue-pending source proof should collect");
+    let partial_fill =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
+            &strategy_source_path,
+            1_000_000,
+        )
+        .expect("partial-fill source proof should collect");
+    let network_partition =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_network_partition_source_proof(
+            &strategy_source_path,
+            1_000_000,
+        )
+        .expect("network-partition source proof should collect");
+    let panic_gate =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_panic_gate_service_policy_source_proof(
+            &strategy_source_path,
+            &submit_admission_source_path,
+            1_000_000,
+        )
+        .expect("panic-gate/service-policy source proof should collect");
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_abort_plan_artifact_from_source_collectors(
+            &loaded,
+            strategy_instance_id,
+            &strategy_source_path,
+            &submit_admission_source_path,
+            1_000_000,
+            &abort_plan_path,
+        )
+        .expect("source-owned collectors should write abort-plan artifact");
+
+    let artifact_bytes = std::fs::read(&abort_plan_path).expect("abort plan artifact should exist");
+    assert_eq!(written.sha256, hex::encode(Sha256::digest(&artifact_bytes)));
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&artifact_bytes).expect("abort plan should be JSON");
+    assert_eq!(json["source_collector_derived"], true);
+    assert_eq!(
+        json["strategy_source_sha256"],
+        sha256_file(&strategy_source_path)
+    );
+    assert_eq!(
+        json["submit_admission_source_sha256"],
+        sha256_file(&submit_admission_source_path)
+    );
+    assert_eq!(json["cancel_if_open_defined"], true);
+    assert_eq!(json["nt_accepted_venue_pending_abort_defined"], true);
+    assert_eq!(json["partial_fill_abort_defined"], true);
+    assert_eq!(json["network_partition_during_submit_abort_defined"], true);
+    assert_eq!(json["panic_gate_trip_abort_defined"], true);
+    assert_eq!(
+        json["cancel_if_open_evidence_hash"],
+        cancel_if_open.cancel_if_open_evidence_hash
+    );
+    assert_eq!(
+        json["nt_accepted_venue_pending_abort_evidence_hash"],
+        venue_pending.nt_accepted_venue_pending_abort_evidence_hash
+    );
+    assert_eq!(
+        json["partial_fill_abort_evidence_hash"],
+        partial_fill.partial_fill_abort_evidence_hash
+    );
+    assert_eq!(
+        json["network_partition_during_submit_abort_evidence_hash"],
+        network_partition.network_partition_during_submit_abort_evidence_hash
+    );
+    assert_eq!(
+        json["panic_gate_trip_abort_evidence_hash"],
+        panic_gate.panic_gate_trip_abort_evidence_hash
     );
 }
 
@@ -444,6 +4305,1172 @@ fn abort_plan_writer_rejects_each_undefined_source_path_without_artifact() {
             proofs.panic_gate_trip_abort_evidence_hash = "invalid";
         },
     );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_derives_from_strategy_cancel_sources() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let abort_plan_path = temp.path().join("abort-plan.json");
+    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            1_000_000,
+        )
+        .expect("strategy source should prove cancel-if-open abort path");
+    let bolt_v2::bolt_v3_operator_artifacts::Phase8AbortPlanCancelIfOpenSourceProof {
+        cancel_if_open_evidence_hash,
+    } = proof;
+
+    assert_eq!(cancel_if_open_evidence_hash.len(), 64);
+    assert!(
+        cancel_if_open_evidence_hash
+            .chars()
+            .all(|char| char.is_ascii_hexdigit() && !char.is_ascii_uppercase()),
+        "cancel-if-open proof hash should be lowercase sha256"
+    );
+    assert!(
+        !abort_plan_path.exists(),
+        "collector must not write final abort-plan artifact"
+    );
+}
+
+#[test]
+fn abort_plan_nt_accepted_venue_pending_source_proof_derives_from_exit_pending_lifecycle() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let abort_plan_path = temp.path().join("abort-plan.json");
+    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
+        &strategy_source_path,
+        1_000_000,
+    )
+    .expect("strategy source should prove NT-accepted / venue-pending abort lifecycle");
+    let bolt_v2::bolt_v3_operator_artifacts::Phase8AbortPlanNtAcceptedVenuePendingSourceProof {
+        nt_accepted_venue_pending_abort_evidence_hash,
+    } = proof;
+
+    assert_eq!(nt_accepted_venue_pending_abort_evidence_hash.len(), 64);
+    assert!(
+        nt_accepted_venue_pending_abort_evidence_hash
+            .chars()
+            .all(|char| char.is_ascii_hexdigit() && !char.is_ascii_uppercase()),
+        "NT-accepted / venue-pending proof hash should be lowercase sha256"
+    );
+    assert!(
+        !abort_plan_path.exists(),
+        "collector must not write final abort-plan artifact"
+    );
+}
+
+#[test]
+fn abort_plan_nt_accepted_venue_pending_source_proof_rejects_pending_after_submit() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
+    let client_order_id = self.core.order_factory().generate_client_order_id();
+    let managed_position = self.managed_position().cloned().unwrap();
+    if let Err(error) = self.submit_order_with_decision_evidence(intent, order, context) {
+        self.exposure = ExposureState::Managed(managed_position);
+        return Err(error);
+    }
+    self.exposure = ExposureState::ExitPending(ExitPendingState {
+        position: Some(managed_position.clone()),
+        pending_exit: PendingExitState {
+            client_order_id,
+            fill_received: false,
+            close_received: false,
+            terminal_received: false,
+        },
+    });
+    Ok(Some(client_order_id))
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
+        &strategy_source_path,
+        10_000,
+    )
+    .expect_err("venue-pending state after submit should not prove abort lifecycle");
+
+    assert!(
+        error.to_string().contains("exit_pending_before_submit"),
+        "late pending-state error should identify ordering proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_nt_accepted_venue_pending_source_proof_rejects_unguarded_terminal_instrument() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
+    let client_order_id = self.core.order_factory().generate_client_order_id();
+    let managed_position = self.managed_position().cloned().unwrap();
+    self.exposure = ExposureState::ExitPending(ExitPendingState {
+        position: Some(managed_position.clone()),
+        pending_exit: PendingExitState {
+            client_order_id,
+            fill_received: false,
+            close_received: false,
+            terminal_received: false,
+        },
+    });
+    if let Err(error) = self.submit_order_with_decision_evidence(intent, order, context) {
+        self.exposure = ExposureState::Managed(managed_position);
+        return Err(error);
+    }
+    Ok(Some(client_order_id))
+}
+
+fn mark_exit_order_terminal(
+    &mut self,
+    client_order_id: ClientOrderId,
+    event_instrument_id: InstrumentId,
+) {
+    let Some(mut exit_pending) = self.exposure.exit_pending().cloned() else {
+        return;
+    };
+    if exit_pending.pending_exit.client_order_id != client_order_id {
+        return;
+    }
+    if !self.event_instrument_matches_held_exposure(event_instrument_id) {
+        log::warn!("foreign instrument observed");
+    }
+    exit_pending.pending_exit.terminal_received = true;
+    self.exposure = exit_pending.into_state_after_exit_update();
+}
+
+fn on_order_canceled(&mut self, event: &OrderCanceled) {
+    self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
+}
+
+fn on_order_rejected(&mut self, event: OrderRejected) {
+    self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
+}
+
+fn on_order_expired(&mut self, event: OrderExpired) {
+    self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
+        &strategy_source_path,
+        10_000,
+    )
+    .expect_err("unguarded terminal instrument should not prove abort lifecycle");
+
+    assert!(
+        error
+            .to_string()
+            .contains("terminal_event_instrument_guard"),
+        "terminal guard error should identify source proof field: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_nt_accepted_venue_pending_source_proof_requires_scoped_terminal_handlers() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
+    let client_order_id = self.core.order_factory().generate_client_order_id();
+    let managed_position = self.managed_position().cloned().unwrap();
+    self.exposure = ExposureState::ExitPending(ExitPendingState {
+        position: Some(managed_position.clone()),
+        pending_exit: PendingExitState {
+            client_order_id,
+            fill_received: false,
+            close_received: false,
+            terminal_received: false,
+        },
+    });
+    if let Err(error) = self.submit_order_with_decision_evidence(intent, order, context) {
+        self.exposure = ExposureState::Managed(managed_position);
+        return Err(error);
+    }
+    Ok(Some(client_order_id))
+}
+
+fn mark_exit_order_terminal(
+    &mut self,
+    client_order_id: ClientOrderId,
+    event_instrument_id: InstrumentId,
+) {
+    let Some(mut exit_pending) = self.exposure.exit_pending().cloned() else {
+        return;
+    };
+    if exit_pending.pending_exit.client_order_id != client_order_id {
+        return;
+    }
+    if !self.event_instrument_matches_held_exposure(event_instrument_id) {
+            return;
+        }
+    exit_pending.pending_exit.terminal_received = true;
+    self.exposure = exit_pending.into_state_after_exit_update();
+}
+
+fn on_order_canceled(&mut self, event: &OrderCanceled) {
+    self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
+}
+
+fn on_order_rejected(&mut self, event: OrderRejected) {
+}
+
+fn on_order_expired(&mut self, event: OrderExpired) {
+}
+
+fn noisy_terminal_call_source(&mut self, event: OrderExpired) {
+    self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
+    self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
+        &strategy_source_path,
+        10_000,
+    )
+    .expect_err("terminal proof must prove each terminal handler scope");
+
+    assert!(
+        error.to_string().contains("terminal_rejected_handler"),
+        "scoped terminal handler error should identify missing handler proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_partial_fill_source_proof_derives_from_exit_fill_lifecycle() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let abort_plan_path = temp.path().join("abort-plan.json");
+    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
+        &strategy_source_path,
+        1_000_000,
+    )
+    .expect("strategy source should prove partial-fill abort lifecycle");
+    let bolt_v2::bolt_v3_operator_artifacts::Phase8AbortPlanPartialFillSourceProof {
+        partial_fill_abort_evidence_hash,
+    } = proof;
+
+    assert_eq!(partial_fill_abort_evidence_hash.len(), 64);
+    assert!(
+        partial_fill_abort_evidence_hash
+            .chars()
+            .all(|char| char.is_ascii_hexdigit() && !char.is_ascii_uppercase()),
+        "partial-fill proof hash should be lowercase sha256"
+    );
+    assert!(
+        !abort_plan_path.exists(),
+        "collector must not write final abort-plan artifact"
+    );
+}
+
+#[test]
+fn abort_plan_partial_fill_source_proof_rejects_unguarded_exit_fill_instrument() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn into_state_after_exit_update(self) -> ExposureState {
+    if self.pending_exit.fill_received && self.pending_exit.close_received {
+        return ExposureState::Flat;
+    }
+    ExposureState::ExitPending(self)
+}
+
+fn on_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) -> anyhow::Result<()> {
+    let exit_fill = self
+        .exposure
+        .exit_pending()
+        .is_some_and(|exit| exit.pending_exit.client_order_id == event.client_order_id);
+    if managed_entry_fill {
+    } else if exit_fill {
+        if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+            log::warn!("foreign instrument observed");
+        }
+        if let Some(exit_pending) = self.exposure.exit_pending_mut() {
+            exit_pending.pending_exit.fill_received = true;
+            if exit_pending.pending_exit.close_received {
+                self.exposure = ExposureState::Flat;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
+    let exit_pending_close = self.exposure.exit_pending().is_some_and(|exit_pending| {
+        exit_pending.pending_exit.position_id == Some(event.position_id)
+    });
+    if exit_pending_close {
+        if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+            return;
+        }
+        if let ExposureState::ExitPending(exit_pending) = &mut self.exposure {
+            exit_pending.pending_exit.close_received = true;
+            exit_pending.position = None;
+            if exit_pending.is_terminal() {
+                self.exposure = ExposureState::Flat;
+            }
+        }
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
+        &strategy_source_path,
+        10_000,
+    )
+    .expect_err("exit fill must guard the event instrument before recording fill");
+
+    assert!(
+        error
+            .to_string()
+            .contains("partial_fill_exit_fill_instrument_guard"),
+        "exit-fill guard error should identify partial-fill guard proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_partial_fill_source_proof_rejects_unguarded_position_close_instrument() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn into_state_after_exit_update(self) -> ExposureState {
+    if self.pending_exit.fill_received && self.pending_exit.close_received {
+        return ExposureState::Flat;
+    }
+    ExposureState::ExitPending(self)
+}
+
+fn on_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) -> anyhow::Result<()> {
+    let exit_fill = self
+        .exposure
+        .exit_pending()
+        .is_some_and(|exit| exit.pending_exit.client_order_id == event.client_order_id);
+    if managed_entry_fill {
+    } else if exit_fill {
+        if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+                return Ok(());
+            }
+        if let Some(exit_pending) = self.exposure.exit_pending_mut() {
+            exit_pending.pending_exit.fill_received = true;
+            if exit_pending.pending_exit.close_received {
+                self.exposure = ExposureState::Flat;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
+    let exit_pending_close = self.exposure.exit_pending().is_some_and(|exit_pending| {
+        exit_pending.pending_exit.position_id == Some(event.position_id)
+    });
+    if exit_pending_close {
+        if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+            log::warn!("foreign instrument observed");
+        }
+        if let ExposureState::ExitPending(exit_pending) = &mut self.exposure {
+            exit_pending.pending_exit.close_received = true;
+            exit_pending.position = None;
+            if exit_pending.is_terminal() {
+                self.exposure = ExposureState::Flat;
+            }
+        }
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
+        &strategy_source_path,
+        10_000,
+    )
+    .expect_err("position close must guard the event instrument before recording close");
+
+    assert!(
+        error
+            .to_string()
+            .contains("partial_fill_position_close_instrument_guard"),
+        "position-close guard error should identify partial-fill guard proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_partial_fill_source_proof_rejects_fill_that_flattens_before_position_close() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn into_state_after_exit_update(self) -> ExposureState {
+    if self.pending_exit.fill_received && self.pending_exit.close_received {
+        return ExposureState::Flat;
+    }
+    ExposureState::ExitPending(self)
+}
+
+fn on_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) -> anyhow::Result<()> {
+    let exit_fill = self
+        .exposure
+        .exit_pending()
+        .is_some_and(|exit| exit.pending_exit.client_order_id == event.client_order_id);
+    if managed_entry_fill {
+    } else if exit_fill {
+        if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+                return Ok(());
+            }
+        if let Some(exit_pending) = self.exposure.exit_pending_mut() {
+            if exit_pending.pending_exit.close_received {
+                self.exposure = ExposureState::Flat;
+            }
+            exit_pending.pending_exit.fill_received = true;
+        }
+    }
+    Ok(())
+}
+
+fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
+    match &mut self.exposure {
+        ExposureState::ExitPending(exit_pending)
+            if exit_pending.pending_exit.position_id == Some(event.position_id) =>
+        {
+            exit_pending.pending_exit.close_received = true;
+            exit_pending.position = None;
+            if exit_pending.is_terminal() {
+                self.exposure = ExposureState::Flat;
+            }
+        }
+        _ => {}
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
+        &strategy_source_path,
+        10_000,
+    )
+    .expect_err("exit fill must wait for position close before flattening");
+
+    assert!(
+        error
+            .to_string()
+            .contains("partial_fill_waits_for_position_close"),
+        "eager flat error should identify partial-fill ordering proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_network_partition_source_proof_derives_from_submit_error_restore() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let abort_plan_path = temp.path().join("abort-plan.json");
+    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_network_partition_source_proof(
+            &strategy_source_path,
+            1_000_000,
+        )
+        .expect("strategy source should prove network-partition submit abort lifecycle");
+    let bolt_v2::bolt_v3_operator_artifacts::Phase8AbortPlanNetworkPartitionSourceProof {
+        network_partition_during_submit_abort_evidence_hash,
+    } = proof;
+
+    assert_eq!(
+        network_partition_during_submit_abort_evidence_hash.len(),
+        64
+    );
+    assert!(
+        network_partition_during_submit_abort_evidence_hash
+            .chars()
+            .all(|char| char.is_ascii_hexdigit() && !char.is_ascii_uppercase()),
+        "network-partition proof hash should be lowercase sha256"
+    );
+    assert!(
+        !abort_plan_path.exists(),
+        "collector must not write final abort-plan artifact"
+    );
+}
+
+#[test]
+fn abort_plan_network_partition_source_proof_rejects_swallowed_submit_error() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
+    let client_order_id = self.core.order_factory().generate_client_order_id();
+    let managed_position = self.managed_position().cloned().unwrap();
+    if let Err(error) = self.submit_order_with_decision_evidence(intent, order, context) {
+        log::warn!("ignored submit error: {error}");
+    }
+    Ok(Some(client_order_id))
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_network_partition_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("network partition submit error must restore state and return error");
+
+    assert!(
+        error
+            .to_string()
+            .contains("submit_error_restores_managed_position"),
+        "swallowed submit error should identify restore proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_panic_gate_service_policy_source_proof_derives_from_strategy_and_admission_sources() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let abort_plan_path = temp.path().join("abort-plan.json");
+    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+    let submit_admission_source_path = repo_path("src/bolt_v3_submit_admission.rs");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_panic_gate_service_policy_source_proof(
+        &strategy_source_path,
+        &submit_admission_source_path,
+        1_000_000,
+    )
+    .expect("strategy and admission sources should prove panic-gate / service-policy abort lifecycle");
+    let bolt_v2::bolt_v3_operator_artifacts::Phase8AbortPlanPanicGateServicePolicySourceProof {
+        panic_gate_trip_abort_evidence_hash,
+    } = proof;
+
+    assert_eq!(panic_gate_trip_abort_evidence_hash.len(), 64);
+    assert!(
+        panic_gate_trip_abort_evidence_hash
+            .chars()
+            .all(|char| char.is_ascii_hexdigit() && !char.is_ascii_uppercase()),
+        "panic-gate/service-policy proof hash should be lowercase sha256"
+    );
+    assert!(
+        !abort_plan_path.exists(),
+        "collector must not write final abort-plan artifact"
+    );
+}
+
+#[test]
+fn abort_plan_panic_gate_service_policy_source_proof_rejects_unguarded_service_submit() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    let submit_admission_source_path = temp.path().join("submit_admission.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn bootstrap_recovery_from_cache(&mut self) {
+    let cached_positions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        self.cache().positions_open(None, None, None, None, None)
+    }));
+    let cached_positions = match cached_positions {
+        Ok(cached_positions) => cached_positions,
+        Err(_) => {
+            self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::CacheProbeFailed,
+            });
+            return;
+        }
+    };
+}
+
+fn enforce_one_position_invariant(&self) -> Result<()> {
+    let Some(occupancy) = self.exposure_occupancy() else {
+        return Ok(());
+    };
+    let message = format!("one-position invariant occupied by {occupancy:?}");
+    if cfg!(debug_assertions) {
+        panic!("{message}");
+    }
+    self.report_one_position_invariant_violation(occupancy);
+    anyhow::bail!("{message}");
+}
+
+fn submit_lifecycle_policy(&self) -> BoltV3SubmitLifecyclePolicy {
+    BoltV3SubmitLifecyclePolicy::new(
+        self.config.manage_contingent_orders
+            || self.config.manage_gtd_expiry
+            || self.config.manage_stop,
+    )
+}
+"#,
+    )
+    .expect("test strategy source should write");
+    std::fs::write(
+        &submit_admission_source_path,
+        r#"
+fn evaluate(
+    inner: &BoltV3SubmitAdmissionInner,
+    request: &BoltV3SubmitAdmissionRequest,
+) -> BoltV3AdmissionOutcome {
+    BoltV3AdmissionOutcome::Admitted
+}
+
+pub fn submit_intent_for(
+    &self,
+    intent: BoltV3OrderLifecycleIntent,
+) -> Result<Option<BoltV3SubmitIntentKind>, BoltV3SubmitAdmissionError> {
+    match intent {
+        BoltV3OrderLifecycleIntent::Entry => Ok(Some(BoltV3SubmitIntentKind::Entry)),
+        BoltV3OrderLifecycleIntent::RiskReducingExit => {
+            Ok(Some(BoltV3SubmitIntentKind::RiskReducingExit))
+        }
+        BoltV3OrderLifecycleIntent::ReplaceSubmit if self.replace_submit => {
+            Ok(Some(BoltV3SubmitIntentKind::ReplaceSubmit))
+        }
+        BoltV3OrderLifecycleIntent::ReplaceSubmit => Ok(None),
+        BoltV3OrderLifecycleIntent::PlainCancel => Ok(None),
+    }
+}
+
+fn allows(&self, intent: BoltV3SubmitIntentKind) -> bool {
+    match intent {
+        BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit => true,
+        BoltV3SubmitIntentKind::ReplaceSubmit => true,
+    }
+}
+"#,
+    )
+    .expect("test admission source should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_panic_gate_service_policy_source_proof(
+        &strategy_source_path,
+        &submit_admission_source_path,
+        10_000,
+    )
+    .expect_err("service submit must be gated by arm state and lifecycle policy");
+
+    assert!(
+        error
+            .to_string()
+            .contains("submit_admission_rejects_unarmed_and_disallowed_lifecycle"),
+        "unguarded service submit should identify service-policy proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_cancel_after_exit_pending() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn try_submit_exit_order() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("late cancel should not prove cancel-if-open abort path");
+
+    assert!(
+        error
+            .to_string()
+            .contains("forced_flat_cancel_before_exit_pending"),
+        "late cancel error should identify ordering proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_disconnected_marker_sequence() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn unrelated_forced_flat(decision: Decision) {
+    let _ = !decision.forced_flat_reasons.is_empty();
+}
+
+fn unrelated_pending(managed_position: ManagedPosition) {
+    let _ = managed_position.pending_entry.as_ref();
+}
+
+fn unrelated_cancel() {
+    self.cancel_order(pending_entry.client_order_id, Some(client_id), None);
+}
+
+fn unrelated_context() {
+    let _ = "forced-flat exit could not cancel pending entry client_order_id={}";
+}
+
+fn unrelated_exit_pending() {
+    self.exposure = ExposureState::ExitPending(ExitPendingState {});
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("disconnected markers should not prove cancel-if-open abort path");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "disconnected marker error should identify function-scoped proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_decoy_marker_scope() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn helper_with_cancel_markers() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("decoy marker scopes must not prove the production cancel-if-open path");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "decoy marker scope should identify function-scoped proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_duplicate_target_scope_with_decoy_markers() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn try_submit_exit_order() {
+    self.exposure = ExposureState::ExitPending(ExitPendingState {});
+}
+
+mod decoy {
+    fn try_submit_exit_order() {
+        if !decision.forced_flat_reasons.is_empty()
+            && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+        {
+            self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+                .with_context(|| {
+                    format!(
+                        "forced-flat exit could not cancel pending entry client_order_id={}",
+                        pending_entry.client_order_id
+                    )
+                })?;
+            self.exposure = ExposureState::ExitPending(ExitPendingState {});
+        }
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("duplicate target scopes must not let a decoy prove cancel-if-open");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "duplicate target scope with decoy markers should fail function-scoped proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_accepts_qualified_function_scope() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+pub async fn try_submit_exit_order() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect("qualified function declaration should prove cancel-if-open abort path");
+
+    assert_eq!(proof.cancel_if_open_evidence_hash.len(), 64);
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_multiple_valid_scopes() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn try_submit_exit_order() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+
+fn try_submit_exit_order() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("multiple valid marker scopes should be rejected as ambiguous");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "multiple valid scopes should identify function-scoped proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_comment_only_markers() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn try_submit_exit_order() {
+    /*
+    !decision.forced_flat_reasons.is_empty()
+    managed_position.pending_entry.as_ref()
+    self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+    forced-flat exit could not cancel pending entry client_order_id={}
+    self.exposure = ExposureState::ExitPending(ExitPendingState {})
+    */
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("comment-only markers should not prove cancel-if-open abort path");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "comment-only marker error should identify function-scoped proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_string_only_markers() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn try_submit_exit_order() {
+    let _ = "
+    !decision.forced_flat_reasons.is_empty()
+    managed_position.pending_entry.as_ref()
+    self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+    forced-flat exit could not cancel pending entry client_order_id={}
+    self.exposure = ExposureState::ExitPending
+    ";
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("string-only markers should not prove cancel-if-open abort path");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "string-only marker error should identify function-scoped proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_raw_string_only_markers() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r###"
+fn try_submit_exit_order() {
+    let _ = r##"
+    !decision.forced_flat_reasons.is_empty()
+    managed_position.pending_entry.as_ref()
+    self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+    forced-flat exit could not cancel pending entry client_order_id={}
+    self.exposure = ExposureState::ExitPending
+    "##;
+}
+"###,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("raw-string-only markers should not prove cancel-if-open abort path");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "raw-string-only marker error should identify function-scoped proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_raw_string_marker_substitution() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r###"
+fn try_submit_exit_order() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        let _ = r##"self.cancel_order(pending_entry.client_order_id, Some(client_id), None)"##;
+        let _ = "forced-flat exit could not cancel pending entry client_order_id={}";
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"###,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("raw-string markers must not substitute for real cancel-order code");
+
+    assert!(
+        error.to_string().contains("forced_flat_function_scope"),
+        "raw-string marker substitution should fail function-scoped proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_rejects_duplicate_context_string() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn try_submit_exit_order() {
+    let _ = "forced-flat exit could not cancel pending entry client_order_id={}";
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect_err("duplicate context marker strings should be rejected as ambiguous");
+
+    assert!(
+        error.to_string().contains("cancel_order_context"),
+        "duplicate context marker error should identify context marker: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_accepts_lifetimes_and_char_literals() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn try_submit_exit_order<'a>(label: &'a str) {
+    let quote = '\'';
+    let _label = label;
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect("lifetimes and char literals should not break cancel-if-open proof parsing");
+
+    assert_eq!(proof.cancel_if_open_evidence_hash.len(), 64);
+}
+
+#[test]
+fn abort_plan_cancel_if_open_source_proof_accepts_same_line_attribute_with_bracketed_string() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+#[doc = "keeps ] inside attribute text"] pub async fn try_submit_exit_order() {
+    if !decision.forced_flat_reasons.is_empty()
+        && let Some(pending_entry) = managed_position.pending_entry.as_ref()
+    {
+        self.cancel_order(pending_entry.client_order_id, Some(client_id), None)
+            .with_context(|| {
+                format!(
+                    "forced-flat exit could not cancel pending entry client_order_id={}",
+                    pending_entry.client_order_id
+                )
+            })?;
+        self.exposure = ExposureState::ExitPending(ExitPendingState {});
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
+            &strategy_source_path,
+            10_000,
+        )
+        .expect("same-line attributes with bracketed strings should not hide function scopes");
+
+    assert_eq!(proof.cancel_if_open_evidence_hash.len(), 64);
 }
 
 #[test]
@@ -575,6 +5602,377 @@ fn pre_run_state_writer_emits_artifact_from_source_bundle_file() {
     assert_eq!(
         json["release_manifest_evidence_hash"],
         bundle["release_manifest_evidence_hash"]
+    );
+}
+
+#[test]
+fn pre_run_state_writer_emits_artifact_from_source_owned_collectors() {
+    let fixture = strategy_input_runtime_fixture();
+    let temp = fixture.temp.path();
+    let strategy_input_path = temp.join("strategy-input.json");
+    let strategy_input = bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_runtime_snapshot(
+        &fixture.loaded,
+        &fixture.strategy_instance_id,
+        &fixture.snapshot,
+        &fixture.market_selection_source_ref,
+        100_000,
+        &strategy_input_path,
+    )
+    .expect("source-bound strategy input evidence should write");
+    let clob_signing_source_path = temp.join("eip712.rs");
+    std::fs::write(
+        &clob_signing_source_path,
+        r#"
+const CLOB_AUTH_DOMAIN_VERSION: &str = "1";
+const DOMAIN_VERSION: &str = "2";
+"#,
+    )
+    .expect("CLOB signing source fixture should write");
+    let host_clock_source_path = temp.join("host-clock-source.json");
+    std::fs::write(
+        &host_clock_source_path,
+        host_clock_source_fixture(1716510000125, 1716510000000),
+    )
+    .expect("host clock source fixture should write");
+    let venue_account_state_source_path = temp.join("venue-account-state-source.json");
+    std::fs::write(
+        &venue_account_state_source_path,
+        venue_account_state_source_fixture(
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
+            0,
+            0,
+            &sha256_text("venue-account-state"),
+        ),
+    )
+    .expect("venue account state source fixture should write");
+    let funding_margin_source_path = temp.join("funding-margin-source.json");
+    std::fs::write(
+        &funding_margin_source_path,
+        funding_margin_source_fixture("10.00", "1.25", &sha256_text("funding-margin")),
+    )
+    .expect("funding margin source fixture should write");
+    let egress_identity_source_path = temp.join("egress-identity-source.json");
+    std::fs::write(
+        &egress_identity_source_path,
+        egress_identity_source_fixture(&sha256_text("approved-egress-identity")),
+    )
+    .expect("egress identity source fixture should write");
+    let clob_v2_adapter_signing_source_path = temp.join("clob-v2-signing-source.json");
+    std::fs::write(
+        &clob_v2_adapter_signing_source_path,
+        clob_v2_adapter_signing_source_fixture(
+            "2",
+            &sha256_text("clob-signing-contract"),
+            &sha256_text("clob-domain-requirements"),
+            &sha256_text("clob-signed-order"),
+            &sha256_text("clob-signature-verification"),
+            true,
+        ),
+    )
+    .expect("CLOB V2 signing source fixture should write");
+    let clob_v2_collateral_accounting_source_path = temp.join("clob-v2-collateral-source.json");
+    std::fs::write(
+        &clob_v2_collateral_accounting_source_path,
+        clob_v2_collateral_accounting_source_fixture(
+            true,
+            "10.00",
+            "10.00",
+            "1.25",
+            &sha256_text("clob-collateral-account"),
+            &sha256_text("clob-collateral-assumptions"),
+        ),
+    )
+    .expect("CLOB V2 collateral source fixture should write");
+    let clob_v2_fee_behavior_source_path = temp.join("clob-v2-fee-source.json");
+    std::fs::write(
+        &clob_v2_fee_behavior_source_path,
+        clob_v2_fee_behavior_source_fixture(
+            (true, true, true, true),
+            "0.55",
+            "0.01",
+            (
+                &sha256_text("clob-fee-account"),
+                &sha256_text("clob-fee-assumptions"),
+            ),
+        ),
+    )
+    .expect("CLOB V2 fee source fixture should write");
+    let single_runner_lock_path = temp.join("single-runner-lock.json");
+    let pre_run_state_path = temp.join("pre-run-state.json");
+
+    let release_manifest =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_release_manifest_source_proof(
+            &repo_path("Cargo.toml"),
+            &repo_path("Cargo.lock"),
+            &clob_signing_source_path,
+            1_000_000,
+        )
+        .expect("release manifest source proof should collect");
+    let host_clock = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_source_path,
+        1_000_000,
+        250,
+    )
+    .expect("host clock source proof should collect");
+    let venue_account =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
+            &venue_account_state_source_path,
+            1_000_000,
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
+        )
+        .expect("venue account state source proof should collect");
+    let market = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_market_window_source_proof(
+        &strategy_input_path,
+        &strategy_input.sha256,
+        fixture.snapshot.price_to_beat_source.as_str(),
+        1_000_000,
+    )
+    .expect("market/window source proof should collect");
+    let funding = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_funding_margin_source_proof(
+        &funding_margin_source_path,
+        1_000_000,
+    )
+    .expect("funding margin source proof should collect");
+    let egress = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_egress_identity_source_proof(
+        &egress_identity_source_path,
+        1_000_000,
+    )
+    .expect("egress identity source proof should collect");
+    let clob_signing =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_adapter_signing_source_proof(
+            &clob_v2_adapter_signing_source_path,
+            1_000_000,
+            &release_manifest.clob_signing_version,
+        )
+        .expect("CLOB V2 signing source proof should collect");
+    let clob_collateral = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_collateral_accounting_source_proof(
+        &clob_v2_collateral_accounting_source_path,
+        1_000_000,
+    )
+    .expect("CLOB V2 collateral source proof should collect");
+    let clob_fee =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_fee_behavior_source_proof(
+            &clob_v2_fee_behavior_source_path,
+            1_000_000,
+        )
+        .expect("CLOB V2 fee source proof should collect");
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_pre_run_state_artifact_from_source_collectors(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            bolt_v2::bolt_v3_operator_artifacts::PreRunStateSourceCollectorInputs {
+                cargo_toml_path: &repo_path("Cargo.toml"),
+                cargo_lock_path: &repo_path("Cargo.lock"),
+                clob_signing_source_path: &clob_signing_source_path,
+                host_clock_source_path: &host_clock_source_path,
+                venue_account_state_source_path: &venue_account_state_source_path,
+                funding_margin_source_path: &funding_margin_source_path,
+                strategy_input_evidence_path: &strategy_input_path,
+                strategy_input_evidence_sha256: &strategy_input.sha256,
+                single_runner_lock_path: &single_runner_lock_path,
+                egress_identity_source_path: &egress_identity_source_path,
+                clob_v2_adapter_signing_source_path: &clob_v2_adapter_signing_source_path,
+                clob_v2_collateral_accounting_source_path:
+                    &clob_v2_collateral_accounting_source_path,
+                clob_v2_fee_behavior_source_path: &clob_v2_fee_behavior_source_path,
+                max_source_bytes: 1_000_000,
+                max_host_clock_skew_millis: 250,
+                max_single_runner_lock_bytes: 100_000,
+            },
+            &pre_run_state_path,
+        )
+        .expect("source-owned collectors should write pre-run-state artifact");
+
+    let artifact_bytes =
+        std::fs::read(&pre_run_state_path).expect("pre-run-state artifact should exist");
+    assert_eq!(written.sha256, hex::encode(Sha256::digest(&artifact_bytes)));
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&artifact_bytes).expect("pre-run state should be JSON");
+    assert_eq!(
+        json["host_clock_skew_evidence_hash"],
+        host_clock.host_clock_skew_evidence_hash
+    );
+    assert_eq!(
+        json["venue_account_state_evidence_hash"],
+        venue_account.venue_account_state_evidence_hash
+    );
+    assert_eq!(
+        json["market_state_evidence_hash"],
+        market.market_state_evidence_hash
+    );
+    assert_eq!(
+        json["funding_margin_evidence_hash"],
+        funding.funding_margin_evidence_hash
+    );
+    assert_eq!(
+        json["single_runner_lock_evidence_hash"],
+        sha256_file(&single_runner_lock_path)
+    );
+    assert_eq!(
+        json["egress_identity_evidence_hash"],
+        egress.egress_identity_evidence_hash
+    );
+    assert_eq!(
+        json["clob_v2_adapter_signing_evidence_hash"],
+        clob_signing.clob_v2_adapter_signing_evidence_hash
+    );
+    assert_eq!(
+        json["clob_v2_collateral_accounting_evidence_hash"],
+        clob_collateral.clob_v2_collateral_accounting_evidence_hash
+    );
+    assert_eq!(
+        json["clob_v2_fee_behavior_evidence_hash"],
+        clob_fee.clob_v2_fee_behavior_evidence_hash
+    );
+    assert_eq!(
+        json["release_manifest_clob_signing_version"],
+        release_manifest.clob_signing_version
+    );
+    assert_eq!(
+        json["release_manifest_evidence_hash"],
+        release_manifest.evidence_hash
+    );
+}
+
+#[test]
+fn pre_run_state_writer_rejects_strategy_input_without_readiness_identity() {
+    let fixture = strategy_input_runtime_fixture();
+    let temp = fixture.temp.path();
+    let strategy_input_path = temp.join("strategy-input.json");
+    bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_runtime_snapshot(
+        &fixture.loaded,
+        &fixture.strategy_instance_id,
+        &fixture.snapshot,
+        &fixture.market_selection_source_ref,
+        100_000,
+        &strategy_input_path,
+    )
+    .expect("source-bound strategy input evidence should write");
+    let mut strategy_input_json = read_json_value(&strategy_input_path);
+    strategy_input_json["gate_evidence"] = serde_json::json!({});
+    let strategy_input_sha256 =
+        write_json_value_and_hash(&strategy_input_path, &strategy_input_json);
+
+    let clob_signing_source_path = temp.join("eip712.rs");
+    std::fs::write(
+        &clob_signing_source_path,
+        r#"
+const CLOB_AUTH_DOMAIN_VERSION: &str = "1";
+const DOMAIN_VERSION: &str = "2";
+"#,
+    )
+    .expect("CLOB signing source fixture should write");
+    let host_clock_source_path = temp.join("host-clock-source.json");
+    std::fs::write(
+        &host_clock_source_path,
+        host_clock_source_fixture(1716510000125, 1716510000000),
+    )
+    .expect("host clock source fixture should write");
+    let venue_account_state_source_path = temp.join("venue-account-state-source.json");
+    std::fs::write(
+        &venue_account_state_source_path,
+        venue_account_state_source_fixture(
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
+            0,
+            0,
+            &sha256_text("venue-account-state"),
+        ),
+    )
+    .expect("venue account state source fixture should write");
+    let funding_margin_source_path = temp.join("funding-margin-source.json");
+    std::fs::write(
+        &funding_margin_source_path,
+        funding_margin_source_fixture("10.00", "1.25", &sha256_text("funding-margin")),
+    )
+    .expect("funding margin source fixture should write");
+    let egress_identity_source_path = temp.join("egress-identity-source.json");
+    std::fs::write(
+        &egress_identity_source_path,
+        egress_identity_source_fixture(&sha256_text("approved-egress-identity")),
+    )
+    .expect("egress identity source fixture should write");
+    let clob_v2_adapter_signing_source_path = temp.join("clob-v2-signing-source.json");
+    std::fs::write(
+        &clob_v2_adapter_signing_source_path,
+        clob_v2_adapter_signing_source_fixture(
+            "2",
+            &sha256_text("clob-signing-contract"),
+            &sha256_text("clob-domain-requirements"),
+            &sha256_text("clob-signed-order"),
+            &sha256_text("clob-signature-verification"),
+            true,
+        ),
+    )
+    .expect("CLOB V2 signing source fixture should write");
+    let clob_v2_collateral_accounting_source_path = temp.join("clob-v2-collateral-source.json");
+    std::fs::write(
+        &clob_v2_collateral_accounting_source_path,
+        clob_v2_collateral_accounting_source_fixture(
+            true,
+            "10.00",
+            "10.00",
+            "1.25",
+            &sha256_text("clob-collateral-account"),
+            &sha256_text("clob-collateral-assumptions"),
+        ),
+    )
+    .expect("CLOB V2 collateral source fixture should write");
+    let clob_v2_fee_behavior_source_path = temp.join("clob-v2-fee-source.json");
+    std::fs::write(
+        &clob_v2_fee_behavior_source_path,
+        clob_v2_fee_behavior_source_fixture(
+            (true, true, true, true),
+            "0.55",
+            "0.01",
+            (
+                &sha256_text("clob-fee-account"),
+                &sha256_text("clob-fee-assumptions"),
+            ),
+        ),
+    )
+    .expect("CLOB V2 fee source fixture should write");
+    let single_runner_lock_path = temp.join("single-runner-lock.json");
+    let pre_run_state_path = temp.join("pre-run-state.json");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_pre_run_state_artifact_from_source_collectors(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            bolt_v2::bolt_v3_operator_artifacts::PreRunStateSourceCollectorInputs {
+                cargo_toml_path: &repo_path("Cargo.toml"),
+                cargo_lock_path: &repo_path("Cargo.lock"),
+                clob_signing_source_path: &clob_signing_source_path,
+                host_clock_source_path: &host_clock_source_path,
+                venue_account_state_source_path: &venue_account_state_source_path,
+                funding_margin_source_path: &funding_margin_source_path,
+                strategy_input_evidence_path: &strategy_input_path,
+                strategy_input_evidence_sha256: &strategy_input_sha256,
+                single_runner_lock_path: &single_runner_lock_path,
+                egress_identity_source_path: &egress_identity_source_path,
+                clob_v2_adapter_signing_source_path: &clob_v2_adapter_signing_source_path,
+                clob_v2_collateral_accounting_source_path:
+                    &clob_v2_collateral_accounting_source_path,
+                clob_v2_fee_behavior_source_path: &clob_v2_fee_behavior_source_path,
+                max_source_bytes: 1_000_000,
+                max_host_clock_skew_millis: 250,
+                max_single_runner_lock_bytes: 100_000,
+            },
+            &pre_run_state_path,
+        )
+        .expect_err("writer must reject strategy input without readiness gate identity");
+
+    assert!(
+        error.to_string().contains("strategy_input"),
+        "readiness identity rejection should identify strategy input evidence: {error}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "readiness identity failure must not leave a pre-run-state artifact"
     );
 }
 
@@ -1035,6 +6433,315 @@ const DOMAIN_VERSION: &str = "2";
 }
 
 #[test]
+fn pre_run_single_runner_lock_source_proof_rejects_existing_lock_without_artifact() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let lock_path = temp.path().join("single-runner.lock");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    std::fs::write(&lock_path, b"existing runner lock")
+        .expect("existing lock fixture should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            strategy_instance_id,
+            &lock_path,
+            100_000,
+        )
+        .expect_err("existing single-runner lock must fail closed");
+
+    assert!(matches!(
+        error,
+        bolt_v2::bolt_v3_operator_artifacts::BoltV3OperatorArtifactError::PreRunSingleRunnerLockSourceInvalid {
+            field: "single_runner_lock_acquired"
+        }
+    ));
+    assert!(
+        error.to_string().contains("single_runner_lock"),
+        "single-runner lock failure should identify the source proof field: {error}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "failed single-runner lock proof must not leave pre-run-state artifact"
+    );
+}
+
+#[test]
+fn pre_run_single_runner_lock_source_proof_rejects_parent_dir_lock_path() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let lock_path = temp
+        .path()
+        .join("nested")
+        .join("..")
+        .join("single-runner.lock");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            strategy_instance_id,
+            &lock_path,
+            100_000,
+        )
+        .expect_err("parent-dir single-runner lock path must fail closed");
+
+    assert!(
+        error.to_string().contains("single_runner_lock_path"),
+        "path failure should identify the lock path diagnostic field: {error}"
+    );
+    assert!(
+        !lock_path.exists(),
+        "rejected parent-dir lock path must not leave a lock artifact"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn pre_run_single_runner_lock_source_proof_rejects_symlink_lock_path_without_target() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let target = temp.path().join("unexpected-single-runner.lock");
+    let link = temp.path().join("single-runner-link.lock");
+    std::os::unix::fs::symlink(&target, &link).expect("single-runner symlink should create");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            strategy_instance_id,
+            &link,
+            100_000,
+        )
+        .expect_err("symlinked single-runner lock path must fail closed");
+
+    assert!(matches!(
+        error,
+        bolt_v2::bolt_v3_operator_artifacts::BoltV3OperatorArtifactError::PreRunSingleRunnerLockSourceInvalid {
+            field: "single_runner_lock_acquired"
+        }
+    ));
+    assert!(
+        error.to_string().contains("single_runner_lock"),
+        "symlink lock path rejection should surface as lock acquisition failure: {error}"
+    );
+    assert!(
+        !target.exists(),
+        "single-runner lock proof must not follow symlink and create target"
+    );
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .expect("single-runner symlink metadata should read")
+            .file_type()
+            .is_symlink(),
+        "failed symlink lock write must leave the original symlink untouched"
+    );
+}
+
+#[test]
+fn pre_run_single_runner_lock_source_proof_rejects_unknown_strategy_before_lock_write() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let missing_strategy_instance_id = format!("{strategy_instance_id}-missing");
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let lock_path = temp.path().join("single-runner.lock");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            &missing_strategy_instance_id,
+            &lock_path,
+            100_000,
+        )
+        .expect_err("unknown strategy must fail before lock acquisition");
+
+    assert!(
+        error.to_string().contains("financial envelope"),
+        "unknown strategy failure should preserve the envelope source error: {error}"
+    );
+    assert!(
+        !lock_path.exists(),
+        "unknown strategy failure must not leave a lock artifact"
+    );
+}
+
+#[test]
+fn pre_run_single_runner_lock_source_proof_rejects_oversize_lock_without_artifact() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let lock_path = temp.path().join("single-runner.lock");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            strategy_instance_id,
+            &lock_path,
+            1,
+        )
+        .expect_err("oversize single-runner lock proof must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("single_runner_lock_evidence_size"),
+        "size failure should identify the evidence-size diagnostic field: {error}"
+    );
+    assert!(
+        !lock_path.exists(),
+        "oversize single-runner lock proof must not leave a lock artifact"
+    );
+}
+
+#[test]
+fn pre_run_single_runner_lock_source_proof_derives_source_owned_values() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let lock_path = temp.path().join("single-runner.lock");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            strategy_instance_id,
+            &lock_path,
+            100_000,
+        )
+        .expect("single-runner lock proof should acquire a fresh lock");
+
+    assert!(proof.single_runner_lock_acquired);
+    assert_eq!(
+        proof.single_runner_lock_evidence_hash,
+        sha256_file(&lock_path)
+    );
+    assert!(
+        proof
+            .single_runner_lock_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "single-runner lock evidence hash should be lowercase hex"
+    );
+    let json = read_json_value(&lock_path);
+    assert_eq!(
+        json["record_kind"],
+        "bolt_v3.pre_run_single_runner_lock_source_proof.v1"
+    );
+    assert_eq!(
+        json["config_bundle_checksum"],
+        loaded.config_bundle_checksum
+    );
+    assert_eq!(json["strategy_instance_id"], strategy_instance_id);
+    assert_eq!(
+        json["lock_path_sha256"],
+        sha256_text(&lock_path.to_string_lossy())
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert_eq!(
+            std::fs::metadata(&lock_path)
+                .expect("single-runner lock metadata should read")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    assert!(
+        !pre_run_state_path.exists(),
+        "single-runner lock collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_single_runner_lock_source_proof_resolves_relative_path_from_config_root() {
+    let mut loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    loaded.root_path = temp.path().join("root.toml");
+    std::fs::write(&loaded.root_path, "fixture root").expect("root fixture should write");
+    let relative_lock_path = std::path::PathBuf::from(format!(
+        "target/bolt-v3-single-runner-lock-review-fix/{}-single-runner.lock",
+        std::process::id()
+    ));
+    let expected_config_root_lock_path = temp.path().join(&relative_lock_path);
+    let cwd_lock_path = repo_path(
+        relative_lock_path
+            .to_str()
+            .expect("relative lock path should be utf-8"),
+    );
+    let _ = std::fs::remove_file(&cwd_lock_path);
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_single_runner_lock_source_proof(
+            &loaded,
+            &strategy_instance_id,
+            &relative_lock_path,
+            100_000,
+        )
+        .expect("relative lock proof should acquire a config-root lock");
+
+    assert_eq!(
+        proof.single_runner_lock_evidence_hash,
+        sha256_file(&expected_config_root_lock_path)
+    );
+    assert!(
+        !cwd_lock_path.exists(),
+        "relative lock path must not be resolved from the process cwd"
+    );
+    let json = read_json_value(&expected_config_root_lock_path);
+    assert_eq!(
+        json["lock_path_sha256"],
+        sha256_text(&expected_config_root_lock_path.to_string_lossy())
+    );
+}
+
+#[test]
 fn static_operator_artifacts_report_market_selection_blocker_until_runtime_proof_exists() {
     let loaded = load_fixture_with_live_canary();
     let strategy_instance_id = loaded
@@ -1065,6 +6772,59 @@ fn static_operator_artifacts_report_market_selection_blocker_until_runtime_proof
         !temp.path().join(TEST_MARKET_SELECTION_SOURCE_FILE).exists(),
         "static packet must not write market-selection source without runtime proof"
     );
+}
+
+#[test]
+fn base_static_operator_artifacts_write_only_unblocked_static_inputs() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let temp = tempfile::tempdir().expect("tempdir should create");
+
+    let outcome = bolt_v2::bolt_v3_operator_artifacts::write_base_static_operator_artifacts(
+        &loaded,
+        strategy_instance_id,
+        temp.path(),
+    )
+    .expect("base static artifacts should write without blocker semantics");
+
+    let generated_paths = outcome
+        .command_summary
+        .generated_artifacts
+        .iter()
+        .map(|artifact| std::path::PathBuf::from(&artifact.path))
+        .collect::<Vec<_>>();
+    for artifact_name in [
+        "ssm-manifest.json",
+        "financial-envelope.json",
+        "approval-nonce.json",
+    ] {
+        let artifact_path = temp.path().join(artifact_name);
+        assert!(
+            artifact_path.exists(),
+            "base static command should write {artifact_name}"
+        );
+        assert!(
+            generated_paths.contains(&artifact_path),
+            "summary should list {artifact_name}"
+        );
+    }
+    for artifact_name in [
+        "static-artifacts-manifest.json",
+        "strategy-input.json",
+        "pre-run-state.json",
+        "abort-plan.json",
+    ] {
+        assert!(
+            !temp.path().join(artifact_name).exists(),
+            "base static command must not write blocked artifact {artifact_name}"
+        );
+    }
 }
 
 #[test]
@@ -1566,6 +7326,17 @@ fn approval_packet_assembly_writes_non_circular_envelope_from_existing_refs() {
                 .expect("strategy cancel path should exist")
         )
     );
+    // The producer must seal the operator-approved gate-session file hash into
+    // the envelope so the live gate can bind the order to the approval.
+    assert_eq!(
+        envelope["expected_gate_session_sha256"],
+        serde_json::json!(
+            operator_evidence
+                .expected_gate_session_sha256
+                .as_deref()
+                .expect("operator evidence should bind gate session sha256")
+        )
+    );
 
     for forbidden in [
         "approval_envelope_sha256",
@@ -1625,6 +7396,20 @@ fn approval_packet_assembly_writes_non_circular_envelope_from_existing_refs() {
         operator_packet["live_canary_operator_evidence"]["ssm_manifest_sha256"],
         operator_evidence.ssm_manifest_sha256
     );
+    assert_eq!(
+        operator_packet["live_canary_operator_evidence"]["gate_session_path"],
+        operator_evidence
+            .gate_session_path
+            .as_deref()
+            .expect("operator evidence should bind gate session path")
+    );
+    assert_eq!(
+        operator_packet["live_canary_operator_evidence"]["expected_gate_session_sha256"],
+        operator_evidence
+            .expected_gate_session_sha256
+            .as_deref()
+            .expect("operator evidence should bind gate session sha256")
+    );
     for forbidden in [
         "max_operator_evidence_file_bytes",
         "approval_consumption_max_age_seconds",
@@ -1668,14 +7453,33 @@ fn approval_packet_assembly_binds_relative_static_manifest_to_config_root() {
     let mut loaded = load_fixture_with_live_canary();
     let temp = tempfile::tempdir().expect("tempdir should create");
     loaded.root_path = temp.path().join("root.toml");
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
     std::fs::write(&loaded.root_path, "fixture root").expect("root fixture should write");
     let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    operator_evidence.decision_evidence_path = decision_evidence_path(&loaded)
+        .expect("fixture persistence decision evidence path should resolve")
+        .to_string_lossy()
+        .to_string();
     operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
         .unwrap_or_else(|| {
             panic!("build head sha should be compiled for relative manifest verifier test")
         })
         .to_string();
-    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    let mut refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    write_valid_financial_static_artifact_for_test(&loaded, &mut operator_evidence, &mut refs);
+    write_source_owned_readiness_static_artifacts_for_test(
+        &loaded,
+        &mut operator_evidence,
+        &mut refs,
+    );
+    write_replayable_strategy_input_artifacts_for_test(
+        &loaded,
+        temp.path(),
+        &mut operator_evidence,
+        &mut refs,
+        MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
+    );
     loaded
         .root
         .live_canary
@@ -2247,6 +8051,267 @@ fn final_packet_verifier_accepts_t128_packet_bound_to_current_config() {
 }
 
 #[test]
+fn final_packet_pre_run_verifier_accepts_packet_before_live_result_evidence_exists() {
+    let fixture = assembled_final_packet_fixture();
+    let evidence = fixture.operator_evidence();
+    for path in [
+        &evidence.canary_evidence_path,
+        &evidence.nt_submit_event_path,
+        &evidence.venue_order_state_path,
+        &evidence.restart_reconciliation_path,
+        &evidence.post_run_hygiene_path,
+        &evidence.approval_consumption_path,
+    ] {
+        let _ = std::fs::remove_file(path);
+    }
+
+    let outcome = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet_with_scope(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+        bolt_v2::bolt_v3_operator_artifacts::FinalOperatorPacketVerificationScope::PreRun,
+    )
+    .expect(
+        "pre-run verifier should not require evidence produced by the later live/no-submit run",
+    );
+
+    assert_eq!(outcome.operator_packet.path, fixture.operator_packet_path);
+    assert_eq!(outcome.static_manifest.path, fixture.static_manifest_path);
+}
+
+#[test]
+fn final_packet_pre_run_verifier_rejects_enabled_proof_policy_without_order_intent_artifact() {
+    let mut fixture = assembled_final_packet_fixture();
+    fixture
+        .loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should exist")
+        .proof_policy = Some(test_live_canary_proof_policy());
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet_with_scope(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+        bolt_v2::bolt_v3_operator_artifacts::FinalOperatorPacketVerificationScope::PreRun,
+    )
+    .expect_err("enabled proof policy must require proof order-intent evidence");
+
+    assert!(
+        error.to_string().contains("canary_proof_order_intent_path"),
+        "error should name missing proof order-intent binding: {error}"
+    );
+}
+
+#[test]
+fn final_packet_pre_run_verifier_accepts_hash_bound_proof_artifacts() {
+    let fixture = assembled_final_packet_fixture_with_proof_artifacts();
+    let evidence = fixture.operator_evidence();
+    for path in [
+        &evidence.canary_evidence_path,
+        &evidence.nt_submit_event_path,
+        &evidence.venue_order_state_path,
+        &evidence.restart_reconciliation_path,
+        &evidence.post_run_hygiene_path,
+        &evidence.approval_consumption_path,
+    ] {
+        let _ = std::fs::remove_file(path);
+    }
+
+    let outcome = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet_with_scope(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+        bolt_v2::bolt_v3_operator_artifacts::FinalOperatorPacketVerificationScope::PreRun,
+    )
+    .expect("pre-run verifier should accept hash-bound proof artifacts");
+    let operator_packet = read_json_value(&fixture.operator_packet_path);
+
+    assert_eq!(outcome.operator_packet.path, fixture.operator_packet_path);
+    assert_eq!(
+        operator_packet["live_canary_operator_evidence"]["canary_proof_order_intent_sha256"]
+            .as_str(),
+        evidence.canary_proof_order_intent_sha256.as_deref()
+    );
+}
+
+#[test]
+fn assembled_proof_envelope_seals_gate_session_and_order_intent_hashes() {
+    let fixture = assembled_final_packet_fixture_with_proof_artifacts();
+    let evidence = fixture.operator_evidence();
+    let envelope = read_json_value(std::path::Path::new(&evidence.approval_envelope_path));
+    // The producer must seal both the gate-session and the canary proof
+    // order-intent file hashes into the envelope so the live gate can bind the
+    // exact order the operator approved.
+    assert_eq!(
+        envelope["expected_gate_session_sha256"].as_str(),
+        evidence.expected_gate_session_sha256.as_deref(),
+        "producer must seal expected_gate_session_sha256 into the envelope"
+    );
+    assert_eq!(
+        envelope["canary_proof_order_intent_sha256"].as_str(),
+        evidence.canary_proof_order_intent_sha256.as_deref(),
+        "producer must seal canary_proof_order_intent_sha256 into the envelope"
+    );
+    assert!(
+        evidence.canary_proof_order_intent_sha256.is_some(),
+        "proof fixture must bind a canary_proof_order_intent_sha256"
+    );
+}
+
+#[test]
+fn final_packet_pre_run_verifier_rejects_hash_bound_non_proof_only_order_intent() {
+    let mut fixture = assembled_final_packet_fixture_with_proof_artifacts();
+    let operator_evidence = fixture
+        .loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("operator evidence should exist");
+    let order_intent_path = std::path::PathBuf::from(
+        operator_evidence
+            .canary_proof_order_intent_path
+            .as_ref()
+            .expect("proof order-intent path should be configured"),
+    );
+    let mut order_intent = read_json_value(&order_intent_path);
+    order_intent["proof_claim"] = serde_json::json!("alpha_ready");
+    let order_intent_sha256 = write_json_value_and_hash(&order_intent_path, &order_intent);
+    operator_evidence.canary_proof_order_intent_sha256 = Some(order_intent_sha256.clone());
+    let mut operator_packet = read_json_value(&fixture.operator_packet_path);
+    operator_packet["live_canary_operator_evidence"]["canary_proof_order_intent_sha256"] =
+        serde_json::json!(order_intent_sha256);
+    write_json_value_and_hash(&fixture.operator_packet_path, &operator_packet);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet_with_scope(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+        bolt_v2::bolt_v3_operator_artifacts::FinalOperatorPacketVerificationScope::PreRun,
+    )
+    .expect_err("hash-bound order intent must still be proof_only");
+
+    assert!(
+        error
+            .to_string()
+            .contains("canary_proof_order_intent.proof_claim"),
+        "error should name non-proof-only order intent claim: {error}"
+    );
+}
+
+#[test]
+fn source_owned_reference_readiness_accepts_replayable_operator_evidence_without_reference_data() {
+    let fixture = assembled_final_packet_fixture();
+    assert!(
+        fixture
+            .loaded
+            .strategies
+            .iter()
+            .all(|strategy| strategy.config.reference_data.is_empty()),
+        "fixture must exercise the source-owned decision-reference path, not legacy reference_data"
+    );
+
+    bolt_v2::bolt_v3_operator_artifacts::verify_source_owned_reference_readiness_from_operator_evidence(
+        &fixture.loaded,
+    )
+    .expect("source-owned operator evidence should satisfy reference readiness without reference_data");
+}
+
+#[test]
+fn operator_evidence_toml_patcher_updates_only_operator_evidence_block_from_json() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let config_path = temp.path().join("root.toml");
+    let root_without_operator_evidence = format!(
+        "{}\n# readiness sentinel: keep local-only root TOML context\n{}",
+        include_str!("fixtures/bolt_v3/root.toml"),
+        minimal_live_canary_toml()
+    );
+    std::fs::write(&config_path, root_without_operator_evidence)
+        .expect("root TOML fixture should write");
+
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    operator_evidence.head_sha = env!("BOLT_V3_BUILD_HEAD_SHA").to_string();
+    write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    operator_evidence.approval_envelope_sha256 = sha256_text("approval-envelope");
+    operator_evidence.strategy_cancel_path = None;
+    let operator_evidence_json_path = temp.path().join("operator-evidence.json");
+    std::fs::write(
+        &operator_evidence_json_path,
+        serde_json::to_vec_pretty(&operator_evidence)
+            .expect("operator evidence JSON should serialize"),
+    )
+    .expect("operator evidence JSON should write");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::update_live_canary_operator_evidence_toml_from_json_file(
+        &config_path,
+        &operator_evidence_json_path,
+        100_000,
+    )
+    .expect("operator evidence TOML patch should succeed");
+
+    let patched = std::fs::read_to_string(&config_path).expect("patched TOML should read");
+    assert!(patched.contains("# readiness sentinel: keep local-only root TOML context"));
+    assert!(patched.contains("[live_canary.operator_evidence]"));
+    assert!(!patched.contains("strategy_cancel_path"));
+    assert_eq!(written.path, config_path);
+    assert_eq!(written.sha256, sha256_file(&written.path));
+
+    let parsed: BoltV3RootConfig = toml::from_str(&patched).expect("patched TOML should parse");
+    let patched_operator_evidence = parsed
+        .live_canary
+        .expect("live canary should remain configured")
+        .operator_evidence
+        .expect("operator evidence should be patched");
+    assert_eq!(patched_operator_evidence, operator_evidence);
+}
+
+#[test]
+fn operator_evidence_toml_patcher_rejects_unmaterialized_static_artifact_bindings_before_patch() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let config_path = temp.path().join("root.toml");
+    let root_without_operator_evidence = format!(
+        "{}\n# readiness sentinel: keep local-only root TOML context\n{}",
+        include_str!("fixtures/bolt_v3/root.toml"),
+        minimal_live_canary_toml()
+    );
+    std::fs::write(&config_path, &root_without_operator_evidence)
+        .expect("root TOML fixture should write");
+
+    let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    operator_evidence.head_sha = env!("BOLT_V3_BUILD_HEAD_SHA").to_string();
+    operator_evidence.ssm_manifest_sha256 = sha256_text("missing-ssm-manifest");
+    operator_evidence.strategy_input_evidence_sha256 = sha256_text("missing-strategy-input");
+    operator_evidence.financial_envelope_sha256 = sha256_text("missing-financial-envelope");
+    operator_evidence.pre_run_state_sha256 = sha256_text("missing-pre-run-state");
+    operator_evidence.abort_plan_sha256 = sha256_text("missing-abort-plan");
+    operator_evidence.approval_nonce_sha256 = sha256_text("missing-approval-nonce");
+    operator_evidence.approval_envelope_sha256 = sha256_text("approval-envelope");
+    operator_evidence.strategy_cancel_path = None;
+    let operator_evidence_json_path = temp.path().join("operator-evidence.json");
+    std::fs::write(
+        &operator_evidence_json_path,
+        serde_json::to_vec_pretty(&operator_evidence)
+            .expect("operator evidence JSON should serialize"),
+    )
+    .expect("operator evidence JSON should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::update_live_canary_operator_evidence_toml_from_json_file(
+        &config_path,
+        &operator_evidence_json_path,
+        100_000,
+    )
+    .expect_err("operator evidence TOML patch must reject absent static artifact bindings");
+
+    assert!(
+        error
+            .to_string()
+            .contains("static manifest artifact `ssm-manifest`"),
+        "error should identify the first missing static artifact binding: {error}"
+    );
+    let after = std::fs::read_to_string(&config_path).expect("root TOML should still read");
+    assert_eq!(after, root_without_operator_evidence);
+    assert!(!after.contains("[live_canary.operator_evidence]"));
+}
+
+#[test]
 fn final_packet_verifier_redacted_summary_omits_artifact_paths() {
     let fixture = assembled_final_packet_fixture();
     let outcome = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
@@ -2550,6 +8615,153 @@ fn final_packet_verifier_rejects_canary_static_evidence_ref_drift() {
     assert!(
         error.to_string().contains("strategy_input_evidence_ref"),
         "static canary evidence ref drift should name the drifted ref: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_strategy_input_not_replayable_from_decision_evidence() {
+    let fixture = assembled_final_packet_fixture();
+    let operator_evidence = fixture.operator_evidence();
+    let mut wrong_snapshot = strategy_input_runtime_fixture().snapshot;
+    wrong_snapshot.price_to_beat_value = "3200".to_string();
+    let decision_evidence_path =
+        std::path::PathBuf::from(&operator_evidence.decision_evidence_path);
+    write_entry_decision_evidence_chain_at(&decision_evidence_path, &wrong_snapshot);
+    let decision_evidence_sha256 = sha256_file(&decision_evidence_path);
+    let canary_path = std::path::PathBuf::from(&operator_evidence.canary_evidence_path);
+    let mut canary = read_json_value(&canary_path);
+    canary["decision_evidence_ref"] = final_evidence_ref_for_test(
+        &operator_evidence.decision_evidence_path,
+        &decision_evidence_sha256,
+    );
+    write_json_value_and_hash(&canary_path, &canary);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err(
+        "final packet verifier must reject strategy input that cannot replay from decision evidence",
+    );
+
+    assert!(
+        error.to_string().contains("strategy_input_replay"),
+        "strategy-input replay failure should be redacted and specific: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_non_runtime_decision_evidence_jsonl_for_strategy_input() {
+    let fixture = assembled_final_packet_fixture_with_decision_evidence_path_binding(
+        DecisionEvidencePathBinding::NonCanonicalTempJsonl,
+    );
+    let operator_evidence = fixture.operator_evidence();
+    let configured_decision_evidence_path =
+        decision_evidence_path(&fixture.loaded).expect("fixture persistence path should resolve");
+    assert_ne!(
+        std::path::PathBuf::from(&operator_evidence.decision_evidence_path),
+        configured_decision_evidence_path,
+        "test setup must bind operator evidence to a non-runtime decision JSONL path"
+    );
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("final packet verifier must reject non-runtime decision evidence JSONL provenance");
+
+    assert!(
+        error.to_string().contains("strategy_input_replay"),
+        "decision evidence provenance failure should be redacted and specific: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_fixture_market_selection_source_for_t124() {
+    let fixture = assembled_final_packet_fixture_with_market_selection_source_binding(
+        MarketSelectionSourceBinding::StaticFixtureCopy,
+    );
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("final packet verifier must reject fixture/static market-selection provenance");
+
+    assert!(
+        error.to_string().contains("strategy_input_replay"),
+        "market-selection provenance failure should be redacted and specific: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_hash_only_t126_t127_static_artifacts() {
+    let fixture = assembled_final_packet_fixture_with_readiness_artifact_binding(
+        ReadinessStaticArtifactBinding::HashOnlyFixtureMarkers,
+    );
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("final packet verifier must reject hash-only T126/T127 marker artifacts");
+
+    assert!(
+        error.to_string().contains("pre_run_state_path"),
+        "T126 source-artifact failure should name pre_run_state_path without relying on raw paths: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_abort_plan_built_from_synthetic_source_proofs() {
+    let fixture = assembled_final_packet_fixture_with_readiness_artifact_binding(
+        ReadinessStaticArtifactBinding::SyntheticAbortPlanProofs,
+    );
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("final verifier must reject abort plan built from synthetic proof hashes");
+
+    assert!(
+        error.to_string().contains("abort plan"),
+        "synthetic abort-plan proof rejection should identify abort plan evidence: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_rejects_strategy_input_candidate_list_not_replayable_from_market_source() {
+    let fixture = assembled_final_packet_fixture_with_strategy_input_mutation(|strategy_input| {
+        strategy_input["candidate_market_start_timestamps_ms"] =
+            serde_json::json!([TEST_MARKET_SELECTION_START_MS + 1]);
+    });
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("final packet verifier must reject candidate list drift from market source");
+
+    assert!(
+        error.to_string().contains("strategy_input_replay"),
+        "candidate list replay failure should be redacted and specific: {error}"
+    );
+}
+
+#[test]
+fn final_packet_verifier_accepts_strategy_input_relative_market_source_path_in_artifact_dir() {
+    let fixture = assembled_final_packet_fixture_with_strategy_input_mutation(|strategy_input| {
+        strategy_input["market_selection_source_path"] =
+            serde_json::json!(TEST_MARKET_SELECTION_SOURCE_FILE);
+    });
+
+    bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect(
+        "relative market-selection source path should resolve from strategy-input artifact dir",
     );
 }
 
@@ -2909,6 +9121,2690 @@ fn market_selection_source_builder_binds_configured_target_to_nt_instruments() {
     assert_eq!(json["polymarket_market_end_timestamp_ms"], market_end_ms);
 }
 
+struct EntryDecisionEvidenceSourceFixture {
+    _temp: tempfile::TempDir,
+    loaded: LoadedBoltV3Config,
+    strategy_instance_id: String,
+    decision_source_path: std::path::PathBuf,
+    instrument_source_path: std::path::PathBuf,
+}
+
+fn entry_decision_evidence_source_fixture(
+    price_precision: u8,
+) -> EntryDecisionEvidenceSourceFixture {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let market_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let instruments = vec![
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+    ];
+    let instrument_source_path = temp.path().join("instruments.json");
+    std::fs::write(
+        &instrument_source_path,
+        serde_json::to_vec_pretty(&instruments).expect("instrument source should serialize"),
+    )
+    .expect("instrument source should write");
+    let decision_source_path = temp.path().join("entry-decision-source.json");
+    let readiness_session = entry_decision_readiness_session_fixture(&loaded);
+    std::fs::write(
+        &decision_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            "readiness_session": readiness_session,
+            "warmup_count": 20,
+            "reference_quote": {
+                "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "realized_volatility": {
+                "value": 1.5,
+                "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "fees": {
+                "fee_bps_by_instrument_id": {
+                    TEST_UP_INSTRUMENT_ID: 0.0,
+                    TEST_DOWN_INSTRUMENT_ID: 0.0
+                }
+            },
+            "books": {
+                "price_precision": price_precision,
+                "up": {
+                    "best_bid": 0.50,
+                    "bid_quantity": 500.0,
+                    "best_ask": 0.50,
+                    "ask_quantity": 500.0,
+                    "liquidity_available": 500.0
+                },
+                "down": {
+                    "best_bid": 0.48,
+                    "bid_quantity": 500.0,
+                    "best_ask": 0.49,
+                    "ask_quantity": 500.0,
+                    "liquidity_available": 500.0
+                }
+            }
+        }))
+        .expect("decision source should serialize"),
+    )
+    .expect("decision source should write");
+
+    EntryDecisionEvidenceSourceFixture {
+        _temp: temp,
+        loaded,
+        strategy_instance_id,
+        decision_source_path,
+        instrument_source_path,
+    }
+}
+
+fn entry_decision_readiness_session_fixture(loaded: &LoadedBoltV3Config) -> serde_json::Value {
+    let selected_market = fixture_selected_market_requirement();
+    entry_decision_readiness_session_fixture_for_selected(loaded, &selected_market)
+}
+
+fn entry_decision_readiness_session_fixture_for_selected(
+    loaded: &LoadedBoltV3Config,
+    selected_market: &SelectedMarketRequirement,
+) -> serde_json::Value {
+    let mut input = fixture_gate_evidence_input(&selected_market.selected_market_key);
+    input.collector_observed_at_ms = TEST_MARKET_SELECTION_NOW_MS + 1_200;
+    input.source_observed_at_ms = TEST_MARKET_SELECTION_NOW_MS + 1_000;
+    input.normalized_value = serde_json::json!({
+        "price_to_beat_value": 3100.0,
+    });
+    input.provider_provenance = serde_json::json!({
+        "provider_kind": CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
+        "feed_id": TEST_PRICE_TO_BEAT_FEED_ID,
+        "report_schema_version": TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION,
+        "report_decimal_scale": TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+        "source_report_full_sha256": TEST_PRICE_TO_BEAT_REPORT_SHA256,
+        "valid_from_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+        "observations_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_000,
+    });
+    input.artifact_refs = vec![GateArtifactRef {
+        path: "entry-decision-price-report".to_string(),
+        sha256: TEST_PRICE_TO_BEAT_REPORT_SHA256.to_string(),
+    }];
+    let evidence = normalize_gate_evidence(input).expect("price evidence should normalize");
+    let requirements = binary_oracle_edge_taker::gate_requirements();
+    let session = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
+        loaded,
+        strategy_instance_id: TEST_STRATEGY_INSTANCE_ID,
+        selected_market,
+        requirements: &requirements,
+        provider_evidence: &[evidence],
+        created_at_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+        artifact_refs: vec![GateArtifactRef {
+            path: "entry-readiness-gate-session.json".to_string(),
+            sha256: TEST_GATE_SESSION_ARTIFACT_SHA256.to_string(),
+        }],
+    })
+    .expect("entry decision readiness session should build");
+    serde_json::to_value(session).expect("readiness session should serialize")
+}
+
+#[test]
+fn entry_decision_evidence_replay_derives_price_from_readiness_session() {
+    let fixture = entry_decision_evidence_source_fixture(2);
+    let readiness_session = entry_decision_readiness_session_fixture(&fixture.loaded);
+    std::fs::write(
+        &fixture.decision_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            "readiness_session": readiness_session,
+            "warmup_count": 20,
+            "reference_quote": {
+                "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "realized_volatility": {
+                "value": 1.5,
+                "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "fees": {
+                "fee_bps_by_instrument_id": {
+                    TEST_UP_INSTRUMENT_ID: 0.0,
+                    TEST_DOWN_INSTRUMENT_ID: 0.0
+                }
+            },
+            "books": {
+                "price_precision": 2,
+                "up": {
+                    "best_bid": 0.50,
+                    "bid_quantity": 500.0,
+                    "best_ask": 0.50,
+                    "ask_quantity": 500.0,
+                    "liquidity_available": 500.0
+                },
+                "down": {
+                    "best_bid": 0.48,
+                    "bid_quantity": 500.0,
+                    "best_ask": 0.49,
+                    "ask_quantity": 500.0,
+                    "liquidity_available": 500.0
+                }
+            }
+        }))
+        .expect("decision source should serialize"),
+    )
+    .expect("decision source should write");
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.decision_source_path,
+            100_000,
+            &fixture.instrument_source_path,
+            100_000,
+            100_000,
+        )
+        .expect("readiness-session entry decision evidence should replay");
+    let chain = read_latest_entry_decision_evidence_chain(&written.path, 100_000)
+        .expect("written JSONL should contain a complete entry decision chain");
+    assert_eq!(chain.snapshot.price_to_beat_value, "3100");
+    assert_eq!(
+        chain.admission.outcome,
+        BoltV3AdmissionOutcome::RejectedNotArmed
+    );
+}
+
+#[test]
+fn entry_decision_evidence_replay_uses_source_selected_rotated_market() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let current_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let next_start_seconds = TEST_MARKET_SELECTION_CURRENT_START_SECONDS + 300;
+    let next_start_ms = TEST_MARKET_SELECTION_END_MS;
+    let next_end_ms =
+        next_start_ms + (TEST_MARKET_SELECTION_END_MS - TEST_MARKET_SELECTION_START_MS);
+    let next_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        next_start_seconds,
+    );
+    let next_up_instrument_id = "condition-next-up.POLYMARKET";
+    let next_down_instrument_id = "condition-next-down.POLYMARKET";
+    let instruments = vec![
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            &current_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            &current_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            next_up_instrument_id,
+            &next_slug,
+            "market-next",
+            "condition-next",
+            "question-next",
+            TEST_UP_OUTCOME,
+            next_start_ms,
+            next_end_ms,
+        ),
+        updown_binary_option(
+            next_down_instrument_id,
+            &next_slug,
+            "market-next",
+            "condition-next",
+            "question-next",
+            TEST_DOWN_OUTCOME,
+            next_start_ms,
+            next_end_ms,
+        ),
+    ];
+    let instrument_source_path = temp.path().join("instruments.json");
+    std::fs::write(
+        &instrument_source_path,
+        serde_json::to_vec_pretty(&instruments).expect("instrument source should serialize"),
+    )
+    .expect("instrument source should write");
+    let selected_market = SelectedMarketRequirement {
+        market_id: "market-next".to_string(),
+        instrument_ids: vec![
+            next_down_instrument_id.to_string(),
+            next_up_instrument_id.to_string(),
+        ],
+        ..fixture_selected_market_requirement()
+    };
+    let readiness_session =
+        entry_decision_readiness_session_fixture_for_selected(&loaded, &selected_market);
+    let decision_source_path = temp.path().join("entry-decision-source.json");
+    std::fs::write(
+        &decision_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            "readiness_session": readiness_session,
+            "warmup_count": 20,
+            "reference_quote": {
+                "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "realized_volatility": {
+                "value": 1.5,
+                "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "fees": {
+                "fee_bps_by_instrument_id": {
+                    next_up_instrument_id: 0.0,
+                    next_down_instrument_id: 0.0
+                }
+            },
+            "books": {
+                "price_precision": 2,
+                "up": {
+                    "best_bid": 0.50,
+                    "bid_quantity": 500.0,
+                    "best_ask": 0.50,
+                    "ask_quantity": 500.0,
+                    "liquidity_available": 500.0
+                },
+                "down": {
+                    "best_bid": 0.48,
+                    "bid_quantity": 500.0,
+                    "best_ask": 0.49,
+                    "ask_quantity": 500.0,
+                    "liquidity_available": 500.0
+                }
+            }
+        }))
+        .expect("decision source should serialize"),
+    )
+    .expect("decision source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &loaded,
+            &strategy_instance_id,
+            &decision_source_path,
+            100_000,
+            &instrument_source_path,
+            100_000,
+            100_000,
+        )
+        .expect_err("future rotated market should not produce a normal strategy entry");
+    let message = error.to_string();
+    assert!(
+        message.contains("IntervalOpenMissing"),
+        "future selected market should block because the interval is not open, got: {message}"
+    );
+    assert!(
+        !message.contains("FeesNotReady"),
+        "source-selected rotated market fees must be used instead of recomputing current market fees: {message}"
+    );
+}
+
+#[test]
+fn entry_decision_evidence_source_collector_reports_no_entry_decision() {
+    let fixture = entry_decision_evidence_source_fixture(2);
+    let readiness_session = entry_decision_readiness_session_fixture(&fixture.loaded);
+    std::fs::write(
+        &fixture.decision_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            "readiness_session": readiness_session,
+            "warmup_count": 20,
+            "reference_quote": {
+                "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3100.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "realized_volatility": {
+                "value": 0.0005,
+                "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "fees": {
+                "fee_bps_by_instrument_id": {
+                    TEST_UP_INSTRUMENT_ID: 1000.0,
+                    TEST_DOWN_INSTRUMENT_ID: 1000.0
+                }
+            },
+            "books": {
+                "price_precision": 2,
+                "up": {
+                    "best_bid": 0.51,
+                    "bid_quantity": 100.0,
+                    "best_ask": 0.52,
+                    "ask_quantity": 100.0,
+                    "liquidity_available": 100.0
+                },
+                "down": {
+                    "best_bid": 0.48,
+                    "bid_quantity": 100.0,
+                    "best_ask": 0.49,
+                    "ask_quantity": 100.0,
+                    "liquidity_available": 100.0
+                }
+            }
+        }))
+        .expect("decision source should serialize"),
+    )
+    .expect("decision source should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.decision_source_path,
+            100_000,
+            &fixture.instrument_source_path,
+            100_000,
+            100_000,
+        )
+        .expect_err("source that does not select a side must fail closed");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("did not produce an entry order"),
+        "no-entry replay should be reported directly, got: {message}"
+    );
+    assert!(
+        message.contains("blocked_reason=Some(\"no_side_selected\")"),
+        "no-entry replay should include the strategy blocked reason, got: {message}"
+    );
+    assert!(
+        !message.contains("unexpectedly admitted"),
+        "no-entry replay must not be mislabeled as submit admission, got: {message}"
+    );
+}
+
+#[test]
+fn entry_decision_evidence_source_collector_writes_configured_runtime_jsonl() {
+    let fixture = entry_decision_evidence_source_fixture(2);
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.decision_source_path,
+            100_000,
+            &fixture.instrument_source_path,
+            100_000,
+            100_000,
+        )
+        .expect("source-owned entry decision evidence should write");
+    let expected_path =
+        decision_evidence_path(&fixture.loaded).expect("decision evidence path resolves");
+    assert_eq!(written.path, expected_path);
+
+    let chain = read_latest_entry_decision_evidence_chain(&written.path, 100_000)
+        .expect("written JSONL should contain a complete entry decision chain");
+    assert_eq!(chain.snapshot.strategy_id, "binary_oracle_edge_taker-001");
+    assert_eq!(
+        chain.snapshot.configured_target_id,
+        TEST_CONFIGURED_TARGET_ID
+    );
+    assert_eq!(chain.snapshot.market_id.as_deref(), Some(TEST_MARKET_ID));
+    assert_eq!(
+        chain.snapshot.polymarket_condition_id.as_deref(),
+        Some(TEST_CONDITION_ID)
+    );
+    assert_eq!(
+        chain.snapshot.price_to_beat_source,
+        TEST_PRICE_TO_BEAT_SOURCE
+    );
+    assert_eq!(chain.snapshot.price_to_beat_value, "3100");
+    assert_eq!(chain.intent.intent_kind, BoltV3OrderIntentKind::Entry);
+    assert_eq!(
+        chain.admission.outcome,
+        BoltV3AdmissionOutcome::RejectedNotArmed
+    );
+    assert_eq!(written.sha256, sha256_file(&written.path));
+}
+
+#[test]
+fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let market_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let instruments = vec![
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+    ];
+    let price_source_path = temp.path().join("source-bound-price.json");
+    std::fs::write(
+        &price_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.source_bound_price_to_beat.v1",
+            "source": TEST_PRICE_TO_BEAT_SOURCE,
+            "price_to_beat_value": 3100.0,
+            "source_report_schema_version": TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION,
+            "source_report_feed_id": TEST_PRICE_TO_BEAT_FEED_ID,
+            "source_report_decimal_scale": TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+            "source_report_full_sha256": TEST_PRICE_TO_BEAT_REPORT_SHA256,
+            "source_report_valid_from_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "source_report_observations_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "source_report_benchmark_price": 3100.0,
+            "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+            "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 30_000
+        }))
+        .expect("price source should serialize"),
+    )
+    .expect("price source should write");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    std::fs::write(
+        &reference_quote_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.reference_quote_source.v1",
+            "venue": "resolution_oracle_primary",
+            "price": 3300.0,
+            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 30_000,
+            "source_report_schema_version": TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION,
+            "source_report_feed_id": TEST_PRICE_TO_BEAT_FEED_ID,
+            "source_report_decimal_scale": TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+            "source_report_full_sha256": TEST_GATE_ARTIFACT_SHA256,
+            "source_report_valid_from_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 30_000,
+            "source_report_observations_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 30_000,
+            "source_report_benchmark_price": 3300.0
+        }))
+        .expect("reference quote source should serialize"),
+    )
+    .expect("reference quote source should write");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+    std::fs::write(
+        &realized_volatility_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.realized_volatility_source.v1",
+            "value": 1.5,
+            "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 30_000
+        }))
+        .expect("realized volatility source should serialize"),
+    )
+    .expect("realized volatility source should write");
+    let decision_source_output = temp.path().join("entry-decision-source.json");
+    let instrument_source_output = temp.path().join("instrument-source.json");
+    let fee_rate_source_output = temp.path().join("entry-decision-fees.json");
+
+    let written =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs: EntryDecisionSourceMarketInputs {
+                    instruments: &instruments,
+                    up_book: EntryDecisionSourceBookSideInput {
+                        best_bid: 0.50,
+                        bid_quantity: 500.0,
+                        best_ask: 0.50,
+                        ask_quantity: 500.0,
+                        liquidity_available: 500.0,
+                    },
+                    down_book: EntryDecisionSourceBookSideInput {
+                        best_bid: 0.48,
+                        bid_quantity: 500.0,
+                        best_ask: 0.49,
+                        ask_quantity: 500.0,
+                        liquidity_available: 500.0,
+                    },
+                    fee_bps_by_instrument_id: BTreeMap::from([
+                        (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
+                        (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
+                    ]),
+                },
+                decision_source_output_path: &decision_source_output,
+                instrument_source_output_path: &instrument_source_output,
+                fee_rate_source_output_path: &fee_rate_source_output,
+            },
+        )
+        .expect("source-input collector should write source files");
+
+    assert_eq!(written.decision_source.path, decision_source_output);
+    assert_eq!(written.instrument_source.path, instrument_source_output);
+    assert_eq!(written.fee_rate_source.path, fee_rate_source_output);
+    assert_eq!(
+        written.decision_source.sha256,
+        sha256_file(&written.decision_source.path)
+    );
+    assert_eq!(
+        written.instrument_source.sha256,
+        sha256_file(&written.instrument_source.path)
+    );
+    let decision_source_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.decision_source.path)
+            .expect("decision source should remain readable"),
+    )
+    .expect("decision source should parse as JSON");
+    assert!(decision_source_json.get("readiness_session").is_some());
+    let satisfied_roles = decision_source_json["readiness_session"]["satisfied_roles"]
+        .as_object()
+        .expect("readiness session roles should be an object");
+    assert!(
+        satisfied_roles.contains_key("resolution"),
+        "readiness session must include source-owned resolution evidence"
+    );
+    assert!(
+        satisfied_roles.contains_key("decision_reference"),
+        "readiness session must include source-owned decision_reference evidence"
+    );
+    assert_eq!(
+        decision_source_json["readiness_session"]["satisfied_roles"]["resolution"]["evidence"]["normalized_value"]
+            ["price_to_beat_value"],
+        serde_json::json!(3100.0)
+    );
+    assert_eq!(
+        decision_source_json["readiness_session"]["satisfied_roles"]["decision_reference"]["evidence"]
+            ["normalized_value"]["reference_value"],
+        serde_json::json!(3300.0)
+    );
+    assert!(decision_source_json.get("price_to_beat_value").is_none());
+    let gate_session_output = temp.path().join("entry-readiness-gate-session.json");
+    let gate_session_written =
+        write_entry_readiness_gate_session_artifact_from_decision_source_file(
+            &loaded,
+            &strategy_instance_id,
+            &written.decision_source.path,
+            100_000,
+            &gate_session_output,
+        )
+        .expect("source-owned readiness session should write as its own artifact");
+    assert_eq!(gate_session_written.path, gate_session_output);
+    assert_eq!(
+        gate_session_written.sha256,
+        sha256_file(&gate_session_written.path)
+    );
+    let gate_session_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&gate_session_written.path).expect("gate session should remain readable"),
+    )
+    .expect("gate session should parse as JSON");
+    assert_eq!(gate_session_json, decision_source_json["readiness_session"]);
+
+    let replayed =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &loaded,
+            &strategy_instance_id,
+            &written.decision_source.path,
+            100_000,
+            &written.instrument_source.path,
+            100_000,
+            100_000,
+        )
+        .expect("written source inputs should replay through the T035B generator");
+    let chain = read_latest_entry_decision_evidence_chain(&replayed.path, 100_000)
+        .expect("replayed decision evidence should have a complete entry chain");
+    assert_eq!(chain.snapshot.price_to_beat_value, "3100");
+    assert_eq!(chain.snapshot.market_id.as_deref(), Some(TEST_MARKET_ID));
+    assert_eq!(
+        chain.admission.outcome,
+        BoltV3AdmissionOutcome::RejectedNotArmed
+    );
+}
+
+struct EntryDecisionSourceInputProofPaths {
+    price_source_path: std::path::PathBuf,
+    reference_quote_source_path: std::path::PathBuf,
+    realized_volatility_source_path: std::path::PathBuf,
+    decision_source_output: std::path::PathBuf,
+    instrument_source_output: std::path::PathBuf,
+    fee_rate_source_output: std::path::PathBuf,
+}
+
+fn write_entry_decision_source_input_proofs(
+    temp: &tempfile::TempDir,
+    price_to_beat_value: f64,
+) -> EntryDecisionSourceInputProofPaths {
+    write_entry_decision_source_input_proofs_with_report_provenance(temp, price_to_beat_value, true)
+}
+
+fn write_entry_decision_source_input_proofs_without_report_provenance(
+    temp: &tempfile::TempDir,
+    price_to_beat_value: f64,
+) -> EntryDecisionSourceInputProofPaths {
+    write_entry_decision_source_input_proofs_with_report_provenance(
+        temp,
+        price_to_beat_value,
+        false,
+    )
+}
+
+fn write_entry_decision_source_input_proofs_with_report_provenance(
+    temp: &tempfile::TempDir,
+    price_to_beat_value: f64,
+    include_report_provenance: bool,
+) -> EntryDecisionSourceInputProofPaths {
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let mut price_source = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.source_bound_price_to_beat.v1",
+        "source": TEST_PRICE_TO_BEAT_SOURCE,
+        "price_to_beat_value": price_to_beat_value,
+        "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
+        "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+    });
+    if include_report_provenance {
+        let object = price_source
+            .as_object_mut()
+            .expect("price source proof should be a JSON object");
+        object.insert(
+            "source_report_schema_version".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION),
+        );
+        object.insert(
+            "source_report_feed_id".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_FEED_ID),
+        );
+        object.insert(
+            "source_report_decimal_scale".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE),
+        );
+        object.insert(
+            "source_report_full_sha256".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_REPORT_SHA256),
+        );
+        object.insert(
+            "source_report_valid_from_timestamp_ms".to_string(),
+            serde_json::json!(TEST_MARKET_SELECTION_NOW_MS),
+        );
+        object.insert(
+            "source_report_observations_timestamp_ms".to_string(),
+            serde_json::json!(TEST_MARKET_SELECTION_NOW_MS + 1_000),
+        );
+        object.insert(
+            "source_report_benchmark_price".to_string(),
+            serde_json::json!(price_to_beat_value),
+        );
+    }
+    std::fs::write(
+        &price_source_path,
+        serde_json::to_vec_pretty(&price_source).expect("price source should serialize"),
+    )
+    .expect("price source should write");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let mut reference_quote_source = serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.reference_quote_source.v1",
+        "venue": "resolution_oracle_primary",
+        "price": 3300.0,
+        "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+    });
+    if include_report_provenance {
+        let object = reference_quote_source
+            .as_object_mut()
+            .expect("reference quote source proof should be a JSON object");
+        object.insert(
+            "source_report_schema_version".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION),
+        );
+        object.insert(
+            "source_report_feed_id".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_FEED_ID),
+        );
+        object.insert(
+            "source_report_decimal_scale".to_string(),
+            serde_json::json!(TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE),
+        );
+        object.insert(
+            "source_report_full_sha256".to_string(),
+            serde_json::json!(TEST_GATE_ARTIFACT_SHA256),
+        );
+        object.insert(
+            "source_report_valid_from_timestamp_ms".to_string(),
+            serde_json::json!(TEST_MARKET_SELECTION_NOW_MS + 1_200),
+        );
+        object.insert(
+            "source_report_observations_timestamp_ms".to_string(),
+            serde_json::json!(TEST_MARKET_SELECTION_NOW_MS + 1_200),
+        );
+        object.insert(
+            "source_report_benchmark_price".to_string(),
+            serde_json::json!(3300.0),
+        );
+    }
+    std::fs::write(
+        &reference_quote_source_path,
+        serde_json::to_vec_pretty(&reference_quote_source)
+            .expect("reference quote source should serialize"),
+    )
+    .expect("reference quote source should write");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+    std::fs::write(
+        &realized_volatility_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.realized_volatility_source.v1",
+            "value": 1.5,
+            "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+        }))
+        .expect("realized volatility source should serialize"),
+    )
+    .expect("realized volatility source should write");
+    EntryDecisionSourceInputProofPaths {
+        price_source_path,
+        reference_quote_source_path,
+        realized_volatility_source_path,
+        decision_source_output: temp.path().join("entry-decision-source.json"),
+        instrument_source_output: temp.path().join("instrument-source.json"),
+        fee_rate_source_output: temp.path().join("entry-decision-fees.json"),
+    }
+}
+
+fn set_resolution_mapping_identity(loaded: &mut LoadedBoltV3Config, resolution_identity: &str) {
+    let mapping = resolution_market_mappings_mut(loaded)
+        .first_mut()
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture should expose one resolution mapping");
+    mapping.insert(
+        "resolution_identity".to_string(),
+        toml::Value::String(resolution_identity.to_string()),
+    );
+}
+
+fn set_chainlink_feed_bindings(loaded: &mut LoadedBoltV3Config, bindings: &[(&str, &str, u64)]) {
+    let provider_config = loaded
+        .root
+        .gate_providers
+        .as_mut()
+        .expect("fixture should configure gate providers")
+        .get_mut("resolution_oracle_primary")
+        .expect("fixture should configure resolution oracle")
+        .provider_config
+        .get_mut(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture should configure chainlink data streams");
+    let feed_bindings = bindings
+        .iter()
+        .map(|(resolution_identity, feed_id, decimal_scale)| {
+            let mut table = toml::map::Map::new();
+            table.insert(
+                "resolution_identity".to_string(),
+                toml::Value::String((*resolution_identity).to_string()),
+            );
+            table.insert(
+                "value_kind".to_string(),
+                toml::Value::String(PRICE_GATE_VALUE_KIND.to_string()),
+            );
+            table.insert(
+                "feed_id".to_string(),
+                toml::Value::String((*feed_id).to_string()),
+            );
+            table.insert(
+                "report_schema_version".to_string(),
+                toml::Value::Integer(
+                    i64::try_from(TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION).unwrap(),
+                ),
+            );
+            table.insert(
+                "report_decimal_scale".to_string(),
+                toml::Value::Integer(i64::try_from(*decimal_scale).unwrap()),
+            );
+            toml::Value::Table(table)
+        })
+        .collect();
+    provider_config.insert(
+        "feed_bindings".to_string(),
+        toml::Value::Array(feed_bindings),
+    );
+}
+
+fn write_reference_quote_observations_source(path: &std::path::Path, prices: &[f64]) {
+    let observations = prices
+        .iter()
+        .enumerate()
+        .map(|(index, price)| {
+            let ts_ms = TEST_MARKET_SELECTION_NOW_MS
+                + u64::try_from(index).expect("test index should fit u64") * 1_000;
+            serde_json::json!({
+                "data_client_id": TEST_REFERENCE_DATA_CLIENT_ID,
+                "instrument_id": TEST_REFERENCE_INSTRUMENT_ID,
+                "bid_price": price,
+                "ask_price": price,
+                "ts_event_unix_nanos": ts_ms * 1_000_000,
+                "ts_init_unix_nanos": ts_ms * 1_000_000,
+                "captured_at_unix_nanos": ts_ms * 1_000_000
+            })
+        })
+        .collect::<Vec<_>>();
+    std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.reference_quote_observations_source.v1",
+            "observations": observations
+        }))
+        .expect("quote observations source should serialize"),
+    )
+    .expect("quote observations source should write");
+}
+
+fn write_chainlink_reference_report_sequence(
+    dir: &std::path::Path,
+) -> Vec<(std::path::PathBuf, String)> {
+    [3300.0, 3301.0, 3302.0, 3304.0, 3308.0, 3313.0]
+        .iter()
+        .enumerate()
+        .map(|(index, price)| {
+            let timestamp_secs = 600 + u32::try_from(index).expect("test index should fit u32");
+            let path = dir.join(format!("chainlink-reference-report-{timestamp_secs}.json"));
+            std::fs::write(
+                &path,
+                chainlink_v3_report_source_json(
+                    TEST_PRICE_TO_BEAT_FEED_ID,
+                    timestamp_secs,
+                    timestamp_secs,
+                    *price,
+                    TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+                    true,
+                ),
+            )
+            .expect("Chainlink reference report should write");
+            let sha256 = sha256_file(&path);
+            (path, sha256)
+        })
+        .collect()
+}
+
+#[test]
+fn reference_quote_observations_source_materializer_writes_nt_quote_probe_prices() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let output_path = temp.path().join("reference-quote-observations-source.json");
+    let evidence = BoltV3NoSubmitReferenceQuoteEvidence {
+        quotes: vec![BoltV3NoSubmitReferenceQuote {
+            data_client_id: TEST_REFERENCE_DATA_CLIENT_ID.to_string(),
+            instrument_id: TEST_REFERENCE_INSTRUMENT_ID.to_string(),
+            bid_price: 3299.0,
+            ask_price: 3301.0,
+            ts_event_unix_nanos: 600_000_000_000,
+            ts_init_unix_nanos: 600_000_000_000,
+            captured_at_unix_nanos: 600_000_000_000,
+        }],
+    };
+
+    let written = write_reference_quote_observations_source_from_no_submit_evidence(
+        &loaded,
+        &strategy_instance_id,
+        &evidence,
+        &output_path,
+    )
+    .expect("NT quote probe evidence should write a source-owned observations artifact");
+
+    assert_eq!(written.path, output_path);
+    let source: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.path).expect("quote observations source should read"),
+    )
+    .expect("quote observations source should parse");
+    assert_eq!(
+        source["record_kind"],
+        serde_json::json!("bolt_v3.reference_quote_observations_source.v1")
+    );
+    assert_eq!(
+        source["observations"][0]["bid_price"],
+        serde_json::json!(3299.0)
+    );
+    assert_eq!(
+        source["observations"][0]["ask_price"],
+        serde_json::json!(3301.0)
+    );
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_derives_reference_quote_and_volatility_from_quote_observations()
+ {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let report_path = temp.path().join("operator-approved-chainlink-report.bin");
+    std::fs::write(
+        &report_path,
+        chainlink_v3_report_source_json(
+            TEST_PRICE_TO_BEAT_FEED_ID,
+            600,
+            601,
+            3100.0,
+            TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+            true,
+        ),
+    )
+    .expect("report source should write");
+    let report_sha256 = sha256_file(&report_path);
+    let reference_quote_observations_source_path =
+        temp.path().join("reference-quote-observations-source.json");
+    write_reference_quote_observations_source(
+        &reference_quote_observations_source_path,
+        &[3300.0, 3301.0, 3302.0, 3304.0, 3308.0, 3313.0],
+    );
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &report_sha256,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 5_000,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+        },
+    )
+    .expect(
+        "source-proof files should derive reference quote and volatility from quote observations",
+    );
+
+    let quote_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.reference_quote_source.path).expect("quote source should read"),
+    )
+    .expect("quote source should parse");
+    assert_eq!(
+        quote_json["venue"],
+        serde_json::json!(TEST_REFERENCE_DATA_CLIENT_ID)
+    );
+    assert_eq!(quote_json["price"], serde_json::json!(3313.0));
+    assert_eq!(quote_json["observed_ts_ms"], serde_json::json!(605000u64));
+
+    let volatility_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.realized_volatility_source.path)
+            .expect("volatility source should read"),
+    )
+    .expect("volatility source should parse");
+    assert!(
+        volatility_json["value"]
+            .as_f64()
+            .is_some_and(|value| value.is_finite() && value > 0.0),
+        "volatility must be computed from moving quote observations: {volatility_json}"
+    );
+    assert_eq!(volatility_json["ready_ts_ms"], serde_json::json!(605000u64));
+}
+
+#[test]
+fn chainlink_reference_quote_observations_source_materializer_writes_provider_owned_observations() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    add_decision_reference_subscription(&mut loaded);
+    add_reference_value_capability(&mut loaded, "resolution_oracle_primary");
+    loaded.strategies[0].config.reference_data.clear();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let reports = write_chainlink_reference_report_sequence(temp.path());
+    let report_refs = reports
+        .iter()
+        .map(|(path, sha256)| ChainlinkReferencePriceReportSourceFile {
+            path,
+            expected_sha256: sha256,
+        })
+        .collect::<Vec<_>>();
+    let output_path = temp
+        .path()
+        .join("chainlink-reference-quote-observations-source.json");
+
+    let written = write_chainlink_reference_quote_observations_source_from_report_files(
+        &loaded,
+        &strategy_instance_id,
+        ChainlinkReferenceQuoteObservationsSourceMaterializationRequest {
+            price_reports: &report_refs,
+            max_price_report_bytes: 100_000,
+            output_path: &output_path,
+        },
+    )
+    .expect("Chainlink report sequence should materialize source-owned reference observations");
+
+    assert_eq!(written.path, output_path);
+    let source: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.path).expect("reference observations source should read"),
+    )
+    .expect("reference observations source should parse");
+    assert_eq!(
+        source["record_kind"],
+        serde_json::json!("bolt_v3.reference_quote_observations_source.v1")
+    );
+    assert_eq!(
+        source["observations"][0]["data_client_id"],
+        serde_json::json!("resolution_oracle_primary")
+    );
+    assert_eq!(
+        source["observations"][0]["instrument_id"],
+        serde_json::json!("configured-reference-price")
+    );
+    assert_eq!(
+        source["observations"][5]["bid_price"],
+        serde_json::json!(3313.0)
+    );
+    assert_eq!(
+        source["observations"][5]["ask_price"],
+        serde_json::json!(3313.0)
+    );
+    assert_eq!(
+        source["observations"][5]["ts_event_unix_nanos"],
+        serde_json::json!(605_000_000_000u64)
+    );
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_derives_reference_quote_and_volatility_from_chainlink_reports_without_reference_data()
+ {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    add_decision_reference_subscription(&mut loaded);
+    add_reference_value_capability(&mut loaded, "resolution_oracle_primary");
+    loaded.strategies[0].config.reference_data.clear();
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let reports = write_chainlink_reference_report_sequence(temp.path());
+    let report_refs = reports
+        .iter()
+        .map(|(path, sha256)| ChainlinkReferencePriceReportSourceFile {
+            path,
+            expected_sha256: sha256,
+        })
+        .collect::<Vec<_>>();
+    let reference_quote_observations_source_path = temp
+        .path()
+        .join("chainlink-reference-observations-source.json");
+    write_chainlink_reference_quote_observations_source_from_report_files(
+        &loaded,
+        &strategy_instance_id,
+        ChainlinkReferenceQuoteObservationsSourceMaterializationRequest {
+            price_reports: &report_refs,
+            max_price_report_bytes: 100_000,
+            output_path: &reference_quote_observations_source_path,
+        },
+    )
+    .expect("Chainlink reports should write reference observations");
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &reports[0].0,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &reports[0].1,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 5_000,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+        },
+    )
+    .expect("source-proof files should use Chainlink decision-reference reports without static reference_data");
+
+    let quote_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.reference_quote_source.path).expect("quote source should read"),
+    )
+    .expect("quote source should parse");
+    assert_eq!(
+        quote_json["venue"],
+        serde_json::json!("resolution_oracle_primary")
+    );
+    assert_eq!(quote_json["price"], serde_json::json!(3313.0));
+    assert_eq!(quote_json["observed_ts_ms"], serde_json::json!(605000u64));
+
+    let volatility_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.realized_volatility_source.path)
+            .expect("volatility source should read"),
+    )
+    .expect("volatility source should parse");
+    assert!(
+        volatility_json["value"]
+            .as_f64()
+            .is_some_and(|value| value.is_finite() && value > 0.0),
+        "volatility must be computed from Chainlink source reports: {volatility_json}"
+    );
+    assert_eq!(volatility_json["ready_ts_ms"], serde_json::json!(605000u64));
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_rejects_non_boundary_price_to_beat_report() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    add_decision_reference_subscription(&mut loaded);
+    add_reference_value_capability(&mut loaded, "resolution_oracle_primary");
+    loaded.strategies[0].config.reference_data.clear();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let reports = write_chainlink_reference_report_sequence(temp.path());
+    let report_refs = reports
+        .iter()
+        .map(|(path, sha256)| ChainlinkReferencePriceReportSourceFile {
+            path,
+            expected_sha256: sha256,
+        })
+        .collect::<Vec<_>>();
+    let reference_quote_observations_source_path = temp
+        .path()
+        .join("chainlink-reference-observations-source.json");
+    write_chainlink_reference_quote_observations_source_from_report_files(
+        &loaded,
+        &strategy_instance_id,
+        ChainlinkReferenceQuoteObservationsSourceMaterializationRequest {
+            price_reports: &report_refs,
+            max_price_report_bytes: 100_000,
+            output_path: &reference_quote_observations_source_path,
+        },
+    )
+    .expect("Chainlink reports should write reference observations");
+
+    let late_report = reports
+        .last()
+        .expect("test report sequence should include a late report");
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &late_report.0,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &late_report.1,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 5_000,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &temp.path().join("source-bound-price.json"),
+            reference_quote_source_output_path: &temp.path().join("reference-quote.json"),
+            realized_volatility_source_output_path: &temp.path().join("realized-volatility.json"),
+        },
+    )
+    .expect_err("price-to-beat report must be the first source-owned boundary observation");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source-bound price_to_beat report provenance"),
+        "error should mention price-to-beat provenance, got: {error}"
+    );
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let report_path = temp.path().join("operator-approved-chainlink-report.bin");
+    std::fs::write(
+        &report_path,
+        chainlink_v3_report_source_json(
+            TEST_PRICE_TO_BEAT_FEED_ID,
+            600,
+            601,
+            3100.0,
+            TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+            true,
+        ),
+    )
+    .expect("report source should write");
+    let report_sha256 = sha256_file(&report_path);
+    let reference_quote_observations_source_path =
+        temp.path().join("reference-quote-observations-source.json");
+    write_reference_quote_observations_source(
+        &reference_quote_observations_source_path,
+        &[3300.0, 3301.0, 3302.0, 3304.0, 3308.0, 3313.0],
+    );
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &report_sha256,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 5_000,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+        },
+    )
+    .expect("source-proof files should write from bounded source inputs");
+
+    assert_eq!(written.price_to_beat_source.path, price_source_path);
+    assert_eq!(
+        written.reference_quote_source.path,
+        reference_quote_source_path
+    );
+    assert_eq!(
+        written.realized_volatility_source.path,
+        realized_volatility_source_path
+    );
+
+    let price_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.price_to_beat_source.path).expect("price source should read"),
+    )
+    .expect("price source should parse");
+    assert_eq!(
+        price_json["source_report_full_sha256"],
+        serde_json::json!(report_sha256)
+    );
+    assert_eq!(
+        price_json["source_report_feed_id"],
+        serde_json::json!(TEST_PRICE_TO_BEAT_FEED_ID)
+    );
+    assert_eq!(
+        price_json["source_report_schema_version"],
+        serde_json::json!(TEST_PRICE_TO_BEAT_REPORT_SCHEMA_VERSION)
+    );
+    assert_eq!(
+        price_json["source_report_valid_from_timestamp_ms"],
+        serde_json::json!(TEST_MARKET_SELECTION_NOW_MS)
+    );
+    assert_eq!(
+        price_json["source_report_observations_timestamp_ms"],
+        serde_json::json!(TEST_MARKET_SELECTION_NOW_MS + 1_000)
+    );
+    assert_eq!(
+        price_json["source_report_benchmark_price"],
+        serde_json::json!(3100.0)
+    );
+
+    let instruments = entry_decision_source_input_instruments();
+    let decision_source_output = temp.path().join("entry-decision-source.json");
+    let instrument_source_output = temp.path().join("instrument-source.json");
+    let fee_rate_source_output = temp.path().join("entry-decision-fees.json");
+    let source_inputs =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &written.price_to_beat_source.path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &written.reference_quote_source.path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &written.realized_volatility_source.path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs: entry_decision_source_market_inputs(&instruments),
+                decision_source_output_path: &decision_source_output,
+                instrument_source_output_path: &instrument_source_output,
+                fee_rate_source_output_path: &fee_rate_source_output,
+            },
+        )
+        .expect("materialized proof sources should feed source-input collector");
+
+    assert_eq!(source_inputs.decision_source.path, decision_source_output);
+    assert_eq!(
+        source_inputs.instrument_source.path,
+        instrument_source_output
+    );
+    assert_eq!(source_inputs.fee_rate_source.path, fee_rate_source_output);
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_selects_feed_by_resolution_identity() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    set_resolution_mapping_identity(&mut loaded, "configured-secondary-market");
+    set_chainlink_feed_bindings(
+        &mut loaded,
+        &[
+            (
+                "configured-reference-price",
+                TEST_PRICE_TO_BEAT_FEED_ID,
+                TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+            ),
+            (
+                "configured-secondary-market",
+                TEST_SECONDARY_CHAINLINK_TESTNET_FEED_ID,
+                18,
+            ),
+        ],
+    );
+    let report_path = temp.path().join("operator-approved-chainlink-report.bin");
+    std::fs::write(
+        &report_path,
+        chainlink_v3_report_source_json(
+            TEST_SECONDARY_CHAINLINK_TESTNET_FEED_ID,
+            600,
+            601,
+            3100.0,
+            18,
+            true,
+        ),
+    )
+    .expect("report source should write");
+    let report_sha256 = sha256_file(&report_path);
+    let reference_quote_observations_source_path =
+        temp.path().join("reference-quote-observations-source.json");
+    write_reference_quote_observations_source(
+        &reference_quote_observations_source_path,
+        &[3300.0, 3301.0, 3302.0, 3304.0, 3308.0, 3313.0],
+    );
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &report_sha256,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 5_000,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+        },
+    )
+    .expect("source-proof files should use the selected market resolution identity");
+
+    let price_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.price_to_beat_source.path).expect("price source should read"),
+    )
+    .expect("price source should parse");
+    assert_eq!(
+        price_json["source_report_feed_id"],
+        serde_json::json!(TEST_SECONDARY_CHAINLINK_TESTNET_FEED_ID)
+    );
+    assert_eq!(
+        price_json["source_report_decimal_scale"],
+        serde_json::json!(18)
+    );
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_selects_alt_feed_by_resolution_identity() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    set_resolution_mapping_identity(&mut loaded, "configured-alt-market");
+    set_chainlink_feed_bindings(
+        &mut loaded,
+        &[
+            (
+                "configured-reference-price",
+                TEST_PRICE_TO_BEAT_FEED_ID,
+                TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+            ),
+            ("configured-alt-market", TEST_ALT_CHAINLINK_FEED_ID, 8),
+        ],
+    );
+    let report_path = temp.path().join("operator-approved-chainlink-report.bin");
+    std::fs::write(
+        &report_path,
+        chainlink_v3_report_source_json(TEST_ALT_CHAINLINK_FEED_ID, 600, 601, 42.12345678, 8, true),
+    )
+    .expect("report source should write");
+    let report_sha256 = sha256_file(&report_path);
+    let reference_quote_observations_source_path =
+        temp.path().join("reference-quote-observations-source.json");
+    write_reference_quote_observations_source(
+        &reference_quote_observations_source_path,
+        &[3300.0, 3301.0, 3302.0, 3304.0, 3308.0, 3313.0],
+    );
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &report_sha256,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 5_000,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+        },
+    )
+    .expect("source-proof files should use the configured alternate resolution identity");
+
+    let price_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.price_to_beat_source.path).expect("price source should read"),
+    )
+    .expect("price source should parse");
+    assert_eq!(
+        price_json["source_report_feed_id"],
+        serde_json::json!(TEST_ALT_CHAINLINK_FEED_ID)
+    );
+    assert_eq!(
+        price_json["source_report_decimal_scale"],
+        serde_json::json!(8)
+    );
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_accepts_chainlink_scale_beyond_rust_decimal_limit() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    set_chainlink_feed_bindings(
+        &mut loaded,
+        &[("configured-reference-price", TEST_PRICE_TO_BEAT_FEED_ID, 29)],
+    );
+    let report_path = temp.path().join("chainlink-report-high-scale.json");
+    std::fs::write(
+        &report_path,
+        chainlink_v3_report_source_json_with_benchmark_word(
+            TEST_PRICE_TO_BEAT_FEED_ID,
+            600,
+            601,
+            abi_i192_word(10_i128.pow(28)),
+            true,
+        ),
+    )
+    .expect("report source should write");
+    let report_sha256 = sha256_file(&report_path);
+    let reference_quote_observations_source_path =
+        temp.path().join("reference-quote-observations-source.json");
+    write_reference_quote_observations_source(
+        &reference_quote_observations_source_path,
+        &[3300.0, 3301.0, 3302.0, 3304.0, 3308.0, 3313.0],
+    );
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &report_sha256,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 5_000,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+        },
+    )
+    .expect("Chainlink report scaling must not inherit rust_decimal max-scale panics");
+
+    let price_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.price_to_beat_source.path).expect("price source should read"),
+    )
+    .expect("price source should parse");
+    assert_eq!(
+        price_json["source_report_decimal_scale"],
+        serde_json::json!(29)
+    );
+    assert_eq!(
+        price_json["source_report_benchmark_price"],
+        serde_json::json!(0.1)
+    );
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_decodes_chainlink_int192_benchmark_price_without_i128_bound()
+ {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    set_chainlink_feed_bindings(
+        &mut loaded,
+        &[("configured-reference-price", TEST_PRICE_TO_BEAT_FEED_ID, 38)],
+    );
+    let mut benchmark_word = [0_u8; 32];
+    benchmark_word[15] = 1;
+    let report_path = temp.path().join("chainlink-report-full-int192.json");
+    std::fs::write(
+        &report_path,
+        chainlink_v3_report_source_json_with_benchmark_word(
+            TEST_PRICE_TO_BEAT_FEED_ID,
+            600,
+            601,
+            benchmark_word,
+            true,
+        ),
+    )
+    .expect("report source should write");
+    let report_sha256 = sha256_file(&report_path);
+    let reference_quote_observations_source_path =
+        temp.path().join("reference-quote-observations-source.json");
+    write_reference_quote_observations_source(
+        &reference_quote_observations_source_path,
+        &[3300.0, 3301.0, 3302.0, 3304.0, 3308.0, 3313.0],
+    );
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &report_sha256,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 5_000,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+        },
+    )
+    .expect("Chainlink report decoder must support the protocol int192 width");
+
+    let price_json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&written.price_to_beat_source.path).expect("price source should read"),
+    )
+    .expect("price source should parse");
+    let price = price_json["source_report_benchmark_price"]
+        .as_f64()
+        .expect("benchmark price should be numeric");
+    assert!(
+        price.is_finite() && price > 3.4 && price < 3.5,
+        "2^128 scaled by 1e38 should decode to about 3.4, got {price_json}"
+    );
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_refuses_unparseable_report_before_outputs() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let report_path = temp.path().join("unparseable-chainlink-report.bin");
+    std::fs::write(&report_path, b"operator-approved-price-report")
+        .expect("report source should write");
+    let report_sha256 = sha256_file(&report_path);
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+    let reference_quote_observations_source_path =
+        temp.path().join("reference-quote-observations-source.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &report_sha256,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 5_000,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+        },
+    )
+    .expect_err("hash-matching but unparseable report must fail before output");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source-bound price_to_beat report provenance is invalid"),
+        "expected report-provenance failure, got: {error}"
+    );
+    for path in [
+        price_source_path,
+        reference_quote_source_path,
+        realized_volatility_source_path,
+    ] {
+        assert!(
+            !path.exists(),
+            "failed materializer must not leave {path:?}"
+        );
+    }
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_rejects_quote_and_volatility_outside_decision_window() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    configure_reference_data(&mut loaded);
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let report_path = temp.path().join("chainlink-report.json");
+    std::fs::write(
+        &report_path,
+        chainlink_v3_report_source_json(
+            TEST_PRICE_TO_BEAT_FEED_ID,
+            600,
+            601,
+            3100.0,
+            TEST_PRICE_TO_BEAT_REPORT_DECIMAL_SCALE,
+            true,
+        ),
+    )
+    .expect("report source should write");
+    let report_sha256 = sha256_file(&report_path);
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+    let reference_quote_observations_source_path =
+        temp.path().join("reference-quote-observations-source.json");
+    write_reference_quote_observations_source(
+        &reference_quote_observations_source_path,
+        &[3300.0, 3301.0, 3302.0, 3304.0, 3308.0, 3313.0],
+    );
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: &report_sha256,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 1_200,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+        },
+    )
+    .expect_err("quote or volatility timestamps outside the decision window must fail");
+
+    assert!(
+        error.to_string().contains(
+            "reference quote observation source did not produce ready realized volatility"
+        ),
+        "expected realized-volatility readiness failure, got: {error}"
+    );
+    for path in [
+        price_source_path,
+        reference_quote_source_path,
+        realized_volatility_source_path,
+    ] {
+        assert!(
+            !path.exists(),
+            "failed materializer must not leave {path:?}"
+        );
+    }
+}
+
+#[test]
+fn entry_decision_proof_source_materializer_refuses_report_hash_mismatch_before_outputs() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let report_path = temp.path().join("wrong-chainlink-report.bin");
+    std::fs::write(&report_path, b"unexpected-price-report").expect("report source should write");
+    let price_source_path = temp.path().join("source-bound-price.json");
+    let reference_quote_source_path = temp.path().join("reference-quote.json");
+    let realized_volatility_source_path = temp.path().join("realized-volatility.json");
+    let reference_quote_observations_source_path =
+        temp.path().join("reference-quote-observations-source.json");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_proof_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionProofSourceMaterializationRequest {
+            price_report_path: &report_path,
+            max_price_report_bytes: 100_000,
+            expected_price_report_sha256: TEST_PRICE_TO_BEAT_REPORT_SHA256,
+            market_selection_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS,
+            decision_timestamp_ms: TEST_MARKET_SELECTION_NOW_MS + 5_000,
+            reference_quote_observations_source_path: &reference_quote_observations_source_path,
+            max_reference_quote_observations_source_bytes: 100_000,
+            price_to_beat_source_output_path: &price_source_path,
+            reference_quote_source_output_path: &reference_quote_source_path,
+            realized_volatility_source_output_path: &realized_volatility_source_path,
+        },
+    )
+    .expect_err("operator-approved report hash mismatch must fail before output");
+
+    assert!(
+        error
+            .to_string()
+            .contains("price_to_beat report hash does not match approved source"),
+        "expected report-hash mismatch, got: {error}"
+    );
+    for path in [
+        price_source_path,
+        reference_quote_source_path,
+        realized_volatility_source_path,
+    ] {
+        assert!(
+            !path.exists(),
+            "failed materializer must not leave {path:?}"
+        );
+    }
+}
+
+fn entry_decision_source_input_instruments() -> Vec<InstrumentAny> {
+    let market_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    vec![
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            &market_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+    ]
+}
+
+fn entry_decision_source_market_inputs(
+    instruments: &[InstrumentAny],
+) -> EntryDecisionSourceMarketInputs<'_> {
+    EntryDecisionSourceMarketInputs {
+        instruments,
+        up_book: EntryDecisionSourceBookSideInput {
+            best_bid: 0.50,
+            bid_quantity: 500.0,
+            best_ask: 0.50,
+            ask_quantity: 500.0,
+            liquidity_available: 500.0,
+        },
+        down_book: EntryDecisionSourceBookSideInput {
+            best_bid: 0.48,
+            bid_quantity: 500.0,
+            best_ask: 0.49,
+            ask_quantity: 500.0,
+            liquidity_available: 500.0,
+        },
+        fee_bps_by_instrument_id: BTreeMap::from([
+            (TEST_UP_INSTRUMENT_ID.to_string(), 0.0),
+            (TEST_DOWN_INSTRUMENT_ID.to_string(), 0.0),
+        ]),
+    }
+}
+
+#[test]
+fn entry_decision_source_input_collector_refuses_price_to_beat_without_report_provenance() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs_without_report_provenance(&temp, 3100.0);
+    let instruments = entry_decision_source_input_instruments();
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs: entry_decision_source_market_inputs(&instruments),
+                decision_source_output_path: &paths.decision_source_output,
+                instrument_source_output_path: &paths.instrument_source_output,
+                fee_rate_source_output_path: &paths.fee_rate_source_output,
+            },
+        )
+        .expect_err("collector must reject price_to_beat without source report provenance");
+
+    assert!(
+        error
+            .to_string()
+            .contains("source-bound price_to_beat report provenance"),
+        "expected price_to_beat report provenance failure, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
+}
+
+#[test]
+fn entry_decision_source_input_collector_refuses_missing_source_bound_price_to_beat() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 0.0);
+    let instruments = entry_decision_source_input_instruments();
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs: entry_decision_source_market_inputs(&instruments),
+                decision_source_output_path: &paths.decision_source_output,
+                instrument_source_output_path: &paths.instrument_source_output,
+                fee_rate_source_output_path: &paths.fee_rate_source_output,
+            },
+        )
+        .expect_err("collector must refuse invalid source-bound price_to_beat");
+
+    assert!(
+        error.to_string().contains("source-bound price_to_beat"),
+        "expected source-bound price_to_beat failure, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
+}
+
+#[test]
+fn entry_decision_source_input_collector_rejects_unselectable_or_incomplete_instrument_pair() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let mut instruments = entry_decision_source_input_instruments();
+    instruments.pop();
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs: entry_decision_source_market_inputs(&instruments),
+                decision_source_output_path: &paths.decision_source_output,
+                instrument_source_output_path: &paths.instrument_source_output,
+                fee_rate_source_output_path: &paths.fee_rate_source_output,
+            },
+        )
+        .expect_err("collector must reject incomplete selected-market instrument input");
+
+    assert!(
+        error.to_string().contains("two-sided configured market"),
+        "expected selected-market pair failure, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
+}
+
+#[test]
+fn entry_decision_source_market_attempts_follow_configured_rotation_limit() {
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let current_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let next_start_seconds = TEST_MARKET_SELECTION_CURRENT_START_SECONDS + 300;
+    let next_start_ms = TEST_MARKET_SELECTION_END_MS;
+    let next_end_ms =
+        next_start_ms + (TEST_MARKET_SELECTION_END_MS - TEST_MARKET_SELECTION_START_MS);
+    let next_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        next_start_seconds,
+    );
+    let instruments = vec![
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            &current_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            &current_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            "condition-next-up.POLYMARKET",
+            &next_slug,
+            "market-next",
+            "condition-next",
+            "question-next",
+            TEST_UP_OUTCOME,
+            next_start_ms,
+            next_end_ms,
+        ),
+        updown_binary_option(
+            "condition-next-down.POLYMARKET",
+            &next_slug,
+            "market-next",
+            "condition-next",
+            "question-next",
+            TEST_DOWN_OUTCOME,
+            next_start_ms,
+            next_end_ms,
+        ),
+    ];
+
+    let attempts = selected_entry_decision_market_attempts(
+        &loaded,
+        &strategy_instance_id,
+        &instruments,
+        TEST_MARKET_SELECTION_NOW_MS,
+        2,
+    )
+    .expect("two configured source-proof attempts should resolve");
+
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0].source_identity.market_slug, current_slug);
+    assert_eq!(attempts[1].source_identity.market_slug, next_slug);
+}
+
+#[test]
+fn entry_decision_source_input_collector_preserves_provider_selected_rotated_market() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let current_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let next_start_seconds = TEST_MARKET_SELECTION_CURRENT_START_SECONDS + 300;
+    let next_start_ms = TEST_MARKET_SELECTION_END_MS;
+    let next_end_ms =
+        next_start_ms + (TEST_MARKET_SELECTION_END_MS - TEST_MARKET_SELECTION_START_MS);
+    let next_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        next_start_seconds,
+    );
+    let instruments = vec![
+        updown_binary_option(
+            TEST_UP_INSTRUMENT_ID,
+            &current_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            TEST_DOWN_INSTRUMENT_ID,
+            &current_slug,
+            TEST_MARKET_ID,
+            TEST_CONDITION_ID,
+            TEST_QUESTION_ID,
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+        ),
+        updown_binary_option(
+            "condition-next-up.POLYMARKET",
+            &next_slug,
+            "market-next",
+            "condition-next",
+            "question-next",
+            TEST_UP_OUTCOME,
+            next_start_ms,
+            next_end_ms,
+        ),
+        updown_binary_option(
+            "condition-next-down.POLYMARKET",
+            &next_slug,
+            "market-next",
+            "condition-next",
+            "question-next",
+            TEST_DOWN_OUTCOME,
+            next_start_ms,
+            next_end_ms,
+        ),
+    ];
+    let selected_attempts = selected_entry_decision_market_attempts(
+        &loaded,
+        &strategy_instance_id,
+        &instruments,
+        TEST_MARKET_SELECTION_NOW_MS,
+        2,
+    )
+    .expect("two configured source-proof attempts should resolve");
+    let selected = selected_attempts
+        .get(1)
+        .expect("rotated selected market should exist");
+    let mut market_inputs = entry_decision_source_market_inputs(&instruments);
+    market_inputs.fee_bps_by_instrument_id = BTreeMap::from([
+        (selected.up_instrument_id.to_string(), 0.0),
+        (selected.down_instrument_id.to_string(), 0.0),
+    ]);
+
+    write_entry_decision_source_inputs_from_selected_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionSourceInputRequest {
+            price_to_beat_source_path: &paths.price_source_path,
+            max_price_to_beat_source_bytes: 100_000,
+            reference_quote_source_path: &paths.reference_quote_source_path,
+            max_reference_quote_source_bytes: 100_000,
+            realized_volatility_source_path: &paths.realized_volatility_source_path,
+            max_realized_volatility_source_bytes: 100_000,
+            market_inputs,
+            decision_source_output_path: &paths.decision_source_output,
+            instrument_source_output_path: &paths.instrument_source_output,
+            fee_rate_source_output_path: &paths.fee_rate_source_output,
+        },
+        selected,
+    )
+    .expect("collector should preserve the provider-selected rotated market");
+
+    let decision_source: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&paths.decision_source_output).expect("decision source should read"),
+    )
+    .expect("decision source should parse");
+    assert_eq!(
+        decision_source["readiness_session"]["selected_market"]["market_id"],
+        serde_json::json!("market-next")
+    );
+}
+
+#[test]
+fn entry_decision_source_input_collector_rejects_empty_or_one_sided_book() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let instruments = entry_decision_source_input_instruments();
+    let mut market_inputs = entry_decision_source_market_inputs(&instruments);
+    market_inputs.up_book.ask_quantity = 0.0;
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs,
+                decision_source_output_path: &paths.decision_source_output,
+                instrument_source_output_path: &paths.instrument_source_output,
+                fee_rate_source_output_path: &paths.fee_rate_source_output,
+            },
+        )
+        .expect_err("collector must reject one-sided selected-market book input");
+
+    assert!(
+        error.to_string().contains("up book"),
+        "expected book failure, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
+}
+
+#[test]
+fn entry_decision_source_input_collector_rejects_crossed_book_before_write() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let instruments = entry_decision_source_input_instruments();
+    let mut market_inputs = entry_decision_source_market_inputs(&instruments);
+    market_inputs.up_book.best_bid = 0.52;
+    market_inputs.up_book.best_ask = 0.51;
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs,
+                decision_source_output_path: &paths.decision_source_output,
+                instrument_source_output_path: &paths.instrument_source_output,
+                fee_rate_source_output_path: &paths.fee_rate_source_output,
+            },
+        )
+        .expect_err("collector must reject crossed selected-market book input");
+
+    assert!(
+        error.to_string().contains("crossed"),
+        "expected crossed book failure, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
+}
+
+#[test]
+fn entry_decision_source_input_collector_uses_selected_market_price_precision() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let mut instruments = entry_decision_source_input_instruments();
+    instruments.insert(
+        0,
+        updown_binary_option_with_price_precision(
+            UpdownBinaryOptionIdentity {
+                instrument_id: "unrelated-up.POLYMARKET",
+                market_slug: "unrelated-market-slug",
+                market_id: "unrelated-market",
+                condition_id: "unrelated-condition",
+                question_id: "unrelated-question",
+            },
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+            6,
+        ),
+    );
+
+    bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+        &loaded,
+        &strategy_instance_id,
+        EntryDecisionSourceInputRequest {
+            price_to_beat_source_path: &paths.price_source_path,
+            max_price_to_beat_source_bytes: 100_000,
+            reference_quote_source_path: &paths.reference_quote_source_path,
+            max_reference_quote_source_bytes: 100_000,
+            realized_volatility_source_path: &paths.realized_volatility_source_path,
+            max_realized_volatility_source_bytes: 100_000,
+            market_inputs: entry_decision_source_market_inputs(&instruments),
+            decision_source_output_path: &paths.decision_source_output,
+            instrument_source_output_path: &paths.instrument_source_output,
+            fee_rate_source_output_path: &paths.fee_rate_source_output,
+        },
+    )
+    .expect("collector should use selected market precision, not first instrument precision");
+
+    let decision_source: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&paths.decision_source_output).expect("decision source should read"),
+    )
+    .expect("decision source should parse");
+    assert_eq!(decision_source["books"]["price_precision"], 3);
+}
+
+#[test]
+fn entry_decision_source_input_collector_rejects_selected_price_precision_mismatch() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let market_slug = updown_market_slug(
+        TEST_MARKET_SELECTION_UNDERLYING_ASSET,
+        TEST_MARKET_SELECTION_CADENCE_SLUG,
+        TEST_MARKET_SELECTION_CURRENT_START_SECONDS,
+    );
+    let instruments = vec![
+        updown_binary_option_with_price_precision(
+            UpdownBinaryOptionIdentity {
+                instrument_id: TEST_UP_INSTRUMENT_ID,
+                market_slug: &market_slug,
+                market_id: TEST_MARKET_ID,
+                condition_id: TEST_CONDITION_ID,
+                question_id: TEST_QUESTION_ID,
+            },
+            TEST_UP_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+            3,
+        ),
+        updown_binary_option_with_price_precision(
+            UpdownBinaryOptionIdentity {
+                instrument_id: TEST_DOWN_INSTRUMENT_ID,
+                market_slug: &market_slug,
+                market_id: TEST_MARKET_ID,
+                condition_id: TEST_CONDITION_ID,
+                question_id: TEST_QUESTION_ID,
+            },
+            TEST_DOWN_OUTCOME,
+            TEST_MARKET_SELECTION_START_MS,
+            TEST_MARKET_SELECTION_END_MS,
+            4,
+        ),
+    ];
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
+            &loaded,
+            &strategy_instance_id,
+            EntryDecisionSourceInputRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                market_inputs: entry_decision_source_market_inputs(&instruments),
+                decision_source_output_path: &paths.decision_source_output,
+                instrument_source_output_path: &paths.instrument_source_output,
+                fee_rate_source_output_path: &paths.fee_rate_source_output,
+            },
+        )
+        .expect_err("collector must reject mismatched selected-market price precision");
+
+    assert!(
+        error.to_string().contains("price_precision"),
+        "expected selected price_precision failure, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
+}
+
+#[test]
+fn entry_decision_source_input_provider_validates_local_proofs_before_network() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .clone();
+    let client = loaded
+        .root
+        .clients
+        .get_mut(TEST_EXECUTION_CLIENT_ID)
+        .expect("fixture should include execution client");
+    let data = client
+        .data
+        .as_mut()
+        .and_then(toml::Value::as_table_mut)
+        .expect("fixture data block should be a TOML table");
+    data.insert(
+        "base_url_gamma".to_string(),
+        toml::Value::String("http://127.0.0.1:9".to_string()),
+    );
+    data.insert("http_timeout_secs".to_string(), toml::Value::Integer(1));
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    std::fs::write(
+        &paths.reference_quote_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.reference_quote_source.v1",
+            "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+            "price": 0.0,
+            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+        }))
+        .expect("reference quote source should serialize"),
+    )
+    .expect("reference quote source should write");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+
+    let error = runtime
+        .block_on(
+            collect_entry_decision_source_inputs_from_configured_provider(
+                &loaded,
+                &strategy_instance_id,
+                EntryDecisionSourceCollectionRequest {
+                    price_to_beat_source_path: &paths.price_source_path,
+                    max_price_to_beat_source_bytes: 100_000,
+                    reference_quote_source_path: &paths.reference_quote_source_path,
+                    max_reference_quote_source_bytes: 100_000,
+                    realized_volatility_source_path: &paths.realized_volatility_source_path,
+                    max_realized_volatility_source_bytes: 100_000,
+                    decision_source_output_path: &paths.decision_source_output,
+                    instrument_source_output_path: &paths.instrument_source_output,
+                    fee_rate_source_output_path: &paths.fee_rate_source_output,
+                },
+            ),
+        )
+        .expect_err("provider must validate local source proofs before network fetches");
+
+    assert!(
+        error.to_string().contains("reference quote source price"),
+        "expected local source proof failure before provider fetch, got: {error}"
+    );
+    assert!(!paths.decision_source_output.exists());
+    assert!(!paths.instrument_source_output.exists());
+    assert!(!paths.fee_rate_source_output.exists());
+}
+
+#[test]
+fn entry_decision_evidence_source_collector_rejects_invalid_price_precision_without_panicking() {
+    let fixture = entry_decision_evidence_source_fixture(u8::MAX);
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.decision_source_path,
+            100_000,
+            &fixture.instrument_source_path,
+            100_000,
+            100_000,
+        )
+        .expect_err("invalid source price precision should fail closed");
+
+    assert!(
+        error.to_string().contains("entry decision evidence"),
+        "invalid precision should be reported as source validation, got: {error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn entry_decision_evidence_source_collector_rejects_symlinked_configured_jsonl_before_append() {
+    let fixture = entry_decision_evidence_source_fixture(2);
+    let configured_path =
+        decision_evidence_path(&fixture.loaded).expect("decision evidence path resolves");
+    let parent = configured_path
+        .parent()
+        .expect("configured decision evidence path should have parent");
+    std::fs::create_dir_all(parent).expect("configured decision evidence parent should create");
+    let external_path = fixture
+        ._temp
+        .path()
+        .join("external-decision-evidence.jsonl");
+    std::fs::write(&external_path, b"sentinel\n").expect("external target should write");
+    std::os::unix::fs::symlink(&external_path, &configured_path)
+        .expect("configured decision evidence symlink should create");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_evidence_from_source_file(
+            &fixture.loaded,
+            &fixture.strategy_instance_id,
+            &fixture.decision_source_path,
+            100_000,
+            &fixture.instrument_source_path,
+            100_000,
+            100_000,
+        )
+        .expect_err("symlinked configured decision evidence path should fail closed");
+
+    assert!(
+        error.to_string().contains("decision evidence"),
+        "symlink rejection should be surfaced as decision-evidence failure, got: {error}"
+    );
+    assert_eq!(
+        std::fs::read(&external_path).expect("external target should remain readable"),
+        b"sentinel\n",
+        "writer must not append through configured decision-evidence symlink before failing"
+    );
+}
+
 #[test]
 fn market_selection_source_builder_uses_nt_expiration_not_rounded_seconds_to_end() {
     let loaded = load_fixture_with_live_canary();
@@ -3080,6 +11976,22 @@ fn market_selection_source_writer_promotes_decision_evidence_from_instrument_sou
         TEST_MARKET_SELECTION_NOW_MS
     );
     assert_eq!(json["polymarket_condition_id"], TEST_CONDITION_ID);
+    assert_eq!(
+        json["runtime_provenance"]["decision_evidence_path"],
+        decision_evidence_path.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        json["runtime_provenance"]["decision_evidence_sha256"],
+        sha256_file(&decision_evidence_path)
+    );
+    assert_eq!(
+        json["runtime_provenance"]["instrument_source_path"],
+        instrument_source_path.to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        json["runtime_provenance"]["instrument_source_sha256"],
+        sha256_file(&instrument_source_path)
+    );
 }
 
 #[test]
@@ -3121,6 +12033,42 @@ fn market_selection_source_writer_rejects_unusable_price_to_beat_values() {
 }
 
 #[test]
+fn market_selection_source_writer_rejects_price_to_beat_source_mismatch() {
+    let fixture = strategy_input_runtime_fixture();
+    let output_path = fixture
+        .temp
+        .path()
+        .join("decision-bound-market-selection-price-source-mismatch.json");
+    let mut snapshot = fixture.snapshot.clone();
+    snapshot.price_to_beat_source = format!("{}-mismatch", TEST_PRICE_TO_BEAT_SOURCE);
+    let decision_evidence_path = write_entry_decision_evidence_chain(&fixture.temp, &snapshot);
+    let market_slug = snapshot
+        .polymarket_market_slug
+        .as_deref()
+        .expect("fixture snapshot should bind market slug");
+    let instruments = market_selection_instruments_for_slug(market_slug);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::write_market_selection_source_artifact_from_decision_evidence_file(
+        &fixture.loaded,
+        &fixture.strategy_instance_id,
+        &decision_evidence_path,
+        100_000,
+        &instruments,
+        &output_path,
+    )
+    .expect_err("mismatched price-to-beat source must fail before market-selection source write");
+
+    assert!(
+        error.to_string().contains("price-to-beat source"),
+        "price-to-beat source rejection should stay diagnostic: {error}"
+    );
+    assert!(
+        !output_path.exists(),
+        "failed price-to-beat source validation must not leave a market-selection artifact"
+    );
+}
+
+#[test]
 fn market_selection_source_writer_uses_family_dispatch_not_updown_directly() {
     let source = std::fs::read_to_string(repo_path("src/bolt_v3_operator_artifacts.rs"))
         .expect("operator artifacts source should read");
@@ -3140,6 +12088,10 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
     let temp = &fixture.temp;
     let strategy_input_path = temp.path().join("strategy-input.json");
     let snapshot = fixture.snapshot.clone();
+    assert_ne!(
+        snapshot.strategy_id, strategy_instance_id,
+        "fixture must exercise NT runtime StrategyId distinct from operator strategy_instance_id"
+    );
 
     let intent = BoltV3OrderIntentEvidence {
         strategy_id: snapshot.strategy_id.clone(),
@@ -3149,6 +12101,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
         order_side: snapshot.submission_order_side.clone(),
         price: snapshot.submission_price.clone(),
         quantity: snapshot.submission_quantity.clone(),
+        canary_proof_claim: None,
         order_fields: BoltV3OrderIntentOrderFields {
             order_type: "Limit".to_string(),
             time_in_force: "Gtc".to_string(),
@@ -3215,7 +12168,6 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
         &decision_evidence_path,
         100_000,
         market_selection_source_ref,
-        &[TEST_MARKET_SELECTION_START_MS],
         &strategy_input_path,
     )
     .expect("source-bound runtime decision evidence should write strategy input evidence");
@@ -3239,7 +12191,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
     let audit = Phase8StrategyInputSafetyAudit::from_evidence_file(
         &strategy_input_path,
         &written.sha256,
-        "chainlink_data_streams.report_at_boundary",
+        TEST_PRICE_TO_BEAT_SOURCE,
     )
     .expect("strategy input evidence should parse");
     assert!(
@@ -3296,7 +12248,6 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
         &wrong_decision_evidence_path,
         100_000,
         market_selection_source_ref,
-        &[TEST_MARKET_SELECTION_START_MS],
         &wrong_strategy_input_path,
     )
     .expect_err("strategy input evidence must reject decision chains from another strategy");
@@ -3308,12 +12259,12 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
 
 #[test]
 #[allow(clippy::type_complexity)]
-fn strategy_input_writer_rejects_runtime_snapshot_target_source_and_hash_mismatches() {
+fn strategy_input_writer_rejects_runtime_snapshot_target_gate_and_hash_mismatches() {
     let cases: [(
         &str,
         fn(&mut BoltV3StrategyInputEvidenceSnapshot, &mut WrittenOperatorArtifact),
         &str,
-    ); 3] = [
+    ); 4] = [
         (
             "configured target",
             |snapshot, _source_ref| {
@@ -3322,11 +12273,11 @@ fn strategy_input_writer_rejects_runtime_snapshot_target_source_and_hash_mismatc
             "target",
         ),
         (
-            "price-to-beat source",
+            "readiness gate identity",
             |snapshot, _source_ref| {
-                snapshot.price_to_beat_source = "other-source".to_string();
+                snapshot.gate_evidence.clear();
             },
-            "price-to-beat source",
+            "readiness gate identity",
         ),
         (
             "market-selection source hash",
@@ -3334,6 +12285,13 @@ fn strategy_input_writer_rejects_runtime_snapshot_target_source_and_hash_mismatc
                 source_ref.sha256 = "0".repeat(64);
             },
             "market-selection source hash",
+        ),
+        (
+            "price-to-beat source",
+            |snapshot, _source_ref| {
+                snapshot.price_to_beat_source = format!("{}-mismatch", TEST_PRICE_TO_BEAT_SOURCE);
+            },
+            "price-to-beat source",
         ),
     ];
 
@@ -3351,7 +12309,6 @@ fn strategy_input_writer_rejects_runtime_snapshot_target_source_and_hash_mismatc
                 &snapshot,
                 &source_ref,
                 100_000,
-                &fixture.candidate_market_start_timestamps_ms,
                 &output_path,
             )
             .expect_err(case_name);
@@ -3382,7 +12339,6 @@ fn strategy_input_writer_rejects_oversized_market_selection_source_before_artifa
             &fixture.snapshot,
             &fixture.market_selection_source_ref,
             source_len.saturating_sub(1),
-            &fixture.candidate_market_start_timestamps_ms,
             &output_path,
         )
         .expect_err("oversized market-selection source must fail before strategy-input write");
@@ -3395,6 +12351,1618 @@ fn strategy_input_writer_rejects_oversized_market_selection_source_before_artifa
     assert!(
         !output_path.exists(),
         "oversized market-selection source failure must not write strategy-input artifact"
+    );
+}
+
+fn host_clock_source_fixture(host_unix_millis: u64, reference_unix_millis: u64) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_host_clock_source.v1",
+  "host_unix_millis": {host_unix_millis},
+  "reference_unix_millis": {reference_unix_millis}
+}}"#
+    )
+}
+
+fn egress_identity_source_fixture(egress_identity_sha256: &str) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_egress_identity_source.v1",
+  "observed_egress_identity_sha256": "{egress_identity_sha256}",
+  "approved_egress_identity_sha256": "{egress_identity_sha256}"
+}}"#
+    )
+}
+
+fn venue_account_state_source_fixture(
+    execution_client_id: &str,
+    configured_target_id: &str,
+    open_order_count: u64,
+    open_position_count: u64,
+    account_state_snapshot_sha256: &str,
+) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_venue_account_state_source.v1",
+  "execution_client_id": "{execution_client_id}",
+  "configured_target_id": "{configured_target_id}",
+  "open_order_count": {open_order_count},
+  "open_position_count": {open_position_count},
+  "account_state_snapshot_sha256": "{account_state_snapshot_sha256}"
+}}"#
+    )
+}
+
+fn funding_margin_source_fixture(
+    available_collateral: &str,
+    required_max_notional_plus_fees: &str,
+    margin_snapshot_sha256: &str,
+) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_funding_margin_source.v1",
+  "available_collateral": "{available_collateral}",
+  "required_max_notional_plus_fees": "{required_max_notional_plus_fees}",
+  "margin_snapshot_sha256": "{margin_snapshot_sha256}"
+}}"#
+    )
+}
+
+fn clob_v2_adapter_signing_source_fixture(
+    clob_signing_version: &str,
+    adapter_signing_source_sha256: &str,
+    domain_requirements_sha256: &str,
+    signed_order_fixture_sha256: &str,
+    signature_verification_sha256: &str,
+    signer_recovered_matches_expected: bool,
+) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_clob_v2_adapter_signing_source.v1",
+  "clob_signing_version": "{clob_signing_version}",
+  "adapter_signing_source_sha256": "{adapter_signing_source_sha256}",
+  "domain_requirements_sha256": "{domain_requirements_sha256}",
+  "signed_order_fixture_sha256": "{signed_order_fixture_sha256}",
+  "signature_verification_sha256": "{signature_verification_sha256}",
+  "signer_recovered_matches_expected": {signer_recovered_matches_expected}
+}}"#
+    )
+}
+
+fn clob_v2_collateral_accounting_source_fixture(
+    collateral_accounting_verified: bool,
+    p_usd_balance: &str,
+    p_usd_allowance: &str,
+    required_max_notional_plus_fees: &str,
+    collateral_accounting_source_sha256: &str,
+    collateral_assumptions_sha256: &str,
+) -> String {
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_clob_v2_collateral_accounting_source.v1",
+  "collateral_accounting_verified": {collateral_accounting_verified},
+  "p_usd_balance": "{p_usd_balance}",
+  "p_usd_allowance": "{p_usd_allowance}",
+  "required_max_notional_plus_fees": "{required_max_notional_plus_fees}",
+  "collateral_accounting_source_sha256": "{collateral_accounting_source_sha256}",
+  "collateral_assumptions_sha256": "{collateral_assumptions_sha256}"
+}}"#
+    )
+}
+
+fn clob_v2_fee_behavior_source_fixture(
+    verification_flags: (bool, bool, bool, bool),
+    price: &str,
+    fee_rate: &str,
+    source_hashes: (&str, &str),
+) -> String {
+    let (
+        fee_behavior_verified,
+        maker_zero_fee_verified,
+        taker_fee_schedule_verified,
+        market_buy_fee_adjustment_verified,
+    ) = verification_flags;
+    let (fee_behavior_source_sha256, fee_assumptions_sha256) = source_hashes;
+    format!(
+        r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_clob_v2_fee_behavior_source.v1",
+  "fee_behavior_verified": {fee_behavior_verified},
+  "maker_zero_fee_verified": {maker_zero_fee_verified},
+  "taker_fee_schedule_verified": {taker_fee_schedule_verified},
+  "market_buy_fee_adjustment_verified": {market_buy_fee_adjustment_verified},
+  "price": "{price}",
+  "fee_rate": "{fee_rate}",
+  "fee_behavior_source_sha256": "{fee_behavior_source_sha256}",
+  "fee_assumptions_sha256": "{fee_assumptions_sha256}"
+}}"#
+    )
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_derives_source_owned_skew_bound() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_source_path = temp.path().join("host-clock-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    std::fs::write(
+        &host_clock_source_path,
+        host_clock_source_fixture(1716510000125, 1716510000000),
+    )
+    .expect("host clock fixture should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_source_path,
+        4096,
+        250,
+    )
+    .expect("source-owned host clock proof should collect");
+
+    assert!(proof.host_clock_skew_within_bound);
+    assert_eq!(proof.host_clock_skew_millis, 125);
+    assert_eq!(proof.max_host_clock_skew_millis, 250);
+    assert_eq!(
+        proof.host_clock_source_sha256,
+        sha256_file(&host_clock_source_path)
+    );
+    assert_eq!(proof.host_clock_skew_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .host_clock_skew_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "host clock proof evidence hash should be lowercase hex"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "host clock proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_venue_account_state_source_proof_derives_source_owned_absence() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let venue_account_source_path = temp.path().join("venue-account-state-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let raw_order_id = "venue-order-id-fixture";
+    let account_state_snapshot_sha256 = sha256_text(raw_order_id);
+    std::fs::write(
+        &venue_account_source_path,
+        venue_account_state_source_fixture(
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
+            0,
+            0,
+            &account_state_snapshot_sha256,
+        ),
+    )
+    .expect("venue account fixture should write");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
+            &venue_account_source_path,
+            4096,
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
+        )
+        .expect("source-owned venue account state proof should collect");
+
+    assert!(proof.conflicting_open_orders_absent);
+    assert!(proof.preexisting_position_absent);
+    assert_eq!(
+        proof.venue_account_state_source_sha256,
+        sha256_file(&venue_account_source_path)
+    );
+    assert_eq!(proof.venue_account_state_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .venue_account_state_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "venue account proof evidence hash should be lowercase hex"
+    );
+    let debug = format!("{proof:?}");
+    assert!(
+        !debug.contains(raw_order_id),
+        "venue account proof must not expose raw order or position material"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "venue account proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_venue_account_state_source_proof_rejects_present_orders_or_positions() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let account_state_snapshot_sha256 = sha256_text("venue-account-state-snapshot");
+    let cases = [
+        ("open_order", 1, 0, "conflicting_open_orders_absent"),
+        ("open_position", 0, 1, "preexisting_position_absent"),
+        ("bad_snapshot_hash", 0, 0, "account_state_snapshot_sha256"),
+    ];
+
+    for (name, open_order_count, open_position_count, expected) in cases {
+        let venue_account_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        let snapshot_hash = if name == "bad_snapshot_hash" {
+            "ABC"
+        } else {
+            account_state_snapshot_sha256.as_str()
+        };
+        std::fs::write(
+            &venue_account_source_path,
+            venue_account_state_source_fixture(
+                TEST_EXECUTION_CLIENT_ID,
+                TEST_CONFIGURED_TARGET_ID,
+                open_order_count,
+                open_position_count,
+                snapshot_hash,
+            ),
+        )
+        .expect("venue account fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
+                &venue_account_source_path,
+                4096,
+                TEST_EXECUTION_CLIENT_ID,
+                TEST_CONFIGURED_TARGET_ID,
+            )
+            .expect_err("present orders or positions must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed venue account proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_venue_account_state_source_proof_rejects_invalid_source_shape() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let account_state_snapshot_sha256 = sha256_text("venue-account-state-snapshot");
+    let raw_order_id = "venue-order-id-fixture";
+    let cases = [
+        (
+            "schema_version",
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "record_kind": "bolt_v3.pre_run_venue_account_state_source.v1",
+  "execution_client_id": "{TEST_EXECUTION_CLIENT_ID}",
+  "configured_target_id": "{TEST_CONFIGURED_TARGET_ID}",
+  "open_order_count": 0,
+  "open_position_count": 0,
+  "account_state_snapshot_sha256": "{account_state_snapshot_sha256}"
+}}"#
+            ),
+            "schema_version",
+        ),
+        (
+            "record_kind",
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_venue_account_state_source.v2",
+  "execution_client_id": "{TEST_EXECUTION_CLIENT_ID}",
+  "configured_target_id": "{TEST_CONFIGURED_TARGET_ID}",
+  "open_order_count": 0,
+  "open_position_count": 0,
+  "account_state_snapshot_sha256": "{account_state_snapshot_sha256}"
+}}"#
+            ),
+            "record_kind",
+        ),
+        (
+            "unknown_field",
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_venue_account_state_source.v1",
+  "execution_client_id": "{TEST_EXECUTION_CLIENT_ID}",
+  "configured_target_id": "{TEST_CONFIGURED_TARGET_ID}",
+  "open_order_count": 0,
+  "open_position_count": 0,
+  "account_state_snapshot_sha256": "{account_state_snapshot_sha256}",
+  "raw_order_id": "{raw_order_id}"
+}}"#
+            ),
+            "failed to parse venue account state source input",
+        ),
+        (
+            "malformed_json",
+            r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_venue_account_state_source.v1""#
+                .to_string(),
+            "failed to parse venue account state source input",
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let venue_account_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(&venue_account_source_path, source)
+            .expect("venue account fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
+                &venue_account_source_path,
+                4096,
+                TEST_EXECUTION_CLIENT_ID,
+                TEST_CONFIGURED_TARGET_ID,
+            )
+            .expect_err("invalid venue account state source must not approve pre-run proof");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !message.contains(raw_order_id),
+            "{name} diagnostic must not expose raw order material: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed venue account proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_venue_account_state_source_proof_rejects_mismatched_config_identity() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let account_state_snapshot_sha256 = sha256_text("venue-account-state-snapshot");
+    let cases = [
+        (
+            "execution_client_id",
+            "other-client",
+            TEST_CONFIGURED_TARGET_ID,
+            "execution_client_id",
+        ),
+        (
+            "configured_target_id",
+            TEST_EXECUTION_CLIENT_ID,
+            "other-target",
+            "configured_target_id",
+        ),
+    ];
+
+    for (name, execution_client_id, configured_target_id, expected) in cases {
+        let venue_account_source_path = temp.path().join(format!("{name}.json"));
+        std::fs::write(
+            &venue_account_source_path,
+            venue_account_state_source_fixture(
+                execution_client_id,
+                configured_target_id,
+                0,
+                0,
+                &account_state_snapshot_sha256,
+            ),
+        )
+        .expect("venue account fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
+                &venue_account_source_path,
+                4096,
+                TEST_EXECUTION_CLIENT_ID,
+                TEST_CONFIGURED_TARGET_ID,
+            )
+            .expect_err("wrong-account venue state must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} mismatch should identify {expected}: {message}"
+        );
+        assert!(
+            !message.contains("other-client") && !message.contains("other-target"),
+            "{name} diagnostic must not echo mismatched account identity: {message}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_venue_account_state_source_proof_rejects_oversized_source_before_parse() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let venue_account_source_path = temp.path().join("venue-account-state-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let account_state_snapshot_sha256 = sha256_text("venue-account-state-snapshot");
+    std::fs::write(
+        &venue_account_source_path,
+        venue_account_state_source_fixture(
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
+            0,
+            0,
+            &account_state_snapshot_sha256,
+        ),
+    )
+    .expect("venue account fixture should write");
+
+    let error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_venue_account_state_source_proof(
+            &venue_account_source_path,
+            1,
+            TEST_EXECUTION_CLIENT_ID,
+            TEST_CONFIGURED_TARGET_ID,
+        )
+        .expect_err("oversized venue account source must not approve pre-run proof");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("failed to read venue account state source input"),
+        "oversized source should be a read diagnostic: {message}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "oversized venue account proof collection must not write pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_funding_margin_source_proof_derives_source_owned_coverage() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let funding_margin_source_path = temp.path().join("funding-margin-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let raw_margin_account = "margin-account-fixture";
+    let margin_snapshot_sha256 = sha256_text(raw_margin_account);
+    std::fs::write(
+        &funding_margin_source_path,
+        funding_margin_source_fixture("10.00", "1.25", &margin_snapshot_sha256),
+    )
+    .expect("funding margin fixture should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_funding_margin_source_proof(
+        &funding_margin_source_path,
+        4096,
+    )
+    .expect("source-owned funding margin proof should collect");
+
+    assert!(proof.funding_margin_covers_max_notional_plus_fees);
+    assert_eq!(
+        proof.funding_margin_source_sha256,
+        sha256_file(&funding_margin_source_path)
+    );
+    assert_eq!(proof.funding_margin_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .funding_margin_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "funding margin proof evidence hash should be lowercase hex"
+    );
+    let debug = format!("{proof:?}");
+    assert!(
+        !debug.contains(raw_margin_account),
+        "funding margin proof must not expose raw margin account material"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "funding margin proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_funding_margin_source_proof_uses_source_decimal_comparator() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let funding_margin_source_path = temp.path().join("funding-margin-source.json");
+    let margin_snapshot_sha256 = sha256_text("funding-margin-snapshot");
+    std::fs::write(
+        &funding_margin_source_path,
+        funding_margin_source_fixture(
+            "1000000000000000000000000000000000000000000.00",
+            "1.25",
+            &margin_snapshot_sha256,
+        ),
+    )
+    .expect("funding margin fixture should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_funding_margin_source_proof(
+        &funding_margin_source_path,
+        4096,
+    )
+    .expect("proof collection should use the same decimal-string comparator as source writing");
+
+    assert!(proof.funding_margin_covers_max_notional_plus_fees);
+    assert_eq!(
+        proof.funding_margin_source_sha256,
+        sha256_file(&funding_margin_source_path)
+    );
+}
+
+#[test]
+fn pre_run_funding_margin_source_proof_rejects_insufficient_or_invalid_margin() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let margin_snapshot_sha256 = sha256_text("funding-margin-snapshot");
+    let cases = [
+        (
+            "insufficient_collateral",
+            "1.00",
+            "1.25",
+            margin_snapshot_sha256.as_str(),
+            "funding_margin_covers_max_notional_plus_fees",
+        ),
+        (
+            "negative_available",
+            "-1.00",
+            "1.25",
+            margin_snapshot_sha256.as_str(),
+            "available_collateral",
+        ),
+        (
+            "zero_required",
+            "1.00",
+            "0",
+            margin_snapshot_sha256.as_str(),
+            "required_max_notional_plus_fees",
+        ),
+        (
+            "bad_available",
+            "not-decimal",
+            "1.25",
+            margin_snapshot_sha256.as_str(),
+            "available_collateral",
+        ),
+        (
+            "bad_required",
+            "1.00",
+            "not-decimal",
+            margin_snapshot_sha256.as_str(),
+            "required_max_notional_plus_fees",
+        ),
+        (
+            "bad_snapshot_hash",
+            "10.00",
+            "1.25",
+            "ABC",
+            "margin_snapshot_sha256",
+        ),
+    ];
+
+    for (name, available, required, snapshot_hash, expected) in cases {
+        let funding_margin_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(
+            &funding_margin_source_path,
+            funding_margin_source_fixture(available, required, snapshot_hash),
+        )
+        .expect("funding margin fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_funding_margin_source_proof(
+                &funding_margin_source_path,
+                4096,
+            )
+            .expect_err("insufficient or invalid funding margin must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed funding margin proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_funding_margin_source_proof_rejects_invalid_source_shape() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let margin_snapshot_sha256 = sha256_text("funding-margin-snapshot");
+    let raw_account = "margin-account-fixture";
+    let cases = [
+        (
+            "schema_version",
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "record_kind": "bolt_v3.pre_run_funding_margin_source.v1",
+  "available_collateral": "10.00",
+  "required_max_notional_plus_fees": "1.25",
+  "margin_snapshot_sha256": "{margin_snapshot_sha256}"
+}}"#
+            ),
+            "schema_version",
+        ),
+        (
+            "record_kind",
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_funding_margin_source.v2",
+  "available_collateral": "10.00",
+  "required_max_notional_plus_fees": "1.25",
+  "margin_snapshot_sha256": "{margin_snapshot_sha256}"
+}}"#
+            ),
+            "record_kind",
+        ),
+        (
+            "unknown_field",
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_funding_margin_source.v1",
+  "available_collateral": "10.00",
+  "required_max_notional_plus_fees": "1.25",
+  "margin_snapshot_sha256": "{margin_snapshot_sha256}",
+  "raw_margin_account": "{raw_account}"
+}}"#
+            ),
+            "failed to parse funding margin source input",
+        ),
+        (
+            "malformed_json",
+            r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_funding_margin_source.v1""#
+                .to_string(),
+            "failed to parse funding margin source input",
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let funding_margin_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(&funding_margin_source_path, source)
+            .expect("funding margin fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_funding_margin_source_proof(
+                &funding_margin_source_path,
+                4096,
+            )
+            .expect_err("invalid funding margin source must not approve pre-run proof");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !message.contains(raw_account),
+            "{name} diagnostic must not expose raw margin account material: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed funding margin proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_funding_margin_source_proof_rejects_oversized_source_before_parse() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let funding_margin_source_path = temp.path().join("funding-margin-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let margin_snapshot_sha256 = sha256_text("funding-margin-snapshot");
+    std::fs::write(
+        &funding_margin_source_path,
+        funding_margin_source_fixture("10.00", "1.25", &margin_snapshot_sha256),
+    )
+    .expect("funding margin fixture should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_funding_margin_source_proof(
+        &funding_margin_source_path,
+        1,
+    )
+    .expect_err("oversized funding margin source must not approve pre-run proof");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("failed to read funding margin source input"),
+        "oversized source should be a read diagnostic: {message}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "oversized funding margin proof collection must not write pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_clob_v2_adapter_signing_source_proof_derives_source_owned_values() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let signing_source_path = temp.path().join("clob-v2-adapter-signing-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let raw_signing_contract = "clob-signing-contract-fixture";
+    let signing_source_sha256 = sha256_text(raw_signing_contract);
+    let domain_requirements_sha256 = sha256_text("clob-domain-requirements");
+    let signed_order_fixture_sha256 = sha256_text("clob-signed-order-fixture");
+    let signature_verification_sha256 = sha256_text("clob-signature-verification");
+    std::fs::write(
+        &signing_source_path,
+        clob_v2_adapter_signing_source_fixture(
+            "2",
+            &signing_source_sha256,
+            &domain_requirements_sha256,
+            &signed_order_fixture_sha256,
+            &signature_verification_sha256,
+            true,
+        ),
+    )
+    .expect("CLOB V2 signing fixture should write");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_adapter_signing_source_proof(
+            &signing_source_path,
+            4096,
+            "2",
+        )
+        .expect("source-owned CLOB V2 signing proof should collect");
+
+    assert!(proof.clob_v2_adapter_signing_verified);
+    assert_eq!(
+        proof.clob_v2_adapter_signing_source_sha256,
+        sha256_file(&signing_source_path)
+    );
+    assert_eq!(proof.clob_v2_adapter_signing_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .clob_v2_adapter_signing_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "CLOB V2 signing evidence hash should be lowercase hex"
+    );
+    assert!(
+        !format!("{proof:?}").contains(raw_signing_contract),
+        "CLOB V2 signing proof must not expose raw signing material"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "CLOB V2 signing proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_clob_v2_collateral_accounting_source_proof_derives_source_owned_values() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let collateral_source_path = temp.path().join("clob-v2-collateral-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let raw_collateral_account = "clob-collateral-account-fixture";
+    let collateral_source_sha256 = sha256_text(raw_collateral_account);
+    let collateral_assumptions_sha256 = sha256_text("clob-collateral-assumptions");
+    std::fs::write(
+        &collateral_source_path,
+        clob_v2_collateral_accounting_source_fixture(
+            true,
+            "10.00",
+            "10.00",
+            "1.25",
+            &collateral_source_sha256,
+            &collateral_assumptions_sha256,
+        ),
+    )
+    .expect("CLOB V2 collateral fixture should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_collateral_accounting_source_proof(
+        &collateral_source_path,
+        4096,
+    )
+    .expect("source-owned CLOB V2 collateral accounting proof should collect");
+
+    assert!(proof.clob_v2_collateral_accounting_verified);
+    assert_eq!(
+        proof.clob_v2_collateral_accounting_source_sha256,
+        sha256_file(&collateral_source_path)
+    );
+    assert_eq!(proof.clob_v2_collateral_accounting_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .clob_v2_collateral_accounting_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "CLOB V2 collateral evidence hash should be lowercase hex"
+    );
+    assert!(
+        !format!("{proof:?}").contains(raw_collateral_account),
+        "CLOB V2 collateral proof must not expose raw account material"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "CLOB V2 collateral proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_clob_v2_fee_behavior_source_proof_derives_source_owned_values() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let fee_source_path = temp.path().join("clob-v2-fee-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let raw_fee_account = "clob-fee-account-fixture";
+    let fee_source_sha256 = sha256_text(raw_fee_account);
+    let fee_assumptions_sha256 = sha256_text("clob-fee-assumptions");
+    std::fs::write(
+        &fee_source_path,
+        clob_v2_fee_behavior_source_fixture(
+            (true, true, true, true),
+            "0.55",
+            "0.01",
+            (&fee_source_sha256, &fee_assumptions_sha256),
+        ),
+    )
+    .expect("CLOB V2 fee fixture should write");
+
+    let proof =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_fee_behavior_source_proof(
+            &fee_source_path,
+            4096,
+        )
+        .expect("source-owned CLOB V2 fee behavior proof should collect");
+
+    assert!(proof.clob_v2_fee_behavior_verified);
+    assert_eq!(
+        proof.clob_v2_fee_behavior_source_sha256,
+        sha256_file(&fee_source_path)
+    );
+    assert_eq!(proof.clob_v2_fee_behavior_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .clob_v2_fee_behavior_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "CLOB V2 fee evidence hash should be lowercase hex"
+    );
+    assert!(
+        !format!("{proof:?}").contains(raw_fee_account),
+        "CLOB V2 fee proof must not expose raw account material"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "CLOB V2 fee proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_clob_v2_adapter_signing_source_proof_rejects_invalid_signing() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let signing_source_sha256 = sha256_text("clob-signing-contract-fixture");
+    let domain_requirements_sha256 = sha256_text("clob-domain-requirements");
+    let signed_order_fixture_sha256 = sha256_text("clob-signed-order-fixture");
+    let signature_verification_sha256 = sha256_text("clob-signature-verification");
+    let cases = [
+        (
+            "version_mismatch",
+            "1",
+            signing_source_sha256.as_str(),
+            domain_requirements_sha256.as_str(),
+            signed_order_fixture_sha256.as_str(),
+            signature_verification_sha256.as_str(),
+            true,
+            "clob_signing_version",
+        ),
+        (
+            "bad_signing_hash",
+            "2",
+            "ABC",
+            domain_requirements_sha256.as_str(),
+            signed_order_fixture_sha256.as_str(),
+            signature_verification_sha256.as_str(),
+            true,
+            "adapter_signing_source_sha256",
+        ),
+        (
+            "signer_mismatch",
+            "2",
+            signing_source_sha256.as_str(),
+            domain_requirements_sha256.as_str(),
+            signed_order_fixture_sha256.as_str(),
+            signature_verification_sha256.as_str(),
+            false,
+            "signer_recovered_matches_expected",
+        ),
+    ];
+
+    for (
+        name,
+        version,
+        signing_hash,
+        domain_hash,
+        order_hash,
+        verification_hash,
+        signer_match,
+        expected,
+    ) in cases
+    {
+        let signing_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(
+            &signing_source_path,
+            clob_v2_adapter_signing_source_fixture(
+                version,
+                signing_hash,
+                domain_hash,
+                order_hash,
+                verification_hash,
+                signer_match,
+            ),
+        )
+        .expect("CLOB V2 signing fixture should write");
+
+        let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_adapter_signing_source_proof(
+            &signing_source_path,
+            4096,
+            "2",
+        )
+        .expect_err("invalid CLOB V2 signing source must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed CLOB V2 signing proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_clob_v2_collateral_accounting_source_proof_rejects_invalid_collateral() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let collateral_source_sha256 = sha256_text("clob-collateral-account-fixture");
+    let collateral_assumptions_sha256 = sha256_text("clob-collateral-assumptions");
+    let cases = [
+        (
+            "not_verified",
+            false,
+            "10.00",
+            "10.00",
+            "1.25",
+            collateral_source_sha256.as_str(),
+            collateral_assumptions_sha256.as_str(),
+            "clob_v2_collateral_accounting_verified",
+        ),
+        (
+            "insufficient_balance",
+            true,
+            "1.00",
+            "10.00",
+            "1.25",
+            collateral_source_sha256.as_str(),
+            collateral_assumptions_sha256.as_str(),
+            "clob_v2_collateral_accounting_verified",
+        ),
+        (
+            "insufficient_allowance",
+            true,
+            "10.00",
+            "1.00",
+            "1.25",
+            collateral_source_sha256.as_str(),
+            collateral_assumptions_sha256.as_str(),
+            "clob_v2_collateral_accounting_verified",
+        ),
+        (
+            "bad_balance",
+            true,
+            "not-decimal",
+            "10.00",
+            "1.25",
+            collateral_source_sha256.as_str(),
+            collateral_assumptions_sha256.as_str(),
+            "p_usd_balance",
+        ),
+        (
+            "bad_hash",
+            true,
+            "10.00",
+            "10.00",
+            "1.25",
+            "ABC",
+            collateral_assumptions_sha256.as_str(),
+            "collateral_accounting_source_sha256",
+        ),
+    ];
+
+    for (name, verified, balance, allowance, required, source_hash, assumptions_hash, expected) in
+        cases
+    {
+        let collateral_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(
+            &collateral_source_path,
+            clob_v2_collateral_accounting_source_fixture(
+                verified,
+                balance,
+                allowance,
+                required,
+                source_hash,
+                assumptions_hash,
+            ),
+        )
+        .expect("CLOB V2 collateral fixture should write");
+
+        let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_collateral_accounting_source_proof(
+            &collateral_source_path,
+            4096,
+        )
+        .expect_err("invalid CLOB V2 collateral source must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed CLOB V2 collateral proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_clob_v2_fee_behavior_source_proof_rejects_invalid_fee_behavior() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let fee_source_sha256 = sha256_text("clob-fee-account-fixture");
+    let fee_assumptions_sha256 = sha256_text("clob-fee-assumptions");
+    let cases = [
+        (
+            "not_verified",
+            false,
+            true,
+            true,
+            true,
+            "0.55",
+            "0.01",
+            fee_source_sha256.as_str(),
+            fee_assumptions_sha256.as_str(),
+            "clob_v2_fee_behavior_verified",
+        ),
+        (
+            "maker_fee_not_verified",
+            true,
+            false,
+            true,
+            true,
+            "0.55",
+            "0.01",
+            fee_source_sha256.as_str(),
+            fee_assumptions_sha256.as_str(),
+            "maker_zero_fee_verified",
+        ),
+        (
+            "bad_price",
+            true,
+            true,
+            true,
+            true,
+            "1.00",
+            "0.01",
+            fee_source_sha256.as_str(),
+            fee_assumptions_sha256.as_str(),
+            "price",
+        ),
+        (
+            "bad_fee_rate",
+            true,
+            true,
+            true,
+            true,
+            "0.55",
+            "-0.01",
+            fee_source_sha256.as_str(),
+            fee_assumptions_sha256.as_str(),
+            "fee_rate",
+        ),
+        (
+            "bad_hash",
+            true,
+            true,
+            true,
+            true,
+            "0.55",
+            "0.01",
+            "ABC",
+            fee_assumptions_sha256.as_str(),
+            "fee_behavior_source_sha256",
+        ),
+    ];
+
+    for (
+        name,
+        verified,
+        maker_verified,
+        taker_verified,
+        market_buy_verified,
+        price,
+        fee_rate,
+        source_hash,
+        assumptions_hash,
+        expected,
+    ) in cases
+    {
+        let fee_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(
+            &fee_source_path,
+            clob_v2_fee_behavior_source_fixture(
+                (
+                    verified,
+                    maker_verified,
+                    taker_verified,
+                    market_buy_verified,
+                ),
+                price,
+                fee_rate,
+                (source_hash, assumptions_hash),
+            ),
+        )
+        .expect("CLOB V2 fee fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_fee_behavior_source_proof(
+                &fee_source_path,
+                4096,
+            )
+            .expect_err("invalid CLOB V2 fee source must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed CLOB V2 fee proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_clob_v2_source_proofs_reject_invalid_shape_or_oversize() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let malformed_path = temp.path().join("malformed-clob-v2-source.json");
+    std::fs::write(
+        &malformed_path,
+        r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_clob_v2_fee_behavior_source.v1""#,
+    )
+    .expect("malformed CLOB fixture should write");
+    let malformed_error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_fee_behavior_source_proof(
+            &malformed_path,
+            4096,
+        )
+        .expect_err("malformed CLOB V2 source must fail closed");
+    assert!(
+        malformed_error
+            .to_string()
+            .contains("failed to parse CLOB V2 source input"),
+        "malformed CLOB source should be parse diagnostic: {malformed_error}"
+    );
+
+    let fee_source_path = temp.path().join("oversized-clob-v2-source.json");
+    let fee_source_sha256 = sha256_text("clob-fee-account-fixture");
+    let fee_assumptions_sha256 = sha256_text("clob-fee-assumptions");
+    std::fs::write(
+        &fee_source_path,
+        clob_v2_fee_behavior_source_fixture(
+            (true, true, true, true),
+            "0.55",
+            "0.01",
+            (&fee_source_sha256, &fee_assumptions_sha256),
+        ),
+    )
+    .expect("CLOB V2 fee fixture should write");
+    let oversized_error =
+        bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_clob_v2_fee_behavior_source_proof(
+            &fee_source_path,
+            1,
+        )
+        .expect_err("oversized CLOB V2 source must fail closed");
+    assert!(
+        oversized_error
+            .to_string()
+            .contains("failed to read CLOB V2 source input"),
+        "oversized CLOB source should be read diagnostic: {oversized_error}"
+    );
+}
+
+#[test]
+fn pre_run_egress_identity_source_proof_derives_source_owned_values() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let egress_identity_source_path = temp.path().join("egress-identity-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let raw_identity = "operator-egress-identity-fixture";
+    let egress_identity_sha256 = sha256_text(raw_identity);
+    std::fs::write(
+        &egress_identity_source_path,
+        egress_identity_source_fixture(&egress_identity_sha256),
+    )
+    .expect("egress identity fixture should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_egress_identity_source_proof(
+        &egress_identity_source_path,
+        4096,
+    )
+    .expect("source-owned egress identity proof should collect");
+
+    assert!(proof.egress_identity_approved);
+    assert_eq!(
+        proof.egress_identity_source_sha256,
+        sha256_file(&egress_identity_source_path)
+    );
+    assert_eq!(proof.egress_identity_evidence_hash.len(), 64);
+    assert!(
+        proof
+            .egress_identity_evidence_hash
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()),
+        "egress identity proof evidence hash should be lowercase hex"
+    );
+    let debug = format!("{proof:?}");
+    assert!(
+        !debug.contains(raw_identity),
+        "egress identity proof must not expose raw identity material"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "egress identity proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_egress_identity_source_proof_rejects_unapproved_or_invalid_hashes() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let observed_hash = sha256_text("observed-egress-identity-fixture");
+    let approved_hash = sha256_text("approved-egress-identity-fixture");
+    let cases = [
+        (
+            "mismatch",
+            observed_hash.as_str(),
+            approved_hash.as_str(),
+            "approved_egress_identity_sha256",
+        ),
+        (
+            "bad_observed_hash",
+            "ABC",
+            approved_hash.as_str(),
+            "observed_egress_identity_sha256",
+        ),
+        (
+            "bad_approved_hash",
+            observed_hash.as_str(),
+            "ABC",
+            "approved_egress_identity_sha256",
+        ),
+    ];
+
+    for (name, observed, approved, expected) in cases {
+        let egress_identity_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(
+            &egress_identity_source_path,
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_egress_identity_source.v1",
+  "observed_egress_identity_sha256": "{observed}",
+  "approved_egress_identity_sha256": "{approved}"
+}}"#
+            ),
+        )
+        .expect("egress identity fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_egress_identity_source_proof(
+                &egress_identity_source_path,
+                4096,
+            )
+            .expect_err("unapproved or invalid egress identity must fail closed");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed egress identity proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_egress_identity_source_proof_rejects_invalid_source_shape() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let egress_identity_sha256 = sha256_text("operator-egress-identity-fixture");
+    let raw_identity = "198.51.100.10";
+    let cases = [
+        (
+            "schema_version",
+            format!(
+                r#"{{
+  "schema_version": 2,
+  "record_kind": "bolt_v3.pre_run_egress_identity_source.v1",
+  "observed_egress_identity_sha256": "{egress_identity_sha256}",
+  "approved_egress_identity_sha256": "{egress_identity_sha256}"
+}}"#
+            ),
+            "schema_version",
+        ),
+        (
+            "record_kind",
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_egress_identity_source.v2",
+  "observed_egress_identity_sha256": "{egress_identity_sha256}",
+  "approved_egress_identity_sha256": "{egress_identity_sha256}"
+}}"#
+            ),
+            "record_kind",
+        ),
+        (
+            "unknown_field",
+            format!(
+                r#"{{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_egress_identity_source.v1",
+  "observed_egress_identity_sha256": "{egress_identity_sha256}",
+  "approved_egress_identity_sha256": "{egress_identity_sha256}",
+  "raw_egress_identity": "{raw_identity}"
+}}"#
+            ),
+            "failed to parse egress identity source input",
+        ),
+        (
+            "malformed_json",
+            r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_egress_identity_source.v1""#
+                .to_string(),
+            "failed to parse egress identity source input",
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let egress_identity_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(&egress_identity_source_path, source)
+            .expect("egress identity fixture should write");
+
+        let error =
+            bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_egress_identity_source_proof(
+                &egress_identity_source_path,
+                4096,
+            )
+            .expect_err("invalid egress identity source must not approve pre-run proof");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !message.contains(raw_identity),
+            "{name} diagnostic must not expose raw egress identity material: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed egress identity proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_egress_identity_source_proof_rejects_oversized_source_before_parse() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let egress_identity_source_path = temp.path().join("egress-identity-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    let egress_identity_sha256 = sha256_text("operator-egress-identity-fixture");
+    std::fs::write(
+        &egress_identity_source_path,
+        egress_identity_source_fixture(&egress_identity_sha256),
+    )
+    .expect("egress identity fixture should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_egress_identity_source_proof(
+        &egress_identity_source_path,
+        1,
+    )
+    .expect_err("oversized egress identity source must not approve pre-run proof");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("failed to read egress identity source input"),
+        "oversized source should be a read diagnostic: {message}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "oversized egress identity proof collection must not write pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_accepts_exact_bound_and_reverse_skew() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_source_path = temp.path().join("host-clock-source.json");
+    std::fs::write(
+        &host_clock_source_path,
+        host_clock_source_fixture(1716510000000, 1716510000250),
+    )
+    .expect("host clock fixture should write");
+
+    let proof = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_source_path,
+        4096,
+        250,
+    )
+    .expect("exact-bound reverse host clock skew should collect");
+
+    assert!(proof.host_clock_skew_within_bound);
+    assert_eq!(proof.host_clock_skew_millis, 250);
+    assert_eq!(proof.max_host_clock_skew_millis, 250);
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_rejects_zero_skew_bound() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_source_path = temp.path().join("host-clock-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    std::fs::write(
+        &host_clock_source_path,
+        host_clock_source_fixture(1716510000000, 1716510000000),
+    )
+    .expect("host clock fixture should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_source_path,
+        4096,
+        0,
+    )
+    .expect_err("zero host clock skew bound must not approve pre-run proof");
+
+    assert!(
+        error.to_string().contains("max_host_clock_skew_millis"),
+        "zero skew bound should identify the failed source field: {error}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "failed host clock proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_rejects_out_of_bound_skew() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_source_path = temp.path().join("host-clock-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    std::fs::write(
+        &host_clock_source_path,
+        host_clock_source_fixture(1716510001000, 1716510000000),
+    )
+    .expect("host clock fixture should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_source_path,
+        4096,
+        250,
+    )
+    .expect_err("out-of-bound host clock skew must not approve pre-run proof");
+
+    assert!(
+        error.to_string().contains("host_clock_skew_millis"),
+        "out-of-bound skew should identify the failed source field: {error}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "failed host clock proof collection must not write final pre-run-state.json"
+    );
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_rejects_invalid_source_shape() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let cases = [
+        (
+            "schema_version",
+            r#"{
+  "schema_version": 2,
+  "record_kind": "bolt_v3.pre_run_host_clock_source.v1",
+  "host_unix_millis": 1716510000000,
+  "reference_unix_millis": 1716510000000
+}"#,
+            "schema_version",
+        ),
+        (
+            "record_kind",
+            r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_host_clock_source.v2",
+  "host_unix_millis": 1716510000000,
+  "reference_unix_millis": 1716510000000
+}"#,
+            "record_kind",
+        ),
+        (
+            "unknown_field",
+            r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_host_clock_source.v1",
+  "host_unix_millis": 1716510000000,
+  "reference_unix_millis": 1716510000000,
+  "operator_override": true
+}"#,
+            "failed to parse host-clock source input",
+        ),
+        (
+            "malformed_json",
+            r#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.pre_run_host_clock_source.v1""#,
+            "failed to parse host-clock source input",
+        ),
+    ];
+
+    for (name, source, expected) in cases {
+        let host_clock_source_path = temp.path().join(format!("{name}.json"));
+        let pre_run_state_path = temp.path().join(format!("{name}-pre-run-state.json"));
+        std::fs::write(&host_clock_source_path, source).expect("host clock fixture should write");
+
+        let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+            &host_clock_source_path,
+            4096,
+            250,
+        )
+        .expect_err("invalid host clock source must not approve pre-run proof");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(expected),
+            "{name} source should identify {expected}: {message}"
+        );
+        assert!(
+            !pre_run_state_path.exists(),
+            "failed host clock proof collection must not write artifact for {name}"
+        );
+    }
+}
+
+#[test]
+fn pre_run_host_clock_source_proof_rejects_oversized_source_before_parse() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let host_clock_source_path = temp.path().join("host-clock-source.json");
+    let pre_run_state_path = temp.path().join("pre-run-state.json");
+    std::fs::write(
+        &host_clock_source_path,
+        host_clock_source_fixture(1716510000000, 1716510000000),
+    )
+    .expect("host clock fixture should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_pre_run_host_clock_source_proof(
+        &host_clock_source_path,
+        1,
+        250,
+    )
+    .expect_err("oversized host clock source must not approve pre-run proof");
+    let message = error.to_string();
+
+    assert!(
+        message.contains("failed to read host-clock source input"),
+        "oversized source should be a read diagnostic: {message}"
+    );
+    assert!(
+        !pre_run_state_path.exists(),
+        "oversized host clock proof collection must not write pre-run-state.json"
     );
 }
 
@@ -3413,7 +13981,6 @@ fn pre_run_market_window_source_proof_derives_source_owned_values() {
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
         100_000,
-        &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
     .expect("source-bound strategy input evidence should write");
@@ -3453,7 +14020,6 @@ fn pre_run_market_window_source_proof_rejects_symlinked_market_source() {
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
         100_000,
-        &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
     .expect("source-bound strategy input evidence should write");
@@ -3490,7 +14056,6 @@ fn pre_run_market_window_source_proof_rejects_stale_market_source_hash() {
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
         100_000,
-        &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
     .expect("source-bound strategy input evidence should write");
@@ -3521,7 +14086,6 @@ fn pre_run_market_window_source_proof_rejects_parent_dir_market_source_before_re
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
         100_000,
-        &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
     .expect("source-bound strategy input evidence should write");
@@ -3579,7 +14143,6 @@ fn pre_run_market_window_source_proof_rejects_oversized_market_source_before_aud
         &fixture.snapshot,
         &fixture.market_selection_source_ref,
         100_000,
-        &fixture.candidate_market_start_timestamps_ms,
         &strategy_input_path,
     )
     .expect("source-bound strategy input evidence should write");
@@ -3649,7 +14212,6 @@ fn strategy_input_writer_reports_market_selection_source_read_as_read_error() {
             &fixture.snapshot,
             &missing_ref,
             100_000,
-            &fixture.candidate_market_start_timestamps_ms,
             &output_path,
         )
         .expect_err("missing market-selection source should fail before write");
@@ -3699,7 +14261,6 @@ fn strategy_input_writer_reports_market_selection_source_json_as_parse_error() {
             &fixture.snapshot,
             &invalid_ref,
             100_000,
-            &fixture.candidate_market_start_timestamps_ms,
             &output_path,
         )
         .expect_err("invalid market-selection source JSON should fail before write");
@@ -3751,7 +14312,6 @@ fn strategy_input_writer_rejects_symlinked_market_selection_source_before_artifa
             &fixture.snapshot,
             &fixture.market_selection_source_ref,
             100_000,
-            &fixture.candidate_market_start_timestamps_ms,
             &output_path,
         )
         .expect_err("symlinked market-selection source must fail before artifact write");
@@ -3832,7 +14392,6 @@ struct StrategyInputRuntimeFixture {
     loaded: bolt_v2::bolt_v3_config::LoadedBoltV3Config,
     strategy_instance_id: String,
     market_selection_source_ref: WrittenOperatorArtifact,
-    candidate_market_start_timestamps_ms: Vec<u64>,
     snapshot: BoltV3StrategyInputEvidenceSnapshot,
 }
 
@@ -3845,6 +14404,7 @@ fn strategy_input_runtime_fixture() -> StrategyInputRuntimeFixture {
         .config
         .strategy_instance_id
         .clone();
+    let runtime_strategy_id = runtime_strategy_id_for_test(&loaded, &strategy_instance_id);
     let temp = tempfile::tempdir().expect("tempdir should create");
     let market_slug = updown_market_slug(
         TEST_MARKET_SELECTION_UNDERLYING_ASSET,
@@ -3893,9 +14453,25 @@ fn strategy_input_runtime_fixture() -> StrategyInputRuntimeFixture {
             .expect("market selection source sha256 should compute"),
     };
     let snapshot = BoltV3StrategyInputEvidenceSnapshot {
-        strategy_id: strategy_instance_id.clone(),
-        configured_target_id: "btc_updown_5m".to_string(),
-        market_selection_ruleset_id: "btc_updown_5m".to_string(),
+        strategy_id: runtime_strategy_id,
+        configured_target_id: TEST_CONFIGURED_TARGET_ID.to_string(),
+        market_selection_ruleset_id: TEST_CONFIGURED_TARGET_ID.to_string(),
+        gate_session_hash: "gate-session-hash-one".to_string(),
+        selected_market_key: TEST_GATE_SELECTED_MARKET_KEY.to_string(),
+        gate_evidence: BTreeMap::from([(
+            RESOLUTION_GATE_ROLE.to_string(),
+            BoltV3GateEvidenceIdentity {
+                satisfaction_kind: "evidence".to_string(),
+                selected_market_key: TEST_GATE_SELECTED_MARKET_KEY.to_string(),
+                provider_id: Some("resolution_oracle_primary".to_string()),
+                provider_kind: Some(CHAINLINK_DATA_STREAMS_PROVIDER_KIND.to_string()),
+                value_kind: Some(PRICE_GATE_VALUE_KIND.to_string()),
+                normalized_value_sha256: Some("normalized-value-sha-one".to_string()),
+                provider_provenance_sha256: Some("provider-provenance-sha-one".to_string()),
+                artifact_sha256s: vec!["artifact-sha-one".to_string()],
+                resolution_identity: None,
+            },
+        )]),
         market_selection_outcome: "current".to_string(),
         market_id: Some(TEST_MARKET_ID.to_string()),
         polymarket_condition_id: Some(TEST_CONDITION_ID.to_string()),
@@ -3907,7 +14483,7 @@ fn strategy_input_runtime_fixture() -> StrategyInputRuntimeFixture {
         selected_market_observed_timestamp_ms: Some(TEST_MARKET_SELECTION_NOW_MS),
         polymarket_market_start_timestamp_ms: Some(TEST_MARKET_SELECTION_START_MS),
         polymarket_market_end_timestamp_ms: Some(TEST_MARKET_SELECTION_END_MS),
-        price_to_beat_source: "chainlink_data_streams.report_at_boundary".to_string(),
+        price_to_beat_source: TEST_PRICE_TO_BEAT_SOURCE.to_string(),
         price_to_beat_value: "3100".to_string(),
         reference_quote_ts_event: TEST_MARKET_SELECTION_NOW_MS,
         spot_price: "3100.5".to_string(),
@@ -3935,15 +14511,45 @@ fn strategy_input_runtime_fixture() -> StrategyInputRuntimeFixture {
         loaded,
         strategy_instance_id,
         market_selection_source_ref,
-        candidate_market_start_timestamps_ms: vec![TEST_MARKET_SELECTION_START_MS],
         snapshot,
     }
+}
+
+fn runtime_strategy_id_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    strategy_instance_id: &str,
+) -> String {
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == strategy_instance_id)
+        .expect("test strategy instance should be loaded");
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, loaded)
+        .expect("test strategy should map to raw runtime config");
+    raw.get("strategy_id")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .expect("raw runtime config should include strategy_id")
+        .to_string()
 }
 
 fn write_entry_decision_evidence_chain(
     temp: &tempfile::TempDir,
     snapshot: &BoltV3StrategyInputEvidenceSnapshot,
 ) -> std::path::PathBuf {
+    let decision_evidence_path = temp.path().join("decision-evidence.jsonl");
+    write_entry_decision_evidence_chain_at(&decision_evidence_path, snapshot);
+    decision_evidence_path
+}
+
+fn write_entry_decision_evidence_chain_at(
+    decision_evidence_path: &std::path::Path,
+    snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+) {
+    if let Some(parent) = decision_evidence_path.parent() {
+        std::fs::create_dir_all(parent).expect("decision evidence parent should create");
+    }
     let intent = BoltV3OrderIntentEvidence {
         strategy_id: snapshot.strategy_id.clone(),
         intent_kind: BoltV3OrderIntentKind::Entry,
@@ -3952,6 +14558,7 @@ fn write_entry_decision_evidence_chain(
         order_side: snapshot.submission_order_side.clone(),
         price: snapshot.submission_price.clone(),
         quantity: snapshot.submission_quantity.clone(),
+        canary_proof_claim: None,
         order_fields: BoltV3OrderIntentOrderFields {
             order_type: "Limit".to_string(),
             time_in_force: "Gtc".to_string(),
@@ -3976,7 +14583,6 @@ fn write_entry_decision_evidence_chain(
         intent_kind: BoltV3SubmitIntentKind::Entry,
         outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
     };
-    let decision_evidence_path = temp.path().join("decision-evidence.jsonl");
     let mut decision_evidence = String::new();
     for line in [
         serde_json::json!({
@@ -4009,9 +14615,8 @@ fn write_entry_decision_evidence_chain(
         );
         decision_evidence.push('\n');
     }
-    std::fs::write(&decision_evidence_path, decision_evidence)
+    std::fs::write(decision_evidence_path, decision_evidence)
         .expect("decision evidence should write");
-    decision_evidence_path
 }
 
 fn market_selection_instruments_for_slug(market_slug: &str) -> [InstrumentAny; 2] {
@@ -4054,9 +14659,88 @@ fn load_fixture_with_live_canary() -> bolt_v2::bolt_v3_config::LoadedBoltV3Confi
         reference_quote_probe_log_commands: false,
         max_live_order_count: 1,
         max_notional_per_order: loaded.root.risk.default_max_notional_per_order.clone(),
+        egress_identity_observed_path: None,
+        egress_identity_observed_max_bytes: None,
+        approved_egress_identity_sha256: None,
+        proof_policy: None,
         operator_evidence: None,
     });
     loaded
+}
+
+fn test_live_canary_proof_policy() -> LiveCanaryProofPolicyBlock {
+    LiveCanaryProofPolicyBlock {
+        enabled: true,
+        policy_kind: "least_bad_strategy_candidate".to_string(),
+        proof_claim: "proof_only".to_string(),
+        executor_strategy_id: "canary-proof-executor-proof".to_string(),
+        strategy_instance_id: "configured_strategy".to_string(),
+        execution_client_id: "configured_execution_client".to_string(),
+        book_type: bolt_v2::bolt_v3_config::DataClientReadinessProbeBookType::L2Mbp,
+        book_snapshot_interval_millis: 1_000,
+        time_in_force: bolt_v2::bolt_v3_config::LiveCanaryProofTimeInForce::Fok,
+        is_post_only: false,
+        is_reduce_only: false,
+        is_quote_quantity: false,
+        notional_mode: "fixed".to_string(),
+        proof_notional: "1.00".to_string(),
+        candidate_score_source: "proof_source".to_string(),
+        allow_negative_expected_ev: true,
+        rotation_observation_enabled: false,
+        rotation_min_distinct_markets: 1,
+        rotation_max_attempts: 3,
+    }
+}
+
+fn write_hash_bound_canary_proof_artifacts_for_test(
+    dir: &std::path::Path,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+) {
+    let candidate_source_path = dir.join("canary-proof-candidate-source.json");
+    let candidate_source = serde_json::json!({
+        "record_kind": "bolt_v3_canary_proof_candidate_source",
+        "proof_claim": "proof_only",
+        "current_source_ref": "source-hash-a",
+        "candidate_count": 1,
+        "candidates": [{
+            "strategy_instance_id": "configured_strategy",
+            "execution_client_id": "configured_execution_client",
+            "instrument_id": "instrument-a",
+            "order_side": "Buy",
+            "candidate_score": "0.01",
+            "source_refs": ["source-hash-a"],
+            "sizing_price": "0.50",
+            "constraints": {
+                "sizing_mode": "BaseQuantity",
+                "quantity_step": "0.01",
+                "min_quantity": null,
+                "min_notional": null
+            }
+        }]
+    });
+    let candidate_source_sha256 =
+        write_json_value_and_hash(&candidate_source_path, &candidate_source);
+
+    let order_intent_path = dir.join("canary-proof-order-intent.json");
+    let order_intent = serde_json::json!({
+        "record_kind": "bolt_v3_canary_proof_order_intent",
+        "proof_claim": "proof_only",
+        "strategy_instance_id": "configured_strategy",
+        "execution_client_id": "configured_execution_client",
+        "instrument_id": "instrument-a",
+        "order_side": "Buy",
+        "notional": "1.00",
+        "quantity": "2.00",
+        "source_refs": ["source-hash-a"]
+    });
+    let order_intent_sha256 = write_json_value_and_hash(&order_intent_path, &order_intent);
+
+    operator_evidence.canary_proof_candidate_source_path =
+        Some(candidate_source_path.to_string_lossy().to_string());
+    operator_evidence.canary_proof_candidate_source_sha256 = Some(candidate_source_sha256);
+    operator_evidence.canary_proof_order_intent_path =
+        Some(order_intent_path.to_string_lossy().to_string());
+    operator_evidence.canary_proof_order_intent_sha256 = Some(order_intent_sha256);
 }
 
 struct FinalPacketFixture {
@@ -4077,17 +14761,171 @@ impl FinalPacketFixture {
     }
 }
 
+#[derive(Clone, Copy)]
+enum DecisionEvidencePathBinding {
+    CanonicalRuntimeJsonl,
+    NonCanonicalTempJsonl,
+}
+
+#[derive(Clone, Copy)]
+enum MarketSelectionSourceBinding {
+    RuntimeDecisionEvidenceAndInstrumentSource,
+    StaticFixtureCopy,
+}
+
+#[derive(Clone, Copy)]
+enum ReadinessStaticArtifactBinding {
+    SourceOwnedT126T127,
+    SyntheticAbortPlanProofs,
+    HashOnlyFixtureMarkers,
+}
+
+#[derive(Clone, Copy)]
+enum CanaryProofArtifactBinding {
+    Disabled,
+    EnabledWithHashBoundArtifacts,
+}
+
 fn assembled_final_packet_fixture() -> FinalPacketFixture {
+    assembled_final_packet_fixture_with_strategy_input_mutation(|_| {})
+}
+
+fn assembled_final_packet_fixture_with_proof_artifacts() -> FinalPacketFixture {
+    assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding(
+        |_| {},
+        DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
+        MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
+        ReadinessStaticArtifactBinding::SourceOwnedT126T127,
+        CanaryProofArtifactBinding::EnabledWithHashBoundArtifacts,
+    )
+}
+
+fn assembled_final_packet_fixture_with_decision_evidence_path_binding(
+    decision_evidence_binding: DecisionEvidencePathBinding,
+) -> FinalPacketFixture {
+    assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding(
+        |_| {},
+        decision_evidence_binding,
+        MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
+        ReadinessStaticArtifactBinding::SourceOwnedT126T127,
+        CanaryProofArtifactBinding::Disabled,
+    )
+}
+
+fn assembled_final_packet_fixture_with_market_selection_source_binding(
+    market_selection_source_binding: MarketSelectionSourceBinding,
+) -> FinalPacketFixture {
+    assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding(
+        |_| {},
+        DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
+        market_selection_source_binding,
+        ReadinessStaticArtifactBinding::SourceOwnedT126T127,
+        CanaryProofArtifactBinding::Disabled,
+    )
+}
+
+fn assembled_final_packet_fixture_with_readiness_artifact_binding(
+    readiness_artifact_binding: ReadinessStaticArtifactBinding,
+) -> FinalPacketFixture {
+    assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding(
+        |_| {},
+        DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
+        MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
+        readiness_artifact_binding,
+        CanaryProofArtifactBinding::Disabled,
+    )
+}
+
+fn assembled_final_packet_fixture_with_strategy_input_mutation<F>(
+    mutate_strategy_input: F,
+) -> FinalPacketFixture
+where
+    F: FnOnce(&mut serde_json::Value),
+{
+    assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding(
+        mutate_strategy_input,
+        DecisionEvidencePathBinding::CanonicalRuntimeJsonl,
+        MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource,
+        ReadinessStaticArtifactBinding::SourceOwnedT126T127,
+        CanaryProofArtifactBinding::Disabled,
+    )
+}
+
+fn assembled_final_packet_fixture_with_strategy_input_mutation_and_decision_evidence_binding<F>(
+    mutate_strategy_input: F,
+    decision_evidence_binding: DecisionEvidencePathBinding,
+    market_selection_source_binding: MarketSelectionSourceBinding,
+    readiness_artifact_binding: ReadinessStaticArtifactBinding,
+    canary_proof_artifact_binding: CanaryProofArtifactBinding,
+) -> FinalPacketFixture
+where
+    F: FnOnce(&mut serde_json::Value),
+{
     let mut loaded = load_fixture_with_live_canary();
     loaded.config_bundle_checksum = sha256_text("final-packet-config-bundle");
     let temp = tempfile::tempdir().expect("tempdir should create");
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
     let mut operator_evidence = test_operator_evidence_packet_bindings(temp.path());
+    if matches!(
+        decision_evidence_binding,
+        DecisionEvidencePathBinding::CanonicalRuntimeJsonl
+    ) {
+        operator_evidence.decision_evidence_path = decision_evidence_path(&loaded)
+            .expect("fixture persistence decision evidence path should resolve")
+            .to_string_lossy()
+            .to_string();
+    }
     operator_evidence.head_sha = option_env!("BOLT_V3_BUILD_HEAD_SHA")
         .unwrap_or_else(|| {
             panic!("build head sha should be compiled for final-packet verifier tests")
         })
         .to_string();
-    let refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    let mut refs = write_required_static_artifacts_for_test(temp.path(), &mut operator_evidence);
+    write_valid_financial_static_artifact_for_test(&loaded, &mut operator_evidence, &mut refs);
+    match readiness_artifact_binding {
+        ReadinessStaticArtifactBinding::SourceOwnedT126T127 => {
+            write_source_owned_readiness_static_artifacts_for_test(
+                &loaded,
+                &mut operator_evidence,
+                &mut refs,
+            );
+        }
+        ReadinessStaticArtifactBinding::SyntheticAbortPlanProofs => {
+            write_readiness_static_artifacts_with_synthetic_abort_plan_for_test(
+                &loaded,
+                &mut operator_evidence,
+                &mut refs,
+            );
+        }
+        ReadinessStaticArtifactBinding::HashOnlyFixtureMarkers => {}
+    }
+    write_replayable_strategy_input_artifacts_for_test(
+        &loaded,
+        temp.path(),
+        &mut operator_evidence,
+        &mut refs,
+        market_selection_source_binding,
+    );
+    if matches!(
+        canary_proof_artifact_binding,
+        CanaryProofArtifactBinding::EnabledWithHashBoundArtifacts
+    ) {
+        loaded
+            .root
+            .live_canary
+            .as_mut()
+            .expect("live canary should exist")
+            .proof_policy = Some(test_live_canary_proof_policy());
+        write_hash_bound_canary_proof_artifacts_for_test(temp.path(), &mut operator_evidence);
+    }
+    let strategy_input_path =
+        std::path::PathBuf::from(&operator_evidence.strategy_input_evidence_path);
+    let mut strategy_input = read_json_value(&strategy_input_path);
+    mutate_strategy_input(&mut strategy_input);
+    let strategy_input_sha256 = write_json_value_and_hash(&strategy_input_path, &strategy_input);
+    operator_evidence.strategy_input_evidence_sha256 = strategy_input_sha256.clone();
+    replace_static_artifact_ref_sha256(&mut refs, "strategy-input", &strategy_input_sha256);
     let manifest_path = temp.path().join("static-artifacts-manifest.json");
     write_static_artifacts_manifest_for_test(
         &manifest_path,
@@ -4156,10 +14994,15 @@ fn write_final_live_evidence_artifacts_for_test(
     loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
     operator_evidence: &LiveCanaryOperatorEvidenceBlock,
 ) {
-    let decision_hash = write_final_bytes_for_test(
-        &operator_evidence.decision_evidence_path,
-        b"{\"kind\":\"admission_decision\",\"outcome\":\"admitted\"}\n",
-    );
+    let decision_evidence_path = std::path::Path::new(&operator_evidence.decision_evidence_path);
+    let decision_hash = if decision_evidence_path.exists() {
+        sha256_file(decision_evidence_path)
+    } else {
+        write_final_bytes_for_test(
+            &operator_evidence.decision_evidence_path,
+            b"{\"kind\":\"admission_decision\",\"outcome\":\"admitted\"}\n",
+        )
+    };
     let nt_submit_hash = write_json_value_and_hash(
         std::path::Path::new(&operator_evidence.nt_submit_event_path),
         &serde_json::json!({"record_kind": "phase8.nt_submit_event.v1"}),
@@ -4263,6 +15106,134 @@ fn write_final_live_evidence_artifacts_for_test(
         std::path::Path::new(&operator_evidence.approval_consumption_path),
         &approval_consumption,
     );
+}
+
+fn write_source_owned_readiness_static_artifacts_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+) {
+    write_source_owned_pre_run_static_artifact_for_test(loaded, operator_evidence, refs);
+    write_collector_derived_abort_plan_static_artifact_for_test(loaded, operator_evidence, refs);
+}
+
+fn write_readiness_static_artifacts_with_synthetic_abort_plan_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+) {
+    write_source_owned_pre_run_static_artifact_for_test(loaded, operator_evidence, refs);
+    write_synthetic_abort_plan_static_artifact_for_test(loaded, operator_evidence, refs);
+}
+
+fn write_source_owned_pre_run_static_artifact_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+) {
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let pre_run_state_path = std::path::PathBuf::from(&operator_evidence.pre_run_state_path);
+    std::fs::remove_file(&pre_run_state_path)
+        .expect("initial pre-run state marker should be removable");
+    let pre_run_hashes = TestPreRunStateProofHashes::new();
+    let written_pre_run =
+        bolt_v2::bolt_v3_operator_artifacts::write_pre_run_state_artifact_from_source_proofs(
+            loaded,
+            strategy_instance_id,
+            pre_run_hashes.as_source_proofs(),
+            &pre_run_state_path,
+        )
+        .expect("source-owned pre-run state artifact should write");
+    operator_evidence.pre_run_state_sha256 = written_pre_run.sha256.clone();
+    replace_static_artifact_ref_sha256(refs, "pre-run-state", &written_pre_run.sha256);
+}
+
+fn write_synthetic_abort_plan_static_artifact_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+) {
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let abort_plan_path = std::path::PathBuf::from(&operator_evidence.abort_plan_path);
+    std::fs::remove_file(&abort_plan_path).expect("initial abort plan marker should be removable");
+    let abort_hashes = TestAbortPlanProofHashes::new();
+    let written_abort =
+        bolt_v2::bolt_v3_operator_artifacts::write_abort_plan_artifact_from_source_proofs(
+            loaded,
+            strategy_instance_id,
+            abort_hashes.as_source_proofs(),
+            &abort_plan_path,
+        )
+        .expect("source-owned abort plan artifact should write");
+    operator_evidence.abort_plan_sha256 = written_abort.sha256.clone();
+    replace_static_artifact_ref_sha256(refs, "abort-plan", &written_abort.sha256);
+}
+
+fn write_collector_derived_abort_plan_static_artifact_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+) {
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let abort_plan_path = std::path::PathBuf::from(&operator_evidence.abort_plan_path);
+    std::fs::remove_file(&abort_plan_path).expect("initial abort plan marker should be removable");
+    let written_abort =
+        bolt_v2::bolt_v3_operator_artifacts::write_abort_plan_artifact_from_source_collectors(
+            loaded,
+            strategy_instance_id,
+            &repo_path("src/strategies/binary_oracle_edge_taker.rs"),
+            &repo_path("src/bolt_v3_submit_admission.rs"),
+            1_000_000,
+            &abort_plan_path,
+        )
+        .expect("source-collector abort plan artifact should write");
+    operator_evidence.abort_plan_sha256 = written_abort.sha256.clone();
+    replace_static_artifact_ref_sha256(refs, "abort-plan", &written_abort.sha256);
+}
+
+fn write_valid_financial_static_artifact_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+) {
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    let financial_path = std::path::PathBuf::from(&operator_evidence.financial_envelope_path);
+    std::fs::remove_file(&financial_path)
+        .expect("initial financial envelope marker should be removable");
+    let financial =
+        Phase8FinancialEnvelopeEvidenceFile::from_loaded_for_strategy(loaded, strategy_instance_id)
+            .expect("fixture financial envelope should build from loaded config");
+    let financial_bytes =
+        serde_json::to_vec_pretty(&financial).expect("financial envelope should serialize");
+    std::fs::write(&financial_path, &financial_bytes)
+        .expect("financial envelope artifact should write");
+    let financial_sha256 = sha256_bytes(&financial_bytes);
+    operator_evidence.financial_envelope_sha256 = financial_sha256.clone();
+    replace_static_artifact_ref_sha256(refs, "financial-envelope", &financial_sha256);
 }
 
 fn write_final_bytes_for_test(path: &str, bytes: &[u8]) -> String {
@@ -4401,6 +15372,44 @@ fn updown_binary_option(
     activation_ms: u64,
     expiration_ms: u64,
 ) -> InstrumentAny {
+    updown_binary_option_with_price_precision(
+        UpdownBinaryOptionIdentity {
+            instrument_id,
+            market_slug,
+            market_id,
+            condition_id,
+            question_id,
+        },
+        outcome,
+        activation_ms,
+        expiration_ms,
+        3,
+    )
+}
+
+struct UpdownBinaryOptionIdentity<'a> {
+    instrument_id: &'a str,
+    market_slug: &'a str,
+    market_id: &'a str,
+    condition_id: &'a str,
+    question_id: &'a str,
+}
+
+fn updown_binary_option_with_price_precision(
+    identity: UpdownBinaryOptionIdentity<'_>,
+    outcome: &str,
+    activation_ms: u64,
+    expiration_ms: u64,
+    price_precision: u8,
+) -> InstrumentAny {
+    let UpdownBinaryOptionIdentity {
+        instrument_id,
+        market_slug,
+        market_id,
+        condition_id,
+        question_id,
+    } = identity;
+    let price_increment = binary_option_price_increment_for_precision(price_precision);
     let mut info = Params::new();
     info.insert(
         "market_slug".to_string(),
@@ -4425,9 +15434,9 @@ fn updown_binary_option(
         Currency::USDC(),
         (activation_ms.saturating_mul(1_000_000)).into(),
         (expiration_ms.saturating_mul(1_000_000)).into(),
-        3,
+        price_precision,
         2,
-        Price::from(TEST_BINARY_OPTION_PRICE_INCREMENT),
+        Price::from(price_increment.as_str()),
         Quantity::from(TEST_BINARY_OPTION_SIZE_INCREMENT),
         Some(ustr::Ustr::from(outcome)),
         None,
@@ -4445,6 +15454,14 @@ fn updown_binary_option(
         1.into(),
         1.into(),
     ))
+}
+
+fn binary_option_price_increment_for_precision(price_precision: u8) -> String {
+    if price_precision == 0 {
+        return "1".to_string();
+    }
+    let zeros = "0".repeat(usize::from(price_precision.saturating_sub(1)));
+    format!("0.{zeros}1")
 }
 
 struct TestPreRunStateProofHashes {
@@ -4633,9 +15650,17 @@ fn assert_manifest_entry(
 fn test_operator_evidence_packet_bindings(
     dir: &std::path::Path,
 ) -> LiveCanaryOperatorEvidenceBlock {
+    let gate_session_path = dir.join("entry-readiness-gate-session.json");
+    std::fs::write(
+        &gate_session_path,
+        serde_json::to_vec(&valid_entry_readiness_gate_session_json())
+            .expect("gate session fixture should encode"),
+    )
+    .expect("gate session fixture should write");
+    let expected_gate_session_sha256 = sha256_file(&gate_session_path);
     LiveCanaryOperatorEvidenceBlock {
         head_sha: "1234567890abcdef1234567890abcdef12345678".to_string(),
-        max_operator_evidence_file_bytes: 4096,
+        max_operator_evidence_file_bytes: 100_000,
         approval_consumption_max_age_seconds: 60,
         approval_envelope_path: dir
             .join("approval-envelope.json")
@@ -4649,6 +15674,8 @@ fn test_operator_evidence_packet_bindings(
             .to_string_lossy()
             .to_string(),
         strategy_input_evidence_sha256: String::new(),
+        gate_session_path: Some(gate_session_path.to_string_lossy().to_string()),
+        expected_gate_session_sha256: Some(expected_gate_session_sha256),
         financial_envelope_path: dir
             .join("financial-envelope.json")
             .to_string_lossy()
@@ -4658,6 +15685,11 @@ fn test_operator_evidence_packet_bindings(
         pre_run_state_sha256: String::new(),
         abort_plan_path: dir.join("abort-plan.json").to_string_lossy().to_string(),
         abort_plan_sha256: String::new(),
+        canary_proof_candidate_source_path: None,
+        canary_proof_candidate_source_sha256: None,
+        canary_proof_order_intent_path: None,
+        canary_proof_order_intent_sha256: None,
+        no_submit_readiness_report_sha256: None,
         canary_evidence_path: dir
             .join("canary-evidence.json")
             .to_string_lossy()
@@ -4695,6 +15727,23 @@ fn test_operator_evidence_packet_bindings(
             .to_string_lossy()
             .to_string(),
     }
+}
+
+fn minimal_live_canary_toml() -> &'static str {
+    r#"
+[live_canary]
+approval_id = "operator-approved-canary-001"
+no_submit_readiness_report_path = "reports/no-submit-readiness.json"
+max_no_submit_readiness_report_bytes = 1000000
+readiness_report_max_age_seconds = 300
+reference_quote_max_age_seconds = 30
+reference_quote_wait_timeout_seconds = 5
+reference_quote_probe_actor_id = "test-reference-probe"
+reference_quote_probe_log_events = false
+reference_quote_probe_log_commands = false
+max_live_order_count = 1
+max_notional_per_order = "10.00"
+"#
 }
 
 fn write_required_static_artifacts_for_test(
@@ -4775,6 +15824,92 @@ fn write_required_static_artifacts_for_test(
     refs
 }
 
+fn write_replayable_strategy_input_artifacts_for_test(
+    loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config,
+    dir: &std::path::Path,
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    refs: &mut [serde_json::Value],
+    market_selection_source_binding: MarketSelectionSourceBinding,
+) {
+    let runtime = strategy_input_runtime_fixture();
+    let strategy_instance_id = loaded
+        .strategies
+        .first()
+        .expect("fixture should load a strategy")
+        .config
+        .strategy_instance_id
+        .as_str();
+    assert_eq!(
+        runtime.strategy_instance_id, strategy_instance_id,
+        "runtime strategy fixture must match final packet config"
+    );
+    let decision_evidence_path =
+        std::path::PathBuf::from(&operator_evidence.decision_evidence_path);
+    write_entry_decision_evidence_chain_at(&decision_evidence_path, &runtime.snapshot);
+    let market_selection_source_path = dir.join(TEST_MARKET_SELECTION_SOURCE_FILE);
+    let market_selection_source_ref = match market_selection_source_binding {
+        MarketSelectionSourceBinding::RuntimeDecisionEvidenceAndInstrumentSource => {
+            let market_slug = runtime
+                .snapshot
+                .polymarket_market_slug
+                .as_deref()
+                .expect("fixture snapshot should bind market slug");
+            let instruments = market_selection_instruments_for_slug(market_slug);
+            let instrument_source_path = dir.join("market-selection-instruments.json");
+            std::fs::write(
+                &instrument_source_path,
+                serde_json::to_vec_pretty(&instruments)
+                    .expect("market-selection instruments should serialize"),
+            )
+            .expect("market-selection instrument source should write");
+            bolt_v2::bolt_v3_operator_artifacts::write_market_selection_source_artifact_from_decision_evidence_and_instrument_source_file(
+                loaded,
+                strategy_instance_id,
+                &decision_evidence_path,
+                operator_evidence.max_operator_evidence_file_bytes,
+                &instrument_source_path,
+                operator_evidence.max_operator_evidence_file_bytes,
+                &market_selection_source_path,
+            )
+            .expect("runtime-bound market-selection source should write")
+        }
+        MarketSelectionSourceBinding::StaticFixtureCopy => {
+            std::fs::copy(
+                &runtime.market_selection_source_ref.path,
+                &market_selection_source_path,
+            )
+            .expect("market selection source should copy into final packet fixture");
+            WrittenOperatorArtifact {
+                path: market_selection_source_path.clone(),
+                sha256: sha256_file(&market_selection_source_path),
+            }
+        }
+    };
+    let strategy_input_path =
+        std::path::PathBuf::from(&operator_evidence.strategy_input_evidence_path);
+    std::fs::remove_file(&strategy_input_path)
+        .expect("initial strategy input should be removed before replayable rewrite");
+    let written = bolt_v2::bolt_v3_operator_artifacts::write_strategy_input_evidence_artifact_from_decision_evidence_file(
+        loaded,
+        strategy_instance_id,
+        &decision_evidence_path,
+        operator_evidence.max_operator_evidence_file_bytes,
+        &market_selection_source_ref,
+        &strategy_input_path,
+    )
+    .expect("final packet fixture should write replayable strategy input evidence");
+    operator_evidence.strategy_input_evidence_sha256 = written.sha256.clone();
+    replace_static_artifact_ref_sha256(refs, "strategy-input", &written.sha256);
+}
+
+fn replace_static_artifact_ref_sha256(refs: &mut [serde_json::Value], name: &str, sha256: &str) {
+    let artifact = refs
+        .iter_mut()
+        .find(|artifact| artifact["name"] == name)
+        .expect("static artifact ref should exist");
+    artifact["sha256"] = serde_json::json!(sha256);
+}
+
 fn write_static_artifacts_manifest_for_test(
     manifest_path: &std::path::Path,
     config_bundle_checksum: &str,
@@ -4797,6 +15932,172 @@ fn write_static_artifacts_manifest_for_test(
 
 fn sha256_bytes(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
+}
+
+fn chainlink_v3_report_source_json(
+    feed_id: &str,
+    valid_from_timestamp_seconds: u32,
+    observations_timestamp_seconds: u32,
+    benchmark_price: f64,
+    decimal_scale: u64,
+    include_hex_prefix: bool,
+) -> Vec<u8> {
+    let full_report = chainlink_v3_full_report_payload(
+        feed_id,
+        valid_from_timestamp_seconds,
+        observations_timestamp_seconds,
+        benchmark_price,
+        decimal_scale,
+    );
+    let full_report_hex = if include_hex_prefix {
+        format!("0x{}", hex::encode(full_report))
+    } else {
+        hex::encode(full_report)
+    };
+    serde_json::to_vec_pretty(&serde_json::json!({
+        "feedID": feed_id,
+        "validFromTimestamp": valid_from_timestamp_seconds,
+        "observationsTimestamp": observations_timestamp_seconds,
+        "fullReport": full_report_hex,
+    }))
+    .expect("Chainlink report source JSON should serialize")
+}
+
+fn chainlink_v3_report_source_json_with_benchmark_word(
+    feed_id: &str,
+    valid_from_timestamp_seconds: u32,
+    observations_timestamp_seconds: u32,
+    benchmark_price_word: [u8; 32],
+    include_hex_prefix: bool,
+) -> Vec<u8> {
+    let full_report = chainlink_v3_full_report_payload_with_benchmark_word(
+        feed_id,
+        valid_from_timestamp_seconds,
+        observations_timestamp_seconds,
+        benchmark_price_word,
+    );
+    let full_report_hex = if include_hex_prefix {
+        format!("0x{}", hex::encode(full_report))
+    } else {
+        hex::encode(full_report)
+    };
+    serde_json::to_vec_pretty(&serde_json::json!({
+        "feedID": feed_id,
+        "validFromTimestamp": valid_from_timestamp_seconds,
+        "observationsTimestamp": observations_timestamp_seconds,
+        "fullReport": full_report_hex,
+    }))
+    .expect("Chainlink report source JSON should serialize")
+}
+
+fn chainlink_v3_full_report_payload(
+    feed_id: &str,
+    valid_from_timestamp_seconds: u32,
+    observations_timestamp_seconds: u32,
+    benchmark_price: f64,
+    decimal_scale: u64,
+) -> Vec<u8> {
+    let mut blob = Vec::new();
+    blob.extend_from_slice(&chainlink_feed_id_bytes(feed_id));
+    blob.extend_from_slice(&abi_u32_word(valid_from_timestamp_seconds));
+    blob.extend_from_slice(&abi_u32_word(observations_timestamp_seconds));
+    blob.extend_from_slice(&abi_zero_word());
+    blob.extend_from_slice(&abi_zero_word());
+    blob.extend_from_slice(&abi_u32_word(observations_timestamp_seconds + 60));
+    blob.extend_from_slice(&abi_i192_word(chainlink_scaled_price(
+        benchmark_price,
+        decimal_scale,
+    )));
+    blob.extend_from_slice(&abi_i192_word(chainlink_scaled_price(
+        benchmark_price,
+        decimal_scale,
+    )));
+    blob.extend_from_slice(&abi_i192_word(chainlink_scaled_price(
+        benchmark_price,
+        decimal_scale,
+    )));
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&abi_zero_word());
+    payload.extend_from_slice(&abi_zero_word());
+    payload.extend_from_slice(&abi_zero_word());
+    payload.extend_from_slice(&abi_usize_word(128));
+    payload.extend_from_slice(&abi_usize_word(blob.len()));
+    payload.extend_from_slice(&blob);
+    payload
+}
+
+fn chainlink_v3_full_report_payload_with_benchmark_word(
+    feed_id: &str,
+    valid_from_timestamp_seconds: u32,
+    observations_timestamp_seconds: u32,
+    benchmark_price_word: [u8; 32],
+) -> Vec<u8> {
+    let mut blob = Vec::new();
+    blob.extend_from_slice(&chainlink_feed_id_bytes(feed_id));
+    blob.extend_from_slice(&abi_u32_word(valid_from_timestamp_seconds));
+    blob.extend_from_slice(&abi_u32_word(observations_timestamp_seconds));
+    blob.extend_from_slice(&abi_zero_word());
+    blob.extend_from_slice(&abi_zero_word());
+    blob.extend_from_slice(&abi_u32_word(observations_timestamp_seconds + 60));
+    blob.extend_from_slice(&benchmark_price_word);
+    blob.extend_from_slice(&benchmark_price_word);
+    blob.extend_from_slice(&benchmark_price_word);
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&abi_zero_word());
+    payload.extend_from_slice(&abi_zero_word());
+    payload.extend_from_slice(&abi_zero_word());
+    payload.extend_from_slice(&abi_usize_word(128));
+    payload.extend_from_slice(&abi_usize_word(blob.len()));
+    payload.extend_from_slice(&blob);
+    payload
+}
+
+fn chainlink_scaled_price(benchmark_price: f64, decimal_scale: u64) -> i128 {
+    let scale = 10_i128
+        .checked_pow(u32::try_from(decimal_scale).expect("test decimal scale should fit u32"))
+        .expect("test decimal scale should fit i128");
+    let price = Decimal::from_str_exact(&benchmark_price.to_string())
+        .expect("test benchmark price should be decimal");
+    (price * Decimal::from(scale))
+        .round()
+        .to_i128()
+        .expect("test benchmark price should fit i128")
+}
+
+fn chainlink_feed_id_bytes(feed_id: &str) -> [u8; 32] {
+    let mut bytes = [0_u8; 32];
+    let decoded = hex::decode(
+        feed_id
+            .strip_prefix("0x")
+            .expect("test feed id should have 0x prefix"),
+    )
+    .expect("test feed id should decode");
+    bytes.copy_from_slice(&decoded);
+    bytes
+}
+
+fn abi_zero_word() -> [u8; 32] {
+    [0_u8; 32]
+}
+
+fn abi_u32_word(value: u32) -> [u8; 32] {
+    let mut word = [0_u8; 32];
+    word[28..32].copy_from_slice(&value.to_be_bytes());
+    word
+}
+
+fn abi_usize_word(value: usize) -> [u8; 32] {
+    let mut word = [0_u8; 32];
+    word[24..32].copy_from_slice(&(value as u64).to_be_bytes());
+    word
+}
+
+fn abi_i192_word(value: i128) -> [u8; 32] {
+    let mut word = if value < 0 { [0xff_u8; 32] } else { [0_u8; 32] };
+    word[16..32].copy_from_slice(&value.to_be_bytes());
+    word
 }
 
 fn sha256_file(path: &std::path::Path) -> String {

@@ -16,7 +16,7 @@
 //!    parameter row without reaching back into core config.
 //! 2. The archetype's bolt-v3 startup-validation policy:
 //!    - the required reference-data role
-//!      (`[reference_data.primary]`),
+//!      (`[reference_data.<role>]`, when the strategy enables an NT quote feed),
 //!    - the enabled `[parameters.entry_order]` and
 //!      `[parameters.exit_order]` and `[parameters.forced_exit_order]`
 //!      NT order-template invariants, including required GTD expiry,
@@ -29,12 +29,14 @@
 //! `strategy.strategy_archetype`. Archetype-specific error-message
 //! policy (the headline "is not allowed for `binary_oracle_edge_taker`"
 //! phrase, the per-field rule listing, and the
-//! "requires `[reference_data.primary]`" phrase) lives here so that a
+//! reference-data structural wording) lives here so that a
 //! future archetype can introduce its own message contract without
 //! reaching back into core validation.
 
+use std::collections::BTreeSet;
+
 use rust_decimal::{Decimal, prelude::ToPrimitive};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use toml::{Value, map::Map};
 
 use nautilus_model::{
@@ -43,8 +45,12 @@ use nautilus_model::{
 };
 
 use crate::{
-    bolt_v3_archetypes::ArchetypeValidationBinding,
-    bolt_v3_config::{BoltV3StrategyConfig, LoadedStrategy},
+    bolt_v3_archetypes::{
+        ArchetypeGateRequirement, ArchetypeValidationBinding, GateRole, GateValueKind,
+    },
+    bolt_v3_config::{
+        BoltV3StrategyConfig, DECISION_REFERENCE_GATE_ROLE, LoadedStrategy, RESOLUTION_GATE_ROLE,
+    },
     bolt_v3_order_intent::{NtOrderTemplateConfig, check_nt_order_template_config},
     bolt_v3_position_contract::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
@@ -76,6 +82,15 @@ pub const RUNTIME_BINDING: StrategyRuntimeBinding = StrategyRuntimeBinding {
     register: register_runtime_strategy,
 };
 
+pub fn gate_requirements() -> Vec<ArchetypeGateRequirement> {
+    vec![ArchetypeGateRequirement {
+        role: GateRole::Resolution,
+        required: true,
+        accepted_value_kinds: BTreeSet::from([GateValueKind::Price, GateValueKind::Outcome]),
+        allow_no_resolution: false,
+    }]
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ParametersBlock {
@@ -88,8 +103,7 @@ pub struct ParametersBlock {
     pub forced_exit_order: OrderParams,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeParametersBlock {
     pub reference_publish_topic: String,
     pub warmup_tick_count: u64,
@@ -105,13 +119,102 @@ pub struct RuntimeParametersBlock {
     pub trade_flow_max_samples: u64,
     pub spike_guard_return_threshold: f64,
     pub spike_guard_cooldown_secs: u64,
-    pub price_to_beat_source: String,
     pub pricing_kurtosis: f64,
     pub theta_decay_factor: f64,
-    pub forced_flat_stale_chainlink_ms: u64,
     pub forced_flat_thin_book_min_liquidity: f64,
     pub lead_agreement_min_corr: f64,
     pub lead_jitter_max_ms: u64,
+}
+
+impl<'de> Deserialize<'de> for RuntimeParametersBlock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            reference_publish_topic: String,
+            warmup_tick_count: u64,
+            reentry_cooldown_secs: u64,
+            book_impact_cap_bps: u64,
+            risk_lambda: f64,
+            exit_hysteresis_bps: i64,
+            vol_window_secs: u64,
+            vol_gap_reset_secs: u64,
+            vol_min_observations: u64,
+            vol_bridge_valid_secs: u64,
+            trade_flow_window_secs: u64,
+            trade_flow_max_samples: u64,
+            spike_guard_return_threshold: f64,
+            spike_guard_cooldown_secs: u64,
+            pricing_kurtosis: f64,
+            theta_decay_factor: f64,
+            forced_flat_thin_book_min_liquidity: f64,
+            lead_agreement_min_corr: f64,
+            lead_jitter_max_ms: u64,
+            price_to_beat_source: Option<toml::Value>,
+            price_to_beat_feed_id: Option<toml::Value>,
+            price_to_beat_report_schema_version: Option<toml::Value>,
+            price_to_beat_report_decimal_scale: Option<toml::Value>,
+            forced_flat_stale_chainlink_ms: Option<toml::Value>,
+            chainlink_data_streams_feed_id: Option<toml::Value>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        if wire.price_to_beat_source.is_some() {
+            return Err(serde::de::Error::custom(
+                "parameters.runtime.price_to_beat_source must move to [target.gate_subscriptions.<role>]",
+            ));
+        }
+        if wire.price_to_beat_feed_id.is_some() {
+            return Err(serde::de::Error::custom(
+                "parameters.runtime.price_to_beat_feed_id must move to [gate_providers.<id>.<provider_kind>]",
+            ));
+        }
+        if wire.price_to_beat_report_schema_version.is_some() {
+            return Err(serde::de::Error::custom(
+                "parameters.runtime.price_to_beat_report_schema_version must move to [gate_providers.<id>.<provider_kind>]",
+            ));
+        }
+        if wire.price_to_beat_report_decimal_scale.is_some() {
+            return Err(serde::de::Error::custom(
+                "parameters.runtime.price_to_beat_report_decimal_scale must move to [gate_providers.<id>.<provider_kind>]",
+            ));
+        }
+        if wire.forced_flat_stale_chainlink_ms.is_some() {
+            return Err(serde::de::Error::custom(
+                "parameters.runtime.forced_flat_stale_chainlink_ms must move to [gate_providers.<id>.freshness]",
+            ));
+        }
+        if wire.chainlink_data_streams_feed_id.is_some() {
+            return Err(serde::de::Error::custom(
+                "parameters.runtime.chainlink_data_streams_feed_id must move to [gate_providers.<id>.chainlink_data_streams]",
+            ));
+        }
+
+        Ok(Self {
+            reference_publish_topic: wire.reference_publish_topic,
+            warmup_tick_count: wire.warmup_tick_count,
+            reentry_cooldown_secs: wire.reentry_cooldown_secs,
+            book_impact_cap_bps: wire.book_impact_cap_bps,
+            risk_lambda: wire.risk_lambda,
+            exit_hysteresis_bps: wire.exit_hysteresis_bps,
+            vol_window_secs: wire.vol_window_secs,
+            vol_gap_reset_secs: wire.vol_gap_reset_secs,
+            vol_min_observations: wire.vol_min_observations,
+            vol_bridge_valid_secs: wire.vol_bridge_valid_secs,
+            trade_flow_window_secs: wire.trade_flow_window_secs,
+            trade_flow_max_samples: wire.trade_flow_max_samples,
+            spike_guard_return_threshold: wire.spike_guard_return_threshold,
+            spike_guard_cooldown_secs: wire.spike_guard_cooldown_secs,
+            pricing_kurtosis: wire.pricing_kurtosis,
+            theta_decay_factor: wire.theta_decay_factor,
+            forced_flat_thin_book_min_liquidity: wire.forced_flat_thin_book_min_liquidity,
+            lead_agreement_min_corr: wire.lead_agreement_min_corr,
+            lead_jitter_max_ms: wire.lead_jitter_max_ms,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -278,11 +381,33 @@ pub fn register_runtime_strategy(
         context.resolved,
     )
     .map_err(|error| binding_message(&context, error.to_string()))?;
-    let build_context = StrategyBuildContext::new(
+    let execution_client_id = context.strategy.config.execution_client_id.as_str();
+    let execution_venue = context
+        .loaded
+        .root
+        .clients
+        .get(execution_client_id)
+        .map(|client| client.venue)
+        .ok_or_else(|| {
+            binding_message(
+                &context,
+                format!(
+                    "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
+                ),
+            )
+        })?;
+    let mut build_context = StrategyBuildContext::new(
         fee_provider,
         context.decision_evidence.clone(),
         context.submit_admission.clone(),
+        execution_venue,
     );
+    if let Some(readiness_evidence) = context.readiness_evidence.clone() {
+        build_context = build_context.with_readiness_evidence(readiness_evidence);
+    }
+    if let Some(runtime_readiness_seed) = context.runtime_readiness_seed.clone() {
+        build_context = build_context.with_runtime_readiness_seed(runtime_readiness_seed);
+    }
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry
@@ -324,18 +449,31 @@ pub fn raw_taker_config(
                 strategy.config.execution_client_id
             ),
         })?;
+    let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
     let reference_data = configured_reference_data(strategy)?;
-    loaded
-        .root
-        .clients
-        .get(reference_data.data_client_id.as_str())
-        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
+    let decision_reference =
+        configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
+    if reference_data.is_some() && decision_reference.is_some() {
+        return Err(BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: format!(
-                "reference_data data_client_id `{}` is not present in loaded clients",
-                reference_data.data_client_id
+                "configure either [reference_data.<role>] or target.gate_subscriptions.{DECISION_REFERENCE_GATE_ROLE}, not both"
             ),
-        })?;
+        });
+    }
+    if let Some(reference_data) = reference_data {
+        loaded
+            .root
+            .clients
+            .get(reference_data.data_client_id.as_str())
+            .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
+                strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+                message: format!(
+                    "reference_data data_client_id `{}` is not present in loaded clients",
+                    reference_data.data_client_id
+                ),
+            })?;
+    }
 
     let order_notional_target = decimal_string_to_f64(
         &strategy.config.strategy_instance_id,
@@ -352,8 +490,16 @@ pub fn raw_taker_config(
         target.cadence_seconds_source_field,
         target.cadence_seconds,
     )?;
+    let price_to_beat_source =
+        price_to_beat_source_from_target(strategy_instance_id, &strategy.config.target)?;
+    let resolution_provider_id =
+        resolution_gate_provider_id_from_target(strategy_instance_id, &strategy.config.target)?;
+    let forced_flat_stale_reference_ms = forced_flat_stale_reference_ms_from_gate_provider(
+        strategy_instance_id,
+        loaded,
+        &resolution_provider_id,
+    )?;
 
-    let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
     let mut table = Map::new();
     insert_string(&mut table, "strategy_id", nt_strategy_id(strategy)?);
     insert_string(
@@ -448,16 +594,35 @@ pub fn raw_taker_config(
         "blocked_after_seconds",
         target.blocked_after_seconds,
     )?;
-    insert_string(
-        &mut table,
-        "reference_venue",
-        reference_data.data_client_id.to_string(),
-    );
-    insert_string(
-        &mut table,
-        "reference_instrument_id",
-        reference_data.instrument_id.to_string(),
-    );
+    insert_string(&mut table, "price_to_beat_source", price_to_beat_source);
+    match (reference_data, decision_reference) {
+        (Some(reference_data), None) => {
+            insert_string(
+                &mut table,
+                "reference_venue",
+                reference_data.data_client_id.to_string(),
+            );
+            insert_string(
+                &mut table,
+                "reference_instrument_id",
+                reference_data.instrument_id.to_string(),
+            );
+        }
+        (None, Some(decision_reference)) => {
+            insert_string(
+                &mut table,
+                "reference_venue",
+                decision_reference.provider_id,
+            );
+            insert_string(
+                &mut table,
+                "reference_instrument_id",
+                decision_reference.resolution_identity,
+            );
+        }
+        (None, None) => {}
+        (Some(_), Some(_)) => unreachable!("dual reference paths are rejected above"),
+    }
     insert_order_config(
         &mut table,
         strategy_instance_id,
@@ -558,11 +723,6 @@ pub fn raw_taker_config(
         "spike_guard_cooldown_secs",
         parameters.runtime.spike_guard_cooldown_secs,
     )?;
-    insert_string(
-        &mut table,
-        "price_to_beat_source",
-        parameters.runtime.price_to_beat_source.clone(),
-    );
     insert_float(
         &mut table,
         "pricing_kurtosis",
@@ -577,7 +737,7 @@ pub fn raw_taker_config(
         &mut table,
         strategy_instance_id,
         "forced_flat_stale_reference_ms",
-        parameters.runtime.forced_flat_stale_chainlink_ms,
+        forced_flat_stale_reference_ms,
     )?;
     insert_float(
         &mut table,
@@ -613,6 +773,200 @@ fn parameters_block(
                 message: error.to_string(),
             },
         )
+}
+
+fn price_to_beat_source_from_target(
+    strategy_instance_id: &str,
+    target: &toml::Value,
+) -> Result<String, BinaryOracleEdgeTakerRuntimeConfigError> {
+    let subscription = resolution_subscription_table(strategy_instance_id, target)?;
+    let mapping = first_resolution_market_mapping(strategy_instance_id, subscription)?;
+    let resolution_kind =
+        required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_kind")?;
+    let resolution_identity =
+        required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_identity")?;
+    Ok(format!("{}.{}", resolution_kind, resolution_identity))
+}
+
+fn resolution_gate_provider_id_from_target(
+    strategy_instance_id: &str,
+    target: &toml::Value,
+) -> Result<String, BinaryOracleEdgeTakerRuntimeConfigError> {
+    let subscription = resolution_subscription_table(strategy_instance_id, target)?;
+    let mapping = first_resolution_market_mapping(strategy_instance_id, subscription)?;
+    gate_provider_id_from_subscription(
+        strategy_instance_id,
+        RESOLUTION_GATE_ROLE,
+        subscription,
+        mapping,
+    )
+}
+
+struct DecisionReferenceTarget {
+    provider_id: String,
+    resolution_identity: String,
+}
+
+fn configured_decision_reference(
+    strategy_instance_id: &str,
+    target: &toml::Value,
+) -> Result<Option<DecisionReferenceTarget>, BinaryOracleEdgeTakerRuntimeConfigError> {
+    let Some(subscription) = target
+        .as_table()
+        .and_then(|target| target.get("gate_subscriptions"))
+        .and_then(toml::Value::as_table)
+        .and_then(|subscriptions| subscriptions.get(DECISION_REFERENCE_GATE_ROLE))
+        .and_then(toml::Value::as_table)
+    else {
+        return Ok(None);
+    };
+    let mapping = first_gate_market_mapping(
+        strategy_instance_id,
+        DECISION_REFERENCE_GATE_ROLE,
+        subscription,
+    )?;
+    let provider_id = gate_provider_id_from_subscription(
+        strategy_instance_id,
+        DECISION_REFERENCE_GATE_ROLE,
+        subscription,
+        mapping,
+    )?;
+    let resolution_identity =
+        required_resolution_mapping_string(strategy_instance_id, mapping, "resolution_identity")?
+            .to_string();
+    // The source-owned decision_reference path binds this resolution_identity onto
+    // the strategy's `reference_instrument_id`, which the runtime accessor parses
+    // with `InstrumentId::from_str(..).ok()`. The path relies on a logical (non-NT)
+    // identity so the accessor yields `None` and the strategy does NOT subscribe to
+    // venue quotes -- its reference arrives via the readiness seed. A resolution_identity
+    // that parses as a valid NT instrument id would silently enable that subscription
+    // and could ingest the wrong reference data, so reject it LOUDLY here.
+    if resolution_identity.parse::<InstrumentId>().is_ok() {
+        return Err(BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            message: format!(
+                "decision_reference resolution_identity `{resolution_identity}` must be a logical gate identity, not a value that parses as an NT instrument id (which would make the source-owned reference path subscribe to venue quotes)"
+            ),
+        });
+    }
+    Ok(Some(DecisionReferenceTarget {
+        provider_id,
+        resolution_identity,
+    }))
+}
+
+fn gate_provider_id_from_subscription(
+    strategy_instance_id: &str,
+    gate_role: &str,
+    subscription: &toml::map::Map<String, toml::Value>,
+    mapping: &toml::map::Map<String, toml::Value>,
+) -> Result<String, BinaryOracleEdgeTakerRuntimeConfigError> {
+    mapping
+        .get("provider_id")
+        .and_then(toml::Value::as_str)
+        .or_else(|| {
+            subscription
+                .get("provider_preference")
+                .and_then(toml::Value::as_array)
+                .and_then(|provider_ids| provider_ids.first())
+                .and_then(toml::Value::as_str)
+        })
+        .or_else(|| {
+            let provider_ids = subscription
+                .get("allowed_provider_ids")
+                .and_then(toml::Value::as_array)?;
+            (provider_ids.len() == 1)
+                .then(|| provider_ids[0].as_str())
+                .flatten()
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            message: format!("{gate_role} gate provider_id is required for runtime bridge"),
+        })
+}
+
+fn first_resolution_market_mapping<'a>(
+    strategy_instance_id: &str,
+    subscription: &'a toml::map::Map<String, toml::Value>,
+) -> Result<&'a toml::map::Map<String, toml::Value>, BinaryOracleEdgeTakerRuntimeConfigError> {
+    first_gate_market_mapping(strategy_instance_id, RESOLUTION_GATE_ROLE, subscription)
+}
+
+fn first_gate_market_mapping<'a>(
+    strategy_instance_id: &str,
+    gate_role: &str,
+    subscription: &'a toml::map::Map<String, toml::Value>,
+) -> Result<&'a toml::map::Map<String, toml::Value>, BinaryOracleEdgeTakerRuntimeConfigError> {
+    subscription
+        .get("market_mappings")
+        .and_then(toml::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(toml::Value::as_table)
+        .next()
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            message: format!("target gate market_mappings must include a {gate_role} mapping"),
+        })
+}
+
+fn required_resolution_mapping_string<'a>(
+    strategy_instance_id: &str,
+    mapping: &'a toml::map::Map<String, toml::Value>,
+    field: &'static str,
+) -> Result<&'a str, BinaryOracleEdgeTakerRuntimeConfigError> {
+    mapping
+        .get(field)
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            message: format!("target gate {field} is required for price_to_beat_source"),
+        })
+}
+
+fn resolution_subscription_table<'a>(
+    strategy_instance_id: &str,
+    target: &'a toml::Value,
+) -> Result<&'a toml::map::Map<String, toml::Value>, BinaryOracleEdgeTakerRuntimeConfigError> {
+    target
+        .as_table()
+        .and_then(|target| target.get("gate_subscriptions"))
+        .and_then(toml::Value::as_table)
+        .and_then(|subscriptions| subscriptions.get(RESOLUTION_GATE_ROLE))
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            message: format!(
+                "target.gate_subscriptions.{RESOLUTION_GATE_ROLE} is required for runtime bridge"
+            ),
+        })
+}
+
+fn forced_flat_stale_reference_ms_from_gate_provider(
+    strategy_instance_id: &str,
+    loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
+    provider_id: &str,
+) -> Result<u64, BinaryOracleEdgeTakerRuntimeConfigError> {
+    loaded
+        .root
+        .gate_providers
+        .as_ref()
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(|provider| provider.freshness.as_ref())
+        .and_then(|freshness| freshness.max_age_ms)
+        .filter(|value| *value != 0)
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::Target {
+            strategy_instance_id: strategy_instance_id.to_string(),
+            message: format!(
+                "gate_providers.{provider_id}.freshness.max_age_ms is required for forced_flat_stale_reference_ms"
+            ),
+        })
 }
 
 fn nt_strategy_id(
@@ -829,18 +1183,18 @@ fn oms_type_value(strategy: &LoadedStrategy) -> String {
 
 fn configured_reference_data(
     strategy: &LoadedStrategy,
-) -> Result<&crate::bolt_v3_config::ReferenceDataBlock, BinaryOracleEdgeTakerRuntimeConfigError> {
+) -> Result<
+    Option<&crate::bolt_v3_config::ReferenceDataBlock>,
+    BinaryOracleEdgeTakerRuntimeConfigError,
+> {
     let mut entries = strategy.config.reference_data.iter();
     match (entries.next(), entries.next()) {
-        (Some((_role, block)), None) => Ok(block),
-        (None, _) => Err(BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
-            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-            message: "requires exactly one [reference_data.<role>] block".to_string(),
-        }),
+        (Some((_role, block)), None) => Ok(Some(block)),
+        (None, _) => Ok(None),
         (Some(_), Some(_)) => Err(BinaryOracleEdgeTakerRuntimeConfigError::ReferenceData {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: format!(
-                "requires exactly one [reference_data.<role>] block; got roles [{}]",
+                "allows at most one [reference_data.<role>] block; got roles [{}]",
                 reference_data_role_names(&strategy.config)
             ),
         }),
@@ -857,12 +1211,12 @@ fn reference_data_role_names(strategy: &BoltV3StrategyConfig) -> String {
 }
 
 fn validate_required_reference_data(context: &str, strategy: &BoltV3StrategyConfig) -> Vec<String> {
-    if strategy.reference_data.contains_key("primary") {
-        Vec::new()
-    } else {
+    if strategy.reference_data.len() > 1 {
         vec![format!(
-            "{context}: strategy_archetype `binary_oracle_edge_taker` requires [reference_data.primary]"
+            "{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"
         )]
+    } else {
+        Vec::new()
     }
 }
 
@@ -905,12 +1259,34 @@ fn validate_parameter_bounds(
             None
         }
     };
-    if let Err(reason) =
-        crate::bolt_v3_validate::parse_decimal_string(&parameters.maximum_position_notional)
+    let position_max_decimal = match crate::bolt_v3_validate::parse_decimal_string(
+        &parameters.maximum_position_notional,
+    ) {
+        Ok(value) => Some(value),
+        Err(reason) => {
+            errors.push(format!(
+                "{context}: parameters.maximum_position_notional is not a valid decimal string ({reason}): `{}`",
+                parameters.maximum_position_notional
+            ));
+            None
+        }
+    };
+    // Both sizing caps must be strictly positive at load. A zero/negative cap is
+    // nonsensical config: the runtime sizing path clamps it to zero and the
+    // strategy silently never submits (fail-soft), so the misconfiguration must
+    // fail closed here instead of at the first dead trading session.
+    if let Some(order_target) = order_target_decimal.as_ref()
+        && *order_target <= Decimal::ZERO
     {
         errors.push(format!(
-            "{context}: parameters.maximum_position_notional is not a valid decimal string ({reason}): `{}`",
-            parameters.maximum_position_notional
+            "{context}: parameters.order_notional_target ({order_target}) must be a positive decimal"
+        ));
+    }
+    if let Some(position_max) = position_max_decimal.as_ref()
+        && *position_max <= Decimal::ZERO
+    {
+        errors.push(format!(
+            "{context}: parameters.maximum_position_notional ({position_max}) must be a positive decimal"
         ));
     }
     if let (Some(order_target), Some(default_max)) =
@@ -921,7 +1297,25 @@ fn validate_parameter_bounds(
             "{context}: parameters.order_notional_target ({order_target}) must be <= root risk.default_max_notional_per_order ({default_max})"
         ));
     }
-
+    // The per-order target cannot exceed the maximum total position notional; such a
+    // target is unsatisfiable (the position cap would always bind first).
+    if let (Some(order_target), Some(position_max)) =
+        (order_target_decimal.as_ref(), position_max_decimal.as_ref())
+        && order_target > position_max
+    {
+        errors.push(format!(
+            "{context}: parameters.order_notional_target ({order_target}) must be <= parameters.maximum_position_notional ({position_max})"
+        ));
+    }
+    // A negative edge threshold admits negative-edge (guaranteed-loss) entries: the entry
+    // edge gate `expected_edge > threshold * theta` is satisfied for any edge — including
+    // losing ones — when the threshold is negative. Fail closed at load (A-EDGE).
+    if parameters.edge_threshold_basis_points < 0 {
+        errors.push(format!(
+            "{context}: parameters.edge_threshold_basis_points ({}) must be >= 0 (a negative edge threshold admits negative-edge / guaranteed-loss entries)",
+            parameters.edge_threshold_basis_points
+        ));
+    }
     errors
 }
 
@@ -930,6 +1324,31 @@ fn check_entry_order_combination(context: &str, entry: &OrderParams) -> Vec<Stri
     if entry.is_reduce_only {
         errors.push(format!(
             "{context}: parameters.entry_order.is_reduce_only must be false because `binary_oracle_edge_taker` entry orders open the managed position"
+        ));
+    }
+    // A market + quote-quantity entry is a BUY sized in pUSD, which makes the pinned NT
+    // Polymarket adapter issue an extra pre-submit collateral-balance REST fetch
+    // (submit_market_order calls fetch_collateral_balance_pusd when side==Buy &&
+    // is_quote_quantity) — 3 REST requests per command instead of 2. The venue egress
+    // reconciliation models the per-order-command REST fanout as 2 (market = get_book +
+    // post_order); a market quote-quantity entry would silently over-drive the Polymarket REST
+    // cap. Forbid the combination so the modeled fanout stays the provable worst-case. (Exits
+    // already reject is_quote_quantity; they are SELLs and never take the collateral path.)
+    if entry.order_type == OrderType::Market && entry.is_quote_quantity {
+        errors.push(format!(
+            "{context}: parameters.entry_order combination order_type=market with is_quote_quantity=true is not supported because a market quote-quantity BUY issues an extra venue collateral-balance REST request (3 per command), over-driving the modeled egress fanout of 2"
+        ));
+    } else if entry.is_quote_quantity {
+        // A non-market (limit) quote-quantity entry skips the extra collateral REST fetch, but
+        // quote-quantity sizing converts the quote amount to a base quantity off the top-of-book
+        // cache tick (quote_quantity_reference_price_for_order / market_order_cache_price_for_order),
+        // which carries no submit-time freshness bound — a stale tick can understate the per-order
+        // cash commitment and slip past the notional cap. This archetype always sizes from base
+        // quantity (exits and forced exits already reject is_quote_quantity), so forbid quote-quantity
+        // entries entirely. Re-enabling the mode requires BOTH the order-template-aware egress fanout
+        // model and a submit-time cache-tick freshness guard (tracked in #506).
+        errors.push(format!(
+            "{context}: parameters.entry_order with is_quote_quantity=true is not supported because quote-quantity sizing converts quote->base off an unguarded top-of-book cache tick with no submit-time freshness bound, which can understate the per-order cash commitment; size entries from base quantity (is_quote_quantity=false)"
         ));
     }
     errors

@@ -3,10 +3,14 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     rc::Rc,
     str::FromStr,
+    sync::Arc,
 };
 
 use anyhow::{Context, Result};
-use nautilus_common::{actor::DataActor, component::Component, timer::TimeEvent};
+use futures_util::future::{BoxFuture, FutureExt};
+use nautilus_common::{
+    actor::DataActor, cache::Cache, clock::TestClock, component::Component, timer::TimeEvent,
+};
 use nautilus_core::{Params, UnixNanos};
 #[cfg(not(test))]
 use nautilus_model::enums::BookType;
@@ -19,25 +23,29 @@ use nautilus_model::{
         AggressorSide, BookAction, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce,
         TrailingOffsetType, TriggerType,
     },
-    identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId},
+    identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId, Venue},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
     types::{Price, Quantity},
 };
+use nautilus_portfolio::portfolio::Portfolio;
 use nautilus_system::trader::Trader;
 use nautilus_trading::{Strategy, StrategyConfig, StrategyCore, nautilus_strategy};
 use rust_decimal::{
     Decimal,
     prelude::{FromPrimitive, ToPrimitive},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use toml::Value;
 
 use crate::{
+    bolt_v3_config::{PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE},
     bolt_v3_decision_evidence::{
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3StrategyInputEvidenceSnapshot, compiled_order_price_source,
+        BoltV3OrderIntentKind, BoltV3ReadinessGateEvidenceSnapshot, BoltV3RuntimeReadinessSeed,
+        BoltV3StrategyInputEvidenceSnapshot, compiled_order_price_source,
+        validate_readiness_gate_evidence_snapshot,
     },
     bolt_v3_market_families::{
         self, FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget,
@@ -47,15 +55,16 @@ use crate::{
         MILLIS_PER_SECOND_U64, POWER_OF_TWO, UNIT_F64, ZERO_F64, is_positive_finite,
         sanitize_probability,
     },
+    bolt_v3_operator_artifacts::{EntryReadinessGateSession, GateSatisfaction},
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
         is_observed_open_side,
     },
     bolt_v3_submit_admission::{
-        BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderKind,
-        BoltV3QuoteQuantityOrderSide, BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind,
-        BoltV3SubmitLifecyclePolicy, conservative_quote_quantity_admission_notional,
+        BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+        admission_base_notional_from_order, base_quantity_admission_notional,
+        fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
     },
     bolt_v3_volatility::{RealizedVolConfig, RealizedVolEstimator},
     strategies::registry::{
@@ -90,8 +99,6 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             market_selection_rule: String => String;
             retry_interval_seconds: u64 => Integer;
             blocked_after_seconds: u64 => Integer;
-            reference_venue: String => String;
-            reference_instrument_id: String => String;
             use_uuid_client_order_ids: bool => Boolean;
             use_hyphens_in_client_order_ids: bool => Boolean;
             external_order_claims: Vec<String> => Array;
@@ -297,6 +304,8 @@ macro_rules! define_config_struct {
         #[serde(deny_unknown_fields)]
         struct BinaryOracleEdgeTakerConfig {
             $( $field: $ty, )+
+            reference_venue: Option<String>,
+            reference_instrument_id: Option<String>,
             entry_order: BinaryOracleEdgeTakerOrderConfig,
             exit_order: BinaryOracleEdgeTakerOrderConfig,
             forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
@@ -1090,6 +1099,10 @@ enum BlindRecoveryReason {
         entry_order_side: OrderSide,
         side: Option<PositionSide>,
     },
+    ForeignVenuePosition {
+        instrument_venue: Venue,
+        execution_venue: Venue,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1169,6 +1182,12 @@ impl ExposureState {
             Self::UnsupportedObserved(observed) => Some(&observed.observed),
             _ => None,
         }
+    }
+
+    fn held_instrument_id(&self) -> Option<InstrumentId> {
+        self.observed_position()
+            .map(|position| position.instrument_id)
+            .or_else(|| self.pending_entry().map(|pending| pending.instrument_id))
     }
 
     fn observed_position_mut(&mut self) -> Option<&mut OpenPositionState> {
@@ -1983,6 +2002,7 @@ impl BinaryOracleEdgeTaker {
         self.active.books.up.instrument_id = next_selection_books.up_instrument_id;
         self.active.books.down.instrument_id = next_selection_books.down_instrument_id;
         self.active.apply_selection_timing(&snapshot);
+        self.apply_source_owned_readiness_seed();
         let reactivated_into_active =
             previous_phase != SelectionPhase::Active && self.active.phase == SelectionPhase::Active;
         let same_market_interval_rollover =
@@ -2009,6 +2029,70 @@ impl BinaryOracleEdgeTaker {
                 error,
             );
         }
+    }
+
+    fn apply_source_owned_readiness_seed(&mut self) {
+        let Some(seed) = self.context.runtime_readiness_seed().cloned() else {
+            return;
+        };
+        if !self.source_owned_readiness_seed_matches_active(&seed) {
+            return;
+        }
+        if !is_positive_finite(seed.price_to_beat_value)
+            || !is_positive_finite(seed.reference_price)
+            || !is_positive_finite(seed.realized_volatility)
+        {
+            return;
+        }
+
+        self.active.price_to_beat = Some(seed.price_to_beat_value);
+        self.observe_reference_quote(&FastSpotObservation {
+            venue_name: seed.reference_venue.clone(),
+            price: seed.reference_price,
+            observed_ts_ms: seed.reference_quote_ts_event,
+        });
+        self.active.warmup_count = self.active.warmup_count.max(self.active.warmup_target);
+        if self
+            .pricing
+            .realized_vol
+            .last_ready_ts_ms
+            .is_none_or(|ready_ts_ms| ready_ts_ms <= seed.reference_quote_ts_event)
+        {
+            self.pricing.realized_vol.last_ready_vol = Some(seed.realized_volatility);
+            self.pricing.realized_vol.last_ready_ts_ms = Some(seed.reference_quote_ts_event);
+            self.pricing.realized_vol_source_venue = Some(seed.reference_venue);
+        }
+    }
+
+    fn source_owned_readiness_seed_matches_active(
+        &self,
+        seed: &BoltV3RuntimeReadinessSeed,
+    ) -> bool {
+        if self.active.phase != SelectionPhase::Active {
+            return false;
+        }
+        let Some(identity) = self.active.source_identity.as_ref() else {
+            return false;
+        };
+        if identity.condition_id != seed.polymarket_condition_id
+            || identity.market_slug != seed.polymarket_market_slug
+            || identity.question_id != seed.polymarket_question_id
+        {
+            return false;
+        }
+        if self.active.interval_start_ms != Some(seed.market_start_timestamp_ms)
+            || self.active.interval_end_ms != Some(seed.market_end_timestamp_ms)
+        {
+            return false;
+        }
+        let Some(up_instrument_id) = self.active.books.up.instrument_id else {
+            return false;
+        };
+        let Some(down_instrument_id) = self.active.books.down.instrument_id else {
+            return false;
+        };
+        up_instrument_id.to_string() == seed.up_instrument_id
+            && down_instrument_id.to_string() == seed.down_instrument_id
     }
 
     fn observe_reference_quote(&mut self, quote: &FastSpotObservation) {
@@ -2071,8 +2155,9 @@ impl BinaryOracleEdgeTaker {
             return None;
         }
         let observed_ts_ms = quote.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        let venue_name = self.config.reference_venue.as_ref()?;
         Some(FastSpotObservation {
-            venue_name: self.config.reference_venue.clone(),
+            venue_name: venue_name.clone(),
             price: midpoint,
             observed_ts_ms,
         })
@@ -2128,15 +2213,42 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn refresh_selection_from_cache(&mut self, now_ms: u64) {
+        // Scope market selection to the configured execution venue. The shared NT cache can hold
+        // instruments from EVERY registered data client (the shipped config registers several
+        // non-Polymarket reference venues, and `load_state` can repopulate the cache across runs),
+        // so an unscoped read could feed a foreign-venue instrument into selection. A real order can
+        // only ever route to the execution client's venue, so any market on another venue must be
+        // unselectable here. Filtering the cache read by the execution venue makes a wrong-venue
+        // selection structurally impossible and fails closed (P5-5 / Codex P5).
+        let execution_venue = self.context.execution_venue();
         let instruments = {
             let cache = self.cache();
             cache
                 .instrument_ids(None)
                 .into_iter()
                 .filter_map(|instrument_id| cache.instrument(instrument_id).cloned())
+                .filter(|instrument| instrument.id().venue == execution_venue)
                 .collect::<Vec<_>>()
         };
         let snapshot = selection_snapshot_from_instruments(&self.config, &instruments, now_ms);
+        // Defense in depth: the venue-scoped read above cannot yield a foreign-venue market, but
+        // assert it explicitly so any future widening of the read still fails closed here — a real
+        // order must never fire against a market whose outcome instruments are on a venue other than
+        // the execution venue.
+        let snapshot = if selected_market_on_execution_venue(&snapshot, execution_venue) {
+            snapshot
+        } else {
+            log::error!(
+                "binary_oracle_edge_taker refusing a selected market whose outcome venue is not the execution venue: strategy_id={} execution_venue={}",
+                self.config.strategy_id,
+                execution_venue,
+            );
+            idle_selection_snapshot(
+                &self.config,
+                now_ms,
+                SELECTION_BLOCK_REASON_TARGET_SELECTION_BLOCKED,
+            )
+        };
         if matches!(snapshot.decision.state, SelectionState::Idle { .. }) {
             if self.selection_missing_since_ms.is_none() {
                 self.selection_missing_since_ms = Some(now_ms);
@@ -2162,24 +2274,29 @@ impl BinaryOracleEdgeTaker {
         self.apply_selection_snapshot(snapshot);
     }
 
-    fn reference_instrument_id(&self) -> InstrumentId {
-        InstrumentId::from(self.config.reference_instrument_id.as_str())
+    fn reference_instrument_id(&self) -> Option<InstrumentId> {
+        self.config
+            .reference_instrument_id
+            .as_deref()
+            .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
     }
 
     fn subscribe_reference_quotes(&mut self) {
-        let instrument_id = self.reference_instrument_id();
-        #[cfg(not(test))]
-        self.subscribe_quotes(instrument_id, None, None);
-        #[cfg(test)]
-        let _ = instrument_id;
+        if let Some(instrument_id) = self.reference_instrument_id() {
+            #[cfg(not(test))]
+            self.subscribe_quotes(instrument_id, None, None);
+            #[cfg(test)]
+            let _ = instrument_id;
+        }
     }
 
     fn unsubscribe_reference_quotes(&mut self) {
-        let instrument_id = self.reference_instrument_id();
-        #[cfg(not(test))]
-        self.unsubscribe_quotes(instrument_id, None, None);
-        #[cfg(test)]
-        let _ = instrument_id;
+        if let Some(instrument_id) = self.reference_instrument_id() {
+            #[cfg(not(test))]
+            self.unsubscribe_quotes(instrument_id, None, None);
+            #[cfg(test)]
+            let _ = instrument_id;
+        }
     }
 
     fn replace_book_subscriptions(&mut self, next: OutcomeBookSubscriptions) {
@@ -2235,29 +2352,47 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn clear_managed_pending_entry_for_client_order(&mut self, client_order_id: ClientOrderId) {
-        if let Some(managed) = self.exposure.managed_position_mut()
-            && managed
-                .pending_entry
-                .as_ref()
-                .is_some_and(|pending| pending.client_order_id == client_order_id)
-        {
+    fn clear_managed_pending_entry_for_client_order(
+        &mut self,
+        client_order_id: ClientOrderId,
+        event_instrument_id: InstrumentId,
+    ) {
+        let matches_pending_entry = self
+            .exposure
+            .managed_position()
+            .and_then(|managed| managed.pending_entry.as_ref())
+            .is_some_and(|pending| pending.client_order_id == client_order_id);
+        if !matches_pending_entry {
+            return;
+        }
+        if !self.event_instrument_matches_held_exposure(event_instrument_id) {
+            return;
+        }
+        if let Some(managed) = self.exposure.managed_position_mut() {
             managed.pending_entry = None;
             self.prune_market_lifecycle_at_current_time();
         }
     }
 
-    fn clear_pending_entry_for_client_order(&mut self, client_order_id: ClientOrderId) {
-        if matches!(
+    fn clear_pending_entry_for_client_order(
+        &mut self,
+        client_order_id: ClientOrderId,
+        event_instrument_id: InstrumentId,
+    ) {
+        let matches_pending_entry = matches!(
             &self.exposure,
             ExposureState::PendingEntry(pending) if pending.client_order_id == client_order_id
-        ) {
+        );
+        if matches_pending_entry {
+            if !self.event_instrument_matches_held_exposure(event_instrument_id) {
+                return;
+            }
             self.exposure = ExposureState::Flat;
             self.prune_market_lifecycle_at_current_time();
             return;
         }
 
-        self.clear_managed_pending_entry_for_client_order(client_order_id);
+        self.clear_managed_pending_entry_for_client_order(client_order_id, event_instrument_id);
     }
 
     fn prune_market_lifecycle_at_current_time(&mut self) {
@@ -2278,11 +2413,17 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn bootstrap_recovery_from_cache(&mut self) {
+        // Scope recovery to the configured execution venue. The shared NT cache can hold positions
+        // from every registered execution client; a foreign-venue position must never be accepted
+        // into Managed state because the exit path would build/submit an order for it with no
+        // additional venue gate. Filtering the cache read by execution venue makes a wrong-venue
+        // recovery structurally impossible and fails closed (P5-5 / Codex P5).
         let strategy_id = StrategyId::from(self.config.strategy_id.as_str());
+        let execution_venue = self.context.execution_venue();
         let cached_positions = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let cache = self.cache();
             cache
-                .positions_open(None, None, Some(&strategy_id), None, None)
+                .positions_open(Some(&execution_venue), None, Some(&strategy_id), None, None)
                 .into_iter()
                 .map(|position| OpenPositionState {
                     market_id: None,
@@ -2340,6 +2481,40 @@ impl BinaryOracleEdgeTaker {
             .into_iter()
             .next()
             .expect("checked non-empty recovery position set");
+        let exposure = self.bootstrapped_exposure_for(open_position, execution_venue);
+        self.exposure = exposure;
+    }
+
+    /// Classify a single recovered open position into the exposure state to adopt.
+    ///
+    /// The recovery probe already scopes the cache read to the execution venue, so a
+    /// foreign-venue position should never reach here in production. This is the single
+    /// fail-closed adoption decision and re-asserts the venue invariant structurally
+    /// (defense in depth) BEFORE any contract check: the exit path would otherwise
+    /// build/submit an order for a wrong-venue position with no further venue gate
+    /// (P5-5 / Codex P5). A foreign-venue position is quarantined to blind recovery and
+    /// is never managed.
+    fn bootstrapped_exposure_for(
+        &self,
+        open_position: OpenPositionState,
+        execution_venue: Venue,
+    ) -> ExposureState {
+        if open_position.instrument_id.venue != execution_venue {
+            log::error!(
+                "binary_oracle_edge_taker recovery bootstrap quarantined foreign-venue cached position: strategy_id={} position_id={} instrument_id={} instrument_venue={} execution_venue={}",
+                self.config.strategy_id,
+                open_position.position_id,
+                open_position.instrument_id,
+                open_position.instrument_id.venue,
+                execution_venue,
+            );
+            return ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::ForeignVenuePosition {
+                    instrument_venue: open_position.instrument_id.venue,
+                    execution_venue,
+                },
+            });
+        }
         if self
             .configured_position_contract()
             .ok()
@@ -2351,11 +2526,6 @@ impl BinaryOracleEdgeTaker {
                 )
             })
         {
-            self.exposure = ExposureState::Managed(ManagedPositionState {
-                position: open_position.clone(),
-                origin: ManagedPositionOrigin::RecoveryBootstrap,
-                pending_entry: None,
-            });
             log::warn!(
                 "binary_oracle_edge_taker recovery bootstrap loaded cached open position: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?} quantity={} avg_px_open={}",
                 self.config.strategy_id,
@@ -2366,11 +2536,12 @@ impl BinaryOracleEdgeTaker {
                 open_position.quantity,
                 open_position.avg_px_open,
             );
+            ExposureState::Managed(ManagedPositionState {
+                position: open_position,
+                origin: ManagedPositionOrigin::RecoveryBootstrap,
+                pending_entry: None,
+            })
         } else if is_observed_open_side(open_position.side) {
-            self.exposure = ExposureState::UnsupportedObserved(UnsupportedObservedState {
-                observed: open_position.clone(),
-                reason: UnsupportedObservedReason::BootstrappedUnsupportedContract,
-            });
             log::error!(
                 "binary_oracle_edge_taker recovery bootstrap quarantined unsupported cached position: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?} quantity={} avg_px_open={}",
                 self.config.strategy_id,
@@ -2381,13 +2552,11 @@ impl BinaryOracleEdgeTaker {
                 open_position.quantity,
                 open_position.avg_px_open,
             );
+            ExposureState::UnsupportedObserved(UnsupportedObservedState {
+                observed: open_position,
+                reason: UnsupportedObservedReason::BootstrappedUnsupportedContract,
+            })
         } else {
-            self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
-                reason: BlindRecoveryReason::InvalidBootstrappedPosition {
-                    entry_order_side: open_position.entry_order_side,
-                    side: open_position.side,
-                },
-            });
             log::error!(
                 "binary_oracle_edge_taker recovery bootstrap received invalid cached position side: strategy_id={} position_id={} instrument_id={} entry_order_side={:?} side={:?}",
                 self.config.strategy_id,
@@ -2396,6 +2565,12 @@ impl BinaryOracleEdgeTaker {
                 open_position.entry_order_side,
                 open_position.side,
             );
+            ExposureState::BlindRecovery(BlindRecoveryState {
+                reason: BlindRecoveryReason::InvalidBootstrappedPosition {
+                    entry_order_side: open_position.entry_order_side,
+                    side: open_position.side,
+                },
+            })
         }
     }
 
@@ -2563,13 +2738,38 @@ impl BinaryOracleEdgeTaker {
         EntryGateDecision { blocked_by }
     }
 
+    /// Single source of truth for the reference-quote freshness bound enforced
+    /// by the forced-flat stale check (A5). When the live canary gate is armed,
+    /// the gate-approved `[live_canary].reference_quote_max_age_seconds` is the
+    /// authoritative freshness policy for the live path, so it is plumbed in here
+    /// rather than letting the submit/stale path run an independent
+    /// strategy-config policy. The effective bound is the STRICTER (smaller) of
+    /// the gate-approved bound and the strategy's `forced_flat_stale_reference_ms`
+    /// so plumbing the gate value can only ever TIGHTEN the existing guard, never
+    /// loosen it (a larger gate bound never relaxes the strategy bound, and the
+    /// strategy bound never relaxes the gate's). Pre-arm there is no gate bound
+    /// and no order can be submitted anyway, so the strategy bound alone applies.
+    fn effective_stale_reference_after_ms(&self) -> u64 {
+        let config_bound_ms = self.config.forced_flat_stale_reference_ms;
+        match self
+            .context
+            .submit_admission()
+            .reference_quote_max_age_seconds()
+        {
+            Some(gate_seconds) => {
+                config_bound_ms.min(gate_seconds.saturating_mul(MILLIS_PER_SECOND_U64))
+            }
+            None => config_bound_ms,
+        }
+    }
+
     fn active_forced_flat_reasons_at(&self, now_ms: u64) -> Vec<ForcedFlatReason> {
         evaluate_forced_flat_predicates(&ForcedFlatInputs {
             phase: self.active.phase,
             metadata_matches_selection: self.active.books.metadata_matches_selection(),
             last_reference_ts_ms: self.active.last_reference_ts_ms,
             now_ms,
-            stale_reference_after_ms: self.config.forced_flat_stale_reference_ms,
+            stale_reference_after_ms: self.effective_stale_reference_after_ms(),
             liquidity_available: self.active.books.minimum_liquidity(),
             min_liquidity_required: self.config.forced_flat_thin_book_min_liquidity,
             fast_venue_incoherent: self.active.fast_venue_incoherent,
@@ -2588,7 +2788,7 @@ impl BinaryOracleEdgeTaker {
             metadata_matches_selection: open_position.book.metadata_matches_selection(),
             last_reference_ts_ms: self.active.last_reference_ts_ms,
             now_ms,
-            stale_reference_after_ms: self.config.forced_flat_stale_reference_ms,
+            stale_reference_after_ms: self.effective_stale_reference_after_ms(),
             liquidity_available: open_position.book.liquidity_available,
             min_liquidity_required: self.config.forced_flat_thin_book_min_liquidity,
             fast_venue_incoherent: self.active.fast_venue_incoherent,
@@ -2782,8 +2982,8 @@ impl BinaryOracleEdgeTaker {
             lead_agreement_corr: self.pricing.last_lead_agreement_corr,
             fast_venue_age_ms: self.pricing.last_fast_venue_age_ms,
             fast_venue_jitter_ms: self.pricing.last_fast_venue_jitter_ms,
-            up_fee_bps: self.outcome_fee_bps(OutcomeSide::Up),
-            down_fee_bps: self.outcome_fee_bps(OutcomeSide::Down),
+            up_fee_bps: self.entry_fee_bps(OutcomeSide::Up),
+            down_fee_bps: self.entry_fee_bps(OutcomeSide::Down),
             up_entry_cost: self.executable_entry_cost(OutcomeSide::Up),
             down_entry_cost: self.executable_entry_cost(OutcomeSide::Down),
             up_worst_case_ev_bps: evaluation.up_worst_case_ev_bps,
@@ -2943,12 +3143,80 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn outcome_fee_bps(&self, side: OutcomeSide) -> Option<f64> {
-        let instrument_id = match side {
-            OutcomeSide::Up => self.active.outcome_fees.up_instrument_id,
-            OutcomeSide::Down => self.active.outcome_fees.down_instrument_id,
-        }?;
-        self.context.fee_provider().fee_bps(instrument_id)?.to_f64()
+    fn entry_fee_bps(&self, side: OutcomeSide) -> Option<f64> {
+        let entry_price = self.executable_entry_cost(side)?;
+        self.entry_fee_bps_at_price(side, entry_price)
+    }
+
+    fn entry_fee_bps_at_price(&self, side: OutcomeSide, entry_price: f64) -> Option<f64> {
+        let instrument_id = self.instrument_id_for_side(side)?;
+        let Some(instrument) = self.current_instrument(instrument_id) else {
+            #[cfg(test)]
+            {
+                return self.context.fee_provider().fee_bps(instrument_id)?.to_f64();
+            }
+            #[cfg(not(test))]
+            {
+                return None;
+            }
+        };
+        let entry_price = Decimal::from_f64(entry_price)?;
+        self.context
+            .fee_provider()
+            .entry_fee_bps(&instrument, entry_price)?
+            .to_f64()
+    }
+
+    /// Resolve the max entry fee bound (in bps) used to compute the
+    /// fee-inclusive admission notional, mirroring the proof executor's
+    /// `fee_provider.max_entry_fee_bps(&instrument, price)` lookup
+    /// (`bolt_v3_canary_proof_executor` line 108-116). Fail-closed: a missing
+    /// instrument context or absent fee bound is a hard error so the
+    /// downstream cap check never silently passes a raw notional.
+    ///
+    /// In production the order is built from a cached instrument, so
+    /// `current_instrument` resolves. Unit tests that exercise this path
+    /// without populating the NT cache supply the bound through the
+    /// `FeeProvider::fee_bps` map, matching the established `#[cfg(test)]`
+    /// fallback in `entry_fee_bps_at_price`.
+    ///
+    /// SYMMETRIC-FEE ASSUMPTION (A12): both entry AND risk-reducing-exit
+    /// admission scale their notional by THIS entry-fee bound. Polymarket
+    /// charges the same fee on either leg, so the entry bound is the exact
+    /// exit bound today. Should a venue ever charge a strictly larger exit fee,
+    /// using the (smaller) entry bound here would UNDERSTATE an exit's
+    /// fee-inclusive notional. That direction fails OPEN for the cap, so a
+    /// venue with asymmetric (higher exit) fees MUST add an exit-fee bound and
+    /// route exits through it before being admitted — do not silently reuse the
+    /// entry bound for an asymmetric-fee venue.
+    fn max_entry_fee_bps_for_admission(
+        &self,
+        instrument_id: InstrumentId,
+        price: Decimal,
+    ) -> Result<Decimal> {
+        let max_fee_bps = match self.current_instrument(instrument_id) {
+            Some(instrument) => self.context.fee_provider().max_entry_fee_bps(&instrument, price),
+            None => {
+                #[cfg(test)]
+                {
+                    self.context.fee_provider().fee_bps(instrument_id)
+                }
+                #[cfg(not(test))]
+                {
+                    None
+                }
+            }
+        }
+        .with_context(|| {
+            format!(
+                "bolt-v3 submit admission requires a max entry fee bound for instrument_id={instrument_id}"
+            )
+        })?;
+        anyhow::ensure!(
+            max_fee_bps >= Decimal::ZERO,
+            "bolt-v3 submit admission max entry fee bound must be non-negative for instrument_id={instrument_id}, got {max_fee_bps}"
+        );
+        Ok(max_fee_bps)
     }
 
     fn active_book_for_outcome(&self, side: OutcomeSide) -> &OutcomeBookState {
@@ -3087,6 +3355,63 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    /// Venue-adoption guard shared by every live event path that materializes a
+    /// `Managed` position from an external event's `instrument_id` (position
+    /// events via `materialize_position_from_event`, entry fills via
+    /// `on_order_filled`). A live event must be on the configured execution
+    /// venue; NT routes events per strategy/execution-client so a foreign-venue
+    /// event should never arrive, but these paths adopt the event `instrument_id`
+    /// into `Managed` with no further venue gate and the exit path then submits
+    /// against it. Rather than rely only on inherited NT routing, quarantine a
+    /// foreign-venue event to blind recovery and signal the caller to stop
+    /// before any `Managed`/`ExitPending` transition. Returns `true` when the
+    /// event was quarantined (the caller must return early), `false` when the
+    /// event is on the execution venue. Mirrors the recovery-path guard in
+    /// `bootstrapped_exposure_for` (single `ForeignVenuePosition` classification).
+    fn quarantine_foreign_venue_event(&mut self, instrument_id: InstrumentId) -> bool {
+        let execution_venue = self.context.execution_venue();
+        if instrument_id.venue == execution_venue {
+            return false;
+        }
+        log::error!(
+            "binary_oracle_edge_taker live event quarantined foreign-venue instrument: strategy_id={} instrument_id={} instrument_venue={} execution_venue={}",
+            self.config.strategy_id,
+            instrument_id,
+            instrument_id.venue,
+            execution_venue,
+        );
+        self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
+            reason: BlindRecoveryReason::ForeignVenuePosition {
+                instrument_venue: instrument_id.venue,
+                execution_venue,
+            },
+        });
+        self.refresh_book_subscriptions_for_current_state();
+        true
+    }
+
+    fn event_instrument_matches_held_exposure(
+        &mut self,
+        event_instrument_id: InstrumentId,
+    ) -> bool {
+        let Some(held_instrument_id) = self.exposure.held_instrument_id() else {
+            return true;
+        };
+        if event_instrument_id == held_instrument_id {
+            return true;
+        }
+        if self.quarantine_foreign_venue_event(event_instrument_id) {
+            return false;
+        }
+        log::warn!(
+            "binary_oracle_edge_taker ignored exposure terminal event for mismatched instrument: strategy_id={} event_instrument_id={} held_instrument_id={}",
+            self.config.strategy_id,
+            event_instrument_id,
+            held_instrument_id,
+        );
+        false
+    }
+
     fn materialize_position_from_event(
         &mut self,
         instrument_id: InstrumentId,
@@ -3096,6 +3421,13 @@ impl BinaryOracleEdgeTaker {
         quantity: Quantity,
         avg_px_open: f64,
     ) {
+        // Venue invariant (defense in depth): a live position event must be on the
+        // execution venue, or it would be adopted into Managed and the exit path
+        // would submit against a foreign instrument_id. Quarantine before any
+        // Managed/ExitPending transition via the shared venue-adoption guard.
+        if self.quarantine_foreign_venue_event(instrument_id) {
+            return;
+        }
         let preserved = self
             .managed_position()
             .filter(|managed| {
@@ -3230,11 +3562,18 @@ impl BinaryOracleEdgeTaker {
         self.refresh_book_subscriptions_for_current_state();
     }
 
-    fn mark_exit_order_terminal(&mut self, client_order_id: ClientOrderId) {
+    fn mark_exit_order_terminal(
+        &mut self,
+        client_order_id: ClientOrderId,
+        event_instrument_id: InstrumentId,
+    ) {
         let Some(mut exit_pending) = self.exposure.exit_pending().cloned() else {
             return;
         };
         if exit_pending.pending_exit.client_order_id != client_order_id {
+            return;
+        }
+        if !self.event_instrument_matches_held_exposure(event_instrument_id) {
             return;
         }
         exit_pending.pending_exit.terminal_received = true;
@@ -3864,10 +4203,19 @@ impl BinaryOracleEdgeTaker {
         order: nautilus_model::orders::OrderAny,
         submit_context: SubmitContext,
     ) -> Result<()> {
+        // A15: build the (fallible) admission request BEFORE recording the
+        // order-intent evidence line. The request build can fail (e.g. a
+        // market-style order whose instrument declares no structural price
+        // ceiling, or an unresolvable fee bound), in which case the order never
+        // fires —
+        // recording the intent first would leave an orphan evidence line for an
+        // order that was never submitted. Recording after the build keeps the
+        // evidence chain truthful: an order-intent line exists only once the
+        // order is fully valued and about to enter admission.
+        let request = self.submit_admission_request_from_order(&intent, &order)?;
         self.context
             .decision_evidence()
             .record_order_intent(&intent)?;
-        let request = self.submit_admission_request_from_order(&intent, &order)?;
         let _permit = self.context.submit_admission().admit(&request)?;
         self.submit_order(
             order,
@@ -3898,17 +4246,98 @@ impl BinaryOracleEdgeTaker {
             )
         })?;
         let notional = if order.is_quote_quantity() {
-            anyhow::ensure!(
-                self.current_instrument(order.instrument_id()).is_some(),
-                "bolt-v3 submit admission missing instrument context for quote-quantity client_order_id={}",
-                client_order_id
-            );
-            self.quote_quantity_last_price_for_order(order)
-                .and_then(|last_px| self.quote_quantity_submit_notional(order, last_px))
-                .unwrap_or(quantity)
+            let instrument = self.current_instrument(order.instrument_id()).with_context(|| {
+                format!(
+                    "bolt-v3 submit admission missing instrument context for quote-quantity client_order_id={}",
+                    client_order_id
+                )
+            })?;
+            let last_price = self.quote_quantity_last_price_for_order(order);
+            let quote_reference_price = self.quote_quantity_reference_price_for_order(order);
+            // Single source of truth: BOTH submit paths derive the admission base
+            // notional from the built order through this shared helper. `None`
+            // means the helper could not produce a settlement-currency notional —
+            // either no reference price could be resolved, OR the instrument is
+            // inverse (A6: the helper fail-closes inverse quote-quantity orders).
+            // The fallback below fails CLOSED on the inverse case and otherwise
+            // falls back to the raw submitted quote quantity, exactly as before.
+            match admission_base_notional_from_order(
+                order,
+                &instrument,
+                price,
+                quantity,
+                last_price,
+                quote_reference_price,
+            ) {
+                Some(base_notional) => base_notional,
+                None => {
+                    // Degraded fallback: no reference price could be resolved.
+                    // The raw submitted quote quantity equals the committed
+                    // settlement-currency amount ONLY for a non-inverse
+                    // instrument; for an inverse instrument the quote quantity is
+                    // denominated in the quote currency, not settlement, so
+                    // falling back to it would understate the cap. This system
+                    // trades only non-inverse binary options — assert the
+                    // invariant and FAIL CLOSED rather than admit a
+                    // mis-denominated notional if that ever changes.
+                    anyhow::ensure!(
+                        !instrument.is_inverse(),
+                        "bolt-v3 submit admission cannot value a quote-quantity order on an inverse instrument from the raw quote quantity (client_order_id={})",
+                        client_order_id
+                    );
+                    quantity
+                }
+            }
         } else {
-            price * quantity
+            base_quantity_admission_notional(price, quantity)
         };
+        // Scale the raw notional to a fee-inclusive notional before the
+        // admission cap check, using the SAME computation the proof executor
+        // applies (`bolt_v3_canary_proof_executor` line 117-118). Without this
+        // the strategy path would check a raw notional against a cap the proof
+        // path checks fee-inclusive — admitting an order whose fee-inclusive
+        // cost exceeds the intended per-order cap.
+        let max_fee_bps = self.max_entry_fee_bps_for_admission(order.instrument_id(), price)?;
+        // A base-quantity order with NO firm limit price (Market / StopMarket /
+        // MarketIfTouched / TrailingStopMarket) carries no venue-enforced price
+        // bound: it can fill, or settle, anywhere up to the instrument's
+        // structural price CEILING. Value its admission notional at that ceiling —
+        // the only price the venue physically cannot exceed — so the per-order cap
+        // is a HARD bound on the cash such an order can commit, not an estimate. A
+        // configured slippage budget is an estimate, not a bound, and must never
+        // stand in for the cap.
+        //
+        // The ceiling is used for EVERY market-style order regardless of side or
+        // intent (A4), because it is the only universally fail-closed bound:
+        //   - A BUY (entry opening a long, or exit buying back a short) can debit
+        //     up to qty * ceiling.
+        //   - A SELL ENTRY (opening a SHORT) carries a settlement liability up to
+        //     qty * ceiling — so a SELL is NOT automatically cheaper; valuing it
+        //     at a price floor would UNDERSTATE a short entry's worst case and
+        //     loosen the cap. The ceiling never understates any side or intent.
+        // This extends the bound to market-style EXITs, which previously skipped
+        // this branch and were valued at their reference/trigger price (the bug
+        // A4 closed). Because an admitted entry was itself capped at the ceiling
+        // and an exit never exceeds the entry quantity, a ceiling-valued exit can
+        // never be spuriously blocked by the cap the entry already cleared.
+        // Quote-quantity orders commit a fixed quote amount (already floored) and
+        // a firm-limit order can never fill past its own price, so those keep
+        // their own notional. Fail CLOSED if the instrument declares no ceiling.
+        let notional = if order.price().is_none() && !order.is_quote_quantity() {
+            let price_ceiling = self
+                .current_instrument(order.instrument_id())
+                .and_then(|instrument| instrument.max_price())
+                .map(|ceiling| ceiling.as_decimal());
+            market_style_admission_ceiling_notional(price_ceiling, quantity).with_context(|| {
+                format!(
+                    "bolt-v3 submit admission refuses a market-style order without a structural price ceiling for client_order_id={}",
+                    client_order_id
+                )
+            })?
+        } else {
+            notional
+        };
+        let notional = fee_inclusive_admission_notional(notional, max_fee_bps);
 
         Ok(BoltV3SubmitAdmissionRequest {
             strategy_id: intent.strategy_id.clone(),
@@ -3920,6 +4349,7 @@ impl BinaryOracleEdgeTaker {
                 BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
             },
             lifecycle_policy: self.submit_lifecycle_policy(),
+            canary_proof_claim: None,
         })
     }
 
@@ -3956,65 +4386,21 @@ impl BinaryOracleEdgeTaker {
             .map(|last_trade| last_trade.price)
     }
 
-    fn quote_quantity_submit_notional(
+    /// Side-appropriate top-of-book price (best ask for a BUY, best bid for a
+    /// SELL) used by [`admission_base_notional_from_order`] to pick a
+    /// conservative effective price for a quote-quantity order's quote→base
+    /// conversion. `None` when no current quote tick is cached, which the shared
+    /// helper treats as "no top-of-book" and falls back to the last price.
+    fn quote_quantity_reference_price_for_order(
         &self,
         order: &nautilus_model::orders::OrderAny,
-        last_px: Price,
-    ) -> Option<Decimal> {
-        let instrument = self.current_instrument(order.instrument_id())?;
-        let effective_price =
-            self.quote_quantity_effective_price_for_order(order, &instrument, last_px);
-        let effective_quantity = if order.is_quote_quantity() && !instrument.is_inverse() {
-            instrument.calculate_base_quantity(order.quantity(), effective_price)
-        } else {
-            order.quantity()
-        };
-        let notional = instrument
-            .calculate_notional_value(effective_quantity, last_px, Some(true))
-            .as_decimal();
-        let submitted_quote_quantity =
-            Decimal::from_str(order.quantity().to_string().trim()).ok()?;
-        Some(conservative_quote_quantity_admission_notional(
-            BoltV3QuoteQuantityAdmissionInput {
-                order_kind: match order {
-                    OrderAny::Limit(_) => BoltV3QuoteQuantityOrderKind::Limit,
-                    OrderAny::StopLimit(_) => BoltV3QuoteQuantityOrderKind::StopLimit,
-                    _ => BoltV3QuoteQuantityOrderKind::Other,
-                },
-                order_side: match order.order_side() {
-                    OrderSide::Buy => BoltV3QuoteQuantityOrderSide::Buy,
-                    OrderSide::Sell => BoltV3QuoteQuantityOrderSide::Sell,
-                    _ => BoltV3QuoteQuantityOrderSide::Other,
-                },
-                is_quote_quantity: order.is_quote_quantity(),
-                is_inverse: instrument.is_inverse(),
-                submitted_quote_quantity,
-                calculated_notional: notional,
-            },
-        ))
-    }
-
-    fn quote_quantity_effective_price_for_order(
-        &self,
-        order: &nautilus_model::orders::OrderAny,
-        instrument: &InstrumentAny,
-        last_px: Price,
-    ) -> Price {
-        if !order.is_quote_quantity()
-            || instrument.is_inverse()
-            || !matches!(order, OrderAny::Limit(_) | OrderAny::StopLimit(_))
-        {
-            return last_px;
-        }
-
+    ) -> Option<Price> {
         let cache = self.cache();
-        let Some(quote_tick) = cache.quote(&order.instrument_id()) else {
-            return last_px;
-        };
+        let quote_tick = cache.quote(&order.instrument_id())?;
         match order.order_side() {
-            OrderSide::Buy => last_px.min(quote_tick.ask_price),
-            OrderSide::Sell => last_px.max(quote_tick.bid_price),
-            _ => last_px,
+            OrderSide::Buy => Some(quote_tick.ask_price),
+            OrderSide::Sell => Some(quote_tick.bid_price),
+            _ => None,
         }
     }
 
@@ -4066,7 +4452,7 @@ impl BinaryOracleEdgeTaker {
             anyhow::anyhow!("entry strategy input evidence requires selected side")
         })?;
         let fee_rate_basis_points = self
-            .outcome_fee_bps(selected_side)
+            .entry_fee_bps_at_price(selected_side, price.as_f64())
             .filter(|value| is_non_negative_finite(*value))
             .ok_or_else(|| {
                 anyhow::anyhow!("entry strategy input evidence requires selected outcome fee")
@@ -4126,11 +4512,19 @@ impl BinaryOracleEdgeTaker {
         let order_side = decision.order_side.ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires submission order side")
         })?;
+        let readiness_evidence = self.context.readiness_evidence().ok_or_else(|| {
+            anyhow::anyhow!(
+                "entry strategy input evidence requires readiness gate session evidence"
+            )
+        })?;
 
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
             configured_target_id: self.config.configured_target_id.clone(),
             market_selection_ruleset_id: self.config.configured_target_id.clone(),
+            gate_session_hash: readiness_evidence.gate_session_hash.clone(),
+            selected_market_key: readiness_evidence.selected_market_key.clone(),
+            gate_evidence: readiness_evidence.gate_evidence.clone(),
             market_selection_outcome: market_selection_outcome.to_string(),
             market_id: self.active.market_id.clone(),
             polymarket_condition_id: self
@@ -4545,7 +4939,7 @@ impl BinaryOracleEdgeTaker {
         let Some(historical_entry_fee_bps) = decision
             .evaluation
             .selected_side
-            .and_then(|selected_side| self.outcome_fee_bps(selected_side))
+            .and_then(|selected_side| self.entry_fee_bps_at_price(selected_side, price))
         else {
             log::warn!(
                 "binary_oracle_edge_taker entry submit skipped: strategy_id={} reason=historical_entry_fee_unavailable",
@@ -4681,7 +5075,25 @@ impl BinaryOracleEdgeTaker {
         };
         evaluation.fair_probability_up = Some(fair_probability_up);
 
-        let up_fee_bps = match self.outcome_fee_bps(OutcomeSide::Up) {
+        let up_entry_cost = match self.executable_entry_cost(OutcomeSide::Up) {
+            Some(value) => value,
+            None => {
+                evaluation.pricing_blocked_by.push(
+                    EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Up),
+                );
+                return evaluation;
+            }
+        };
+        let down_entry_cost = match self.executable_entry_cost(OutcomeSide::Down) {
+            Some(value) => value,
+            None => {
+                evaluation.pricing_blocked_by.push(
+                    EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Down),
+                );
+                return evaluation;
+            }
+        };
+        let up_fee_bps = match self.entry_fee_bps_at_price(OutcomeSide::Up, up_entry_cost) {
             Some(value) => value,
             None => {
                 evaluation
@@ -4690,7 +5102,7 @@ impl BinaryOracleEdgeTaker {
                 return evaluation;
             }
         };
-        let down_fee_bps = match self.outcome_fee_bps(OutcomeSide::Down) {
+        let down_fee_bps = match self.entry_fee_bps_at_price(OutcomeSide::Down, down_entry_cost) {
             Some(value) => value,
             None => {
                 evaluation
@@ -4710,24 +5122,6 @@ impl BinaryOracleEdgeTaker {
                 }
             };
         evaluation.uncertainty_band_probability = Some(uncertainty_band_probability);
-        let up_entry_cost = match self.executable_entry_cost(OutcomeSide::Up) {
-            Some(value) => value,
-            None => {
-                evaluation.pricing_blocked_by.push(
-                    EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Up),
-                );
-                return evaluation;
-            }
-        };
-        let down_entry_cost = match self.executable_entry_cost(OutcomeSide::Down) {
-            Some(value) => value,
-            None => {
-                evaluation.pricing_blocked_by.push(
-                    EntryPricingBlockReason::ExecutableEntryCostUnavailable(OutcomeSide::Down),
-                );
-                return evaluation;
-            }
-        };
 
         evaluation.up_worst_case_ev_bps = compute_worst_case_ev_bps(
             OutcomeSide::Up,
@@ -4830,7 +5224,10 @@ impl DataActor for BinaryOracleEdgeTaker {
     }
 
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
-        if quote.instrument_id != self.reference_instrument_id() {
+        if self
+            .reference_instrument_id()
+            .is_none_or(|instrument_id| quote.instrument_id != instrument_id)
+        {
             return Ok(());
         }
         if let Some(reference_quote) = self.reference_quote_from_tick(quote) {
@@ -4872,6 +5269,7 @@ impl DataActor for BinaryOracleEdgeTaker {
             return Ok(());
         }
 
+        self.refresh_fee_readiness();
         let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
         if matches!(self.exposure, ExposureState::Managed(_))
             && let Err(error) = self.try_submit_exit_order(now_ms)
@@ -4936,17 +5334,29 @@ impl DataActor for BinaryOracleEdgeTaker {
                     )
                 });
             if managed_entry_fill {
+                if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+                    return Ok(());
+                }
                 if let Some(exit_pending) = self.exposure.exit_pending_mut() {
                     exit_pending
                         .pending_exit
                         .residual_position_observed_after_fill = true;
                 }
                 if !keep_pending_entry {
-                    self.clear_managed_pending_entry_for_client_order(event.client_order_id);
+                    self.clear_managed_pending_entry_for_client_order(
+                        event.client_order_id,
+                        event.instrument_id,
+                    );
                 }
             } else if let (Some(position_id), Some(position_side)) =
                 (event.position_id, position_side)
             {
+                // Venue invariant (shared guard): never adopt a foreign-venue fill
+                // into Managed — the exit path would submit against it. Same
+                // venue-adoption class as the position-event path above.
+                if self.quarantine_foreign_venue_event(event.instrument_id) {
+                    return Ok(());
+                }
                 self.exposure = ExposureState::Managed(ManagedPositionState {
                     position: self.build_open_position_state(
                         None,
@@ -4998,6 +5408,9 @@ impl DataActor for BinaryOracleEdgeTaker {
                 self.record_market_fill(&market_id, now_ms);
             }
         } else if exit_fill {
+            if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+                return Ok(());
+            }
             if let Some(market_id) = self
                 .exposure
                 .exit_pending()
@@ -5021,8 +5434,8 @@ impl DataActor for BinaryOracleEdgeTaker {
         &mut self,
         event: &nautilus_model::events::OrderCanceled,
     ) -> anyhow::Result<()> {
-        self.clear_pending_entry_for_client_order(event.client_order_id);
-        self.mark_exit_order_terminal(event.client_order_id);
+        self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
+        self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
         Ok(())
     }
@@ -5030,14 +5443,14 @@ impl DataActor for BinaryOracleEdgeTaker {
 
 nautilus_strategy!(BinaryOracleEdgeTaker, {
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
-        self.clear_pending_entry_for_client_order(event.client_order_id);
-        self.mark_exit_order_terminal(event.client_order_id);
+        self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
+        self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
     }
 
     fn on_order_expired(&mut self, event: nautilus_model::events::OrderExpired) {
-        self.clear_pending_entry_for_client_order(event.client_order_id);
-        self.mark_exit_order_terminal(event.client_order_id);
+        self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
+        self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
     }
 
@@ -5064,10 +5477,19 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
     }
 
     fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
-        if let ExposureState::Managed(position) = &self.exposure
-            && position.position.position_id == event.position_id
-        {
-            if let Some(pending_entry) = position.pending_entry.clone() {
+        let managed_position_close = match &self.exposure {
+            ExposureState::Managed(position)
+                if position.position.position_id == event.position_id =>
+            {
+                Some(position.pending_entry.clone())
+            }
+            _ => None,
+        };
+        if let Some(pending_entry) = managed_position_close {
+            if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+                return;
+            }
+            if let Some(pending_entry) = pending_entry {
                 let client_order_id = pending_entry.client_order_id;
                 self.exposure = ExposureState::PendingEntry(pending_entry);
                 let client_id = ClientId::from(self.config.client_id.as_str());
@@ -5086,29 +5508,45 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
             return;
         }
 
-        match &mut self.exposure {
-            ExposureState::ExitPending(exit_pending)
-                if exit_pending.pending_exit.position_id == Some(event.position_id) =>
-            {
+        let exit_pending_close = self.exposure.exit_pending().is_some_and(|exit_pending| {
+            exit_pending.pending_exit.position_id == Some(event.position_id)
+        });
+        if exit_pending_close {
+            if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+                return;
+            }
+            if let ExposureState::ExitPending(exit_pending) = &mut self.exposure {
                 exit_pending.pending_exit.close_received = true;
                 exit_pending.position = None;
                 if exit_pending.is_terminal() {
                     self.exposure = ExposureState::Flat;
                 }
             }
+        } else if matches!(
+            &self.exposure,
             ExposureState::UnsupportedObserved(observed)
-                if observed.observed.position_id == event.position_id =>
-            {
+                if observed.observed.position_id == event.position_id
+        ) {
+            if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+                return;
+            }
+            if matches!(
+                &self.exposure,
+                ExposureState::UnsupportedObserved(observed)
+                    if observed.observed.position_id == event.position_id
+            ) {
                 self.exposure = ExposureState::Flat;
             }
+        } else {
             // Entry reconciliation may not have a position id yet; the instrument is the
             // strongest available key for a close that races ahead of position materialization.
-            ExposureState::EntryReconcilePending { pending, .. }
-                if pending.instrument_id == event.instrument_id =>
-            {
+            if matches!(
+                &self.exposure,
+                ExposureState::EntryReconcilePending { pending, .. }
+                    if pending.instrument_id == event.instrument_id
+            ) {
                 self.exposure = ExposureState::Flat;
             }
-            _ => {}
         }
         self.refresh_book_subscriptions_for_current_state();
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
@@ -5203,6 +5641,8 @@ impl BinaryOracleEdgeTakerBuilder {
                 ENTRY_ORDER_FIELD
                     | EXIT_ORDER_FIELD
                     | FORCED_EXIT_ORDER_FIELD
+                    | "reference_venue"
+                    | "reference_instrument_id"
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -5214,6 +5654,26 @@ impl BinaryOracleEdgeTakerBuilder {
             field_prefix,
             errors,
         );
+        Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);
+        Self::validate_optional_string_field(
+            table,
+            field_prefix,
+            "reference_instrument_id",
+            errors,
+        );
+        if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {
+            let missing = if table.contains_key("reference_venue") {
+                "reference_instrument_id"
+            } else {
+                "reference_venue"
+            };
+            Self::push_missing(
+                errors,
+                format!("{field_prefix}.{missing}"),
+                "missing_reference_data_pair",
+                BinaryOracleEdgeTakerFieldType::String,
+            );
+        }
         Self::validate_order_table(
             table,
             field_prefix,
@@ -5235,6 +5695,58 @@ impl BinaryOracleEdgeTakerBuilder {
             concat!(stringify!(missing_), stringify!(forced_exit_order)),
             errors,
         );
+        Self::validate_rotating_market_family(table, field_prefix, errors);
+    }
+
+    /// Reject an unknown `rotating_market_family` at config-parse time (P5-10).
+    /// Startup market-identity construction already fails loud on an unknown
+    /// family, so this is defense-in-depth that converges parse-time validation
+    /// with the SINGLE registry source of truth
+    /// (`bolt_v3_market_families::validation_bindings`): a family the registry
+    /// does not bind can never be selected or traded, so it must be rejected here
+    /// rather than accepted and only caught later.
+    fn validate_rotating_market_family(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        let field_name = stringify!(rotating_market_family);
+        let Some(value) = table.get(field_name) else {
+            // Presence/type is enforced by the generated field validator; an
+            // absent or non-string value is reported there, not here.
+            return;
+        };
+        let Some(family) = value.as_str() else {
+            return;
+        };
+        let is_known = bolt_v3_market_families::validation_bindings()
+            .iter()
+            .any(|binding| binding.key == family);
+        if !is_known {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.{field_name}"),
+                code: stringify!(unknown_market_family),
+                message: format!("unknown market family `{family}`"),
+            });
+        }
+    }
+
+    fn validate_optional_string_field(
+        table: &toml::map::Map<String, Value>,
+        field_prefix: &str,
+        field_name: &'static str,
+        errors: &mut Vec<ValidationError>,
+    ) {
+        if let Some(value) = table.get(field_name)
+            && !BinaryOracleEdgeTakerFieldType::String.matches(value)
+        {
+            Self::push_wrong_type(
+                errors,
+                format!("{field_prefix}.{field_name}"),
+                BinaryOracleEdgeTakerFieldType::String,
+                value,
+            );
+        }
     }
 
     fn validate_order_table(
@@ -5409,6 +5921,455 @@ impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {
     }
 }
 
+pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 2;
+pub const ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND: &str =
+    "bolt_v3.binary_oracle_entry_decision_source.v2";
+const ENTRY_DECISION_PRICE_TO_BEAT_VALUE_FIELD: &str = "price_to_beat_value";
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOracleEntryDecisionEvidenceSource {
+    pub schema_version: u32,
+    pub record_kind: String,
+    pub market_selection_timestamp_ms: u64,
+    pub decision_timestamp_ms: u64,
+    pub readiness_session: EntryReadinessGateSession,
+    pub warmup_count: u64,
+    pub reference_quote: BinaryOracleEntryReferenceQuoteSource,
+    pub realized_volatility: BinaryOracleEntryRealizedVolatilitySource,
+    pub fees: BinaryOracleEntryFeeSource,
+    pub books: BinaryOracleEntryBooksSource,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOracleEntryReferenceQuoteSource {
+    pub venue: String,
+    pub price: f64,
+    pub observed_ts_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOracleEntryRealizedVolatilitySource {
+    pub value: f64,
+    pub ready_ts_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BinaryOracleReferenceQuoteObservationSource<'a> {
+    pub data_client_id: &'a str,
+    pub instrument_id: &'a str,
+    pub bid_price: f64,
+    pub ask_price: f64,
+    pub ts_event_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BinaryOracleEntryReferenceProofSources {
+    pub reference_quote: BinaryOracleEntryReferenceQuoteSource,
+    pub realized_volatility: BinaryOracleEntryRealizedVolatilitySource,
+}
+
+pub fn derive_entry_reference_proofs_from_quote_observations(
+    raw_config: &Value,
+    observations: &[BinaryOracleReferenceQuoteObservationSource<'_>],
+    market_selection_timestamp_ms: u64,
+    decision_timestamp_ms: u64,
+) -> Result<BinaryOracleEntryReferenceProofSources> {
+    if decision_timestamp_ms < market_selection_timestamp_ms {
+        anyhow::bail!("entry reference proof decision timestamp precedes market selection");
+    }
+
+    let config = BinaryOracleEdgeTakerBuilder::parse_config(raw_config)?;
+    let reference_venue = config.reference_venue.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("reference quote observation source requires configured reference_venue")
+    })?;
+    let reference_instrument_id = config.reference_instrument_id.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "reference quote observation source requires configured reference_instrument_id"
+        )
+    })?;
+    let mut sorted_observations = observations.to_vec();
+    sorted_observations.sort_by_key(|observation| observation.ts_event_unix_nanos);
+    let mut estimator = RealizedVolEstimator::from_config(&realized_vol_config(&config));
+    let mut latest_quote = None;
+    let mut latest_ready_volatility = None;
+
+    for observation in sorted_observations {
+        if observation.data_client_id != *reference_venue
+            || observation.instrument_id != *reference_instrument_id
+        {
+            continue;
+        }
+        if observation.ts_event_unix_nanos == 0
+            || !is_positive_finite(observation.bid_price)
+            || !is_positive_finite(observation.ask_price)
+        {
+            anyhow::bail!("reference quote observation source contains invalid quote data");
+        }
+        let observed_ts_ms = observation.ts_event_unix_nanos / NANOS_PER_MILLI_U64;
+        if observed_ts_ms > decision_timestamp_ms {
+            continue;
+        }
+        let midpoint = (observation.bid_price + observation.ask_price) / MIDPOINT_DIVISOR_F64;
+        if !is_positive_finite(midpoint) {
+            anyhow::bail!("reference quote observation source midpoint is invalid");
+        }
+        let quote = FastSpotObservation {
+            venue_name: reference_venue.clone(),
+            price: midpoint,
+            observed_ts_ms,
+        };
+        if let Some(value) = estimator.observe(&quote.venue_name, quote.price, quote.observed_ts_ms)
+            && observed_ts_ms >= market_selection_timestamp_ms
+        {
+            latest_ready_volatility = Some(BinaryOracleEntryRealizedVolatilitySource {
+                value,
+                ready_ts_ms: observed_ts_ms,
+            });
+        }
+        if observed_ts_ms >= market_selection_timestamp_ms {
+            latest_quote = Some(BinaryOracleEntryReferenceQuoteSource {
+                venue: reference_venue.clone(),
+                price: midpoint,
+                observed_ts_ms,
+            });
+        }
+    }
+
+    let reference_quote = latest_quote.ok_or_else(|| {
+        anyhow::anyhow!(
+            "reference quote observation source did not produce a configured reference quote"
+        )
+    })?;
+    let realized_volatility = latest_ready_volatility.ok_or_else(|| {
+        anyhow::anyhow!(
+            "reference quote observation source did not produce ready realized volatility"
+        )
+    })?;
+    Ok(BinaryOracleEntryReferenceProofSources {
+        reference_quote,
+        realized_volatility,
+    })
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOracleEntryFeeSource {
+    pub fee_bps_by_instrument_id: BTreeMap<String, f64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOracleEntryBooksSource {
+    pub price_precision: u8,
+    pub up: BinaryOracleEntryBookSideSource,
+    pub down: BinaryOracleEntryBookSideSource,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOracleEntryBookSideSource {
+    pub best_bid: f64,
+    pub bid_quantity: f64,
+    pub best_ask: f64,
+    pub ask_quantity: f64,
+    pub liquidity_available: f64,
+}
+
+#[derive(Debug, Clone)]
+struct SourceFeeProvider {
+    fee_bps_by_instrument_id: BTreeMap<String, Decimal>,
+}
+
+impl FeeProvider for SourceFeeProvider {
+    fn fee_bps(&self, instrument_id: InstrumentId) -> Option<Decimal> {
+        self.fee_bps_by_instrument_id
+            .get(&instrument_id.to_string())
+            .copied()
+    }
+
+    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
+        async { Ok(()) }.boxed()
+    }
+}
+
+pub fn record_entry_decision_evidence_from_source(
+    raw_config: &Value,
+    decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    trader_id: TraderId,
+    source: &BinaryOracleEntryDecisionEvidenceSource,
+    instruments: &[InstrumentAny],
+) -> Result<()> {
+    validate_entry_decision_source(source)?;
+    if instruments.is_empty() {
+        anyhow::bail!("entry decision evidence source requires at least one instrument");
+    }
+
+    let fee_provider = Arc::new(SourceFeeProvider {
+        fee_bps_by_instrument_id: source_fee_bps_by_instrument_id(source)?,
+    });
+    let submit_admission = Arc::new(
+        crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
+            decision_evidence.clone(),
+        ),
+    );
+    let readiness_evidence = BoltV3ReadinessGateEvidenceSnapshot::from_entry_readiness_gate_session(
+        &source.readiness_session,
+    );
+    let price_to_beat =
+        entry_decision_price_to_beat_from_readiness_session(&source.readiness_session)?;
+    // Execution venue for this replay is the venue of the stored selection's outcome instruments
+    // (the strategy only ever trades the venue its selected market is on). This offline evidence
+    // path validates against that stored selection and never reads the live cache, so the venue is
+    // used only for context completeness; it is still derived from the source rather than assumed.
+    let execution_venue = source
+        .readiness_session
+        .selected_market
+        .instrument_ids
+        .iter()
+        .find_map(|instrument_id| InstrumentId::from_str(instrument_id.as_str()).ok())
+        .map(|instrument_id| instrument_id.venue)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "entry decision evidence source selected market is missing a parseable instrument required for execution-venue resolution"
+            )
+        })?;
+    let context = StrategyBuildContext::new(
+        fee_provider,
+        decision_evidence,
+        submit_admission,
+        execution_venue,
+    )
+    .with_readiness_evidence(readiness_evidence);
+    let mut strategy = BinaryOracleEdgeTaker::new(
+        BinaryOracleEdgeTakerBuilder::parse_config(raw_config)?,
+        context,
+    );
+    register_source_replay_strategy(&mut strategy, trader_id, source, instruments)?;
+
+    let mut selection =
+        selection_snapshot_from_entry_decision_source(&strategy.config, source, instruments);
+    let SelectionState::Active { market } = &mut selection.decision.state else {
+        anyhow::bail!("entry decision evidence source did not select an active configured market");
+    };
+    market.price_to_beat = Some(price_to_beat);
+    selection.published_at_ms = source.market_selection_timestamp_ms;
+    strategy.apply_selection_snapshot(selection);
+    strategy.observe_reference_quote(&FastSpotObservation {
+        venue_name: source.reference_quote.venue.clone(),
+        price: source.reference_quote.price,
+        observed_ts_ms: source.reference_quote.observed_ts_ms,
+    });
+    strategy.active.warmup_count = source.warmup_count;
+    strategy.pricing.realized_vol.last_ready_vol = Some(source.realized_volatility.value);
+    strategy.pricing.realized_vol.last_ready_ts_ms = Some(source.realized_volatility.ready_ts_ms);
+    strategy.refresh_fee_readiness();
+    apply_entry_decision_source_books(&mut strategy, &source.books)?;
+
+    match strategy.try_submit_entry_order(source.decision_timestamp_ms) {
+        Err(error) if error.to_string().contains("submit admission is not armed") => Ok(()),
+        Err(error) => Err(error),
+        Ok(Some(client_order_id)) => anyhow::bail!(
+            "entry decision evidence source unexpectedly admitted order {client_order_id}; submit admission must stay unarmed"
+        ),
+        Ok(None) => {
+            let decision = strategy.entry_submission_decision_at(source.decision_timestamp_ms);
+            anyhow::bail!(
+                "entry decision evidence source did not produce an entry order: blocked_reason={:?} gate_blocked_by={:?} pricing_blocked_by={:?} selected_side={:?} up_worst_case_ev_bps={:?} down_worst_case_ev_bps={:?} min_worst_case_ev_bps={:?} sized_notional={:?}",
+                decision.blocked_reason,
+                decision.evaluation.gate.blocked_by,
+                decision.evaluation.pricing_blocked_by,
+                decision.evaluation.selected_side,
+                decision.evaluation.up_worst_case_ev_bps,
+                decision.evaluation.down_worst_case_ev_bps,
+                decision.evaluation.min_worst_case_ev_bps,
+                decision.evaluation.sized_notional,
+            )
+        }
+    }
+}
+
+fn validate_entry_decision_source(source: &BinaryOracleEntryDecisionEvidenceSource) -> Result<()> {
+    anyhow::ensure!(
+        source.schema_version == ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION,
+        "entry decision evidence source schema_version is invalid"
+    );
+    anyhow::ensure!(
+        source.record_kind == ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND,
+        "entry decision evidence source record_kind is invalid"
+    );
+    anyhow::ensure!(
+        source.decision_timestamp_ms >= source.market_selection_timestamp_ms,
+        "entry decision evidence source decision_timestamp_ms precedes market selection"
+    );
+    let readiness_evidence = BoltV3ReadinessGateEvidenceSnapshot::from_entry_readiness_gate_session(
+        &source.readiness_session,
+    );
+    validate_readiness_gate_evidence_snapshot(&readiness_evidence)?;
+    entry_decision_price_to_beat_from_readiness_session(&source.readiness_session)?;
+    anyhow::ensure!(
+        is_positive_finite(source.reference_quote.price),
+        "entry decision evidence source reference quote price is invalid"
+    );
+    anyhow::ensure!(
+        is_positive_finite(source.realized_volatility.value),
+        "entry decision evidence source realized volatility is invalid"
+    );
+    Ok(())
+}
+
+fn entry_decision_price_to_beat_from_readiness_session(
+    session: &EntryReadinessGateSession,
+) -> Result<f64> {
+    let satisfaction = session
+        .satisfied_roles
+        .get(RESOLUTION_GATE_ROLE)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "entry decision evidence source readiness_session is missing resolution evidence"
+            )
+        })?;
+    let GateSatisfaction::Evidence { evidence } = satisfaction else {
+        anyhow::bail!(
+            "entry decision evidence source readiness_session resolution evidence is required"
+        );
+    };
+    anyhow::ensure!(
+        evidence.value_kind == PRICE_GATE_VALUE_KIND,
+        "entry decision evidence source readiness_session resolution value_kind is invalid"
+    );
+    let value = evidence
+        .normalized_value
+        .get(ENTRY_DECISION_PRICE_TO_BEAT_VALUE_FIELD)
+        .and_then(json_value_as_f64)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "entry decision evidence source readiness_session price_to_beat_value is invalid"
+            )
+        })?;
+    anyhow::ensure!(
+        is_positive_finite(value),
+        "entry decision evidence source readiness_session price_to_beat_value is invalid"
+    );
+    Ok(value)
+}
+
+fn json_value_as_f64(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_i64().map(|value| value as f64))
+        .or_else(|| value.as_u64().map(|value| value as f64))
+}
+
+fn source_fee_bps_by_instrument_id(
+    source: &BinaryOracleEntryDecisionEvidenceSource,
+) -> Result<BTreeMap<String, Decimal>> {
+    let mut fees = BTreeMap::new();
+    for (instrument_id, fee_bps) in &source.fees.fee_bps_by_instrument_id {
+        anyhow::ensure!(
+            !instrument_id.trim().is_empty(),
+            "entry decision evidence source fee instrument id is required"
+        );
+        anyhow::ensure!(
+            is_non_negative_finite(*fee_bps),
+            "entry decision evidence source fee bps is invalid"
+        );
+        let fee_bps = Decimal::from_f64(*fee_bps)
+            .ok_or_else(|| anyhow::anyhow!("entry decision evidence source fee bps is invalid"))?;
+        fees.insert(instrument_id.clone(), fee_bps);
+    }
+    Ok(fees)
+}
+
+fn register_source_replay_strategy(
+    strategy: &mut BinaryOracleEdgeTaker,
+    trader_id: TraderId,
+    source: &BinaryOracleEntryDecisionEvidenceSource,
+    instruments: &[InstrumentAny],
+) -> Result<()> {
+    let clock = Rc::new(RefCell::new(TestClock::new()));
+    clock.borrow_mut().set_time(UnixNanos::from(
+        source
+            .decision_timestamp_ms
+            .saturating_mul(NANOS_PER_MILLI_U64),
+    ));
+    let cache = Rc::new(RefCell::new(Cache::new(None, None)));
+    let portfolio = Rc::new(RefCell::new(Portfolio::new(
+        cache.clone(),
+        clock.clone(),
+        None,
+    )));
+    strategy
+        .core
+        .register(trader_id, clock, cache.clone(), portfolio)
+        .context("failed to register source replay strategy core")?;
+    let mut cache = cache.borrow_mut();
+    for instrument in instruments {
+        cache
+            .add_instrument(instrument.clone())
+            .context("failed to add source replay instrument to cache")?;
+    }
+    Ok(())
+}
+
+fn apply_entry_decision_source_books(
+    strategy: &mut BinaryOracleEdgeTaker,
+    books: &BinaryOracleEntryBooksSource,
+) -> Result<()> {
+    apply_entry_decision_source_book(
+        &mut strategy.active.books.up,
+        &books.up,
+        books.price_precision,
+    )
+    .context("entry decision evidence up book source is invalid")?;
+    apply_entry_decision_source_book(
+        &mut strategy.active.books.down,
+        &books.down,
+        books.price_precision,
+    )
+    .context("entry decision evidence down book source is invalid")?;
+    Ok(())
+}
+
+fn apply_entry_decision_source_book(
+    book: &mut OutcomeBookState,
+    source: &BinaryOracleEntryBookSideSource,
+    price_precision: u8,
+) -> Result<()> {
+    let instrument_id = book
+        .instrument_id
+        .ok_or_else(|| anyhow::anyhow!("entry decision evidence book is missing instrument id"))?;
+    anyhow::ensure!(
+        is_positive_finite(source.best_bid)
+            && is_positive_finite(source.best_ask)
+            && is_positive_finite(source.bid_quantity)
+            && is_positive_finite(source.ask_quantity)
+            && is_positive_finite(source.liquidity_available),
+        "entry decision evidence book contains non-positive values"
+    );
+    anyhow::ensure!(
+        source.best_bid <= source.best_ask,
+        "entry decision evidence book best_bid exceeds best_ask"
+    );
+    book.last_observed_instrument_id = Some(instrument_id);
+    book.bid_levels.clear();
+    book.ask_levels.clear();
+    let best_bid = Price::new_checked(source.best_bid, price_precision).map_err(|source| {
+        anyhow::anyhow!("entry decision evidence book bid is invalid: {source}")
+    })?;
+    let best_ask = Price::new_checked(source.best_ask, price_precision).map_err(|source| {
+        anyhow::anyhow!("entry decision evidence book ask is invalid: {source}")
+    })?;
+    book.bid_levels.insert(best_bid, source.bid_quantity);
+    book.ask_levels.insert(best_ask, source.ask_quantity);
+    book.best_bid = Some(source.best_bid);
+    book.best_ask = Some(source.best_ask);
+    book.liquidity_available = Some(source.liquidity_available);
+    Ok(())
+}
+
 fn apply_selection_snapshot_to_active(
     active: &mut ActiveMarketState,
     snapshot: &RuntimeSelectionSnapshot,
@@ -5464,6 +6425,30 @@ fn selection_book_subscriptions(snapshot: &RuntimeSelectionSnapshot) -> OutcomeB
     }
 }
 
+/// True unless `snapshot` selects an Active (or, in tests, Freeze) market whose up or down outcome
+/// instrument is on a venue other than `execution_venue`. An Idle snapshot has no selected market to
+/// route a real order to and trivially matches. An outcome instrument id that cannot be parsed fails
+/// closed (treated as NOT on the execution venue), so a malformed selection can never pass the gate.
+fn selected_market_on_execution_venue(
+    snapshot: &RuntimeSelectionSnapshot,
+    execution_venue: Venue,
+) -> bool {
+    let market = match &snapshot.decision.state {
+        SelectionState::Active { market } => market,
+        #[cfg(test)]
+        SelectionState::Freeze { market, .. } => market,
+        SelectionState::Idle { .. } => return true,
+    };
+    outcome_on_execution_venue(&market.up, execution_venue)
+        && outcome_on_execution_venue(&market.down, execution_venue)
+}
+
+fn outcome_on_execution_venue(outcome: &CandidateOutcome, execution_venue: Venue) -> bool {
+    InstrumentId::from_str(&outcome.instrument_id)
+        .map(|instrument_id| instrument_id.venue == execution_venue)
+        .unwrap_or(false)
+}
+
 fn selection_snapshot_from_instruments(
     config: &BinaryOracleEdgeTakerConfig,
     instruments: &[InstrumentAny],
@@ -5474,6 +6459,66 @@ fn selection_snapshot_from_instruments(
         return idle_selection_snapshot(config, now_ms, TARGET_MARKET_NOT_FOUND_REASON);
     };
     selection_snapshot_for_state(config, now_ms, SelectionState::Active { market })
+}
+
+fn selection_snapshot_from_entry_decision_source(
+    config: &BinaryOracleEdgeTakerConfig,
+    source: &BinaryOracleEntryDecisionEvidenceSource,
+    instruments: &[InstrumentAny],
+) -> RuntimeSelectionSnapshot {
+    let Some(market) = selected_source_market_from_instruments(config, source, instruments) else {
+        return idle_selection_snapshot(
+            config,
+            source.market_selection_timestamp_ms,
+            TARGET_MARKET_NOT_FOUND_REASON,
+        );
+    };
+    selection_snapshot_for_state(
+        config,
+        source.market_selection_timestamp_ms,
+        SelectionState::Active { market },
+    )
+}
+
+fn selected_source_market_from_instruments(
+    config: &BinaryOracleEdgeTakerConfig,
+    source: &BinaryOracleEntryDecisionEvidenceSource,
+    instruments: &[InstrumentAny],
+) -> Option<CandidateMarket> {
+    let selected = &source.readiness_session.selected_market;
+    let expected_instrument_ids = selected
+        .instrument_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if expected_instrument_ids.len() != selected.instrument_ids.len() {
+        return None;
+    }
+    let cadence_milliseconds = config.cadence_seconds.checked_mul(MILLIS_PER_SECOND_U64)?;
+    let max_attempts = instruments.len().max(COUNTER_INCREMENT);
+    for attempt_index in INITIAL_COUNTER_USIZE..max_attempts {
+        let attempt_offset =
+            cadence_milliseconds.checked_mul(u64::try_from(attempt_index).ok()?)?;
+        let attempt_now_ms = source
+            .market_selection_timestamp_ms
+            .checked_add(attempt_offset)?;
+        let Some(market) =
+            select_configured_market_from_instruments(config, instruments, attempt_now_ms)
+        else {
+            continue;
+        };
+        if market.market_id != selected.market_id {
+            continue;
+        }
+        let market_instrument_ids = BTreeSet::from([
+            market.up.instrument_id.clone(),
+            market.down.instrument_id.clone(),
+        ]);
+        if market_instrument_ids == expected_instrument_ids {
+            return Some(market);
+        }
+    }
+    None
 }
 
 fn idle_selection_snapshot(
@@ -5765,6 +6810,7 @@ fn refresh_fee_readiness_for_active(
         .is_some();
 }
 
+const INITIAL_COUNTER_USIZE: usize = 0;
 const INITIAL_COUNTER_U64: u64 = 0;
 const COUNTER_INCREMENT: usize = 1;
 const COUNTER_INCREMENT_U64: u64 = 1;
@@ -6465,7 +7511,12 @@ struct ForcedFlatInputs {
 
 fn evaluate_forced_flat_predicates(inputs: &ForcedFlatInputs) -> Vec<ForcedFlatReason> {
     let mut reasons = Vec::new();
-    let reference_stale = inputs.last_reference_ts_ms.is_some_and(|last_ts_ms| {
+    // Defense-in-depth (A14): a MISSING reference timestamp is the maximally
+    // stale condition — the strategy has never observed a reference quote — so
+    // it must classify as stale, not fresh. `is_none_or` returns `true` for the
+    // `None` case (no reference ever) AND for an observed-but-aged reference,
+    // and `false` only for a reference observed within the freshness bound.
+    let reference_stale = inputs.last_reference_ts_ms.is_none_or(|last_ts_ms| {
         inputs.now_ms.saturating_sub(last_ts_ms) > inputs.stale_reference_after_ms
     });
 
@@ -6504,9 +7555,23 @@ fn submit_admission_request_from_order(
             client_order_id
         )
     })?;
+    // Base-only test helper: it has no strategy cache/instrument context, so it
+    // cannot size quote-quantity orders (that requires the full
+    // `admission_base_notional_from_order` path with an instrument) and it cannot
+    // value a market-style order — ENTRY OR EXIT (production values any price-less
+    // base-quantity order at the instrument's structural price ceiling via the
+    // strategy method). It is NOT a divergent copy of the notional
+    // math — for the shapes it DOES accept (base-quantity firm-limit orders) it
+    // reuses the shared base-quantity definition so the order is sized
+    // identically here, in the production strategy, and in the canary proof
+    // executor.
     anyhow::ensure!(
         !order.is_quote_quantity(),
         "test submit admission helper requires strategy cache context for quote-quantity orders"
+    );
+    anyhow::ensure!(
+        order.price().is_some(),
+        "test submit admission helper cannot value a market-style order (no firm limit price): production values it at the instrument price ceiling — use `strategy.submit_admission_request_from_order` with a cache-seeded instrument"
     );
     let price_source = compiled_order_price_source(intent.price.clone(), order);
     let price = Decimal::from_str(price_source.trim()).with_context(|| {
@@ -6515,7 +7580,7 @@ fn submit_admission_request_from_order(
             client_order_id
         )
     })?;
-    let notional = price * quantity;
+    let notional = base_quantity_admission_notional(price, quantity);
 
     Ok(BoltV3SubmitAdmissionRequest {
         strategy_id: intent.strategy_id.clone(),
@@ -6527,6 +7592,7 @@ fn submit_admission_request_from_order(
             BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
         },
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+        canary_proof_claim: None,
     })
 }
 
@@ -6551,6 +7617,7 @@ mod tests {
         identifiers::{Symbol, TraderId},
         instruments::BinaryOption,
         orders::{Order, OrderAny},
+        position::Position,
         types::{Currency, Price, Quantity},
     };
     use nautilus_portfolio::portfolio::Portfolio;
@@ -6579,20 +7646,20 @@ mod tests {
             order_id_tag = "001"
             oms_type = "netting"
             client_id = "POLYMARKET"
-            configured_target_id = "btc_updown_5m"
+            configured_target_id = "configured_updown_target"
             target_kind = "rotating_market"
             rotating_market_family = "updown"
-            underlying_asset = "BTC"
+            underlying_asset = "CONFIGURED_ASSET"
             cadence_seconds = 300
-            cadence_slug_token = "5m"
+            cadence_slug_token = "configuredwindow"
             market_selection_rule = "active_or_next"
             retry_interval_seconds = 5
             blocked_after_seconds = 60
-            reference_venue = "binance_reference"
-            reference_instrument_id = "BTCUSDT.BINANCE"
+            reference_venue = "reference_data_client"
+            reference_instrument_id = "REFERENCE.SOURCE"
             use_uuid_client_order_ids = true
             use_hyphens_in_client_order_ids = false
-            external_order_claims = ["ETHUSDT.BINANCE"]
+            external_order_claims = ["AUXILIARY.SOURCE"]
             manage_contingent_orders = true
             manage_gtd_expiry = true
             manage_stop = true
@@ -6658,6 +7725,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct RecordingFeeProvider {
         fees: Mutex<HashMap<String, Decimal>>,
+        entry_fees: Mutex<HashMap<String, Decimal>>,
         warm_calls: Mutex<Vec<String>>,
     }
 
@@ -6666,8 +7734,27 @@ mod tests {
             Arc::new(Self::default())
         }
 
+        /// Build a provider that yields `fee_bps` for `instrument_id`. The
+        /// submit-admission path resolves the fee-inclusive notional through
+        /// `FeeProvider::max_entry_fee_bps`, which falls back to `fee_bps` in
+        /// `#[cfg(test)]` when the NT cache holds no instrument, so seeding the
+        /// fee here is sufficient to exercise the fee-inclusive cap check
+        /// without registering a full cache.
+        fn with_fee(instrument_id: &str, fee_bps: Decimal) -> Arc<Self> {
+            let provider = Arc::new(Self::default());
+            provider.set_fee(instrument_id, fee_bps);
+            provider
+        }
+
         fn set_fee(&self, instrument_id: &str, fee_bps: Decimal) {
             self.fees
+                .lock()
+                .expect("recording fee provider mutex poisoned")
+                .insert(instrument_id.to_string(), fee_bps);
+        }
+
+        fn set_entry_fee_bps(&self, instrument_id: &str, fee_bps: Decimal) {
+            self.entry_fees
                 .lock()
                 .expect("recording fee provider mutex poisoned")
                 .insert(instrument_id.to_string(), fee_bps);
@@ -6688,6 +7775,19 @@ mod tests {
                 .expect("recording fee provider mutex poisoned")
                 .get(instrument_id.to_string().as_str())
                 .copied()
+        }
+
+        fn entry_fee_bps(
+            &self,
+            instrument: &InstrumentAny,
+            _entry_price: Decimal,
+        ) -> Option<Decimal> {
+            self.entry_fees
+                .lock()
+                .expect("recording fee provider mutex poisoned")
+                .get(instrument.id().to_string().as_str())
+                .copied()
+                .or_else(|| self.fee_bps(instrument.id()))
         }
 
         fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
@@ -6819,8 +7919,49 @@ mod tests {
         }
     }
 
+    /// Execution venue of the binary-option market fixtures these tests trade against (their
+    /// outcome instruments are `...POLYMARKET`). Production resolves the execution venue from
+    /// config — `root.clients[execution_client_id].venue` — and is venue-agnostic (a HIP-4 or any
+    /// other execution client works with no code change); these unit tests build the
+    /// `StrategyBuildContext` directly without a root TOML, so they pin the venue to their fixtures
+    /// in ONE place here rather than scattering the literal. A different-venue test would supply
+    /// that venue plus matching instrument fixtures.
+    fn fixture_execution_venue() -> Venue {
+        Venue::from("POLYMARKET")
+    }
+
+    fn test_readiness_gate_evidence()
+    -> crate::bolt_v3_decision_evidence::BoltV3ReadinessGateEvidenceSnapshot {
+        crate::bolt_v3_decision_evidence::BoltV3ReadinessGateEvidenceSnapshot {
+            gate_session_hash: "gate-session-hash-one".to_string(),
+            selected_market_key: "selected-market-key-one".to_string(),
+            gate_evidence: BTreeMap::from([(
+                "resolution_price".to_string(),
+                crate::bolt_v3_decision_evidence::BoltV3GateEvidenceIdentity {
+                    satisfaction_kind: "evidence".to_string(),
+                    selected_market_key: "selected-market-key-one".to_string(),
+                    provider_id: Some("provider-one".to_string()),
+                    provider_kind: Some("chainlink_data_streams".to_string()),
+                    value_kind: Some("price".to_string()),
+                    normalized_value_sha256: Some("normalized-value-sha-one".to_string()),
+                    provider_provenance_sha256: Some("provider-provenance-sha-one".to_string()),
+                    artifact_sha256s: vec!["artifact-sha-one".to_string()],
+                    resolution_identity: None,
+                },
+            )]),
+        }
+    }
+
     fn test_strategy() -> BinaryOracleEdgeTaker {
         test_strategy_with_fee_provider(RecordingFeeProvider::cold())
+    }
+
+    fn test_strategy_with_runtime_readiness_seed(
+        seed: BoltV3RuntimeReadinessSeed,
+    ) -> BinaryOracleEdgeTaker {
+        let mut strategy = test_strategy();
+        strategy.context = strategy.context.clone().with_runtime_readiness_seed(seed);
+        strategy
     }
 
     fn register_test_strategy(strategy: &mut BinaryOracleEdgeTaker) -> Rc<RefCell<Cache>> {
@@ -6928,20 +8069,20 @@ mod tests {
                 order_id_tag: "001".to_string(),
                 oms_type: "netting".to_string(),
                 client_id: "POLYMARKET".to_string(),
-                configured_target_id: "btc_updown_5m".to_string(),
+                configured_target_id: "configured_updown_target".to_string(),
                 target_kind: "rotating_market".to_string(),
                 rotating_market_family: "updown".to_string(),
-                underlying_asset: "BTC".to_string(),
+                underlying_asset: "CONFIGURED_ASSET".to_string(),
                 cadence_seconds: 300,
-                cadence_slug_token: "5m".to_string(),
+                cadence_slug_token: "configuredwindow".to_string(),
                 market_selection_rule: "active_or_next".to_string(),
                 retry_interval_seconds: 5,
                 blocked_after_seconds: 60,
-                reference_venue: "binance_reference".to_string(),
-                reference_instrument_id: "BTCUSDT.BINANCE".to_string(),
+                reference_venue: Some("reference_data_client".to_string()),
+                reference_instrument_id: Some("REFERENCE.SOURCE".to_string()),
                 use_uuid_client_order_ids: true,
                 use_hyphens_in_client_order_ids: false,
-                external_order_claims: vec!["ETHUSDT.BINANCE".to_string()],
+                external_order_claims: vec!["AUXILIARY.SOURCE".to_string()],
                 manage_contingent_orders: true,
                 manage_gtd_expiry: true,
                 manage_stop: true,
@@ -7022,7 +8163,13 @@ mod tests {
                 lead_agreement_min_corr: 0.8,
                 lead_jitter_max_ms: 250,
             },
-            StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission),
+            StrategyBuildContext::new(
+                fee_provider,
+                decision_evidence,
+                submit_admission,
+                fixture_execution_venue(),
+            )
+            .with_readiness_evidence(test_readiness_gate_evidence()),
         )
     }
 
@@ -7079,7 +8226,9 @@ mod tests {
                     RecordingDecisionEvidenceWriter,
                 )),
             ),
-        );
+            fixture_execution_venue(),
+        )
+        .with_readiness_evidence(test_readiness_gate_evidence());
 
         let strategy = BinaryOracleEdgeTaker::new(config, context);
 
@@ -7159,14 +8308,16 @@ mod tests {
                         Arc::new(RecordingDecisionEvidenceWriter),
                     ),
                 ),
-            ),
+                fixture_execution_venue(),
+            )
+            .with_readiness_evidence(test_readiness_gate_evidence()),
         );
 
         assert!(strategy.core.config.use_uuid_client_order_ids);
         assert!(!strategy.core.config.use_hyphens_in_client_order_ids);
         assert_eq!(
             strategy.core.config.external_order_claims,
-            Some(vec![InstrumentId::from("ETHUSDT.BINANCE")])
+            Some(vec![InstrumentId::from("AUXILIARY.SOURCE")])
         );
         assert!(strategy.core.config.manage_contingent_orders);
         assert!(strategy.core.config.manage_gtd_expiry);
@@ -7230,13 +8381,13 @@ mod tests {
         let mut strategy = test_strategy();
 
         strategy
-            .on_quote(&quote_tick("BTCUSDT.BINANCE", 100.0, 102.0, 1_200))
+            .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_200))
             .expect("reference quote should process");
 
         assert_eq!(strategy.pricing.last_reference_fair_value, Some(101.0));
         assert_eq!(
             strategy.pricing.fast_spot,
-            Some(fast_spot("binance_reference", 101.0, 1_200))
+            Some(fast_spot("reference_data_client", 101.0, 1_200))
         );
     }
 
@@ -7245,11 +8396,45 @@ mod tests {
         let mut strategy = test_strategy();
 
         strategy
-            .on_quote(&quote_tick("ETHUSDT.BINANCE", 100.0, 102.0, 1_200))
+            .on_quote(&quote_tick("OTHER.SOURCE", 100.0, 102.0, 1_200))
             .expect("non-reference quote should be ignored");
 
         assert_eq!(strategy.pricing.last_reference_fair_value, None);
         assert_eq!(strategy.pricing.fast_spot, None);
+    }
+
+    #[test]
+    fn source_owned_reference_identity_does_not_panic_nt_quote_filter() {
+        let mut strategy = test_strategy();
+        strategy.config.reference_venue = Some("resolution_oracle_primary".to_string());
+        strategy.config.reference_instrument_id = Some("configured-reference-price".to_string());
+
+        strategy
+            .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_200))
+            .expect("source-owned reference identity should not be parsed as an NT instrument");
+
+        assert_eq!(strategy.pricing.last_reference_fair_value, None);
+        assert_eq!(strategy.pricing.fast_spot, None);
+    }
+
+    #[test]
+    fn source_owned_readiness_seed_warms_matching_runtime_market() {
+        let market = candidate_market("market-1", 1_000);
+        let seed = runtime_readiness_seed_for_market(&market, 3_100.0, 3_101.0, 1_200, 1.5);
+        let mut strategy = test_strategy_with_runtime_readiness_seed(seed);
+
+        strategy
+            .apply_selection_snapshot(selection_snapshot(1_200, SelectionState::Active { market }));
+
+        assert_eq!(strategy.active.price_to_beat, Some(3_100.0));
+        assert_eq!(strategy.active.interval_open, Some(3_100.0));
+        assert_eq!(strategy.active.last_reference_ts_ms, Some(1_200));
+        assert_eq!(strategy.pricing.last_reference_fair_value, Some(3_101.0));
+        assert_eq!(
+            strategy.pricing.fast_spot,
+            Some(fast_spot("reference_data_client", 3_101.0, 1_200))
+        );
+        assert_eq!(strategy.current_realized_vol_at(1_200), Some(1.5));
     }
 
     fn live_canary_gate_report(
@@ -7264,11 +8449,14 @@ mod tests {
 
     #[test]
     fn decision_evidence_failure_rejects_before_nt_submit() {
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        // Seed a (zero) fee for the order's instrument so admission clears the
+        // fee-bound guard and the FailingDecisionEvidenceWriter is what rejects
+        // the order before NT submit — the behavior this test pins.
         let mut strategy = test_strategy_with_fee_provider_and_decision_evidence(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(FailingDecisionEvidenceWriter),
         );
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -7331,12 +8519,14 @@ mod tests {
                 RecordingDecisionEvidenceWriter,
             )),
         );
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        // Zero fee leaves the notional unchanged; the unarmed rejection from the
+        // admission gate is what this test exercises.
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -7403,12 +8593,15 @@ mod tests {
         submit_admission
             .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
             .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        // Zero fee keeps the notional (0.50) under the 1.0 cap so admission
+        // succeeds; the test then proves the submit reaches NT (and panics
+        // because the strategy is intentionally unregistered).
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -7466,6 +8659,50 @@ mod tests {
     }
 
     #[test]
+    fn effective_stale_bound_uses_gate_freshness_as_single_source_when_armed() {
+        // A5: the gate-approved reference-quote freshness bound is the single
+        // authoritative source for the armed live path, plumbed into the
+        // forced-flat stale check as the STRICTER of (gate bound, strategy
+        // config bound) so arming can only tighten, never loosen.
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::cold(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+
+        // Unarmed: no gate bound exists, so the strategy config bound applies.
+        strategy.config.forced_flat_stale_reference_ms = 1_500;
+        assert_eq!(strategy.effective_stale_reference_after_ms(), 1_500);
+
+        // Arm the gate. `for_test` carries reference_quote_max_age_seconds = 10
+        // (10_000 ms). With a LARGER strategy config bound the gate value wins
+        // (it tightens the stale check to the gate-approved freshness).
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
+            .expect("valid gate report should arm submit admission");
+        strategy.config.forced_flat_stale_reference_ms = 20_000;
+        assert_eq!(
+            strategy.effective_stale_reference_after_ms(),
+            10_000,
+            "armed gate freshness bound (10s) must tighten a looser strategy config bound (20s)"
+        );
+
+        // With a SMALLER strategy config bound the config value wins — arming
+        // never loosens the existing strategy guard.
+        strategy.config.forced_flat_stale_reference_ms = 1_500;
+        assert_eq!(
+            strategy.effective_stale_reference_after_ms(),
+            1_500,
+            "arming must never loosen a stricter strategy config freshness bound"
+        );
+    }
+
+    #[test]
     fn submit_context_routes_non_empty_nt_params_to_submit_order() {
         let submit_admission = Arc::new(
             crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
@@ -7475,8 +8712,11 @@ mod tests {
         submit_admission
             .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
             .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        // Zero fee leaves the 0.50 notional under the 1.0 cap; this test
+        // exercises submit-param routing, not the fee-inclusive cap.
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
@@ -7488,7 +8728,6 @@ mod tests {
             risk_handler,
         );
 
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -7548,12 +8787,15 @@ mod tests {
         submit_admission
             .arm(live_canary_gate_report(1, Decimal::new(1, 0)))
             .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        // Zero fee isolates the assertion to "compiled order price drives the
+        // notional": the compiled 2.0 notional still exceeds the 1.0 cap, while
+        // the understated intent price (0.50) must NOT be what is checked.
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(2.0, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -8036,6 +9278,63 @@ mod tests {
     }
 
     #[test]
+    fn base_quantity_market_entry_admission_values_at_instrument_price_ceiling() {
+        // A base-quantity Market entry has no firm limit price, so the venue fill
+        // can land anywhere up to the instrument's structural price ceiling. The
+        // admission notional must therefore be valued at that ceiling — the only
+        // price the venue cannot exceed — not at the reference price the order
+        // happens to be priced at. A firm-limit entry (fill <= limit) needs no
+        // such adjustment; this test pins the ceiling valuation for the
+        // market-style shape that lacks a firm price.
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
+        strategy.config.entry_order.order_type = OrderType::Market;
+        strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
+        strategy.config.entry_order.is_quote_quantity = false;
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(100.0, 2);
+        let price = Price::new(0.33, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-MKT-1");
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                client_order_id,
+            )
+            .expect("base-quantity market order should build through the strategy factory path");
+        assert!(matches!(order, OrderAny::Market(_)));
+        assert!(!order.is_quote_quantity());
+
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                    price.to_string(),
+                    &order,
+                ),
+                &order,
+            )
+            .expect("base-quantity market admission should value at the instrument price ceiling");
+
+        // The fixture instrument declares max_price = 0.999 (the production NT
+        // Polymarket adapter's ceiling), so the cap is valued at the ceiling
+        // (0.999 * 100 = 99.9), NOT at the 0.33 reference price (33.00).
+        assert_eq!(
+            admission.notional,
+            Decimal::from_str("99.9").expect("expected decimal should parse"),
+            "a market-style base-quantity entry must be valued at qty * the instrument price ceiling"
+        );
+        assert!(
+            admission.notional > price.as_decimal() * Decimal::from(100u32),
+            "the ceiling valuation must bound strictly above the reference-price estimate it replaces"
+        );
+    }
+
+    #[test]
     fn quote_quantity_market_submit_admission_uses_nt_cache_trade_when_quote_missing() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let cache = register_test_strategy(&mut strategy);
@@ -8094,22 +9393,31 @@ mod tests {
 
     #[test]
     fn over_notional_submit_admission_rejects_before_nt_submit() {
+        // Coarse over-cap rejection: raw notional = price*qty = 2.0*1.0 = 2.0
+        // already exceeds the 1.0 cap, so this rejects with OR without the
+        // fee-inclusive scaling and is NOT a discriminating test of the
+        // fee multiplier at `binary_oracle_edge_taker.rs:3972`. The fee
+        // multiplier is pinned by the discriminating pair
+        // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`
+        // / `zero_fee_submit_admission_admits_at_same_cap` below; this test
+        // only proves a grossly over-cap raw notional is rejected before NT
+        // submit.
         let submit_admission = Arc::new(
             crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         );
         submit_admission
-            .arm(live_canary_gate_report(1, Decimal::new(25, 2)))
+            .arm(live_canary_gate_report(1, Decimal::ONE))
             .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
-        let price = Price::new(0.50, 2);
+        let price = Price::new(2.0, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
         let order = nautilus_model::orders::OrderAny::Limit(
             nautilus_model::orders::LimitOrder::new_checked(
@@ -8155,13 +9463,280 @@ mod tests {
                 order,
                 SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
             )
-            .expect_err("over-cap notional must reject before NT submit");
+            .expect_err("fee-inclusive over-cap notional must reject before NT submit");
 
         assert!(
             error.to_string().contains("notional cap is exceeded"),
             "{error:#}"
         );
         assert_eq!(submit_admission.admitted_order_count(), 0);
+    }
+
+    #[test]
+    fn fee_inclusive_submit_admission_passes_at_cap_boundary() {
+        // Strict-inequality boundary: raw notional = price*qty = 1.0*1.0 = 1.0;
+        // at 25 bps the fee-inclusive admission notional is
+        // 1.0 * (1 + 25/10000) = 1.0025, set EXACTLY equal to the cap. The
+        // admission gate rejects only when notional STRICTLY exceeds the cap
+        // (`request.notional > report.max_notional_per_order()`), so this must
+        // be ADMITTED. The strategy is intentionally unregistered, so reaching
+        // NT submit after a successful admission panics — proving admission
+        // passed.
+        //
+        // NOTE: this is NOT a fee-discrimination test — with the cap set to the
+        // fee-inclusive value, the raw 1.0 notional admits with OR without the
+        // fee multiplier (1.0 <= 1.0025 either way). It only pins the strict
+        // `>` boundary. Fee discrimination at
+        // `binary_oracle_edge_taker.rs:3972` is pinned by the
+        // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`
+        // / `zero_fee_submit_admission_admits_at_same_cap` pair below.
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(10025, 4)))
+            .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(1.0, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order = nautilus_model::orders::OrderAny::Limit(
+            nautilus_model::orders::LimitOrder::new_checked(
+                nautilus_model::identifiers::TraderId::from("TRADER-001"),
+                StrategyId::from(strategy.config.strategy_id.as_str()),
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                TimeInForce::Fok,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("limit order should be valid"),
+        );
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            strategy.submit_order_with_decision_evidence(
+                intent,
+                order,
+                SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            )
+        }));
+
+        assert!(
+            result.is_err(),
+            "fee-inclusive notional exactly at the cap must be admitted and reach NT submit (which panics on the unregistered test strategy)"
+        );
+        assert_eq!(
+            submit_admission.admitted_order_count(),
+            1,
+            "fee-inclusive notional exactly at the cap must be admitted"
+        );
+    }
+
+    #[test]
+    fn fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit() {
+        // DISCRIMINATING test for the fee-inclusive scaling at
+        // `binary_oracle_edge_taker.rs:3972`. The cap is set STRICTLY BETWEEN the
+        // raw notional and the fee-inclusive notional so the rejection is caused
+        // by the fee multiplier specifically, not by the raw notional:
+        //   raw notional      = price*qty = 1.00 * 1.00 = 1.0000
+        //   cap               = 1.001  (Decimal::new(1001, 3))
+        //   fee-inclusive     = 1.00 * (1 + 25/10000) = 1.0025
+        // Since 1.0000 <= 1.001 < 1.0025, the order is admitted with the raw
+        // notional but rejected with the fee-inclusive notional. This test must
+        // FAIL if line 3972 is deleted: without the fee scaling the cap sees the
+        // raw 1.0000 (<= 1.001) and admits, so the expected reject never fires.
+        // The zero-fee CONTROL `zero_fee_submit_admission_admits_at_same_cap`
+        // below uses the SAME raw 1.00 notional and SAME 1.001 cap and ADMITS,
+        // proving the rejection here is caused by the fee scaling.
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(1001, 3)))
+            .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::new(25, 0)),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(1.0, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order = nautilus_model::orders::OrderAny::Limit(
+            nautilus_model::orders::LimitOrder::new_checked(
+                nautilus_model::identifiers::TraderId::from("TRADER-001"),
+                StrategyId::from(strategy.config.strategy_id.as_str()),
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                TimeInForce::Fok,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("limit order should be valid"),
+        );
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
+
+        let error = strategy
+            .submit_order_with_decision_evidence(
+                intent,
+                order,
+                SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            )
+            .expect_err(
+                "fee-inclusive notional pushed strictly over the cap by fee scaling must reject before NT submit",
+            );
+
+        assert!(
+            error.to_string().contains("notional cap is exceeded"),
+            "{error:#}"
+        );
+        assert_eq!(submit_admission.admitted_order_count(), 0);
+    }
+
+    #[test]
+    fn zero_fee_submit_admission_admits_at_same_cap() {
+        // Zero-fee CONTROL for
+        // `fee_scaling_pushes_submit_admission_over_cap_rejects_before_nt_submit`.
+        // SAME raw notional (price*qty = 1.00 * 1.00 = 1.0000) and SAME cap
+        // (1.001) as the reject test, but the fee is ZERO so no scaling is
+        // applied:
+        //   admission notional = 1.0000 * (1 + 0/10000) = 1.0000 <= 1.001
+        // and the order is ADMITTED. The strategy is intentionally unregistered,
+        // so reaching NT submit after a successful admission panics — proving
+        // admission passed. Together with the reject test this pair proves the
+        // rejection there is caused by the fee scaling specifically, not by the
+        // raw notional (which admits at this cap when the fee is zero).
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                RecordingDecisionEvidenceWriter,
+            )),
+        );
+        submit_admission
+            .arm(live_canary_gate_report(1, Decimal::new(1001, 3)))
+            .expect("valid gate report should arm submit admission");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            submit_admission.clone(),
+        );
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(1.0, 2);
+        let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
+        let order = nautilus_model::orders::OrderAny::Limit(
+            nautilus_model::orders::LimitOrder::new_checked(
+                nautilus_model::identifiers::TraderId::from("TRADER-001"),
+                StrategyId::from(strategy.config.strategy_id.as_str()),
+                instrument_id,
+                client_order_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                TimeInForce::Fok,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("limit order should be valid"),
+        );
+        let intent =
+            crate::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence::from_compiled_order(
+                strategy.config.strategy_id.clone(),
+                crate::bolt_v3_decision_evidence::BoltV3OrderIntentKind::Entry,
+                price.to_string(),
+                &order,
+            );
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            strategy.submit_order_with_decision_evidence(
+                intent,
+                order,
+                SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
+            )
+        }));
+
+        assert!(
+            result.is_err(),
+            "zero-fee notional below the cap must be admitted and reach NT submit (which panics on the unregistered test strategy)"
+        );
+        assert_eq!(
+            submit_admission.admitted_order_count(),
+            1,
+            "zero-fee notional below the cap must be admitted at the same cap the fee-scaled order is rejected at"
+        );
     }
 
     #[test]
@@ -8184,15 +9759,18 @@ mod tests {
                     intent_kind: crate::bolt_v3_submit_admission::BoltV3SubmitIntentKind::Entry,
                     lifecycle_policy:
                         crate::bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy::new(true),
+                    canary_proof_claim: None,
                 },
             )
             .expect("first admission should consume the only slot");
+        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
+        // Zero fee keeps the 0.50 notional under the 1.0 cap so the rejection is
+        // the count-exhausted check, not the notional cap.
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
-            RecordingFeeProvider::cold(),
+            RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(RecordingDecisionEvidenceWriter),
             submit_admission.clone(),
         );
-        let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
         let quantity = Quantity::new(1.0, 2);
         let price = Price::new(0.50, 2);
         let client_order_id = ClientOrderId::from("O-19700101-000000-001-001-1");
@@ -8374,8 +9952,13 @@ mod tests {
     ) -> BinaryOracleEdgeTaker {
         let (mut strategy, fee_provider) =
             ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
-        strategy.context =
-            StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission);
+        strategy.context = StrategyBuildContext::new(
+            fee_provider,
+            decision_evidence,
+            submit_admission,
+            fixture_execution_venue(),
+        )
+        .with_readiness_evidence(test_readiness_gate_evidence());
         strategy.config.edge_threshold_basis_points = 1;
         strategy.active.price_to_beat = Some(3_100.0);
         strategy
@@ -8497,7 +10080,7 @@ mod tests {
             instrument_id,
             outcome_side: Some(outcome_side),
             outcome_fees: strategy.active.outcome_fees.clone(),
-            historical_entry_fee_bps: strategy.outcome_fee_bps(outcome_side).or(Some(0.0)),
+            historical_entry_fee_bps: strategy.entry_fee_bps(outcome_side).or(Some(0.0)),
             interval_open: Some(3_100.0),
             selection_published_at_ms: Some(1_000),
             seconds_to_expiry_at_selection: Some(300),
@@ -8513,6 +10096,20 @@ mod tests {
             .into_iter()
             .find(|configured_instrument_id| *configured_instrument_id != instrument_id)
             .expect("fixture should expose a second configured outcome instrument")
+    }
+
+    fn foreign_venue_instrument_id(
+        strategy: &BinaryOracleEdgeTaker,
+        instrument_id: InstrumentId,
+    ) -> InstrumentId {
+        let foreign_instrument_id =
+            InstrumentId::new(instrument_id.symbol, Venue::from("HYPERLIQUID"));
+        assert_ne!(
+            foreign_instrument_id.venue,
+            strategy.context.execution_venue(),
+            "foreign fixture instrument must not be on the execution venue",
+        );
+        foreign_instrument_id
     }
 
     fn materialize_configured_position(
@@ -8567,6 +10164,19 @@ mod tests {
             position,
             origin,
             pending_entry: None,
+        });
+    }
+
+    fn set_managed_position_with_pending_entry(
+        strategy: &mut BinaryOracleEdgeTaker,
+        position: OpenPositionState,
+        origin: ManagedPositionOrigin,
+        pending_entry: PendingEntryState,
+    ) {
+        strategy.exposure = ExposureState::Managed(ManagedPositionState {
+            position,
+            origin,
+            pending_entry: Some(pending_entry),
         });
     }
 
@@ -8658,6 +10268,19 @@ mod tests {
             .map(|exit_pending| &exit_pending.pending_exit)
     }
 
+    fn assert_foreign_venue_blind_recovery(strategy: &BinaryOracleEdgeTaker) {
+        assert!(
+            matches!(
+                strategy.exposure,
+                ExposureState::BlindRecovery(BlindRecoveryState {
+                    reason: BlindRecoveryReason::ForeignVenuePosition { .. }
+                })
+            ),
+            "foreign-venue terminal event must be quarantined to blind recovery, got {:?}",
+            strategy.exposure,
+        );
+    }
+
     fn active_snapshot(market_id: &str) -> RuntimeSelectionSnapshot {
         active_snapshot_with_start(market_id, 0)
     }
@@ -8730,6 +10353,32 @@ mod tests {
         }
     }
 
+    fn runtime_readiness_seed_for_market(
+        market: &CandidateMarket,
+        price_to_beat_value: f64,
+        reference_price: f64,
+        reference_quote_ts_event: u64,
+        realized_volatility: f64,
+    ) -> BoltV3RuntimeReadinessSeed {
+        BoltV3RuntimeReadinessSeed {
+            strategy_instance_id: "configured_updown_main".to_string(),
+            gate_session_hash: "gate-session-hash-one".to_string(),
+            selected_market_key: "selected-market-key-one".to_string(),
+            polymarket_condition_id: market.source_identity.condition_id.clone(),
+            polymarket_market_slug: market.source_identity.market_slug.clone(),
+            polymarket_question_id: market.source_identity.question_id.clone(),
+            up_instrument_id: market.up.instrument_id.clone(),
+            down_instrument_id: market.down.instrument_id.clone(),
+            market_start_timestamp_ms: market.start_ts_ms,
+            market_end_timestamp_ms: market.expiration_ts_ms,
+            price_to_beat_value,
+            reference_venue: "reference_data_client".to_string(),
+            reference_price,
+            reference_quote_ts_event,
+            realized_volatility,
+        }
+    }
+
     fn updown_binary_option(
         instrument_id: &str,
         market_slug: &str,
@@ -8772,7 +10421,13 @@ mod tests {
             None,
             None,
             None,
-            None,
+            // max_price: a binary option's structural payout ceiling. Mirrors the
+            // upstream NT Polymarket adapter (MAX_PRICE = "0.999") so the fixture
+            // declares the same hard price bound production instruments carry —
+            // the only price a market-style order (BUY or SELL, entry or exit) can
+            // ever fill or settle at, which the market-style admission valuation
+            // uses as the universal worst case.
+            Some(Price::from("0.999")),
             None,
             None,
             None,
@@ -9168,6 +10823,47 @@ mod tests {
             e.field == "strategies[0].config.warmup_tick_count"
                 && e.code == "missing_required_integer"
         }));
+    }
+
+    #[test]
+    fn builder_rejects_unknown_rotating_market_family() {
+        // P5-10: a market family not bound by the registry must be rejected at
+        // parse, converging with the registry single source of truth.
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("valid config must be a table")
+            .insert(
+                "rotating_market_family".to_string(),
+                Value::String("not-a-real-family".to_string()),
+            );
+        let mut errors = Vec::new();
+
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        let error = find_error(
+            &errors,
+            "strategies[0].config.rotating_market_family",
+            "unknown_market_family",
+        );
+        assert_eq!(error.message, "unknown market family `not-a-real-family`");
+    }
+
+    #[test]
+    fn builder_accepts_registry_bound_rotating_market_family() {
+        // The valid fixture's family is registry-bound, so no unknown-family
+        // error is raised — the check must accept every family the registry
+        // binds, not just reject unknown ones.
+        let raw = valid_raw_config();
+        let mut errors = Vec::new();
+
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        assert!(
+            !errors
+                .iter()
+                .any(|error| error.code == "unknown_market_family"),
+            "registry-bound family must not raise an unknown-market-family error: {errors:?}"
+        );
     }
 
     #[test]
@@ -10383,6 +12079,161 @@ mod tests {
     }
 
     #[test]
+    fn exit_fill_quarantines_foreign_venue_client_order_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("P-FOREIGN-EXIT-FILL");
+        let exit_client_order_id = ClientOrderId::from("EXIT-FOREIGN-FILL");
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            exit_client_order_id,
+            false,
+            true,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy
+            .on_order_filled(&order_filled_event(
+                exit_client_order_id,
+                foreign_instrument_id,
+                position_id,
+            ))
+            .expect("foreign-venue exit fill should fail closed");
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
+    fn managed_entry_fill_quarantines_foreign_venue_client_order_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("P-FOREIGN-MANAGED-ENTRY-FILL");
+        let entry_client_order_id = ClientOrderId::from("ENTRY-FOREIGN-MANAGED-FILL");
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        let mut pending_entry = pending_entry_state(&mut strategy, entry_client_order_id);
+        pending_entry.instrument_id = instrument_id;
+        set_managed_position_with_pending_entry(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+            pending_entry,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy
+            .on_order_filled(&order_filled_event_with_details(
+                entry_client_order_id,
+                foreign_instrument_id,
+                Some(PositionId::from("P-FOREIGN-MANAGED-ENTRY-FILL")),
+                OrderSide::Buy,
+            ))
+            .expect("foreign-venue managed entry fill should fail closed");
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
+    fn pending_entry_terminal_quarantines_foreign_venue_client_order_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let entry_client_order_id = ClientOrderId::from("ENTRY-FOREIGN-CANCEL");
+        let pending_entry = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending_entry.instrument_id;
+        set_pending_entry(&mut strategy, pending_entry);
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy
+            .on_order_canceled(&order_canceled_event(
+                entry_client_order_id,
+                foreign_instrument_id,
+            ))
+            .expect("foreign-venue entry cancel should fail closed");
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
+    fn managed_pending_entry_terminal_quarantines_foreign_venue_client_order_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("P-FOREIGN-MANAGED-ENTRY-CANCEL");
+        let entry_client_order_id = ClientOrderId::from("ENTRY-FOREIGN-MANAGED-CANCEL");
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        let mut pending_entry = pending_entry_state(&mut strategy, entry_client_order_id);
+        pending_entry.instrument_id = instrument_id;
+        set_managed_position_with_pending_entry(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+            pending_entry,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy
+            .on_order_canceled(&order_canceled_event(
+                entry_client_order_id,
+                foreign_instrument_id,
+            ))
+            .expect("foreign-venue managed entry cancel should fail closed");
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
+    fn exit_terminal_quarantines_foreign_venue_client_order_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("P-FOREIGN-EXIT-CANCEL");
+        let exit_client_order_id = ClientOrderId::from("EXIT-FOREIGN-CANCEL");
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            exit_client_order_id,
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy
+            .on_order_canceled(&order_canceled_event(
+                exit_client_order_id,
+                foreign_instrument_id,
+            ))
+            .expect("foreign-venue exit cancel should fail closed");
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
     fn down_entry_submission_price_uses_configured_order_side_price() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         set_active_books_best_prices(&mut strategy, 0.40, 0.41);
@@ -10452,7 +12303,8 @@ mod tests {
     #[test]
     fn market_if_touched_order_objects_preserve_nt_trigger_price_and_admission() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-        let _cache = register_test_strategy(&mut strategy);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
         strategy.config.entry_order.order_type = OrderType::MarketIfTouched;
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.trigger_price = Some(0.52);
@@ -10476,16 +12328,17 @@ mod tests {
             )
             .expect("MarketIfTouched order with explicit trigger price should build");
 
-        let admission = submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence::from_compiled_order(
-                strategy.config.strategy_id.clone(),
-                BoltV3OrderIntentKind::Entry,
-                fallback_price.to_string(),
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    BoltV3OrderIntentKind::Entry,
+                    fallback_price.to_string(),
+                    &order,
+                ),
                 &order,
-            ),
-            &order,
-        )
-        .expect("MarketIfTouched admission should derive from compiled trigger price");
+            )
+            .expect("MarketIfTouched admission should derive from the instrument price ceiling");
 
         let OrderAny::MarketIfTouched(order) = order else {
             panic!("MarketIfTouched config should build an NT market-if-touched order");
@@ -10500,8 +12353,39 @@ mod tests {
         assert!(!order.is_quote_quantity());
         assert_eq!(
             admission.notional,
-            Decimal::from_str("1.040").expect("expected decimal should parse")
+            Decimal::from_str("1.998").expect("expected decimal should parse"),
+            "a market-style MarketIfTouched entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
         );
+    }
+
+    #[test]
+    fn submit_admission_request_drops_canary_proof_order_intent_claim() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(2.0, 2);
+        let price = Price::new(0.50, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-PROOF-1"),
+            )
+            .expect("configured entry order should build");
+        let mut intent = BoltV3OrderIntentEvidence::from_compiled_order(
+            strategy.config.strategy_id.clone(),
+            BoltV3OrderIntentKind::Entry,
+            price.to_string(),
+            &order,
+        );
+        intent.canary_proof_claim = Some("proof_only".to_string());
+
+        let admission = submit_admission_request_from_order(&intent, &order)
+            .expect("entry intent should map into submit admission");
+
+        assert_eq!(admission.canary_proof_claim, None);
     }
 
     #[test]
@@ -10918,7 +12802,8 @@ mod tests {
     #[test]
     fn stop_market_order_objects_preserve_nt_trigger_price_and_admission() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-        let _cache = register_test_strategy(&mut strategy);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
         strategy.config.entry_order.order_type = OrderType::StopMarket;
         strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
         strategy.config.entry_order.trigger_price = Some(0.52);
@@ -10937,16 +12822,17 @@ mod tests {
             )
             .expect("StopMarket order with explicit trigger price should build");
 
-        let admission = submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence::from_compiled_order(
-                strategy.config.strategy_id.clone(),
-                BoltV3OrderIntentKind::Entry,
-                admission_price.to_string(),
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    BoltV3OrderIntentKind::Entry,
+                    admission_price.to_string(),
+                    &order,
+                ),
                 &order,
-            ),
-            &order,
-        )
-        .expect("StopMarket admission should derive from compiled order plus fallback price");
+            )
+            .expect("StopMarket admission should derive from the instrument price ceiling");
 
         let OrderAny::StopMarket(order) = order else {
             panic!("StopMarket config should build an NT stop-market order");
@@ -10960,7 +12846,8 @@ mod tests {
         assert!(!order.is_quote_quantity());
         assert_eq!(
             admission.notional,
-            Decimal::from_str("1.040").expect("expected decimal should parse")
+            Decimal::from_str("1.998").expect("expected decimal should parse"),
+            "a market-style StopMarket entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
         );
     }
 
@@ -10985,7 +12872,7 @@ mod tests {
         entry_order.insert("trigger_price".to_string(), Value::Float(0.52));
         entry_order.insert(
             "trigger_instrument_id".to_string(),
-            Value::String("ETHUSDT.BINANCE".to_string()),
+            Value::String("TRIGGER.SOURCE".to_string()),
         );
         let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
             .expect("trigger_instrument_id should parse through runtime config");
@@ -10997,10 +12884,12 @@ mod tests {
                     RecordingDecisionEvidenceWriter,
                 )),
             ),
-        );
+            fixture_execution_venue(),
+        )
+        .with_readiness_evidence(test_readiness_gate_evidence());
         let mut strategy = BinaryOracleEdgeTaker::new(config, context);
         let _cache = register_test_strategy(&mut strategy);
-        let trigger_instrument_id = InstrumentId::from("ETHUSDT.BINANCE");
+        let trigger_instrument_id = InstrumentId::from("TRIGGER.SOURCE");
         let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
 
         let order = strategy
@@ -11031,7 +12920,7 @@ mod tests {
             .expect("entry_order should be a table");
         entry_order.insert(
             "trigger_instrument_id".to_string(),
-            Value::String("ETHUSDT.BINANCE".to_string()),
+            Value::String("TRIGGER.SOURCE".to_string()),
         );
         let config = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
             .expect("trigger_instrument_id should parse through runtime config");
@@ -11043,7 +12932,9 @@ mod tests {
                     RecordingDecisionEvidenceWriter,
                 )),
             ),
-        );
+            fixture_execution_venue(),
+        )
+        .with_readiness_evidence(test_readiness_gate_evidence());
         let mut strategy = BinaryOracleEdgeTaker::new(config, context);
         let _cache = register_test_strategy(&mut strategy);
         let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
@@ -11285,7 +13176,8 @@ mod tests {
     #[test]
     fn trailing_stop_market_order_objects_preserve_nt_trailing_fields_and_admission() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
-        let _cache = register_test_strategy(&mut strategy);
+        let cache = register_test_strategy(&mut strategy);
+        add_active_instruments_to_cache(&strategy, &cache);
         let expire_time = nautilus_core::UnixNanos::from(4_102_444_800_000_000_000_u64);
         strategy.config.entry_order.order_type = OrderType::TrailingStopMarket;
         strategy.config.entry_order.time_in_force = TimeInForce::Gtd;
@@ -11317,16 +13209,17 @@ mod tests {
             )
             .expect("TrailingStopMarket entry order with explicit trailing fields should build");
 
-        let admission = submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence::from_compiled_order(
-                strategy.config.strategy_id.clone(),
-                BoltV3OrderIntentKind::Entry,
-                fallback_price.to_string(),
+        let admission = strategy
+            .submit_admission_request_from_order(
+                &BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    BoltV3OrderIntentKind::Entry,
+                    fallback_price.to_string(),
+                    &order,
+                ),
                 &order,
-            ),
-            &order,
-        )
-        .expect("TrailingStopMarket admission should derive from compiled trigger price");
+            )
+            .expect("TrailingStopMarket admission should derive from the instrument price ceiling");
 
         let OrderAny::TrailingStopMarket(order) = order else {
             panic!("TrailingStopMarket config should build an NT trailing-stop-market order");
@@ -11349,7 +13242,8 @@ mod tests {
         assert!(!order.is_quote_quantity());
         assert_eq!(
             admission.notional,
-            Decimal::from_str("1.040").expect("expected decimal should parse")
+            Decimal::from_str("1.998").expect("expected decimal should parse"),
+            "a market-style TrailingStopMarket entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
         );
 
         let exit_fallback_price = Price::new(0.45, 2);
@@ -11363,16 +13257,24 @@ mod tests {
             )
             .expect("TrailingStopMarket exit order with explicit activation price should build");
 
-        let exit_admission = submit_admission_request_from_order(
-            &BoltV3OrderIntentEvidence::from_compiled_order(
-                strategy.config.strategy_id.clone(),
-                BoltV3OrderIntentKind::Exit,
-                exit_fallback_price.to_string(),
+        // A market-style (price-less) EXIT is valued at the instrument's
+        // structural price CEILING (`max_price`) — the universally fail-closed
+        // worst case for any side/intent — NOT at its reference/activation price.
+        // Valuing it at the activation price (as the pre-A4 code did) was a
+        // reference-price estimate, not a structural bound. This is the exit
+        // counterpart of the entry ceiling valuation above and must run through
+        // the strategy method that carries instrument context.
+        let exit_admission = strategy
+            .submit_admission_request_from_order(
+                &BoltV3OrderIntentEvidence::from_compiled_order(
+                    strategy.config.strategy_id.clone(),
+                    BoltV3OrderIntentKind::Exit,
+                    exit_fallback_price.to_string(),
+                    &exit_order,
+                ),
                 &exit_order,
-            ),
-            &exit_order,
-        )
-        .expect("TrailingStopMarket activation-only exit admission should derive from compiled activation price");
+            )
+            .expect("market-style exit admission should derive from the instrument price ceiling");
 
         let OrderAny::TrailingStopMarket(exit_order) = exit_order else {
             panic!("TrailingStopMarket exit config should build an NT trailing-stop-market order");
@@ -11383,16 +13285,22 @@ mod tests {
         assert_eq!(exit_order.price(), None);
         assert_eq!(exit_order.trigger_price(), Some(Price::new(0.48, 2)));
         assert_eq!(exit_order.activation_price(), Some(Price::new(0.48, 2)));
-        let expected_exit_notional = Decimal::from_str(
-            exit_order
-                .activation_price()
-                .expect("activation-only trailing-stop exit should retain activation price")
-                .to_string()
-                .trim(),
-        )
-        .expect("activation price should parse")
-            * Decimal::from_str(quantity.to_string().trim()).expect("quantity should parse");
-        assert_eq!(exit_admission.notional, expected_exit_notional);
+        // The fixture instrument declares max_price = 0.999 (the production NT
+        // Polymarket adapter's ceiling), so the market-style exit cap is valued
+        // at the ceiling (0.999 * 2 = 1.998), strictly ABOVE the 0.48
+        // activation-price estimate it replaces (0.96).
+        assert_eq!(
+            exit_admission.notional,
+            Decimal::from_str("1.998").expect("expected decimal should parse"),
+            "a market-style exit must be valued at qty * the instrument price ceiling (2 * 0.999)"
+        );
+        assert!(
+            exit_admission.notional
+                > Decimal::from_str("0.48").expect("expected decimal should parse")
+                    * Decimal::from_str(quantity.to_string().trim())
+                        .expect("quantity should parse"),
+            "the ceiling valuation must bound strictly above the activation-price estimate it replaces"
+        );
         assert_eq!(exit_order.trigger_type(), Some(TriggerType::MarkPrice));
         assert_eq!(exit_order.trailing_offset(), Some(Decimal::new(3, 0)));
         assert_eq!(
@@ -12262,7 +14170,9 @@ mod tests {
                 fee_provider,
                 Arc::new(RecordingDecisionEvidenceWriter),
                 submit_admission,
-            );
+                fixture_execution_venue(),
+            )
+            .with_readiness_evidence(test_readiness_gate_evidence());
             strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
             strategy.config.entry_order.is_post_only = true;
             strategy.active.phase = SelectionPhase::Freeze;
@@ -12814,6 +14724,85 @@ mod tests {
     }
 
     #[test]
+    fn position_closed_quarantines_foreign_venue_managed_position_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("P-FOREIGN-CLOSE-MANAGED");
+        materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy.on_position_closed(position_closed_event(foreign_instrument_id, position_id));
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
+    fn position_closed_quarantines_foreign_venue_exit_pending_position_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("P-FOREIGN-CLOSE-EXIT");
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            ClientOrderId::from("EXIT-FOREIGN-CLOSE"),
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy.on_position_closed(position_closed_event(foreign_instrument_id, position_id));
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
+    fn position_closed_quarantines_foreign_venue_unsupported_position_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let position_id = PositionId::from("P-FOREIGN-CLOSE-UNSUPPORTED");
+        let book = strategy.active.books.up.clone();
+        set_unsupported_observed(
+            &mut strategy,
+            OpenPositionState {
+                market_id: Some("MKT-1".to_string()),
+                instrument_id,
+                position_id,
+                outcome_side: None,
+                outcome_fees: OutcomeFeeState::empty(),
+                historical_entry_fee_bps: None,
+                entry_order_side: OrderSide::Sell,
+                side: PositionSide::Short,
+                quantity: Quantity::new(5.0, 2),
+                avg_px_open: 0.480,
+                interval_open: None,
+                selection_published_at_ms: None,
+                seconds_to_expiry_at_selection: None,
+                book,
+            },
+            UnsupportedObservedReason::BootstrappedUnsupportedContract,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy.on_position_closed(position_closed_event(foreign_instrument_id, position_id));
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
     fn position_closed_releases_unsupported_observed_for_same_position() {
         let mut strategy = ready_to_trade_strategy();
         let instrument_id = strategy.active.books.up.instrument_id.unwrap();
@@ -12940,6 +14929,111 @@ mod tests {
         assert_eq!(quarantined.observed.entry_order_side, OrderSide::Sell);
         assert_eq!(quarantined.observed.side, PositionSide::Short);
         assert!(strategy.pending_entry().is_none());
+    }
+
+    #[test]
+    fn live_position_event_quarantines_foreign_venue_position() {
+        // P5-5 / Codex P5 — LIVE-PATH regression lock (mirror of
+        // `recovery_bootstrap_quarantines_foreign_venue_position`). The recovery path already
+        // quarantines a foreign-venue cached position before its contract check; the LIVE
+        // position-event path (`materialize_position_from_event`, driven by `on_position_opened`)
+        // must do the same. This event carries a SUPPORTED side/contract shape (Buy / Long, the
+        // exact shape the same-venue baseline `position_events_update_live_position_state` adopts
+        // into Managed), so the ONLY thing making it foreign is the venue. Under the pre-guard
+        // code this foreign event would pass the side + contract checks and become Managed (the
+        // exit path then submits a real order against that foreign instrument_id); the new venue
+        // guard is what diverts it to blind recovery instead.
+        let mut strategy = ready_to_trade_strategy();
+        let execution_venue = strategy.context.execution_venue();
+        let execution_instrument = configured_outcome_instruments(&strategy)
+            .into_iter()
+            .next()
+            .expect("ready-to-trade fixture should expose a configured instrument");
+        assert_eq!(
+            execution_instrument.venue, execution_venue,
+            "fixture instrument must be on the execution venue so only the venue is changed",
+        );
+        // Same symbol, foreign venue: the venue is the ONLY difference from a managed position.
+        let foreign_instrument =
+            InstrumentId::new(execution_instrument.symbol, Venue::from("HYPERLIQUID"));
+        assert_ne!(
+            foreign_instrument.venue, execution_venue,
+            "foreign instrument must be on a non-execution venue",
+        );
+
+        strategy.on_position_opened(position_opened_event_with_details(
+            foreign_instrument,
+            PositionId::from("P-FOREIGN-LIVE"),
+            Quantity::new(10.0, 2),
+            0.450,
+            OrderSide::Buy,
+            PositionSide::Long,
+        ));
+
+        // Observable exposure: quarantined to blind recovery, never adopted into Managed.
+        assert!(
+            matches!(
+                strategy.exposure,
+                ExposureState::BlindRecovery(BlindRecoveryState {
+                    reason: BlindRecoveryReason::ForeignVenuePosition { .. }
+                })
+            ),
+            "foreign-venue live position event must be quarantined to blind recovery, got {:?}",
+            strategy.exposure,
+        );
+        assert!(strategy.managed_position().is_none());
+    }
+
+    #[test]
+    fn order_fill_entry_quarantines_foreign_venue_position() {
+        // P5-5 / Codex P5 — LIVE ORDER-FILL regression lock (sibling of
+        // `live_position_event_quarantines_foreign_venue_position`). The entry-fill branch of
+        // `on_order_filled` matches a fill to our pending entry by client_order_id ALONE, then
+        // adopts the fill's instrument_id into Managed (origin StrategyEntry). A foreign-venue fill
+        // that happens to carry our pending entry's client_order_id must NOT be adopted — the exit
+        // path would otherwise submit a real order against the foreign instrument_id. The shared
+        // venue-adoption guard must divert it to blind recovery, exactly as the position-event path
+        // does. Pre-guard this fill (Some position_id + supported Buy/Long side) would become Managed.
+        let mut strategy = ready_to_trade_strategy();
+        let execution_venue = strategy.context.execution_venue();
+        let entry_client_order_id = ClientOrderId::from("ENTRY-FOREIGN-FILL");
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let execution_instrument_id = pending.instrument_id;
+        assert_eq!(
+            execution_instrument_id.venue, execution_venue,
+            "pending entry must be on the execution venue so only the fill venue differs",
+        );
+        set_pending_entry(&mut strategy, pending);
+
+        // Same symbol, foreign venue: the venue is the ONLY difference from our pending entry.
+        let foreign_instrument_id =
+            InstrumentId::new(execution_instrument_id.symbol, Venue::from("HYPERLIQUID"));
+        assert_ne!(
+            foreign_instrument_id.venue, execution_venue,
+            "foreign fill must be on a non-execution venue",
+        );
+
+        strategy
+            .on_order_filled(&order_filled_event_with_details(
+                entry_client_order_id,
+                foreign_instrument_id,
+                Some(PositionId::from("P-FOREIGN-FILL")),
+                OrderSide::Buy,
+            ))
+            .expect("foreign-venue entry fill must not wedge the strategy");
+
+        // Observable exposure: quarantined to blind recovery, never adopted into Managed.
+        assert!(
+            matches!(
+                strategy.exposure,
+                ExposureState::BlindRecovery(BlindRecoveryState {
+                    reason: BlindRecoveryReason::ForeignVenuePosition { .. }
+                })
+            ),
+            "foreign-venue entry fill must be quarantined to blind recovery, got {:?}",
+            strategy.exposure,
+        );
+        assert!(strategy.managed_position().is_none());
     }
 
     #[test]
@@ -13130,6 +15224,27 @@ mod tests {
         assert!(strategy.active.outcome_fees.down_ready);
     }
 
+    #[test]
+    fn entry_evaluation_uses_price_adjusted_fee_bps_not_cached_base_fee_rate() {
+        let (mut strategy, fee_provider) =
+            ready_to_trade_strategy_with_recording_fees(Decimal::from(1000), Decimal::from(1000));
+        fee_provider.set_entry_fee_bps(
+            "condition-MKT-1-MKT-1-UP.POLYMARKET",
+            Decimal::from_str("511.111111111111").expect("test decimal should parse"),
+        );
+        fee_provider.set_entry_fee_bps(
+            "condition-MKT-1-MKT-1-DOWN.POLYMARKET",
+            Decimal::from_str("182.027027027027").expect("test decimal should parse"),
+        );
+        register_test_strategy_with_active_instruments(&mut strategy);
+
+        let decision = strategy.entry_submission_decision_at(1_200);
+        let fields = strategy.entry_evaluation_log_fields_at(1_200, &decision);
+
+        assert_eq!(fields.up_fee_bps, Some(511.111111111111));
+        assert_eq!(fields.down_fee_bps, Some(182.027027027027));
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn market_activation_and_switch_warm_both_outcome_fee_tokens() {
         let fee_provider = RecordingFeeProvider::cold();
@@ -13214,6 +15329,51 @@ mod tests {
         strategy.refresh_fee_readiness();
         assert!(strategy.active.outcome_fees.up_ready);
         assert!(strategy.active.outcome_fees.down_ready);
+    }
+
+    #[test]
+    fn book_delta_refreshes_fee_readiness_after_warm_populates_provider() {
+        let fee_provider = RecordingFeeProvider::cold();
+        let mut strategy = ready_to_trade_strategy();
+        strategy.context = StrategyBuildContext::new(
+            fee_provider.clone(),
+            Arc::new(RecordingDecisionEvidenceWriter),
+            Arc::new(
+                crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+                    RecordingDecisionEvidenceWriter,
+                )),
+            ),
+            fixture_execution_venue(),
+        )
+        .with_readiness_evidence(test_readiness_gate_evidence());
+        strategy.active.outcome_fees.up_ready = false;
+        strategy.active.outcome_fees.down_ready = false;
+        register_test_strategy_with_active_instruments(&mut strategy);
+
+        let up_instrument_id = strategy
+            .active
+            .outcome_fees
+            .up_instrument_id
+            .expect("test active market should have up outcome");
+        let down_instrument_id = strategy
+            .active
+            .outcome_fees
+            .down_instrument_id
+            .expect("test active market should have down outcome");
+        fee_provider.set_fee(up_instrument_id.to_string().as_str(), Decimal::new(100, 2));
+        fee_provider.set_fee(
+            down_instrument_id.to_string().as_str(),
+            Decimal::new(100, 2),
+        );
+
+        strategy
+            .on_book_deltas(&book_deltas(
+                up_instrument_id,
+                &[(BookAction::Update, OrderSide::Sell, 0.45, 500.0)],
+            ))
+            .expect("book delta should not escape actor loop");
+
+        assert!(strategy.active.outcome_fees.market_ready());
     }
 
     #[test]
@@ -13830,6 +15990,387 @@ mod tests {
     }
 
     #[test]
+    fn strategy_refuses_foreign_venue_market_even_when_slug_matches_the_target() {
+        // P5-5 / Codex P5: the shared NT cache can hold instruments from venues OTHER than the
+        // execution venue. A foreign-venue binary option that happens to carry the SAME updown slug
+        // as the configured target must never be tradeable — a real order only ever routes to the
+        // execution client's venue. The market matcher is venue-agnostic (it matches on slug +
+        // outcome), so without venue scoping a colliding foreign instrument WOULD be selectable;
+        // the execution-venue read filter excludes it and the explicit guard fails closed.
+        let strategy = test_strategy();
+        let current_start = 1_746_000_000_i64;
+        let now_ms = current_start as u64 * MILLIS_PER_SECOND_U64 + 1;
+        let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+            &strategy.config.underlying_asset,
+            &strategy.config.cadence_slug_token,
+            current_start,
+        );
+        let start_ms = current_start as u64 * MILLIS_PER_SECOND_U64;
+        let end_ms = start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
+        let execution_venue = fixture_execution_venue();
+
+        // The SAME slug + market id exists on a NON-execution venue (a HIP-4 / Hyperliquid market
+        // here) as well as on the Polymarket execution venue.
+        let foreign = vec![
+            updown_binary_option(
+                "token-up.HYPERLIQUID",
+                &market_slug,
+                "market-1",
+                "Up",
+                start_ms,
+                end_ms,
+            ),
+            updown_binary_option(
+                "token-down.HYPERLIQUID",
+                &market_slug,
+                "market-1",
+                "Down",
+                start_ms,
+                end_ms,
+            ),
+        ];
+        let polymarket = vec![
+            updown_binary_option(
+                "token-up.POLYMARKET",
+                &market_slug,
+                "market-1",
+                "Up",
+                start_ms,
+                end_ms,
+            ),
+            updown_binary_option(
+                "token-down.POLYMARKET",
+                &market_slug,
+                "market-1",
+                "Down",
+                start_ms,
+                end_ms,
+            ),
+        ];
+
+        // The slug genuinely matches on the foreign venue too: in isolation the matcher selects it,
+        // which is exactly the latent hazard.
+        let foreign_snapshot =
+            selection_snapshot_from_instruments(&strategy.config, &foreign, now_ms);
+        let SelectionState::Active { market } = &foreign_snapshot.decision.state else {
+            panic!(
+                "foreign-venue instruments share the target slug and must select in isolation: {foreign_snapshot:?}"
+            );
+        };
+        assert_eq!(market.up.instrument_id, "token-up.HYPERLIQUID");
+        // ...but the execution-venue guard refuses that foreign selection (fail closed).
+        assert!(
+            !selected_market_on_execution_venue(&foreign_snapshot, execution_venue),
+            "a selected market whose outcomes are on a non-execution venue must be refused",
+        );
+
+        // The execution-venue market selects and is accepted by the guard.
+        let polymarket_snapshot =
+            selection_snapshot_from_instruments(&strategy.config, &polymarket, now_ms);
+        assert!(
+            selected_market_on_execution_venue(&polymarket_snapshot, execution_venue),
+            "the execution-venue market must pass the guard",
+        );
+
+        // The production cache read scopes by the execution venue, so from a MIXED cache only the
+        // execution-venue market is ever considered for selection.
+        let mixed = [foreign.clone(), polymarket].concat();
+        let scoped = mixed
+            .iter()
+            .filter(|instrument| instrument.id().venue == execution_venue)
+            .cloned()
+            .collect::<Vec<_>>();
+        let scoped_snapshot =
+            selection_snapshot_from_instruments(&strategy.config, &scoped, now_ms);
+        let SelectionState::Active { market } = scoped_snapshot.decision.state else {
+            panic!(
+                "execution-venue-scoped selection should still find the market: {scoped_snapshot:?}"
+            );
+        };
+        assert_eq!(market.up.instrument_id, "token-up.POLYMARKET");
+        assert_eq!(market.down.instrument_id, "token-down.POLYMARKET");
+    }
+
+    #[test]
+    fn recovery_bootstrap_quarantines_foreign_venue_position() {
+        // P5-5 / Codex P5 — RECOVERY-PATH regression lock. The entry path is venue-scoped, but
+        // recovery bootstrap previously adopted any-venue cached positions, and the exit path would
+        // then build/submit a real order on the foreign-venue instrument. `bootstrapped_exposure_for`
+        // is the single fail-closed adoption decision and must quarantine a foreign-venue position
+        // BEFORE the contract check. This test holds the venue as the ONLY difference between a managed
+        // and a quarantined position, proving the venue guard is what diverts it.
+        let mut strategy = ready_to_trade_strategy();
+        let execution_venue = fixture_execution_venue();
+        let instrument_id = configured_outcome_instruments(&strategy)
+            .into_iter()
+            .next()
+            .expect("ready-to-trade fixture should expose a configured instrument");
+        let supported = configured_position_probe(&mut strategy, instrument_id);
+        assert_eq!(
+            supported.instrument_id.venue, execution_venue,
+            "probe should produce an execution-venue position",
+        );
+
+        // Control: an execution-venue, supported-side position is adopted into Managed.
+        let managed = strategy.bootstrapped_exposure_for(supported.clone(), execution_venue);
+        assert!(
+            matches!(managed, ExposureState::Managed(_)),
+            "execution-venue supported position must be managed, got {managed:?}",
+        );
+
+        // Same position on a foreign venue (only the venue differs) must be quarantined, never managed.
+        let foreign_instrument =
+            InstrumentId::new(supported.instrument_id.symbol, Venue::from("HYPERLIQUID"));
+        let foreign = OpenPositionState {
+            instrument_id: foreign_instrument,
+            book: OutcomeBookState::from_instrument_id(foreign_instrument),
+            ..supported.clone()
+        };
+        let quarantined = strategy.bootstrapped_exposure_for(foreign, execution_venue);
+        assert!(
+            matches!(
+                quarantined,
+                ExposureState::BlindRecovery(BlindRecoveryState {
+                    reason: BlindRecoveryReason::ForeignVenuePosition { .. }
+                })
+            ),
+            "foreign-venue position must be quarantined to blind recovery, got {quarantined:?}",
+        );
+    }
+
+    #[test]
+    fn refresh_selection_from_cache_filters_foreign_venue_in_production_path() {
+        // P5-5 / Codex P5 — PRODUCTION-PATH regression lock. The sibling test
+        // `strategy_refuses_foreign_venue_market_even_when_slug_matches_the_target` proves the
+        // selection HELPERS refuse a foreign-venue market, but it REPLICATES the venue filter
+        // inside the test, so deleting the production filter would not fail it. This test drives
+        // the real `refresh_selection_from_cache` against a shared NT cache holding BOTH a
+        // foreign-venue (HYPERLIQUID) and the execution-venue (POLYMARKET) updown market that
+        // share the configured target slug, and proves the production path selects ONLY the
+        // execution-venue market. Removing the venue-scoped cache filter (the
+        // `instrument.id().venue == execution_venue` read) or the
+        // `selected_market_on_execution_venue` guard makes this fail. A real order can only ever
+        // route to the execution client's venue.
+        let mut strategy = test_strategy();
+        assert_eq!(
+            strategy.context.execution_venue(),
+            fixture_execution_venue(),
+            "harness precondition: production execution venue must be the POLYMARKET fixture",
+        );
+        let cache = register_test_strategy(&mut strategy);
+
+        let current_start = 1_746_000_000_i64;
+        let now_ms = current_start as u64 * MILLIS_PER_SECOND_U64 + 1;
+        let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+            &strategy.config.underlying_asset,
+            &strategy.config.cadence_slug_token,
+            current_start,
+        );
+        let start_ms = current_start as u64 * MILLIS_PER_SECOND_U64;
+        let end_ms = start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
+
+        // Same slug + market id on a NON-execution venue (HYPERLIQUID) AND the execution venue
+        // (POLYMARKET). The matcher is venue-agnostic, so without the production venue filter the
+        // foreign instruments would be selectable.
+        let mixed = [
+            updown_binary_option(
+                "token-up.HYPERLIQUID",
+                &market_slug,
+                "market-1",
+                "Up",
+                start_ms,
+                end_ms,
+            ),
+            updown_binary_option(
+                "token-down.HYPERLIQUID",
+                &market_slug,
+                "market-1",
+                "Down",
+                start_ms,
+                end_ms,
+            ),
+            updown_binary_option(
+                "token-up.POLYMARKET",
+                &market_slug,
+                "market-1",
+                "Up",
+                start_ms,
+                end_ms,
+            ),
+            updown_binary_option(
+                "token-down.POLYMARKET",
+                &market_slug,
+                "market-1",
+                "Down",
+                start_ms,
+                end_ms,
+            ),
+        ];
+        {
+            let mut cache_mut = cache.borrow_mut();
+            for instrument in &mixed {
+                cache_mut
+                    .add_instrument(instrument.clone())
+                    .expect("test cache should accept the seeded instrument");
+            }
+        }
+
+        strategy.refresh_selection_from_cache(now_ms);
+
+        // The production venue-scoped read + guard select ONLY the execution-venue market, even
+        // though the foreign-venue market carrying the identical slug is present in the cache.
+        assert_eq!(
+            strategy
+                .active
+                .books
+                .up
+                .instrument_id
+                .map(|id| id.to_string())
+                .as_deref(),
+            Some("token-up.POLYMARKET"),
+            "production refresh must select the execution-venue Up outcome from a mixed-venue cache",
+        );
+        assert_eq!(
+            strategy
+                .active
+                .books
+                .down
+                .instrument_id
+                .map(|id| id.to_string())
+                .as_deref(),
+            Some("token-down.POLYMARKET"),
+            "production refresh must select the execution-venue Down outcome from a mixed-venue cache",
+        );
+    }
+
+    #[test]
+    fn bootstrap_recovery_from_cache_ignores_foreign_venue_position() {
+        // P5-5 / Codex P5 — RECOVERY-PATH regression lock. The entry path scopes selection to the
+        // execution venue; the recovery path must do the same. A foreign-venue cached position with
+        // a supported contract shape must NOT be accepted into Managed state, because the exit
+        // submission path uses the position's instrument_id directly with no additional venue gate.
+        let mut strategy = test_strategy();
+        assert_eq!(
+            strategy.context.execution_venue(),
+            fixture_execution_venue(),
+            "harness precondition: production execution venue must be the POLYMARKET fixture",
+        );
+        let cache = register_test_strategy(&mut strategy);
+
+        // Foreign-venue (HYPERLIQUID) instrument and position
+        let foreign_instrument = updown_binary_option(
+            "token-up.HYPERLIQUID",
+            "foreign-market",
+            "market-foreign",
+            "Up",
+            1_000,
+            2_000,
+        );
+        let foreign_fill = order_filled_event_with_details(
+            ClientOrderId::from("FOREIGN-ORDER-001"),
+            foreign_instrument.id(),
+            Some(PositionId::from("POS-FOREIGN-001")),
+            OrderSide::Buy,
+        );
+        let foreign_position = Position::new(&foreign_instrument, foreign_fill);
+
+        // Seed the cache with the foreign-venue instrument and position
+        {
+            let mut cache_mut = cache.borrow_mut();
+            cache_mut
+                .add_instrument(foreign_instrument.clone())
+                .expect("test cache should accept the seeded instrument");
+            cache_mut
+                .add_position(&foreign_position, NtOmsType::Netting)
+                .expect("test cache should accept the seeded position");
+        }
+
+        // Verify the position is present when querying WITHOUT venue scoping
+        assert_eq!(
+            cache
+                .borrow()
+                .positions_open(
+                    None,
+                    None,
+                    Some(&StrategyId::from("BINARYORACLEEDGETAKER-001")),
+                    None,
+                    None,
+                )
+                .len(),
+            1,
+            "foreign position must exist in the unscoped cache",
+        );
+
+        strategy.bootstrap_recovery_from_cache();
+
+        // The foreign-venue position must be ignored; strategy stays Flat.
+        assert!(
+            matches!(strategy.exposure, ExposureState::Flat),
+            "a foreign-venue cached position must NOT be recovered into Managed state: got {:?}",
+            strategy.exposure,
+        );
+    }
+
+    #[test]
+    fn bootstrap_recovery_from_cache_loads_execution_venue_position() {
+        // Baseline: an execution-venue position matching the strategy contract IS recovered into
+        // Managed state. This ensures the venue filter does not over-reject.
+        let mut strategy = test_strategy();
+        assert_eq!(
+            strategy.context.execution_venue(),
+            fixture_execution_venue(),
+            "harness precondition: production execution venue must be the POLYMARKET fixture",
+        );
+        let cache = register_test_strategy(&mut strategy);
+
+        let execution_instrument = updown_binary_option(
+            "token-up.POLYMARKET",
+            "execution-market",
+            "market-execution",
+            "Up",
+            1_000,
+            2_000,
+        );
+        let execution_fill = order_filled_event_with_details(
+            ClientOrderId::from("EXEC-ORDER-001"),
+            execution_instrument.id(),
+            Some(PositionId::from("POS-EXEC-001")),
+            OrderSide::Buy,
+        );
+        let execution_position = Position::new(&execution_instrument, execution_fill);
+
+        {
+            let mut cache_mut = cache.borrow_mut();
+            cache_mut
+                .add_instrument(execution_instrument.clone())
+                .expect("test cache should accept the seeded instrument");
+            cache_mut
+                .add_position(&execution_position, NtOmsType::Netting)
+                .expect("test cache should accept the seeded position");
+        }
+
+        strategy.bootstrap_recovery_from_cache();
+
+        let managed = strategy
+            .managed_position()
+            .expect("execution-venue position must be recovered into Managed state");
+        assert_eq!(
+            managed.position.instrument_id.to_string(),
+            "token-up.POLYMARKET",
+            "recovered position must be the execution-venue instrument",
+        );
+        assert_eq!(
+            managed.position.position_id.to_string(),
+            "POS-EXEC-001",
+            "recovered position must carry the correct position id",
+        );
+        assert!(
+            matches!(managed.origin, ManagedPositionOrigin::RecoveryBootstrap),
+            "recovered position must carry RecoveryBootstrap origin",
+        );
+    }
+
+    #[test]
     fn strategy_selects_next_updown_target_outcome_from_nt_binary_option_metadata() {
         let strategy = test_strategy();
         let current_start = 1_746_000_000_i64;
@@ -14241,6 +16782,7 @@ mod tests {
                 EntryBlockReason::RecoveryMode,
                 EntryBlockReason::MarketCoolingDown,
                 EntryBlockReason::ForcedFlat(ForcedFlatReason::Freeze),
+                EntryBlockReason::ForcedFlat(ForcedFlatReason::StaleReference),
                 EntryBlockReason::ForcedFlat(ForcedFlatReason::ThinBook),
                 EntryBlockReason::OnePositionInvariant(ExposureOccupancy::EntryReconcilePending),
             ]
@@ -14723,6 +17265,24 @@ mod tests {
     }
 
     #[test]
+    fn task5_missing_reference_timestamp_is_stale_reference() {
+        // A14: a never-observed reference (None timestamp) is the maximally
+        // stale condition and must classify as StaleReference, not as fresh.
+        let reasons = evaluate_forced_flat_predicates(&ForcedFlatInputs {
+            phase: SelectionPhase::Active,
+            metadata_matches_selection: true,
+            last_reference_ts_ms: None,
+            now_ms: 1_250,
+            stale_reference_after_ms: 1_500,
+            liquidity_available: Some(500.0),
+            min_liquidity_required: 100.0,
+            fast_venue_incoherent: false,
+        });
+
+        assert_eq!(reasons, vec![ForcedFlatReason::StaleReference]);
+    }
+
+    #[test]
     fn task5_entry_gate_blocks_on_active_phase_forced_flat_reasons() {
         let mut strategy = ready_to_trade_strategy();
         strategy.active.last_reference_ts_ms = Some(1_000);
@@ -15019,9 +17579,14 @@ mod tests {
         };
 
         assert_eq!(snapshot.strategy_id, strategy.config.strategy_id);
+        assert_eq!(snapshot.gate_session_hash, "gate-session-hash-one");
+        assert_eq!(snapshot.selected_market_key, "selected-market-key-one");
         assert_eq!(
-            snapshot.price_to_beat_source,
-            strategy.config.price_to_beat_source
+            snapshot
+                .gate_evidence
+                .get("resolution_price")
+                .and_then(|identity| identity.normalized_value_sha256.as_deref()),
+            Some("normalized-value-sha-one")
         );
         assert_eq!(snapshot.price_to_beat_value, "3100");
         assert_eq!(snapshot.reference_quote_ts_event, 1_200);

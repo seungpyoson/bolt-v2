@@ -17,10 +17,39 @@ use nautilus_model::{
     enums::OmsType,
     identifiers::{ClientId, InstrumentId, TraderId, Venue},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
+
+pub const TEST_DOUBLE_PROVIDER_KIND: &str = "test_double";
+pub const CHAINLINK_DATA_STREAMS_PROVIDER_KIND: &str = "chainlink_data_streams";
+pub const NO_RESOLUTION_KIND: &str = "no_resolution";
+pub const NO_RESOLUTION_VALUE_KIND: &str = "none";
+pub const RESOLUTION_GATE_ROLE: &str = "resolution";
+pub const DECISION_REFERENCE_GATE_ROLE: &str = "decision_reference";
+pub const PRICE_GATE_VALUE_KIND: &str = "price";
+pub const GATE_PROVIDER_KINDS: &[&str] = &[
+    CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
+    "pyth",
+    "exchange_index",
+    "venue_native",
+    "hyperliquid_hip4",
+    "deribit_index",
+    "outcome_oracle",
+    TEST_DOUBLE_PROVIDER_KIND,
+];
+pub const GATE_PROVIDER_CAPABILITIES: &[&str] =
+    &["resolution_value", "reference_value", "market_metadata"];
+pub const GATE_ROLES: &[&str] = &[RESOLUTION_GATE_ROLE, DECISION_REFERENCE_GATE_ROLE];
+pub const GATE_VALUE_KINDS: &[&str] = &[
+    PRICE_GATE_VALUE_KIND,
+    "index",
+    "outcome",
+    "metadata",
+    NO_RESOLUTION_VALUE_KIND,
+];
+pub const SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -36,6 +65,7 @@ pub struct BoltV3RootConfig {
     pub live_canary: Option<LiveCanaryBlock>,
     pub aws: AwsBlock,
     pub clients: BTreeMap<String, ClientBlock>,
+    pub gate_providers: Option<BTreeMap<String, GateProviderBlock>>,
 }
 
 // `[risk]` owns Bolt-v3 strategy-sizing limits and the explicit
@@ -190,10 +220,38 @@ pub struct LiveCanaryBlock {
     pub reference_quote_probe_log_commands: bool,
     pub max_live_order_count: u32,
     pub max_notional_per_order: String,
+    pub egress_identity_observed_path: Option<String>,
+    pub egress_identity_observed_max_bytes: Option<u64>,
+    pub approved_egress_identity_sha256: Option<String>,
+    pub proof_policy: Option<LiveCanaryProofPolicyBlock>,
     pub operator_evidence: Option<LiveCanaryOperatorEvidenceBlock>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LiveCanaryProofPolicyBlock {
+    pub enabled: bool,
+    pub policy_kind: String,
+    pub proof_claim: String,
+    pub executor_strategy_id: String,
+    pub strategy_instance_id: String,
+    pub execution_client_id: String,
+    pub book_type: DataClientReadinessProbeBookType,
+    pub book_snapshot_interval_millis: u64,
+    pub time_in_force: LiveCanaryProofTimeInForce,
+    pub is_post_only: bool,
+    pub is_reduce_only: bool,
+    pub is_quote_quantity: bool,
+    pub notional_mode: String,
+    pub proof_notional: String,
+    pub candidate_score_source: String,
+    pub allow_negative_expected_ev: bool,
+    pub rotation_observation_enabled: bool,
+    pub rotation_min_distinct_markets: u32,
+    pub rotation_max_attempts: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct LiveCanaryOperatorEvidenceBlock {
     pub head_sha: String,
@@ -205,12 +263,26 @@ pub struct LiveCanaryOperatorEvidenceBlock {
     pub ssm_manifest_sha256: String,
     pub strategy_input_evidence_path: String,
     pub strategy_input_evidence_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate_session_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_gate_session_sha256: Option<String>,
     pub financial_envelope_path: String,
     pub financial_envelope_sha256: String,
     pub pre_run_state_path: String,
     pub pre_run_state_sha256: String,
     pub abort_plan_path: String,
     pub abort_plan_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_candidate_source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_candidate_source_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_order_intent_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canary_proof_order_intent_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_submit_readiness_report_sha256: Option<String>,
     pub canary_evidence_path: String,
     pub approval_not_before_unix_seconds: i64,
     pub approval_not_after_unix_seconds: i64,
@@ -253,12 +325,102 @@ pub struct AwsBlock {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct GateProviderBlock {
+    pub provider_kind: Option<String>,
+    pub capabilities: Option<Vec<String>>,
+    pub client_id: Option<ClientId>,
+    pub freshness: Option<GateProviderFreshnessBlock>,
+    #[serde(flatten)]
+    pub provider_config: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct GateProviderFreshnessBlock {
+    pub max_age_ms: Option<u64>,
+    pub max_clock_skew_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ClientBlock {
     pub venue: Venue,
     pub data: Option<toml::Value>,
     pub execution: Option<toml::Value>,
     pub secrets: Option<toml::Value>,
+    pub readiness_probe: Option<DataClientReadinessProbeBlock>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DataClientReadinessProbeBlock {
+    pub market_data_kind: DataClientReadinessProbeMarketDataKind,
+    pub book_type: Option<DataClientReadinessProbeBookType>,
+    pub quote_target_source: DataClientReadinessProbeQuoteTargetSource,
+    pub max_metadata_quote_targets: Option<usize>,
+    pub allow_metadata_target_sampling: Option<bool>,
+    /// Minimum number of sampled readiness-probe targets that must produce a
+    /// fresh quote/book/trade observation for the probe to pass. When unset the probe
+    /// requires every sampled target (strict, fail-closed default). Configuring
+    /// a value lets broad metadata universes prove adapter data-path behaviour
+    /// without requiring every illiquid or un-streamable sampled instrument to
+    /// tick within the configured wait. Must be >= 1 and <= the sampled count.
+    /// For a trade chunk-count probe (`market_data_kind = "trade"` with
+    /// `quote_target_source = "metadata_response"`) this is `m`: the number of
+    /// distinct markets that must produce a trade across the chunk walk for the
+    /// probe to pass, and it is required (there is no fixed sample to fall back
+    /// on).
+    pub min_observed_targets: Option<usize>,
+    /// Maximum number of instruments a trade chunk-count probe subscribes to at
+    /// once (`n`). The probe walks the venue's full instrument universe in
+    /// chunks of this size — never subscribing to more than `chunk_size`
+    /// channels concurrently — to stay below the venue's silent delivery
+    /// ceiling. Required (and only valid) when `market_data_kind = "trade"`
+    /// and `quote_target_source = "metadata_response"`; must be >= 1.
+    pub chunk_size: Option<usize>,
+    /// How long a trade chunk-count probe watches each chunk for trades before
+    /// moving to the next chunk, in seconds. Required (and only valid) when
+    /// `market_data_kind = "trade"` and `quote_target_source =
+    /// "metadata_response"`; must be >= 1.
+    pub chunk_observation_window_seconds: Option<u64>,
+    pub quote_targets: Option<BTreeMap<String, DataClientReadinessProbeQuoteTargetBlock>>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DataClientReadinessProbeMarketDataKind {
+    Quote,
+    Book,
+    Trade,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DataClientReadinessProbeBookType {
+    L1Mbp,
+    L2Mbp,
+    L3Mbo,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveCanaryProofTimeInForce {
+    Fok,
+    Gtc,
+    Ioc,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DataClientReadinessProbeQuoteTargetSource {
+    Configured,
+    MetadataResponse,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DataClientReadinessProbeQuoteTargetBlock {
+    pub instrument_id: InstrumentId,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -490,13 +652,10 @@ mod tests {
         assert_eq!(root.trader_id, TraderId::from("BOLT-001"));
         assert_eq!(root.runtime.mode, Environment::Live);
         assert!(root.clients.contains_key("polymarket_main"));
-        assert!(root.clients.contains_key("binance_reference"));
         let polymarket = &root.clients["polymarket_main"];
         assert_eq!(polymarket.venue, Venue::from("POLYMARKET"));
         assert!(polymarket.execution.is_some());
-        let binance = &root.clients["binance_reference"];
-        assert_eq!(binance.venue, Venue::from("BINANCE"));
-        assert!(binance.execution.is_none());
+        assert!(!root.clients.contains_key("binance_reference"));
     }
 
     #[test]
@@ -510,6 +669,114 @@ mod tests {
             .as_table()
             .expect("[target] should parse into a table");
         assert!(!target_table.is_empty());
-        assert!(strategy.reference_data.contains_key("primary"));
+        assert!(strategy.reference_data.is_empty());
+    }
+
+    /// A `[live_canary]` block with a configurable per-order cap and no
+    /// `proof_policy` / `operator_evidence` (both optional), used to exercise
+    /// the unconditional base-field validation in `validate_live_canary_block`.
+    fn live_canary_block_with_cap(max_notional_per_order: &str) -> LiveCanaryBlock {
+        LiveCanaryBlock {
+            approval_id: "approval-1".to_string(),
+            no_submit_readiness_report_path: "/tmp/readiness.json".to_string(),
+            max_no_submit_readiness_report_bytes: 1024,
+            readiness_report_max_age_seconds: 60,
+            reference_quote_max_age_seconds: 10,
+            reference_quote_wait_timeout_seconds: 20,
+            reference_quote_probe_actor_id: "probe-1".to_string(),
+            reference_quote_probe_log_events: false,
+            reference_quote_probe_log_commands: false,
+            max_live_order_count: 1,
+            max_notional_per_order: max_notional_per_order.to_string(),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: None,
+        }
+    }
+
+    #[test]
+    fn risk_default_max_notional_must_be_positive_decimal() {
+        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        for bad in ["0.00", "-1.00"] {
+            root.risk.default_max_notional_per_order = bad.to_string();
+            let errors = crate::bolt_v3_validate::validate_root_only(&root);
+            assert!(
+                errors.iter().any(|e| e.contains(
+                    "risk.default_max_notional_per_order must be a positive decimal string"
+                )),
+                "default_max_notional_per_order={bad} must fail the positive check; got: {errors:?}"
+            );
+        }
+        // A malformed decimal keeps the existing syntax error rather than the
+        // positivity message.
+        root.risk.default_max_notional_per_order = "not-a-decimal".to_string();
+        let errors = crate::bolt_v3_validate::validate_root_only(&root);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e
+                    .contains("risk.default_max_notional_per_order is not a valid decimal string")),
+            "malformed default_max_notional must keep the syntax error; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn live_canary_max_notional_validated_without_proof_policy() {
+        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        // No proof_policy: the cap must still be range-validated at config load.
+        root.live_canary = Some(live_canary_block_with_cap("0.00"));
+        let errors = crate::bolt_v3_validate::validate_root_only(&root);
+        assert!(
+            errors.iter().any(|e| e
+                .contains("live_canary.max_notional_per_order must be a positive decimal string")),
+            "a non-positive canary cap must fail even without proof_policy; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn live_canary_max_notional_must_not_exceed_default_max() {
+        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        root.risk.default_max_notional_per_order = "1.00".to_string();
+        root.live_canary = Some(live_canary_block_with_cap("1000.00"));
+        let errors = crate::bolt_v3_validate::validate_root_only(&root);
+        assert!(
+            errors.iter().any(|e| e.contains(
+                "live_canary.max_notional_per_order must be <= risk.default_max_notional_per_order"
+            )),
+            "a canary cap above the entity cap must fail; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn live_canary_max_live_order_count_must_be_positive() {
+        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        let mut block = live_canary_block_with_cap("1.00");
+        block.max_live_order_count = 0;
+        root.live_canary = Some(block);
+        let errors = crate::bolt_v3_validate::validate_root_only(&root);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("live_canary.max_live_order_count must be a positive integer")),
+            "a zero max_live_order_count must fail; got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn live_canary_valid_block_passes_base_field_checks() {
+        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        root.risk.default_max_notional_per_order = "100.00".to_string();
+        root.live_canary = Some(live_canary_block_with_cap("10.00"));
+        let errors = crate::bolt_v3_validate::validate_root_only(&root);
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.contains("live_canary.max_notional_per_order")
+                    || e.contains("live_canary.max_live_order_count")
+                    || e.contains("live_canary.approval_id")),
+            "a valid canary block must not produce base-field errors; got: {errors:?}"
+        );
     }
 }

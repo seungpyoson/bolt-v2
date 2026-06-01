@@ -112,17 +112,6 @@ fn startup_check_reports_success_facts_without_connecting() {
     assert!(polymarket.detail.contains("data=true"));
     assert!(polymarket.detail.contains("execution=true"));
 
-    let binance = report
-        .facts
-        .iter()
-        .find(|fact| {
-            fact.stage == BoltV3StartupCheckStage::ClientRegistration
-                && fact.detail.contains("binance_reference")
-        })
-        .expect("binance_reference registration fact should exist");
-    assert!(binance.detail.contains("data=true"));
-    assert!(binance.detail.contains("execution=false"));
-
     assert_no_resolved_secret_values(&report_text(&report));
 }
 

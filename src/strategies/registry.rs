@@ -3,14 +3,20 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
 use anyhow::{Context, Result};
 use futures_util::future::BoxFuture;
 use nautilus_common::{actor::DataActor, component::Component};
-use nautilus_model::identifiers::{InstrumentId, StrategyId};
+use nautilus_model::{
+    identifiers::{InstrumentId, StrategyId, Venue},
+    instruments::{Instrument, InstrumentAny},
+};
 use nautilus_system::trader::Trader;
 use nautilus_trading::Strategy;
 use rust_decimal::Decimal;
 use toml::Value;
 
 use crate::{
-    bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
+    bolt_v3_decision_evidence::{
+        BoltV3DecisionEvidenceWriter, BoltV3ReadinessGateEvidenceSnapshot,
+        BoltV3RuntimeReadinessSeed,
+    },
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
 };
 
@@ -35,6 +41,16 @@ pub type BoxedStrategy = Box<dyn RuntimeStrategy>;
 
 pub trait FeeProvider: Send + Sync {
     fn fee_bps(&self, instrument_id: InstrumentId) -> Option<Decimal>;
+    fn entry_fee_bps(&self, instrument: &InstrumentAny, _entry_price: Decimal) -> Option<Decimal> {
+        self.fee_bps(instrument.id())
+    }
+    fn max_entry_fee_bps(
+        &self,
+        instrument: &InstrumentAny,
+        entry_price: Decimal,
+    ) -> Option<Decimal> {
+        self.entry_fee_bps(instrument, entry_price)
+    }
     fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>>;
 }
 
@@ -43,19 +59,48 @@ pub struct StrategyBuildContext {
     fee_provider: Arc<dyn FeeProvider>,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    execution_venue: Venue,
+    readiness_evidence: Option<BoltV3ReadinessGateEvidenceSnapshot>,
+    runtime_readiness_seed: Option<BoltV3RuntimeReadinessSeed>,
 }
 
 impl StrategyBuildContext {
+    /// `execution_venue` is the venue of the strategy's configured execution client
+    /// (`root.clients[execution_client_id].venue`). It is a REQUIRED constructor argument — not an
+    /// optional builder field — so a production build can never forget to scope market selection to
+    /// the venue that orders actually route to. The strategy uses it to fail closed unless the
+    /// selected market's venue equals this one (a wrong-venue selection from the shared NT cache
+    /// would otherwise be possible once a second venue's instruments coexist in the cache).
     pub fn new(
         fee_provider: Arc<dyn FeeProvider>,
         decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
+        execution_venue: Venue,
     ) -> Self {
         Self {
             fee_provider,
             decision_evidence,
             submit_admission,
+            execution_venue,
+            readiness_evidence: None,
+            runtime_readiness_seed: None,
         }
+    }
+
+    pub fn with_readiness_evidence(
+        mut self,
+        readiness_evidence: BoltV3ReadinessGateEvidenceSnapshot,
+    ) -> Self {
+        self.readiness_evidence = Some(readiness_evidence);
+        self
+    }
+
+    pub fn with_runtime_readiness_seed(
+        mut self,
+        runtime_readiness_seed: BoltV3RuntimeReadinessSeed,
+    ) -> Self {
+        self.runtime_readiness_seed = Some(runtime_readiness_seed);
+        self
     }
 
     pub fn fee_provider(&self) -> &dyn FeeProvider {
@@ -76,6 +121,20 @@ impl StrategyBuildContext {
 
     pub fn submit_admission_arc(&self) -> Arc<BoltV3SubmitAdmissionState> {
         self.submit_admission.clone()
+    }
+
+    /// Venue of the configured execution client. Market selection must be scoped to this venue so a
+    /// real order can only ever fire against an instrument on the venue it routes to.
+    pub fn execution_venue(&self) -> Venue {
+        self.execution_venue
+    }
+
+    pub fn readiness_evidence(&self) -> Option<&BoltV3ReadinessGateEvidenceSnapshot> {
+        self.readiness_evidence.as_ref()
+    }
+
+    pub fn runtime_readiness_seed(&self) -> Option<&BoltV3RuntimeReadinessSeed> {
+        self.runtime_readiness_seed.as_ref()
     }
 }
 
@@ -347,6 +406,10 @@ mod tests {
             Arc::new(BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
                 NoopDecisionEvidenceWriter,
             ))),
+            // Fixture venue for registry tests. These exercise strategy registration, not
+            // venue-scoped market selection, so the value is inert here; production resolves the
+            // execution venue from `root.clients[execution_client_id].venue` (venue-agnostic).
+            Venue::from("POLYMARKET"),
         )
     }
 

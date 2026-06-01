@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env,
     fmt::Display,
     fs,
@@ -16,8 +17,11 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    bolt_v3_config::{LoadedBoltV3Config, load_bolt_v3_config},
-    bolt_v3_decision_evidence::BoltV3StrategyInputEvidenceSnapshot,
+    bolt_v3_config::{LoadedBoltV3Config, RESOLUTION_GATE_ROLE, load_bolt_v3_config},
+    bolt_v3_decision_evidence::{
+        BoltV3GateEvidenceIdentity, BoltV3ReadinessGateEvidenceSnapshot,
+        BoltV3StrategyInputEvidenceSnapshot, validate_readiness_gate_evidence_snapshot,
+    },
     bolt_v3_live_canary_gate::{
         BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_pre_consumption_gate,
     },
@@ -84,6 +88,7 @@ pub enum Phase8CanaryBlockReason {
     InvalidMarketSelectionBinding,
     InvalidSelectedMarketWindow,
     DecisionEvidenceUnavailable,
+    RuntimeNoAdmittedOrder,
     BlockedBeforeLiveOrder,
     RootConfigHashUnavailable,
 }
@@ -273,6 +278,13 @@ impl Phase8StrategyInputSafetyAudit {
             Decimal::from_str_exact(raw.theta_scaled_min_edge_bps.trim()).map_err(|source| {
                 anyhow!("failed to parse phase8 strategy input theta_scaled_min_edge_bps: {source}")
             })?;
+        let readiness_identity_valid = phase8_strategy_input_readiness_identity_valid(&raw);
+        // The caller-supplied `expected_price_to_beat_source` is config-derived and MUST flow
+        // straight through so `from_strategy_inputs` keeps a genuine config-vs-runtime equality
+        // check (raw.price_to_beat_source vs config). Never reassign it from the evidence file's
+        // own raw value — doing so turns the integrity check into a self-comparison that always
+        // passes. `readiness_identity_valid` is an additional fail-closed gate below
+        // (DecisionEvidenceUnavailable), never a license to drop the price-to-beat binding.
         let mut audit = Self::from_strategy_inputs(Phase8StrategyInputSafetyInputs {
             realized_volatility,
             seconds_to_market_end: raw.seconds_to_market_end,
@@ -288,6 +300,10 @@ impl Phase8StrategyInputSafetyAudit {
             pricing_kurtosis,
             theta_decay_factor,
         });
+        audit.block_if(
+            !readiness_identity_valid,
+            Phase8CanaryBlockReason::DecisionEvidenceUnavailable,
+        );
         let market_selection_outcome = raw.market_selection_outcome.trim();
         audit.block_if(
             market_selection_outcome.is_empty()
@@ -481,6 +497,25 @@ fn phase8_market_selection_start_is_nearest_next(
         == Some(market_start_timestamp_ms)
 }
 
+fn phase8_strategy_input_readiness_identity_valid(raw: &Phase8StrategyInputEvidenceFile) -> bool {
+    let Some(gate_session_hash) = raw.gate_session_hash.as_deref() else {
+        return false;
+    };
+    let Some(selected_market_key) = raw.selected_market_key.as_deref() else {
+        return false;
+    };
+    let Some(gate_evidence) = raw.gate_evidence.as_ref() else {
+        return false;
+    };
+
+    validate_readiness_gate_evidence_snapshot(&BoltV3ReadinessGateEvidenceSnapshot {
+        gate_session_hash: gate_session_hash.to_string(),
+        selected_market_key: selected_market_key.to_string(),
+        gate_evidence: gate_evidence.clone(),
+    })
+    .is_ok()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Phase8StrategyInputEvidenceFile {
@@ -493,6 +528,12 @@ pub struct Phase8StrategyInputEvidenceFile {
     worst_case_edge_basis_points: String,
     fee_rate_basis_points: String,
     price_to_beat_source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gate_session_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selected_market_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gate_evidence: Option<BTreeMap<String, BoltV3GateEvidenceIdentity>>,
     reference_quote_ts_event: u64,
     pricing_kurtosis: String,
     theta_decay_factor: String,
@@ -516,6 +557,7 @@ impl Phase8StrategyInputEvidenceFile {
     pub fn from_runtime_snapshot_and_market_selection_source(
         snapshot: &BoltV3StrategyInputEvidenceSnapshot,
         strategy_instance_id: impl AsRef<str>,
+        runtime_strategy_id: impl AsRef<str>,
         market_selection_source: &Phase8MarketSelectionSourceEvidenceFile,
         market_selection_source_path: impl AsRef<str>,
         market_selection_source_sha256: impl AsRef<str>,
@@ -527,9 +569,15 @@ impl Phase8StrategyInputEvidenceFile {
                 "phase8 strategy input evidence requires strategy_instance_id"
             ));
         }
-        if snapshot.strategy_id != strategy_instance_id {
+        let runtime_strategy_id = runtime_strategy_id.as_ref().trim();
+        if runtime_strategy_id.is_empty() {
             return Err(anyhow!(
-                "phase8 strategy input evidence strategy_instance_id does not match runtime strategy_id"
+                "phase8 strategy input evidence requires runtime_strategy_id"
+            ));
+        }
+        if snapshot.strategy_id != runtime_strategy_id {
+            return Err(anyhow!(
+                "phase8 strategy input evidence runtime strategy_id does not match config"
             ));
         }
         let market_selection_timestamp_ms =
@@ -579,6 +627,9 @@ impl Phase8StrategyInputEvidenceFile {
             worst_case_edge_basis_points: snapshot.worst_case_edge_basis_points.clone(),
             fee_rate_basis_points: snapshot.fee_rate_basis_points.clone(),
             price_to_beat_source: snapshot.price_to_beat_source.clone(),
+            gate_session_hash: Some(snapshot.gate_session_hash.clone()),
+            selected_market_key: Some(snapshot.selected_market_key.clone()),
+            gate_evidence: Some(snapshot.gate_evidence.clone()),
             reference_quote_ts_event: snapshot.reference_quote_ts_event,
             pricing_kurtosis: snapshot.pricing_kurtosis.clone(),
             theta_decay_factor: snapshot.theta_decay_factor.clone(),
@@ -633,9 +684,76 @@ fn required_snapshot_string(value: Option<&str>, field: &str) -> Result<String> 
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Phase8MarketSelectionRuntimeProvenance {
+    decision_evidence_path: String,
+    decision_evidence_sha256: String,
+    instrument_source_path: String,
+    instrument_source_sha256: String,
+}
+
+impl Phase8MarketSelectionRuntimeProvenance {
+    pub fn new(
+        decision_evidence_path: impl AsRef<str>,
+        decision_evidence_sha256: impl AsRef<str>,
+        instrument_source_path: impl AsRef<str>,
+        instrument_source_sha256: impl AsRef<str>,
+    ) -> Result<Self> {
+        let decision_evidence_path = decision_evidence_path.as_ref().trim();
+        if decision_evidence_path.is_empty() {
+            return Err(anyhow!(
+                "phase8 market selection source requires decision_evidence_path"
+            ));
+        }
+        let decision_evidence_sha256 = decision_evidence_sha256.as_ref().trim();
+        if !phase8_is_sha256_hex(decision_evidence_sha256) {
+            return Err(anyhow!(
+                "phase8 market selection source requires decision_evidence_sha256"
+            ));
+        }
+        let instrument_source_path = instrument_source_path.as_ref().trim();
+        if instrument_source_path.is_empty() {
+            return Err(anyhow!(
+                "phase8 market selection source requires instrument_source_path"
+            ));
+        }
+        let instrument_source_sha256 = instrument_source_sha256.as_ref().trim();
+        if !phase8_is_sha256_hex(instrument_source_sha256) {
+            return Err(anyhow!(
+                "phase8 market selection source requires instrument_source_sha256"
+            ));
+        }
+        Ok(Self {
+            decision_evidence_path: decision_evidence_path.to_string(),
+            decision_evidence_sha256: decision_evidence_sha256.to_string(),
+            instrument_source_path: instrument_source_path.to_string(),
+            instrument_source_sha256: instrument_source_sha256.to_string(),
+        })
+    }
+
+    pub fn decision_evidence_path(&self) -> &str {
+        &self.decision_evidence_path
+    }
+
+    pub fn decision_evidence_sha256(&self) -> &str {
+        &self.decision_evidence_sha256
+    }
+
+    pub fn instrument_source_path(&self) -> &str {
+        &self.instrument_source_path
+    }
+
+    pub fn instrument_source_sha256(&self) -> &str {
+        &self.instrument_source_sha256
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Phase8MarketSelectionSourceEvidenceFile {
     record_kind: String,
     source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_provenance: Option<Phase8MarketSelectionRuntimeProvenance>,
     market_selection_timestamp_ms: u64,
     candidate_market_start_timestamps_ms: Vec<u64>,
     market_selection_outcome: String,
@@ -650,6 +768,22 @@ pub struct Phase8MarketSelectionSourceEvidenceFile {
 }
 
 impl Phase8MarketSelectionSourceEvidenceFile {
+    pub fn candidate_market_start_timestamps_ms(&self) -> &[u64] {
+        &self.candidate_market_start_timestamps_ms
+    }
+
+    pub fn runtime_provenance(&self) -> Option<&Phase8MarketSelectionRuntimeProvenance> {
+        self.runtime_provenance.as_ref()
+    }
+
+    pub fn with_runtime_provenance(
+        mut self,
+        provenance: Phase8MarketSelectionRuntimeProvenance,
+    ) -> Self {
+        self.runtime_provenance = Some(provenance);
+        self
+    }
+
     pub fn from_market_family_selection(
         market_selection_timestamp_ms: u64,
         candidate_windows: &[MarketSelectionCandidateWindow],
@@ -685,6 +819,7 @@ impl Phase8MarketSelectionSourceEvidenceFile {
         Ok(Self {
             record_kind: PHASE8_MARKET_SELECTION_SOURCE_RECORD_KIND.to_string(),
             source: PHASE8_MARKET_SELECTION_SOURCE.to_string(),
+            runtime_provenance: None,
             market_selection_timestamp_ms,
             candidate_market_start_timestamps_ms: candidate_windows
                 .iter()
@@ -1477,6 +1612,104 @@ fn phase8_reject_parent_dir(path: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
+/// Spent-nonce evidence written over the operator nonce file on consume. It carries no
+/// hardcoded record-kind string — its only job is to overwrite the nonce with content that no
+/// longer hashes to the approved `approval_nonce_sha256` (the serde field names are the keys;
+/// both values are runtime data). Nothing reads this record back.
+#[derive(serde::Serialize)]
+struct Phase8ApprovalNonceSpentEvidence<'a> {
+    spent_unix_secs: i64,
+    consumed_approval_nonce_sha256: &'a str,
+}
+
+/// Filesystem suffix for the sibling temp file used to atomically overwrite the nonce. This is an
+/// internal staging detail, not a runtime config value: the spent record is written to this temp
+/// file, fsynced, then renamed over the nonce so the spend is crash-atomic and durable.
+const PHASE8_NONCE_SPEND_TEMP_SUFFIX: &str = ".spending";
+
+/// Spend the one-shot operator-approval nonce by overwriting the nonce evidence file once
+/// the approval is consumed (A1/A2). After this, `validate_approval_nonce` fails for that
+/// approval because the on-disk nonce no longer hashes to the approved
+/// `approval_nonce_sha256`, so even a deliberately-deleted consumption marker cannot re-arm
+/// the one-time approval. Re-approval requires the operator to mint a fresh nonce. This is
+/// the one point where bolt-v3 WRITES operator evidence — by design, a nonce is single-use.
+///
+/// The overwrite is DURABLE and ATOMIC: the spent record is staged in a sibling temp file and
+/// fsynced, then atomically renamed over the nonce, and the parent directory is fsynced. Once
+/// this returns `Ok` the spent record is on stable storage, so a crash immediately afterwards
+/// (in particular, after this but before the consumption marker is written) still leaves the
+/// pre-consumption gate failing closed on the spent nonce. A plain in-place rewrite is not
+/// crash-safe — a power loss could lose the rewrite (reverting the nonce to the approved value)
+/// or leave a torn file — which is why the spend must complete durably before the caller proceeds
+/// to write the consumption marker.
+fn spend_phase8_approval_nonce(
+    nonce_path: &str,
+    approved_nonce_sha256: &str,
+    spent_unix_secs: i64,
+) -> Result<()> {
+    let spent = Phase8ApprovalNonceSpentEvidence {
+        spent_unix_secs,
+        consumed_approval_nonce_sha256: approved_nonce_sha256,
+    };
+    let bytes = serde_json::to_vec_pretty(&spent)
+        .map_err(|source| anyhow!("failed to serialize phase8 spent-nonce record: {source}"))?;
+    let nonce_file = Path::new(nonce_path);
+    let mut temp_os = nonce_file.as_os_str().to_owned();
+    temp_os.push(PHASE8_NONCE_SPEND_TEMP_SUFFIX);
+    let temp_path = PathBuf::from(temp_os);
+    {
+        let mut temp_file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp_path)
+            .map_err(|source| {
+                anyhow!(
+                    "failed to open phase8 spent-nonce temp `{}`: {source}",
+                    temp_path.display()
+                )
+            })?;
+        if let Err(source) = temp_file.write_all(&bytes) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(anyhow!(
+                "failed to write phase8 spent-nonce temp `{}`: {source}",
+                temp_path.display()
+            ));
+        }
+        if let Err(source) = temp_file.sync_all() {
+            let _ = fs::remove_file(&temp_path);
+            return Err(anyhow!(
+                "failed to sync phase8 spent-nonce temp `{}`: {source}",
+                temp_path.display()
+            ));
+        }
+    }
+    if let Err(source) = fs::rename(&temp_path, nonce_file) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(anyhow!(
+            "failed to spend phase8 operator approval nonce `{nonce_path}`: {source}"
+        ));
+    }
+    if let Some(parent) = nonce_file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        let dir = fs::File::open(parent).map_err(|source| {
+            anyhow!(
+                "failed to open phase8 nonce directory `{}` for durability sync: {source}",
+                parent.display()
+            )
+        })?;
+        dir.sync_all().map_err(|source| {
+            anyhow!(
+                "failed to sync phase8 nonce directory `{}`: {source}",
+                parent.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
 fn phase8_resolve_configured_path(root_path: &Path, configured: &str) -> PathBuf {
     let path = PathBuf::from(configured.trim());
     if path.is_absolute() {
@@ -1657,6 +1890,21 @@ impl Phase8OperatorApprovalEnvelope {
         self.validate_approval_nonce()?;
         let canary_evidence_path = self.canary_evidence_path_against(loaded)?;
         let strategy_cancel_path = self.validate_strategy_cancel_path_against(loaded)?;
+        // Spend the one-shot nonce FIRST — before the consumption marker — so the spend is the
+        // FIRST durable one-way state transition on consume. `spend_phase8_approval_nonce` returns
+        // only after the spent record is durable (fsync + atomic rename + parent-dir fsync), so any
+        // crash after this point leaves the pre-consumption gate failing closed on the spent nonce
+        // (`validate_approval_nonce` no longer matches the approved `approval_nonce_sha256`),
+        // regardless of the marker. Writing the marker first (the previous order) left a crash
+        // window where the marker was durable but the nonce was still un-spent: a later deletion of
+        // that marker — by an operator inside the window or by host tmp cleanup — could re-arm the
+        // approval. Spending first closes that window: the marker is written only once the nonce is
+        // already, durably, single-use, so the marker's existence implies the nonce is spent (A1/A2).
+        spend_phase8_approval_nonce(
+            &self.approval_nonce_path,
+            &self.approval_nonce_sha256,
+            current_unix_secs,
+        )?;
         self.write_approval_consumption_evidence(
             current_unix_secs,
             canary_evidence_path,
@@ -1703,7 +1951,7 @@ impl Phase8OperatorApprovalEnvelope {
             loaded,
             &approved_financial.strategy_instance_id,
         )?;
-        approved.validate_matches_loaded(&loaded)
+        approved.validate_collector_derived_matches_loaded(&loaded)
     }
 
     fn validate_strategy_cancel_path_against<'a>(
@@ -2003,6 +2251,7 @@ pub struct Phase8FinancialEnvelopeEvidenceFile {
     rotating_market_family: String,
     underlying_asset: String,
     cadence_secs: i64,
+    cadence_slug_token: String,
     market_selection_rule: String,
     retry_interval_secs: i64,
     blocked_after_secs: i64,
@@ -2056,6 +2305,14 @@ pub struct Phase8FinancialEnvelopeEvidenceFile {
 }
 
 impl Phase8FinancialEnvelopeEvidenceFile {
+    pub fn max_notional_per_order(&self) -> &str {
+        &self.max_notional_per_order
+    }
+
+    pub fn execution_client_id(&self) -> &str {
+        &self.execution_client_id
+    }
+
     pub fn strategy_instance_id(&self) -> &str {
         &self.strategy_instance_id
     }
@@ -2128,6 +2385,7 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             .ok_or_else(|| {
                 anyhow!("phase8 financial envelope strategy forced exit order must be a TOML table")
             })?;
+        let price_to_beat_source = price_to_beat_source_from_target(&strategy.target)?;
         Ok(Self {
             max_live_order_count: live_canary.max_live_order_count,
             max_notional_per_order: live_canary.max_notional_per_order.clone(),
@@ -2142,13 +2400,11 @@ impl Phase8FinancialEnvelopeEvidenceFile {
             )?,
             underlying_asset: required_toml_string(target, stringify!(underlying_asset))?,
             cadence_secs: required_toml_integer(target, stringify!(cadence_secs))?,
+            cadence_slug_token: required_toml_string(target, stringify!(cadence_slug_token))?,
             market_selection_rule: required_toml_string(target, stringify!(market_selection_rule))?,
             retry_interval_secs: required_toml_integer(target, stringify!(retry_interval_secs))?,
             blocked_after_secs: required_toml_integer(target, stringify!(blocked_after_secs))?,
-            price_to_beat_source: required_toml_string(
-                runtime_parameters,
-                stringify!(price_to_beat_source),
-            )?,
+            price_to_beat_source,
             edge_threshold_basis_points: required_toml_integer(
                 parameters,
                 stringify!(edge_threshold_basis_points),
@@ -2321,7 +2577,7 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         })
     }
 
-    fn validate_matches(&self, loaded: &Self) -> Result<()> {
+    pub fn validate_matches(&self, loaded: &Self) -> Result<()> {
         if self.max_live_order_count != loaded.max_live_order_count {
             return Err(financial_envelope_mismatch(stringify!(
                 max_live_order_count
@@ -2361,6 +2617,9 @@ impl Phase8FinancialEnvelopeEvidenceFile {
         }
         if self.cadence_secs != loaded.cadence_secs {
             return Err(financial_envelope_mismatch(stringify!(cadence_secs)));
+        }
+        if self.cadence_slug_token != loaded.cadence_slug_token {
+            return Err(financial_envelope_mismatch(stringify!(cadence_slug_token)));
         }
         if self.market_selection_rule != loaded.market_selection_rule {
             return Err(financial_envelope_mismatch(stringify!(
@@ -2835,7 +3094,10 @@ impl Phase8PreRunStateEvidenceFile {
         Ok(artifact)
     }
 
-    fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
+    pub fn validate_matches_loaded(
+        &self,
+        loaded: &Phase8FinancialEnvelopeEvidenceFile,
+    ) -> Result<()> {
         if self.execution_client_id != loaded.execution_client_id {
             return Err(pre_run_state_mismatch(stringify!(execution_client_id)));
         }
@@ -2988,6 +3250,9 @@ pub struct Phase8AbortPlanSourceProofs<'a> {
 pub struct Phase8AbortPlanEvidenceFile {
     execution_client_id: String,
     configured_target_id: String,
+    source_collector_derived: bool,
+    strategy_source_sha256: String,
+    submit_admission_source_sha256: String,
     cancel_if_open_defined: bool,
     cancel_if_open_evidence_hash: String,
     nt_accepted_venue_pending_abort_defined: bool,
@@ -3005,9 +3270,39 @@ impl Phase8AbortPlanEvidenceFile {
         loaded: &Phase8FinancialEnvelopeEvidenceFile,
         proofs: Phase8AbortPlanSourceProofs<'_>,
     ) -> Result<Self> {
+        Self::from_financial_envelope_and_source_proofs_with_provenance(
+            loaded, proofs, false, "", "",
+        )
+    }
+
+    pub fn from_financial_envelope_and_collector_source_proofs(
+        loaded: &Phase8FinancialEnvelopeEvidenceFile,
+        proofs: Phase8AbortPlanSourceProofs<'_>,
+        strategy_source_sha256: &str,
+        submit_admission_source_sha256: &str,
+    ) -> Result<Self> {
+        Self::from_financial_envelope_and_source_proofs_with_provenance(
+            loaded,
+            proofs,
+            true,
+            strategy_source_sha256,
+            submit_admission_source_sha256,
+        )
+    }
+
+    fn from_financial_envelope_and_source_proofs_with_provenance(
+        loaded: &Phase8FinancialEnvelopeEvidenceFile,
+        proofs: Phase8AbortPlanSourceProofs<'_>,
+        source_collector_derived: bool,
+        strategy_source_sha256: &str,
+        submit_admission_source_sha256: &str,
+    ) -> Result<Self> {
         let artifact = Self {
             execution_client_id: loaded.execution_client_id.clone(),
             configured_target_id: loaded.configured_target_id.clone(),
+            source_collector_derived,
+            strategy_source_sha256: strategy_source_sha256.to_string(),
+            submit_admission_source_sha256: submit_admission_source_sha256.to_string(),
             cancel_if_open_defined: proofs.cancel_if_open_defined,
             cancel_if_open_evidence_hash: proofs.cancel_if_open_evidence_hash.to_string(),
             nt_accepted_venue_pending_abort_defined: proofs.nt_accepted_venue_pending_abort_defined,
@@ -3030,7 +3325,39 @@ impl Phase8AbortPlanEvidenceFile {
         Ok(artifact)
     }
 
-    fn validate_matches_loaded(&self, loaded: &Phase8FinancialEnvelopeEvidenceFile) -> Result<()> {
+    pub fn validate_collector_derived_matches_loaded(
+        &self,
+        loaded: &Phase8FinancialEnvelopeEvidenceFile,
+    ) -> Result<()> {
+        self.validate_matches_loaded(loaded)?;
+        if !self.source_collector_derived {
+            return Err(abort_plan_blocked(stringify!(source_collector_derived)));
+        }
+        require_abort_plan_sha256(
+            stringify!(strategy_source_sha256),
+            &self.strategy_source_sha256,
+        )?;
+        require_abort_plan_sha256(
+            stringify!(submit_admission_source_sha256),
+            &self.submit_admission_source_sha256,
+        )?;
+        if self.strategy_source_sha256 != expected_abort_plan_strategy_source_sha256() {
+            return Err(abort_plan_mismatch(stringify!(strategy_source_sha256)));
+        }
+        if self.submit_admission_source_sha256
+            != expected_abort_plan_submit_admission_source_sha256()
+        {
+            return Err(abort_plan_mismatch(stringify!(
+                submit_admission_source_sha256
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn validate_matches_loaded(
+        &self,
+        loaded: &Phase8FinancialEnvelopeEvidenceFile,
+    ) -> Result<()> {
         if self.execution_client_id != loaded.execution_client_id {
             return Err(abort_plan_mismatch(stringify!(execution_client_id)));
         }
@@ -3100,6 +3427,14 @@ fn abort_plan_mismatch(field: &'static str) -> anyhow::Error {
     anyhow!("phase8 abort plan `{field}` does not match loaded TOML")
 }
 
+fn expected_abort_plan_strategy_source_sha256() -> String {
+    sha256_text(include_str!("strategies/binary_oracle_edge_taker.rs"))
+}
+
+fn expected_abort_plan_submit_admission_source_sha256() -> String {
+    sha256_text(include_str!("bolt_v3_submit_admission.rs"))
+}
+
 fn abort_plan_blocked(field: &'static str) -> anyhow::Error {
     anyhow!("phase8 abort plan `{field}` is not defined")
 }
@@ -3113,6 +3448,48 @@ fn required_toml_string(
         .and_then(toml::Value::as_str)
         .map(ToString::to_string)
         .ok_or_else(|| anyhow!("phase8 financial envelope loaded TOML field `{field}` is missing"))
+}
+
+fn price_to_beat_source_from_target(target: &toml::Value) -> Result<String> {
+    let subscription = target
+        .as_table()
+        .and_then(|target| target.get("gate_subscriptions"))
+        .and_then(toml::Value::as_table)
+        .and_then(|subscriptions| subscriptions.get(RESOLUTION_GATE_ROLE))
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| {
+            anyhow!(
+                "phase8 financial envelope requires target.gate_subscriptions.{RESOLUTION_GATE_ROLE}"
+            )
+        })?;
+    let mapping = subscription
+        .get("market_mappings")
+        .and_then(toml::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(toml::Value::as_table)
+        .next()
+        .ok_or_else(|| {
+            anyhow!("phase8 financial envelope requires a target gate market mapping")
+        })?;
+    let resolution_kind = mapping
+        .get("resolution_kind")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow!("phase8 financial envelope target gate resolution_kind is missing")
+        })?;
+    let resolution_identity = mapping
+        .get("resolution_identity")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow!("phase8 financial envelope target gate resolution_identity is missing")
+        })?;
+    Ok(format!("{}.{}", resolution_kind, resolution_identity))
 }
 
 fn required_toml_nt_enum<T>(
@@ -3312,10 +3689,161 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        phase8_is_sha256_hex, phase8_resolve_configured_path, validate_phase8_env_path_value,
-        validate_phase8_sha256_env_value, validate_phase8_sha256_field,
+        Phase8CanaryBlockReason, Phase8StrategyInputEvidenceFile, Phase8StrategyInputSafetyAudit,
+        phase8_is_sha256_hex, phase8_resolve_configured_path, spend_phase8_approval_nonce,
+        validate_phase8_env_path_value, validate_phase8_sha256_env_value,
+        validate_phase8_sha256_field,
     };
+    use crate::bolt_v3_decision_evidence::BoltV3GateEvidenceIdentity;
+    use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
+
+    /// Config-derived price-to-beat source the operator approved. The runtime evidence file's
+    /// own `price_to_beat_source` must equal this for the canary to proceed.
+    const TEST_EXPECTED_PRICE_TO_BEAT_SOURCE: &str = "polymarket-clob-up";
+    /// A drifted runtime source that does NOT match the config-approved value above.
+    const TEST_DRIFTED_PRICE_TO_BEAT_SOURCE: &str = "stale-feed";
+    const TEST_SELECTED_MARKET_KEY: &str = "polymarket-binary-up-down-2026-05-30T00:00:00Z";
+    const TEST_GATE_SESSION_HASH: &str = "gate-session-hash-fixture";
+    const TEST_SHA256_HEX: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// Build a structurally valid `gate_evidence` map so
+    /// `phase8_strategy_input_readiness_identity_valid` returns `true`. This is the precise
+    /// precondition under which the (now-removed) self-comparison bug silently approved a
+    /// drifted price-to-beat source: only when readiness identity is valid did the buggy code
+    /// overwrite `expected_price_to_beat_source` with the file's own raw value.
+    fn valid_gate_evidence() -> BTreeMap<String, BoltV3GateEvidenceIdentity> {
+        let mut gate_evidence = BTreeMap::new();
+        gate_evidence.insert(
+            "resolution".to_string(),
+            BoltV3GateEvidenceIdentity {
+                satisfaction_kind: "evidence".to_string(),
+                selected_market_key: TEST_SELECTED_MARKET_KEY.to_string(),
+                provider_id: Some("polymarket-clob".to_string()),
+                provider_kind: Some("clob".to_string()),
+                value_kind: Some("price".to_string()),
+                normalized_value_sha256: Some(TEST_SHA256_HEX.to_string()),
+                provider_provenance_sha256: Some(TEST_SHA256_HEX.to_string()),
+                artifact_sha256s: vec![TEST_SHA256_HEX.to_string()],
+                resolution_identity: None,
+            },
+        );
+        gate_evidence
+    }
+
+    /// Build a fully-populated evidence file whose runtime `price_to_beat_source` is the caller's
+    /// choice and whose readiness identity is structurally valid (so the integrity check is the
+    /// only variable under test).
+    fn evidence_file_with_price_to_beat_source(
+        price_to_beat_source: &str,
+    ) -> Phase8StrategyInputEvidenceFile {
+        Phase8StrategyInputEvidenceFile {
+            strategy_instance_id: Some("strategy-instance-fixture".to_string()),
+            realized_volatility: "0.25".to_string(),
+            seconds_to_market_end: 3_600,
+            spot_price: "0.51".to_string(),
+            price_to_beat_value: "0.50".to_string(),
+            expected_edge_basis_points: "120".to_string(),
+            worst_case_edge_basis_points: "120".to_string(),
+            fee_rate_basis_points: "10".to_string(),
+            price_to_beat_source: price_to_beat_source.to_string(),
+            gate_session_hash: Some(TEST_GATE_SESSION_HASH.to_string()),
+            selected_market_key: Some(TEST_SELECTED_MARKET_KEY.to_string()),
+            gate_evidence: Some(valid_gate_evidence()),
+            reference_quote_ts_event: 1,
+            pricing_kurtosis: "0.5".to_string(),
+            theta_decay_factor: "0.1".to_string(),
+            theta_scaled_min_edge_bps: "30".to_string(),
+            market_selection_timestamp_ms: 1_700_000_001_000,
+            candidate_market_start_timestamps_ms: Some(vec![1_700_000_000_000]),
+            market_selection_source_path: None,
+            market_selection_source_sha256: None,
+            market_selection_outcome: "current".to_string(),
+            polymarket_condition_id: "condition-id".to_string(),
+            polymarket_market_slug: "market-slug".to_string(),
+            polymarket_question_id: "question-id".to_string(),
+            up_instrument_id: "up-instrument".to_string(),
+            down_instrument_id: "down-instrument".to_string(),
+            selected_market_observed_timestamp_ms: 1_700_000_001_000,
+            polymarket_market_start_timestamp_ms: 1_700_000_000_000,
+            polymarket_market_end_timestamp_ms: 1_700_000_900_000,
+        }
+    }
+
+    /// Regression guard for the price-to-beat self-comparison blocker. With a structurally valid
+    /// readiness identity and a runtime `price_to_beat_source` that has drifted away from the
+    /// config-approved value, the audit MUST be blocked with `UnsupportedPriceToBeatSource`. The
+    /// removed bug overwrote the config-derived expected source with the file's own raw value,
+    /// turning the config-vs-runtime equality check into a tautology that silently approved drift.
+    #[test]
+    fn drifted_price_to_beat_source_is_rejected_even_with_valid_readiness_identity() {
+        let raw = evidence_file_with_price_to_beat_source(TEST_DRIFTED_PRICE_TO_BEAT_SOURCE);
+
+        let audit = Phase8StrategyInputSafetyAudit::from_raw_evidence(
+            raw,
+            TEST_EXPECTED_PRICE_TO_BEAT_SOURCE,
+            None,
+        )
+        .expect("from_raw_evidence should parse a structurally valid evidence file");
+
+        assert!(
+            !audit.is_approved(),
+            "a drifted runtime price_to_beat_source must never be approved; \
+             block_reasons={:?}",
+            audit.block_reasons()
+        );
+        assert!(
+            audit
+                .block_reasons()
+                .contains(&Phase8CanaryBlockReason::UnsupportedPriceToBeatSource),
+            "config-vs-runtime price_to_beat_source drift must surface \
+             UnsupportedPriceToBeatSource; block_reasons={:?}",
+            audit.block_reasons()
+        );
+        assert!(
+            !audit
+                .block_reasons()
+                .contains(&Phase8CanaryBlockReason::DecisionEvidenceUnavailable),
+            "readiness identity is structurally valid in this fixture, so the rejection must come \
+             from the price-to-beat binding, not a degraded readiness identity; \
+             block_reasons={:?}",
+            audit.block_reasons()
+        );
+    }
+
+    /// Control arm: with the SAME structurally valid readiness identity, a runtime
+    /// `price_to_beat_source` that MATCHES the config-approved value must NOT trip
+    /// `UnsupportedPriceToBeatSource`. This proves the integrity check is genuinely comparing
+    /// config-vs-runtime (not always-fail) and isolates the drift signal in the test above.
+    #[test]
+    fn matching_price_to_beat_source_passes_the_integrity_check() {
+        let raw = evidence_file_with_price_to_beat_source(TEST_EXPECTED_PRICE_TO_BEAT_SOURCE);
+
+        let audit = Phase8StrategyInputSafetyAudit::from_raw_evidence(
+            raw,
+            TEST_EXPECTED_PRICE_TO_BEAT_SOURCE,
+            None,
+        )
+        .expect("from_raw_evidence should parse a structurally valid evidence file");
+
+        assert!(
+            !audit
+                .block_reasons()
+                .contains(&Phase8CanaryBlockReason::UnsupportedPriceToBeatSource),
+            "a matching config-vs-runtime price_to_beat_source must not trip the integrity check; \
+             block_reasons={:?}",
+            audit.block_reasons()
+        );
+        assert!(
+            !audit
+                .block_reasons()
+                .contains(&Phase8CanaryBlockReason::MissingPriceToBeatSource),
+            "a non-empty matching price_to_beat_source must not be flagged missing; \
+             block_reasons={:?}",
+            audit.block_reasons()
+        );
+    }
 
     #[test]
     fn phase8_sha256_shape_rejects_uppercase_hex() {
@@ -3371,5 +3899,30 @@ mod tests {
         );
 
         assert_eq!(resolved, PathBuf::from("reports/no-submit-readiness.json"));
+    }
+
+    #[test]
+    fn spend_phase8_approval_nonce_rewrites_the_nonce_so_old_sha_no_longer_matches() {
+        // After consume, spending the nonce must overwrite the nonce file so a deliberately
+        // deleted consumption marker cannot re-arm: validate_approval_nonce compares the
+        // approved sha against the on-disk file, which now differs (A1/A2).
+        let dir = std::env::temp_dir().join(format!("bolt-nonce-spend-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let nonce_path = dir.join("approval-nonce.json");
+        std::fs::write(&nonce_path, b"original-operator-nonce-material").expect("seed nonce");
+
+        spend_phase8_approval_nonce(
+            nonce_path.to_str().expect("utf8 path"),
+            "deadbeef".repeat(8).as_str(),
+            1_700_000_000,
+        )
+        .expect("spending the nonce should succeed");
+
+        let after = std::fs::read_to_string(&nonce_path).expect("read nonce");
+        assert_ne!(
+            after, "original-operator-nonce-material",
+            "spending must overwrite the nonce so the approved sha256 no longer matches"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

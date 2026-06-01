@@ -6,15 +6,14 @@
 
 pub mod updown;
 
-use std::{any::Any, fmt, sync::Arc};
+use std::{any::Any, collections::BTreeMap, fmt, sync::Arc};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
     bolt_v3_config::{LoadedBoltV3Config, LoadedStrategy},
-    bolt_v3_instrument_filters::{
-        InstrumentFilterConfig, InstrumentFilterError, InstrumentFilterTarget,
-    },
+    bolt_v3_instrument_filters::InstrumentFilterError,
 };
 use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
 
@@ -30,19 +29,23 @@ struct TargetFamilyDispatch {
     rotating_market_family: String,
 }
 
+/// Per-strategy market-identity projector signature. The parent
+/// dispatcher (`market_identity_plan_from_config_with_bindings`) reads
+/// each strategy's `target.rotating_market_family` first and routes only
+/// the matching strategies into this function; family bindings never see
+/// strategies from a different family, so a future non-updown strategy
+/// cannot fail inside the updown binding's typed deserialization.
+/// Returns a type-erased `MarketIdentityTarget` so the shared plan
+/// builder owns the single projection path and no family is dispatched by
+/// a hardcoded call.
+pub type PlanStrategyTargetFn =
+    fn(&LoadedStrategy) -> Result<Option<Arc<dyn MarketIdentityTarget>>, InstrumentFilterError>;
+
 #[derive(Clone)]
 pub struct MarketFamilyValidationBinding {
     pub key: &'static str,
     pub validate_target: fn(&str, &toml::Value) -> Vec<String>,
-    /// Per-strategy projector. The parent dispatcher
-    /// (`instrument_filters_from_config_with_bindings`) reads each
-    /// strategy's `target.rotating_market_family` first and routes only
-    /// the matching strategies into this function; family bindings
-    /// never see strategies from a different family, so a future
-    /// non-updown strategy cannot fail inside the updown binding's
-    /// typed deserialization.
-    pub instrument_filter_target_for_strategy:
-        fn(&LoadedStrategy) -> Result<Option<InstrumentFilterTarget>, InstrumentFilterError>,
+    pub plan_strategy_target: PlanStrategyTargetFn,
     pub target_runtime_fields:
         fn(&toml::Value) -> Result<TargetRuntimeFields, InstrumentFilterError>,
     pub select_binary_option_market:
@@ -52,6 +55,12 @@ pub struct MarketFamilyValidationBinding {
             MarketSelectionTarget<'_>,
             u64,
         ) -> Result<Vec<MarketSelectionCandidateWindow>, InstrumentFilterError>,
+    pub selected_market_requirement: fn(
+        &toml::Value,
+        &SelectedBinaryOptionMarket,
+        u64,
+    )
+        -> Result<SelectedMarketRequirement, InstrumentFilterError>,
     /// Family-owned fair-value model. The binary up/down pricing math
     /// is instrument-type-specific, so it lives at the family seam
     /// rather than inlined in a strategy. Returns the model's fair
@@ -103,6 +112,50 @@ pub struct SelectedMarketSourceIdentity {
     pub market_slug: String,
     pub question_id: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedMarketRequirement {
+    pub configured_target_id: String,
+    pub venue: String,
+    pub family_key: String,
+    pub market_id: String,
+    pub instrument_ids: Vec<String>,
+    pub market_class: String,
+    pub resolution_kind: String,
+    pub resolution_identity: String,
+    pub value_kind: String,
+    pub metadata_provenance_sha256: String,
+    pub selected_market_key: String,
+    pub selected_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SelectedMarketRequirementParts<'a> {
+    pub configured_target_id: &'a str,
+    pub venue: &'a str,
+    pub family_key: &'a str,
+    pub market_id: &'a str,
+    pub instrument_ids: Vec<String>,
+    pub market_class: &'a str,
+    pub resolution_kind: &'a str,
+    pub resolution_identity: &'a str,
+    pub value_kind: &'a str,
+    pub metadata_provenance_fields: BTreeMap<String, serde_json::Value>,
+    pub selected_at_ms: u64,
+}
+
+const SELECTED_MARKET_CONFIGURED_TARGET_ID_FIELD: &str = "configured_target_id";
+const SELECTED_MARKET_FAMILY_KEY_FIELD: &str = "family_key";
+const SELECTED_MARKET_INSTRUMENT_IDS_FIELD: &str = "instrument_ids";
+const SELECTED_MARKET_MARKET_CLASS_FIELD: &str = "market_class";
+const SELECTED_MARKET_MARKET_ID_FIELD: &str = "market_id";
+const SELECTED_MARKET_METADATA_PROVENANCE_FIELD: &str = "metadata_provenance";
+const SELECTED_MARKET_METADATA_PROVENANCE_KEY_FIELD: &str = "metadata_provenance key";
+const SELECTED_MARKET_METADATA_PROVENANCE_SHA256_FIELD: &str = "metadata_provenance_sha256";
+const SELECTED_MARKET_RESOLUTION_IDENTITY_FIELD: &str = "resolution_identity";
+const SELECTED_MARKET_RESOLUTION_KIND_FIELD: &str = "resolution_kind";
+const SELECTED_MARKET_VALUE_KIND_FIELD: &str = "value_kind";
+const SELECTED_MARKET_VENUE_FIELD: &str = "venue";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarketSelectionOutcome {
@@ -182,6 +235,10 @@ impl MarketIdentityPlan {
         self.targets.push(Arc::new(target));
     }
 
+    pub fn push_arc_target(&mut self, target: Arc<dyn MarketIdentityTarget>) {
+        self.targets.push(target);
+    }
+
     pub fn targets(&self) -> impl Iterator<Item = &dyn MarketIdentityTarget> {
         self.targets.iter().map(Arc::as_ref)
     }
@@ -201,10 +258,11 @@ impl MarketIdentityPlan {
 const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[MarketFamilyValidationBinding {
     key: updown::KEY,
     validate_target: updown::validate_target_block,
-    instrument_filter_target_for_strategy: updown::instrument_filter_target_for_strategy,
+    plan_strategy_target: updown::plan_strategy_target,
     target_runtime_fields: updown::target_runtime_fields,
     select_binary_option_market: updown::select_binary_option_market,
     market_selection_candidate_windows: updown::market_selection_candidate_windows,
+    selected_market_requirement: updown::selected_market_requirement,
     fair_probability_up: updown::fair_probability_up,
 }];
 
@@ -215,21 +273,21 @@ pub fn validation_bindings() -> &'static [MarketFamilyValidationBinding] {
 pub fn market_identity_plan_from_config(
     loaded: &LoadedBoltV3Config,
 ) -> Result<MarketIdentityPlan, MarketIdentityPlanError> {
-    updown::plan_market_identity(loaded)
+    market_identity_plan_from_config_with_bindings(loaded, validation_bindings())
         .map_err(|error| MarketIdentityPlanError::new(error.to_string()))
 }
 
-pub fn instrument_filters_from_config(
-    loaded: &LoadedBoltV3Config,
-) -> Result<InstrumentFilterConfig, InstrumentFilterError> {
-    instrument_filters_from_config_with_bindings(loaded, validation_bindings())
-}
-
-pub fn instrument_filters_from_config_with_bindings(
+/// Build the market-identity plan by routing every configured strategy
+/// through the family registry. Each strategy's
+/// `target.rotating_market_family` selects the binding that owns its
+/// projection, so no family is dispatched by a hardcoded call and an
+/// unknown family fails loud as `UnsupportedFamily` (the same fail-loud
+/// policy the sibling target dispatchers use).
+pub fn market_identity_plan_from_config_with_bindings(
     loaded: &LoadedBoltV3Config,
     bindings: &[MarketFamilyValidationBinding],
-) -> Result<InstrumentFilterConfig, InstrumentFilterError> {
-    let mut targets = Vec::new();
+) -> Result<MarketIdentityPlan, InstrumentFilterError> {
+    let mut plan = MarketIdentityPlan::empty();
     for strategy in &loaded.strategies {
         let dispatch: TargetFamilyDispatch =
             strategy.config.target.clone().try_into().map_err(|error| {
@@ -249,11 +307,11 @@ pub fn instrument_filters_from_config_with_bindings(
                 family_key: dispatch.rotating_market_family.clone(),
                 supported: bindings.iter().map(|b| b.key).collect(),
             })?;
-        if let Some(target) = (binding.instrument_filter_target_for_strategy)(strategy)? {
-            targets.push(target);
+        if let Some(target) = (binding.plan_strategy_target)(strategy)? {
+            plan.push_arc_target(target);
         }
     }
-    Ok(InstrumentFilterConfig::new(targets))
+    Ok(plan)
 }
 
 pub fn target_runtime_fields_from_target(
@@ -303,12 +361,23 @@ pub fn select_binary_option_market_from_target_with_bindings(
     now_milliseconds: u64,
     bindings: &[MarketFamilyValidationBinding],
 ) -> Option<SelectedBinaryOptionMarket> {
-    bindings
+    // An unknown `family_key` must never reach here: startup validation (P5-10) rejects
+    // an unregistered `rotating_market_family` at config load. If it somehow does, fail
+    // LOUD — an `error!` an operator can see — rather than a silent `None` that is
+    // indistinguishable from "no market this cycle" and masks the broken invariant
+    // (P5-3). The signature stays `Option` so the live-money strategy/operator selection
+    // chain is not refactored to `Result` for a branch that cannot be reached.
+    let Some(binding) = bindings
         .iter()
         .find(|binding| binding.key == target.family_key)
-        .and_then(|binding| {
-            (binding.select_binary_option_market)(target, instruments, now_milliseconds)
-        })
+    else {
+        log::error!(
+            "bolt-v3 market selection: no registered family binding for `{}` (config validation should have rejected this before runtime); selecting no market",
+            target.family_key
+        );
+        return None;
+    };
+    (binding.select_binary_option_market)(target, instruments, now_milliseconds)
 }
 
 pub fn fair_probability_up_for_family(
@@ -356,36 +425,229 @@ pub fn market_selection_candidate_windows_from_target_with_bindings(
         .and_then(|binding| (binding.market_selection_candidate_windows)(target, now_milliseconds))
 }
 
-impl From<updown::BoltV3InstrumentFilterError> for InstrumentFilterError {
-    fn from(error: updown::BoltV3InstrumentFilterError) -> Self {
-        match error {
-            updown::BoltV3InstrumentFilterError::NonPositiveCadenceSeconds {
-                strategy_instance_id,
-                configured_target_id,
-                cadence_seconds,
-            } => Self::NonPositiveCadenceSeconds {
-                strategy_instance_id,
-                configured_target_id,
-                cadence_seconds,
-            },
-            updown::BoltV3InstrumentFilterError::NegativeNowUnixSeconds { now_unix_seconds } => {
-                Self::NegativeNowUnixSeconds { now_unix_seconds }
-            }
-            updown::BoltV3InstrumentFilterError::PeriodPairOverflow {
-                now_unix_seconds,
-                cadence_seconds,
-            } => Self::PeriodPairOverflow {
-                now_unix_seconds,
-                cadence_seconds,
-            },
-            updown::BoltV3InstrumentFilterError::TargetParseFailed {
-                strategy_instance_id,
-                message,
-            } => Self::TargetParseFailed {
-                strategy_instance_id,
-                message,
-            },
+pub fn selected_market_requirement_from_target(
+    target: &toml::Value,
+    selected: &SelectedBinaryOptionMarket,
+    selected_at_ms: u64,
+) -> Result<SelectedMarketRequirement, InstrumentFilterError> {
+    selected_market_requirement_from_target_with_bindings(
+        target,
+        selected,
+        selected_at_ms,
+        validation_bindings(),
+    )
+}
+
+pub fn selected_market_requirement_from_target_with_bindings(
+    target: &toml::Value,
+    selected: &SelectedBinaryOptionMarket,
+    selected_at_ms: u64,
+    bindings: &[MarketFamilyValidationBinding],
+) -> Result<SelectedMarketRequirement, InstrumentFilterError> {
+    let dispatch: TargetFamilyDispatch =
+        target
+            .clone()
+            .try_into()
+            .map_err(|error| InstrumentFilterError::Other {
+                message: format!("target: {error}"),
+            })?;
+    bindings
+        .iter()
+        .find(|binding| binding.key == dispatch.rotating_market_family)
+        .ok_or_else(|| InstrumentFilterError::UnsupportedFamily {
+            context: None,
+            family_key: dispatch.rotating_market_family.clone(),
+            supported: bindings.iter().map(|b| b.key).collect(),
+        })
+        .and_then(|binding| (binding.selected_market_requirement)(target, selected, selected_at_ms))
+}
+
+pub(crate) fn selected_market_metadata_provenance_fields<I, K, V>(
+    fields: I,
+) -> BTreeMap<String, serde_json::Value>
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: Into<String>,
+    V: Into<String>,
+{
+    fields
+        .into_iter()
+        .map(|(key, value)| (key.into(), serde_json::Value::String(value.into())))
+        .collect()
+}
+
+pub(crate) fn selected_market_requirement_from_parts(
+    parts: SelectedMarketRequirementParts<'_>,
+) -> Result<SelectedMarketRequirement, InstrumentFilterError> {
+    ensure_selected_market_text(
+        SELECTED_MARKET_CONFIGURED_TARGET_ID_FIELD,
+        parts.configured_target_id,
+        false,
+    )?;
+    ensure_selected_market_text(SELECTED_MARKET_VENUE_FIELD, parts.venue, false)?;
+    ensure_selected_market_text(SELECTED_MARKET_FAMILY_KEY_FIELD, parts.family_key, false)?;
+    ensure_selected_market_text(SELECTED_MARKET_MARKET_ID_FIELD, parts.market_id, false)?;
+    ensure_selected_market_text(
+        SELECTED_MARKET_MARKET_CLASS_FIELD,
+        parts.market_class,
+        false,
+    )?;
+    ensure_selected_market_text(
+        SELECTED_MARKET_RESOLUTION_KIND_FIELD,
+        parts.resolution_kind,
+        false,
+    )?;
+    ensure_selected_market_text(
+        SELECTED_MARKET_RESOLUTION_IDENTITY_FIELD,
+        parts.resolution_identity,
+        false,
+    )?;
+    ensure_selected_market_text(SELECTED_MARKET_VALUE_KIND_FIELD, parts.value_kind, false)?;
+    if parts.instrument_ids.is_empty() {
+        return Err(selected_market_requirement_error(
+            "selected-market instrument_ids must not be empty",
+        ));
+    }
+    let mut previous_instrument_id = None;
+    for instrument_id in &parts.instrument_ids {
+        if let Some(previous) = previous_instrument_id
+            && previous >= instrument_id
+        {
+            return Err(selected_market_requirement_error(
+                "selected-market instrument_ids must be sorted and unique",
+            ));
         }
+        ensure_selected_market_text(SELECTED_MARKET_INSTRUMENT_IDS_FIELD, instrument_id, false)?;
+        previous_instrument_id = Some(instrument_id);
+    }
+    for (key, value) in &parts.metadata_provenance_fields {
+        ensure_selected_market_text(SELECTED_MARKET_METADATA_PROVENANCE_KEY_FIELD, key, false)?;
+        ensure_selected_market_json_text(SELECTED_MARKET_METADATA_PROVENANCE_FIELD, value)?;
+    }
+
+    let metadata_provenance_sha256 = canonical_json_sha256(&parts.metadata_provenance_fields)?;
+    let mut requirement = SelectedMarketRequirement {
+        configured_target_id: parts.configured_target_id.to_string(),
+        venue: parts.venue.to_string(),
+        family_key: parts.family_key.to_string(),
+        market_id: parts.market_id.to_string(),
+        instrument_ids: parts.instrument_ids,
+        market_class: parts.market_class.to_string(),
+        resolution_kind: parts.resolution_kind.to_string(),
+        resolution_identity: parts.resolution_identity.to_string(),
+        value_kind: parts.value_kind.to_string(),
+        metadata_provenance_sha256,
+        selected_market_key: String::new(),
+        selected_at_ms: parts.selected_at_ms,
+    };
+    requirement.selected_market_key = selected_market_key_for_requirement(&requirement)?;
+    Ok(requirement)
+}
+
+pub(crate) fn selected_market_key_for_requirement(
+    requirement: &SelectedMarketRequirement,
+) -> Result<String, InstrumentFilterError> {
+    let input = BTreeMap::from([
+        (
+            SELECTED_MARKET_CONFIGURED_TARGET_ID_FIELD.to_string(),
+            serde_json::json!(requirement.configured_target_id),
+        ),
+        (
+            SELECTED_MARKET_FAMILY_KEY_FIELD.to_string(),
+            serde_json::json!(requirement.family_key),
+        ),
+        (
+            SELECTED_MARKET_INSTRUMENT_IDS_FIELD.to_string(),
+            serde_json::json!(requirement.instrument_ids),
+        ),
+        (
+            SELECTED_MARKET_MARKET_CLASS_FIELD.to_string(),
+            serde_json::json!(requirement.market_class),
+        ),
+        (
+            SELECTED_MARKET_MARKET_ID_FIELD.to_string(),
+            serde_json::json!(requirement.market_id),
+        ),
+        (
+            SELECTED_MARKET_METADATA_PROVENANCE_SHA256_FIELD.to_string(),
+            serde_json::json!(requirement.metadata_provenance_sha256),
+        ),
+        (
+            SELECTED_MARKET_RESOLUTION_IDENTITY_FIELD.to_string(),
+            serde_json::json!(requirement.resolution_identity),
+        ),
+        (
+            SELECTED_MARKET_RESOLUTION_KIND_FIELD.to_string(),
+            serde_json::json!(requirement.resolution_kind),
+        ),
+        (
+            SELECTED_MARKET_VALUE_KIND_FIELD.to_string(),
+            serde_json::json!(requirement.value_kind),
+        ),
+        (
+            SELECTED_MARKET_VENUE_FIELD.to_string(),
+            serde_json::json!(requirement.venue),
+        ),
+    ]);
+    canonical_json_sha256(&input)
+}
+
+pub(crate) fn canonical_json_sha256<T>(value: &T) -> Result<String, InstrumentFilterError>
+where
+    T: Serialize,
+{
+    let bytes = serde_json::to_vec(value).map_err(|error| InstrumentFilterError::Other {
+        message: format!("selected-market canonical JSON serialization failed: {error}"),
+    })?;
+    Ok(hex::encode(Sha256::digest(&bytes)))
+}
+
+fn ensure_selected_market_json_text(
+    field: &'static str,
+    value: &serde_json::Value,
+) -> Result<(), InstrumentFilterError> {
+    match value {
+        serde_json::Value::String(text) => ensure_selected_market_text(field, text, false),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                ensure_selected_market_json_text(field, item)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(map) => {
+            for (key, nested) in map {
+                ensure_selected_market_text(field, key, false)?;
+                ensure_selected_market_json_text(field, nested)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn ensure_selected_market_text(
+    field: &'static str,
+    value: &str,
+    allow_empty: bool,
+) -> Result<(), InstrumentFilterError> {
+    if !allow_empty && value.is_empty() {
+        return Err(selected_market_requirement_error(format!(
+            "selected-market {field} must not be empty"
+        )));
+    }
+    if value.contains('|') {
+        return Err(selected_market_requirement_error(format!(
+            "selected-market {field} must not contain `|`"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn selected_market_requirement_error(
+    message: impl Into<String>,
+) -> InstrumentFilterError {
+    InstrumentFilterError::TargetValidationFailure {
+        message: message.into(),
     }
 }
 
@@ -447,16 +709,17 @@ mod tests {
         &[MarketFamilyValidationBinding {
             key: "fixture_family",
             validate_target: fake_validate_target,
-            instrument_filter_target_for_strategy: fake_instrument_filter_target_for_strategy,
+            plan_strategy_target: fake_plan_strategy_target,
             target_runtime_fields: fake_target_runtime_fields,
             select_binary_option_market: fake_select_binary_option_market,
             market_selection_candidate_windows: fake_market_selection_candidate_windows,
+            selected_market_requirement: fake_selected_market_requirement,
             fair_probability_up: fake_fair_probability_up,
         }];
 
-    fn fake_instrument_filter_target_for_strategy(
+    fn fake_plan_strategy_target(
         strategy: &LoadedStrategy,
-    ) -> Result<Option<InstrumentFilterTarget>, InstrumentFilterError> {
+    ) -> Result<Option<Arc<dyn MarketIdentityTarget>>, InstrumentFilterError> {
         Err(InstrumentFilterError::Other {
             message: format!(
                 "fixture_family binding invoked for strategy `{}`",
@@ -478,7 +741,11 @@ mod tests {
         _instruments: &[InstrumentAny],
         _now_milliseconds: u64,
     ) -> Option<SelectedBinaryOptionMarket> {
-        Some(SelectedBinaryOptionMarket {
+        Some(fake_selected_binary_option_market())
+    }
+
+    fn fake_selected_binary_option_market() -> SelectedBinaryOptionMarket {
+        SelectedBinaryOptionMarket {
             market_id: "fixture-market".to_string(),
             instrument_id: InstrumentId::from("fixture-market.FIXTURE"),
             up_instrument_id: InstrumentId::from("fixture-up.FIXTURE"),
@@ -492,7 +759,64 @@ mod tests {
                 market_slug: "fixture-market".to_string(),
                 question_id: "fixture-question".to_string(),
             },
+        }
+    }
+
+    fn fake_selected_market_requirement(
+        _target: &toml::Value,
+        selected: &SelectedBinaryOptionMarket,
+        selected_at_ms: u64,
+    ) -> Result<SelectedMarketRequirement, InstrumentFilterError> {
+        selected_market_requirement_from_parts(SelectedMarketRequirementParts {
+            configured_target_id: "fixture-target",
+            venue: "FIXTURE",
+            family_key: "fixture_family",
+            market_id: selected.market_id.as_str(),
+            instrument_ids: vec![
+                selected.down_instrument_id.to_string(),
+                selected.up_instrument_id.to_string(),
+            ],
+            market_class: "fixture_market",
+            resolution_kind: "fixture_resolution",
+            resolution_identity: "fixture-resolution-1",
+            value_kind: "fixture_value",
+            metadata_provenance_fields: selected_market_metadata_provenance_fields([
+                ("family_key", "fixture_family"),
+                ("market_class", "fixture_market"),
+                ("market_id", selected.market_id.as_str()),
+                ("source_kind", "fixture_metadata"),
+                ("venue", "FIXTURE"),
+            ]),
+            selected_at_ms,
         })
+    }
+
+    fn fixture_requirement_parts(
+        market_id: &'static str,
+        selected_at_ms: u64,
+    ) -> SelectedMarketRequirementParts<'static> {
+        SelectedMarketRequirementParts {
+            configured_target_id: "target-a",
+            venue: "FIXTURE",
+            family_key: "fixture_family",
+            market_id,
+            instrument_ids: vec![
+                "fixture-down.FIXTURE".to_string(),
+                "fixture-up.FIXTURE".to_string(),
+            ],
+            market_class: "fixture_market",
+            resolution_kind: "fixture_resolution",
+            resolution_identity: "fixture-resolution-1",
+            value_kind: "fixture_value",
+            metadata_provenance_fields: selected_market_metadata_provenance_fields([
+                ("family_key", "fixture_family"),
+                ("market_class", "fixture_market"),
+                ("market_id", market_id),
+                ("source_kind", "fixture_metadata"),
+                ("venue", "FIXTURE"),
+            ]),
+            selected_at_ms,
+        }
     }
 
     fn fake_market_selection_candidate_windows(
@@ -593,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn instrument_filters_use_injected_family_binding_without_parent_family_branch() {
+    fn market_identity_plan_uses_injected_family_binding_without_parent_family_branch() {
         let mut loaded = fixture_loaded_config();
         loaded
             .strategies
@@ -602,8 +926,9 @@ mod tests {
         // Production registry has only updown; a fixture_family
         // strategy must be rejected as UnsupportedFamily, not silently
         // dispatched to updown.
-        let production_error = instrument_filters_from_config(&loaded)
-            .expect_err("production registry must reject unknown family");
+        let production_error =
+            market_identity_plan_from_config_with_bindings(&loaded, validation_bindings())
+                .expect_err("production registry must reject unknown family");
         match &production_error {
             InstrumentFilterError::UnsupportedFamily { family_key, .. } => {
                 assert_eq!(family_key, "fixture_family");
@@ -615,7 +940,7 @@ mod tests {
         // strategy and returns its own error, proving the per-strategy
         // dispatcher routes by `target.rotating_market_family`.
         let injected_error =
-            instrument_filters_from_config_with_bindings(&loaded, FAKE_FAMILY_BINDINGS)
+            market_identity_plan_from_config_with_bindings(&loaded, FAKE_FAMILY_BINDINGS)
                 .expect_err("fake binding should own this dispatch and return its error");
         assert_eq!(
             injected_error.to_string(),
@@ -627,7 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn instrument_filters_dispatch_routes_each_strategy_to_its_family_binding() {
+    fn market_identity_plan_dispatch_routes_each_strategy_to_its_family_binding() {
         // Two strategies, one updown and one fixture_family. The
         // per-strategy dispatcher must read each strategy's
         // `target.rotating_market_family` and call only the matching
@@ -651,7 +976,7 @@ mod tests {
         // The dispatcher must surface that error, proving the fake
         // strategy was routed to the fake binding and not to updown.
         let dispatch_error =
-            instrument_filters_from_config_with_bindings(&loaded, &combined_bindings)
+            market_identity_plan_from_config_with_bindings(&loaded, &combined_bindings)
                 .expect_err("fake binding must reject the fixture_family strategy");
         match &dispatch_error {
             InstrumentFilterError::Other { message } => {
@@ -670,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn instrument_filters_dispatcher_rejects_strategy_with_missing_family_discriminator() {
+    fn market_identity_plan_dispatcher_rejects_strategy_with_missing_family_discriminator() {
         // The parent dispatcher reads `target.rotating_market_family`
         // from each strategy's raw TOML before routing to a family
         // binding. If the discriminator field is absent, the dispatcher
@@ -683,7 +1008,7 @@ mod tests {
             .push(fixture_strategy_without_family_discriminator());
         let strategy_id = loaded.strategies[0].config.strategy_instance_id.clone();
 
-        match instrument_filters_from_config(&loaded) {
+        match market_identity_plan_from_config_with_bindings(&loaded, validation_bindings()) {
             Err(InstrumentFilterError::TargetParseFailed {
                 strategy_instance_id,
                 message,
@@ -782,110 +1107,161 @@ mod tests {
     }
 
     #[test]
-    fn from_internal_preserves_typed_non_positive_cadence_seconds() {
-        let internal = updown::BoltV3InstrumentFilterError::NonPositiveCadenceSeconds {
-            strategy_instance_id: Some("alpha".to_string()),
-            configured_target_id: Some("target_a".to_string()),
-            cadence_seconds: -1,
-        };
-
-        let public: InstrumentFilterError = internal.into();
-
-        match public {
-            InstrumentFilterError::NonPositiveCadenceSeconds {
-                strategy_instance_id,
-                configured_target_id,
-                cadence_seconds,
-            } => {
-                assert_eq!(strategy_instance_id.as_deref(), Some("alpha"));
-                assert_eq!(configured_target_id.as_deref(), Some("target_a"));
-                assert_eq!(cadence_seconds, -1);
-            }
-            other => panic!("expected NonPositiveCadenceSeconds, got {other:?}"),
+    fn selected_market_requirement_uses_injected_family_binding_without_parent_family_branch() {
+        let target = toml::toml! {
+            configured_target_id = "fixture-target"
+            rotating_market_family = "fixture_family"
         }
+        .into();
+        let selected = fake_selected_binary_option_market();
+
+        let production_error = selected_market_requirement_from_target(&target, &selected, 123)
+            .expect_err("production registry should not know the test family");
+        assert!(
+            production_error
+                .to_string()
+                .contains("not supported by this build"),
+            "production registry should not know the test family: {production_error}"
+        );
+
+        let requirement = selected_market_requirement_from_target_with_bindings(
+            &target,
+            &selected,
+            123,
+            FAKE_FAMILY_BINDINGS,
+        )
+        .expect("injected family binding should own requirement extraction");
+
+        assert_eq!(requirement.configured_target_id, "fixture-target");
+        assert_eq!(requirement.family_key, "fixture_family");
+        assert_eq!(requirement.selected_at_ms, 123);
+        assert_eq!(
+            requirement.instrument_ids,
+            vec!["fixture-down.FIXTURE", "fixture-up.FIXTURE"]
+        );
     }
 
     #[test]
-    fn display_for_non_positive_cadence_seconds_preserves_internal_operator_message() {
-        let strategy_instance_id = Some("alpha".to_string());
-        let configured_target_id = Some("target_a".to_string());
-        let cadence_seconds = -1;
+    fn selected_market_key_excludes_selected_at_and_tracks_identity_fields() {
+        let first = selected_market_requirement_from_parts(fixture_requirement_parts(
+            "fixture-market",
+            123,
+        ))
+        .expect("fixture requirement should build");
+        let later = selected_market_requirement_from_parts(fixture_requirement_parts(
+            "fixture-market",
+            456,
+        ))
+        .expect("later fixture requirement should build");
+        assert_eq!(first.selected_market_key, later.selected_market_key);
 
-        let public = InstrumentFilterError::NonPositiveCadenceSeconds {
-            strategy_instance_id: strategy_instance_id.clone(),
-            configured_target_id: configured_target_id.clone(),
-            cadence_seconds,
-        };
-        let internal = updown::BoltV3InstrumentFilterError::NonPositiveCadenceSeconds {
-            strategy_instance_id,
-            configured_target_id,
-            cadence_seconds,
-        };
-        assert_eq!(public.to_string(), internal.to_string());
+        let changed = selected_market_requirement_from_parts(fixture_requirement_parts(
+            "fixture-market-2",
+            123,
+        ))
+        .expect("changed fixture requirement should build");
+        assert_ne!(first.selected_market_key, changed.selected_market_key);
     }
 
     #[test]
-    fn from_internal_preserves_typed_negative_now_unix_seconds() {
-        let internal = updown::BoltV3InstrumentFilterError::NegativeNowUnixSeconds {
-            now_unix_seconds: -42,
-        };
-        let internal_message = internal.to_string();
+    fn selected_market_requirement_rejects_unsorted_or_duplicate_instrument_ids() {
+        let mut unsorted = fixture_requirement_parts("fixture-market", 123);
+        unsorted.instrument_ids = vec![
+            "fixture-up.FIXTURE".to_string(),
+            "fixture-down.FIXTURE".to_string(),
+        ];
+        let error = selected_market_requirement_from_parts(unsorted)
+            .expect_err("unsorted instrument ids should fail closed");
+        assert!(
+            error.to_string().contains("sorted and unique"),
+            "expected sorted ids rejection, got: {error}"
+        );
 
-        let public: InstrumentFilterError = internal.into();
-
-        match &public {
-            InstrumentFilterError::NegativeNowUnixSeconds { now_unix_seconds } => {
-                assert_eq!(*now_unix_seconds, -42);
-            }
-            other => panic!("expected NegativeNowUnixSeconds, got {other:?}"),
-        }
-        assert_eq!(public.to_string(), internal_message);
+        let mut duplicate = fixture_requirement_parts("fixture-market", 123);
+        duplicate.instrument_ids = vec![
+            "fixture-up.FIXTURE".to_string(),
+            "fixture-up.FIXTURE".to_string(),
+        ];
+        let error = selected_market_requirement_from_parts(duplicate)
+            .expect_err("duplicate instrument ids should fail closed");
+        assert!(
+            error.to_string().contains("sorted and unique"),
+            "expected unique ids rejection, got: {error}"
+        );
     }
 
     #[test]
-    fn from_internal_preserves_typed_period_pair_overflow() {
-        let internal = updown::BoltV3InstrumentFilterError::PeriodPairOverflow {
-            now_unix_seconds: i64::MAX,
-            cadence_seconds: 60,
-        };
-        let internal_message = internal.to_string();
+    fn selected_market_requirement_rejects_empty_metadata_provenance_strings() {
+        let mut parts = fixture_requirement_parts("fixture-market", 123);
+        parts.metadata_provenance_fields = selected_market_metadata_provenance_fields([
+            ("family_key", "fixture_family"),
+            ("source_kind", ""),
+        ]);
 
-        let public: InstrumentFilterError = internal.into();
-
-        match &public {
-            InstrumentFilterError::PeriodPairOverflow {
-                now_unix_seconds,
-                cadence_seconds,
-            } => {
-                assert_eq!(*now_unix_seconds, i64::MAX);
-                assert_eq!(*cadence_seconds, 60);
-            }
-            other => panic!("expected PeriodPairOverflow, got {other:?}"),
-        }
-        assert_eq!(public.to_string(), internal_message);
+        let error = selected_market_requirement_from_parts(parts)
+            .expect_err("empty provenance string should fail closed");
+        assert!(
+            error.to_string().contains("metadata_provenance"),
+            "expected provenance string rejection, got: {error}"
+        );
     }
 
     #[test]
-    fn from_internal_preserves_typed_target_parse_failed() {
-        let internal = updown::BoltV3InstrumentFilterError::TargetParseFailed {
-            strategy_instance_id: "alpha".to_string(),
-            message: "missing field `cadence_seconds`".to_string(),
-        };
-        let internal_message = internal.to_string();
+    fn selected_market_key_uses_lexicographically_sorted_canonical_json() {
+        use std::collections::BTreeMap;
 
-        let public: InstrumentFilterError = internal.into();
+        let requirement = selected_market_requirement_from_parts(fixture_requirement_parts(
+            "fixture-market",
+            123,
+        ))
+        .expect("fixture requirement should build");
 
-        match &public {
-            InstrumentFilterError::TargetParseFailed {
-                strategy_instance_id,
-                message,
-            } => {
-                assert_eq!(strategy_instance_id, "alpha");
-                assert_eq!(message, "missing field `cadence_seconds`");
-            }
-            other => panic!("expected TargetParseFailed, got {other:?}"),
-        }
-        assert_eq!(public.to_string(), internal_message);
+        let expected_input = BTreeMap::from([
+            (
+                SELECTED_MARKET_CONFIGURED_TARGET_ID_FIELD.to_string(),
+                serde_json::json!("target-a"),
+            ),
+            (
+                SELECTED_MARKET_FAMILY_KEY_FIELD.to_string(),
+                serde_json::json!("fixture_family"),
+            ),
+            (
+                SELECTED_MARKET_INSTRUMENT_IDS_FIELD.to_string(),
+                serde_json::json!(["fixture-down.FIXTURE", "fixture-up.FIXTURE"]),
+            ),
+            (
+                SELECTED_MARKET_MARKET_CLASS_FIELD.to_string(),
+                serde_json::json!("fixture_market"),
+            ),
+            (
+                SELECTED_MARKET_MARKET_ID_FIELD.to_string(),
+                serde_json::json!("fixture-market"),
+            ),
+            (
+                SELECTED_MARKET_METADATA_PROVENANCE_SHA256_FIELD.to_string(),
+                serde_json::json!(requirement.metadata_provenance_sha256),
+            ),
+            (
+                SELECTED_MARKET_RESOLUTION_IDENTITY_FIELD.to_string(),
+                serde_json::json!("fixture-resolution-1"),
+            ),
+            (
+                SELECTED_MARKET_RESOLUTION_KIND_FIELD.to_string(),
+                serde_json::json!("fixture_resolution"),
+            ),
+            (
+                SELECTED_MARKET_VALUE_KIND_FIELD.to_string(),
+                serde_json::json!("fixture_value"),
+            ),
+            (
+                SELECTED_MARKET_VENUE_FIELD.to_string(),
+                serde_json::json!("FIXTURE"),
+            ),
+        ]);
+        assert_eq!(
+            requirement.selected_market_key,
+            canonical_json_sha256(&expected_input).expect("canonical BTreeMap should hash")
+        );
     }
 
     #[test]
@@ -894,8 +1270,9 @@ mod tests {
             configured_target_id = "fixture-target"
             kind = "rotating_market"
             rotating_market_family = "updown"
-            underlying_asset = "BTC"
+            underlying_asset = "CONFIGURED_ASSET"
             cadence_secs = -1
+            cadence_slug_token = "configuredwindow"
             market_selection_rule = "active_or_next"
             retry_interval_secs = 1
             blocked_after_secs = 1

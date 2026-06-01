@@ -81,8 +81,8 @@ default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
 bypass = false
-max_order_submit_rate = "100/00:00:01"
-max_order_modify_rate = "100/00:00:01"
+max_order_submit_rate = "40/00:01:00"
+max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
 graceful_shutdown_on_error = false
@@ -107,6 +107,29 @@ rotation_kind = "none"
 
 [aws]
 region = "eu-west-1"
+
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value", "reference_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 18
 
 [clients.polymarket_main]
 venue = "POLYMARKET"
@@ -148,18 +171,3 @@ private_key_ssm_path = "/bolt/polymarket_main/private_key"
 api_key_ssm_path = "/bolt/polymarket_main/api_key"
 api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
 passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
-
-[clients.binance_reference]
-venue = "BINANCE"
-
-[clients.binance_reference.data]
-product_types = ["spot"]
-environment = "mainnet"
-base_url_http = "https://api.binance.com" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http
-base_url_ws = "wss://stream-sbe.binance.com/ws" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws
-instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs
-transport_backend = "sockudo"
-
-[clients.binance_reference.secrets]
-api_key_ssm_path = "/bolt/binance_reference/api_key"
-api_secret_ssm_path = "/bolt/binance_reference/api_secret"

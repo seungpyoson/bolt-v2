@@ -24,7 +24,17 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.report_at_boundary";
+const PHASE8_TEST_PRICE_TO_BEAT_SOURCE: &str = "chainlink_data_streams.configured-reference-price";
+const PHASE8_TEST_GATE_SESSION_HASH: &str =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const PHASE8_TEST_SELECTED_MARKET_KEY: &str =
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const PHASE8_TEST_GATE_NORMALIZED_VALUE_HASH: &str =
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const PHASE8_TEST_GATE_PROVIDER_PROVENANCE_HASH: &str =
+    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+const PHASE8_TEST_GATE_ARTIFACT_HASH: &str =
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const PHASE8_TEST_APPROVAL_ENVELOPE_SHA256: &str =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 fn phase8_required_operator_artifact_terms() -> [&'static str; 24] {
@@ -79,11 +89,11 @@ fn write_current_market_selection_source(
             "market_selection_timestamp_ms": 1234567890_u64,
             "candidate_market_start_timestamps_ms": [1234567000_u64],
             "market_selection_outcome": "current",
-            "polymarket_condition_id": "condition-1",
-            "polymarket_market_slug": "btc-updown-5m",
-            "polymarket_question_id": "question-1",
-            "up_instrument_id": "condition-1-UP.POLYMARKET",
-            "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+            "polymarket_condition_id": "configured-condition",
+            "polymarket_market_slug": "configured-asset-updown-configuredwindow",
+            "polymarket_question_id": "configured-question",
+            "up_instrument_id": "configured-condition-UP.POLYMARKET",
+            "down_instrument_id": "configured-condition-DOWN.POLYMARKET",
             "selected_market_observed_timestamp_ms": 1234567890_u64,
             "polymarket_market_start_timestamp_ms": 1234567000_u64,
             "polymarket_market_end_timestamp_ms": 1234867000_u64
@@ -107,6 +117,20 @@ fn current_strategy_input_evidence_json(
         "worst_case_edge_basis_points": "12.5",
         "fee_rate_basis_points": "0",
         "price_to_beat_source": price_to_beat_source,
+        "gate_session_hash": PHASE8_TEST_GATE_SESSION_HASH,
+        "selected_market_key": PHASE8_TEST_SELECTED_MARKET_KEY,
+        "gate_evidence": {
+            "resolution": {
+                "satisfaction_kind": "evidence",
+                "selected_market_key": PHASE8_TEST_SELECTED_MARKET_KEY,
+                "provider_id": "chainlink_main",
+                "provider_kind": "chainlink_data_streams",
+                "value_kind": "scalar_price",
+                "normalized_value_sha256": PHASE8_TEST_GATE_NORMALIZED_VALUE_HASH,
+                "provider_provenance_sha256": PHASE8_TEST_GATE_PROVIDER_PROVENANCE_HASH,
+                "artifact_sha256s": [PHASE8_TEST_GATE_ARTIFACT_HASH]
+            }
+        },
         "reference_quote_ts_event": 1234567890_u64,
         "pricing_kurtosis": "0",
         "theta_decay_factor": "0",
@@ -115,15 +139,24 @@ fn current_strategy_input_evidence_json(
         "market_selection_source_path": market_selection_source_path.to_string_lossy(),
         "market_selection_source_sha256": market_selection_source_sha256,
         "market_selection_outcome": "current",
-        "polymarket_condition_id": "condition-1",
-        "polymarket_market_slug": "btc-updown-5m",
-        "polymarket_question_id": "question-1",
-        "up_instrument_id": "condition-1-UP.POLYMARKET",
-        "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+        "polymarket_condition_id": "configured-condition",
+        "polymarket_market_slug": "configured-asset-updown-configuredwindow",
+        "polymarket_question_id": "configured-question",
+        "up_instrument_id": "configured-condition-UP.POLYMARKET",
+        "down_instrument_id": "configured-condition-DOWN.POLYMARKET",
         "selected_market_observed_timestamp_ms": 1234567890_u64,
         "polymarket_market_start_timestamp_ms": 1234567000_u64,
         "polymarket_market_end_timestamp_ms": 1234867000_u64
     })
+}
+
+fn remove_strategy_input_readiness_identity(value: &mut Value) {
+    let object = value
+        .as_object_mut()
+        .expect("strategy input evidence should be a JSON object");
+    object.remove("gate_session_hash");
+    object.remove("selected_market_key");
+    object.remove("gate_evidence");
 }
 
 fn write_current_strategy_input_evidence(
@@ -268,6 +301,7 @@ async fn preflight_blocks_strategy_input_safety_audit_before_build() {
     write_satisfied_no_submit_readiness_report(&report_path);
     let mut loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
     bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
+    seal_loaded_no_submit_readiness_report_for_pre_consumption(&mut loaded, &report_path);
 
     let report = evaluate_phase8_canary_preflight(
         &loaded,
@@ -298,6 +332,7 @@ async fn preflight_blocks_live_order_count_above_one_before_build() {
     write_satisfied_no_submit_readiness_report(&report_path);
     let mut loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
     bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
+    seal_loaded_no_submit_readiness_report_for_pre_consumption(&mut loaded, &report_path);
     loaded
         .root
         .live_canary
@@ -401,14 +436,14 @@ fn strategy_audit_blocks_zero_time_to_market_end() {
 }
 
 #[test]
-fn strategy_audit_binds_price_to_beat_source_to_approved_source() {
+fn strategy_audit_uses_normalized_readiness_identity_not_price_source_string() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("strategy-input.json");
     let (source_path, source_hash) =
         write_current_market_selection_source(temp.path()).expect("source should write");
     write_current_strategy_input_evidence(
         &evidence_path,
-        "operator_configured_source",
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
         &source_path,
         &source_hash,
     )
@@ -419,21 +454,32 @@ fn strategy_audit_binds_price_to_beat_source_to_approved_source() {
     let approved = Phase8StrategyInputSafetyAudit::from_evidence_file(
         &evidence_path,
         &evidence_hash,
-        "operator_configured_source",
-    )
-    .expect("matching configured price source should audit");
-    assert!(approved.is_approved());
-
-    let blocked = Phase8StrategyInputSafetyAudit::from_evidence_file(
-        &evidence_path,
-        &evidence_hash,
         PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
     )
-    .expect("mismatched configured price source should still produce an audit");
+    .expect("readiness identity should audit without legacy price-source equality");
+    assert!(approved.is_approved());
+
+    let mut source_string_only = current_strategy_input_evidence_json(
+        PHASE8_TEST_PRICE_TO_BEAT_SOURCE,
+        &source_path,
+        &source_hash,
+    );
+    remove_strategy_input_readiness_identity(&mut source_string_only);
+    std::fs::write(
+        &evidence_path,
+        serde_json::to_vec(&source_string_only)
+            .expect("source-string-only evidence should serialize"),
+    )
+    .expect("source-string-only evidence should write");
+    let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
+        .expect("strategy evidence should hash");
+
+    let blocked = strategy_audit_from_evidence_file(&evidence_path, &evidence_hash)
+        .expect("source-string-only evidence should still parse into a blocked audit");
     assert!(
         blocked
             .block_reasons()
-            .contains(&Phase8CanaryBlockReason::UnsupportedPriceToBeatSource)
+            .contains(&Phase8CanaryBlockReason::DecisionEvidenceUnavailable)
     );
 }
 
@@ -530,7 +576,7 @@ fn strategy_audit_blocks_non_positive_spot_or_price_to_beat_evidence() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -548,7 +594,7 @@ fn strategy_audit_blocks_non_positive_spot_or_price_to_beat_evidence() {
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -571,7 +617,7 @@ fn strategy_audit_blocks_invalid_edge_or_fee_metrics() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"0","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"0","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -589,7 +635,7 @@ fn strategy_audit_blocks_invalid_edge_or_fee_metrics() {
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"0","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"0","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -607,7 +653,7 @@ fn strategy_audit_blocks_invalid_edge_or_fee_metrics() {
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"11.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"11.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -625,7 +671,7 @@ fn strategy_audit_blocks_invalid_edge_or_fee_metrics() {
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"-0.1","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"-0.1","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -648,7 +694,7 @@ fn strategy_audit_blocks_non_positive_theta_scaled_min_edge() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"-1","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"-1","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -671,7 +717,7 @@ fn strategy_audit_blocks_missing_source_or_reference_timestamp() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -689,7 +735,7 @@ fn strategy_audit_blocks_missing_source_or_reference_timestamp() {
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"manual","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"manual","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -707,7 +753,7 @@ fn strategy_audit_blocks_missing_source_or_reference_timestamp() {
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":0,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":0,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -730,7 +776,7 @@ fn strategy_audit_blocks_invalid_kurtosis_or_theta_inputs() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"-6","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"-6","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -748,7 +794,7 @@ fn strategy_audit_blocks_invalid_kurtosis_or_theta_inputs() {
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"-0.1","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"-0.1","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -771,7 +817,7 @@ fn strategy_audit_blocks_missing_selected_market_identity_or_window() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -789,7 +835,7 @@ fn strategy_audit_blocks_missing_selected_market_identity_or_window() {
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234567000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234567000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -812,7 +858,7 @@ fn strategy_audit_blocks_missing_market_selection_timestamp() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":0,"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":0,"market_selection_outcome":"next","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -835,7 +881,7 @@ fn strategy_audit_requires_nearest_next_market_selection() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"candidate_market_start_timestamps_ms":[1234667000,1234767000],"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234767000,"polymarket_market_end_timestamp_ms":1235067000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"candidate_market_start_timestamps_ms":[1234667000,1234767000],"market_selection_outcome":"next","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234767000,"polymarket_market_end_timestamp_ms":1235067000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -860,11 +906,11 @@ fn strategy_audit_requires_nearest_next_market_selection() {
             "market_selection_timestamp_ms": 1234567890_u64,
             "candidate_market_start_timestamps_ms": [1234667000_u64, 1234767000_u64],
             "market_selection_outcome": "next",
-            "polymarket_condition_id": "condition-1",
-            "polymarket_market_slug": "btc-updown-5m",
-            "polymarket_question_id": "question-1",
-            "up_instrument_id": "condition-1-UP.POLYMARKET",
-            "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+            "polymarket_condition_id": "configured-condition",
+            "polymarket_market_slug": "configured-asset-updown-configuredwindow",
+            "polymarket_question_id": "configured-question",
+            "up_instrument_id": "configured-condition-UP.POLYMARKET",
+            "down_instrument_id": "configured-condition-DOWN.POLYMARKET",
             "selected_market_observed_timestamp_ms": 1234567890_u64,
             "polymarket_market_start_timestamp_ms": 1234667000_u64,
             "polymarket_market_end_timestamp_ms": 1234967000_u64
@@ -885,7 +931,21 @@ fn strategy_audit_requires_nearest_next_market_selection() {
             "expected_edge_basis_points": "12.5",
             "worst_case_edge_basis_points": "12.5",
             "fee_rate_basis_points": "0",
-            "price_to_beat_source": "chainlink_data_streams.report_at_boundary",
+            "price_to_beat_source": "chainlink_data_streams.configured-reference-price",
+            "gate_session_hash": PHASE8_TEST_GATE_SESSION_HASH,
+            "selected_market_key": PHASE8_TEST_SELECTED_MARKET_KEY,
+            "gate_evidence": {
+                "resolution": {
+                    "satisfaction_kind": "evidence",
+                    "selected_market_key": PHASE8_TEST_SELECTED_MARKET_KEY,
+                    "provider_id": "chainlink_main",
+                    "provider_kind": "chainlink_data_streams",
+                    "value_kind": "scalar_price",
+                    "normalized_value_sha256": PHASE8_TEST_GATE_NORMALIZED_VALUE_HASH,
+                    "provider_provenance_sha256": PHASE8_TEST_GATE_PROVIDER_PROVENANCE_HASH,
+                    "artifact_sha256s": [PHASE8_TEST_GATE_ARTIFACT_HASH]
+                }
+            },
             "reference_quote_ts_event": 1234567890_u64,
             "pricing_kurtosis": "0",
             "theta_decay_factor": "0",
@@ -895,11 +955,11 @@ fn strategy_audit_requires_nearest_next_market_selection() {
             "market_selection_source_path": market_selection_source_path.to_string_lossy(),
             "market_selection_source_sha256": market_selection_source_hash,
             "market_selection_outcome": "next",
-            "polymarket_condition_id": "condition-1",
-            "polymarket_market_slug": "btc-updown-5m",
-            "polymarket_question_id": "question-1",
-            "up_instrument_id": "condition-1-UP.POLYMARKET",
-            "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+            "polymarket_condition_id": "configured-condition",
+            "polymarket_market_slug": "configured-asset-updown-configuredwindow",
+            "polymarket_question_id": "configured-question",
+            "up_instrument_id": "configured-condition-UP.POLYMARKET",
+            "down_instrument_id": "configured-condition-DOWN.POLYMARKET",
             "selected_market_observed_timestamp_ms": 1234567890_u64,
             "polymarket_market_start_timestamp_ms": 1234667000_u64,
             "polymarket_market_end_timestamp_ms": 1234967000_u64
@@ -922,7 +982,7 @@ fn strategy_audit_requires_source_bound_current_market_selection() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -945,7 +1005,7 @@ fn strategy_audit_rejects_next_market_without_source_bound_candidates() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"candidate_market_start_timestamps_ms":[1234767000],"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234767000,"polymarket_market_end_timestamp_ms":1235067000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"candidate_market_start_timestamps_ms":[1234767000],"market_selection_outcome":"next","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234767000,"polymarket_market_end_timestamp_ms":1235067000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -974,11 +1034,11 @@ fn strategy_audit_rejects_next_market_candidate_list_truncated_from_source() {
             "market_selection_timestamp_ms": 1234567890_u64,
             "candidate_market_start_timestamps_ms": [1234667000_u64, 1234767000_u64],
             "market_selection_outcome": "next",
-            "polymarket_condition_id": "condition-1",
-            "polymarket_market_slug": "btc-updown-5m",
-            "polymarket_question_id": "question-1",
-            "up_instrument_id": "condition-1-UP.POLYMARKET",
-            "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+            "polymarket_condition_id": "configured-condition",
+            "polymarket_market_slug": "configured-asset-updown-configuredwindow",
+            "polymarket_question_id": "configured-question",
+            "up_instrument_id": "configured-condition-UP.POLYMARKET",
+            "down_instrument_id": "configured-condition-DOWN.POLYMARKET",
             "selected_market_observed_timestamp_ms": 1234567890_u64,
             "polymarket_market_start_timestamp_ms": 1234767000_u64,
             "polymarket_market_end_timestamp_ms": 1235067000_u64
@@ -1000,7 +1060,7 @@ fn strategy_audit_rejects_next_market_candidate_list_truncated_from_source() {
             "expected_edge_basis_points": "12.5",
             "worst_case_edge_basis_points": "12.5",
             "fee_rate_basis_points": "0",
-            "price_to_beat_source": "chainlink_data_streams.report_at_boundary",
+            "price_to_beat_source": "chainlink_data_streams.configured-reference-price",
             "reference_quote_ts_event": 1234567890_u64,
             "pricing_kurtosis": "0",
             "theta_decay_factor": "0",
@@ -1010,11 +1070,11 @@ fn strategy_audit_rejects_next_market_candidate_list_truncated_from_source() {
             "market_selection_source_path": market_selection_source_path.to_string_lossy(),
             "market_selection_source_sha256": market_selection_source_hash,
             "market_selection_outcome": "next",
-            "polymarket_condition_id": "condition-1",
-            "polymarket_market_slug": "btc-updown-5m",
-            "polymarket_question_id": "question-1",
-            "up_instrument_id": "condition-1-UP.POLYMARKET",
-            "down_instrument_id": "condition-1-DOWN.POLYMARKET",
+            "polymarket_condition_id": "configured-condition",
+            "polymarket_market_slug": "configured-asset-updown-configuredwindow",
+            "polymarket_question_id": "configured-question",
+            "up_instrument_id": "configured-condition-UP.POLYMARKET",
+            "down_instrument_id": "configured-condition-DOWN.POLYMARKET",
             "selected_market_observed_timestamp_ms": 1234567890_u64,
             "polymarket_market_start_timestamp_ms": 1234767000_u64,
             "polymarket_market_end_timestamp_ms": 1235067000_u64
@@ -1042,7 +1102,7 @@ fn strategy_audit_blocks_invalid_market_selection_outcome() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"failed","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"failed","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -1070,7 +1130,7 @@ fn strategy_audit_blocks_market_selection_window_mismatch() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1235000000,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1235000000,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -1088,7 +1148,7 @@ fn strategy_audit_blocks_market_selection_window_mismatch() {
 
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"next","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"next","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -1111,7 +1171,7 @@ fn strategy_audit_rejects_unknown_input_evidence_fields() {
     let evidence_path = temp.path().join("strategy-input-evidence.json");
     std::fs::write(
         &evidence_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000,"unreviewed_override":"accepted"}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000,"unreviewed_override":"accepted"}"#,
     )
     .expect("strategy input evidence should write");
     let evidence_hash = Phase8OperatorApprovalEnvelope::sha256_file(&evidence_path)
@@ -1154,7 +1214,7 @@ fn strategy_audit_rejects_input_evidence_hash_mismatch() {
     let evidence_path = temp.path().join("strategy-input-evidence.json");
     std::fs::write(
         &evidence_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
 
@@ -1968,7 +2028,7 @@ fn operator_approval_envelope_consumes_time_bound_nonce_once() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -2202,6 +2262,13 @@ async fn operator_approval_consumption_writer_output_is_accepted_by_live_gate() 
         .expect("operator evidence should exist");
     operator_evidence.approval_consumption_path =
         approval_consumption_path.to_string_lossy().to_string();
+    // Seal the genuine readiness-report hash into the operator evidence +
+    // envelope before the producer reads `approval_envelope_sha256`: the report
+    // binding is mandatory on the production (proof-disabled) path too.
+    support::seal_no_submit_readiness_report_into_pre_consumption_operator_evidence(
+        operator_evidence,
+        &report_path,
+    );
 
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: operator_evidence.head_sha.clone(),
@@ -2238,6 +2305,99 @@ async fn operator_approval_consumption_writer_output_is_accepted_by_live_gate() 
     check_bolt_v3_live_canary_gate(&loaded)
         .await
         .expect("live gate should accept writer-created approval consumption proof");
+}
+
+#[test]
+fn operator_approval_consumption_spends_nonce_before_marker_so_deletion_cannot_rearm() {
+    // A1/A2 crash-atomicity (Codex P4): consume spends the one-shot nonce FIRST and durably, then
+    // writes the consumption marker. So once the marker exists the nonce is already spent, and
+    // deleting the marker — the operator-window removal / host tmp-cleanup re-arm vector — cannot
+    // restore the approved nonce. The pre-consumption nonce check (which compares the on-disk nonce
+    // hash against the approved `approval_nonce_sha256`) therefore stays failed closed.
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let report_path = temp.path().join("no-submit-readiness.json");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+    write_satisfied_no_submit_readiness_report(&report_path);
+
+    let mut loaded = loaded_with_live_canary(&report_path.to_string_lossy());
+    let root_toml_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(&loaded.root_path)
+        .expect("root TOML hash should compute");
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("operator evidence should exist");
+    operator_evidence.approval_consumption_path =
+        approval_consumption_path.to_string_lossy().to_string();
+
+    let envelope = Phase8OperatorApprovalEnvelope {
+        head_sha: operator_evidence.head_sha.clone(),
+        root_toml_path: loaded.root_path.to_string_lossy().to_string(),
+        root_toml_sha256,
+        approval_envelope_sha256: operator_evidence.approval_envelope_sha256.clone(),
+        ssm_manifest_path: operator_evidence.ssm_manifest_path.clone(),
+        ssm_manifest_sha256: operator_evidence.ssm_manifest_sha256.clone(),
+        strategy_input_evidence_path: operator_evidence.strategy_input_evidence_path.clone(),
+        strategy_input_evidence_sha256: operator_evidence.strategy_input_evidence_sha256.clone(),
+        financial_envelope_path: operator_evidence.financial_envelope_path.clone(),
+        financial_envelope_sha256: operator_evidence.financial_envelope_sha256.clone(),
+        pre_run_state_path: operator_evidence.pre_run_state_path.clone(),
+        pre_run_state_sha256: operator_evidence.pre_run_state_sha256.clone(),
+        abort_plan_path: operator_evidence.abort_plan_path.clone(),
+        abort_plan_sha256: operator_evidence.abort_plan_sha256.clone(),
+        operator_approval_id: "operator-approved-canary-001".to_string(),
+        approval_not_before_unix_secs: operator_evidence.approval_not_before_unix_seconds,
+        approval_not_after_unix_secs: operator_evidence.approval_not_after_unix_seconds,
+        approval_nonce_path: operator_evidence.approval_nonce_path.clone(),
+        approval_nonce_sha256: operator_evidence.approval_nonce_sha256.clone(),
+        approval_consumption_path: operator_evidence.approval_consumption_path.clone(),
+        canary_evidence_path: operator_evidence.canary_evidence_path.clone(),
+        strategy_cancel_path: operator_evidence.strategy_cancel_path.clone(),
+    };
+
+    let approved_nonce_sha256 = envelope.approval_nonce_sha256.clone();
+    let nonce_path = std::path::PathBuf::from(&envelope.approval_nonce_path);
+    assert_eq!(
+        Phase8OperatorApprovalEnvelope::sha256_file(&nonce_path)
+            .expect("nonce hash before consume"),
+        approved_nonce_sha256,
+        "fixture nonce must hash to the approved sha before consume",
+    );
+
+    envelope
+        .consume_approval_after_live_runner_entry_validation(
+            &loaded,
+            current_unix_seconds_for_test() as i64,
+        )
+        .expect("consume should persist the spent nonce and the consumption marker");
+
+    // Post-consume end state: marker present AND nonce already spent (spend ran first, durably).
+    assert!(
+        approval_consumption_path.exists(),
+        "consume must write the consumption marker",
+    );
+    assert_ne!(
+        Phase8OperatorApprovalEnvelope::sha256_file(&nonce_path).expect("nonce hash after consume"),
+        approved_nonce_sha256,
+        "consume must spend the nonce so it no longer hashes to the approved sha",
+    );
+
+    // Re-arm attempt: delete the consumption marker.
+    std::fs::remove_file(&approval_consumption_path).expect("remove consumption marker");
+    assert!(
+        !approval_consumption_path.exists(),
+        "marker should be deleted for the re-arm attempt",
+    );
+
+    // The nonce stays spent after marker deletion: the pre-consumption nonce check cannot match the
+    // approved sha, so the one-time approval can never re-arm.
+    assert_ne!(
+        Phase8OperatorApprovalEnvelope::sha256_file(&nonce_path)
+            .expect("nonce hash after marker deletion"),
+        approved_nonce_sha256,
+        "deleting the marker must not restore the approved nonce — re-arm must be impossible",
+    );
 }
 
 #[test]
@@ -2338,7 +2498,7 @@ fn operator_approval_envelope_verifies_ssm_manifest_hash() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -2405,7 +2565,7 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -2458,6 +2618,17 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
     );
 }
 
+/// Write a fresh un-spent Phase-8 operator-approval nonce to `path`. Consuming an approval SPENDS
+/// the one-shot nonce (A1/A2 durable one-time) by overwriting the file, so a test that consumes the
+/// same approval more than once must restore a fresh nonce before each successful consume.
+fn write_fresh_phase8_approval_nonce(path: &std::path::Path) {
+    std::fs::write(
+        path,
+        r#"{"record_kind":"phase8_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+    )
+    .expect("approval nonce should write");
+}
+
 #[test]
 fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -2472,7 +2643,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -2491,14 +2662,15 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         serde_json::to_vec(&serde_json::json!({
             "max_live_order_count": 1,
             "max_notional_per_order": "5.00",
-            "strategy_instance_id": "bitcoin_updown_main",
+            "strategy_instance_id": "configured_updown_main",
             "oms_type": approved_oms_type,
             "execution_client_id": "polymarket_main",
-            "configured_target_id": "btc_updown_5m",
+            "configured_target_id": "configured_updown_target",
             "target_kind": "rotating_market",
             "rotating_market_family": "updown",
-            "underlying_asset": "BTC",
+            "underlying_asset": "CONFIGURED_ASSET",
             "cadence_secs": 300,
+            "cadence_slug_token": "configuredwindow",
             "market_selection_rule": "active_or_next",
             "retry_interval_secs": 5,
             "blocked_after_secs": 60,
@@ -2791,16 +2963,24 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     );
 
     let mut mismatched_price_source_loaded = loaded.clone();
-    let runtime_parameters = mismatched_price_source_loaded.strategies[0]
+    let target = mismatched_price_source_loaded.strategies[0]
         .config
-        .parameters
+        .target
         .as_table_mut()
-        .and_then(|parameters| parameters.get_mut("runtime"))
+        .expect("strategy target should be a TOML table");
+    let gate_mapping = target
+        .get_mut("gate_subscriptions")
         .and_then(toml::Value::as_table_mut)
-        .expect("strategy runtime parameters should be a TOML table");
-    runtime_parameters.insert(
-        "price_to_beat_source".to_string(),
-        toml::Value::String("operator_configured_source".to_string()),
+        .and_then(|subscriptions| subscriptions.get_mut("resolution"))
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|resolution| resolution.get_mut("market_mappings"))
+        .and_then(toml::Value::as_array_mut)
+        .and_then(|mappings| mappings.first_mut())
+        .and_then(toml::Value::as_table_mut)
+        .expect("strategy target should include a resolution gate mapping");
+    gate_mapping.insert(
+        "resolution_identity".to_string(),
+        toml::Value::String("operator-configured-source".to_string()),
     );
     let mismatched_price_source_error = envelope
         .validate_and_consume_against(
@@ -3044,7 +3224,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "entry_order",
             "trigger_instrument_id",
             "entry_trigger_instrument_id",
-            toml::Value::String("ETHUSDT.BINANCE".to_string()),
+            toml::Value::String("TRIGGER.SOURCE".to_string()),
         ),
         (
             "entry_order",
@@ -3086,7 +3266,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "exit_order",
             "trigger_instrument_id",
             "exit_trigger_instrument_id",
-            toml::Value::String("ETHUSDT.BINANCE".to_string()),
+            toml::Value::String("TRIGGER.SOURCE".to_string()),
         ),
         (
             "exit_order",
@@ -3128,7 +3308,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
             "forced_exit_order",
             "trigger_instrument_id",
             "forced_exit_trigger_instrument_id",
-            toml::Value::String("ETHUSDT.BINANCE".to_string()),
+            toml::Value::String("TRIGGER.SOURCE".to_string()),
         ),
         (
             "forced_exit_order",
@@ -3277,6 +3457,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         &mut uppercase_oms_loaded,
         &uppercase_oms_consumption_path,
     );
+    write_fresh_phase8_approval_nonce(&approval_nonce_path);
     uppercase_oms_envelope
         .validate_and_consume_against(
             "expected-head",
@@ -3389,6 +3570,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         &mut uppercase_order_enums_loaded,
         &uppercase_order_enums_consumption_path,
     );
+    write_fresh_phase8_approval_nonce(&approval_nonce_path);
     uppercase_order_enums_envelope
         .validate_and_consume_against(
             "expected-head",
@@ -3472,6 +3654,10 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         &mut uppercase_order_enums_loaded,
         &uppercase_loaded_order_enums_consumption_path,
     );
+    // The previous canonicalization sub-case consumed (and therefore SPENT) the
+    // one-time approval nonce; re-arm a fresh approved nonce so this independent
+    // loaded-order-enum canonicalization case can consume in turn.
+    write_fresh_phase8_approval_nonce(&approval_nonce_path);
     uppercase_loaded_order_enums_envelope
         .validate_and_consume_against(
             "expected-head",
@@ -3629,6 +3815,9 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         &mut multi_strategy_loaded,
         &multi_strategy_consumption_path,
     );
+    // Each successful consume spends the one-time nonce; re-arm a fresh approved
+    // nonce before this positive multi-strategy binding case.
+    write_fresh_phase8_approval_nonce(&approval_nonce_path);
     multi_strategy_envelope
         .validate_and_consume_against(
             "expected-head",
@@ -3647,6 +3836,8 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     std::fs::remove_file(&multi_strategy_consumption_path)
         .expect("multi-strategy consumption evidence should remove");
 
+    // Re-arm before the final positive consume (the previous case spent the nonce).
+    write_fresh_phase8_approval_nonce(&approval_nonce_path);
     envelope
         .validate_and_consume_against(
             "expected-head",
@@ -3676,7 +3867,7 @@ fn operator_approval_envelope_verifies_pre_run_state_hash_and_required_clearance
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -3834,7 +4025,7 @@ fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -3847,7 +4038,7 @@ fn operator_approval_envelope_rejects_pre_run_state_without_artifact_hashes() {
     let pre_run_state_path = temp.path().join("phase8-pre-run-state.json");
     let pre_run_json = serde_json::json!({
         "execution_client_id": "polymarket_main",
-        "configured_target_id": "btc_updown_5m",
+        "configured_target_id": "configured_updown_target",
         "host_clock_skew_within_bound": true,
         "conflicting_open_orders_absent": true,
         "preexisting_position_absent": true,
@@ -3942,7 +4133,7 @@ fn operator_approval_envelope_verifies_abort_plan_hash_and_required_paths() {
     let strategy_input_path = temp.path().join("phase8-strategy-input-evidence.json");
     std::fs::write(
         &strategy_input_path,
-        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.report_at_boundary","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"condition-1","polymarket_market_slug":"btc-updown-5m","polymarket_question_id":"question-1","up_instrument_id":"condition-1-UP.POLYMARKET","down_instrument_id":"condition-1-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
+        r#"{"realized_volatility":"2.5","seconds_to_market_end":300,"spot_price":"100000.0","price_to_beat_value":"100000.0","expected_edge_basis_points":"12.5","worst_case_edge_basis_points":"12.5","fee_rate_basis_points":"0","price_to_beat_source":"chainlink_data_streams.configured-reference-price","reference_quote_ts_event":1234567890,"pricing_kurtosis":"0","theta_decay_factor":"0","theta_scaled_min_edge_bps":"12.5","market_selection_timestamp_ms":1234567890,"market_selection_outcome":"current","polymarket_condition_id":"configured-condition","polymarket_market_slug":"configured-asset-updown-configuredwindow","polymarket_question_id":"configured-question","up_instrument_id":"configured-condition-UP.POLYMARKET","down_instrument_id":"configured-condition-DOWN.POLYMARKET","selected_market_observed_timestamp_ms":1234567890,"polymarket_market_start_timestamp_ms":1234567000,"polymarket_market_end_timestamp_ms":1234867000}"#,
     )
     .expect("strategy input evidence should write");
     let strategy_input_hash = Phase8OperatorApprovalEnvelope::sha256_file(&strategy_input_path)
@@ -4071,6 +4262,10 @@ fn loaded_with_live_canary(report_path: &str) -> LoadedBoltV3Config {
         reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
         reference_quote_probe_log_events: true,
         reference_quote_probe_log_commands: true,
+        egress_identity_observed_path: None,
+        egress_identity_observed_max_bytes: None,
+        approved_egress_identity_sha256: None,
+        proof_policy: None,
         operator_evidence: Some(support::valid_live_canary_operator_evidence()),
         max_live_order_count: 1,
         max_notional_per_order: "0.25".to_string(),
@@ -4089,6 +4284,22 @@ fn bind_loaded_approval_consumption_path(
         .and_then(|live_canary| live_canary.operator_evidence.as_mut())
         .expect("live canary operator evidence should exist")
         .approval_consumption_path = approval_consumption_path.to_string_lossy().to_string();
+}
+
+fn seal_loaded_no_submit_readiness_report_for_pre_consumption(
+    loaded: &mut LoadedBoltV3Config,
+    report_path: &Path,
+) {
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("live canary operator evidence should exist");
+    support::seal_no_submit_readiness_report_into_pre_consumption_operator_evidence(
+        operator_evidence,
+        report_path,
+    );
 }
 
 fn live_canary_strategy_cancel_path(loaded: &LoadedBoltV3Config) -> Option<String> {
@@ -4182,14 +4393,15 @@ fn write_phase8_financial_envelope(path: &std::path::Path, max_notional_per_orde
     let json = serde_json::json!({
         "max_live_order_count": 1,
         "max_notional_per_order": max_notional_per_order,
-        "strategy_instance_id": "bitcoin_updown_main",
+        "strategy_instance_id": "configured_updown_main",
         "oms_type": approved_oms_type,
         "execution_client_id": "polymarket_main",
-        "configured_target_id": "btc_updown_5m",
+        "configured_target_id": "configured_updown_target",
         "target_kind": "rotating_market",
         "rotating_market_family": "updown",
-        "underlying_asset": "BTC",
+        "underlying_asset": "CONFIGURED_ASSET",
         "cadence_secs": 300,
+        "cadence_slug_token": "configuredwindow",
         "market_selection_rule": "active_or_next",
         "retry_interval_secs": 5,
         "blocked_after_secs": 60,
@@ -4239,7 +4451,7 @@ fn write_phase8_pre_run_state_with_clob_fee_behavior(
     let evidence_hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let json = serde_json::json!({
         "execution_client_id": "polymarket_main",
-        "configured_target_id": "btc_updown_5m",
+        "configured_target_id": "configured_updown_target",
         "host_clock_skew_within_bound": true,
         "host_clock_skew_evidence_hash": evidence_hash,
         "conflicting_open_orders_absent": true,
@@ -4274,7 +4486,10 @@ fn write_phase8_pre_run_state_with_clob_fee_behavior(
 fn write_phase8_abort_plan(path: &std::path::Path, panic_policy_missing: bool) {
     let json = serde_json::json!({
         "execution_client_id": "polymarket_main",
-        "configured_target_id": "btc_updown_5m",
+        "configured_target_id": "configured_updown_target",
+        "source_collector_derived": true,
+        "strategy_source_sha256": sha256_text_for_test(include_str!("../src/strategies/binary_oracle_edge_taker.rs")),
+        "submit_admission_source_sha256": sha256_text_for_test(include_str!("../src/bolt_v3_submit_admission.rs")),
         "cancel_if_open_defined": true,
         "cancel_if_open_evidence_hash": sha256_text_for_test("cancel-if-open-proof"),
         "nt_accepted_venue_pending_abort_defined": true,

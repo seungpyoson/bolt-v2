@@ -1,6 +1,6 @@
 mod support;
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::Result;
 use bolt_v2::{
@@ -9,9 +9,9 @@ use bolt_v2::{
         BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
         BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
         BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
-        BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
-        BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
-        decision_evidence_path, read_latest_entry_decision_evidence_chain,
+        BoltV3DecisionEvidenceWriter, BoltV3GateEvidenceIdentity, BoltV3OrderIntentEvidence,
+        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitIntentKind, decision_evidence_path, read_latest_entry_decision_evidence_chain,
     },
     strategies::registry::FeeProvider,
     strategies::registry::StrategyBuildContext,
@@ -205,11 +205,70 @@ fn latest_entry_decision_evidence_chain_rejects_cross_record_field_mismatches() 
     }
 }
 
+#[test]
+fn latest_entry_decision_evidence_chain_rejects_missing_readiness_gate_identity() {
+    type DecisionEvidenceMutation = fn(&mut [serde_json::Value; 3]);
+    let cases: [(&str, DecisionEvidenceMutation); 6] = [
+        ("gate_session_hash", |lines| {
+            lines[0]["snapshot"]["gate_session_hash"] = serde_json::json!("");
+        }),
+        ("selected_market_key", |lines| {
+            lines[0]["snapshot"]["selected_market_key"] = serde_json::json!("");
+        }),
+        ("gate_evidence", |lines| {
+            lines[0]["snapshot"]["gate_evidence"] = serde_json::json!({});
+        }),
+        ("normalized_value_sha256", |lines| {
+            lines[0]["snapshot"]["gate_evidence"]["resolution_price"]["normalized_value_sha256"] =
+                serde_json::json!("");
+        }),
+        ("provider_provenance_sha256", |lines| {
+            lines[0]["snapshot"]["gate_evidence"]["resolution_price"]["provider_provenance_sha256"] =
+                serde_json::json!("");
+        }),
+        ("artifact_sha256s", |lines| {
+            lines[0]["snapshot"]["gate_evidence"]["resolution_price"]["artifact_sha256s"] =
+                serde_json::json!([]);
+        }),
+    ];
+
+    for (field, mutate) in cases {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let evidence_path = temp.path().join("decision-evidence.jsonl");
+        let mut lines = sample_entry_decision_evidence_lines();
+        mutate(&mut lines);
+        write_decision_evidence_lines(&evidence_path, &lines);
+
+        let error =
+            read_latest_entry_decision_evidence_chain(&evidence_path, 100_000).expect_err(field);
+        assert!(
+            error.to_string().contains(field),
+            "{field} readiness gap should be diagnostic: {error:#}"
+        );
+    }
+}
+
 fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
     let snapshot = BoltV3StrategyInputEvidenceSnapshot {
         strategy_id: "strategy-one".to_string(),
         configured_target_id: "target-one".to_string(),
         market_selection_ruleset_id: "target-one".to_string(),
+        gate_session_hash: "gate-session-hash-one".to_string(),
+        selected_market_key: "selected-market-key-one".to_string(),
+        gate_evidence: BTreeMap::from([(
+            "resolution_price".to_string(),
+            BoltV3GateEvidenceIdentity {
+                satisfaction_kind: "evidence".to_string(),
+                selected_market_key: "selected-market-key-one".to_string(),
+                provider_id: Some("provider-one".to_string()),
+                provider_kind: Some("chainlink_data_streams".to_string()),
+                value_kind: Some("price".to_string()),
+                normalized_value_sha256: Some("normalized-value-sha-one".to_string()),
+                provider_provenance_sha256: Some("provider-provenance-sha-one".to_string()),
+                artifact_sha256s: vec!["artifact-sha-one".to_string()],
+                resolution_identity: None,
+            },
+        )]),
         market_selection_outcome: "current".to_string(),
         market_id: Some("market-one".to_string()),
         polymarket_condition_id: Some("condition-one".to_string()),
@@ -251,6 +310,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
         order_side: snapshot.submission_order_side.clone(),
         price: snapshot.submission_price.clone(),
         quantity: snapshot.submission_quantity.clone(),
+        canary_proof_claim: None,
         order_fields: BoltV3OrderIntentOrderFields {
             order_type: OrderType::Limit.to_string(),
             time_in_force: TimeInForce::Gtc.to_string(),
@@ -430,6 +490,7 @@ fn strategy_build_context_requires_decision_evidence_value() {
                 NoopDecisionEvidenceWriter,
             )),
         ),
+        support::fixture_execution_venue(),
     );
 
     assert!(
@@ -443,6 +504,7 @@ fn strategy_build_context_requires_decision_evidence_value() {
                 order_side: OrderSide::Buy.to_string(),
                 price: "0.50".to_string(),
                 quantity: "1".to_string(),
+                canary_proof_claim: None,
                 order_fields: BoltV3OrderIntentOrderFields {
                     order_type: OrderType::Limit.to_string(),
                     time_in_force: TimeInForce::Gtc.to_string(),

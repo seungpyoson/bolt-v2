@@ -5,14 +5,14 @@
 //!      `MarketIdentityPlan` derived from validated config alone.
 //!   2. The current and next updown period start values are computed
 //!      from `cadence_secs` and an injected `now_unix_secs`, and
-//!      match the runtime-contract slug-derivation rule on the
-//!      boundary, one second before, and one second after.
+//!      match the configured slug-token on the boundary, one second
+//!      before, and one second after.
 //!   3. The updown market-slug formatter lowercases the underlying
 //!      asset, uses the configured cadence slug-token, and trails the
 //!      period-start unix seconds value.
-//!   4. Direct struct mutation of `cadence_secs` into an
-//!      unsupported or non-positive value still fails cleanly through
-//!      `plan_market_identity` rather than producing a malformed plan.
+//!   4. Direct struct mutation of cadence fields into invalid values
+//!      still fails cleanly through `plan_market_identity` rather than
+//!      producing a malformed plan.
 //!   5. The module source does not reference the NautilusTrader live
 //!      runtime symbols this slice intentionally excludes (`LiveNode`,
 //!      `connect`, `request_instruments`, `Cache`).
@@ -56,12 +56,12 @@ fn plan_market_identity_from_fixture_yields_one_updown_target_plan() {
     let targets = target_plans(&plan).collect::<Vec<_>>();
     assert_eq!(targets.len(), 1, "one updown target plan");
     let target = targets[0];
-    assert_eq!(target.strategy_instance_id, "bitcoin_updown_main");
-    assert_eq!(target.configured_target_id, "btc_updown_5m");
+    assert_eq!(target.strategy_instance_id, "configured_updown_main");
+    assert_eq!(target.configured_target_id, "configured_updown_target");
     assert_eq!(target.execution_client_id, "polymarket_main");
-    assert_eq!(target.underlying_asset, "BTC");
+    assert_eq!(target.underlying_asset, "CONFIGURED_ASSET");
     assert_eq!(target.cadence_secs, 300);
-    assert_eq!(target.cadence_slug_token, "5m");
+    assert_eq!(target.cadence_slug_token, "configuredwindow");
 }
 
 #[test]
@@ -113,28 +113,33 @@ fn updown_period_pair_rejects_negative_now_unix_secs() {
 }
 
 #[test]
-fn updown_market_slug_lowercases_asset_for_btc_5m() {
-    let slug = updown_market_slug("BTC", "5m", 1_700_000_000);
-    assert_eq!(slug, "btc-updown-5m-1700000000");
+fn updown_market_slug_lowercases_configured_asset() {
+    let slug = updown_market_slug("ASSET", "window", 1_700_000_000);
+    assert_eq!(slug, "asset-updown-window-1700000000");
 }
 
 #[test]
-fn updown_market_slug_lowercases_asset_for_eth_15m() {
-    let slug = updown_market_slug("ETH", "15m", 1_700_000_900);
-    assert_eq!(slug, "eth-updown-15m-1700000900");
+fn updown_market_slug_accepts_distinct_configured_tokens() {
+    let slug = updown_market_slug("ALT", "longwindow", 1_700_000_900);
+    assert_eq!(slug, "alt-updown-longwindow-1700000900");
 }
 
 #[test]
-fn updown_market_slug_table_matches_runtime_contract() {
+fn updown_market_slug_uses_configured_token_without_asset_assumptions() {
     let cases: &[(&str, &str, i64, &str)] = &[
-        ("BTC", "1m", 1_700_000_000, "btc-updown-1m-1700000000"),
-        ("BTC", "5m", 1_700_000_000, "btc-updown-5m-1700000000"),
-        ("BTC", "15m", 1_700_000_000, "btc-updown-15m-1700000000"),
-        ("BTC", "1h", 1_700_000_000, "btc-updown-1h-1700000000"),
-        ("BTC", "4h", 1_700_000_000, "btc-updown-4h-1700000000"),
-        ("ETH", "5m", 1_700_000_900, "eth-updown-5m-1700000900"),
-        ("XRP", "1h", 1_700_000_000, "xrp-updown-1h-1700000000"),
-        ("BTC", "5m", 0, "btc-updown-5m-0"),
+        (
+            "ALPHA",
+            "shortwindow",
+            1_700_000_000,
+            "alpha-updown-shortwindow-1700000000",
+        ),
+        (
+            "BETA",
+            "mediumwindow",
+            1_700_000_900,
+            "beta-updown-mediumwindow-1700000900",
+        ),
+        ("GAMMA", "longwindow", 0, "gamma-updown-longwindow-0"),
     ];
     for (asset, token, period, expected) in cases {
         assert_eq!(updown_market_slug(asset, token, *period), *expected);
@@ -142,14 +147,14 @@ fn updown_market_slug_table_matches_runtime_contract() {
 }
 
 #[test]
-fn candidates_for_target_btc_5m_yields_current_and_next_slugs() {
+fn candidates_for_target_yields_current_and_next_configured_slugs() {
     let target = UpdownTargetPlan {
-        strategy_instance_id: "bitcoin_updown_main".to_string(),
-        configured_target_id: "btc_updown_5m".to_string(),
+        strategy_instance_id: "configured_updown_main".to_string(),
+        configured_target_id: "configured_updown_target".to_string(),
         execution_client_id: "polymarket_main".to_string(),
-        underlying_asset: "BTC".to_string(),
+        underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
-        cadence_slug_token: "5m".to_string(),
+        cadence_slug_token: "window".to_string(),
     };
     let UpdownSlugCandidates {
         current_period_start_unix_secs,
@@ -159,19 +164,19 @@ fn candidates_for_target_btc_5m_yields_current_and_next_slugs() {
     } = candidates_for_target(&target, 601).expect("candidates should succeed for valid input");
     assert_eq!(current_period_start_unix_secs, 600);
     assert_eq!(next_period_start_unix_secs, 900);
-    assert_eq!(current_market_slug, "btc-updown-5m-600");
-    assert_eq!(next_market_slug, "btc-updown-5m-900");
+    assert_eq!(current_market_slug, "asset-updown-window-600");
+    assert_eq!(next_market_slug, "asset-updown-window-900");
 }
 
 #[test]
 fn candidates_for_target_propagates_negative_now_unix_seconds_error() {
     let target = UpdownTargetPlan {
-        strategy_instance_id: "bitcoin_updown_main".to_string(),
-        configured_target_id: "btc_updown_5m".to_string(),
+        strategy_instance_id: "configured_updown_main".to_string(),
+        configured_target_id: "configured_updown_target".to_string(),
         execution_client_id: "polymarket_main".to_string(),
-        underlying_asset: "BTC".to_string(),
+        underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
-        cadence_slug_token: "5m".to_string(),
+        cadence_slug_token: "window".to_string(),
     };
     assert!(matches!(
         candidates_for_target(&target, -1),
@@ -180,29 +185,33 @@ fn candidates_for_target_propagates_negative_now_unix_seconds_error() {
 }
 
 #[test]
-fn plan_market_identity_rejects_unsupported_cadence_seconds_after_mutation() {
+fn plan_market_identity_rejects_invalid_cadence_slug_token_after_mutation() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
 
-    // Direct struct mutation: cadence=120 has no slug-token mapping in
-    // the runtime-contract table.
     set_target_field(
         &mut loaded.strategies[0],
-        "cadence_secs",
-        toml::Value::Integer(120),
+        "cadence_slug_token",
+        toml::Value::String("Bad-Token".to_string()),
     );
 
     match plan_market_identity(&loaded) {
-        Err(BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
+        Err(BoltV3MarketIdentityError::InvalidCadenceSlugToken {
             strategy_instance_id,
             configured_target_id,
-            cadence_secs,
+            cadence_slug_token,
         }) => {
-            assert_eq!(strategy_instance_id.as_deref(), Some("bitcoin_updown_main"));
-            assert_eq!(configured_target_id.as_deref(), Some("btc_updown_5m"));
-            assert_eq!(cadence_secs, 120);
+            assert_eq!(
+                strategy_instance_id.as_deref(),
+                Some("configured_updown_main")
+            );
+            assert_eq!(
+                configured_target_id.as_deref(),
+                Some("configured_updown_target")
+            );
+            assert_eq!(cadence_slug_token, "Bad-Token");
         }
-        other => panic!("expected UnsupportedCadenceSeconds; got {other:?}"),
+        other => panic!("expected InvalidCadenceSlugToken; got {other:?}"),
     }
 }
 
@@ -223,8 +232,14 @@ fn plan_market_identity_rejects_non_positive_cadence_seconds_after_mutation() {
             configured_target_id,
             cadence_secs,
         }) => {
-            assert_eq!(strategy_instance_id.as_deref(), Some("bitcoin_updown_main"));
-            assert_eq!(configured_target_id.as_deref(), Some("btc_updown_5m"));
+            assert_eq!(
+                strategy_instance_id.as_deref(),
+                Some("configured_updown_main")
+            );
+            assert_eq!(
+                configured_target_id.as_deref(),
+                Some("configured_updown_target")
+            );
             assert_eq!(cadence_secs, 0);
         }
         other => panic!("expected NonPositiveCadenceSeconds; got {other:?}"),
@@ -242,8 +257,14 @@ fn plan_market_identity_rejects_non_positive_cadence_seconds_after_mutation() {
             configured_target_id,
             cadence_secs,
         }) => {
-            assert_eq!(strategy_instance_id.as_deref(), Some("bitcoin_updown_main"));
-            assert_eq!(configured_target_id.as_deref(), Some("btc_updown_5m"));
+            assert_eq!(
+                strategy_instance_id.as_deref(),
+                Some("configured_updown_main")
+            );
+            assert_eq!(
+                configured_target_id.as_deref(),
+                Some("configured_updown_target")
+            );
             assert_eq!(cadence_secs, -300);
         }
         other => panic!("expected NonPositiveCadenceSeconds; got {other:?}"),
@@ -264,9 +285,9 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
     // `sort_by` on any of these keys would re-order at least one
     // index and fail the per-index assertions below.
     //
-    //   declared order : [0]=zeta_strategy_main / ltc_updown_15m / LTC / 900  / 15m
-    //                    [1]=alpha_strategy_main / xrp_updown_5m / XRP / 300  / 5m
-    //                    [2]=mike_strategy_main / btc_updown_1h / BTC / 3600 / 1h
+    //   declared order : [0]=zeta_strategy_main / zeta_target / ZETA / 900  / quarterhour
+    //                    [1]=alpha_strategy_main / alpha_target / ALPHA / 300 / shortwindow
+    //                    [2]=mike_strategy_main / mike_target / MIKE / 3600 / hourwindow
     //
     //   sort by strategy_instance_id ascending  -> [1, 2, 0]
     //   sort by configured_target_id ascending  -> [2, 0, 1]
@@ -284,41 +305,56 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
         set_target_field(
             first,
             "configured_target_id",
-            toml::Value::String("ltc_updown_15m".to_string()),
+            toml::Value::String("zeta_target".to_string()),
         );
         set_target_field(
             first,
             "underlying_asset",
-            toml::Value::String("LTC".to_string()),
+            toml::Value::String("ZETA".to_string()),
         );
         set_target_field(first, "cadence_secs", toml::Value::Integer(900));
+        set_target_field(
+            first,
+            "cadence_slug_token",
+            toml::Value::String("quarterhour".to_string()),
+        );
     }
 
     second.config.strategy_instance_id = "alpha_strategy_main".to_string();
     set_target_field(
         &mut second,
         "configured_target_id",
-        toml::Value::String("xrp_updown_5m".to_string()),
+        toml::Value::String("alpha_target".to_string()),
     );
     set_target_field(
         &mut second,
         "underlying_asset",
-        toml::Value::String("XRP".to_string()),
+        toml::Value::String("ALPHA".to_string()),
     );
     set_target_field(&mut second, "cadence_secs", toml::Value::Integer(300));
+    set_target_field(
+        &mut second,
+        "cadence_slug_token",
+        toml::Value::String("shortwindow".to_string()),
+    );
 
     third.config.strategy_instance_id = "mike_strategy_main".to_string();
     set_target_field(
         &mut third,
         "configured_target_id",
-        toml::Value::String("btc_updown_1h".to_string()),
+        toml::Value::String("mike_target".to_string()),
     );
     set_target_field(
         &mut third,
         "underlying_asset",
-        toml::Value::String("BTC".to_string()),
+        toml::Value::String("MIKE".to_string()),
     );
     set_target_field(&mut third, "cadence_secs", toml::Value::Integer(3600));
+    set_target_field(
+        &mut third,
+        "cadence_slug_token",
+        toml::Value::String("hourwindow".to_string()),
+    );
 
     loaded.strategies.push(second);
     loaded.strategies.push(third);
@@ -329,27 +365,27 @@ fn plan_market_identity_projects_strategies_in_declaration_order() {
 
     let zero = targets[0];
     assert_eq!(zero.strategy_instance_id, "zeta_strategy_main");
-    assert_eq!(zero.configured_target_id, "ltc_updown_15m");
+    assert_eq!(zero.configured_target_id, "zeta_target");
     assert_eq!(zero.execution_client_id, "polymarket_main");
-    assert_eq!(zero.underlying_asset, "LTC");
+    assert_eq!(zero.underlying_asset, "ZETA");
     assert_eq!(zero.cadence_secs, 900);
-    assert_eq!(zero.cadence_slug_token, "15m");
+    assert_eq!(zero.cadence_slug_token, "quarterhour");
 
     let one = targets[1];
     assert_eq!(one.strategy_instance_id, "alpha_strategy_main");
-    assert_eq!(one.configured_target_id, "xrp_updown_5m");
+    assert_eq!(one.configured_target_id, "alpha_target");
     assert_eq!(one.execution_client_id, "polymarket_main");
-    assert_eq!(one.underlying_asset, "XRP");
+    assert_eq!(one.underlying_asset, "ALPHA");
     assert_eq!(one.cadence_secs, 300);
-    assert_eq!(one.cadence_slug_token, "5m");
+    assert_eq!(one.cadence_slug_token, "shortwindow");
 
     let two = targets[2];
     assert_eq!(two.strategy_instance_id, "mike_strategy_main");
-    assert_eq!(two.configured_target_id, "btc_updown_1h");
+    assert_eq!(two.configured_target_id, "mike_target");
     assert_eq!(two.execution_client_id, "polymarket_main");
-    assert_eq!(two.underlying_asset, "BTC");
+    assert_eq!(two.underlying_asset, "MIKE");
     assert_eq!(two.cadence_secs, 3600);
-    assert_eq!(two.cadence_slug_token, "1h");
+    assert_eq!(two.cadence_slug_token, "hourwindow");
 }
 
 #[test]
@@ -375,37 +411,37 @@ fn period_pair_overflow_display_includes_now_and_cadence_context() {
 
 #[test]
 fn cadence_error_display_includes_strategy_and_target_context() {
-    let unsupported = BoltV3MarketIdentityError::UnsupportedCadenceSeconds {
-        strategy_instance_id: Some("bitcoin_updown_main".to_string()),
-        configured_target_id: Some("btc_updown_5m".to_string()),
-        cadence_secs: 120,
+    let invalid_slug = BoltV3MarketIdentityError::InvalidCadenceSlugToken {
+        strategy_instance_id: Some("configured_updown_main".to_string()),
+        configured_target_id: Some("configured_updown_target".to_string()),
+        cadence_slug_token: "Bad-Token".to_string(),
     };
-    let display = unsupported.to_string();
+    let display = invalid_slug.to_string();
     assert!(
-        display.contains("bitcoin_updown_main"),
+        display.contains("configured_updown_main"),
         "Display should include strategy_instance_id: {display}"
     );
     assert!(
-        display.contains("btc_updown_5m"),
+        display.contains("configured_updown_target"),
         "Display should include configured_target_id: {display}"
     );
     assert!(
-        display.contains("120"),
-        "Display should include cadence_secs value: {display}"
+        display.contains("Bad-Token"),
+        "Display should include cadence_slug_token value: {display}"
     );
 
     let non_positive = BoltV3MarketIdentityError::NonPositiveCadenceSeconds {
-        strategy_instance_id: Some("bitcoin_updown_main".to_string()),
-        configured_target_id: Some("btc_updown_5m".to_string()),
+        strategy_instance_id: Some("configured_updown_main".to_string()),
+        configured_target_id: Some("configured_updown_target".to_string()),
         cadence_secs: 0,
     };
     let np_display = non_positive.to_string();
     assert!(
-        np_display.contains("bitcoin_updown_main"),
+        np_display.contains("configured_updown_main"),
         "Display should include strategy_instance_id: {np_display}"
     );
     assert!(
-        np_display.contains("btc_updown_5m"),
+        np_display.contains("configured_updown_target"),
         "Display should include configured_target_id: {np_display}"
     );
 }
@@ -427,12 +463,12 @@ fn updown_period_pair_rejects_overflow_at_i64_max_with_supported_cadence() {
 #[test]
 fn candidates_for_target_propagates_period_pair_overflow() {
     let target = UpdownTargetPlan {
-        strategy_instance_id: "bitcoin_updown_main".to_string(),
-        configured_target_id: "btc_updown_5m".to_string(),
+        strategy_instance_id: "configured_updown_main".to_string(),
+        configured_target_id: "configured_updown_target".to_string(),
         execution_client_id: "polymarket_main".to_string(),
-        underlying_asset: "BTC".to_string(),
+        underlying_asset: "ASSET".to_string(),
         cadence_secs: 300,
-        cadence_slug_token: "5m".to_string(),
+        cadence_slug_token: "window".to_string(),
     };
     assert!(matches!(
         candidates_for_target(&target, i64::MAX),
@@ -578,15 +614,15 @@ fn core_instrument_filters_module_does_not_import_strategy_policy_code() {
 fn validate_module_must_not_own_updown_slug_token_policy() {
     // Bolt-v3 startup validation must stay structural and dispatch
     // family-specific policy out to the per-family binding module.
-    // The updown cadence slug-token table, its lookup helpers, and
-    // its error-message policy belong to the updown family binding,
-    // not to core validation. Validate.rs may still call into the
+    // Updown cadence slug-token validation belongs to the updown
+    // family binding, not to core validation. Validate.rs may still
+    // call into the
     // updown family validator (`bolt_v3_market_families::updown::*`)
     // to check family-shaped target fields; the substrings forbidden
     // below pin policy *ownership*, not the dispatch call itself.
     let src = include_str!("../src/bolt_v3_validate.rs");
     let forbidden = [
-        // Owned table identifier and helper symbol names.
+        // Deprecated code-owned table identifier and helper symbol names.
         "UPDOWN_CADENCE_SLUG_TOKEN_TABLE",
         "updown_cadence_slug_token",
         "supported_updown_cadence_secs",
@@ -601,8 +637,8 @@ fn validate_module_must_not_own_updown_slug_token_policy() {
             !src.contains(symbol),
             "src/bolt_v3_validate.rs must not own updown slug-token policy; \
              source unexpectedly references `{symbol}`. \
-             Move the updown slug-token table, its helpers, and its error \
-             messaging to src/bolt_v3_market_families/updown.rs; have \
+             Keep updown slug-token validation and error messaging in \
+             src/bolt_v3_market_families/updown.rs; have \
              validate.rs dispatch into the updown family validator instead."
         );
     }

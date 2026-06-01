@@ -113,6 +113,60 @@ def test_real_scan_covers_provider_neutral_source_files() -> None:
         assert rel not in core_files
 
 
+def test_shared_market_data_provider_module_name_is_not_concrete_provider() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_providers/market_data.rs": (
+                    'pub const BITMEX_KEY: &str = "BITMEX";\n'
+                ),
+                "src/bolt_v3_readiness.rs": """
+                    pub enum DataClientReadinessProbeMarketDataKind {
+                        Quote,
+                        Book,
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "concrete provider type name in core production code" not in messages
+
+
+def test_provider_key_constants_in_shared_market_data_module_are_findings() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "src/bolt_v3_providers/market_data.rs": (
+                    'pub const BITMEX_KEY: &str = "BITMEX";\n'
+                ),
+                "src/bolt_v3_readiness.rs": """
+                    pub struct BitmexAdapterLeak;
+
+                    pub fn leaked(kind: &str) -> bool {
+                        kind == "bitmex"
+                    }
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+        messages = "\n".join(finding.message for finding in findings)
+
+        assert "concrete provider type name in core production code" in messages
+        assert "provider-key string literal in core production code" in messages
+
+
 def test_shared_secret_module_provider_import_is_finding() -> None:
     verifier = load_verifier()
     with tempfile.TemporaryDirectory() as tmp:
@@ -894,6 +948,8 @@ def main() -> int:
         test_production_after_cfg_test_block_is_scanned,
         test_cfg_not_test_is_scanned_as_production,
         test_cfg_not_any_test_is_scanned_as_production,
+        test_shared_market_data_provider_module_name_is_not_concrete_provider,
+        test_provider_key_constants_in_shared_market_data_module_are_findings,
         test_cfg_any_test_feature_is_scanned_as_production,
         test_cfg_all_test_feature_is_stripped_as_test_only,
         test_cfg_not_not_test_is_stripped_as_test_only,

@@ -26,17 +26,17 @@ use nautilus_polymarket::{
 
 fn fixture_polymarket_secrets() -> ResolvedBoltV3PolymarketSecrets {
     ResolvedBoltV3PolymarketSecrets {
-        private_key: "regression-poly-private-key".to_string(),
-        api_key: "regression-poly-api-key".to_string(),
-        api_secret: "regression-poly-api-secret".to_string(),
-        passphrase: "regression-poly-passphrase".to_string(),
+        private_key: zeroize::Zeroizing::new("regression-poly-private-key".to_string()),
+        api_key: zeroize::Zeroizing::new("regression-poly-api-key".to_string()),
+        api_secret: zeroize::Zeroizing::new("regression-poly-api-secret".to_string()),
+        passphrase: zeroize::Zeroizing::new("regression-poly-passphrase".to_string()),
     }
 }
 
 fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
     ResolvedBoltV3BinanceSecrets {
-        api_key: "regression-binance-api-key".to_string(),
-        api_secret: "regression-binance-api-secret".to_string(),
+        api_key: zeroize::Zeroizing::new("regression-binance-api-key".to_string()),
+        api_secret: zeroize::Zeroizing::new("regression-binance-api-secret".to_string()),
     }
 }
 
@@ -51,6 +51,19 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
         Arc::new(fixture_binance_secrets()),
     );
     ResolvedBoltV3Secrets { clients }
+}
+
+fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.insert(
+        "binance_reference".to_string(),
+        toml::from_str(&support::repo_text(
+            "tests/fixtures/bolt_v3/binance_reference_client.toml",
+        ))
+        .expect("binance provider fixture client should parse"),
+    );
+    loaded
 }
 
 #[test]
@@ -201,8 +214,7 @@ fn adapter_mapper_rejects_subscribe_new_markets_true_if_validation_was_bypassed(
 
 #[test]
 fn binance_data_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = fixture_loaded_config_with_binance_reference();
     let resolved = fixture_resolved_secrets();
 
     let configs = map_bolt_v3_adapters(&loaded, &resolved).expect("fixture should map cleanly");
@@ -332,8 +344,8 @@ default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
 bypass = false
-max_order_submit_rate = "100/00:00:01"
-max_order_modify_rate = "100/00:00:01"
+max_order_submit_rate = "40/00:01:00"
+max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
 graceful_shutdown_on_error = false
@@ -446,14 +458,17 @@ fn live_node_build_path_propagates_adapter_mapping_failures() {
     // re-validate string shape; if future requirements need shape
     // checks at the mapper boundary, this test is the place to assert
     // that they fire.
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = fixture_loaded_config_with_binance_reference();
 
-    // Force the binance api_secret resolution to fail; the live-node
+    // Force the polymarket_main api_secret resolution to fail; the live-node
     // builder must surface the error rather than silently skipping the
-    // mapping step.
+    // mapping step. polymarket_main is the strategy-bound execution client,
+    // so the scoped trade build path resolves its secrets — making the
+    // SecretResolution error surface through the mapping boundary. (binance
+    // is an unbound broad-readiness probe client and is not resolved by the
+    // scoped path, so failing its secret would surface nothing here.)
     let bad_resolver = |region: &str, path: &str| -> Result<String, &'static str> {
-        if path == "/bolt/binance_reference/api_secret" {
+        if path == "/bolt/polymarket_main/api_secret" {
             Err("simulated SSM permissions denied")
         } else {
             support::fake_bolt_v3_resolver(region, path)

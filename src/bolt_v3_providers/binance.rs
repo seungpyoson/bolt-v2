@@ -41,7 +41,7 @@ use nautilus_core::string::secret::REDACTED;
 use nautilus_network::websocket::TransportBackend;
 use serde::Deserialize;
 use url::Url;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{
     bolt_v3_adapters::{
@@ -63,12 +63,55 @@ pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecre
     consumer: "Binance reference-data client",
 }];
 pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_path", "api_secret_ssm_path"];
+/// NT module path(s) whose info-level logs can echo Binance credential
+/// metadata; the live-node builder installs `WARN` filters for these so secret
+/// material never reaches operator logs. The path is pinned to the NT revision
+/// declared by `nautilus-binance` in `Cargo.toml` (single source of truth for
+/// the rev) and is kept honest at compile time by the
+/// `use nautilus_binance::common::credential::Ed25519Credential` import above:
+/// if the NT rev moved this module, that import — and therefore the build —
+/// would fail before this string could silently drift.
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_binance::common::credential"];
+/// Every Binance credential environment variable that NT's
+/// `resolve_credentials` (and the Spot WebSocket trading client) can read as a
+/// secret fallback. Bolt always passes `Some(api_key)`/`Some(api_secret)` into
+/// NT, so this env path is currently dead, but the blocklist is verified empty
+/// at startup as defense-in-depth so a future regression that drops the
+/// `Some(...)` wiring cannot silently let NT resolve a trading secret from the
+/// operator's shell environment instead of SSM.
+///
+/// The set is verified against the pinned NT revision declared by
+/// `nautilus-binance` in `Cargo.toml`, in
+/// `nautilus_binance::common::credential::resolve_credentials`
+/// (`crates/adapters/binance/src/common/credential.rs`). That function selects
+/// the variable names by `BinanceEnvironment` and `BinanceProductType`:
+/// - Live: standard `BINANCE_API_KEY`/`BINANCE_API_SECRET` plus the deprecated
+///   `BINANCE_ED25519_*` pair (still read via `std::env::var` before the
+///   deprecation error).
+/// - Testnet (Spot/Margin/Options): `BINANCE_TESTNET_API_KEY`/`_API_SECRET`
+///   plus deprecated `BINANCE_TESTNET_ED25519_*`.
+/// - Futures testnet (UsdM/CoinM): `BINANCE_FUTURES_TESTNET_API_KEY`/`_API_SECRET`
+///   plus deprecated `BINANCE_FUTURES_TESTNET_ED25519_*`.
+/// - Demo (all product types): `BINANCE_DEMO_API_KEY`/`BINANCE_DEMO_API_SECRET`
+///   (NT defines no Demo `ED25519` pair — the deprecated names are empty).
+///
+/// Every name NT can read is listed; under-listing would reopen the
+/// defense-in-depth gap for the testnet/futures-testnet/demo environments.
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[
     "BINANCE_ED25519_API_KEY",
     "BINANCE_ED25519_API_SECRET",
     "BINANCE_API_KEY",
     "BINANCE_API_SECRET",
+    "BINANCE_TESTNET_API_KEY",
+    "BINANCE_TESTNET_API_SECRET",
+    "BINANCE_TESTNET_ED25519_API_KEY",
+    "BINANCE_TESTNET_ED25519_API_SECRET",
+    "BINANCE_FUTURES_TESTNET_API_KEY",
+    "BINANCE_FUTURES_TESTNET_API_SECRET",
+    "BINANCE_FUTURES_TESTNET_ED25519_API_KEY",
+    "BINANCE_FUTURES_TESTNET_ED25519_API_SECRET",
+    "BINANCE_DEMO_API_KEY",
+    "BINANCE_DEMO_API_SECRET",
 ];
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -94,12 +137,21 @@ pub struct BinanceDataConfig {
 #[serde(rename_all = "lowercase")]
 pub enum BinanceProductType {
     Spot,
+    Margin,
+    #[serde(rename = "usd_m")]
+    UsdM,
+    #[serde(rename = "coin_m")]
+    CoinM,
+    Options,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum BinanceEnvironment {
     Mainnet,
+    Live,
+    Testnet,
+    Demo,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -111,8 +163,12 @@ pub struct BinanceSecretsConfig {
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct ResolvedBoltV3BinanceSecrets {
-    pub api_key: String,
-    pub api_secret: String,
+    /// Wrapped in [`Zeroizing`] so the individual secret bytes are scrubbed on
+    /// drop even when this field is moved out of the container — per-field
+    /// zeroize in addition to the container-level `ZeroizeOnDrop`. Derefs to
+    /// `String`; the redacting `Debug` impl below keeps it out of logs.
+    pub api_key: Zeroizing<String>,
+    pub api_secret: Zeroizing<String>,
 }
 
 impl std::fmt::Debug for ResolvedBoltV3BinanceSecrets {
@@ -142,7 +198,7 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
     let mut errors = Vec::new();
     if client.execution.is_some() {
         errors.push(format!(
-            "clients.{key} (provider=BINANCE) is not allowed to declare an [execution] block in the current bolt-v3 scope"
+            "clients.{key} (provider={KEY}) is not allowed to declare an [execution] block in the current bolt-v3 scope"
         ));
     }
     if let Some(data) = &client.data {
@@ -154,7 +210,7 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
     if let Some(secrets) = &client.secrets {
         if client.data.is_none() {
             errors.push(format!(
-                "clients.{key} (provider=BINANCE) declares [secrets] but no [data] block is configured; \
+                "clients.{key} (provider={KEY}) declares [secrets] but no [data] block is configured; \
                  Binance [secrets] are only allowed alongside the data adapter that consumes them"
             ));
         }
@@ -168,6 +224,23 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
 
 fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
     let mut errors = Vec::new();
+    if data.product_types.is_empty() {
+        errors.push(format!(
+            "clients.{key}.data.product_types must select exactly one NT Binance data-client product type"
+        ));
+    }
+    if data.product_types.len() > 1 {
+        errors.push(format!(
+            "clients.{key}.data.product_types must contain exactly one product type because the pinned NT BinanceDataClientFactory constructs one client from the first configured product type"
+        ));
+    }
+    for product_type in &data.product_types {
+        if !is_nt_binance_data_factory_supported(*product_type) {
+            errors.push(format!(
+                "clients.{key}.data.product_types contains {product_type:?}, but the pinned NT BinanceDataClientFactory only supports spot, usd_m, and coin_m data clients"
+            ));
+        }
+    }
     let url_fields: &[(&str, &str)] = &[
         ("base_url_http", data.base_url_http.as_str()),
         ("base_url_ws", data.base_url_ws.as_str()),
@@ -180,8 +253,9 @@ fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
         }
     }
     if !data.base_url_ws.trim().is_empty() {
-        errors.extend(validate_not_known_spot_json_websocket_endpoint(
+        errors.extend(validate_binance_websocket_endpoint(
             key,
+            data.product_types.first().copied(),
             data.base_url_ws.as_str(),
         ));
     }
@@ -198,26 +272,40 @@ fn validate_data_bounds(key: &str, data: &BinanceDataConfig) -> Vec<String> {
     errors
 }
 
-fn validate_not_known_spot_json_websocket_endpoint(key: &str, value: &str) -> Vec<String> {
+fn validate_binance_websocket_endpoint(
+    key: &str,
+    product_type: Option<BinanceProductType>,
+    value: &str,
+) -> Vec<String> {
     let mut errors = Vec::new();
+    let is_spot = product_type == Some(BinanceProductType::Spot);
+    let url_description = if is_spot {
+        "Binance Spot WebSocket URL for NT subscribe_quotes"
+    } else {
+        "Binance WebSocket URL"
+    };
     let Ok(configured) = Url::parse(value) else {
         errors.push(format!(
-            "clients.{key}.data.base_url_ws must be a valid Binance Spot WebSocket URL for NT subscribe_quotes"
+            "clients.{key}.data.base_url_ws must be a valid {url_description}"
         ));
         return errors;
     };
     if !matches!(configured.scheme(), "ws" | "wss") {
         errors.push(format!(
-            "clients.{key}.data.base_url_ws must be a valid Binance Spot WebSocket URL for NT subscribe_quotes"
+            "clients.{key}.data.base_url_ws must be a valid {url_description}"
         ));
         return errors;
     }
     if !value[configured.scheme().len()..].starts_with("://") || !configured.has_host() {
         errors.push(format!(
-            "clients.{key}.data.base_url_ws must be a valid Binance Spot WebSocket URL for NT subscribe_quotes"
+            "clients.{key}.data.base_url_ws must be a valid {url_description}"
         ));
         return errors;
     }
+    if !is_spot {
+        return errors;
+    }
+
     let Ok(json_endpoint) = Url::parse(BINANCE_SPOT_WS_URL) else {
         errors.push(
             "nautilus_binance Spot JSON WebSocket URL constant failed URL parsing".to_string(),
@@ -272,8 +360,8 @@ pub fn resolve_secrets(
         resolver,
     )?;
     Ok(Arc::new(ResolvedBoltV3BinanceSecrets {
-        api_key,
-        api_secret,
+        api_key: Zeroizing::new(api_key),
+        api_secret: Zeroizing::new(api_secret),
     }))
 }
 
@@ -360,14 +448,22 @@ fn map_data(
             message: error.to_string(),
         }
     })?;
+    let validation_errors = validate_data_bounds(client_key, &cfg);
+    if let Some(message) = validation_errors.into_iter().next() {
+        return Err(BoltV3AdapterMappingError::SchemaParse {
+            client_key: client_key.to_string(),
+            block: "data",
+            message,
+        });
+    }
     let product_types = cfg.product_types.into_iter().map(nt_product_type).collect();
     Ok(BinanceDataClientConfig {
         product_types,
         environment: nt_environment(cfg.environment),
         base_url_http: Some(cfg.base_url_http),
         base_url_ws: Some(cfg.base_url_ws),
-        api_key: Some(secrets.api_key.clone()),
-        api_secret: Some(secrets.api_secret.clone()),
+        api_key: Some(secrets.api_key.as_str().to_owned()),
+        api_secret: Some(secrets.api_secret.as_str().to_owned()),
         instrument_status_poll_secs: cfg.instrument_status_poll_secs,
         transport_backend: cfg.transport_backend,
     })
@@ -394,11 +490,24 @@ fn secrets_for<'a>(
 fn nt_product_type(value: BinanceProductType) -> NtBinanceProductType {
     match value {
         BinanceProductType::Spot => NtBinanceProductType::Spot,
+        BinanceProductType::Margin => NtBinanceProductType::Margin,
+        BinanceProductType::UsdM => NtBinanceProductType::UsdM,
+        BinanceProductType::CoinM => NtBinanceProductType::CoinM,
+        BinanceProductType::Options => NtBinanceProductType::Options,
     }
+}
+
+fn is_nt_binance_data_factory_supported(value: BinanceProductType) -> bool {
+    matches!(
+        value,
+        BinanceProductType::Spot | BinanceProductType::UsdM | BinanceProductType::CoinM
+    )
 }
 
 fn nt_environment(value: BinanceEnvironment) -> NtBinanceEnvironment {
     match value {
-        BinanceEnvironment::Mainnet => NtBinanceEnvironment::Live,
+        BinanceEnvironment::Mainnet | BinanceEnvironment::Live => NtBinanceEnvironment::Live,
+        BinanceEnvironment::Testnet => NtBinanceEnvironment::Testnet,
+        BinanceEnvironment::Demo => NtBinanceEnvironment::Demo,
     }
 }

@@ -24,7 +24,24 @@
 //! core and is called from this module the same way the archetype
 //! binding calls `parse_decimal_string`.
 
+mod adapter_signing_source;
+mod balance_allowance_cache;
+mod collateral_accounting_source;
+mod entry_decision_source_inputs;
+mod fee_behavior_source;
 mod fees;
+mod venue_account_state_source;
+
+pub use adapter_signing_source::materialize_clob_v2_adapter_signing_source_from_nt_signing_source;
+pub use balance_allowance_cache::sync_clob_v2_balance_allowance_cache_from_configured_account;
+pub use collateral_accounting_source::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance;
+pub(crate) use collateral_accounting_source::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once;
+pub use entry_decision_source_inputs::{
+    collect_canary_proof_artifacts, collect_entry_decision_source_inputs,
+    polymarket_entry_decision_gate_provenance_payload,
+};
+pub use fee_behavior_source::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources;
+pub use venue_account_state_source::materialize_venue_account_state_source_from_configured_account_queries;
 
 use std::{any::Any, sync::Arc, time::Duration};
 
@@ -32,6 +49,7 @@ use nautilus_core::string::secret::REDACTED;
 use nautilus_model::identifiers::AccountId;
 use nautilus_network::websocket::TransportBackend;
 use nautilus_polymarket::{
+    common::consts::HTTP_RATE_LIMIT,
     common::credential::{EvmPrivateKey, Secrets as PolymarketSecrets},
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
@@ -40,7 +58,7 @@ use nautilus_polymarket::{
     http::clob::PolymarketClobHttpClient,
 };
 use serde::Deserialize;
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{
     bolt_v3_adapters::{
@@ -64,6 +82,27 @@ use crate::{
 use self::fees::PolymarketClobFeeProvider;
 
 pub const KEY: &str = "POLYMARKET";
+/// Per-minute REST egress ceiling for the Polymarket HTTP clients, taken from
+/// the NT adapter's own quota constant so bolt-v3 and NT share one source of
+/// truth for the venue capability.
+pub const REST_EGRESS_CAP_PER_MINUTE: u32 = HTTP_RATE_LIMIT;
+/// Worst-case REST requests a single NT order command issues against Polymarket,
+/// used to derate the command-rate ceiling so a config cannot pass validation
+/// yet over-drive the venue's REST quota. Taken from the pinned NT adapter
+/// (`adapters/polymarket/src/execution/`): a MARKET submit issues `get_book` +
+/// `post_order` = 2 requests (`submitter.rs`); a LIMIT submit issues 1; a modify
+/// issues 0 (rejected locally). A market + quote-quantity BUY would issue a 3rd
+/// request — a pre-submit `fetch_collateral_balance_pusd` (`execution/mod.rs`, only
+/// when `side==Buy && is_quote_quantity`) — but the `binary_oracle_edge_taker`
+/// archetype forbids that entry combination (`check_entry_order_combination`) and
+/// exits are SELLs that never take the collateral path, so 2 stays the provable
+/// worst-case across allowed configs. The global submit/modify throttle does not
+/// distinguish order type, so this worst case is the only sound bound — and the
+/// production strategy fires market exits, so the path is real. Excludes transient
+/// RetryManager retries and non-submit calls (cancels, status, readiness/account
+/// probes); the full shared REST budget is the venue egress-capability contract
+/// tracked in #501.
+pub const MAX_REST_REQUESTS_PER_ORDER_COMMAND: u32 = 2;
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
 const URL_SAFE_BASE64_BLOCK_WIDTH: usize = 4;
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
@@ -76,6 +115,14 @@ pub const SECRET_FIELD_NAMES: &[&str] = &[
     "api_secret_ssm_path",
     "passphrase_ssm_path",
 ];
+/// NT module path(s) whose info-level logs can echo Polymarket credential
+/// metadata; the live-node builder installs `WARN` filters for these so secret
+/// material never reaches operator logs. The path is pinned to the NT revision
+/// declared by `nautilus-polymarket` in `Cargo.toml` (single source of truth
+/// for the rev) and is kept honest at compile time by the
+/// `use nautilus_polymarket::common::credential::{..}` import above: if the NT
+/// rev moved this module, that import — and therefore the build — would fail
+/// before this string could silently drift.
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_polymarket::common::credential"];
 pub const FORBIDDEN_ENV_VARS: &[&str] = &[
     "POLYMARKET_PK",
@@ -145,6 +192,15 @@ pub struct PolymarketExecutionConfig {
     pub ack_timeout_secs: u64,
     pub fee_cache_ttl_secs: u64,
     pub transport_backend: TransportBackend,
+    pub on_chain_collateral: Option<PolymarketOnChainCollateralConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PolymarketOnChainCollateralConfig {
+    pub rpc_url: String,
+    pub chain_id: u64,
+    pub collateral_token_address: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -166,10 +222,23 @@ pub struct PolymarketSecretsConfig {
 
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct ResolvedBoltV3PolymarketSecrets {
-    pub private_key: String,
-    pub api_key: String,
-    pub api_secret: String,
-    pub passphrase: String,
+    /// Each secret field is wrapped in [`Zeroizing`] so the individual secret
+    /// bytes are scrubbed on drop even when a field is moved out of the
+    /// container — per-field zeroize in addition to the container-level
+    /// `ZeroizeOnDrop`. All four fields deref to `String`; the redacting
+    /// `Debug` impl below keeps them out of logs.
+    pub private_key: Zeroizing<String>,
+    pub api_key: Zeroizing<String>,
+    /// Canonical URL-safe base64 `api_secret` (padded) handed to the NT
+    /// Polymarket credential, which decodes it with the padded `URL_SAFE`
+    /// engine. The raw SSM value is canonicalized via
+    /// [`normalize_api_secret_padding`] before storage so NT never re-derives
+    /// padding silently. `normalize_api_secret_padding` only ever APPENDS `=`
+    /// padding and never rewrites the data characters, so the raw SSM byte
+    /// string is recoverable as this value with trailing `=` removed — see
+    /// [`redaction_values`](Self::redaction_values), which redacts both forms.
+    pub api_secret: Zeroizing<String>,
+    pub passphrase: Zeroizing<String>,
 }
 
 impl std::fmt::Debug for ResolvedBoltV3PolymarketSecrets {
@@ -193,10 +262,17 @@ impl ProviderResolvedSecrets for ResolvedBoltV3PolymarketSecrets {
     }
 
     fn redaction_values(&self) -> Vec<&str> {
+        // Redact BOTH the canonical (padded) `api_secret` and the raw SSM byte
+        // string so the post-run residue scan catches the secret in either
+        // representation. `normalize_api_secret_padding` only appends `=`
+        // padding, so the raw SSM value is exactly the stored value with its
+        // trailing `=` removed; callers dedup identical entries, so an
+        // already-canonical secret contributes a single redaction value.
         vec![
             self.private_key.as_str(),
             self.api_key.as_str(),
             self.api_secret.as_str(),
+            self.api_secret.trim_end_matches('='),
             self.passphrase.as_str(),
         ]
     }
@@ -221,7 +297,7 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
         // on the same `clients.<id>` as the [execution] adapter.
         if client.data.is_none() {
             errors.push(format!(
-                "clients.{key} (provider=POLYMARKET) declares [execution] but no [data] block is configured; \
+                "clients.{key} (provider={KEY}) declares [execution] but no [data] block is configured; \
                  Polymarket per-target market-slug filters are attached during data-client mapping and bind by \
                  client_key, so the [data] adapter must be co-located on the same `clients.<id>` as the \
                  [execution] adapter to keep configured target market filters bound to this client_key"
@@ -231,6 +307,7 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
             Ok(parsed) => {
                 errors.extend(validate_funder(key, &parsed));
                 errors.extend(validate_execution_bounds(key, &parsed));
+                errors.extend(validate_on_chain_collateral(key, &parsed));
             }
             Err(message) => {
                 errors.push(format!("clients.{key}.execution: {message}"));
@@ -244,7 +321,7 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
         // misconfiguration rather than a silent no-op.
         if client.execution.is_none() {
             errors.push(format!(
-                "clients.{key} (provider=POLYMARKET) declares [secrets] but no [execution] block is configured; \
+                "clients.{key} (provider={KEY}) declares [secrets] but no [execution] block is configured; \
                  Polymarket [secrets] are only allowed alongside the execution adapter that consumes them"
             ));
         }
@@ -383,6 +460,30 @@ fn validate_execution_bounds(key: &str, execution: &PolymarketExecutionConfig) -
     errors
 }
 
+fn validate_on_chain_collateral(key: &str, execution: &PolymarketExecutionConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    let Some(on_chain) = execution.on_chain_collateral.as_ref() else {
+        return errors;
+    };
+    if !on_chain.rpc_url.starts_with("http://") && !on_chain.rpc_url.starts_with("https://") {
+        errors.push(format!(
+            "clients.{key}.execution.on_chain_collateral.rpc_url must start with http:// or https://"
+        ));
+    }
+    if on_chain.chain_id == 0 {
+        errors.push(format!(
+            "clients.{key}.execution.on_chain_collateral.chain_id must be a positive integer"
+        ));
+    }
+    if let Err(message) = check_evm_address_syntax(&on_chain.collateral_token_address) {
+        errors.push(format!(
+            "clients.{key}.execution.on_chain_collateral.collateral_token_address is not a valid EVM public address ({message}): `{}`",
+            on_chain.collateral_token_address
+        ));
+    }
+    errors
+}
+
 fn validate_secret_paths(key: &str, secrets: &PolymarketSecretsConfig) -> Vec<String> {
     let mut errors = Vec::new();
     let path_fields: &[(&str, &str)] = &[
@@ -435,6 +536,20 @@ pub fn resolve_secrets(
         resolver,
     )?;
     let api_secret = normalize_api_secret_padding(api_secret_raw);
+    // Symmetric with `validate_private_key_shape` (Polymarket) and
+    // `validate_binance_api_secret_shape` (Binance): reject api_secret material
+    // the NT Polymarket credential cannot decode BEFORE it is stored, so a
+    // malformed secret fails loud at SSM resolution rather than deep inside NT
+    // client construction.
+    if let Err(reason) = validate_api_secret_shape(&api_secret) {
+        return Err(BoltV3SecretError {
+            client_key: context.client_key.to_string(),
+            field: "api_secret_ssm_path".to_string(),
+            source: format!(
+                "resolved polymarket api_secret is not valid URL-safe base64 material accepted by the NautilusTrader polymarket adapter: {reason}"
+            ),
+        });
+    }
     let passphrase = resolve_field(
         context.client_key,
         "passphrase_ssm_path",
@@ -443,10 +558,10 @@ pub fn resolve_secrets(
         resolver,
     )?;
     Ok(Arc::new(ResolvedBoltV3PolymarketSecrets {
-        private_key,
-        api_key,
-        api_secret,
-        passphrase,
+        private_key: Zeroizing::new(private_key),
+        api_key: Zeroizing::new(api_key),
+        api_secret: Zeroizing::new(api_secret),
+        passphrase: Zeroizing::new(passphrase),
     }))
 }
 
@@ -509,6 +624,21 @@ fn normalize_api_secret_padding(mut api_secret: String) -> String {
     api_secret
 }
 
+/// Validates that the (padding-canonicalized) Polymarket `api_secret` decodes
+/// under the same padded `URL_SAFE` base64 engine the pinned NT Polymarket
+/// `Credential::new` uses, so an unusable secret is rejected at SSM resolution
+/// time rather than surfacing as an opaque NT client-construction failure
+/// later. Mirrors the resolve-time shape checks for `private_key`
+/// ([`validate_private_key_shape`]) and the Binance `api_secret`
+/// (`binance::validate_binance_api_secret_shape`).
+fn validate_api_secret_shape(api_secret: &str) -> Result<(), String> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE
+        .decode(api_secret)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 pub fn map_adapters(
     context: ProviderAdapterMapContext<'_>,
 ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
@@ -565,9 +695,9 @@ pub fn build_fee_provider(
     let secrets = secrets_for(client_key, resolved)?;
     let secrets = PolymarketSecrets::resolve(
         Some(secrets.private_key.as_str()),
-        Some(secrets.api_key.clone()),
-        Some(secrets.api_secret.clone()),
-        Some(secrets.passphrase.clone()),
+        Some(secrets.api_key.as_str().to_owned()),
+        Some(secrets.api_secret.as_str().to_owned()),
+        Some(secrets.passphrase.as_str().to_owned()),
         cfg.funder.clone(),
     )
     .map_err(|error| BoltV3AdapterMappingError::ValidationInvariant {
@@ -680,8 +810,14 @@ fn build_market_slug_filter(
                 updown_market_slug(&asset, &token, next),
             ],
             Err(error) => {
-                log::warn!(
-                    "bolt-v3 provider binding: skipping updown filter cycle (cadence={cadence}, now_unix_secs={now}): {error}"
+                // Fail closed: returning an empty slug set narrows the
+                // Polymarket instrument universe to zero for this cycle, which
+                // starves the strategy of tradeable instruments. That is the
+                // safe direction, but it must never be silent — emit at
+                // `error!` so an operator sees the data-starvation instead of a
+                // quiet warning that scrolls past.
+                log::error!(
+                    "bolt-v3 provider binding: failing closed on updown filter cycle (cadence={cadence}, now_unix_secs={now}); instrument universe narrowed to zero for this cycle: {error}"
                 );
                 Vec::new()
             }
@@ -715,10 +851,10 @@ fn map_execution(
     Ok(PolymarketExecClientConfig {
         trader_id: root.trader_id,
         account_id: cfg.account_id,
-        private_key: Some(secrets.private_key.clone()),
-        api_key: Some(secrets.api_key.clone()),
-        api_secret: Some(secrets.api_secret.clone()),
-        passphrase: Some(secrets.passphrase.clone()),
+        private_key: Some(secrets.private_key.as_str().to_owned()),
+        api_key: Some(secrets.api_key.as_str().to_owned()),
+        api_secret: Some(secrets.api_secret.as_str().to_owned()),
+        passphrase: Some(secrets.passphrase.as_str().to_owned()),
         funder: cfg.funder,
         signature_type: nt_signature_type(cfg.signature_type),
         base_url_http: Some(cfg.base_url_http),

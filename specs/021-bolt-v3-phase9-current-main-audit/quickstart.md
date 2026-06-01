@@ -36,7 +36,7 @@ Expected:
 ## Live-Readiness Blockers
 
 ```bash
-ls -l config/live.local{.example,}.toml config/root.example.toml config/strategies/binary_oracle.example.toml
+ls -l config/live.local{.example,}.toml config/root.toml config/strategies/binary_oracle.example.toml
 rg -n "T038|T046" specs/001-thin-live-canary-path/tasks.md
 ```
 

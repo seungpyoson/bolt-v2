@@ -2,6 +2,15 @@ mod support;
 
 use std::fs;
 
+const OLD_CHAINLINK_FIXTURE_FEED_ID: &str =
+    "0x00036b4aa7e57ca7b68ae1bf45653f56b656fd3aa335ef7fae696b663f1b8472";
+const CHAINLINK_BTC_TESTNET_FEED_ID: &str =
+    "0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439";
+const CHAINLINK_TEST_FEED_ID_PRIMARY: &str =
+    "0x1111111111111111111111111111111111111111111111111111111111111111";
+const CHAINLINK_TEST_FEED_ID_SECONDARY: &str =
+    "0x2222222222222222222222222222222222222222222222222222222222222222";
+
 #[test]
 fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
@@ -15,10 +24,7 @@ fn bolt_v3_config_uses_nautilus_vocabulary_field_names() {
         strategy.execution_client_id,
         nautilus_model::identifiers::ClientId::from("polymarket_main")
     );
-    assert_eq!(
-        strategy.reference_data["primary"].data_client_id,
-        nautilus_model::identifiers::ClientId::from("binance_reference")
-    );
+    assert!(strategy.reference_data.is_empty());
 
     let data_engine = &loaded.root.nautilus.data_engine;
     let exec_engine = &loaded.root.nautilus.exec_engine;
@@ -42,15 +48,10 @@ fn bolt_v3_config_uses_clients_section_with_nt_venue_identifier() {
 
     let clients = &loaded.root.clients;
     assert!(clients.contains_key("polymarket_main"));
-    assert!(clients.contains_key("binance_reference"));
 
     let polymarket = &clients["polymarket_main"];
     assert_eq!(polymarket.venue, Venue::from("POLYMARKET"));
     assert!(polymarket.execution.is_some());
-
-    let binance = &clients["binance_reference"];
-    assert_eq!(binance.venue, Venue::from("BINANCE"));
-    assert!(binance.execution.is_none());
 }
 
 #[test]
@@ -80,6 +81,194 @@ fn bolt_v3_root_trader_id_rejects_empty_string_at_parse_time() {
         rendered.contains("empty") || rendered.contains("invalid"),
         "rejection should explain the empty trader_id, got: {rendered}"
     );
+}
+
+#[test]
+fn bolt_v3_live_canary_proof_policy_is_absent_or_disabled_by_default() {
+    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+
+    let loaded = load_bolt_v3_config(&support::repo_path("config/root.toml"))
+        .expect("root config should load");
+    let live_canary = loaded
+        .root
+        .live_canary
+        .expect("fixture should declare live canary controls");
+
+    if let Some(proof_policy) = live_canary.proof_policy {
+        assert!(
+            !proof_policy.enabled,
+            "fixture proof policy must not arm canary proof by default"
+        );
+    }
+}
+
+#[test]
+fn bolt_v3_live_canary_proof_policy_rejects_non_proof_only_claim() {
+    let messages = validate_root_messages_with_live_canary_proof_policy(
+        &valid_live_canary_proof_policy_block().replace(
+            "proof_claim = \"proof_only\"",
+            "proof_claim = \"alpha_ready\"",
+        ),
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("live_canary.proof_policy.proof_claim")
+                && message.contains("proof_only")
+        }),
+        "non-proof-only claims must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_live_canary_proof_policy_rejects_notional_above_canary_cap() {
+    let with_proof_policy = root_config_with_live_canary_proof_policy(
+        &valid_live_canary_proof_policy_block()
+            .replace("proof_notional = \"1.00\"", "proof_notional = \"5.01\""),
+    )
+    .replace(
+        "max_notional_per_order = \"1.00\"",
+        "max_notional_per_order = \"5.00\"",
+    );
+    let messages = validate_root_messages_from_source(&with_proof_policy);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("live_canary.proof_policy.proof_notional")
+                && message.contains("max_notional_per_order")
+        }),
+        "proof notional above live canary cap must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_live_canary_proof_policy_rejects_unsupported_policy_kind() {
+    let messages = validate_root_messages_with_live_canary_proof_policy(
+        &valid_live_canary_proof_policy_block().replace(
+            "policy_kind = \"least_bad_strategy_candidate\"",
+            "policy_kind = \"specific_venue_probe\"",
+        ),
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("live_canary.proof_policy.policy_kind")
+                && message.contains("least_bad_strategy_candidate")
+        }),
+        "unsupported proof policy kind must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_live_canary_proof_policy_rejects_unsupported_notional_mode() {
+    let messages = validate_root_messages_with_live_canary_proof_policy(
+        &valid_live_canary_proof_policy_block()
+            .replace("notional_mode = \"fixed\"", "notional_mode = \"adaptive\""),
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("live_canary.proof_policy.notional_mode") && message.contains("fixed")
+        }),
+        "unsupported proof policy notional mode must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_live_canary_proof_policy_rejects_unsupported_candidate_score_source() {
+    let messages = validate_root_messages_with_live_canary_proof_policy(
+        &valid_live_canary_proof_policy_block().replace(
+            "candidate_score_source = \"proof_source\"",
+            "candidate_score_source = \"external_override\"",
+        ),
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("live_canary.proof_policy.candidate_score_source")
+                && message.contains("proof_source")
+        }),
+        "unsupported proof policy candidate score source must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_live_canary_proof_policy_rejects_rotation_min_above_attempts() {
+    let messages = validate_root_messages_with_live_canary_proof_policy(
+        &valid_live_canary_proof_policy_block().replace(
+            "rotation_min_distinct_markets = 1\nrotation_max_attempts = 1",
+            "rotation_min_distinct_markets = 2\nrotation_max_attempts = 1",
+        ),
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("live_canary.proof_policy.rotation_min_distinct_markets")
+                && message.contains("rotation_max_attempts")
+        }),
+        "rotation minimum above attempts must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_live_canary_proof_policy_rejects_zero_book_snapshot_interval() {
+    let messages = validate_root_messages_with_live_canary_proof_policy(
+        &valid_live_canary_proof_policy_block().replace(
+            "book_snapshot_interval_millis = 1000",
+            "book_snapshot_interval_millis = 0",
+        ),
+    );
+
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("book_snapshot_interval_millis")),
+        "zero proof policy book snapshot interval must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_live_canary_proof_policy_rejects_quote_quantity() {
+    // The canary proof executor sizes the proof order from a base share quantity. A
+    // quote-quantity proof order would denominate that base quantity as a quote-currency amount
+    // and issue an extra venue collateral-balance REST request, so it must fail closed at load.
+    let messages = validate_root_messages_with_live_canary_proof_policy(
+        &valid_live_canary_proof_policy_block()
+            .replace("is_quote_quantity = false", "is_quote_quantity = true"),
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("live_canary.proof_policy.is_quote_quantity")
+                && message.contains("base share quantity")
+        }),
+        "quote-quantity proof policy must fail closed at load: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_live_canary_proof_policy_rejects_blank_strategy_or_execution_client() {
+    let messages = validate_root_messages_with_live_canary_proof_policy(
+        &valid_live_canary_proof_policy_block()
+            .replace(
+                "strategy_instance_id = \"configured_strategy\"",
+                "strategy_instance_id = \"\"",
+            )
+            .replace(
+                "execution_client_id = \"configured_execution_client\"",
+                "execution_client_id = \"\"",
+            ),
+    );
+
+    for expected in [
+        "live_canary.proof_policy.strategy_instance_id",
+        "live_canary.proof_policy.execution_client_id",
+    ] {
+        assert!(
+            messages.iter().any(|message| message.contains(expected)),
+            "blank proof policy identity field `{expected}` must fail closed: {messages:#?}"
+        );
+    }
 }
 
 #[test]
@@ -206,12 +395,12 @@ fn bolt_v3_polymarket_and_nautilus_config_rejects_nt_field_aliases() {
 fn bolt_v3_operator_evidence_allows_unassigned_order_ids() {
     use bolt_v2::bolt_v3_config::BoltV3RootConfig;
 
-    let example = std::fs::read_to_string(support::repo_path("config/root.example.toml"))
-        .expect("root example should be readable");
-    assert!(!example.contains("client_order_id_hash"));
-    assert!(!example.contains("venue_order_id_hash"));
+    let source = std::fs::read_to_string(support::repo_path("config/root.toml"))
+        .expect("root config should be readable");
+    assert!(!source.contains("client_order_id_hash"));
+    assert!(!source.contains("venue_order_id_hash"));
 
-    let parsed = toml::from_str::<BoltV3RootConfig>(&example)
+    let parsed = toml::from_str::<BoltV3RootConfig>(&source)
         .expect("operator evidence should not require order IDs before submit");
 
     assert!(
@@ -224,6 +413,67 @@ fn bolt_v3_operator_evidence_allows_unassigned_order_ids() {
 }
 
 #[test]
+fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() {
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
+        let source = std::fs::read_to_string(support::repo_path(relative_path))
+            .expect("root config should be readable");
+        assert!(
+            !source.contains(OLD_CHAINLINK_FIXTURE_FEED_ID),
+            "{relative_path} should not ship the old generic Chainlink fixture feed as a token mapping"
+        );
+        assert!(
+            !source.contains(CHAINLINK_BTC_TESTNET_FEED_ID),
+            "{relative_path} should not ship a BTC-specific Chainlink feed as a token mapping"
+        );
+
+        let parsed = toml::from_str::<toml::Value>(&source).expect("root TOML should parse");
+        let feed_bindings = parsed
+            .get("gate_providers")
+            .and_then(|value| value.get("resolution_oracle_primary"))
+            .and_then(|value| value.get("chainlink_data_streams"))
+            .and_then(|value| value.get("feed_bindings"))
+            .and_then(toml::Value::as_array)
+            .expect("root config should declare Chainlink feed bindings");
+        assert_eq!(
+            feed_bindings.len(),
+            1,
+            "{relative_path} should not ship unused canonical Chainlink feed bindings"
+        );
+        assert_eq!(
+            feed_bindings[0]
+                .get("resolution_identity")
+                .and_then(toml::Value::as_str),
+            Some("configured-reference-price"),
+            "{relative_path} feed binding should match the shipped strategy mapping"
+        );
+    }
+}
+
+#[test]
+fn bolt_v3_operator_evidence_rejects_pre_run_egress_probe_inputs() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+
+    let source = std::fs::read_to_string(support::repo_path("config/root.toml"))
+        .expect("root config should be readable");
+    let with_operator_evidence_probe_inputs = source.replace(
+        "[live_canary.operator_evidence]\n",
+        concat!(
+            "[live_canary.operator_evidence]\n",
+            "egress_identity_observed_path = \"/var/lib/bolt/operator-evidence/egress-identity-observed.txt\"\n",
+            "approved_egress_identity_sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"\n",
+        ),
+    );
+
+    let error = toml::from_str::<BoltV3RootConfig>(&with_operator_evidence_probe_inputs)
+        .expect_err("pre-run egress probe inputs must not be accepted in operator evidence");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("unknown field"),
+        "operator-evidence egress probe input rejection should come from deny_unknown_fields, got: {rendered}"
+    );
+}
+
+#[test]
 fn bolt_v3_reference_data_instrument_id_uses_nt_typed_identifier() {
     // `ReferenceDataBlock.instrument_id` is typed as
     // `nautilus_model::identifiers::InstrumentId`. The strategy block is
@@ -231,33 +481,28 @@ fn bolt_v3_reference_data_instrument_id_uses_nt_typed_identifier() {
     // so NT's `impl_serialization_for_identifier!` macro runs and routes
     // through `InstrumentId::new_checked`, eliminating the bolt-side
     // runtime empty / non-empty guard.
-    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
     use nautilus_model::identifiers::InstrumentId;
 
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let loaded = load_bolt_v3_config(&root_path).expect("v3 config should load");
+    let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_fixture_with_reference_data(
+        "reference_data_client",
+        "REFERENCE.SOURCE",
+    ))
+    .expect("strategy with optional reference_data should parse");
 
-    let reference = loaded.strategies[0]
-        .config
+    let reference = strategy
         .reference_data
         .get("primary")
-        .expect("binary_oracle strategy fixture should have reference_data.primary");
+        .expect("strategy should have reference_data.primary");
     let instrument_id: InstrumentId = reference.instrument_id;
-    assert_eq!(instrument_id.to_string(), "BTCUSDT.BINANCE");
+    assert_eq!(instrument_id.to_string(), "REFERENCE.SOURCE");
 }
 
 #[test]
 fn bolt_v3_reference_data_instrument_id_rejects_empty_string_at_parse_time() {
     use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
 
-    let strategy_toml = std::fs::read_to_string(support::repo_path(
-        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-    ))
-    .expect("strategy fixture should be readable");
-    let mutated = strategy_toml.replace(
-        "instrument_id = \"BTCUSDT.BINANCE\"",
-        "instrument_id = \"\"",
-    );
+    let mutated = strategy_fixture_with_reference_data("reference_data_client", "");
     let err = toml::from_str::<BoltV3StrategyConfig>(&mutated)
         .expect_err("empty instrument_id should be rejected by NT InstrumentId serde");
     let rendered = err.to_string();
@@ -292,12 +537,8 @@ fn bolt_v3_strategy_execution_client_id_uses_nt_typed_identifier() {
     let execution_client_id: ClientId = strategy.execution_client_id;
     assert_eq!(execution_client_id, ClientId::from("polymarket_main"));
 
-    let primary = strategy
-        .reference_data
-        .get("primary")
-        .expect("binary_oracle fixture should have reference_data.primary");
-    let data_client_id: ClientId = primary.data_client_id;
-    assert_eq!(data_client_id, ClientId::from("binance_reference"));
+    assert!(strategy.reference_data.is_empty());
+    let _typed_client_id_check = ClientId::from("reference_data_client");
 }
 
 #[test]
@@ -325,14 +566,7 @@ fn bolt_v3_strategy_execution_client_id_rejects_empty_string_at_parse_time() {
 fn bolt_v3_reference_data_data_client_id_rejects_empty_string_at_parse_time() {
     use bolt_v2::bolt_v3_config::BoltV3StrategyConfig;
 
-    let strategy_toml = std::fs::read_to_string(support::repo_path(
-        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-    ))
-    .expect("strategy fixture should be readable");
-    let mutated = strategy_toml.replace(
-        "data_client_id = \"binance_reference\"",
-        "data_client_id = \"\"",
-    );
+    let mutated = strategy_fixture_with_reference_data("", "REFERENCE.SOURCE");
     let err = toml::from_str::<BoltV3StrategyConfig>(&mutated)
         .expect_err("empty data_client_id should be rejected by NT ClientId serde");
     let rendered = err.to_string();
@@ -393,6 +627,34 @@ fn bolt_v3_strategy_oms_type_accepts_nt_variants() {
             "NT oms_type variant {supported_oms_type} should not be narrowed by bolt validation: {messages:#?}"
         );
     }
+}
+
+#[test]
+fn binary_oracle_strategy_rejects_legacy_price_to_beat_feed_id_under_runtime() {
+    let messages = legacy_binary_oracle_runtime_field_messages(
+        "price_to_beat_feed_id = \"0x1111111111111111111111111111111111111111111111111111111111111111\"",
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.runtime.price_to_beat_feed_id")
+                && message.contains("[gate_providers.<id>.")
+        }),
+        "legacy price_to_beat_feed_id must fail closed with a gate-provider migration message: {messages:#?}"
+    );
+}
+
+#[test]
+fn binary_oracle_strategy_rejects_legacy_price_to_beat_source_under_runtime() {
+    let messages = legacy_binary_oracle_runtime_field_messages(
+        "price_to_beat_source = \"chainlink_data_streams.report_at_boundary\"",
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.runtime.price_to_beat_source")
+                && message.contains("target.gate_subscriptions")
+        }),
+        "legacy price_to_beat_source must fail closed with a target gate migration message: {messages:#?}"
+    );
 }
 
 #[test]
@@ -488,15 +750,14 @@ fn bolt_v3_reference_data_client_id_rejects_execution_only_client_with_client_vo
         bolt_v3_validate::validate_strategies,
     };
 
-    let data_block = "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream-sbe.binance.com/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n";
-    let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(data_block, ""))
-        .expect("execution-only binance fixture should parse");
-    let strategy: BoltV3StrategyConfig = toml::from_str(
-        &std::fs::read_to_string(support::repo_path(
-            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-        ))
-        .expect("strategy fixture should be readable"),
-    )
+    let data_block = "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream-sbe.binance.com/ws\" # NT: BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n";
+    let root: BoltV3RootConfig =
+        toml::from_str(&replace_in_binance_reference_fixture(data_block, ""))
+            .expect("execution-only binance fixture should parse");
+    let strategy: BoltV3StrategyConfig = toml::from_str(&strategy_fixture_with_reference_data(
+        "binance_reference",
+        "REFERENCE.SOURCE",
+    ))
     .expect("strategy fixture should parse");
     let loaded = vec![LoadedStrategy {
         config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
@@ -519,18 +780,15 @@ fn bolt_v3_reference_data_rejects_same_instrument_across_distinct_data_clients()
         bolt_v3_validate::validate_strategies,
     };
 
-    let stable_root: BoltV3RootConfig = toml::from_str(
-        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
-            .expect("root fixture should be readable"),
-    )
-    .expect("stable root should parse");
-    let mutated_strategy = std::fs::read_to_string(support::repo_path(
-        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
-    ))
-    .expect("strategy fixture should be readable")
-    .replace(
-        "[reference_data.primary]\ndata_client_id = \"binance_reference\"\ninstrument_id = \"BTCUSDT.BINANCE\"",
-        "[reference_data.primary]\ndata_client_id = \"binance_reference\"\ninstrument_id = \"BTCUSDT.BINANCE\"\n\n[reference_data.secondary]\ndata_client_id = \"polymarket_main\"\ninstrument_id = \"BTCUSDT.BINANCE\"",
+    let stable_root: BoltV3RootConfig =
+        toml::from_str(&fixture_root_with_binance_reference_client())
+            .expect("stable root should parse");
+    let mutated_strategy = format!(
+        "{}\n[reference_data.primary]\ndata_client_id = \"binance_reference\"\ninstrument_id = \"REFERENCE.SOURCE\"\n\n[reference_data.secondary]\ndata_client_id = \"polymarket_main\"\ninstrument_id = \"REFERENCE.SOURCE\"\n",
+        std::fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable")
     );
     let strategy: BoltV3StrategyConfig = toml::from_str(&mutated_strategy)
         .expect("duplicate reference instrument strategy should parse");
@@ -544,7 +802,7 @@ fn bolt_v3_reference_data_rejects_same_instrument_across_distinct_data_clients()
     let rendered = messages.join("\n");
 
     assert!(
-        rendered.contains("reference_data.secondary.instrument_id `BTCUSDT.BINANCE`")
+        rendered.contains("reference_data.secondary.instrument_id `REFERENCE.SOURCE`")
             && rendered.contains("binance_reference")
             && rendered.contains("polymarket_main")
             && rendered.contains("QuoteTick does not carry data_client_id"),
@@ -916,6 +1174,311 @@ fn bolt_v3_archetype_rejects_manage_stop_with_non_market_forced_exit_order() {
                 && message.contains("market")
         }),
         "manage_stop should reject forced_exit_order semantics NT close_all_positions cannot honor: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_non_positive_order_notional_target() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+
+    for bad_value in ["0", "-1.00"] {
+        let mut strategy: BoltV3StrategyConfig = toml::from_str(
+            &fs::read_to_string(support::repo_path(
+                "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+            ))
+            .expect("strategy fixture should be readable"),
+        )
+        .expect("strategy fixture should parse");
+        let parameters = strategy
+            .parameters
+            .as_table_mut()
+            .expect("strategy parameters should be a table");
+        parameters.insert(
+            "order_notional_target".to_string(),
+            toml::Value::String(bad_value.to_string()),
+        );
+
+        let loaded = vec![LoadedStrategy {
+            config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+            relative_path: "strategies/binary_oracle.toml".to_string(),
+            config: strategy,
+        }];
+
+        let messages = validate_strategies(&stable_root, &loaded);
+        assert!(
+            messages.iter().any(|message| {
+                message.contains("parameters.order_notional_target")
+                    && message.contains("must be a positive decimal")
+            }),
+            "order_notional_target={bad_value} must fail closed as non-positive at load: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_non_positive_maximum_position_notional() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+
+    for bad_value in ["0", "-5.00"] {
+        let mut strategy: BoltV3StrategyConfig = toml::from_str(
+            &fs::read_to_string(support::repo_path(
+                "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+            ))
+            .expect("strategy fixture should be readable"),
+        )
+        .expect("strategy fixture should parse");
+        let parameters = strategy
+            .parameters
+            .as_table_mut()
+            .expect("strategy parameters should be a table");
+        parameters.insert(
+            "maximum_position_notional".to_string(),
+            toml::Value::String(bad_value.to_string()),
+        );
+
+        let loaded = vec![LoadedStrategy {
+            config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+            relative_path: "strategies/binary_oracle.toml".to_string(),
+            config: strategy,
+        }];
+
+        let messages = validate_strategies(&stable_root, &loaded);
+        assert!(
+            messages.iter().any(|message| {
+                message.contains("parameters.maximum_position_notional")
+                    && message.contains("must be a positive decimal")
+            }),
+            "maximum_position_notional={bad_value} must fail closed as non-positive at load: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_order_notional_target_above_maximum_position_notional() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let parameters = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table");
+    // order target (5.00) <= root risk.default_max_notional_per_order (10.00) but ABOVE the
+    // position cap (1.00): an unsatisfiable per-order target must fail closed at load, not
+    // silently clamp at runtime.
+    parameters.insert(
+        "order_notional_target".to_string(),
+        toml::Value::String("5.00".to_string()),
+    );
+    parameters.insert(
+        "maximum_position_notional".to_string(),
+        toml::Value::String("1.00".to_string()),
+    );
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.order_notional_target")
+                && message.contains("must be <=")
+                && message.contains("parameters.maximum_position_notional")
+        }),
+        "order_notional_target above maximum_position_notional must fail closed at load: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_negative_edge_threshold_basis_points() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let parameters = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table");
+    // A negative edge threshold admits negative-edge (guaranteed-loss) entries and must
+    // fail closed at load (A-EDGE).
+    parameters.insert(
+        "edge_threshold_basis_points".to_string(),
+        toml::Value::Integer(-1),
+    );
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.edge_threshold_basis_points")
+                && message.contains("must be >= 0")
+        }),
+        "negative edge_threshold_basis_points must fail closed at load: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_market_quote_quantity_entry_order() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let parameters = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table");
+    // Build a valid MARKET entry by cloning the fixture's market exit_order, then set
+    // is_quote_quantity=true (and is_reduce_only=false, since entries open the position). A
+    // market quote-quantity BUY entry costs an extra venue collateral-balance REST request, so
+    // it must fail closed at load for the modeled egress fanout (2) to stay the worst-case.
+    let mut entry_order = parameters
+        .get("exit_order")
+        .cloned()
+        .expect("fixture parameters should include a market exit_order");
+    let entry_table = entry_order
+        .as_table_mut()
+        .expect("exit_order fixture should be an order table");
+    entry_table.insert("is_quote_quantity".to_string(), toml::Value::Boolean(true));
+    entry_table.insert("is_reduce_only".to_string(), toml::Value::Boolean(false));
+    parameters.insert("entry_order".to_string(), entry_order);
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.entry_order")
+                && message.contains("order_type=market")
+                && message.contains("is_quote_quantity")
+        }),
+        "market quote-quantity entry must fail closed at load: {messages:#?}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_quote_quantity_limit_entry_order() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("root fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let mut strategy: BoltV3StrategyConfig = toml::from_str(
+        &fs::read_to_string(support::repo_path(
+            "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+        ))
+        .expect("strategy fixture should be readable"),
+    )
+    .expect("strategy fixture should parse");
+    let parameters = strategy
+        .parameters
+        .as_table_mut()
+        .expect("strategy parameters should be a table");
+    // The fixture entry_order is a LIMIT order. A limit quote-quantity entry skips the extra
+    // collateral REST fetch (so it is not the market-fanout case above), but quote-quantity sizing
+    // converts quote->base off an unguarded top-of-book cache tick, so it must also fail closed at
+    // load via the base-quantity guard.
+    let entry_order = parameters
+        .get_mut("entry_order")
+        .expect("fixture parameters should include a limit entry_order")
+        .as_table_mut()
+        .expect("entry_order fixture should be an order table");
+    assert_eq!(
+        entry_order
+            .get("order_type")
+            .and_then(|value| value.as_str()),
+        Some("limit"),
+        "fixture entry_order must be a limit order for this test"
+    );
+    entry_order.insert("is_quote_quantity".to_string(), toml::Value::Boolean(true));
+
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.entry_order")
+                && message.contains("is_quote_quantity")
+                && !message.contains("order_type=market")
+        }),
+        "limit quote-quantity entry must fail closed at load via the base-quantity guard: {messages:#?}"
     );
 }
 
@@ -1462,7 +2025,7 @@ fn bolt_v3_archetype_accepts_triggered_entry_order_with_trigger_instrument_id() 
         .replace("order_type = \"limit\"", "order_type = \"stop_market\"")
         .replace(
             "time_in_force = \"fok\"\nis_post_only = false",
-            "time_in_force = \"gtc\"\ntrigger_price = 0.52\ntrigger_type = \"last_price\"\ntrigger_instrument_id = \"ETHUSDT.BINANCE\"\nis_post_only = false",
+            "time_in_force = \"gtc\"\ntrigger_price = 0.52\ntrigger_type = \"last_price\"\ntrigger_instrument_id = \"TRIGGER.SOURCE\"\nis_post_only = false",
         );
 
     let strategy: BoltV3StrategyConfig = toml::from_str(&stop_market_strategy_source)
@@ -1498,7 +2061,7 @@ fn bolt_v3_archetype_rejects_non_triggered_entry_order_with_trigger_instrument_i
     .expect("strategy fixture should be readable");
     let strategy_source = fixture.replacen(
         "time_in_force = \"fok\"\nis_post_only = false",
-        "time_in_force = \"fok\"\ntrigger_instrument_id = \"ETHUSDT.BINANCE\"\nis_post_only = false",
+        "time_in_force = \"fok\"\ntrigger_instrument_id = \"TRIGGER.SOURCE\"\nis_post_only = false",
         1,
     );
 
@@ -2310,7 +2873,7 @@ fn bolt_v3_archetype_rejects_limit_if_touched_gtd_entry_without_expiry() {
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_limit_if_touched_entry_quote_quantity_flag() {
+fn bolt_v3_archetype_rejects_limit_if_touched_entry_quote_quantity() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -2346,9 +2909,19 @@ fn bolt_v3_archetype_accepts_limit_if_touched_entry_quote_quantity_flag() {
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
+    // The LimitIfTouched order template (trigger_price + gtc) parses as a valid NT order
+    // field set (the toml::from_str above succeeds), but a non-market quote-quantity
+    // ENTRY is forbidden by R12: quote->base sizing reads an unguarded top-of-book cache
+    // tick with no submit-time freshness bound. Re-enable is tracked in #506. Assert the
+    // base-quantity guard fails closed via the same non-market branch as the limit and
+    // stop_limit cases (message excludes the market-fanout variant).
     assert!(
-        messages.is_empty(),
-        "LimitIfTouched entry quote-quantity flag should be accepted as an NT order field: {messages:#?}"
+        messages.iter().any(|message| {
+            message.contains("parameters.entry_order")
+                && message.contains("is_quote_quantity")
+                && !message.contains("order_type=market")
+        }),
+        "LimitIfTouched (non-market) quote-quantity entry must fail closed at load via the base-quantity guard (R12, #506): {messages:#?}"
     );
 }
 
@@ -2603,7 +3176,7 @@ fn bolt_v3_archetype_rejects_stop_limit_gtd_entry_without_expiry() {
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_stop_limit_entry_quote_quantity_flag() {
+fn bolt_v3_archetype_rejects_stop_limit_entry_quote_quantity() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -2636,9 +3209,19 @@ fn bolt_v3_archetype_accepts_stop_limit_entry_quote_quantity_flag() {
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
+    // The StopLimit order template (trigger_price + gtc) parses as a valid NT order
+    // field set (the toml::from_str above succeeds), but a non-market quote-quantity
+    // ENTRY is forbidden by R12: quote->base sizing reads an unguarded top-of-book
+    // cache tick with no submit-time freshness bound. Re-enable is tracked in #506.
+    // Assert the base-quantity guard fails closed via the same non-market branch as
+    // the limit case (message excludes the market-fanout variant).
     assert!(
-        messages.is_empty(),
-        "StopLimit entry quote-quantity flag should be accepted as an NT order field: {messages:#?}"
+        messages.iter().any(|message| {
+            message.contains("parameters.entry_order")
+                && message.contains("is_quote_quantity")
+                && !message.contains("order_type=market")
+        }),
+        "StopLimit (non-market) quote-quantity entry must fail closed at load via the base-quantity guard (R12, #506): {messages:#?}"
     );
 }
 
@@ -2663,12 +3246,8 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
         loaded.root.clients["polymarket_main"].venue.as_str(),
         "POLYMARKET"
     );
-    assert_eq!(
-        loaded.root.clients["binance_reference"].venue.as_str(),
-        "BINANCE"
-    );
     assert!(loaded.root.clients["polymarket_main"].execution.is_some());
-    assert!(loaded.root.clients["binance_reference"].execution.is_none());
+    assert!(!loaded.root.clients.contains_key("binance_reference"));
 
     assert_eq!(loaded.strategies.len(), 1);
     let strategy = &loaded.strategies[0].config;
@@ -2692,11 +3271,7 @@ fn parses_minimal_bolt_v3_root_and_strategy_config() {
     assert_eq!(parameters.entry_order.time_in_force, TimeInForce::Fok);
     assert_eq!(parameters.exit_order.order_type, OrderType::Market);
     assert_eq!(parameters.exit_order.time_in_force, TimeInForce::Ioc);
-    assert!(strategy.reference_data.contains_key("primary"));
-    assert_eq!(
-        strategy.reference_data["primary"].data_client_id,
-        nautilus_model::identifiers::ClientId::from("binance_reference")
-    );
+    assert!(strategy.reference_data.is_empty());
 }
 
 #[test]
@@ -2746,6 +3321,1018 @@ fn rejects_unknown_bolt_v3_config_fields() {
         parameters_error.contains("bogus_parameter"),
         "archetype deserialization error should name the unknown strategy field, got: {parameters_error}"
     );
+}
+
+#[test]
+fn accepts_canonical_gate_provider_root_blocks() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 8
+
+[gate_providers.venue_metadata_primary]
+provider_kind = "hyperliquid_hip4"
+capabilities = ["market_metadata", "reference_value"]
+
+[gate_providers.venue_metadata_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.venue_metadata_primary.hyperliquid_hip4]
+metadata_scope = "asset_universe"
+"#,
+    ))
+    .expect("canonical gate provider blocks should parse");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.is_empty(),
+        "canonical gate provider blocks should validate: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_chainlink_data_streams_provider_level_feed_fields() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 8
+endpoint_id = "testnet-data-streams"
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+"#,
+    ))
+    .expect("legacy provider-level feed fields should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary.chainlink_data_streams")
+                && message.contains("feed_bindings")
+        }),
+        "provider-level Chainlink feed fields should fail with feed_bindings guidance: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_chainlink_data_streams_unknown_provider_field() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+unowned_connection_field = "must-fail"
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 8
+"#,
+    ))
+    .expect("unknown Chainlink provider fields should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary.chainlink_data_streams")
+                && message.contains("unowned_connection_field")
+        }),
+        "unknown Chainlink provider fields should fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_chainlink_data_streams_missing_rest_request_fields() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 8
+"#,
+    ))
+    .expect("missing Chainlink request fields should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("rest_base_url")),
+        "missing Chainlink rest_base_url should fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_gate_provider_client_id_without_configured_client() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+client_id = "missing_chainlink_client"
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 8
+"#,
+    ))
+    .expect("dangling gate provider client_id should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary.client_id")
+                && message.contains("missing_chainlink_client")
+        }),
+        "dangling gate provider client_id should fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_chainlink_data_streams_json_credential_parameter_shape() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+ssm_credential_parameter = "/bolt/gate-providers/chainlink/testnet"
+
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+report_schema_version = 3
+report_decimal_scale = 8
+"#,
+    ))
+    .expect("legacy Chainlink credential shape should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("ssm_credential_parameter")
+                && message.contains("api_key_ssm_parameter")
+                && message.contains("api_secret_ssm_parameter")
+        }),
+        "legacy Chainlink JSON credential parameter should fail with migration guidance: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_gate_provider_fields_under_strategy_runtime() {
+    let strategy_toml = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable")
+    .replace(
+        "[parameters.runtime]\n",
+        "[parameters.runtime]\nchainlink_data_streams_feed_id = \"0x0000000000000000000000000000000000000000000000000000000000000000\"\n",
+    );
+
+    let strategy: bolt_v2::bolt_v3_config::BoltV3StrategyConfig = toml::from_str(&strategy_toml)
+        .expect("strategy envelope parse should keep parameters archetype-neutral");
+    let error = strategy
+        .parameters
+        .try_into::<bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock>()
+        .expect_err("gate provider source fields under [parameters.runtime] must be rejected")
+        .to_string();
+
+    assert!(
+        error.contains("parameters.runtime.chainlink_data_streams_feed_id")
+            && error.contains("[gate_providers.<id>.chainlink_data_streams]"),
+        "runtime gate provider field rejection should point to the gate provider table, got: {error}"
+    );
+}
+
+#[test]
+fn bolt_v3_archetype_rejects_all_six_gate_coupled_runtime_fields() {
+    // Class regression lock (Codex/internal-review forbidden_fields gap). All SIX provider-coupled
+    // fields are DECLARED in the RuntimeParametersBlock `Wire` struct, so `deny_unknown_fields`
+    // does NOT reject them — each is rejected only by a dedicated `is_some()` guard in the custom
+    // Deserialize impl (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs:165-194). Before this
+    // test only three of the six guards had injection coverage; the other three
+    // (price_to_beat_report_schema_version, price_to_beat_report_decimal_scale,
+    // forced_flat_stale_chainlink_ms) could be deleted while the field stayed a Wire field —
+    // silently accepting-and-dropping it with `cargo test` green. Inject EACH field under
+    // [parameters.runtime] and assert the deserializer fails closed naming the field path, so
+    // deleting any one guard now fails this test. Values are arbitrary: the guard fires on
+    // presence (`is_some()`), independent of value type.
+    let base = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+
+    let forbidden_fields: [(&str, &str); 6] = [
+        (
+            "price_to_beat_source",
+            "\"chainlink_data_streams.report_at_boundary\"",
+        ),
+        (
+            "price_to_beat_feed_id",
+            "\"0x0000000000000000000000000000000000000000000000000000000000000000\"",
+        ),
+        ("price_to_beat_report_schema_version", "3"),
+        ("price_to_beat_report_decimal_scale", "8"),
+        ("forced_flat_stale_chainlink_ms", "1500"),
+        (
+            "chainlink_data_streams_feed_id",
+            "\"0x0000000000000000000000000000000000000000000000000000000000000000\"",
+        ),
+    ];
+
+    for (field, value) in forbidden_fields {
+        let strategy_toml = base.replace(
+            "[parameters.runtime]\n",
+            &format!("[parameters.runtime]\n{field} = {value}\n"),
+        );
+        assert!(
+            strategy_toml.contains(&format!("{field} = {value}")),
+            "fixture must expose a [parameters.runtime] table to inject {field} into",
+        );
+
+        let strategy: bolt_v2::bolt_v3_config::BoltV3StrategyConfig =
+            toml::from_str(&strategy_toml)
+                .expect("strategy envelope parse should keep parameters archetype-neutral");
+        // A SUCCESSFUL deserialize here is the regression this test guards against (a deleted or
+        // weakened `is_some()` guard), so the Ok branch fails loudly; the Err branch is the
+        // fail-closed behavior and must name the offending `parameters.runtime.<field>` path.
+        let error = match strategy
+            .parameters
+            .try_into::<bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock>(
+        ) {
+            Ok(_) => panic!(
+                "provider-coupled runtime field {field} was ACCEPTED at deserialize \
+                 (is_some() guard missing or deleted) — fail-closed rejection lost"
+            ),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains(&format!("parameters.runtime.{field}")),
+            "rejection for {field} must name the field path parameters.runtime.{field}, got: {error}"
+        );
+    }
+}
+
+#[test]
+fn rejects_gate_provider_fields_under_wrong_provider_subtable() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.hyperliquid_hip4]
+metadata_scope = "asset_universe"
+"#,
+    ))
+    .expect("wrong provider subtable should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary")
+                && message.contains("provider_kind `chainlink_data_streams`")
+                && message
+                    .contains("[gate_providers.resolution_oracle_primary.chainlink_data_streams]")
+        }),
+        "wrong provider subtable should be rejected with the matching subtable path: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_unregistered_gate_provider_kind() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "made_up_oracle"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.made_up_oracle]
+endpoint_id = "test"
+"#,
+    ))
+    .expect("unregistered provider kind should parse before registry validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary.provider_kind")
+                && message.contains("made_up_oracle")
+                && message.contains("unregistered")
+        }),
+        "unregistered gate provider kind should fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_gate_provider_without_provider_kind() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+"#,
+    ))
+    .expect("missing provider_kind should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary.provider_kind")
+                && message.contains("required")
+        }),
+        "gate provider without provider_kind should fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_gate_provider_with_empty_capabilities() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = []
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+"#,
+    ))
+    .expect("empty capabilities should parse before semantic validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary.capabilities")
+                && message.contains("one or more")
+        }),
+        "gate provider with empty capabilities should fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_test_double_gate_provider_in_operator_root() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(&fixture_root_with_gate_providers(
+        r#"
+[gate_providers.fixture_resolution]
+provider_kind = "test_double"
+capabilities = ["resolution_value"]
+
+[gate_providers.fixture_resolution.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.fixture_resolution.test_double]
+fixture_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+"#,
+    ))
+    .expect("test_double provider should parse before live/local operator validation");
+
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.fixture_resolution.provider_kind")
+                && message.contains("test_double")
+                && message.contains("live/local operator TOML")
+        }),
+        "test_double gate providers must be rejected outside tests: {messages:#?}"
+    );
+}
+
+#[test]
+fn accepts_canonical_target_gate_subscription() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_kinds = ["chainlink_data_streams", "pyth", "exchange_index", "venue_native", "hyperliquid_hip4", "deribit_index", "outcome_oracle"]
+allowed_value_kinds = ["price", "index", "outcome", "metadata"]
+provider_preference = ["resolution_oracle_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+"#,
+    );
+
+    assert!(
+        messages.is_empty(),
+        "canonical target gate subscription should validate: {messages:#?}"
+    );
+}
+
+#[test]
+fn accepts_no_resolution_target_gate_mapping_with_provider_kinds() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_kinds = ["chainlink_data_streams"]
+allowed_value_kinds = ["price", "none"]
+provider_preference = ["resolution_oracle_primary"]
+allow_no_resolution = true
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "no_resolution"
+resolution_identity = "none"
+value_kind = "none"
+"#,
+    );
+
+    assert!(
+        messages.is_empty(),
+        "valid no-resolution mapping should validate even when provider kinds are listed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_provider_capability_as_target_gate_role() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.market_metadata]
+required = true
+allowed_provider_kinds = ["venue_native", "hyperliquid_hip4"]
+allowed_value_kinds = ["metadata"]
+allow_no_resolution = false
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.market_metadata")
+                && message.contains("provider capability")
+                && message.contains("GateRole")
+        }),
+        "market_metadata capability must not be accepted as a gate role: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_ambiguous_target_gate_market_mappings() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_ids = ["resolution_oracle_primary", "backup_resolution_oracle"]
+allowed_provider_kinds = ["chainlink_data_streams"]
+allowed_value_kinds = ["price"]
+provider_preference = ["resolution_oracle_primary", "backup_resolution_oracle"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+provider_id = "backup_resolution_oracle"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.resolution.market_mappings")
+                && message.contains("ambiguous")
+        }),
+        "duplicate market mappings should fail closed as ambiguous: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_static_single_provider_subscription_for_rotating_market() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_ids = ["resolution_oracle_primary"]
+allowed_value_kinds = ["price"]
+allow_no_resolution = false
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.resolution")
+                && message.contains("single static provider")
+                && message.contains("rotating")
+        }),
+        "rotating markets must not collapse to a single static provider assumption: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_multiple_matching_target_gate_providers_without_preference() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_ids = ["resolution_oracle_primary", "backup_resolution_oracle"]
+allowed_provider_kinds = ["chainlink_data_streams"]
+allowed_value_kinds = ["price"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.resolution.provider_preference")
+                && message.contains("multiple")
+                && message.contains("providers")
+        }),
+        "multiple matching providers require deterministic provider_preference: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_target_gate_provider_kind_and_value_kind_mismatch() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_kinds = ["hyperliquid_hip4"]
+allowed_value_kinds = ["price"]
+provider_preference = ["venue_metadata_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "configured-reference-price"
+value_kind = "metadata"
+provider_id = "venue_metadata_primary"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.resolution")
+                && message.contains("resolution_kind")
+                && message.contains("allowed_provider_kinds")
+                && message.contains("value_kind")
+                && message.contains("allowed_value_kinds")
+        }),
+        "provider-kind/value-kind mismatches must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_target_gate_mapping_without_allowed_provider_kinds() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_value_kinds = ["price"]
+provider_preference = ["resolution_oracle_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "configured-reference-price"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.resolution.allowed_provider_kinds")
+                && message.contains("provider-backed")
+        }),
+        "provider-backed mappings must not accept an unbounded provider-kind set: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_invalid_no_resolution_target_gate_usage() {
+    let messages = target_gate_subscription_messages(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_kinds = ["chainlink_data_streams"]
+allowed_value_kinds = ["price"]
+allow_no_resolution = true
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "no_resolution"
+resolution_identity = "none"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+"#,
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("target.gate_subscriptions.resolution.allow_no_resolution")
+                && message.contains("no_resolution")
+                && message.contains("value_kind")
+        }),
+        "invalid no-resolution policy should fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_chainlink_target_mapping_without_matching_feed_binding() {
+    let root_toml = root_with_single_chainlink_feed_binding(
+        "configured-primary-resolution",
+        CHAINLINK_TEST_FEED_ID_PRIMARY,
+    );
+    let strategy_toml = strategy_with_single_chainlink_mapping("configured-secondary-resolution");
+
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("strategy `strategies/binary_oracle.toml`")
+                && message.contains("configured-secondary-resolution")
+                && message.contains("feed_bindings")
+                && message.contains("no matching")
+        }),
+        "Chainlink target mapping without a matching feed binding must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_chainlink_target_mapping_without_resolvable_provider_id() {
+    let root_toml = root_with_single_chainlink_feed_binding(
+        "configured-primary-resolution",
+        CHAINLINK_TEST_FEED_ID_PRIMARY,
+    );
+    let strategy_toml = strategy_with_single_chainlink_mapping("configured-primary-resolution")
+        .replace(
+            "provider_preference = [\"resolution_oracle_primary\"]\n",
+            "",
+        )
+        .replace("provider_id = \"resolution_oracle_primary\"\n", "");
+
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("strategy `strategies/binary_oracle.toml`")
+                && message.contains("configured-primary-resolution")
+                && message.contains("provider_id")
+                && message.contains("Chainlink Data Streams")
+        }),
+        "Chainlink target mappings must resolve a concrete provider_id for feed bindings: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_target_gate_reference_to_missing_root_provider_id() {
+    let root_toml = root_with_single_chainlink_feed_binding(
+        "configured-primary-resolution",
+        CHAINLINK_TEST_FEED_ID_PRIMARY,
+    );
+    let strategy_toml = fixture_strategy_with_target_gate_subscriptions(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_ids = ["venue_metadata_primary"]
+allowed_provider_kinds = ["hyperliquid_hip4"]
+allowed_value_kinds = ["metadata"]
+provider_preference = ["venue_metadata_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "hyperliquid_hip4"
+resolution_identity = "configured-market-metadata"
+value_kind = "metadata"
+provider_id = "venue_metadata_primary"
+"#,
+    );
+
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("strategy `strategies/binary_oracle.toml`")
+                && message.contains("target.gate_subscriptions.resolution")
+                && message.contains("venue_metadata_primary")
+                && message.contains("gate_providers")
+        }),
+        "target gate provider ids must resolve to root gate_providers: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_unreachable_chainlink_feed_binding() {
+    let root_toml = root_with_chainlink_feed_bindings(&[
+        (
+            "configured-primary-resolution",
+            CHAINLINK_TEST_FEED_ID_PRIMARY,
+        ),
+        (
+            "configured-secondary-resolution",
+            CHAINLINK_TEST_FEED_ID_SECONDARY,
+        ),
+    ]);
+    let strategy_toml = strategy_with_single_chainlink_mapping("configured-primary-resolution");
+
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("gate_providers.resolution_oracle_primary")
+                && message.contains("configured-secondary-resolution")
+                && message.contains("feed_bindings")
+                && message.contains("not referenced by any loaded strategy")
+        }),
+        "unreachable Chainlink feed bindings must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn accepts_alternate_chainlink_mapping_with_matching_feed_binding() {
+    let root_toml = root_with_single_chainlink_feed_binding(
+        "configured-secondary-resolution",
+        CHAINLINK_TEST_FEED_ID_SECONDARY,
+    );
+    let strategy_toml = strategy_with_single_chainlink_mapping("configured-secondary-resolution");
+
+    let messages =
+        strategy_validation_messages_for_root_and_strategy_toml(&root_toml, &strategy_toml);
+    assert!(
+        messages.is_empty(),
+        "matching alternate Chainlink mapping should validate without fallback assumptions: {messages:#?}"
+    );
+}
+
+#[test]
+fn binary_oracle_fixture_uses_gate_subscription_without_provider_specific_runtime_fields() {
+    let source = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+
+    assert_binary_oracle_strategy_source_uses_gate_schema("fixture", &source);
+}
+
+#[test]
+fn canonical_binary_oracle_config_uses_gate_subscription_without_provider_specific_runtime_fields()
+{
+    let source =
+        std::fs::read_to_string(support::repo_path("config/strategies/binary_oracle.toml"))
+            .expect("canonical strategy config should be readable");
+
+    assert_binary_oracle_strategy_source_uses_gate_schema("canonical config", &source);
+}
+
+#[test]
+fn shipped_strategy_config_surface_uses_canonical_binary_oracle_path() {
+    let canonical_root = support::repo_path("config/root.toml");
+    let legacy_root = support::repo_path("config/root.example.toml");
+    let canonical_strategy = support::repo_path("config/strategies/binary_oracle.toml");
+    let legacy_strategy = support::repo_path("config/strategies/binary_oracle.example.toml");
+    assert!(
+        canonical_root.exists(),
+        "tracked root config should live at config/root.toml"
+    );
+    assert!(
+        !legacy_root.exists(),
+        "tracked root config should not keep an .example.toml twin"
+    );
+    assert!(
+        canonical_strategy.exists(),
+        "tracked strategy config should live at config/strategies/binary_oracle.toml"
+    );
+    assert!(
+        !legacy_strategy.exists(),
+        "tracked strategy config should not keep an .example.toml twin"
+    );
+
+    let root = std::fs::read_to_string(&canonical_root).expect("root config should be readable");
+    assert!(
+        root.contains("\"strategies/binary_oracle.toml\""),
+        "root config should load the canonical strategy path"
+    );
+    assert!(
+        !root.contains("binary_oracle.example.toml"),
+        "root config should not reference the legacy .example strategy path"
+    );
+
+    let justfile = std::fs::read_to_string(support::repo_path("justfile"))
+        .expect("justfile should be readable");
+    assert!(
+        justfile.contains("live_root := \"config/live.local.toml\""),
+        "live recipes should use the ignored operator root"
+    );
+    assert!(
+        !justfile.contains("live_root_example"),
+        "live recipes should not keep a second example-root path"
+    );
+}
+
+#[test]
+fn shipped_binary_oracle_configs_do_not_canonicalize_one_reference_market_or_venue() {
+    for relative_path in [
+        "config/strategies/binary_oracle.toml",
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ] {
+        let source =
+            std::fs::read_to_string(support::repo_path(relative_path)).expect("source should read");
+        let forbidden = "binance_reference";
+        assert!(
+            !source.contains(forbidden),
+            "{relative_path} must not make `{forbidden}` a canonical strategy config"
+        );
+    }
+
+    for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
+        let source =
+            std::fs::read_to_string(support::repo_path(relative_path)).expect("source should read");
+        for forbidden in [
+            "[clients.binance_reference]",
+            "[clients.binance_reference.data]",
+            "[clients.binance_reference.secrets]",
+            "/bolt/binance_reference/",
+            "https://1rpc.io/matic",
+            "chain_id = 137",
+            "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{relative_path} must not make `{forbidden}` a canonical root example"
+            );
+        }
+    }
+}
+
+#[test]
+fn binary_oracle_archetype_exposes_provider_neutral_gate_requirements() {
+    use std::collections::BTreeSet;
+
+    use bolt_v2::bolt_v3_archetypes::{GateRole, GateValueKind, binary_oracle_edge_taker};
+
+    let requirements = binary_oracle_edge_taker::gate_requirements();
+    assert_eq!(requirements.len(), 1);
+
+    let requirement = &requirements[0];
+    assert_eq!(requirement.role, GateRole::Resolution);
+    assert!(requirement.required);
+    assert_eq!(
+        requirement.accepted_value_kinds,
+        BTreeSet::from([GateValueKind::Price, GateValueKind::Outcome])
+    );
+    assert!(!requirement.allow_no_resolution);
 }
 
 #[test]
@@ -2867,8 +4454,8 @@ default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
 bypass = false
-max_order_submit_rate = "100/00:00:01"
-max_order_modify_rate = "100/00:00:01"
+max_order_submit_rate = "40/00:01:00"
+max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
 graceful_shutdown_on_error = false
@@ -2933,128 +4520,11 @@ transport_backend = "sockudo"
 fn rejects_binance_reference_data_client_missing_secrets_block() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let toml_text = r#"
-schema_version = 1
-trader_id = "BOLT-001"
-strategy_files = ["strategies/binary_oracle.toml"]
-
-[runtime]
-mode = "Live"
-
-[nautilus]
-load_state = true
-save_state = true
-timeout_connection_secs = 30
-timeout_reconciliation_secs = 60
-timeout_portfolio_secs = 10
-timeout_disconnection_secs = 10
-delay_post_stop_secs = 5
-timeout_shutdown_secs = 10
-
-[nautilus.data_engine]
-time_bars_build_with_no_updates = true
-time_bars_timestamp_on_close = true
-time_bars_skip_first_non_full_bar = false
-time_bars_interval_type = "LEFT_OPEN"
-time_bars_build_delay = 0
-time_bars_origins = {}
-validate_data_sequence = false
-buffer_deltas = false
-emit_quotes_from_book = false
-emit_quotes_from_book_depths = false
-external_clients = []
-debug = false
-graceful_shutdown_on_error = false
-qsize = 100000
-
-[nautilus.exec_engine]
-load_cache = true
-snapshot_orders = false
-snapshot_positions = false
-snapshot_positions_interval_secs = 0
-external_clients = []
-debug = false
-reconciliation = true
-reconciliation_startup_delay_secs = 10
-reconciliation_lookback_mins = 0
-reconciliation_instrument_ids = []
-filter_unclaimed_external_orders = false
-filter_position_reports = false
-filtered_client_order_ids = []
-generate_missing_orders = true
-inflight_check_interval_ms = 2000
-inflight_check_threshold_ms = 5000
-inflight_check_retries = 5
-open_check_interval_secs = 0
-open_check_lookback_mins = 60
-open_check_threshold_ms = 5000
-open_check_missing_retries = 5
-open_check_open_only = true
-max_single_order_queries_per_cycle = 10
-single_order_query_delay_ms = 100
-position_check_interval_secs = 0
-position_check_lookback_mins = 60
-position_check_threshold_ms = 5000
-position_check_retries = 3
-purge_closed_orders_interval_mins = 0
-purge_closed_orders_buffer_mins = 0
-purge_closed_positions_interval_mins = 0
-purge_closed_positions_buffer_mins = 0
-purge_account_events_interval_mins = 0
-purge_account_events_lookback_mins = 0
-purge_from_database = false
-own_books_audit_interval_secs = 0
-graceful_shutdown_on_error = false
-qsize = 100000
-allow_overfills = false
-manage_own_order_books = false
-
-[risk]
-default_max_notional_per_order = "10.00"
-
-[risk.nautilus]
-bypass = false
-max_order_submit_rate = "100/00:00:01"
-max_order_modify_rate = "100/00:00:01"
-max_notional_per_order = {}
-debug = false
-graceful_shutdown_on_error = false
-qsize = 100000
-
-[logging]
-stdout_level = "INFO"
-fileout_level = "INFO"
-
-[persistence]
-catalog_directory = "/var/lib/bolt/catalog"
-runtime_capture_start_poll_interval_ms = 50
-
-[persistence.decision_evidence]
-order_intents_relative_path = "bolt-v3/decision-evidence/order-intents.jsonl"
-
-[persistence.streaming]
-catalog_fs_protocol = "file"
-flush_interval_ms = 1000
-replace_existing = false
-rotation_kind = "none"
-
-[aws]
-region = "eu-west-1"
-
-[clients.binance_reference]
-venue = "BINANCE"
-
-[clients.binance_reference.data]
-product_types = ["spot"]
-environment = "mainnet"
-base_url_http = "https://binance.test.invalid/http"
-base_url_ws = "wss://stream-sbe.binance.com/ws"
-instrument_status_poll_secs = 3600
-transport_backend = "sockudo"
-"#;
+    let toml_text = fixture_root_with_binance_reference_client()
+        .replace(&binance_reference_secrets_block(), "");
 
     let root: BoltV3RootConfig =
-        toml::from_str(toml_text).expect("binance-data-only TOML should parse");
+        toml::from_str(&toml_text).expect("binance-data-only TOML should parse");
     let messages = validate_root_only(&root);
     let rendered = messages.join("\n");
     assert!(
@@ -3074,7 +4544,7 @@ fn rejects_binance_spot_json_websocket_endpoint_for_reference_quotes() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
     use nautilus_binance::common::consts::BINANCE_SPOT_WS_URL;
 
-    let mutated = replace_in_fixture_root(
+    let mutated = replace_in_binance_reference_fixture(
         "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
         &format!("base_url_ws = \"{BINANCE_SPOT_WS_URL}\""),
     );
@@ -3097,7 +4567,7 @@ fn rejects_binance_spot_json_websocket_endpoint_with_trailing_slash() {
 
     let json_endpoint_with_trailing_slash =
         format!("{}/", BINANCE_SPOT_WS_URL.trim_end_matches('/'));
-    let mutated = replace_in_fixture_root(
+    let mutated = replace_in_binance_reference_fixture(
         "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
         &format!("base_url_ws = \"{json_endpoint_with_trailing_slash}\""),
     );
@@ -3119,7 +4589,7 @@ fn rejects_binance_spot_json_websocket_endpoint_with_plain_ws_scheme() {
     use nautilus_binance::common::consts::BINANCE_SPOT_WS_URL;
 
     let plain_ws_json_endpoint = BINANCE_SPOT_WS_URL.replacen("wss://", "ws://", 1);
-    let mutated = replace_in_fixture_root(
+    let mutated = replace_in_binance_reference_fixture(
         "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
         &format!("base_url_ws = \"{plain_ws_json_endpoint}\""),
     );
@@ -3139,7 +4609,7 @@ fn rejects_binance_spot_json_websocket_endpoint_with_plain_ws_scheme() {
 fn rejects_binance_spot_json_websocket_host_with_different_path() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
+    let mutated = replace_in_binance_reference_fixture(
         "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
         "base_url_ws = \"wss://stream.binance.com:9443/stream\"",
     );
@@ -3181,7 +4651,7 @@ fn rejects_invalid_binance_reference_websocket_urls_before_nt_mapping() {
         ),
     ];
     for (value, expected) in cases {
-        let mutated = replace_in_fixture_root(
+        let mutated = replace_in_binance_reference_fixture(
             "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
             &format!("base_url_ws = \"{value}\""),
         );
@@ -3198,6 +4668,33 @@ fn rejects_invalid_binance_reference_websocket_urls_before_nt_mapping() {
 }
 
 #[test]
+fn rejects_invalid_binance_futures_websocket_url_without_spot_sbe_guidance() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_binance_reference_fixture(
+        "product_types = [\"spot\"]",
+        "product_types = [\"usd_m\"]",
+    )
+    .replace(
+        "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
+        "base_url_ws = \"https://fstream.binance.com/market/ws\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("invalid futures websocket fixture should parse");
+    let messages = validate_root_only(&root);
+    let rendered = messages.join("\n");
+    assert!(
+        rendered.contains("clients.binance_reference.data.base_url_ws")
+            && rendered.contains("valid Binance WebSocket URL"),
+        "expected generic Binance websocket URL validation error, got: {messages:#?}"
+    );
+    assert!(
+        !rendered.contains("Spot") && !rendered.contains("SBE"),
+        "futures websocket validation must not emit Spot/SBE guidance, got: {rendered}"
+    );
+}
+
+#[test]
 fn accepts_binance_spot_sbe_and_proxy_websocket_endpoints() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
@@ -3206,7 +4703,7 @@ fn accepts_binance_spot_sbe_and_proxy_websocket_endpoints() {
         "ws://binance-sbe-proxy.test.invalid/ws",
         "wss://binance-sbe-proxy.test.invalid/ws",
     ] {
-        let mutated = replace_in_fixture_root(
+        let mutated = replace_in_binance_reference_fixture(
             "base_url_ws = \"wss://stream-sbe.binance.com/ws\"",
             &format!("base_url_ws = \"{value}\""),
         );
@@ -3226,10 +4723,8 @@ fn accepts_binance_spot_sbe_and_proxy_websocket_endpoints() {
 fn rejects_binance_execution_block_with_provider_vocabulary() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let fixture = fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
-        .expect("fixture should be readable");
-    let mutated =
-        format!("{fixture}\n\n[clients.binance_reference.execution]\nnot_allowed = true\n");
+    let fixture = fixture_root_with_binance_reference_client();
+    let mutated = format!("{fixture}\n[clients.binance_reference.execution]\nnot_allowed = true\n");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("binance execution mutation should parse");
     let messages = validate_root_only(&root);
@@ -3241,6 +4736,66 @@ fn rejects_binance_execution_block_with_provider_vocabulary() {
         "expected Binance execution-block rejection, got: {messages:#?}"
     );
     assert!(rendered.contains("(provider=BINANCE)"));
+    assert!(!rendered.contains("(venue="));
+}
+
+#[test]
+fn rejects_market_data_only_provider_execution_secrets_and_direct_credentials() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let mutated = format!(
+        r#"{fixture}
+
+[clients.bybit_data]
+venue = "BYBIT"
+
+[clients.bybit_data.data]
+product_types = ["spot", "linear"]
+environment = "testnet"
+transport_backend = "sockudo"
+ws_reconnect_delay_secs = 5
+api_key = "not-from-ssm"
+
+[clients.bybit_data.execution]
+not_allowed = true
+
+[clients.bybit_data.secrets]
+api_key_ssm_path = "/bolt/bybit/api_key"
+"#
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("bybit data-only mutation should parse");
+    let messages = validate_root_only(&root);
+    let rendered = messages.join("\n");
+    assert!(
+        messages.iter().any(|message| message.contains("bybit_data")
+            && message.contains("data-only")
+            && message.contains("[execution]")),
+        "expected data-only execution-block rejection, got: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|message| message.contains("bybit_data")
+            && message.contains("data-only")
+            && message.contains("[secrets]")),
+        "expected data-only secrets-block rejection, got: {messages:#?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.contains("bybit_data.data.api_key")
+                && message.contains("SSM-backed [secrets] binding")),
+        "expected direct credential-field rejection, got: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(
+            |message| message.contains("bybit_data.data.ws_reconnect_delay_secs")
+                && message.contains("not an NT BYBIT data-client config field")
+        ),
+        "expected unknown NT data-field rejection, got: {messages:#?}"
+    );
+    assert!(rendered.contains("(provider=BYBIT)"));
     assert!(!rendered.contains("(venue="));
 }
 
@@ -3329,8 +4884,8 @@ default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
 bypass = false
-max_order_submit_rate = "100/00:00:01"
-max_order_modify_rate = "100/00:00:01"
+max_order_submit_rate = "40/00:01:00"
+max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
 graceful_shutdown_on_error = false
@@ -3506,20 +5061,56 @@ fn rejects_previous_strategy_schema_version_after_forced_exit_order_schema_updat
 }
 
 #[test]
-fn shipped_binary_oracle_example_uses_supported_strategy_schema_version() {
+fn shipped_binary_oracle_config_uses_supported_strategy_schema_version() {
     use bolt_v2::{
         bolt_v3_config::BoltV3StrategyConfig, bolt_v3_validate::SUPPORTED_STRATEGY_SCHEMA_VERSION,
     };
 
     let strategy: BoltV3StrategyConfig = toml::from_str(
-        &std::fs::read_to_string(support::repo_path(
-            "config/strategies/binary_oracle.example.toml",
-        ))
-        .expect("example strategy should be readable"),
+        &std::fs::read_to_string(support::repo_path("config/strategies/binary_oracle.toml"))
+            .expect("canonical strategy config should be readable"),
     )
-    .expect("example strategy should parse");
+    .expect("canonical strategy config should parse");
 
     assert_eq!(strategy.schema_version, SUPPORTED_STRATEGY_SCHEMA_VERSION);
+}
+
+#[test]
+fn shipped_binary_oracle_config_rejects_legacy_price_to_beat_feed_id_under_runtime() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::validate_strategies,
+    };
+
+    let stable_root: BoltV3RootConfig = toml::from_str(
+        &std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+            .expect("fixture should be readable"),
+    )
+    .expect("stable root should parse");
+    let strategy_toml =
+        binary_oracle_strategy_source_without_legacy_gate_runtime_fields_from_path(
+            "config/strategies/binary_oracle.toml",
+        )
+        .replace(
+            "[parameters.runtime]\n",
+            "[parameters.runtime]\nprice_to_beat_feed_id = \"0x1111111111111111111111111111111111111111111111111111111111111111\"\n",
+        );
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&strategy_toml).expect("canonical strategy config should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("config/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    let messages = validate_strategies(&stable_root, &loaded);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("parameters.runtime.price_to_beat_feed_id")
+                && message.contains("[gate_providers.<id>.")
+        }),
+        "legacy price_to_beat_feed_id in shipped operator example must fail closed with a gate-provider migration message: {messages:#?}"
+    );
 }
 
 fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
@@ -3530,6 +5121,300 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
         "fixture must contain `{needle}` for this validation test to mutate"
     );
     fixture.replace(needle, replacement)
+}
+
+fn root_config_with_live_canary_proof_policy(proof_policy_block: &str) -> String {
+    let source = fs::read_to_string(support::repo_path("config/root.toml"))
+        .expect("root config should read");
+    assert!(
+        source.contains("[live_canary.operator_evidence]\n"),
+        "root config must contain the live canary operator evidence block"
+    );
+    source.replace(
+        "[live_canary.operator_evidence]\n",
+        &format!("{proof_policy_block}\n\n[live_canary.operator_evidence]\n"),
+    )
+}
+
+fn validate_root_messages_with_live_canary_proof_policy(proof_policy_block: &str) -> Vec<String> {
+    validate_root_messages_from_source(&root_config_with_live_canary_proof_policy(
+        proof_policy_block,
+    ))
+}
+
+fn validate_root_messages_from_source(source: &str) -> Vec<String> {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let root: BoltV3RootConfig = toml::from_str(source).expect("proof policy root should parse");
+    validate_root_only(&root)
+}
+
+fn valid_live_canary_proof_policy_block() -> &'static str {
+    r#"[live_canary.proof_policy]
+enabled = true
+policy_kind = "least_bad_strategy_candidate"
+proof_claim = "proof_only"
+executor_strategy_id = "canary-proof-executor-proof"
+strategy_instance_id = "configured_strategy"
+execution_client_id = "configured_execution_client"
+book_type = "l2_mbp"
+book_snapshot_interval_millis = 1000
+time_in_force = "fok"
+is_post_only = false
+is_reduce_only = false
+is_quote_quantity = false
+notional_mode = "fixed"
+proof_notional = "1.00"
+candidate_score_source = "proof_source"
+allow_negative_expected_ev = true
+rotation_observation_enabled = true
+rotation_min_distinct_markets = 1
+rotation_max_attempts = 1"#
+}
+
+fn fixture_root_with_binance_reference_client() -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    format!("{fixture}\n{}", binance_reference_root_fixture())
+}
+
+fn binance_reference_root_fixture() -> String {
+    support::repo_text("tests/fixtures/bolt_v3/binance_reference_root.toml")
+}
+
+fn binance_reference_data_block() -> String {
+    let fixture = binance_reference_root_fixture();
+    let start = fixture
+        .find("[clients.binance_reference.data]")
+        .expect("binance reference fixture must include a data block");
+    let end = fixture
+        .find("[clients.binance_reference.secrets]")
+        .expect("binance reference fixture must include a secrets block");
+    fixture[start..end].to_string()
+}
+
+fn binance_reference_secrets_block() -> String {
+    let fixture = binance_reference_root_fixture();
+    let start = fixture
+        .find("[clients.binance_reference.secrets]")
+        .expect("binance reference fixture must include a secrets block");
+    fixture[start..].to_string()
+}
+
+fn replace_in_binance_reference_fixture(needle: &str, replacement: &str) -> String {
+    let fixture = fixture_root_with_binance_reference_client();
+    assert!(
+        fixture.contains(needle),
+        "binance validation fixture must contain `{needle}` for this test to mutate"
+    );
+    fixture.replace(needle, replacement)
+}
+
+fn strategy_fixture_with_reference_data(data_client_id: &str, instrument_id: &str) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    format!(
+        "{fixture}\n[reference_data.primary]\ndata_client_id = \"{data_client_id}\"\ninstrument_id = \"{instrument_id}\"\n"
+    )
+}
+
+fn fixture_root_with_gate_providers(gate_providers_toml: &str) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let fixture = without_toml_sections(&fixture, &["gate_providers."]);
+    format!("{fixture}\n{gate_providers_toml}")
+}
+
+fn fixture_strategy_with_target_gate_subscriptions(gate_subscriptions_toml: &str) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+    let fixture = without_toml_sections(&fixture, &["target.gate_subscriptions."]);
+    format!("{fixture}\n{gate_subscriptions_toml}")
+}
+
+fn root_with_single_chainlink_feed_binding(resolution_identity: &str, feed_id: &str) -> String {
+    root_with_chainlink_feed_bindings(&[(resolution_identity, feed_id)])
+}
+
+fn root_with_chainlink_feed_bindings(feed_bindings: &[(&str, &str)]) -> String {
+    let bindings_toml = feed_bindings
+        .iter()
+        .map(|(resolution_identity, feed_id)| {
+            format!(
+                r#"
+[[gate_providers.resolution_oracle_primary.chainlink_data_streams.feed_bindings]]
+resolution_identity = "{resolution_identity}"
+value_kind = "price"
+feed_id = "{feed_id}"
+report_schema_version = 3
+report_decimal_scale = 8
+"#
+            )
+        })
+        .collect::<String>();
+    fixture_root_with_gate_providers(&format!(
+        r#"
+[gate_providers.resolution_oracle_primary]
+provider_kind = "chainlink_data_streams"
+capabilities = ["resolution_value"]
+
+[gate_providers.resolution_oracle_primary.freshness]
+max_age_ms = 300000
+max_clock_skew_ms = 5000
+
+[gate_providers.resolution_oracle_primary.chainlink_data_streams]
+endpoint_id = "testnet-data-streams"
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+{bindings_toml}
+"#
+    ))
+}
+
+fn strategy_with_single_chainlink_mapping(resolution_identity: &str) -> String {
+    fixture_strategy_with_target_gate_subscriptions(&format!(
+        r#"
+[target.gate_subscriptions.resolution]
+required = true
+allowed_provider_kinds = ["chainlink_data_streams", "pyth", "exchange_index", "venue_native", "hyperliquid_hip4", "deribit_index", "outcome_oracle"]
+allowed_value_kinds = ["price", "index", "outcome", "metadata"]
+provider_preference = ["resolution_oracle_primary"]
+allow_no_resolution = false
+
+[[target.gate_subscriptions.resolution.market_mappings]]
+family_key = "updown"
+market_class = "binary_option"
+resolution_kind = "chainlink_data_streams"
+resolution_identity = "{resolution_identity}"
+value_kind = "price"
+provider_id = "resolution_oracle_primary"
+"#
+    ))
+}
+
+fn without_toml_sections(source: &str, section_prefixes: &[&str]) -> String {
+    let mut keep_line = true;
+    let mut lines = Vec::new();
+    for line in source.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            let header = trimmed.trim_start_matches('[');
+            keep_line = !section_prefixes
+                .iter()
+                .any(|prefix| header.starts_with(prefix));
+        }
+        if keep_line {
+            lines.push(line);
+        }
+    }
+    let mut filtered = lines.join("\n");
+    filtered.push('\n');
+    filtered
+}
+
+fn target_gate_subscription_messages(gate_subscriptions_toml: &str) -> Vec<String> {
+    let strategy_toml = fixture_strategy_with_target_gate_subscriptions(gate_subscriptions_toml);
+    let strategy: bolt_v2::bolt_v3_config::BoltV3StrategyConfig = toml::from_str(&strategy_toml)
+        .expect("strategy fixture with gate subscriptions should parse");
+    let (_, errors) = bolt_v2::bolt_v3_market_families::validate_strategy_target(
+        "strategy `binary_oracle`",
+        &strategy.target,
+    );
+    errors.into_iter().map(|error| error.to_string()).collect()
+}
+
+fn strategy_validation_messages_for_toml(strategy_toml: &str) -> Vec<String> {
+    let root_toml = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("root fixture should be readable");
+    strategy_validation_messages_for_root_and_strategy_toml(&root_toml, strategy_toml)
+}
+
+fn strategy_validation_messages_for_root_and_strategy_toml(
+    root_toml: &str,
+    strategy_toml: &str,
+) -> Vec<String> {
+    use bolt_v2::bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy};
+
+    let stable_root: BoltV3RootConfig =
+        toml::from_str(root_toml).expect("root fixture should parse");
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(strategy_toml).expect("strategy fixture should parse");
+    let loaded = vec![LoadedStrategy {
+        config_path: support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml"),
+        relative_path: "strategies/binary_oracle.toml".to_string(),
+        config: strategy,
+    }];
+
+    bolt_v2::bolt_v3_validate::validate_strategies(&stable_root, &loaded)
+}
+
+fn legacy_binary_oracle_runtime_field_messages(field_line: &str) -> Vec<String> {
+    let strategy_toml = binary_oracle_strategy_source_without_legacy_gate_runtime_fields_from_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    )
+    .replace(
+        "[parameters.runtime]\n",
+        &format!("[parameters.runtime]\n{field_line}\n"),
+    );
+
+    strategy_validation_messages_for_toml(&strategy_toml)
+}
+
+fn binary_oracle_strategy_source_without_legacy_gate_runtime_fields_from_path(
+    relative_path: &str,
+) -> String {
+    let source = std::fs::read_to_string(support::repo_path(relative_path))
+        .expect("binary oracle strategy source should be readable");
+    let mut filtered = source
+        .lines()
+        .filter(|line| !is_legacy_binary_oracle_gate_runtime_line(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    filtered.push('\n');
+    filtered
+}
+
+fn is_legacy_binary_oracle_gate_runtime_line(line: &&str) -> bool {
+    let trimmed = line.trim_start();
+    [
+        "price_to_beat_source",
+        "price_to_beat_feed_id",
+        "price_to_beat_report_schema_version",
+        "price_to_beat_report_decimal_scale",
+        "forced_flat_stale_chainlink_ms",
+    ]
+    .iter()
+    .any(|field| trimmed.starts_with(field))
+}
+
+fn assert_binary_oracle_strategy_source_uses_gate_schema(label: &str, source: &str) {
+    assert!(
+        source.contains("[target.gate_subscriptions.resolution]"),
+        "binary_oracle {label} must declare the provider-neutral resolution gate subscription"
+    );
+    assert!(
+        source.contains("[[target.gate_subscriptions.resolution.market_mappings]]"),
+        "binary_oracle {label} must declare config-owned resolution market mappings"
+    );
+    for forbidden in [
+        "price_to_beat_source",
+        "price_to_beat_feed_id",
+        "price_to_beat_report_schema_version",
+        "price_to_beat_report_decimal_scale",
+        "forced_flat_stale_chainlink_ms",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "binary_oracle {label} must not retain provider-specific runtime field `{forbidden}`"
+        );
+    }
 }
 
 fn mutate_parameters_exit_order(fixture: &str, mutate: impl FnOnce(&str) -> String) -> String {
@@ -3549,7 +5434,7 @@ fn mutate_parameters_exit_order(fixture: &str, mutate: impl FnOnce(&str) -> Stri
 fn rejects_zero_explicit_nt_exec_runtime_values() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
+    let mutated = replace_in_binance_reference_fixture(
         "inflight_check_threshold_ms = 5000\ninflight_check_retries = 5",
         "inflight_check_threshold_ms = 0\ninflight_check_retries = 5",
     )
@@ -3599,6 +5484,27 @@ fn rejects_zero_runtime_capture_start_poll_interval() {
                 && m.contains("must be a positive integer")
         }),
         "expected positive-integer runtime-capture poll validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_absolute_decision_evidence_order_intents_relative_path() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "order_intents_relative_path = \"bolt-v3/decision-evidence/order-intents.jsonl\"",
+        "order_intents_relative_path = \"/var/lib/bolt/decision-evidence/order-intents.jsonl\"",
+    );
+    let root: BoltV3RootConfig = toml::from_str(&mutated)
+        .expect("absolute decision-evidence relative-path fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|m| {
+            m.contains("persistence.decision_evidence.order_intents_relative_path")
+                && m.contains("must be non-empty, relative, and stay under catalog_directory")
+        }),
+        "expected config-load rejection of an absolute decision-evidence path, got: {messages:#?}"
     );
 }
 
@@ -3770,15 +5676,15 @@ fn rejects_invalid_nt_risk_rate_limit_strings() {
 
     for (submit_rate, modify_rate) in [
         ("0/00:00:01", "100/00:00:00"),
-        ("100", "100/00:00:01"),
-        ("abc/00:00:01", "100/00:00:01"),
-        ("100/00:01", "100/00:00:01"),
-        ("100/00:00:01:00", "100/00:00:01"),
-        ("100/00:60:00", "100/00:00:01"),
-        ("100/00:00:60", "100/00:00:01"),
+        ("100", "40/00:01:00"),
+        ("abc/00:00:01", "40/00:01:00"),
+        ("100/00:01", "40/00:01:00"),
+        ("100/00:00:01:00", "40/00:01:00"),
+        ("100/00:60:00", "40/00:01:00"),
+        ("100/00:00:60", "40/00:01:00"),
     ] {
-        let mutated = replace_in_fixture_root(
-            "max_order_submit_rate = \"100/00:00:01\"\nmax_order_modify_rate = \"100/00:00:01\"",
+        let mutated = replace_in_binance_reference_fixture(
+            "max_order_submit_rate = \"40/00:01:00\"\nmax_order_modify_rate = \"40/00:01:00\"",
             &format!(
                 "max_order_submit_rate = \"{submit_rate}\"\nmax_order_modify_rate = \"{modify_rate}\""
             ),
@@ -3813,6 +5719,175 @@ fn rejects_invalid_nt_risk_rate_limit_strings() {
 }
 
 #[test]
+fn rejects_nt_submit_rate_above_polymarket_egress_cap() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // The Polymarket REST egress ceiling is 100/min (NT HTTP_RATE_LIMIT), and a
+    // single order command issues up to 2 REST requests (market submit =
+    // get_book + post_order), so the order-rate ceiling is 50/min (50 * 2 = 100
+    // = the cap). A submit rate of 51/min over-drives egress (51 * 2 = 102 >
+    // 100) and would block at egress (stale quotes) instead of emitting a loud
+    // OrderDenied, so it must fail closed at config load.
+    let mutated = replace_in_fixture_root(
+        "max_order_submit_rate = \"40/00:01:00\"",
+        "max_order_submit_rate = \"51/00:01:00\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("over-cap submit-rate fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("max_order_submit_rate")
+            && m.contains("POLYMARKET")
+            && m.contains("REST egress cap")),
+        "submit rate above the POLYMARKET egress cap must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_nt_modify_rate_above_polymarket_egress_cap() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // The Polymarket REST egress ceiling is 100/min (NT HTTP_RATE_LIMIT), and a
+    // single order command issues up to 2 REST requests, so the order-rate
+    // ceiling is 50/min (50 * 2 = 100 = the cap). A modify rate of 51/min
+    // over-drives egress (51 * 2 = 102 > 100), so it must fail closed.
+    let mutated = replace_in_fixture_root(
+        "max_order_modify_rate = \"40/00:01:00\"",
+        "max_order_modify_rate = \"51/00:01:00\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("over-cap modify-rate fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("max_order_modify_rate")
+            && m.contains("POLYMARKET")
+            && m.contains("REST egress cap")),
+        "modify rate above the POLYMARKET egress cap must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn accepts_nt_order_rates_at_polymarket_egress_cap() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // The Polymarket REST egress ceiling is 100/min (NT HTTP_RATE_LIMIT), and a
+    // single order command issues up to 2 REST requests (market submit =
+    // get_book + post_order), so the order-rate ceiling is 50/min: 50/min * 2
+    // REST = 100 = the cap. The boundary value is accepted because the ceiling
+    // check is inclusive.
+    let source = replace_in_fixture_root(
+        "max_order_submit_rate = \"40/00:01:00\"",
+        "max_order_submit_rate = \"50/00:01:00\"",
+    );
+    let root: BoltV3RootConfig = toml::from_str(&source).expect("at-cap fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        !messages.iter().any(|m| m.contains("REST egress cap")),
+        "order rates at exactly the venue egress cap must be accepted: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_old_100_per_min_rate_now_overdrives_polymarket_fanout() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // Regression guard for the per-order-command REST fanout the reconciliation
+    // now applies. The old order-rate ceiling was the raw 100/min REST cap, but
+    // a single Polymarket order command issues up to 2 REST requests (market
+    // submit = get_book + post_order), so 100/min order commands = 200 REST/min
+    // = 2x the 100/min cap. The order-rate ceiling is therefore 50/min, and the
+    // previously-accepted 100/00:01:00 value must now fail closed.
+    let mutated = replace_in_fixture_root(
+        "max_order_submit_rate = \"40/00:01:00\"",
+        "max_order_submit_rate = \"100/00:01:00\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("legacy 100/min submit-rate fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("max_order_submit_rate")
+            && m.contains("POLYMARKET")
+            && m.contains("REST egress cap")),
+        "the legacy 100/min order rate now over-drives the 2x Polymarket REST fanout (100 * 2 = 200 > 100) and must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_nt_rate_limit_string_whose_interval_overflows_u64() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // `hours` here fits in u64 but `hours * 3600` overflows it. The interval
+    // computation is checked, so this must surface a loud validation message
+    // instead of panicking (debug) or wrapping to a bogus interval (release).
+    let mutated = replace_in_fixture_root(
+        "max_order_submit_rate = \"40/00:01:00\"",
+        "max_order_submit_rate = \"1/9999999999999999999:00:00\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("overflowing-interval fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m
+            .contains("risk.nautilus.max_order_submit_rate is not a valid Nautilus rate limit")
+            && m.contains("interval seconds overflow u64")),
+        "an interval that overflows u64 must fail loud, not panic or wrap: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_nt_submit_rate_above_egress_cap_under_dual_u64_saturation() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // Hand-verified dual-saturation vector: limit = 5e17, interval_seconds =
+    // 51388888888889 * 3600 = 185000000000000400 (~1.85e17, fits u64). This is
+    // a u128-overflow regression vector, not a boundary value, so the fanout
+    // derate is irrelevant: the raw rate already saturates the REST cap. The
+    // true rate is 5e17 * 60 / 1.85e17 ≈ 162/min, far above the 100/min
+    // POLYMARKET REST egress cap regardless of the 2x order-command fanout.
+    // Under the old u64-saturating comparison both sides saturate to u64::MAX
+    // (5e17*60 = 3e19 and 100*1.85e17 = 1.85e19 both exceed u64::MAX), so
+    // MAX > MAX is false and the over-cap rate was wrongly accepted. The u128
+    // comparison computes the true products (3e19 > 1.85e19) and rejects it.
+    let mutated = replace_in_fixture_root(
+        "max_order_submit_rate = \"40/00:01:00\"",
+        "max_order_submit_rate = \"500000000000000000/51388888888889:00:00\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("dual-saturation submit-rate fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|m| m.contains("max_order_submit_rate")
+            && m.contains("POLYMARKET")
+            && m.contains("REST egress cap")),
+        "an over-cap rate that saturates both sides of the old u64 check must still fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn fails_closed_on_execution_client_for_unmodeled_egress_venue() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // An [execution] block on a venue whose REST egress ceiling bolt-v3 does not
+    // model must fail closed rather than be silently skipped: a skipped venue
+    // leaves the submit rate unreconciled. The config is also rejected for
+    // declaring execution on a data-only provider; we only assert OUR error.
+    let fixture = fixture_root_with_binance_reference_client();
+    let mutated = format!("{fixture}\n[clients.binance_reference.execution]\nnot_allowed = true\n");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("unmodeled-egress execution mutation should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("clients.binance_reference")
+                && m.contains("(provider=BINANCE)")
+                && m.contains("models no REST egress cap")
+                && m.contains("fail closed")),
+        "an execution client on an unmodeled egress venue must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_invalid_nt_risk_max_notional_map_entries() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
@@ -3843,14 +5918,14 @@ fn rejects_non_positive_nt_risk_max_notional_map_values() {
     for notional in ["0", "-1.00"] {
         let mutated = replace_in_fixture_root(
             "max_notional_per_order = {}",
-            &format!("max_notional_per_order = {{ \"ETHUSDT.BINANCE\" = \"{notional}\" }}"),
+            &format!("max_notional_per_order = {{ \"TRIGGER.SOURCE\" = \"{notional}\" }}"),
         );
         let root: BoltV3RootConfig =
             toml::from_str(&mutated).expect("non-positive NT max-notional fixture should parse");
         let messages = validate_root_only(&root);
         assert!(
             messages.iter().any(|m| m.contains(
-                "risk.nautilus.max_notional_per_order[`ETHUSDT.BINANCE`] must be a positive decimal string"
+                "risk.nautilus.max_notional_per_order[`TRIGGER.SOURCE`] must be a positive decimal string"
             )),
             "expected positive notional validation error for `{notional}`, got: {messages:#?}"
         );
@@ -3861,10 +5936,8 @@ fn rejects_non_positive_nt_risk_max_notional_map_values() {
 fn rejects_orphan_secrets_block_without_data_or_execution() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
-        "[clients.binance_reference.data]\nproduct_types = [\"spot\"]\nenvironment = \"mainnet\"\nbase_url_http = \"https://api.binance.com\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_http\nbase_url_ws = \"wss://stream-sbe.binance.com/ws\" # NT: nautilus_binance::config::BinanceDataClientConfig.base_url_ws\ninstrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs\ntransport_backend = \"sockudo\"\n\n",
-        "",
-    );
+    let data_block = binance_reference_data_block();
+    let mutated = replace_in_binance_reference_fixture(&data_block, "");
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("orphan-secrets fixture should parse");
     let messages = validate_root_only(&root);
@@ -3884,20 +5957,20 @@ fn rejects_ssm_paths_missing_leading_slash() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     let mutated = replace_in_fixture_root(
-        "api_key_ssm_path = \"/bolt/binance_reference/api_key\"",
-        "api_key_ssm_path = \"bolt/binance_reference/api_key\"",
+        "private_key_ssm_path = \"/bolt/polymarket_main/private_key\"",
+        "private_key_ssm_path = \"bolt/polymarket_main/private_key\"",
     );
     let root: BoltV3RootConfig = toml::from_str(&mutated).expect("ssm-path mutation should parse");
     let messages = validate_root_only(&root);
     let rendered = messages.join("\n");
     assert!(
-        messages.iter().any(|m| m.contains("binance_reference")
-            && m.contains("api_key_ssm_path")
+        messages.iter().any(|m| m.contains("polymarket_main")
+            && m.contains("private_key_ssm_path")
             && m.contains("absolute-style SSM parameter path starting with `/`")),
         "expected SSM-path leading-slash validation error, got: {messages:#?}"
     );
-    assert!(rendered.contains("clients.binance_reference.secrets.api_key_ssm_path"));
-    let legacy_path = ["venues", "binance_reference"].join(".");
+    assert!(rendered.contains("clients.polymarket_main.secrets.private_key_ssm_path"));
+    let legacy_path = ["venues", "polymarket_main"].join(".");
     assert!(!rendered.contains(&legacy_path));
 }
 
@@ -3906,16 +5979,6 @@ fn rejects_ssm_paths_with_leading_or_trailing_whitespace() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
     for (field, original, replacement) in [
-        (
-            "clients.binance_reference.secrets.api_key_ssm_path",
-            "api_key_ssm_path = \"/bolt/binance_reference/api_key\"",
-            "api_key_ssm_path = \" /bolt/binance_reference/api_key\"",
-        ),
-        (
-            "clients.binance_reference.secrets.api_secret_ssm_path",
-            "api_secret_ssm_path = \"/bolt/binance_reference/api_secret\"",
-            "api_secret_ssm_path = \"/bolt/binance_reference/api_secret \"",
-        ),
         (
             "clients.polymarket_main.secrets.private_key_ssm_path",
             "private_key_ssm_path = \"/bolt/polymarket_main/private_key\"",
@@ -4021,7 +6084,7 @@ fn allows_missing_funder_for_eoa_signature_type() {
 fn rejects_binance_data_zero_instrument_status_poll_secs() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let mutated = replace_in_fixture_root(
+    let mutated = replace_in_binance_reference_fixture(
         "instrument_status_poll_secs = 3600 # NT: BinanceDataClientConfig.instrument_status_poll_secs",
         "instrument_status_poll_secs = 0 # NT: BinanceDataClientConfig.instrument_status_poll_secs",
     );
@@ -4187,10 +6250,10 @@ fn rejects_polymarket_data_auto_load_retry_initial_after_max() {
 }
 
 #[test]
-fn rejects_more_than_one_polymarket_client_in_current_slice() {
+fn allows_multiple_configured_client_ids_for_same_nt_venue() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n\n[clients.polymarket_secondary.secrets]\nprivate_key_ssm_path = \"/bolt/polymarket_secondary/private_key\"\napi_key_ssm_path = \"/bolt/polymarket_secondary/api_key\"\napi_secret_ssm_path = \"/bolt/polymarket_secondary/api_secret\"\npassphrase_ssm_path = \"/bolt/polymarket_secondary/passphrase\"\n";
+    let extra_client = "\n\n[clients.polymarket_secondary]\nvenue = \"POLYMARKET\"\n\n[clients.polymarket_secondary.data]\nbase_url_http = \"https://test.invalid/clob\"\nbase_url_ws = \"wss://test.invalid/ws/market\"\nbase_url_gamma = \"https://test.invalid/gamma\"\nbase_url_data_api = \"https://test.invalid/data\"\nhttp_timeout_secs = 60\nws_timeout_secs = 30\nsubscribe_new_markets = false\nauto_load_missing_instruments = false\nauto_load_debounce_ms = 250\nauto_load_max_retries = 12\nauto_load_retry_delay_initial_secs = 5\nauto_load_retry_delay_max_secs = 15\nupdate_instruments_interval_mins = 60\nws_max_subscriptions = 200\ntransport_backend = \"sockudo\"\n";
     let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
         .expect("fixture should be readable");
     let mutated = format!("{fixture}{extra_client}");
@@ -4198,10 +6261,510 @@ fn rejects_more_than_one_polymarket_client_in_current_slice() {
         toml::from_str(&mutated).expect("two-polymarket-venues fixture should parse");
     let messages = validate_root_only(&root);
     assert!(
-        messages
+        !messages
             .iter()
-            .any(|m| m.contains("at most one [clients.<id>] block per venue")
-                && m.contains("polymarket")),
-        "expected one-venue-per-kind validation error, got: {messages:#?}"
+            .any(|m| m.contains("at most one [clients.<id>] block per venue")),
+        "client routing is keyed by [clients.<id>], so same-venue client ids must be accepted; got: {messages:#?}"
     );
+}
+
+#[test]
+fn allows_metadata_response_readiness_probe_without_static_quote_targets() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "quote"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+allow_metadata_target_sampling = false
+"#
+    ))
+    .expect("metadata-response readiness probe should parse");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.is_empty(),
+        "metadata-response readiness probes should not require copied static quote target ids: {messages:#?}"
+    );
+}
+
+#[test]
+fn allows_metadata_response_readiness_probe_with_explicit_sampling_opt_in() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "quote"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+allow_metadata_target_sampling = true
+"#
+    ))
+    .expect("metadata-response sampling readiness probe should parse");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.is_empty(),
+        "metadata-response sampling must be an explicit config-owned opt-in: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_book_readiness_probe_without_book_type() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "book"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+allow_metadata_target_sampling = false
+"#
+    ))
+    .expect("book readiness probe should parse so validation can reject missing book type");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.book_type")
+                && message.contains("market_data_kind = \"book\"")
+        }),
+        "book probes must declare the NT book type in TOML: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_quote_readiness_probe_with_book_type() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "quote"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+allow_metadata_target_sampling = false
+"#
+    ))
+    .expect("quote readiness probe should parse so validation can reject book type");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.book_type")
+                && message.contains("market_data_kind = \"book\"")
+        }),
+        "quote probes must not carry a book subscription type: {messages:#?}"
+    );
+}
+
+#[test]
+fn allows_trade_readiness_probe() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+quote_target_source = "metadata_response"
+chunk_size = 200
+chunk_observation_window_seconds = 45
+min_observed_targets = 10
+"#
+    ))
+    .expect("trade chunk-count readiness probe should parse");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.is_empty(),
+        "a trade chunk-count readiness probe must validate cleanly: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_trade_readiness_probe_with_book_type() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+chunk_size = 200
+chunk_observation_window_seconds = 45
+min_observed_targets = 10
+"#
+    ))
+    .expect("trade readiness probe should parse so validation can reject book type");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.book_type")
+                && message.contains("market_data_kind = \"book\"")
+        }),
+        "trade probes must not carry a book subscription type: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_trade_chunk_count_probe_without_chunk_size() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+quote_target_source = "metadata_response"
+chunk_observation_window_seconds = 45
+min_observed_targets = 10
+"#
+    ))
+    .expect("trade chunk-count probe should parse so validation can reject the missing chunk size");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.chunk_size")
+                && message.contains("positive integer")
+        }),
+        "trade chunk-count probes must declare a config-owned chunk size: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_trade_chunk_count_probe_without_observation_window() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+quote_target_source = "metadata_response"
+chunk_size = 200
+min_observed_targets = 10
+"#
+    ))
+    .expect("trade chunk-count probe should parse so validation can reject the missing window");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains(
+                "clients.polymarket_main.readiness_probe.chunk_observation_window_seconds",
+            ) && message.contains("positive integer")
+        }),
+        "trade chunk-count probes must declare a config-owned per-chunk window: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_trade_chunk_count_probe_without_min_observed_targets() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+quote_target_source = "metadata_response"
+chunk_size = 200
+chunk_observation_window_seconds = 45
+"#
+    ))
+    .expect("trade chunk-count probe should parse so validation can reject the missing live bar");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.min_observed_targets")
+                && message.contains("positive integer")
+        }),
+        "trade chunk-count probes must declare a config-owned required-live-markets count: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_trade_chunk_count_probe_with_max_metadata_quote_targets() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+quote_target_source = "metadata_response"
+chunk_size = 200
+chunk_observation_window_seconds = 45
+min_observed_targets = 10
+max_metadata_quote_targets = 20
+"#
+    ))
+    .expect("trade chunk-count probe should parse so validation can reject the fixed-sample bound");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.max_metadata_quote_targets")
+                && message.contains("trade chunk-count")
+        }),
+        "a trade chunk-count probe has no fixed sample, so max_metadata_quote_targets must be rejected: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_trade_chunk_count_probe_with_allow_metadata_target_sampling() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "trade"
+quote_target_source = "metadata_response"
+chunk_size = 200
+chunk_observation_window_seconds = 45
+min_observed_targets = 10
+allow_metadata_target_sampling = true
+"#
+    ))
+    .expect("trade chunk-count probe should parse so validation can reject the sampling opt-in");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message
+                .contains("clients.polymarket_main.readiness_probe.allow_metadata_target_sampling")
+                && message.contains("trade chunk-count")
+        }),
+        "a trade chunk-count probe does not sample, so allow_metadata_target_sampling must be rejected: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_chunk_count_fields_on_book_probe() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "book"
+book_type = "l2_mbp"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 20
+allow_metadata_target_sampling = true
+chunk_size = 200
+chunk_observation_window_seconds = 45
+"#
+    ))
+    .expect("book probe should parse so validation can reject chunk-count fields");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.chunk_size")
+                && message.contains("market_data_kind = \"trade\"")
+        }),
+        "chunk_size is only valid for a trade chunk-count probe: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.contains(
+                "clients.polymarket_main.readiness_probe.chunk_observation_window_seconds",
+            ) && message.contains("market_data_kind = \"trade\"")
+        }),
+        "chunk_observation_window_seconds is only valid for a trade chunk-count probe: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_metadata_response_readiness_probe_with_min_quote_targets() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let error = toml::from_str::<BoltV3RootConfig>(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "quote"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+allow_metadata_target_sampling = false
+min_metadata_quote_targets = 2
+"#
+    ))
+    .expect_err("metadata-response readiness probes must not accept hardcoded min target counts");
+
+    assert!(
+        error.to_string().contains("min_metadata_quote_targets"),
+        "parse error should name the removed min target count field: {error}"
+    );
+}
+
+#[test]
+fn rejects_metadata_response_readiness_probe_without_max_quote_targets() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "quote"
+quote_target_source = "metadata_response"
+"#
+    ))
+    .expect("metadata-response readiness probe should parse so validation can reject missing max");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe.max_metadata_quote_targets")
+                && message.contains("positive integer")
+        }),
+        "metadata-response readiness probe must declare a config-owned safety bound: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_readiness_probe_with_both_metadata_response_and_static_targets() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let root: BoltV3RootConfig = toml::from_str(&format!(
+        r#"{fixture}
+
+[clients.polymarket_main.readiness_probe]
+market_data_kind = "quote"
+quote_target_source = "metadata_response"
+max_metadata_quote_targets = 4
+allow_metadata_target_sampling = false
+
+[clients.polymarket_main.readiness_probe.quote_targets.configured_quote_probe]
+instrument_id = "CONFIGURED-PROBE.POLYMARKET"
+"#
+    ))
+    .expect("mixed readiness probe should parse so validation can reject the dual target source");
+
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.polymarket_main.readiness_probe")
+                && message.contains("quote_target_source")
+                && message.contains("quote_targets")
+        }),
+        "metadata-response readiness probes must reject static target ids in the same client block: {messages:#?}"
+    );
+}
+
+#[test]
+fn root_config_declares_requested_nt_data_clients_for_registration() {
+    use bolt_v2::bolt_v3_config::{
+        DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetSource,
+        load_bolt_v3_config,
+    };
+
+    let loaded = load_bolt_v3_config(&support::repo_path("config/root.toml"))
+        .expect("root.toml should load with requested data clients");
+
+    for client_key in [
+        "binance_spot_data",
+        "binance_usdm_data",
+        "binance_coinm_data",
+        "bitmex_data",
+        "bybit_data",
+        "coinbase_data",
+        "deribit_data",
+        "kraken_spot_data",
+        "kraken_futures_data",
+        "okx_data",
+        "polymarket_main",
+    ] {
+        let client = loaded
+            .root
+            .clients
+            .get(client_key)
+            .unwrap_or_else(|| panic!("{client_key} must be configured in root.toml"));
+        assert!(
+            client.data.is_some(),
+            "{client_key} must declare a [data] block"
+        );
+        let readiness_probe = client
+            .readiness_probe
+            .as_ref()
+            .unwrap_or_else(|| panic!("{client_key} must declare a readiness_probe block"));
+        if readiness_probe.market_data_kind == DataClientReadinessProbeMarketDataKind::Trade
+            && readiness_probe.quote_target_source
+                == DataClientReadinessProbeQuoteTargetSource::MetadataResponse
+            && readiness_probe.chunk_size.is_some()
+        {
+            assert!(
+                readiness_probe.chunk_observation_window_seconds.is_some()
+                    && readiness_probe.min_observed_targets.is_some(),
+                "{client_key} trade chunk-count probe must declare chunk_size, chunk_observation_window_seconds, and min_observed_targets"
+            );
+        } else {
+            assert_eq!(
+                readiness_probe.allow_metadata_target_sampling,
+                Some(true),
+                "{client_key} must explicitly opt into source-owned metadata sampling"
+            );
+        }
+    }
 }

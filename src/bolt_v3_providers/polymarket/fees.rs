@@ -6,11 +6,14 @@ use std::{
 
 use anyhow::{Context, Result};
 use futures_util::future::{BoxFuture, FutureExt};
-use nautilus_model::identifiers::InstrumentId;
+use nautilus_model::{enums::LiquiditySide, identifiers::InstrumentId, instruments::InstrumentAny};
+use nautilus_polymarket::execution::parse::{compute_commission, instrument_taker_fee};
 use nautilus_polymarket::{common::consts::POLYMARKET, http::clob::PolymarketClobHttpClient};
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal, prelude::FromPrimitive};
 
 use crate::strategies::registry::FeeProvider;
+
+const ENTRY_FEE_BPS_SCALE: i64 = 10_000;
 
 trait FeeRateFetcher: Send + Sync {
     fn fetch_fee_bps<'a>(&'a self, token_id: &'a str) -> BoxFuture<'a, Result<Decimal>>;
@@ -162,6 +165,31 @@ impl FeeProvider for PolymarketClobFeeProvider {
         }
     }
 
+    fn entry_fee_bps(&self, instrument: &InstrumentAny, entry_price: Decimal) -> Option<Decimal> {
+        if entry_price <= Decimal::ZERO || entry_price >= Decimal::ONE {
+            return None;
+        }
+        let commission = compute_commission(
+            instrument_taker_fee(instrument),
+            Decimal::ONE,
+            entry_price,
+            LiquiditySide::Taker,
+        );
+        if !commission.is_finite() || commission.is_sign_negative() {
+            return None;
+        }
+        let commission = Decimal::from_f64(commission)?;
+        Some(commission / entry_price * Decimal::from(ENTRY_FEE_BPS_SCALE))
+    }
+
+    fn max_entry_fee_bps(
+        &self,
+        instrument: &InstrumentAny,
+        _entry_price: Decimal,
+    ) -> Option<Decimal> {
+        Some(instrument_taker_fee(instrument) * Decimal::from(ENTRY_FEE_BPS_SCALE))
+    }
+
     fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, Result<()>> {
         self.warm_inner(instrument_id)
     }
@@ -173,6 +201,14 @@ mod tests {
     use std::collections::VecDeque;
 
     use crate::bolt_v3_config::BoltV3RootConfig;
+    use nautilus_core::{Params, UnixNanos};
+    use nautilus_model::{
+        enums::AssetClass,
+        identifiers::Symbol,
+        instruments::{BinaryOption, InstrumentAny},
+        types::{Currency, Price, Quantity},
+    };
+    use rust_decimal::prelude::ToPrimitive;
 
     fn decimal(input: &str) -> Decimal {
         input.parse().expect("decimal literal should parse")
@@ -196,9 +232,43 @@ mod tests {
         InstrumentId::from(format!("0xcondition-{token_id}.POLYMARKET").as_str())
     }
 
+    fn binary_option_with_taker_fee(
+        instrument_id: InstrumentId,
+        taker_fee: Decimal,
+    ) -> InstrumentAny {
+        let ts = UnixNanos::from(1_000_000_000);
+        InstrumentAny::BinaryOption(BinaryOption::new(
+            instrument_id,
+            Symbol::from("0xcondition-token_a"),
+            AssetClass::Alternative,
+            Currency::USDC(),
+            ts,
+            UnixNanos::from(2_000_000_000),
+            3,
+            2,
+            Price::from("0.001"),
+            Quantity::from("0.01"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(Decimal::ZERO),
+            Some(taker_fee),
+            Some(Params::new()),
+            ts,
+            ts,
+        ))
+    }
+
     #[test]
     fn clob_token_id_uses_nt_polymarket_symbol_suffix() {
-        let instrument_id = InstrumentId::from("0xcondition-with-dash-12345.POLYMARKET");
+        let instrument_id = InstrumentId::from("0xconfigured-market-with-dash-12345.POLYMARKET");
 
         assert_eq!(
             clob_token_id_from_instrument_id(instrument_id)
@@ -209,12 +279,52 @@ mod tests {
 
     #[test]
     fn clob_token_id_rejects_non_polymarket_venue() {
-        let instrument_id = InstrumentId::from("0xcondition-12345.BINANCE");
+        let instrument_id = InstrumentId::from("0xconfigured-market-12345.SOURCE");
 
         let error = clob_token_id_from_instrument_id(instrument_id)
             .expect_err("fee lookup should reject non-Polymarket instruments");
 
         assert!(error.to_string().contains("requires venue `POLYMARKET`"));
+    }
+
+    #[test]
+    fn entry_fee_bps_uses_nt_commission_formula_not_cached_base_fee_rate() {
+        let clock = TestClock::new();
+        let fetcher = MockFeeRateFetcher::new(vec![MockFetchResult::Success(decimal("1000"))]);
+        let provider = PolymarketClobFeeProvider::new_for_tests(
+            Arc::new(fetcher),
+            clock.source(),
+            test_fee_cache_ttl(),
+        );
+        let instrument_id = instrument_id_for_token("token_a");
+        let instrument = binary_option_with_taker_fee(instrument_id, decimal("0.07"));
+
+        let fee_bps = provider
+            .entry_fee_bps(&instrument, decimal("0.27"))
+            .expect("entry fee bps should be derived from NT commission");
+
+        let fee_bps = fee_bps
+            .to_f64()
+            .expect("entry fee bps should fit in f64 for assertion");
+        assert!((fee_bps - 511.111111111111).abs() < 1e-9);
+    }
+
+    #[test]
+    fn max_entry_fee_bps_uses_raw_nt_fee_rate_for_cash_debit_cap() {
+        let clock = TestClock::new();
+        let fetcher = MockFeeRateFetcher::new(vec![MockFetchResult::Success(decimal("1000"))]);
+        let provider = PolymarketClobFeeProvider::new_for_tests(
+            Arc::new(fetcher),
+            clock.source(),
+            test_fee_cache_ttl(),
+        );
+        let instrument_id = instrument_id_for_token("token_a");
+        let instrument = binary_option_with_taker_fee(instrument_id, decimal("0.07"));
+
+        assert_eq!(
+            provider.max_entry_fee_bps(&instrument, decimal("0.27")),
+            Some(decimal("700.00"))
+        );
     }
 
     #[derive(Clone)]

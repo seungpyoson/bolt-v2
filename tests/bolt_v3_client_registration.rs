@@ -18,15 +18,202 @@ mod support;
 use std::collections::BTreeMap;
 
 use bolt_v2::{
-    bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
-    bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with_summary},
+    bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config, load_bolt_v3_config},
+    bolt_v3_live_node::{
+        BoltV3LiveNodeError, build_bolt_v3_all_configured_client_mapping_live_node_with_summary,
+        build_bolt_v3_live_node_with_summary,
+    },
 };
 use nautilus_model::identifiers::ClientId;
 
-#[test]
-fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_data() {
+fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.insert(
+        "binance_reference".to_string(),
+        toml::from_str(&support::repo_text(
+            "tests/fixtures/bolt_v3/binance_reference_client.toml",
+        ))
+        .expect("binance provider fixture client should parse"),
+    );
+    loaded
+}
+
+fn data_client_from_toml(value: &str) -> ClientBlock {
+    toml::from_str(value).expect("test data client block should parse")
+}
+
+fn add_all_requested_data_clients(loaded: &mut LoadedBoltV3Config) {
+    let clients: &[(&str, &str)] = &[
+        (
+            "binance_spot_data",
+            r#"
+venue = "BINANCE"
+
+[data]
+product_types = ["spot"]
+environment = "mainnet"
+base_url_http = "https://api.binance.com"
+base_url_ws = "wss://stream-sbe.binance.com/ws"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[secrets]
+api_key_ssm_path = "/bolt/binance_reference/api_key"
+api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+"#,
+        ),
+        (
+            "binance_usdm_data",
+            r#"
+venue = "BINANCE"
+
+[data]
+product_types = ["usd_m"]
+environment = "testnet"
+base_url_http = "https://demo-fapi.binance.com"
+base_url_ws = "wss://fstream.binancefuture.com/ws"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[secrets]
+api_key_ssm_path = "/bolt/binance_reference/api_key"
+api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+"#,
+        ),
+        (
+            "binance_coinm_data",
+            r#"
+venue = "BINANCE"
+
+[data]
+product_types = ["coin_m"]
+environment = "testnet"
+base_url_http = "https://testnet.binancefuture.com"
+base_url_ws = "wss://dstream.binancefuture.com/ws"
+instrument_status_poll_secs = 3600
+transport_backend = "sockudo"
+
+[secrets]
+api_key_ssm_path = "/bolt/binance_reference/api_key"
+api_secret_ssm_path = "/bolt/binance_reference/api_secret"
+"#,
+        ),
+        (
+            "bitmex_data",
+            r#"
+venue = "BITMEX"
+
+[data]
+environment = "testnet"
+active_only = false
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "bybit_data",
+            r#"
+venue = "BYBIT"
+
+[data]
+product_types = ["spot", "linear", "inverse", "option"]
+environment = "testnet"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "coinbase_data",
+            r#"
+venue = "COINBASE"
+
+[data]
+environment = "Live"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "deribit_data",
+            r#"
+venue = "DERIBIT"
+
+[data]
+product_types = ["future", "option", "spot", "future_combo", "option_combo"]
+environment = "testnet"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "kraken_spot_data",
+            r#"
+venue = "KRAKEN"
+
+[data]
+product_type = "spot"
+environment = "live"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "kraken_futures_data",
+            r#"
+venue = "KRAKEN"
+
+[data]
+product_type = "futures"
+environment = "demo"
+transport_backend = "sockudo"
+"#,
+        ),
+        (
+            "okx_data",
+            r#"
+venue = "OKX"
+
+[data]
+instrument_types = ["SPOT", "MARGIN", "SWAP", "FUTURES", "EVENTS"]
+contract_types = ["linear", "inverse"]
+load_spreads = true
+environment = "demo"
+transport_backend = "sockudo"
+"#,
+        ),
+    ];
+
+    for (client_key, client_toml) in clients {
+        loaded.root.clients.insert(
+            (*client_key).to_string(),
+            data_client_from_toml(client_toml),
+        );
+    }
+}
+
+#[test]
+fn live_node_build_path_registers_only_strategy_bound_polymarket_data_and_exec() {
+    // The trade build path (`build_bolt_v3_live_node_with_summary`) registers
+    // ONLY strategy-bound clients: the strategy `execution_client_id`, its
+    // `[reference_data].*.data_client_id`, and the proof-policy
+    // `execution_client_id`. The fixture strategy
+    // (tests/fixtures/bolt_v3/strategies/binary_oracle.toml) sets
+    // `execution_client_id = "polymarket_main"` and has an EMPTY
+    // `[reference_data]` block; its reference comes from a source-owned
+    // `decision_reference` (provider id "resolution_oracle_primary"), NOT an NT
+    // data client. So `binance_reference` is a broad-readiness PROBE client that
+    // is configured but unbound, and the scoped trade runner correctly EXCLUDES
+    // it from both the registration summary and the NT engines.
+    //
+    // We keep `fixture_loaded_config_with_binance_reference` so the exclusion is
+    // meaningful: an unbound client is present in config yet must NOT register.
+    //
+    // Coverage of the SEPARATE concerns:
+    //   - broad-readiness registration of every requested data client (without
+    //     extra execution clients) is covered by
+    //     `live_node_registration_can_load_all_requested_data_clients_without_extra_execution_clients`,
+    //     which exercises
+    //     `build_bolt_v3_all_configured_client_mapping_live_node_with_summary`;
+    //   - positive `[reference_data]` scoping (a strategy-bound reference data
+    //     client IS registered) is covered by the
+    //     `trade_transport_config_keeps_only_strategy_bound_clients` unit test.
+    let mut loaded = fixture_loaded_config_with_binance_reference();
     let temp = support::TempCaseDir::new("bolt-v3-client-registration-build-path");
     loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
 
@@ -34,12 +221,17 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
         build_bolt_v3_live_node_with_summary(&loaded, |_| false, support::fake_bolt_v3_resolver)
             .expect("v3 LiveNode should build through the registration boundary");
 
-    // The summary records bolt-v3's intent at the registration boundary.
-    assert_eq!(summary.clients.len(), 2, "two configured clients");
+    // The scoped trade runner records exactly one strategy-bound client.
+    assert_eq!(
+        summary.clients.len(),
+        1,
+        "scoped trade path registers only strategy-bound clients; got {:?}",
+        summary.clients.keys().collect::<Vec<_>>()
+    );
     let polymarket = summary
         .clients
         .get("polymarket_main")
-        .expect("polymarket_main must appear in summary");
+        .expect("polymarket_main (strategy execution_client_id) must appear in summary");
     assert!(
         polymarket.data,
         "fixture polymarket_main has a [data] block"
@@ -48,29 +240,25 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
         polymarket.execution,
         "fixture polymarket_main has an [execution] block"
     );
-    let binance = summary
-        .clients
-        .get("binance_reference")
-        .expect("binance_reference must appear in summary");
-    assert!(binance.data, "fixture binance_reference has a [data] block");
     assert!(
-        !binance.execution,
-        "fixture binance_reference has no [execution] block"
+        !summary.clients.contains_key("binance_reference"),
+        "binance_reference is unbound (no strategy reference_data binding) and must be excluded from the scoped summary; got {:?}",
+        summary.clients.keys().collect::<Vec<_>>()
     );
 
-    // NT-side state confirms the actual registrations happened. The
-    // bolt-v3 venue identifier is reused as the NT registration name,
-    // so the NT engines expose ClientIds matching those keys. This
-    // proves the wiring goes all the way through `factory.create` and
-    // `engine.register_client` without a parallel NT mock.
+    // NT-side state confirms the actual registrations happened and that the
+    // unbound probe client was excluded all the way through `factory.create`
+    // and `engine.register_client`, without a parallel NT mock. The bolt-v3
+    // venue identifier is reused as the NT registration name, so the NT
+    // engines expose ClientIds matching the configured keys.
     let registered_data: Vec<ClientId> = node.registered_data_client_ids();
     assert!(
         registered_data.contains(&ClientId::from("polymarket_main")),
         "data engine should expose polymarket_main; got {registered_data:?}"
     );
     assert!(
-        registered_data.contains(&ClientId::from("binance_reference")),
-        "data engine should expose binance_reference; got {registered_data:?}"
+        !registered_data.contains(&ClientId::from("binance_reference")),
+        "scoped runner must EXCLUDE the unbound binance_reference data client; got {registered_data:?}"
     );
 
     let registered_exec: Vec<ClientId> = node.registered_exec_client_ids();
@@ -80,7 +268,63 @@ fn live_node_build_path_registers_polymarket_data_polymarket_exec_and_binance_da
     );
     assert!(
         !registered_exec.contains(&ClientId::from("binance_reference")),
-        "binance_reference has no [execution] block, must not be on the exec engine; got {registered_exec:?}"
+        "binance_reference has no [execution] block and is unbound, must not be on the exec engine; got {registered_exec:?}"
+    );
+}
+
+#[test]
+fn live_node_registration_can_load_all_requested_data_clients_without_extra_execution_clients() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    add_all_requested_data_clients(&mut loaded);
+    let temp = support::TempCaseDir::new("bolt-v3-all-requested-data-client-registration");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+
+    let (node, summary) = build_bolt_v3_all_configured_client_mapping_live_node_with_summary(
+        &loaded,
+        |_| false,
+        support::fake_bolt_v3_resolver,
+    )
+    .expect("all requested data clients should register through the LiveNode boundary");
+
+    for client_key in [
+        "polymarket_main",
+        "binance_spot_data",
+        "binance_usdm_data",
+        "binance_coinm_data",
+        "bitmex_data",
+        "bybit_data",
+        "coinbase_data",
+        "deribit_data",
+        "kraken_spot_data",
+        "kraken_futures_data",
+        "okx_data",
+    ] {
+        let row = summary
+            .clients
+            .get(client_key)
+            .unwrap_or_else(|| panic!("{client_key} must appear in registration summary"));
+        assert!(row.data, "{client_key} must register as data-capable");
+        assert!(
+            node.registered_data_client_ids()
+                .contains(&ClientId::from(client_key)),
+            "{client_key} must be registered with NT data engine"
+        );
+    }
+
+    let mut expected_exec: Vec<ClientId> = loaded
+        .root
+        .clients
+        .iter()
+        .filter(|(_, client)| client.execution.is_some())
+        .map(|(client_key, _)| ClientId::from(client_key.as_str()))
+        .collect();
+    expected_exec.sort();
+    let mut registered_exec = node.registered_exec_client_ids();
+    registered_exec.sort();
+    assert_eq!(
+        registered_exec, expected_exec,
+        "registering requested data clients must not create execution clients beyond TOML-declared [execution] blocks"
     );
 }
 

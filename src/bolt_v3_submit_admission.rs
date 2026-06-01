@@ -2,10 +2,20 @@ use crate::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
 };
 use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
+use nautilus_model::{
+    enums::OrderSide,
+    instruments::{Instrument, InstrumentAny},
+    orders::{Order, OrderAny},
+    types::Price,
+};
 use rust_decimal::Decimal;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
+use crate::bolt_v3_canary_proof_policy::CANARY_PROOF_CLAIM;
 pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
+
+const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
 
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionState {
@@ -100,6 +110,9 @@ impl BoltV3SubmitAdmissionState {
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => {
                 Err(BoltV3SubmitAdmissionError::NotionalCapExceeded)
             }
+            BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim => {
+                Err(BoltV3SubmitAdmissionError::InvalidCanaryProofClaim)
+            }
             BoltV3AdmissionOutcome::RejectedCountCapExhausted => {
                 Err(BoltV3SubmitAdmissionError::CountCapExhausted)
             }
@@ -122,6 +135,13 @@ impl BoltV3SubmitAdmissionState {
         if request.notional > report.max_notional_per_order() {
             return BoltV3AdmissionOutcome::RejectedNotionalCapExceeded;
         }
+        if request
+            .canary_proof_claim
+            .as_deref()
+            .is_some_and(|claim| claim != CANARY_PROOF_CLAIM)
+        {
+            return BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim;
+        }
         if inner.admitted_order_count >= report.max_live_order_count() {
             return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
         }
@@ -133,6 +153,23 @@ impl BoltV3SubmitAdmissionState {
             .lock()
             .expect("submit admission state mutex should not be poisoned")
             .admitted_order_count
+    }
+
+    /// Gate-approved maximum reference-quote age (seconds) carried by the armed
+    /// gate report, or `None` when the state is not yet armed. This is the single
+    /// authoritative freshness bound for the armed live path (A5): the submit /
+    /// forced-flat stale check plumbs this value in so the gate-validated
+    /// freshness policy — not an independent strategy-config value — governs
+    /// whether a reference quote is fresh enough to keep trading. `None` (unarmed)
+    /// is irrelevant to live money because admission rejects every order until the
+    /// state is armed.
+    pub fn reference_quote_max_age_seconds(&self) -> Option<u64> {
+        self.inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .gate_report
+            .as_ref()
+            .map(BoltV3LiveCanaryGateReport::reference_quote_max_age_seconds)
     }
 }
 
@@ -190,23 +227,16 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub notional: Decimal,
     pub intent_kind: BoltV3SubmitIntentKind,
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
+    pub canary_proof_claim: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct BoltV3QuoteQuantityAdmissionInput {
-    pub order_kind: BoltV3QuoteQuantityOrderKind,
     pub order_side: BoltV3QuoteQuantityOrderSide,
     pub is_quote_quantity: bool,
     pub is_inverse: bool,
     pub submitted_quote_quantity: Decimal,
     pub calculated_notional: Decimal,
-}
-
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub enum BoltV3QuoteQuantityOrderKind {
-    Limit,
-    StopLimit,
-    Other,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -216,15 +246,30 @@ pub enum BoltV3QuoteQuantityOrderSide {
     Other,
 }
 
+/// Floor a quote-quantity order's admission notional at the submitted quote
+/// quantity. A non-inverse quote-quantity order commits exactly its submitted
+/// quote quantity in settlement currency — on either side and for ANY order kind
+/// (Limit, StopLimit, Market, …) — so the per-order cap must never be checked
+/// against a smaller value.
+///
+/// When the venue rounds the derived base quantity DOWN to size precision, NT's
+/// effective notional can land a sub-tick BELOW the committed quote quantity. The
+/// floor is therefore applied to every non-inverse quote-quantity Buy/Sell order
+/// regardless of kind — restricting it (to one side, or to Limit/StopLimit) would
+/// leave the excluded shapes' safety dependent on a precision coincidence rather
+/// than a structural guarantee. The conservative effective-price pull that feeds
+/// `calculated_notional` is a separate, Limit/StopLimit-only concern handled in
+/// [`quote_quantity_effective_price`]; this floor is the kind-independent
+/// backstop. Inverse instruments do not denominate the quote quantity in
+/// settlement currency, so the floor is skipped for them.
 pub fn conservative_quote_quantity_admission_notional(
     input: BoltV3QuoteQuantityAdmissionInput,
 ) -> Decimal {
     if input.is_quote_quantity
         && !input.is_inverse
-        && input.order_side == BoltV3QuoteQuantityOrderSide::Sell
         && matches!(
-            input.order_kind,
-            BoltV3QuoteQuantityOrderKind::Limit | BoltV3QuoteQuantityOrderKind::StopLimit
+            input.order_side,
+            BoltV3QuoteQuantityOrderSide::Buy | BoltV3QuoteQuantityOrderSide::Sell
         )
     {
         return input
@@ -234,15 +279,216 @@ pub fn conservative_quote_quantity_admission_notional(
     input.calculated_notional
 }
 
+/// Admission base notional for a BASE-quantity order: the product of the
+/// already-rounded order's price and quantity. This is the single definition of
+/// the base-quantity notional; every submit path (and the base-only test helper)
+/// derives it from here so there is no divergent `price * quantity` copy.
+pub fn base_quantity_admission_notional(order_price: Decimal, order_quantity: Decimal) -> Decimal {
+    order_price * order_quantity
+}
+
+/// Single source of truth for "given a built venue-precision order, its
+/// instrument, and a conservative reference/last price, what is the conservative
+/// admission BASE notional?"
+///
+/// Both submit paths derive their admission notional from a built order through
+/// THIS function so base-quantity and quote-quantity orders are sized
+/// identically everywhere. Divergent per-call-site notional math is forbidden
+/// (NO DUAL PATHS): a price*quantity shortcut UNDERSTATES the real cash debit of
+/// a quote-quantity (quote-currency-denominated) order, understating the
+/// per-order cap.
+///
+/// Contract for the inputs:
+/// - `order_price` / `order_quantity` are the Decimal price and quantity of the
+///   already-rounded order actually handed to the venue. For a BASE-quantity
+///   order the result is exactly `order_price * order_quantity`, unchanged from
+///   the historical per-call-site computation.
+/// - `last_price` is the conservative reference/last price used to value a
+///   quote-quantity order. For a quote-quantity order it MUST be `Some`; when a
+///   caller cannot resolve a reference price it passes `None` and this function
+///   returns `None` so the caller can apply its own degraded fallback. It is
+///   ignored for base-quantity orders.
+/// - `quote_reference_price` is the side-appropriate top-of-book price (best ask
+///   for a BUY, best bid for a SELL) used to pick a conservative effective price
+///   for the quote→base conversion. `None` means no top-of-book is available, in
+///   which case the effective price is the `last_price` (matching the historical
+///   no-quote-tick fallback).
+///
+/// For a quote-quantity, non-inverse Limit/StopLimit order the effective price is
+/// pulled toward the book (`min(last, ask)` for a BUY, `max(last, bid)` for a
+/// SELL) so the quote→base conversion yields the LARGEST base quantity the order
+/// could fill — the conservative direction that never understates the notional.
+/// The result is then floored by [`conservative_quote_quantity_admission_notional`].
+pub fn admission_base_notional_from_order(
+    order: &OrderAny,
+    instrument: &InstrumentAny,
+    order_price: Decimal,
+    order_quantity: Decimal,
+    last_price: Option<Price>,
+    quote_reference_price: Option<Price>,
+) -> Option<Decimal> {
+    if !order.is_quote_quantity() {
+        return Some(base_quantity_admission_notional(
+            order_price,
+            order_quantity,
+        ));
+    }
+    // Fail CLOSED on an inverse quote-quantity order at the SHARED admission
+    // helper (A6). An inverse instrument denominates the quote quantity in the
+    // QUOTE currency, not the settlement currency, so neither
+    // `calculate_notional_value` here nor the submitted-quote-quantity floor in
+    // [`conservative_quote_quantity_admission_notional`] yields a settlement-
+    // currency notional the per-order cap can be checked against — both would
+    // UNDERSTATE the real cash debit. This is the single, structural rejection
+    // point: returning `None` makes every caller (production strategy, canary
+    // proof executor) treat an inverse quote-quantity order as unvaluable and
+    // refuse it, rather than relying on a per-caller fallback to notice the
+    // inverse case. This system trades only non-inverse binary options; carrying
+    // currency-aware settlement notional would be the alternative, but the
+    // fail-closed reject is the conservative default until such an instrument is
+    // intentionally supported. Reachable only if an inverse instrument enters the
+    // universe (the market-family filters gate it out today), but the defense
+    // lives here so the cap can never be silently understated.
+    if instrument.is_inverse() {
+        return None;
+    }
+    let last_px = last_price?;
+    let effective_price =
+        quote_quantity_effective_price(order, instrument, last_px, quote_reference_price);
+    let effective_quantity = instrument.calculate_base_quantity(order.quantity(), effective_price);
+    let calculated_notional = instrument
+        .calculate_notional_value(effective_quantity, last_px, Some(true))
+        .as_decimal();
+    let submitted_quote_quantity = Decimal::from_str(order.quantity().to_string().trim()).ok()?;
+    Some(conservative_quote_quantity_admission_notional(
+        BoltV3QuoteQuantityAdmissionInput {
+            order_side: match order.order_side() {
+                OrderSide::Buy => BoltV3QuoteQuantityOrderSide::Buy,
+                OrderSide::Sell => BoltV3QuoteQuantityOrderSide::Sell,
+                _ => BoltV3QuoteQuantityOrderSide::Other,
+            },
+            is_quote_quantity: order.is_quote_quantity(),
+            is_inverse: instrument.is_inverse(),
+            submitted_quote_quantity,
+            calculated_notional,
+        },
+    ))
+}
+
+/// Conservative effective price for the quote→base conversion of a
+/// quote-quantity order. Mirrors the production cache-driven selection: for a
+/// non-inverse Limit/StopLimit order it pulls the price toward the book
+/// (`min(last, ask)` for a BUY, `max(last, bid)` for a SELL) so a smaller
+/// effective price yields a larger base quantity — the conservative direction.
+/// Every other shape, or a missing top-of-book, falls back to `last_price`.
+fn quote_quantity_effective_price(
+    order: &OrderAny,
+    instrument: &InstrumentAny,
+    last_price: Price,
+    quote_reference_price: Option<Price>,
+) -> Price {
+    if !order.is_quote_quantity()
+        || instrument.is_inverse()
+        || !matches!(order, OrderAny::Limit(_) | OrderAny::StopLimit(_))
+    {
+        return last_price;
+    }
+    let Some(quote_reference_price) = quote_reference_price else {
+        return last_price;
+    };
+    match order.order_side() {
+        OrderSide::Buy => last_price.min(quote_reference_price),
+        OrderSide::Sell => last_price.max(quote_reference_price),
+        _ => last_price,
+    }
+}
+
+pub fn fee_inclusive_admission_notional(notional: Decimal, max_fee_bps: Decimal) -> Decimal {
+    let fee_multiplier =
+        Decimal::ONE + max_fee_bps / Decimal::from(SUBMIT_ADMISSION_BPS_DENOMINATOR);
+    notional * fee_multiplier
+}
+
+/// Cap-bypass-via-rounding guard for submit paths that carry an operator
+/// intent SEPARATE from the order actually built.
+///
+/// Callers must pass the base notional of the already-rounded order
+/// (`rounded_base_notional`) — i.e. the product of the venue-precision
+/// `Price`/`Quantity` actually submitted — together with the operator-intended
+/// raw notional that authorized the order. Banker's rounding to venue precision
+/// can round a quantity or price UP, so the rounded base notional can exceed the
+/// intended notional. When that happens this helper fails CLOSED: a rounded
+/// order may never debit more than the operator approved, so admission is
+/// refused rather than letting the cap be bypassed by rounding.
+///
+/// On success it returns the fee-inclusive admission notional computed from the
+/// rounded base, so the cap check downstream sees the same cash debit the venue
+/// will incur.
+///
+/// Scope: this guard is required precisely where the operator approves an
+/// explicit `order_intent.notional` BEFORE the venue-precision order is
+/// constructed — currently the canary proof executor. The production strategy
+/// path does NOT use this guard and structurally does not need it: it builds
+/// the venue-precision order first and derives its admission notional from that
+/// already-rounded order (`binary_oracle_edge_taker::submit_admission_request_from_order`,
+/// whose intent is `BoltV3OrderIntentEvidence::from_compiled_order`), so the
+/// strict-`>` cap check in [`BoltV3SubmitAdmissionState::admit`] already
+/// evaluates the exact order handed to the venue — there is no separate
+/// unrounded intent for rounding to bypass. Both paths share the same
+/// fee-inclusive cap arithmetic via [`fee_inclusive_admission_notional`].
+pub fn rounded_order_admission_notional(
+    rounded_base_notional: Decimal,
+    intended_notional: Decimal,
+    max_fee_bps: Decimal,
+) -> Result<Decimal, BoltV3SubmitAdmissionError> {
+    if rounded_base_notional > intended_notional {
+        return Err(BoltV3SubmitAdmissionError::RoundedNotionalExceedsIntent {
+            rounded_base_notional,
+            intended_notional,
+        });
+    }
+    Ok(fee_inclusive_admission_notional(
+        rounded_base_notional,
+        max_fee_bps,
+    ))
+}
+
+/// Admission notional for a market-style order — one with NO firm limit price
+/// (Market / StopMarket / MarketIfTouched / TrailingStopMarket). Such an order
+/// carries no venue-enforced price bound: it can fill anywhere up to the
+/// instrument's structural price ceiling. The per-order cap must therefore be
+/// checked against that ceiling — the only price the venue physically cannot
+/// exceed — never against a reference-price estimate or a configured slippage
+/// budget (an estimate is not a bound). Fails CLOSED when the instrument
+/// declares no ceiling: an order whose worst-case cash cost cannot be bounded
+/// must not be admitted.
+pub fn market_style_admission_ceiling_notional(
+    price_ceiling: Option<Decimal>,
+    order_quantity: Decimal,
+) -> Result<Decimal, BoltV3SubmitAdmissionError> {
+    let ceiling = price_ceiling.ok_or(BoltV3SubmitAdmissionError::MissingPriceCeiling)?;
+    Ok(base_quantity_admission_notional(ceiling, order_quantity))
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum BoltV3SubmitAdmissionError {
     NotArmed,
     AlreadyArmed,
-    SubmitLifecycleDisallowed { intent: BoltV3SubmitIntentKind },
+    SubmitLifecycleDisallowed {
+        intent: BoltV3SubmitIntentKind,
+    },
     CountCapExhausted,
     NonPositiveNotional,
     NotionalCapExceeded,
-    EvidenceWriteFailed { reason: String },
+    MissingPriceCeiling,
+    RoundedNotionalExceedsIntent {
+        rounded_base_notional: Decimal,
+        intended_notional: Decimal,
+    },
+    InvalidCanaryProofClaim,
+    EvidenceWriteFailed {
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for BoltV3SubmitAdmissionError {
@@ -263,6 +509,21 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             Self::NotionalCapExceeded => {
                 write!(f, "bolt-v3 submit admission notional cap is exceeded")
             }
+            Self::MissingPriceCeiling => write!(
+                f,
+                "bolt-v3 submit admission refuses a market-style order without a declared instrument price ceiling"
+            ),
+            Self::RoundedNotionalExceedsIntent {
+                rounded_base_notional,
+                intended_notional,
+            } => write!(
+                f,
+                "bolt-v3 submit admission rejected: rounded order notional {rounded_base_notional} exceeded operator-intended notional {intended_notional}"
+            ),
+            Self::InvalidCanaryProofClaim => write!(
+                f,
+                "bolt-v3 submit admission canary proof claim must be proof_only"
+            ),
             Self::EvidenceWriteFailed { reason } => {
                 write!(
                     f,

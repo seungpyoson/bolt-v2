@@ -32,13 +32,14 @@
 //! trading runner entrypoint is [`run_bolt_v3_live_node`], which first
 //! applies the bolt-v3 live canary gate. The no-submit readiness path
 //! builds a strategy-free node before using NT's supported runner loop
-//! with handle-driven stop; its dedicated reference quote probe calls
-//! only NT quote subscribe/unsubscribe APIs for configured
-//! `[reference_data]` instruments. This module still never constructs an
-//! order or enables any submit path from its own boundary code.
+//! with handle-driven stop; its dedicated quote probes call only NT
+//! quote subscribe/unsubscribe APIs for configured strategy
+//! `[reference_data]` or client-owned readiness-probe instruments. This
+//! module still never constructs an order or enables any submit path
+//! from its own boundary code.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap},
     rc::Rc,
     str::FromStr,
@@ -50,30 +51,41 @@ use ahash::AHashMap;
 use anyhow::Result;
 use log::LevelFilter;
 use nautilus_common::{
-    actor::{DataActor, DataActorConfig, DataActorCore},
+    actor::{DataActor, DataActorConfig, DataActorCore, registry::try_get_actor_unchecked},
     enums::Environment,
     logging::logger::LoggerConfig,
+    messages::data::InstrumentsResponse,
+    msgbus::ShareableMessageHandler,
     nautilus_actor,
+    timer::TimeEvent,
 };
+use nautilus_core::UnixNanos;
 use nautilus_live::{
     builder::LiveNodeBuilder,
     config::LiveNodeConfig,
     node::{LiveNode, LiveNodeHandle, NodeState},
 };
 use nautilus_model::{
-    data::QuoteTick,
-    enums::BarIntervalType,
-    identifiers::{ActorId, ClientId, InstrumentId, StrategyId},
+    data::{OrderBookDeltas, QuoteTick, TradeTick},
+    enums::{BarIntervalType, BookType},
+    identifiers::{ActorId, ClientId, InstrumentId, StrategyId, Venue},
+    instruments::Instrument,
 };
+use rust_decimal::Decimal;
 use ustr::Ustr;
 use zeroize::Zeroizing;
 
 use crate::{
     bolt_v3_adapters::{BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters},
+    bolt_v3_canary_proof_executor::register_canary_proof_executor_on_node,
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
-    bolt_v3_config::LoadedBoltV3Config,
+    bolt_v3_config::{
+        DataClientReadinessProbeBlock, DataClientReadinessProbeBookType,
+        DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetSource,
+        LoadedBoltV3Config,
+    },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
@@ -89,16 +101,22 @@ use crate::{
         resolve_bolt_v3_secrets, resolve_bolt_v3_secrets_with,
     },
     bolt_v3_strategy_registration::{
-        BoltV3StrategyRegistrationError, register_bolt_v3_strategies_on_node_with_bindings,
+        BoltV3StrategyRegistrationError, BoltV3StrategyRegistrationSummary,
+        register_bolt_v3_strategies_on_node_with_bindings,
     },
     bolt_v3_submit_admission::{BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState},
-    bolt_v3_tiny_canary_evidence::Phase8OperatorApprovalEnvelope,
+    bolt_v3_tiny_canary_evidence::{
+        Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
+        Phase8EvidenceRef, Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef,
+        phase8_sha256_text,
+    },
     nt_runtime_capture::{NtRuntimeCaptureGuards, wire_nt_runtime_capture},
     secrets::SsmResolverSession,
 };
 
 pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
+    registration_summary: BoltV3RegistrationSummary,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     redaction_values: Vec<Zeroizing<String>>,
 }
@@ -108,18 +126,73 @@ pub struct BoltV3NoSubmitReferenceCacheEvidence {
     cached_instrument_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BoltV3NoSubmitReferenceQuote {
     pub data_client_id: String,
     pub instrument_id: String,
+    pub bid_price: f64,
+    pub ask_price: f64,
+    pub ts_event_unix_nanos: u64,
+    pub ts_init_unix_nanos: u64,
+    pub captured_at_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoltV3NoSubmitReferenceQuoteEvidence {
+    pub quotes: Vec<BoltV3NoSubmitReferenceQuote>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3NoSubmitBookDeltas {
+    pub data_client_id: String,
+    pub instrument_id: String,
+    pub delta_count: u64,
     pub ts_event_unix_nanos: u64,
     pub ts_init_unix_nanos: u64,
     pub captured_at_unix_nanos: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BoltV3NoSubmitReferenceQuoteEvidence {
-    pub quotes: Vec<BoltV3NoSubmitReferenceQuote>,
+pub struct BoltV3NoSubmitBookDeltasEvidence {
+    pub deltas: Vec<BoltV3NoSubmitBookDeltas>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoltV3NoSubmitTrade {
+    pub data_client_id: String,
+    pub instrument_id: String,
+    pub price: f64,
+    pub size: f64,
+    pub ts_event_unix_nanos: u64,
+    pub ts_init_unix_nanos: u64,
+    pub captured_at_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoltV3NoSubmitTradeEvidence {
+    pub trades: Vec<BoltV3NoSubmitTrade>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3NoSubmitDataClientMetadata {
+    pub data_client_id: String,
+    pub venue: String,
+    pub instrument_ids: Vec<String>,
+    pub ts_init_unix_nanos: u64,
+    pub captured_at_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3NoSubmitDataClientMetadataEvidence {
+    pub responses: Vec<BoltV3NoSubmitDataClientMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoltV3NoSubmitDataClientReadinessEvidence {
+    pub metadata: BoltV3NoSubmitDataClientMetadataEvidence,
+    pub quotes: BoltV3NoSubmitReferenceQuoteEvidence,
+    pub books: BoltV3NoSubmitBookDeltasEvidence,
+    pub trades: BoltV3NoSubmitTradeEvidence,
 }
 
 impl BoltV3NoSubmitReferenceQuoteEvidence {
@@ -131,47 +204,390 @@ impl BoltV3NoSubmitReferenceQuoteEvidence {
     }
 }
 
+impl BoltV3NoSubmitDataClientMetadataEvidence {
+    pub fn observed_at_unix_nanos(&self) -> Option<u64> {
+        self.responses
+            .iter()
+            .map(|response| response.captured_at_unix_nanos)
+            .max()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NoSubmitReferenceQuoteSubscription {
     data_client_id: ClientId,
     instrument_id: InstrumentId,
 }
 
+/// Name of the actor time-alert that drives a trade chunk-count walk from one
+/// chunk to the next.
+const CHUNK_ADVANCE_TIMER: &str = "bolt-v3-readiness-chunk-advance";
+
+/// SI time-unit conversion factor for turning the configured per-chunk
+/// observation window (seconds) into the nanosecond clock the actor timer uses.
+const NANOS_PER_SECOND: u64 = 1_000_000_000;
+
+/// Live state for a trade chunk-count readiness walk. The probe subscribes one
+/// chunk of the instrument universe at a time (so it never holds more than
+/// `chunk_size` channels at once, staying below the venue's silent delivery
+/// ceiling), watches it for `chunk_observation_window_seconds`, then advances.
+/// It passes as soon as `required_live_markets` (`m`) distinct markets have
+/// traded, and fails closed once the whole universe has been walked without
+/// reaching `m`. Interior mutability mirrors the surrounding handle: the actor
+/// is single-threaded (`!Send`), so `Cell`/`RefCell` is sufficient.
+#[derive(Debug)]
+struct ChunkCountWalk {
+    data_client_id: ClientId,
+    chunk_size: usize,
+    chunk_observation_window_seconds: u64,
+    required_live_markets: usize,
+    /// Universe pre-split into consecutive chunks of at most `chunk_size`,
+    /// populated when the metadata response arrives.
+    chunks: RefCell<Vec<Vec<InstrumentId>>>,
+    /// Index of the next chunk to subscribe.
+    cursor: Cell<usize>,
+    /// Set once the universe has been captured and chunking has begun.
+    started: Cell<bool>,
+    /// Set once the walk has finished, whether by reaching `m` (pass) or by
+    /// exhausting the universe (fail closed).
+    complete: Cell<bool>,
+}
+
 #[derive(Debug, Clone)]
 struct BoltV3NoSubmitReferenceQuoteProbeHandle {
-    required: Vec<NoSubmitReferenceQuoteSubscription>,
-    ambiguous_instrument_ids: BTreeSet<String>,
+    required: Rc<RefCell<Vec<NoSubmitReferenceQuoteSubscription>>>,
+    ambiguous_instrument_ids: Rc<RefCell<BTreeSet<String>>>,
+    market_data_kind: DataClientReadinessProbeMarketDataKind,
+    book_type: Option<DataClientReadinessProbeBookType>,
+    metadata_response_data_client_id: Option<ClientId>,
+    metadata_response_max_quote_targets: Option<usize>,
+    metadata_response_allow_target_sampling: bool,
+    min_observed_targets: Option<usize>,
+    quote_targets_initialized: Rc<Cell<bool>>,
+    failure_reason: Rc<RefCell<Option<String>>>,
     quotes: Rc<RefCell<Vec<BoltV3NoSubmitReferenceQuote>>>,
+    book_deltas: Rc<RefCell<Vec<BoltV3NoSubmitBookDeltas>>>,
+    trades: Rc<RefCell<Vec<BoltV3NoSubmitTrade>>>,
     quote_notify: Rc<tokio::sync::Notify>,
+    /// Present only for a trade chunk-count probe (`market_data_kind = "trade"`
+    /// with `quote_target_source = "metadata_response"`); drives the chunked
+    /// walk over the instrument universe instead of a fixed sampled target set.
+    chunk_walk: Option<Rc<ChunkCountWalk>>,
 }
 
 impl BoltV3NoSubmitReferenceQuoteProbeHandle {
     fn new(loaded: &LoadedBoltV3Config) -> Self {
         let (required, ambiguous_instrument_ids) =
             no_submit_reference_quote_subscription_plan(loaded);
-        Self {
+        Self::from_plan(
             required,
             ambiguous_instrument_ids,
+            DataClientReadinessProbeMarketDataKind::Quote,
+            None,
+            None,
+        )
+    }
+
+    fn from_plan(
+        required: Vec<NoSubmitReferenceQuoteSubscription>,
+        ambiguous_instrument_ids: BTreeSet<String>,
+        market_data_kind: DataClientReadinessProbeMarketDataKind,
+        book_type: Option<DataClientReadinessProbeBookType>,
+        min_observed_targets: Option<usize>,
+    ) -> Self {
+        Self {
+            required: Rc::new(RefCell::new(required)),
+            ambiguous_instrument_ids: Rc::new(RefCell::new(ambiguous_instrument_ids)),
+            market_data_kind,
+            book_type,
+            metadata_response_data_client_id: None,
+            metadata_response_max_quote_targets: None,
+            metadata_response_allow_target_sampling: false,
+            min_observed_targets,
+            quote_targets_initialized: Rc::new(Cell::new(true)),
+            failure_reason: Rc::new(RefCell::new(None)),
             quotes: Rc::new(RefCell::new(Vec::new())),
+            book_deltas: Rc::new(RefCell::new(Vec::new())),
+            trades: Rc::new(RefCell::new(Vec::new())),
             quote_notify: Rc::new(tokio::sync::Notify::new()),
+            chunk_walk: None,
         }
     }
 
-    fn has_all_required_quotes(&self) -> bool {
-        if !self.ambiguous_instrument_ids.is_empty() {
-            return false;
+    fn from_metadata_response_plan(
+        data_client_id: ClientId,
+        max_quote_targets: usize,
+        allow_target_sampling: bool,
+        market_data_kind: DataClientReadinessProbeMarketDataKind,
+        book_type: Option<DataClientReadinessProbeBookType>,
+        min_observed_targets: Option<usize>,
+    ) -> Self {
+        Self {
+            required: Rc::new(RefCell::new(Vec::new())),
+            ambiguous_instrument_ids: Rc::new(RefCell::new(BTreeSet::new())),
+            market_data_kind,
+            book_type,
+            metadata_response_data_client_id: Some(data_client_id),
+            metadata_response_max_quote_targets: Some(max_quote_targets),
+            metadata_response_allow_target_sampling: allow_target_sampling,
+            min_observed_targets,
+            quote_targets_initialized: Rc::new(Cell::new(false)),
+            failure_reason: Rc::new(RefCell::new(None)),
+            quotes: Rc::new(RefCell::new(Vec::new())),
+            book_deltas: Rc::new(RefCell::new(Vec::new())),
+            trades: Rc::new(RefCell::new(Vec::new())),
+            quote_notify: Rc::new(tokio::sync::Notify::new()),
+            chunk_walk: None,
         }
-        let quotes = self.quotes.borrow();
-        self.required.iter().all(|required| {
-            quotes.iter().any(|quote| {
-                quote.data_client_id == required.data_client_id.to_string()
-                    && quote.instrument_id == required.instrument_id.to_string()
+    }
+
+    fn from_metadata_response_chunk_count_plan(
+        data_client_id: ClientId,
+        chunk_size: usize,
+        chunk_observation_window_seconds: u64,
+        required_live_markets: usize,
+        market_data_kind: DataClientReadinessProbeMarketDataKind,
+    ) -> Self {
+        Self {
+            required: Rc::new(RefCell::new(Vec::new())),
+            ambiguous_instrument_ids: Rc::new(RefCell::new(BTreeSet::new())),
+            market_data_kind,
+            book_type: None,
+            metadata_response_data_client_id: Some(data_client_id),
+            metadata_response_max_quote_targets: None,
+            metadata_response_allow_target_sampling: false,
+            min_observed_targets: Some(required_live_markets),
+            quote_targets_initialized: Rc::new(Cell::new(false)),
+            failure_reason: Rc::new(RefCell::new(None)),
+            quotes: Rc::new(RefCell::new(Vec::new())),
+            book_deltas: Rc::new(RefCell::new(Vec::new())),
+            trades: Rc::new(RefCell::new(Vec::new())),
+            quote_notify: Rc::new(tokio::sync::Notify::new()),
+            chunk_walk: Some(Rc::new(ChunkCountWalk {
+                data_client_id,
+                chunk_size,
+                chunk_observation_window_seconds,
+                required_live_markets,
+                chunks: RefCell::new(Vec::new()),
+                cursor: Cell::new(0),
+                started: Cell::new(false),
+                complete: Cell::new(false),
+            })),
+        }
+    }
+
+    fn is_chunk_count_mode(&self) -> bool {
+        self.chunk_walk.is_some()
+    }
+
+    /// Capture the metadata-response universe and split it into chunks. The
+    /// universe is sorted and de-duplicated so chunk membership is
+    /// deterministic; which markets ultimately certify the feed is still
+    /// liveness-driven (a chunk's markets only count once they actually trade).
+    fn chunk_count_capture_universe(&self, mut instrument_ids: Vec<InstrumentId>) {
+        let Some(walk) = &self.chunk_walk else {
+            return;
+        };
+        if walk.started.get() {
+            return;
+        }
+        instrument_ids.sort_by_key(|instrument_id| instrument_id.to_string());
+        instrument_ids.dedup();
+        *walk.chunks.borrow_mut() = chunk_universe(&instrument_ids, walk.chunk_size);
+        walk.cursor.set(0);
+        walk.started.set(true);
+        self.quote_notify.notify_one();
+    }
+
+    /// Take the next chunk to subscribe, installing it as the probe's current
+    /// `required` set so recorded trades match against it. Returns `None` once
+    /// the universe is exhausted.
+    fn chunk_count_next_chunk(&self) -> Option<Vec<NoSubmitReferenceQuoteSubscription>> {
+        let walk = self.chunk_walk.as_ref()?;
+        let cursor = walk.cursor.get();
+        let chunk = walk.chunks.borrow().get(cursor).cloned()?;
+        walk.cursor.set(cursor + 1);
+        let subscriptions: Vec<NoSubmitReferenceQuoteSubscription> = chunk
+            .into_iter()
+            .map(|instrument_id| NoSubmitReferenceQuoteSubscription {
+                data_client_id: walk.data_client_id,
+                instrument_id,
             })
+            .collect();
+        *self.required.borrow_mut() = subscriptions.clone();
+        Some(subscriptions)
+    }
+
+    /// The chunk currently subscribed, returned so the actor can unsubscribe it
+    /// before advancing to the next chunk.
+    fn chunk_count_current_chunk(&self) -> Vec<NoSubmitReferenceQuoteSubscription> {
+        self.required.borrow().clone()
+    }
+
+    /// Per-chunk observation window in nanoseconds, or `None` on overflow.
+    fn chunk_count_window_ns(&self) -> Option<u64> {
+        self.chunk_walk.as_ref().and_then(|walk| {
+            walk.chunk_observation_window_seconds
+                .checked_mul(NANOS_PER_SECOND)
         })
     }
 
+    /// Distinct instruments that produced at least one trade for this data
+    /// client across the whole walk so far.
+    fn distinct_traded_instrument_count(&self) -> usize {
+        let Some(walk) = &self.chunk_walk else {
+            return 0;
+        };
+        let data_client_id = walk.data_client_id.to_string();
+        self.trades
+            .borrow()
+            .iter()
+            .filter(|trade| trade.data_client_id == data_client_id)
+            .map(|trade| trade.instrument_id.clone())
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
+    fn chunk_count_passed(&self) -> bool {
+        match &self.chunk_walk {
+            Some(walk) => trade_chunk_count_probe_passed(
+                self.distinct_traded_instrument_count(),
+                walk.required_live_markets,
+            ),
+            None => false,
+        }
+    }
+
+    fn complete_chunk_count_walk_passed(&self) {
+        if let Some(walk) = &self.chunk_walk {
+            walk.complete.set(true);
+        }
+        self.quote_notify.notify_one();
+    }
+
+    fn complete_chunk_count_walk_failed(&self, reason: String) {
+        if self.failure_reason.borrow().is_none() {
+            *self.failure_reason.borrow_mut() = Some(reason);
+        }
+        if let Some(walk) = &self.chunk_walk {
+            walk.complete.set(true);
+        }
+        self.quote_notify.notify_one();
+    }
+
+    /// Fail-closed message naming how much of the universe was walked and how
+    /// many distinct markets actually traded versus the required `m`.
+    fn chunk_count_exhausted_reason(&self) -> String {
+        let (universe, chunks, chunk_size, required_live_markets) = match &self.chunk_walk {
+            Some(walk) => (
+                walk.chunks.borrow().iter().map(Vec::len).sum::<usize>(),
+                walk.chunks.borrow().len(),
+                walk.chunk_size,
+                walk.required_live_markets,
+            ),
+            None => (0, 0, 0, 0),
+        };
+        format!(
+            "trade chunk-count readiness probe walked the entire {universe}-instrument universe in {chunks} chunk(s) of up to {chunk_size}; only {} distinct market(s) traded within the per-chunk window, fewer than the required {required_live_markets}",
+            self.distinct_traded_instrument_count()
+        )
+    }
+
+    fn chunk_walk_started(&self) -> bool {
+        self.chunk_walk
+            .as_ref()
+            .is_some_and(|walk| walk.started.get())
+    }
+
+    fn chunk_walk_complete_flag(&self) -> bool {
+        self.chunk_walk
+            .as_ref()
+            .is_some_and(|walk| walk.complete.get())
+    }
+
+    /// `(number_of_chunks, per_chunk_window_seconds)` for sizing the overall
+    /// walk timeout once the universe is known.
+    fn chunk_walk_dims(&self) -> (usize, u64) {
+        match &self.chunk_walk {
+            Some(walk) => (
+                walk.chunks.borrow().len(),
+                walk.chunk_observation_window_seconds,
+            ),
+            None => (0, 0),
+        }
+    }
+
+    async fn wait_for_chunk_walk_started(&self) {
+        loop {
+            if self.failure_error().is_some() || self.chunk_walk_started() {
+                return;
+            }
+            self.quote_notify.notified().await;
+        }
+    }
+
+    #[cfg(test)]
+    fn has_all_required_quotes(&self) -> bool {
+        if self.market_data_kind != DataClientReadinessProbeMarketDataKind::Quote {
+            return false;
+        }
+        self.has_all_required_market_data()
+    }
+
+    fn has_all_required_market_data(&self) -> bool {
+        if self.failure_error().is_some() {
+            return false;
+        }
+        if let Some(walk) = &self.chunk_walk {
+            // Chunk-count probe: satisfied once the walk has concluded by
+            // reaching `m` distinct firing markets. Fail-closed exhaustion sets
+            // `failure_error` (handled above), so reaching here with
+            // `complete` set and the pass rule unmet cannot happen.
+            return walk.complete.get() && self.chunk_count_passed();
+        }
+        if !self.ambiguous_instrument_ids.borrow().is_empty() {
+            return false;
+        }
+        if !self.quote_targets_initialized.get() {
+            return false;
+        }
+        let required = self.required.borrow();
+        if self.metadata_response_data_client_id.is_some() && required.is_empty() {
+            return false;
+        }
+        let required_observations = self.required_observation_count(required.len());
+        match self.market_data_kind {
+            DataClientReadinessProbeMarketDataKind::Quote => {
+                let quotes = self.quotes.borrow();
+                observed_required_quote_count(&required, &quotes) >= required_observations
+            }
+            DataClientReadinessProbeMarketDataKind::Book => {
+                let book_deltas = self.book_deltas.borrow();
+                observed_required_book_delta_count(&required, &book_deltas) >= required_observations
+            }
+            DataClientReadinessProbeMarketDataKind::Trade => {
+                let trades = self.trades.borrow();
+                observed_required_trade_count(&required, &trades) >= required_observations
+            }
+        }
+    }
+
+    /// Number of sampled targets that must be observed for the probe to pass.
+    ///
+    /// Defaults to every sampled target (strict, fail-closed). When
+    /// `readiness_probe.min_observed_targets` is configured it lowers the bar to
+    /// that value, clamped into `[1, sampled_len]` so a broad metadata universe
+    /// can prove adapter data-path behaviour without requiring every illiquid or
+    /// un-streamable sampled instrument to tick within the configured wait.
+    fn required_observation_count(&self, sampled_len: usize) -> usize {
+        match self.min_observed_targets {
+            Some(min_observed) => min_observed.clamp(1, sampled_len.max(1)),
+            None => sampled_len,
+        }
+    }
+
     fn ambiguity_error(&self) -> Option<String> {
-        if self.ambiguous_instrument_ids.is_empty() {
+        if self.ambiguous_instrument_ids.borrow().is_empty() {
             return None;
         }
         Some(
@@ -180,25 +596,113 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
         )
     }
 
+    fn failure_error(&self) -> Option<String> {
+        self.failure_reason.borrow().clone()
+    }
+
+    fn fail_metadata_response_probe(&self, reason: String) {
+        if self.failure_reason.borrow().is_none() {
+            *self.failure_reason.borrow_mut() = Some(reason);
+        }
+        self.required.borrow_mut().clear();
+        self.ambiguous_instrument_ids.borrow_mut().clear();
+        self.quote_targets_initialized.set(true);
+        self.quote_notify.notify_one();
+    }
+
     fn evidence(&self) -> BoltV3NoSubmitReferenceQuoteEvidence {
         BoltV3NoSubmitReferenceQuoteEvidence {
             quotes: self.quotes.borrow().clone(),
         }
     }
 
+    fn book_evidence(&self) -> BoltV3NoSubmitBookDeltasEvidence {
+        BoltV3NoSubmitBookDeltasEvidence {
+            deltas: self.book_deltas.borrow().clone(),
+        }
+    }
+
+    fn trade_evidence(&self) -> BoltV3NoSubmitTradeEvidence {
+        BoltV3NoSubmitTradeEvidence {
+            trades: self.trades.borrow().clone(),
+        }
+    }
+
+    fn install_metadata_response_instrument_ids(
+        &self,
+        mut instrument_ids: Vec<InstrumentId>,
+    ) -> Vec<NoSubmitReferenceQuoteSubscription> {
+        let Some(data_client_id) = self.metadata_response_data_client_id else {
+            return Vec::new();
+        };
+        if self.quote_targets_initialized.get() {
+            return Vec::new();
+        }
+        instrument_ids.sort_by_key(|instrument_id| instrument_id.to_string());
+        instrument_ids.dedup();
+        let Some(max_quote_targets) = self.metadata_response_max_quote_targets else {
+            self.fail_metadata_response_probe(
+                "clients.<id>.readiness_probe.max_metadata_quote_targets is missing for metadata_response readiness probing".to_string(),
+            );
+            return Vec::new();
+        };
+        let metadata_quote_targets = instrument_ids.len();
+        if metadata_quote_targets > max_quote_targets {
+            if self.metadata_response_allow_target_sampling {
+                instrument_ids =
+                    sample_metadata_response_targets(&instrument_ids, max_quote_targets);
+            } else {
+                self.fail_metadata_response_probe(format!(
+                    "metadata_response produced {metadata_quote_targets} source-owned quote targets, exceeding clients.<id>.readiness_probe.max_metadata_quote_targets={max_quote_targets}; tighten TOML-owned metadata filters or set clients.<id>.readiness_probe.allow_metadata_target_sampling=true before using this client for production readiness"
+                ));
+                return Vec::new();
+            }
+        }
+        let subscriptions = instrument_ids
+            .into_iter()
+            .map(|instrument_id| NoSubmitReferenceQuoteSubscription {
+                data_client_id,
+                instrument_id,
+            })
+            .collect();
+        let (required, ambiguous_instrument_ids) =
+            dedupe_no_submit_reference_quote_subscriptions(subscriptions);
+        if let Some(min_observed) = self.min_observed_targets
+            && min_observed > required.len()
+        {
+            self.fail_metadata_response_probe(format!(
+                "clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} source-owned metadata_response target(s) sampled this run",
+                required.len()
+            ));
+            return Vec::new();
+        }
+        *self.required.borrow_mut() = required.clone();
+        *self.ambiguous_instrument_ids.borrow_mut() = ambiguous_instrument_ids;
+        self.quote_targets_initialized.set(true);
+        self.quote_notify.notify_one();
+        required
+    }
+
     fn record_quote(&self, quote: &QuoteTick, captured_at_unix_nanos: u64) {
         let quote_instrument_id = quote.instrument_id.to_string();
-        if self.ambiguous_instrument_ids.contains(&quote_instrument_id) {
+        if self
+            .ambiguous_instrument_ids
+            .borrow()
+            .contains(&quote_instrument_id)
+        {
             return;
         }
+        let required = self.required.borrow().clone();
         let mut matched_required = false;
         let mut quotes = self.quotes.borrow_mut();
-        for required in &self.required {
+        for required in &required {
             if quote.instrument_id == required.instrument_id {
                 matched_required = true;
                 quotes.push(BoltV3NoSubmitReferenceQuote {
                     data_client_id: required.data_client_id.to_string(),
                     instrument_id: required.instrument_id.to_string(),
+                    bid_price: quote.bid_price.as_f64(),
+                    ask_price: quote.ask_price.as_f64(),
                     ts_event_unix_nanos: quote.ts_event.as_u64(),
                     ts_init_unix_nanos: quote.ts_init.as_u64(),
                     captured_at_unix_nanos,
@@ -206,14 +710,257 @@ impl BoltV3NoSubmitReferenceQuoteProbeHandle {
             }
         }
         drop(quotes);
-        if matched_required && self.has_all_required_quotes() {
+        if matched_required && self.has_all_required_market_data() {
             self.quote_notify.notify_one();
         }
     }
 
-    async fn wait_for_all_required_quotes(&self) {
-        while !self.has_all_required_quotes() {
+    fn record_book_deltas(&self, deltas: &OrderBookDeltas, captured_at_unix_nanos: u64) {
+        let deltas_instrument_id = deltas.instrument_id.to_string();
+        if self
+            .ambiguous_instrument_ids
+            .borrow()
+            .contains(&deltas_instrument_id)
+        {
+            return;
+        }
+        let required = self.required.borrow().clone();
+        let mut matched_required = false;
+        let mut book_deltas = self.book_deltas.borrow_mut();
+        for required in &required {
+            if deltas.instrument_id == required.instrument_id {
+                matched_required = true;
+                book_deltas.push(BoltV3NoSubmitBookDeltas {
+                    data_client_id: required.data_client_id.to_string(),
+                    instrument_id: required.instrument_id.to_string(),
+                    delta_count: deltas.deltas.len() as u64,
+                    ts_event_unix_nanos: deltas.ts_event.as_u64(),
+                    ts_init_unix_nanos: deltas.ts_init.as_u64(),
+                    captured_at_unix_nanos,
+                });
+            }
+        }
+        drop(book_deltas);
+        if matched_required && self.has_all_required_market_data() {
+            self.quote_notify.notify_one();
+        }
+    }
+
+    fn record_trade(&self, trade: &TradeTick, captured_at_unix_nanos: u64) {
+        let trade_instrument_id = trade.instrument_id.to_string();
+        if self
+            .ambiguous_instrument_ids
+            .borrow()
+            .contains(&trade_instrument_id)
+        {
+            return;
+        }
+        let required = self.required.borrow().clone();
+        let mut matched_required = false;
+        let mut trades = self.trades.borrow_mut();
+        for required in &required {
+            if trade.instrument_id == required.instrument_id {
+                matched_required = true;
+                trades.push(BoltV3NoSubmitTrade {
+                    data_client_id: required.data_client_id.to_string(),
+                    instrument_id: required.instrument_id.to_string(),
+                    price: trade.price.as_f64(),
+                    size: trade.size.as_f64(),
+                    ts_event_unix_nanos: trade.ts_event.as_u64(),
+                    ts_init_unix_nanos: trade.ts_init.as_u64(),
+                    captured_at_unix_nanos,
+                });
+            }
+        }
+        drop(trades);
+        if matched_required && self.has_all_required_market_data() {
+            self.quote_notify.notify_one();
+        }
+    }
+
+    async fn wait_for_all_required_quotes(&self) -> Result<(), String> {
+        loop {
+            if let Some(reason) = self.failure_error() {
+                return Err(reason);
+            }
+            if self.has_all_required_market_data() {
+                return Ok(());
+            }
             self.quote_notify.notified().await;
+        }
+    }
+}
+
+pub(crate) fn sample_metadata_response_targets<T: Clone>(
+    targets: &[T],
+    max_targets: usize,
+) -> Vec<T> {
+    if max_targets == 0 {
+        return Vec::new();
+    }
+    if targets.len() <= max_targets {
+        return targets.to_vec();
+    }
+    if max_targets == 1 {
+        return vec![targets[targets.len() / 2].clone()];
+    }
+    let last_index = targets.len() - 1;
+    let last_sample = max_targets - 1;
+    (0..max_targets)
+        .map(|sample_index| targets[(sample_index * last_index) / last_sample].clone())
+        .collect()
+}
+
+/// Split a deterministically-ordered instrument universe into consecutive
+/// chunks of at most `chunk_size`, preserving order. Returns no chunks when
+/// `chunk_size == 0` so a misconfigured probe observes nothing and fails
+/// closed rather than panicking. The trade chunk-count readiness probe walks
+/// the universe one chunk at a time so it never subscribes to more than
+/// `chunk_size` channels at once, staying below the venue's silent delivery
+/// ceiling.
+pub(crate) fn chunk_universe<T: Clone>(universe: &[T], chunk_size: usize) -> Vec<Vec<T>> {
+    if chunk_size == 0 {
+        return Vec::new();
+    }
+    universe.chunks(chunk_size).map(<[T]>::to_vec).collect()
+}
+
+/// Pass rule for a trade chunk-count readiness probe: at least
+/// `required_live_markets` (`m`) distinct markets must have produced a trade
+/// across the chunk walk, and `m` itself must be >= 1 (a probe that requires
+/// nothing proves nothing, so it fails closed). Single source of truth for
+/// the pass decision, shared by the live probe orchestration and the
+/// operator-artifacts materializer so both agree on what "healthy" means.
+pub(crate) fn trade_chunk_count_probe_passed(
+    distinct_fired: usize,
+    required_live_markets: usize,
+) -> bool {
+    required_live_markets >= 1 && distinct_fired >= required_live_markets
+}
+
+fn observed_required_book_delta_count(
+    required: &[NoSubmitReferenceQuoteSubscription],
+    book_deltas: &[BoltV3NoSubmitBookDeltas],
+) -> usize {
+    let mut observed = BTreeSet::new();
+    for required in required {
+        if book_deltas.iter().any(|deltas| {
+            deltas.data_client_id == required.data_client_id.to_string()
+                && deltas.instrument_id == required.instrument_id.to_string()
+        }) {
+            observed.insert((
+                required.data_client_id.to_string(),
+                required.instrument_id.to_string(),
+            ));
+        }
+    }
+    observed.len()
+}
+
+fn observed_required_trade_count(
+    required: &[NoSubmitReferenceQuoteSubscription],
+    trades: &[BoltV3NoSubmitTrade],
+) -> usize {
+    let mut observed = BTreeSet::new();
+    for required in required {
+        if trades.iter().any(|trade| {
+            trade.data_client_id == required.data_client_id.to_string()
+                && trade.instrument_id == required.instrument_id.to_string()
+        }) {
+            observed.insert((
+                required.data_client_id.to_string(),
+                required.instrument_id.to_string(),
+            ));
+        }
+    }
+    observed.len()
+}
+
+fn observed_required_quote_count(
+    required: &[NoSubmitReferenceQuoteSubscription],
+    quotes: &[BoltV3NoSubmitReferenceQuote],
+) -> usize {
+    let mut observed = BTreeSet::new();
+    for required in required {
+        if quotes.iter().any(|quote| {
+            quote.data_client_id == required.data_client_id.to_string()
+                && quote.instrument_id == required.instrument_id.to_string()
+        }) {
+            observed.insert((
+                required.data_client_id.to_string(),
+                required.instrument_id.to_string(),
+            ));
+        }
+    }
+    observed.len()
+}
+
+#[derive(Debug, Clone)]
+struct BoltV3NoSubmitDataClientMetadataProbeHandle {
+    data_client_id: ClientId,
+    venue: Venue,
+    responses: Rc<RefCell<Vec<BoltV3NoSubmitDataClientMetadata>>>,
+    metadata_notify: Rc<tokio::sync::Notify>,
+}
+
+impl BoltV3NoSubmitDataClientMetadataProbeHandle {
+    fn new(loaded: &LoadedBoltV3Config, client_key: &str) -> Result<Self, BoltV3LiveNodeError> {
+        let client = loaded.root.clients.get(client_key).ok_or_else(|| {
+            BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+                "data-client metadata probe client_key is not configured"
+            ))
+        })?;
+        if client.data.is_none() {
+            return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                anyhow::anyhow!(
+                    "data-client metadata probe requires the selected client to declare [data]"
+                ),
+            ));
+        }
+
+        Ok(Self {
+            data_client_id: ClientId::from(client_key),
+            venue: client.venue,
+            responses: Rc::new(RefCell::new(Vec::new())),
+            metadata_notify: Rc::new(tokio::sync::Notify::new()),
+        })
+    }
+
+    fn has_metadata_response(&self) -> bool {
+        !self.responses.borrow().is_empty()
+    }
+
+    fn evidence(&self) -> BoltV3NoSubmitDataClientMetadataEvidence {
+        BoltV3NoSubmitDataClientMetadataEvidence {
+            responses: self.responses.borrow().clone(),
+        }
+    }
+
+    fn record_response(&self, response: &InstrumentsResponse, captured_at_unix_nanos: u64) {
+        if response.client_id != self.data_client_id || response.venue != self.venue {
+            return;
+        }
+        let mut instrument_ids: Vec<String> = response
+            .data
+            .iter()
+            .map(|instrument| instrument.id().to_string())
+            .collect();
+        instrument_ids.sort();
+        self.responses
+            .borrow_mut()
+            .push(BoltV3NoSubmitDataClientMetadata {
+                data_client_id: response.client_id.to_string(),
+                venue: response.venue.to_string(),
+                instrument_ids,
+                ts_init_unix_nanos: response.ts_init.as_u64(),
+                captured_at_unix_nanos,
+            });
+        self.metadata_notify.notify_one();
+    }
+
+    async fn wait_for_metadata_response(&self) {
+        while !self.has_metadata_response() {
+            self.metadata_notify.notified().await;
         }
     }
 }
@@ -237,56 +984,584 @@ impl BoltV3NoSubmitReferenceQuoteProbe {
 
 impl DataActor for BoltV3NoSubmitReferenceQuoteProbe {
     fn on_start(&mut self) -> anyhow::Result<()> {
-        for required in self.handle.required.clone() {
-            self.subscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+        let required_subscriptions = self.handle.required.borrow().clone();
+        let market_data_kind = self.handle.market_data_kind;
+        let book_type = self.handle.book_type;
+        for required in required_subscriptions {
+            subscribe_no_submit_required_market_data(self, market_data_kind, book_type, required)?;
         }
         Ok(())
     }
 
     fn on_stop(&mut self) -> anyhow::Result<()> {
-        for required in self.handle.required.clone() {
-            self.unsubscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+        let required_subscriptions = self.handle.required.borrow().clone();
+        let market_data_kind = self.handle.market_data_kind;
+        let book_type = self.handle.book_type;
+        for required in required_subscriptions {
+            unsubscribe_no_submit_required_market_data(
+                self,
+                market_data_kind,
+                book_type,
+                required,
+            )?;
         }
         Ok(())
     }
 
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
-        self.handle
-            .record_quote(quote, self.timestamp_ns().as_u64());
+        self.handle.record_quote(quote, current_unix_nanos()?);
         Ok(())
+    }
+
+    fn on_book_deltas(&mut self, deltas: &OrderBookDeltas) -> anyhow::Result<()> {
+        self.handle
+            .record_book_deltas(deltas, current_unix_nanos()?);
+        Ok(())
+    }
+
+    fn on_trade(&mut self, trade: &TradeTick) -> anyhow::Result<()> {
+        self.handle.record_trade(trade, current_unix_nanos()?);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct BoltV3NoSubmitDataClientReadinessProbe {
+    core: DataActorCore,
+    metadata_handle: BoltV3NoSubmitDataClientMetadataProbeHandle,
+    quote_handle: BoltV3NoSubmitReferenceQuoteProbeHandle,
+}
+
+nautilus_actor!(BoltV3NoSubmitDataClientReadinessProbe);
+
+impl BoltV3NoSubmitDataClientReadinessProbe {
+    fn new(
+        metadata_handle: BoltV3NoSubmitDataClientMetadataProbeHandle,
+        quote_handle: BoltV3NoSubmitReferenceQuoteProbeHandle,
+        config: DataActorConfig,
+    ) -> Self {
+        Self {
+            core: DataActorCore::new(config),
+            metadata_handle,
+            quote_handle,
+        }
+    }
+
+    fn handle_instruments_metadata_response(&mut self, response: &InstrumentsResponse) {
+        self.metadata_handle
+            .record_response(response, self.timestamp_ns().as_u64());
+        if response.client_id == self.metadata_handle.data_client_id
+            && response.venue == self.metadata_handle.venue
+        {
+            let instrument_ids: Vec<InstrumentId> = response
+                .data
+                .iter()
+                .map(|instrument| instrument.id())
+                .collect();
+            if self.quote_handle.is_chunk_count_mode() {
+                self.quote_handle
+                    .chunk_count_capture_universe(instrument_ids);
+                self.subscribe_next_chunk_and_arm();
+            } else {
+                for required in self
+                    .quote_handle
+                    .install_metadata_response_instrument_ids(instrument_ids)
+                {
+                    if let Err(error) = subscribe_no_submit_required_market_data(
+                        self,
+                        self.quote_handle.market_data_kind,
+                        self.quote_handle.book_type,
+                        required,
+                    ) {
+                        self.quote_handle
+                            .fail_metadata_response_probe(error.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Subscribe the next universe chunk for trades and arm the chunk-advance
+    /// time alert. Fails the walk closed if the universe is exhausted, a
+    /// subscription errors, or the timer cannot be armed.
+    fn subscribe_next_chunk_and_arm(&mut self) {
+        let Some(chunk) = self.quote_handle.chunk_count_next_chunk() else {
+            self.quote_handle
+                .complete_chunk_count_walk_failed(self.quote_handle.chunk_count_exhausted_reason());
+            return;
+        };
+        for required in chunk {
+            if let Err(error) = subscribe_no_submit_required_market_data(
+                self,
+                DataClientReadinessProbeMarketDataKind::Trade,
+                None,
+                required,
+            ) {
+                self.quote_handle
+                    .complete_chunk_count_walk_failed(error.to_string());
+                return;
+            }
+        }
+        let Some(window_ns) = self.quote_handle.chunk_count_window_ns() else {
+            self.quote_handle.complete_chunk_count_walk_failed(
+                "trade chunk-count readiness probe per-chunk window overflowed".to_string(),
+            );
+            return;
+        };
+        let Some(alert_ns) = self.timestamp_ns().as_u64().checked_add(window_ns) else {
+            self.quote_handle.complete_chunk_count_walk_failed(
+                "trade chunk-count readiness probe chunk-advance time overflowed".to_string(),
+            );
+            return;
+        };
+        // Bind the result so the `self.clock()` borrow is released before the
+        // failure path re-borrows `self.quote_handle`.
+        let alert_result = self.clock().set_time_alert_ns(
+            CHUNK_ADVANCE_TIMER,
+            UnixNanos::from(alert_ns),
+            None,
+            None,
+        );
+        if let Err(error) = alert_result {
+            self.quote_handle.complete_chunk_count_walk_failed(format!(
+                "trade chunk-count readiness probe failed to arm its chunk-advance timer: {error}"
+            ));
+        }
+    }
+
+    /// Fired at each chunk boundary: unsubscribe the watched chunk, pass if `m`
+    /// distinct markets have now traded, otherwise advance to the next chunk.
+    fn advance_chunk_count_walk(&mut self) {
+        if self.quote_handle.chunk_walk_complete_flag() {
+            return;
+        }
+        for required in self.quote_handle.chunk_count_current_chunk() {
+            if let Err(error) = unsubscribe_no_submit_required_market_data(
+                self,
+                DataClientReadinessProbeMarketDataKind::Trade,
+                None,
+                required,
+            ) {
+                self.quote_handle
+                    .complete_chunk_count_walk_failed(error.to_string());
+                return;
+            }
+        }
+        if self.quote_handle.chunk_count_passed() {
+            self.quote_handle.complete_chunk_count_walk_passed();
+            return;
+        }
+        self.subscribe_next_chunk_and_arm();
+    }
+}
+
+impl DataActor for BoltV3NoSubmitDataClientReadinessProbe {
+    fn on_start(&mut self) -> anyhow::Result<()> {
+        let actor_id = self.actor_id().inner();
+        let handler = ShareableMessageHandler::from_typed(move |response: &InstrumentsResponse| {
+            if let Some(mut actor) =
+                try_get_actor_unchecked::<BoltV3NoSubmitDataClientReadinessProbe>(&actor_id)
+            {
+                actor.handle_instruments_metadata_response(response);
+            } else {
+                log::error!("Actor {actor_id} not found for data-client metadata handling");
+            }
+        });
+        self.core.request_instruments(
+            Some(self.metadata_handle.venue),
+            None,
+            None,
+            Some(self.metadata_handle.data_client_id),
+            None,
+            handler,
+        )?;
+        let required_subscriptions = self.quote_handle.required.borrow().clone();
+        let market_data_kind = self.quote_handle.market_data_kind;
+        let book_type = self.quote_handle.book_type;
+        for required in required_subscriptions {
+            subscribe_no_submit_required_market_data(self, market_data_kind, book_type, required)?;
+        }
+        Ok(())
+    }
+
+    fn on_stop(&mut self) -> anyhow::Result<()> {
+        let required_subscriptions = self.quote_handle.required.borrow().clone();
+        let market_data_kind = self.quote_handle.market_data_kind;
+        let book_type = self.quote_handle.book_type;
+        for required in required_subscriptions {
+            unsubscribe_no_submit_required_market_data(
+                self,
+                market_data_kind,
+                book_type,
+                required,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
+        self.quote_handle.record_quote(quote, current_unix_nanos()?);
+        Ok(())
+    }
+
+    fn on_book_deltas(&mut self, deltas: &OrderBookDeltas) -> anyhow::Result<()> {
+        self.quote_handle
+            .record_book_deltas(deltas, current_unix_nanos()?);
+        Ok(())
+    }
+
+    fn on_trade(&mut self, trade: &TradeTick) -> anyhow::Result<()> {
+        self.quote_handle.record_trade(trade, current_unix_nanos()?);
+        Ok(())
+    }
+
+    fn on_time_event(&mut self, event: &TimeEvent) -> anyhow::Result<()> {
+        if event.name.as_str() == CHUNK_ADVANCE_TIMER {
+            self.advance_chunk_count_walk();
+        }
+        Ok(())
+    }
+}
+
+fn subscribe_no_submit_required_market_data<A: DataActor + std::fmt::Debug + 'static>(
+    actor: &mut A,
+    market_data_kind: DataClientReadinessProbeMarketDataKind,
+    book_type: Option<DataClientReadinessProbeBookType>,
+    required: NoSubmitReferenceQuoteSubscription,
+) -> anyhow::Result<()> {
+    match market_data_kind {
+        DataClientReadinessProbeMarketDataKind::Quote => {
+            actor.subscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+        }
+        DataClientReadinessProbeMarketDataKind::Book => {
+            let book_type = book_type.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "clients.<id>.readiness_probe.book_type must be configured when market_data_kind = \"book\""
+                )
+            })?;
+            actor.subscribe_book_deltas(
+                required.instrument_id,
+                data_client_readiness_probe_book_type_to_nt(book_type),
+                None,
+                Some(required.data_client_id),
+                false,
+                None,
+            );
+        }
+        DataClientReadinessProbeMarketDataKind::Trade => {
+            actor.subscribe_trades(required.instrument_id, Some(required.data_client_id), None);
+        }
+    }
+    Ok(())
+}
+
+fn unsubscribe_no_submit_required_market_data<A: DataActor + std::fmt::Debug + 'static>(
+    actor: &mut A,
+    market_data_kind: DataClientReadinessProbeMarketDataKind,
+    book_type: Option<DataClientReadinessProbeBookType>,
+    required: NoSubmitReferenceQuoteSubscription,
+) -> anyhow::Result<()> {
+    match market_data_kind {
+        DataClientReadinessProbeMarketDataKind::Quote => {
+            actor.unsubscribe_quotes(required.instrument_id, Some(required.data_client_id), None);
+        }
+        DataClientReadinessProbeMarketDataKind::Book => {
+            let _ = book_type.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "clients.<id>.readiness_probe.book_type must be configured when market_data_kind = \"book\""
+                )
+            })?;
+            actor.unsubscribe_book_deltas(
+                required.instrument_id,
+                Some(required.data_client_id),
+                None,
+            );
+        }
+        DataClientReadinessProbeMarketDataKind::Trade => {
+            actor.unsubscribe_trades(required.instrument_id, Some(required.data_client_id), None);
+        }
+    }
+    Ok(())
+}
+
+fn data_client_readiness_probe_book_type_to_nt(
+    book_type: DataClientReadinessProbeBookType,
+) -> BookType {
+    match book_type {
+        DataClientReadinessProbeBookType::L1Mbp => BookType::L1_MBP,
+        DataClientReadinessProbeBookType::L2Mbp => BookType::L2_MBP,
+        DataClientReadinessProbeBookType::L3Mbo => BookType::L3_MBO,
     }
 }
 
 fn no_submit_reference_quote_subscription_plan(
     loaded: &LoadedBoltV3Config,
 ) -> (Vec<NoSubmitReferenceQuoteSubscription>, BTreeSet<String>) {
-    let mut seen = BTreeSet::new();
-    let mut by_instrument: BTreeMap<String, String> = BTreeMap::new();
-    let mut ambiguous_instrument_ids = BTreeSet::new();
     let mut subscriptions = Vec::new();
     for strategy in &loaded.strategies {
         for reference in strategy.config.reference_data.values() {
-            let data_client_id = reference.data_client_id.to_string();
-            let instrument_id = reference.instrument_id.to_string();
-            match by_instrument.get(&instrument_id) {
-                Some(existing_data_client_id) if existing_data_client_id != &data_client_id => {
-                    ambiguous_instrument_ids.insert(instrument_id.clone());
-                }
-                None => {
-                    by_instrument.insert(instrument_id.clone(), data_client_id.clone());
-                }
-                _ => {}
-            }
-            let key = (data_client_id, instrument_id);
-            if seen.insert(key) {
-                subscriptions.push(NoSubmitReferenceQuoteSubscription {
-                    data_client_id: reference.data_client_id,
-                    instrument_id: reference.instrument_id,
-                });
-            }
+            subscriptions.push(NoSubmitReferenceQuoteSubscription {
+                data_client_id: reference.data_client_id,
+                instrument_id: reference.instrument_id,
+            });
         }
     }
-    (subscriptions, ambiguous_instrument_ids)
+    dedupe_no_submit_reference_quote_subscriptions(subscriptions)
+}
+
+fn no_submit_data_client_readiness_quote_subscription_plan(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<(Vec<NoSubmitReferenceQuoteSubscription>, BTreeSet<String>), BoltV3LiveNodeError> {
+    let client = loaded.root.clients.get(client_key).ok_or_else(|| {
+        BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+            "data-client readiness quote probe client_key is not configured"
+        ))
+    })?;
+    if client.data.is_none() {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "data-client readiness quote probe requires the selected client to declare [data]"
+            ),
+        ));
+    }
+    let readiness_probe = client.readiness_probe.as_ref().ok_or_else(|| {
+        BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+            "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
+        ))
+    })?;
+    if readiness_probe.quote_target_source != DataClientReadinessProbeQuoteTargetSource::Configured
+    {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "standalone data-client readiness quote probe requires quote_target_source = \"configured\"; metadata_response requires the combined data-client readiness probe"
+            ),
+        ));
+    }
+    let Some(quote_targets) = &readiness_probe.quote_targets else {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
+            ),
+        ));
+    };
+    if quote_targets.is_empty() {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
+            ),
+        ));
+    }
+    let subscriptions = quote_targets
+        .values()
+        .map(|target| NoSubmitReferenceQuoteSubscription {
+            data_client_id: ClientId::from(client_key),
+            instrument_id: target.instrument_id,
+        })
+        .collect();
+    Ok(dedupe_no_submit_reference_quote_subscriptions(
+        subscriptions,
+    ))
+}
+
+/// Validates the TOML-owned `readiness_probe.min_observed_targets` lower bound.
+///
+/// `min_observed_targets` lets a broad metadata universe prove adapter data-path
+/// behaviour by observing fresh data for at least this many sampled targets,
+/// rather than requiring every sampled (and possibly illiquid or un-streamable)
+/// instrument to tick. A configured value of zero would let the probe pass with
+/// no observed data, so it is rejected here. The upper bound against the actual
+/// sampled target count is enforced where that count is known (at build time for
+/// configured targets, at metadata-response install time for sampled targets).
+fn validate_readiness_probe_min_observed_targets(
+    readiness_probe: &DataClientReadinessProbeBlock,
+) -> Result<Option<usize>, BoltV3LiveNodeError> {
+    match readiness_probe.min_observed_targets {
+        Some(0) => Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "clients.<id>.readiness_probe.min_observed_targets must be a positive integer when configured"
+            ),
+        )),
+        other => Ok(other),
+    }
+}
+
+fn no_submit_data_client_readiness_quote_probe_handle(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<BoltV3NoSubmitReferenceQuoteProbeHandle, BoltV3LiveNodeError> {
+    let client = loaded.root.clients.get(client_key).ok_or_else(|| {
+        BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+            "data-client readiness probe client_key is not configured"
+        ))
+    })?;
+    if client.data.is_none() {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(
+                "data-client readiness probe requires the selected client to declare [data]"
+            ),
+        ));
+    }
+    let Some(readiness_probe) = &client.readiness_probe else {
+        return Ok(BoltV3NoSubmitReferenceQuoteProbeHandle::from_plan(
+            Vec::new(),
+            BTreeSet::new(),
+            DataClientReadinessProbeMarketDataKind::Quote,
+            None,
+            None,
+        ));
+    };
+    let min_observed_targets = validate_readiness_probe_min_observed_targets(readiness_probe)?;
+    match readiness_probe.quote_target_source {
+        DataClientReadinessProbeQuoteTargetSource::Configured => {
+            let Some(quote_targets) = &readiness_probe.quote_targets else {
+                return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                    anyhow::anyhow!(
+                        "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
+                    ),
+                ));
+            };
+            if quote_targets.is_empty() {
+                return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                    anyhow::anyhow!(
+                        "data-client readiness quote probe requires clients.<id>.readiness_probe.quote_targets"
+                    ),
+                ));
+            }
+            let subscriptions = quote_targets
+                .values()
+                .map(|target| NoSubmitReferenceQuoteSubscription {
+                    data_client_id: ClientId::from(client_key),
+                    instrument_id: target.instrument_id,
+                })
+                .collect();
+            let (required, ambiguous_instrument_ids) =
+                dedupe_no_submit_reference_quote_subscriptions(subscriptions);
+            if let Some(min_observed) = min_observed_targets
+                && min_observed > required.len()
+            {
+                return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                    anyhow::anyhow!(
+                        "clients.<id>.readiness_probe.min_observed_targets={min_observed} exceeds the {} configured readiness_probe.quote_targets",
+                        required.len()
+                    ),
+                ));
+            }
+            Ok(BoltV3NoSubmitReferenceQuoteProbeHandle::from_plan(
+                required,
+                ambiguous_instrument_ids,
+                readiness_probe.market_data_kind,
+                readiness_probe.book_type,
+                min_observed_targets,
+            ))
+        }
+        DataClientReadinessProbeQuoteTargetSource::MetadataResponse => {
+            if readiness_probe.market_data_kind == DataClientReadinessProbeMarketDataKind::Trade
+                && readiness_probe.chunk_size.is_some()
+            {
+                let chunk_size = match readiness_probe.chunk_size {
+                    Some(chunk_size) if chunk_size > 0 => chunk_size,
+                    _ => {
+                        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                            anyhow::anyhow!(
+                                "trade chunk-count readiness probe requires positive clients.<id>.readiness_probe.chunk_size"
+                            ),
+                        ));
+                    }
+                };
+                let chunk_observation_window_seconds = match readiness_probe
+                    .chunk_observation_window_seconds
+                {
+                    Some(window) if window > 0 => window,
+                    _ => {
+                        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                            anyhow::anyhow!(
+                                "trade chunk-count readiness probe requires positive clients.<id>.readiness_probe.chunk_observation_window_seconds"
+                            ),
+                        ));
+                    }
+                };
+                let required_live_markets = match min_observed_targets {
+                    Some(required_live_markets) if required_live_markets > 0 => {
+                        required_live_markets
+                    }
+                    _ => {
+                        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                            anyhow::anyhow!(
+                                "trade chunk-count readiness probe requires positive clients.<id>.readiness_probe.min_observed_targets (m)"
+                            ),
+                        ));
+                    }
+                };
+                return Ok(
+                    BoltV3NoSubmitReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
+                        ClientId::from(client_key),
+                        chunk_size,
+                        chunk_observation_window_seconds,
+                        required_live_markets,
+                        readiness_probe.market_data_kind,
+                    ),
+                );
+            }
+            let max_quote_targets = readiness_probe.max_metadata_quote_targets.ok_or_else(|| {
+                BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+                    "data-client readiness quote probe requires clients.<id>.readiness_probe.max_metadata_quote_targets when quote_target_source = \"metadata_response\""
+                ))
+            })?;
+            if max_quote_targets == 0 {
+                return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+                    anyhow::anyhow!(
+                        "data-client readiness quote probe requires positive clients.<id>.readiness_probe.max_metadata_quote_targets"
+                    ),
+                ));
+            }
+            let allow_target_sampling = readiness_probe
+                .allow_metadata_target_sampling
+                .ok_or_else(|| {
+                    BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(anyhow::anyhow!(
+                        "data-client readiness quote probe requires clients.<id>.readiness_probe.allow_metadata_target_sampling when quote_target_source = \"metadata_response\""
+                    ))
+                })?;
+            Ok(
+                BoltV3NoSubmitReferenceQuoteProbeHandle::from_metadata_response_plan(
+                    ClientId::from(client_key),
+                    max_quote_targets,
+                    allow_target_sampling,
+                    readiness_probe.market_data_kind,
+                    readiness_probe.book_type,
+                    min_observed_targets,
+                ),
+            )
+        }
+    }
+}
+
+fn dedupe_no_submit_reference_quote_subscriptions(
+    subscriptions: Vec<NoSubmitReferenceQuoteSubscription>,
+) -> (Vec<NoSubmitReferenceQuoteSubscription>, BTreeSet<String>) {
+    let mut seen = BTreeSet::new();
+    let mut by_instrument: BTreeMap<String, String> = BTreeMap::new();
+    let mut ambiguous_instrument_ids = BTreeSet::new();
+    let mut deduped = Vec::new();
+    for subscription in subscriptions {
+        let data_client_id = subscription.data_client_id.to_string();
+        let instrument_id = subscription.instrument_id.to_string();
+        match by_instrument.get(&instrument_id) {
+            Some(existing_data_client_id) if existing_data_client_id != &data_client_id => {
+                ambiguous_instrument_ids.insert(instrument_id.clone());
+            }
+            None => {
+                by_instrument.insert(instrument_id.clone(), data_client_id.clone());
+            }
+            _ => {}
+        }
+        let key = (data_client_id, instrument_id);
+        if seen.insert(key) {
+            deduped.push(subscription);
+        }
+    }
+    (deduped, ambiguous_instrument_ids)
 }
 
 impl BoltV3NoSubmitReferenceCacheEvidence {
@@ -318,11 +1593,13 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
 impl BoltV3LiveNodeRuntime {
     fn new(
         node: LiveNode,
+        registration_summary: BoltV3RegistrationSummary,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
         redaction_values: Vec<Zeroizing<String>>,
     ) -> Self {
         Self {
             node,
+            registration_summary,
             submit_admission,
             redaction_values,
         }
@@ -342,6 +1619,10 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn registered_data_client_ids(&self) -> Vec<ClientId> {
         self.node.kernel().data_engine.borrow().registered_clients()
+    }
+
+    pub fn registration_summary(&self) -> &BoltV3RegistrationSummary {
+        &self.registration_summary
     }
 
     pub fn registered_exec_client_ids(&self) -> Vec<ClientId> {
@@ -436,6 +1717,13 @@ pub enum BoltV3LiveNodeError {
     /// could not atomically create the operator-approval consumption
     /// proof before arming submit admission.
     OperatorApprovalConsumption(anyhow::Error),
+    /// The loaded root TOML configured clients beyond the selected
+    /// strategy-owned transport path, but the strategy-owned
+    /// execution/reference client set could not be derived or validated
+    /// against `[clients]`.
+    LiveTransportScope {
+        reason: String,
+    },
     /// The validated live canary gate report could not arm the shared
     /// submit-admission state before `LiveNode::run` was invoked.
     SubmitAdmission(BoltV3SubmitAdmissionError),
@@ -448,6 +1736,16 @@ pub enum BoltV3LiveNodeError {
     /// NT runtime capture failed during shutdown after the runner loop
     /// exited or after the capture worker asked the LiveNode to stop.
     RuntimeCaptureShutdown(anyhow::Error),
+    /// The live runner exited without admitting a live order after the
+    /// one-time approval had already been consumed. A blocked canary
+    /// evidence artifact was written so the consumed approval has a
+    /// source-owned terminal record instead of disappearing into logs.
+    BlockedBeforeSubmit {
+        canary_evidence_path: String,
+    },
+    /// The live runner exited without admitting a live order, but the
+    /// terminal blocked canary evidence artifact could not be written.
+    CanaryEvidenceWrite(anyhow::Error),
     /// NT's runner loop and runtime-capture shutdown both failed. This
     /// preserves both failure categories instead of reporting the
     /// compound case as only a capture-shutdown error.
@@ -515,6 +1813,9 @@ pub enum BoltV3LiveNodeError {
     NoSubmitReferenceProbeFailed {
         reason: String,
     },
+    NoSubmitDataClientProbeFailed {
+        reason: String,
+    },
     NoSubmitStartFailed(anyhow::Error),
     NoSubmitStopTimeout {
         timeout_secs: u64,
@@ -558,6 +1859,10 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                     "bolt-v3 live canary approval consumption failed before runtime start: {error}"
                 )
             }
+            BoltV3LiveNodeError::LiveTransportScope { reason } => write!(
+                f,
+                "bolt-v3 live transport scope could not be derived from strategy-owned client bindings: {reason}"
+            ),
             BoltV3LiveNodeError::SubmitAdmission(error) => {
                 write!(
                     f,
@@ -570,6 +1875,15 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             }
             BoltV3LiveNodeError::RuntimeCaptureShutdown(error) => {
                 write!(f, "NT runtime capture shutdown failed: {error}")
+            }
+            BoltV3LiveNodeError::BlockedBeforeSubmit {
+                canary_evidence_path,
+            } => write!(
+                f,
+                "bolt-v3 live canary blocked before submit; canary evidence written to {canary_evidence_path}"
+            ),
+            BoltV3LiveNodeError::CanaryEvidenceWrite(error) => {
+                write!(f, "bolt-v3 live canary evidence write failed: {error}")
             }
             BoltV3LiveNodeError::RunAndRuntimeCaptureShutdown {
                 run_error,
@@ -630,6 +1944,10 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 f,
                 "bolt-v3 no-submit controlled-run reached NT Running but live reference quote evidence was not observed; engine connectivity cannot be treated as proven: {reason}"
             ),
+            BoltV3LiveNodeError::NoSubmitDataClientProbeFailed { reason } => write!(
+                f,
+                "bolt-v3 no-submit controlled-run reached NT Running but data-client readiness evidence was not observed; data-client production readiness cannot be treated as proven: {reason}"
+            ),
             BoltV3LiveNodeError::NoSubmitStartFailed(error) => {
                 write!(f, "bolt-v3 no-submit controlled-start failed: {error}")
             }
@@ -667,17 +1985,21 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::Run(error) => error.source(),
             BoltV3LiveNodeError::RuntimeCaptureWire(error)
             | BoltV3LiveNodeError::RuntimeCaptureShutdown(error) => error.source(),
+            BoltV3LiveNodeError::CanaryEvidenceWrite(error) => Some(error.as_ref()),
             BoltV3LiveNodeError::RunAndRuntimeCaptureShutdown { run_error, .. } => {
                 Some(run_error.as_ref())
             }
             BoltV3LiveNodeError::ConnectTimeout { .. }
             | BoltV3LiveNodeError::ConnectIncomplete
             | BoltV3LiveNodeError::DisconnectTimeout { .. }
+            | BoltV3LiveNodeError::LiveTransportScope { .. }
+            | BoltV3LiveNodeError::BlockedBeforeSubmit { .. }
             | BoltV3LiveNodeError::NoSubmitStartTimeout { .. }
             | BoltV3LiveNodeError::NoSubmitStartTimeoutOverflow
             | BoltV3LiveNodeError::NoSubmitStartIncomplete
             | BoltV3LiveNodeError::NoSubmitExecutionAccountsMissing { .. }
             | BoltV3LiveNodeError::NoSubmitReferenceProbeFailed { .. }
+            | BoltV3LiveNodeError::NoSubmitDataClientProbeFailed { .. }
             | BoltV3LiveNodeError::NoSubmitStopTimeout { .. }
             | BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow => None,
             BoltV3LiveNodeError::DisconnectFailed(error)
@@ -691,10 +2013,11 @@ impl std::error::Error for BoltV3LiveNodeError {
 pub fn build_bolt_v3_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
-    let resolved = resolve_bolt_v3_live_node_secrets(loaded)?;
-    let adapters =
-        map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    let (runtime, _summary) = build_live_node_with_clients(loaded, &resolved, adapters)?;
+    let transport_loaded = trade_transport_loaded_config(loaded)?;
+    let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
+    let adapters = map_bolt_v3_adapters(&transport_loaded, &resolved)
+        .map_err(BoltV3LiveNodeError::AdapterMapping)?;
+    let (runtime, _summary) = build_live_node_with_clients(&transport_loaded, &resolved, adapters)?;
     Ok(runtime)
 }
 
@@ -717,10 +2040,34 @@ fn resolve_bolt_v3_live_node_secrets(
 pub fn build_bolt_v3_no_submit_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
-    let resolved = resolve_bolt_v3_live_node_secrets(loaded)?;
-    let adapters = no_submit_transport_adapter_configs(loaded, &resolved)?;
-    let no_submit_loaded = no_submit_transport_loaded_config(loaded);
+    let transport_loaded = trade_transport_loaded_config(loaded)?;
+    let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
+    let adapters = no_submit_transport_adapter_configs(&transport_loaded, &resolved)?;
+    let no_submit_loaded = no_submit_transport_loaded_config(&transport_loaded);
     let (runtime, _summary) = build_live_node_with_clients(&no_submit_loaded, &resolved, adapters)?;
+    Ok(runtime)
+}
+
+pub fn build_bolt_v3_no_submit_data_client_probe_live_node(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<(BoltV3LiveNodeRuntime, LoadedBoltV3Config), BoltV3LiveNodeError> {
+    let probe_loaded = data_client_probe_loaded_config(loaded, client_key)?;
+    let resolved = resolve_bolt_v3_live_node_secrets(&probe_loaded)?;
+    let adapters = no_submit_transport_adapter_configs(&probe_loaded, &resolved)?;
+    let no_submit_loaded = no_submit_transport_loaded_config(&probe_loaded);
+    let (runtime, _summary) = build_live_node_with_clients(&no_submit_loaded, &resolved, adapters)?;
+    Ok((runtime, no_submit_loaded))
+}
+
+pub fn build_bolt_v3_all_configured_client_mapping_live_node(
+    loaded: &LoadedBoltV3Config,
+) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
+    let resolved = resolve_bolt_v3_live_node_secrets(loaded)?;
+    let adapters =
+        map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
+    let mapping_loaded = no_submit_transport_loaded_config(loaded);
+    let (runtime, _summary) = build_live_node_with_clients(&mapping_loaded, &resolved, adapters)?;
     Ok(runtime)
 }
 
@@ -729,6 +2076,89 @@ fn no_submit_transport_adapter_configs(
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<BoltV3AdapterConfigs, BoltV3LiveNodeError> {
     map_bolt_v3_adapters(loaded, resolved).map_err(BoltV3LiveNodeError::AdapterMapping)
+}
+
+fn trade_transport_loaded_config(
+    loaded: &LoadedBoltV3Config,
+) -> Result<LoadedBoltV3Config, BoltV3LiveNodeError> {
+    if loaded.strategies.is_empty() {
+        return Ok(loaded.clone());
+    }
+
+    let required_clients = trade_transport_client_keys(loaded);
+    let missing_clients = required_clients
+        .iter()
+        .filter(|client_key| !loaded.root.clients.contains_key(*client_key))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_clients.is_empty() {
+        return Err(BoltV3LiveNodeError::LiveTransportScope {
+            reason: format!(
+                "strategy references unconfigured client(s): {}",
+                missing_clients.join(", ")
+            ),
+        });
+    }
+
+    let mut transport_loaded = loaded.clone();
+    transport_loaded
+        .root
+        .clients
+        .retain(|client_key, _| required_clients.contains(client_key));
+    Ok(transport_loaded)
+}
+
+fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> {
+    let mut client_keys = BTreeSet::new();
+    for strategy in &loaded.strategies {
+        client_keys.insert(strategy.config.execution_client_id.to_string());
+        for reference in strategy.config.reference_data.values() {
+            client_keys.insert(reference.data_client_id.to_string());
+        }
+    }
+    if let Some(proof_policy) = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.proof_policy.as_ref())
+        .filter(|proof_policy| proof_policy.enabled)
+    {
+        client_keys.insert(proof_policy.execution_client_id.clone());
+    }
+    client_keys
+}
+
+fn data_client_probe_loaded_config(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<LoadedBoltV3Config, BoltV3LiveNodeError> {
+    if client_key.trim().is_empty() {
+        return Err(BoltV3LiveNodeError::NoSubmitDataClientProbeFailed {
+            reason: "data-client probe client_key is not configured".to_string(),
+        });
+    }
+    let client = loaded
+        .root
+        .clients
+        .get(client_key)
+        .cloned()
+        .ok_or_else(|| BoltV3LiveNodeError::NoSubmitDataClientProbeFailed {
+            reason: "data-client probe client_key is not configured".to_string(),
+        })?;
+    if client.data.is_none() {
+        return Err(BoltV3LiveNodeError::NoSubmitDataClientProbeFailed {
+            reason: "data-client probe requires the selected client to declare [data]".to_string(),
+        });
+    }
+    let mut probe_loaded = loaded.clone();
+    probe_loaded
+        .root
+        .clients
+        .retain(|configured_key, _| configured_key == client_key);
+    probe_loaded
+        .strategies
+        .retain(|strategy| strategy.config.execution_client_id == ClientId::from(client_key));
+    Ok(probe_loaded)
 }
 
 fn no_submit_transport_loaded_config(loaded: &LoadedBoltV3Config) -> LoadedBoltV3Config {
@@ -781,12 +2211,104 @@ pub async fn run_bolt_v3_live_node(
     };
     let shutdown_result = capture_guards.shutdown().await;
 
-    classify_live_node_run_and_capture_shutdown(run_result, shutdown_result)
+    let run_classification =
+        classify_live_node_run_and_capture_shutdown(run_result, shutdown_result);
+    if run_blocked_before_submit(
+        run_classification.is_ok(),
+        canary_proof_executor_enabled(loaded),
+        runtime.admitted_order_count(),
+    ) {
+        let canary_evidence_path =
+            write_bolt_v3_blocked_before_submit_canary_evidence(loaded, &runtime.instance_id())
+                .map_err(BoltV3LiveNodeError::CanaryEvidenceWrite)?;
+        return Err(BoltV3LiveNodeError::BlockedBeforeSubmit {
+            canary_evidence_path,
+        });
+    }
+    run_classification
+}
+
+/// A canary/proof run MUST fire exactly one proof order, so a clean run that admitted ZERO orders is
+/// a blocked-before-submit failure. A production strategy run (proof policy disabled) that finds no
+/// edge and admits zero orders is a LEGITIMATE outcome and must not be reported as a failure
+/// (F3 / Kimi P4). Scoping the zero-order failure to canary/proof runs keeps the canary's
+/// must-fire-one-order semantics without breaking a no-edge production run.
+fn run_blocked_before_submit(
+    run_classification_ok: bool,
+    canary_proof_executor_enabled: bool,
+    admitted_order_count: u32,
+) -> bool {
+    run_classification_ok && canary_proof_executor_enabled && admitted_order_count == 0
 }
 
 pub fn consume_bolt_v3_live_runner_approval(
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), anyhow::Error> {
+    let current_head_sha = current_build_head_sha()
+        .ok_or_else(|| anyhow::anyhow!("bolt-v3 build head_sha is unavailable or invalid"))?;
+    let (envelope, current_root_toml_sha256) = phase8_live_runner_approval_envelope(loaded)?;
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing `[live_canary]` config"))?;
+    let current_unix_secs = current_unix_seconds_i64()?;
+
+    envelope.validate_and_consume_against(
+        current_head_sha,
+        &current_root_toml_sha256,
+        &live_canary.approval_id,
+        loaded,
+        current_unix_secs,
+    )
+}
+
+fn write_bolt_v3_blocked_before_submit_canary_evidence(
+    loaded: &LoadedBoltV3Config,
+    run_id: &str,
+) -> Result<String, anyhow::Error> {
+    let (envelope, current_root_toml_sha256) = phase8_live_runner_approval_envelope(loaded)?;
+    let live_canary = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing `[live_canary]` config"))?;
+    let max_notional_per_order = Decimal::from_str_exact(live_canary.max_notional_per_order.trim())
+        .map_err(|source| {
+            anyhow::anyhow!("[live_canary].max_notional_per_order is not a valid decimal: {source}")
+        })?;
+    let input = Phase8CanaryEvidenceInput {
+        head_sha: envelope.head_sha.clone(),
+        root_config_sha256: current_root_toml_sha256,
+        ssm_manifest_sha256: envelope.ssm_manifest_sha256.clone(),
+        ssm_manifest_ref: Phase8EvidenceRef {
+            path_hash: phase8_sha256_text(&envelope.ssm_manifest_path),
+            record_hash: envelope.ssm_manifest_sha256.clone(),
+        },
+        strategy_input_evidence_ref: Phase8EvidenceRef {
+            path_hash: phase8_sha256_text(&envelope.strategy_input_evidence_path),
+            record_hash: envelope.strategy_input_evidence_sha256.clone(),
+        },
+        approved_strategy_instance_id_hash: envelope.approved_strategy_instance_id_hash()?,
+        approval_id: live_canary.approval_id.clone(),
+        max_live_order_count: live_canary.max_live_order_count,
+        max_notional_per_order,
+        runtime_capture_ref: Phase8RuntimeCaptureRef {
+            spool_root_hash: phase8_sha256_text(&loaded.root.persistence.catalog_directory),
+            run_id: run_id.to_string(),
+        },
+    };
+    let evidence = Phase8CanaryEvidence::blocked_before_submit(
+        input,
+        vec![Phase8CanaryBlockReason::RuntimeNoAdmittedOrder],
+    );
+    evidence.write_json_file(&envelope.canary_evidence_path)?;
+    Ok(envelope.canary_evidence_path)
+}
+
+fn phase8_live_runner_approval_envelope(
+    loaded: &LoadedBoltV3Config,
+) -> Result<(Phase8OperatorApprovalEnvelope, String), anyhow::Error> {
     let live_canary = loaded
         .root
         .live_canary
@@ -796,10 +2318,7 @@ pub fn consume_bolt_v3_live_runner_approval(
         .operator_evidence
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("missing `[live_canary.operator_evidence]` config"))?;
-    let current_head_sha = current_build_head_sha()
-        .ok_or_else(|| anyhow::anyhow!("bolt-v3 build head_sha is unavailable or invalid"))?;
     let current_root_toml_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(&loaded.root_path)?;
-    let current_unix_secs = current_unix_seconds_i64()?;
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: operator_evidence.head_sha.clone(),
         root_toml_path: loaded.root_path.to_string_lossy().to_string(),
@@ -824,14 +2343,7 @@ pub fn consume_bolt_v3_live_runner_approval(
         canary_evidence_path: operator_evidence.canary_evidence_path.clone(),
         strategy_cancel_path: operator_evidence.strategy_cancel_path.clone(),
     };
-
-    envelope.validate_and_consume_against(
-        current_head_sha,
-        &current_root_toml_sha256,
-        &live_canary.approval_id,
-        loaded,
-        current_unix_secs,
-    )
+    Ok((envelope, current_root_toml_sha256))
 }
 
 fn current_unix_seconds_i64() -> Result<i64, anyhow::Error> {
@@ -841,6 +2353,15 @@ fn current_unix_seconds_i64() -> Result<i64, anyhow::Error> {
         .as_secs();
     i64::try_from(seconds)
         .map_err(|source| anyhow::anyhow!("current unix seconds exceeds i64: {source}"))
+}
+
+fn current_unix_nanos() -> Result<u64, anyhow::Error> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|source| anyhow::anyhow!("system time is before UNIX_EPOCH: {source}"))?
+        .as_nanos();
+    u64::try_from(nanos)
+        .map_err(|source| anyhow::anyhow!("current unix nanoseconds exceeds u64: {source}"))
 }
 
 pub async fn controlled_no_submit_readiness<F>(
@@ -870,6 +2391,108 @@ where
     (connect, reference, stop)
 }
 
+pub async fn collect_no_submit_reference_quote_evidence(
+    runtime: &mut BoltV3LiveNodeRuntime,
+    loaded: &LoadedBoltV3Config,
+) -> Result<BoltV3NoSubmitReferenceQuoteEvidence, BoltV3LiveNodeError> {
+    let (run, reference_quote_evidence, reference_quote_probe, stop) =
+        run_bolt_v3_no_submit_readiness_until_observed(&mut runtime.node, loaded).await;
+    run?;
+    no_submit_required_execution_accounts_registered(runtime, loaded)?;
+    if let Err(reason) = reference_quote_probe {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeFailed { reason });
+    }
+    stop?;
+    Ok(reference_quote_evidence)
+}
+
+pub async fn collect_no_submit_data_client_readiness_quote_evidence(
+    runtime: &mut BoltV3LiveNodeRuntime,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<BoltV3NoSubmitReferenceQuoteEvidence, BoltV3LiveNodeError> {
+    let (run, reference_quote_evidence, reference_quote_probe, stop) =
+        run_bolt_v3_no_submit_readiness_until_data_client_probe_observed(
+            &mut runtime.node,
+            loaded,
+            client_key,
+        )
+        .await;
+    run?;
+    no_submit_required_execution_accounts_registered(runtime, loaded)?;
+    if let Err(reason) = reference_quote_probe {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeFailed { reason });
+    }
+    stop?;
+    Ok(reference_quote_evidence)
+}
+
+pub async fn collect_no_submit_data_client_readiness_evidence(
+    runtime: &mut BoltV3LiveNodeRuntime,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<BoltV3NoSubmitDataClientReadinessEvidence, BoltV3LiveNodeError> {
+    let (
+        run,
+        metadata_evidence,
+        quote_evidence,
+        book_evidence,
+        trade_evidence,
+        metadata_probe,
+        reference_quote_probe,
+        stop,
+    ) = run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
+        &mut runtime.node,
+        loaded,
+        client_key,
+    )
+    .await;
+    run?;
+    no_submit_required_execution_accounts_registered(runtime, loaded)?;
+    if let Err(reason) = metadata_probe {
+        return Err(BoltV3LiveNodeError::NoSubmitDataClientProbeFailed { reason });
+    }
+    if let Err(reason) = reference_quote_probe {
+        return Err(BoltV3LiveNodeError::NoSubmitDataClientProbeFailed { reason });
+    }
+    stop?;
+    Ok(BoltV3NoSubmitDataClientReadinessEvidence {
+        metadata: metadata_evidence,
+        quotes: quote_evidence,
+        books: book_evidence,
+        trades: trade_evidence,
+    })
+}
+
+pub async fn collect_no_submit_data_client_metadata_evidence(
+    runtime: &mut BoltV3LiveNodeRuntime,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<BoltV3NoSubmitDataClientMetadataEvidence, BoltV3LiveNodeError> {
+    let (
+        run,
+        metadata_evidence,
+        _quote_evidence,
+        _book_evidence,
+        _trade_evidence,
+        metadata_probe,
+        _reference_quote_probe,
+        stop,
+    ) = run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
+        &mut runtime.node,
+        loaded,
+        client_key,
+    )
+    .await;
+    run?;
+    no_submit_required_execution_accounts_registered(runtime, loaded)?;
+    if let Err(reason) = metadata_probe {
+        return Err(BoltV3LiveNodeError::NoSubmitDataClientProbeFailed { reason });
+    }
+    stop?;
+    Ok(metadata_evidence)
+}
+
 fn no_submit_controlled_connect_result(
     execution_accounts: Result<(), BoltV3LiveNodeError>,
     reference_quote_probe: &Result<(), String>,
@@ -892,7 +2515,236 @@ async fn run_bolt_v3_no_submit_readiness_until_observed(
     Result<(), String>,
     Result<(), BoltV3LiveNodeError>,
 ) {
-    let reference_quote_probe = match install_no_submit_reference_quote_probe(node, loaded) {
+    let reference_quote_probe = install_no_submit_reference_quote_probe(node, loaded);
+    run_bolt_v3_no_submit_readiness_with_reference_quote_probe(
+        node,
+        loaded,
+        reference_quote_probe,
+        "configured reference_data quotes",
+    )
+    .await
+}
+
+async fn run_bolt_v3_no_submit_readiness_until_data_client_probe_observed(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> (
+    Result<(), BoltV3LiveNodeError>,
+    BoltV3NoSubmitReferenceQuoteEvidence,
+    Result<(), String>,
+    Result<(), BoltV3LiveNodeError>,
+) {
+    let reference_quote_probe =
+        install_no_submit_data_client_readiness_quote_probe(node, loaded, client_key);
+    run_bolt_v3_no_submit_readiness_with_reference_quote_probe(
+        node,
+        loaded,
+        reference_quote_probe,
+        "configured client readiness_probe.quote_targets quotes",
+    )
+    .await
+}
+
+async fn run_bolt_v3_no_submit_readiness_until_data_client_readiness_observed(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> (
+    Result<(), BoltV3LiveNodeError>,
+    BoltV3NoSubmitDataClientMetadataEvidence,
+    BoltV3NoSubmitReferenceQuoteEvidence,
+    BoltV3NoSubmitBookDeltasEvidence,
+    BoltV3NoSubmitTradeEvidence,
+    Result<(), String>,
+    Result<(), String>,
+    Result<(), BoltV3LiveNodeError>,
+) {
+    let probe = install_no_submit_data_client_readiness_probe(node, loaded, client_key);
+    let (metadata_probe, reference_quote_probe) = match probe {
+        Ok(probe) => probe,
+        Err(error) => {
+            return (
+                Err(error),
+                BoltV3NoSubmitDataClientMetadataEvidence {
+                    responses: Vec::new(),
+                },
+                BoltV3NoSubmitReferenceQuoteEvidence { quotes: Vec::new() },
+                BoltV3NoSubmitBookDeltasEvidence { deltas: Vec::new() },
+                BoltV3NoSubmitTradeEvidence { trades: Vec::new() },
+                Err("data-client metadata probe setup failed".to_string()),
+                Err("data-client quote probe setup failed".to_string()),
+                Err(BoltV3LiveNodeError::NoSubmitStopFailed(anyhow::anyhow!(
+                    "no-submit runner was not started because data-client readiness probe setup failed"
+                ))),
+            );
+        }
+    };
+    let timeout_secs = match no_submit_start_timeout_secs(loaded) {
+        Ok(timeout_secs) => timeout_secs,
+        Err(error) => {
+            return (
+                Err(error),
+                metadata_probe.evidence(),
+                reference_quote_probe.evidence(),
+                reference_quote_probe.book_evidence(),
+                reference_quote_probe.trade_evidence(),
+                Err(
+                    "data-client metadata probe was not observed because start timeout overflowed"
+                        .to_string(),
+                ),
+                Err(
+                    "data-client quote probe was not observed because start timeout overflowed"
+                        .to_string(),
+                ),
+                Err(BoltV3LiveNodeError::NoSubmitStopFailed(anyhow::anyhow!(
+                    "no-submit runner was not started because the configured start timeout overflowed"
+                ))),
+            );
+        }
+    };
+    let stop_timeout_secs = match no_submit_stop_timeout_secs(loaded) {
+        Ok(timeout_secs) => timeout_secs,
+        Err(_) => {
+            return (
+                Err(BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow),
+                metadata_probe.evidence(),
+                reference_quote_probe.evidence(),
+                reference_quote_probe.book_evidence(),
+                reference_quote_probe.trade_evidence(),
+                Err(
+                    "data-client metadata probe was not observed because stop timeout overflowed"
+                        .to_string(),
+                ),
+                Err(
+                    "data-client quote probe was not observed because stop timeout overflowed"
+                        .to_string(),
+                ),
+                Err(BoltV3LiveNodeError::NoSubmitStopTimeoutOverflow),
+            );
+        }
+    };
+    let node_handle = node.handle();
+    let run_future = node.run();
+    tokio::pin!(run_future);
+
+    let connect = tokio::select! {
+        result = &mut run_future => {
+            let connect = match result {
+                Ok(()) => Err(BoltV3LiveNodeError::NoSubmitStartIncomplete),
+                Err(error) => Err(BoltV3LiveNodeError::NoSubmitStartFailed(error)),
+            };
+            return (
+                connect,
+                metadata_probe.evidence(),
+                reference_quote_probe.evidence(),
+                reference_quote_probe.book_evidence(),
+                reference_quote_probe.trade_evidence(),
+                Err("data-client metadata probe was not observed before runner exit".to_string()),
+                Err("data-client quote probe was not observed before runner exit".to_string()),
+                Ok(()),
+            );
+        }
+        result = tokio::time::timeout(
+            Duration::from_secs(timeout_secs),
+            await_no_submit_running(&node_handle, loaded),
+        ) => {
+            match result {
+                Ok(()) => Ok(()),
+                Err(_) => {
+                    return (
+                        Err(BoltV3LiveNodeError::NoSubmitStartTimeout { timeout_secs }),
+                        metadata_probe.evidence(),
+                        reference_quote_probe.evidence(),
+                        reference_quote_probe.book_evidence(),
+                reference_quote_probe.trade_evidence(),
+                        Err("data-client metadata probe was not observed because no-submit runner did not reach Running".to_string()),
+                        Err("data-client quote probe was not observed because no-submit runner did not reach Running".to_string()),
+                        Err(BoltV3LiveNodeError::NoSubmitStopFailed(anyhow::anyhow!(
+                            "no-submit runner did not reach Running before the configured start timeout; NT does not observe stop signals during startup"
+                        ))),
+                    );
+                }
+            }
+        }
+    };
+
+    let mut metadata_probe_result = None;
+    let mut reference_probe_result = None;
+    let metadata_future = await_no_submit_data_client_metadata_probe(&metadata_probe, loaded);
+    let reference_future =
+        await_no_submit_data_client_readiness_quote_probe(&reference_quote_probe, loaded);
+    tokio::pin!(metadata_future);
+    tokio::pin!(reference_future);
+    while metadata_probe_result.is_none() || reference_probe_result.is_none() {
+        tokio::select! {
+            result = &mut run_future => {
+                let stop = match result {
+                    Ok(()) => Ok(()),
+                    Err(error) => Err(BoltV3LiveNodeError::NoSubmitStopFailed(error)),
+                };
+                return (
+                    connect,
+                    metadata_probe.evidence(),
+                    reference_quote_probe.evidence(),
+                    reference_quote_probe.book_evidence(),
+                reference_quote_probe.trade_evidence(),
+                    metadata_probe_result.unwrap_or_else(|| {
+                        Err("data-client metadata probe was not observed before runner exit".to_string())
+                    }),
+                    reference_probe_result.unwrap_or_else(|| {
+                        Err("data-client quote probe was not observed before runner exit".to_string())
+                    }),
+                    stop,
+                );
+            }
+            result = &mut metadata_future, if metadata_probe_result.is_none() => {
+                metadata_probe_result = Some(result);
+            }
+            result = &mut reference_future, if reference_probe_result.is_none() => {
+                reference_probe_result = Some(result);
+            }
+        }
+    }
+    let metadata_evidence = metadata_probe.evidence();
+    let reference_quote_evidence = reference_quote_probe.evidence();
+    let book_delta_evidence = reference_quote_probe.book_evidence();
+    let trade_evidence = reference_quote_probe.trade_evidence();
+    node_handle.stop();
+    let stop =
+        match tokio::time::timeout(Duration::from_secs(stop_timeout_secs), &mut run_future).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(BoltV3LiveNodeError::NoSubmitStopFailed(error)),
+            Err(_) => Err(BoltV3LiveNodeError::NoSubmitStopTimeout {
+                timeout_secs: stop_timeout_secs,
+            }),
+        };
+    (
+        connect,
+        metadata_evidence,
+        reference_quote_evidence,
+        book_delta_evidence,
+        trade_evidence,
+        metadata_probe_result
+            .unwrap_or_else(|| Err("data-client metadata probe was not observed".to_string())),
+        reference_probe_result
+            .unwrap_or_else(|| Err("data-client quote probe was not observed".to_string())),
+        stop,
+    )
+}
+
+async fn run_bolt_v3_no_submit_readiness_with_reference_quote_probe(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    reference_quote_probe: Result<BoltV3NoSubmitReferenceQuoteProbeHandle, BoltV3LiveNodeError>,
+    configured_targets_label: &'static str,
+) -> (
+    Result<(), BoltV3LiveNodeError>,
+    BoltV3NoSubmitReferenceQuoteEvidence,
+    Result<(), String>,
+    Result<(), BoltV3LiveNodeError>,
+) {
+    let reference_quote_probe = match reference_quote_probe {
         Ok(probe) => probe,
         Err(error) => {
             return (
@@ -985,7 +2837,11 @@ async fn run_bolt_v3_no_submit_readiness_until_observed(
                 stop,
             );
         }
-        result = await_no_submit_reference_quote_probe(&reference_quote_probe, loaded) => result,
+        result = await_no_submit_reference_quote_probe(
+            &reference_quote_probe,
+            loaded,
+            configured_targets_label,
+        ) => result,
     };
     let reference_quote_evidence = reference_quote_probe.evidence();
     node_handle.stop();
@@ -1005,6 +2861,59 @@ fn install_no_submit_reference_quote_probe(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3NoSubmitReferenceQuoteProbeHandle, BoltV3LiveNodeError> {
     let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::new(loaded);
+    install_no_submit_reference_quote_probe_handle(node, loaded, handle)
+}
+
+fn install_no_submit_data_client_readiness_quote_probe(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<BoltV3NoSubmitReferenceQuoteProbeHandle, BoltV3LiveNodeError> {
+    let (required, ambiguous_instrument_ids) =
+        no_submit_data_client_readiness_quote_subscription_plan(loaded, client_key)?;
+    let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::from_plan(
+        required,
+        ambiguous_instrument_ids,
+        DataClientReadinessProbeMarketDataKind::Quote,
+        None,
+        None,
+    );
+    install_no_submit_reference_quote_probe_handle(node, loaded, handle)
+}
+
+fn install_no_submit_data_client_readiness_probe(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<
+    (
+        BoltV3NoSubmitDataClientMetadataProbeHandle,
+        BoltV3NoSubmitReferenceQuoteProbeHandle,
+    ),
+    BoltV3LiveNodeError,
+> {
+    let metadata_handle = BoltV3NoSubmitDataClientMetadataProbeHandle::new(loaded, client_key)?;
+    let quote_handle = no_submit_data_client_readiness_quote_probe_handle(loaded, client_key)?;
+    if let Some(message) = quote_handle.ambiguity_error() {
+        return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
+            anyhow::anyhow!(message),
+        ));
+    }
+    let config = no_submit_reference_quote_probe_config(loaded)?;
+    node.add_actor(BoltV3NoSubmitDataClientReadinessProbe::new(
+        metadata_handle.clone(),
+        quote_handle.clone(),
+        config,
+    ))
+    .map_err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup)?;
+    Ok((metadata_handle, quote_handle))
+}
+
+fn install_no_submit_reference_quote_probe_handle(
+    node: &mut LiveNode,
+    loaded: &LoadedBoltV3Config,
+    handle: BoltV3NoSubmitReferenceQuoteProbeHandle,
+) -> Result<BoltV3NoSubmitReferenceQuoteProbeHandle, BoltV3LiveNodeError> {
     if let Some(message) = handle.ambiguity_error() {
         return Err(BoltV3LiveNodeError::NoSubmitReferenceProbeSetup(
             anyhow::anyhow!(message),
@@ -1048,9 +2957,37 @@ fn no_submit_reference_quote_probe_config(
     })
 }
 
+async fn await_no_submit_data_client_metadata_probe(
+    probe: &BoltV3NoSubmitDataClientMetadataProbeHandle,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), String> {
+    let timeout_secs = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or_else(|| "data-client metadata probe wait requires `[live_canary]`".to_string())?
+        .reference_quote_wait_timeout_seconds;
+    if timeout_secs == 0 {
+        return Err(
+            "[live_canary].reference_quote_wait_timeout_seconds must be a positive integer"
+                .to_string(),
+        );
+    }
+    tokio::time::timeout(Duration::from_secs(timeout_secs), async {
+        probe.wait_for_metadata_response().await;
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "data-client metadata probe did not observe request_instruments response within [live_canary].reference_quote_wait_timeout_seconds={timeout_secs}"
+        )
+    })
+}
+
 async fn await_no_submit_reference_quote_probe(
     probe: &BoltV3NoSubmitReferenceQuoteProbeHandle,
     loaded: &LoadedBoltV3Config,
+    configured_targets_label: &'static str,
 ) -> Result<(), String> {
     let timeout_secs = loaded
         .root
@@ -1065,14 +3002,85 @@ async fn await_no_submit_reference_quote_probe(
         );
     }
     tokio::time::timeout(Duration::from_secs(timeout_secs), async {
-        probe.wait_for_all_required_quotes().await;
+        probe.wait_for_all_required_quotes().await
     })
     .await
     .map_err(|_| {
         format!(
-            "reference quote probe did not observe all configured reference_data quotes within [live_canary].reference_quote_wait_timeout_seconds={timeout_secs}"
+            "reference quote probe did not observe all {configured_targets_label} within [live_canary].reference_quote_wait_timeout_seconds={timeout_secs}"
         )
-    })
+    })?
+}
+
+/// Await the data-client readiness quote probe, dispatching on probe mode: a
+/// trade chunk-count probe walks the universe in chunks (its own dynamic
+/// timeout), every other probe waits for the fixed sampled/configured targets.
+async fn await_no_submit_data_client_readiness_quote_probe(
+    probe: &BoltV3NoSubmitReferenceQuoteProbeHandle,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), String> {
+    if probe.is_chunk_count_mode() {
+        await_no_submit_chunk_count_probe(probe, loaded).await
+    } else {
+        await_no_submit_reference_quote_probe(
+            probe,
+            loaded,
+            "client readiness_probe metadata_response targets",
+        )
+        .await
+    }
+}
+
+/// Await a trade chunk-count walk. First bound the wait for the metadata
+/// response (and thus walk start) by `reference_quote_wait_timeout_seconds`;
+/// then size the overall walk timeout from the now-known universe
+/// (`chunks * window`, plus one window of slack) and wait for the walk to pass
+/// (`m` distinct markets traded) or fail closed (universe exhausted).
+async fn await_no_submit_chunk_count_probe(
+    probe: &BoltV3NoSubmitReferenceQuoteProbeHandle,
+    loaded: &LoadedBoltV3Config,
+) -> Result<(), String> {
+    let start_timeout_secs = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or_else(|| "trade chunk-count probe wait requires `[live_canary]`".to_string())?
+        .reference_quote_wait_timeout_seconds;
+    if start_timeout_secs == 0 {
+        return Err(
+            "[live_canary].reference_quote_wait_timeout_seconds must be a positive integer"
+                .to_string(),
+        );
+    }
+    tokio::time::timeout(
+        Duration::from_secs(start_timeout_secs),
+        probe.wait_for_chunk_walk_started(),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "trade chunk-count probe did not observe a request_instruments response within [live_canary].reference_quote_wait_timeout_seconds={start_timeout_secs}"
+        )
+    })?;
+    if let Some(reason) = probe.failure_error() {
+        return Err(reason);
+    }
+    let (num_chunks, window_secs) = probe.chunk_walk_dims();
+    let walk_timeout_secs = (num_chunks as u64)
+        .saturating_mul(window_secs)
+        .saturating_add(window_secs)
+        .max(window_secs);
+    match tokio::time::timeout(
+        Duration::from_secs(walk_timeout_secs),
+        probe.wait_for_all_required_quotes(),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "trade chunk-count probe did not finish walking the instrument universe within {walk_timeout_secs}s ({num_chunks} chunk(s) x {window_secs}s window)"
+        )),
+    }
 }
 
 async fn await_no_submit_running(node_handle: &LiveNodeHandle, loaded: &LoadedBoltV3Config) {
@@ -1097,6 +3105,13 @@ fn no_submit_required_execution_accounts_registered(
         .root
         .clients
         .iter()
+        .filter(|(client_key, _)| {
+            runtime
+                .registration_summary()
+                .clients
+                .get(*client_key)
+                .is_some_and(|registered| registered.execution)
+        })
         .filter(|(_, client)| client.execution.is_some())
         .filter(|(_, client)| cache.account_for_venue(&client.venue).is_none())
         .map(|(client_key, client)| format!("clients.{client_key} ({})", client.venue))
@@ -1183,13 +3198,34 @@ where
     R: FnMut(&str, &str) -> Result<String, E>,
     E: std::fmt::Display,
 {
+    let transport_loaded = trade_transport_loaded_config(loaded)?;
+    check_no_forbidden_credential_env_vars_with(&transport_loaded.root, env_is_set)
+        .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
+    let resolved = resolve_bolt_v3_secrets_with(&transport_loaded, resolver)
+        .map_err(BoltV3LiveNodeError::SecretResolution)?;
+    let adapters = map_bolt_v3_adapters(&transport_loaded, &resolved)
+        .map_err(BoltV3LiveNodeError::AdapterMapping)?;
+    build_live_node_with_clients(&transport_loaded, &resolved, adapters)
+}
+
+pub fn build_bolt_v3_all_configured_client_mapping_live_node_with_summary<F, R, E>(
+    loaded: &LoadedBoltV3Config,
+    env_is_set: F,
+    resolver: R,
+) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError>
+where
+    F: FnMut(&str) -> bool,
+    R: FnMut(&str, &str) -> Result<String, E>,
+    E: std::fmt::Display,
+{
     check_no_forbidden_credential_env_vars_with(&loaded.root, env_is_set)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
     let resolved = resolve_bolt_v3_secrets_with(loaded, resolver)
         .map_err(BoltV3LiveNodeError::SecretResolution)?;
     let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    build_live_node_with_clients(loaded, &resolved, adapters)
+    let mapping_loaded = no_submit_transport_loaded_config(loaded);
+    build_live_node_with_clients(&mapping_loaded, &resolved, adapters)
 }
 
 fn build_live_node_with_clients(
@@ -1197,19 +3233,21 @@ fn build_live_node_with_clients(
     resolved: &ResolvedBoltV3Secrets,
     adapters: BoltV3AdapterConfigs,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
-    let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> = if loaded.strategies.is_empty() {
-        Arc::new(NoStrategyDecisionEvidenceWriter)
-    } else {
-        Arc::new(
-            JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
-                BoltV3LiveNodeError::StrategyRegistration(
-                    BoltV3StrategyRegistrationError::Evidence {
-                        message: error.to_string(),
-                    },
-                )
-            })?,
-        )
-    };
+    let proof_executor_enabled = canary_proof_executor_enabled(loaded);
+    let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> =
+        if loaded.strategies.is_empty() && !proof_executor_enabled {
+            Arc::new(NoStrategyDecisionEvidenceWriter)
+        } else {
+            Arc::new(
+                JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded).map_err(|error| {
+                    BoltV3LiveNodeError::StrategyRegistration(
+                        BoltV3StrategyRegistrationError::Evidence {
+                            message: error.to_string(),
+                        },
+                    )
+                })?,
+            )
+        };
     let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(
         decision_evidence.clone(),
     ));
@@ -1218,15 +3256,35 @@ fn build_live_node_with_clients(
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
-    let strategy_summary = register_bolt_v3_strategies_on_node_with_bindings(
-        &mut node,
-        loaded,
-        resolved,
-        crate::bolt_v3_archetypes::runtime_bindings(),
-        submit_admission.clone(),
-        decision_evidence,
-    )
-    .map_err(BoltV3LiveNodeError::StrategyRegistration)?;
+    let strategy_summary = if proof_executor_enabled {
+        BoltV3StrategyRegistrationSummary {
+            registered: Vec::new(),
+        }
+    } else {
+        register_bolt_v3_strategies_on_node_with_bindings(
+            &mut node,
+            loaded,
+            resolved,
+            crate::bolt_v3_archetypes::runtime_bindings(),
+            submit_admission.clone(),
+            decision_evidence.clone(),
+        )
+        .map_err(BoltV3LiveNodeError::StrategyRegistration)?
+    };
+    if proof_executor_enabled {
+        register_canary_proof_executor_on_node(
+            &mut node,
+            loaded,
+            resolved,
+            decision_evidence,
+            submit_admission.clone(),
+        )
+        .map_err(|error| {
+            BoltV3LiveNodeError::StrategyRegistration(BoltV3StrategyRegistrationError::Evidence {
+                message: error.to_string(),
+            })
+        })?;
+    }
     for strategy in &strategy_summary.registered {
         log::info!(
             "bolt-v3 registered strategy: strategy_instance_id={} strategy_archetype={} nt_strategy_id={}",
@@ -1236,7 +3294,12 @@ fn build_live_node_with_clients(
         );
     }
     Ok((
-        BoltV3LiveNodeRuntime::new(node, submit_admission, resolved.redaction_values()),
+        BoltV3LiveNodeRuntime::new(
+            node,
+            summary.clone(),
+            submit_admission,
+            resolved.redaction_values(),
+        ),
         summary,
     ))
 }
@@ -1571,12 +3634,152 @@ pub async fn disconnect_bolt_v3_clients(
     }
 }
 
+fn canary_proof_executor_enabled(loaded: &LoadedBoltV3Config) -> bool {
+    !loaded.strategies.is_empty()
+        && loaded
+            .root
+            .live_canary
+            .as_ref()
+            .and_then(|live_canary| live_canary.proof_policy.as_ref())
+            .is_some_and(|proof_policy| proof_policy.enabled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bolt_v3_config::{BoltV3RootConfig, ReferenceDataBlock};
+    use crate::bolt_v3_config::{
+        BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeBookType,
+        DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetBlock,
+        DataClientReadinessProbeQuoteTargetSource, LiveCanaryProofPolicyBlock,
+        LiveCanaryProofTimeInForce, ReferenceDataBlock,
+    };
+    use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
+    use nautilus_model::enums::{BookAction, OrderSide};
     use nautilus_model::identifiers::TraderId;
     use nautilus_model::types::{Price, Quantity};
+
+    #[test]
+    fn chunk_universe_splits_into_consecutive_chunks_of_at_most_n() {
+        let universe: Vec<u32> = (0..10).collect();
+        assert_eq!(
+            chunk_universe(&universe, 3),
+            vec![vec![0, 1, 2], vec![3, 4, 5], vec![6, 7, 8], vec![9]],
+            "chunks must be consecutive, in order, and at most chunk_size"
+        );
+    }
+
+    #[test]
+    fn run_blocked_before_submit_only_for_canary_proof_runs() {
+        // F3: a canary/proof run MUST fire exactly one proof order, so a clean run with zero admitted
+        // orders is a blocked-before-submit failure. A production run (proof policy disabled) that
+        // finds no edge and admits zero orders is legitimate and must NOT be reported as blocked.
+        assert!(
+            run_blocked_before_submit(true, true, 0),
+            "canary/proof run with zero admitted orders is blocked-before-submit",
+        );
+        assert!(
+            !run_blocked_before_submit(true, false, 0),
+            "production run (proof disabled) with zero admitted orders is a legitimate no-edge run",
+        );
+        assert!(
+            !run_blocked_before_submit(true, true, 1),
+            "a canary run that admitted an order is never blocked-before-submit",
+        );
+        assert!(
+            !run_blocked_before_submit(true, false, 1),
+            "a production run that admitted an order is never blocked-before-submit",
+        );
+        assert!(
+            !run_blocked_before_submit(false, true, 0),
+            "a failed run is classified by its own error, not blocked-before-submit",
+        );
+    }
+
+    #[test]
+    fn chunk_universe_returns_single_chunk_when_universe_fits() {
+        assert_eq!(chunk_universe(&["a", "b"], 5), vec![vec!["a", "b"]]);
+    }
+
+    #[test]
+    fn chunk_universe_is_empty_for_empty_universe_or_zero_chunk_size() {
+        assert!(chunk_universe::<u32>(&[], 4).is_empty());
+        assert!(
+            chunk_universe(&[1, 2, 3], 0).is_empty(),
+            "chunk_size 0 must yield no chunks so the probe fails closed rather than panicking"
+        );
+    }
+
+    #[test]
+    fn trade_chunk_count_probe_passes_only_at_or_above_m_with_positive_m() {
+        assert!(
+            !trade_chunk_count_probe_passed(0, 0),
+            "m=0 must fail closed: requiring nothing proves nothing"
+        );
+        assert!(
+            !trade_chunk_count_probe_passed(5, 0),
+            "m=0 must fail closed even with fires"
+        );
+        assert!(!trade_chunk_count_probe_passed(9, 10), "below m must fail");
+        assert!(
+            trade_chunk_count_probe_passed(10, 10),
+            "exactly m must pass"
+        );
+        assert!(trade_chunk_count_probe_passed(11, 10), "above m must pass");
+    }
+
+    #[test]
+    fn chunk_count_handle_chunks_universe_and_walks_in_sorted_order() {
+        let handle =
+            BoltV3NoSubmitReferenceQuoteProbeHandle::from_metadata_response_chunk_count_plan(
+                ClientId::from("okx_data"),
+                2,
+                45,
+                3,
+                DataClientReadinessProbeMarketDataKind::Trade,
+            );
+        assert!(handle.is_chunk_count_mode());
+        assert!(!handle.chunk_walk_started());
+
+        handle.chunk_count_capture_universe(vec![
+            InstrumentId::from("C-3.OKX"),
+            InstrumentId::from("A-1.OKX"),
+            InstrumentId::from("B-2.OKX"),
+        ]);
+        assert!(handle.chunk_walk_started());
+        // 3 instruments at chunk_size 2 => 2 chunks; window threads through.
+        assert_eq!(handle.chunk_walk_dims(), (2, 45));
+
+        let first: Vec<String> = handle
+            .chunk_count_next_chunk()
+            .expect("first chunk")
+            .iter()
+            .map(|subscription| subscription.instrument_id.to_string())
+            .collect();
+        assert_eq!(
+            first,
+            vec!["A-1.OKX".to_string(), "B-2.OKX".to_string()],
+            "the universe is walked in deterministic sorted order"
+        );
+        assert_eq!(
+            handle.chunk_count_current_chunk().len(),
+            2,
+            "the current chunk tracks what is subscribed, for unsubscribe on advance"
+        );
+
+        assert_eq!(
+            handle.chunk_count_next_chunk().expect("second chunk").len(),
+            1,
+            "the trailing chunk holds the remainder"
+        );
+        assert!(
+            handle.chunk_count_next_chunk().is_none(),
+            "the walk is exhausted after the last chunk"
+        );
+        assert!(
+            !handle.chunk_count_passed(),
+            "with no trades recorded the pass rule fails closed"
+        );
+    }
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
         let root_text = include_str!("../tests/fixtures/bolt_v3/root.toml");
@@ -1587,6 +3790,507 @@ mod tests {
             root,
             strategies: Vec::new(),
         }
+    }
+
+    fn loaded_config_with_primary_reference_data() -> LoadedBoltV3Config {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        strategy.config.reference_data.insert(
+            "primary".to_string(),
+            ReferenceDataBlock {
+                data_client_id: ClientId::from("polymarket_main"),
+                instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
+            },
+        );
+        loaded
+    }
+
+    #[test]
+    fn data_client_readiness_quote_plan_uses_client_owned_probe_targets() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include polymarket client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+            book_type: None,
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::Configured,
+            max_metadata_quote_targets: None,
+            allow_metadata_target_sampling: None,
+            min_observed_targets: None,
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
+            quote_targets: Some(BTreeMap::from([(
+                "configured_quote_probe".to_string(),
+                DataClientReadinessProbeQuoteTargetBlock {
+                    instrument_id: InstrumentId::from("REFERENCE.POLYMARKET"),
+                },
+            )])),
+        });
+
+        let (required, ambiguous) =
+            no_submit_data_client_readiness_quote_subscription_plan(&loaded, "polymarket_main")
+                .expect("client-owned readiness quote plan should build");
+
+        assert!(ambiguous.is_empty());
+        assert_eq!(required.len(), 1);
+        assert_eq!(
+            required[0].data_client_id,
+            ClientId::from("polymarket_main")
+        );
+        assert_eq!(
+            required[0].instrument_id,
+            InstrumentId::from("REFERENCE.POLYMARKET")
+        );
+    }
+
+    #[test]
+    fn data_client_readiness_metadata_response_probe_starts_pending_until_targets_arrive() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+            book_type: None,
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(2),
+            allow_metadata_target_sampling: Some(false),
+            min_observed_targets: None,
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
+            quote_targets: None,
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness quote handle should build");
+
+        assert!(
+            !handle.has_all_required_quotes(),
+            "metadata-response quote probes must not pass before same-run metadata installs targets"
+        );
+        let installed = handle.install_metadata_response_instrument_ids(vec![
+            InstrumentId::from("CONFIGURED-FIRST.SOURCE"),
+            InstrumentId::from("CONFIGURED-SECOND.SOURCE"),
+        ]);
+
+        assert_eq!(installed.len(), 2);
+        assert!(
+            !handle.has_all_required_quotes(),
+            "installing targets should not pass the quote probe until quotes arrive"
+        );
+        for subscription in installed {
+            handle
+                .quotes
+                .borrow_mut()
+                .push(BoltV3NoSubmitReferenceQuote {
+                    data_client_id: subscription.data_client_id.to_string(),
+                    instrument_id: subscription.instrument_id.to_string(),
+                    bid_price: 1.0,
+                    ask_price: 2.0,
+                    ts_event_unix_nanos: 1_000,
+                    ts_init_unix_nanos: 1_100,
+                    captured_at_unix_nanos: 1_200,
+                });
+        }
+
+        assert!(
+            handle.has_all_required_quotes(),
+            "metadata-response quote probes should pass after every installed source-owned target has a quote"
+        );
+    }
+
+    #[test]
+    fn data_client_readiness_metadata_response_probe_rejects_unbounded_metadata_universe() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+            book_type: None,
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(2),
+            allow_metadata_target_sampling: Some(false),
+            min_observed_targets: None,
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
+            quote_targets: None,
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness quote handle should build");
+        let installed = handle.install_metadata_response_instrument_ids(vec![
+            InstrumentId::from("CONFIGURED-FIRST.SOURCE"),
+            InstrumentId::from("CONFIGURED-SECOND.SOURCE"),
+            InstrumentId::from("CONFIGURED-THIRD.SOURCE"),
+        ]);
+
+        assert!(
+            installed.is_empty(),
+            "metadata-response probes must not truncate a broad metadata universe into an arbitrary sample"
+        );
+        let failure = handle
+            .failure_error()
+            .expect("unbounded metadata universe should fail closed");
+        assert!(
+            failure.contains("max_metadata_quote_targets"),
+            "failure should name the TOML-owned bound: {failure}"
+        );
+    }
+
+    #[test]
+    fn data_client_readiness_metadata_response_probe_samples_when_explicitly_configured() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+            book_type: None,
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(3),
+            allow_metadata_target_sampling: Some(true),
+            min_observed_targets: None,
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
+            quote_targets: None,
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness quote handle should build");
+        let installed = handle.install_metadata_response_instrument_ids(vec![
+            InstrumentId::from("CONFIGURED-C.SOURCE"),
+            InstrumentId::from("CONFIGURED-A.SOURCE"),
+            InstrumentId::from("CONFIGURED-E.SOURCE"),
+            InstrumentId::from("CONFIGURED-B.SOURCE"),
+            InstrumentId::from("CONFIGURED-D.SOURCE"),
+        ]);
+
+        assert_eq!(installed.len(), 3);
+        assert_eq!(
+            installed[0].instrument_id,
+            InstrumentId::from("CONFIGURED-A.SOURCE")
+        );
+        assert_eq!(
+            installed[1].instrument_id,
+            InstrumentId::from("CONFIGURED-C.SOURCE")
+        );
+        assert_eq!(
+            installed[2].instrument_id,
+            InstrumentId::from("CONFIGURED-E.SOURCE")
+        );
+        assert!(handle.failure_error().is_none());
+    }
+
+    #[test]
+    fn data_client_readiness_metadata_response_probe_requires_all_metadata_quote_targets() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Quote,
+            book_type: None,
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(3),
+            allow_metadata_target_sampling: Some(false),
+            min_observed_targets: None,
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
+            quote_targets: None,
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness quote handle should build");
+        let installed = handle.install_metadata_response_instrument_ids(vec![
+            InstrumentId::from("CONFIGURED-FIRST.SOURCE"),
+            InstrumentId::from("CONFIGURED-SECOND.SOURCE"),
+            InstrumentId::from("CONFIGURED-THIRD.SOURCE"),
+        ]);
+
+        for subscription in installed.iter().take(1) {
+            handle
+                .quotes
+                .borrow_mut()
+                .push(BoltV3NoSubmitReferenceQuote {
+                    data_client_id: subscription.data_client_id.to_string(),
+                    instrument_id: subscription.instrument_id.to_string(),
+                    bid_price: 1.0,
+                    ask_price: 2.0,
+                    ts_event_unix_nanos: 1_000,
+                    ts_init_unix_nanos: 1_100,
+                    captured_at_unix_nanos: 1_200,
+                });
+        }
+        assert!(
+            !handle.has_all_required_quotes(),
+            "metadata-response quote probe must not pass before every same-run metadata target is observed"
+        );
+
+        let subscription = installed
+            .get(1)
+            .expect("second source-owned target should be installed");
+        handle
+            .quotes
+            .borrow_mut()
+            .push(BoltV3NoSubmitReferenceQuote {
+                data_client_id: subscription.data_client_id.to_string(),
+                instrument_id: subscription.instrument_id.to_string(),
+                bid_price: 1.0,
+                ask_price: 2.0,
+                ts_event_unix_nanos: 1_000,
+                ts_init_unix_nanos: 1_100,
+                captured_at_unix_nanos: 1_200,
+            });
+
+        assert!(
+            !handle.has_all_required_quotes(),
+            "metadata-response quote probe should still wait for the final same-run metadata target"
+        );
+
+        let subscription = installed
+            .get(2)
+            .expect("third source-owned target should be installed");
+        handle
+            .quotes
+            .borrow_mut()
+            .push(BoltV3NoSubmitReferenceQuote {
+                data_client_id: subscription.data_client_id.to_string(),
+                instrument_id: subscription.instrument_id.to_string(),
+                bid_price: 1.0,
+                ask_price: 2.0,
+                ts_event_unix_nanos: 1_000,
+                ts_init_unix_nanos: 1_100,
+                captured_at_unix_nanos: 1_200,
+            });
+
+        assert!(
+            handle.has_all_required_quotes(),
+            "metadata-response quote probe should pass after all same-run metadata targets are observed"
+        );
+    }
+
+    #[test]
+    fn data_client_readiness_metadata_response_probe_accepts_book_deltas_when_configured() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
+            book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(1),
+            allow_metadata_target_sampling: Some(false),
+            min_observed_targets: None,
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
+            quote_targets: None,
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness book handle should build");
+        let installed = handle.install_metadata_response_instrument_ids(vec![InstrumentId::from(
+            "CONFIGURED-FIRST.SOURCE",
+        )]);
+
+        assert_eq!(installed.len(), 1);
+        assert!(
+            !handle.has_all_required_market_data(),
+            "book probes must not pass before a source-owned book-delta event arrives"
+        );
+        let subscription = &installed[0];
+        let delta = OrderBookDelta::new(
+            subscription.instrument_id,
+            BookAction::Add,
+            BookOrder::new(
+                OrderSide::Buy,
+                Price::from("1.00"),
+                Quantity::from("2.00"),
+                1,
+            ),
+            0,
+            0,
+            1_000.into(),
+            1_100.into(),
+        );
+        let deltas = OrderBookDeltas::new(subscription.instrument_id, vec![delta]);
+
+        handle.record_book_deltas(&deltas, 1_200);
+
+        assert!(
+            handle.has_all_required_market_data(),
+            "metadata-response book probes should pass after every installed source-owned target has book deltas"
+        );
+        assert_eq!(handle.book_evidence().deltas.len(), 1);
+    }
+
+    #[test]
+    fn data_client_readiness_metadata_response_book_probe_passes_at_min_observed_targets() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
+            book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(5),
+            allow_metadata_target_sampling: Some(true),
+            min_observed_targets: Some(2),
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
+            quote_targets: None,
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness book handle should build");
+        let installed = handle.install_metadata_response_instrument_ids(vec![
+            InstrumentId::from("CONFIGURED-A.SOURCE"),
+            InstrumentId::from("CONFIGURED-B.SOURCE"),
+            InstrumentId::from("CONFIGURED-C.SOURCE"),
+            InstrumentId::from("CONFIGURED-D.SOURCE"),
+            InstrumentId::from("CONFIGURED-E.SOURCE"),
+        ]);
+        assert_eq!(installed.len(), 5);
+
+        let record_delta = |subscription: &NoSubmitReferenceQuoteSubscription| {
+            let delta = OrderBookDelta::new(
+                subscription.instrument_id,
+                BookAction::Add,
+                BookOrder::new(
+                    OrderSide::Buy,
+                    Price::from("1.00"),
+                    Quantity::from("2.00"),
+                    1,
+                ),
+                0,
+                0,
+                1_000.into(),
+                1_100.into(),
+            );
+            let deltas = OrderBookDeltas::new(subscription.instrument_id, vec![delta]);
+            handle.record_book_deltas(&deltas, 1_200);
+        };
+
+        assert!(
+            !handle.has_all_required_market_data(),
+            "book probe must not pass before any sampled target streams a delta"
+        );
+
+        record_delta(&installed[0]);
+        assert!(
+            !handle.has_all_required_market_data(),
+            "book probe must keep waiting below min_observed_targets (1 of required 2)"
+        );
+
+        record_delta(&installed[1]);
+        assert!(
+            handle.has_all_required_market_data(),
+            "book probe should pass once min_observed_targets sampled targets stream fresh deltas, without requiring every illiquid sampled instrument to tick"
+        );
+    }
+
+    #[test]
+    fn data_client_readiness_probe_rejects_zero_min_observed_targets() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
+            book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(5),
+            allow_metadata_target_sampling: Some(true),
+            min_observed_targets: Some(0),
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
+            quote_targets: None,
+        });
+
+        assert!(
+            no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main").is_err(),
+            "min_observed_targets=0 must fail closed: a probe that observes nothing proves nothing"
+        );
+    }
+
+    #[test]
+    fn data_client_readiness_probe_fails_closed_when_min_observed_exceeds_sampled() {
+        let mut loaded = fixture_loaded_config();
+        let client = loaded
+            .root
+            .clients
+            .get_mut("polymarket_main")
+            .expect("fixture should include a data client");
+        client.readiness_probe = Some(DataClientReadinessProbeBlock {
+            market_data_kind: DataClientReadinessProbeMarketDataKind::Book,
+            book_type: Some(DataClientReadinessProbeBookType::L2Mbp),
+            quote_target_source: DataClientReadinessProbeQuoteTargetSource::MetadataResponse,
+            max_metadata_quote_targets: Some(5),
+            allow_metadata_target_sampling: Some(true),
+            min_observed_targets: Some(4),
+            chunk_size: None,
+            chunk_observation_window_seconds: None,
+            quote_targets: None,
+        });
+
+        let handle = no_submit_data_client_readiness_quote_probe_handle(&loaded, "polymarket_main")
+            .expect("metadata-response readiness book handle should build");
+        let installed = handle.install_metadata_response_instrument_ids(vec![
+            InstrumentId::from("CONFIGURED-A.SOURCE"),
+            InstrumentId::from("CONFIGURED-B.SOURCE"),
+        ]);
+
+        assert!(
+            installed.is_empty(),
+            "install must fail closed when min_observed_targets exceeds the sampled target count"
+        );
+        assert!(
+            !handle.has_all_required_market_data(),
+            "probe must not pass after min_observed_targets exceeds the sampled targets"
+        );
+    }
+
+    #[test]
+    fn no_submit_quote_probe_captures_quotes_with_wall_clock_time() {
+        let source = include_str!("bolt_v3_live_node.rs");
+        let runtime_source = source
+            .split("\n#[cfg(test)]\nmod tests")
+            .next()
+            .expect("runtime source should precede tests");
+
+        assert!(
+            runtime_source.contains("current_unix_nanos()?"),
+            "no-submit quote evidence must capture receive time from the process wall clock"
+        );
+        assert!(
+            !runtime_source.contains(".record_quote(quote, self.timestamp_ns().as_u64())"),
+            "actor timestamp is not strong enough evidence for quote receive time"
+        );
     }
 
     #[test]
@@ -1649,6 +4353,209 @@ mod tests {
     }
 
     #[test]
+    fn no_submit_transport_disables_canary_proof_executor_after_strategy_strip() {
+        let mut loaded =
+            crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
+                .expect("fixture config should load");
+        let live_canary = loaded
+            .root
+            .live_canary
+            .as_mut()
+            .expect("fixture should include live canary config");
+        live_canary.proof_policy = Some(LiveCanaryProofPolicyBlock {
+            enabled: true,
+            policy_kind: "least_bad_strategy_candidate".to_string(),
+            proof_claim: "proof_only".to_string(),
+            executor_strategy_id: "canary-proof-executor-proof".to_string(),
+            strategy_instance_id: "configured_updown_main".to_string(),
+            execution_client_id: "polymarket_main".to_string(),
+            book_type: DataClientReadinessProbeBookType::L2Mbp,
+            book_snapshot_interval_millis: 1_000,
+            time_in_force: LiveCanaryProofTimeInForce::Fok,
+            is_post_only: false,
+            is_reduce_only: false,
+            is_quote_quantity: false,
+            notional_mode: "fixed".to_string(),
+            proof_notional: "5.00".to_string(),
+            candidate_score_source: "proof_source".to_string(),
+            allow_negative_expected_ev: true,
+            rotation_observation_enabled: true,
+            rotation_min_distinct_markets: 1,
+            rotation_max_attempts: 1,
+        });
+
+        assert!(
+            canary_proof_executor_enabled(&loaded),
+            "trade transport should enable the proof executor when strategies remain registered"
+        );
+
+        let no_submit_loaded = no_submit_transport_loaded_config(&loaded);
+
+        assert!(
+            no_submit_loaded
+                .root
+                .live_canary
+                .as_ref()
+                .and_then(|live_canary| live_canary.proof_policy.as_ref())
+                .is_some_and(|proof_policy| proof_policy.enabled),
+            "no-submit keeps proof policy config available for readiness verification"
+        );
+        assert!(
+            !canary_proof_executor_enabled(&no_submit_loaded),
+            "no-submit transport must not register a submitting proof executor"
+        );
+    }
+
+    #[test]
+    fn trade_transport_config_keeps_only_strategy_bound_clients() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let mut reference_client = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        reference_client.execution = None;
+        reference_client.secrets = None;
+        let unrelated_client = reference_client.clone();
+        loaded
+            .root
+            .clients
+            .insert("reference_data".to_string(), reference_client);
+        loaded
+            .root
+            .clients
+            .insert("unrelated_data".to_string(), unrelated_client);
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        strategy.config.reference_data.insert(
+            "primary".to_string(),
+            ReferenceDataBlock {
+                data_client_id: ClientId::from("reference_data"),
+                instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
+            },
+        );
+
+        let scoped = trade_transport_loaded_config(&loaded)
+            .expect("strategy-bound transport scope should be derived from config");
+
+        assert_eq!(scoped.root.clients.len(), 2);
+        assert!(scoped.root.clients.contains_key("polymarket_main"));
+        assert!(scoped.root.clients.contains_key("reference_data"));
+        assert!(
+            !scoped.root.clients.contains_key("unrelated_data"),
+            "unrelated configured data clients must not block the selected trade path"
+        );
+        assert_eq!(scoped.strategies.len(), loaded.strategies.len());
+        assert!(
+            loaded.root.clients.contains_key("unrelated_data"),
+            "helper must not mutate the caller's full client bundle"
+        );
+    }
+
+    #[test]
+    fn data_client_probe_config_keeps_only_selected_data_client() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let mut secondary = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        secondary.execution = None;
+        secondary.secrets = None;
+        loaded
+            .root
+            .clients
+            .insert("secondary_data".to_string(), secondary);
+
+        let probe_loaded = data_client_probe_loaded_config(&loaded, "secondary_data")
+            .expect("selected data client should produce a scoped probe config");
+
+        assert!(
+            probe_loaded.strategies.is_empty(),
+            "adapter mapping must drop strategy targets that do not reference the selected probe client"
+        );
+        assert_eq!(probe_loaded.root_path, loaded.root_path);
+        assert_eq!(
+            probe_loaded.config_bundle_checksum,
+            loaded.config_bundle_checksum
+        );
+        assert_eq!(probe_loaded.root.clients.len(), 1);
+        assert!(probe_loaded.root.clients.contains_key("secondary_data"));
+        assert!(
+            loaded.root.clients.contains_key("polymarket_main"),
+            "helper must not mutate the caller's full client bundle"
+        );
+    }
+
+    #[test]
+    fn data_client_probe_adapter_mapping_drops_unrelated_strategy_targets() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let mut secondary = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        secondary.execution = None;
+        secondary.secrets = None;
+        loaded
+            .root
+            .clients
+            .insert("secondary_data".to_string(), secondary);
+
+        let probe_loaded = data_client_probe_loaded_config(&loaded, "secondary_data")
+            .expect("selected data client should produce a scoped probe config");
+
+        assert!(
+            probe_loaded.strategies.is_empty(),
+            "probe mapping input must drop strategy targets that reference clients outside the scoped probe"
+        );
+        no_submit_transport_adapter_configs(
+            &probe_loaded,
+            &crate::bolt_v3_secrets::ResolvedBoltV3Secrets {
+                clients: Default::default(),
+            },
+        )
+        .expect("scoped data-client adapter mapping must not fail on unrelated strategies");
+    }
+
+    #[test]
+    fn data_client_probe_runtime_clears_strategies_after_adapter_mapping() {
+        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+
+        let probe_loaded = data_client_probe_loaded_config(&loaded, "polymarket_main")
+            .expect("selected data client should produce a scoped probe config");
+        let runtime_loaded = no_submit_transport_loaded_config(&probe_loaded);
+
+        assert!(
+            !probe_loaded.strategies.is_empty(),
+            "probe adapter mapping input must keep strategies for provider-owned data filters"
+        );
+        assert!(
+            runtime_loaded.strategies.is_empty(),
+            "no-submit data-client probes must not register strategy actors"
+        );
+        assert_eq!(runtime_loaded.root.clients.len(), 1);
+        assert!(runtime_loaded.root.clients.contains_key("polymarket_main"));
+    }
+
+    #[test]
     fn no_submit_adapter_mapping_preserves_strategy_derived_market_filters() {
         use crate::{
             bolt_v3_providers::{
@@ -1667,17 +4574,17 @@ mod tests {
         clients.insert(
             "polymarket_main".to_string(),
             Arc::new(ResolvedBoltV3PolymarketSecrets {
-                private_key: "fixture-poly-private-key".to_string(),
-                api_key: "fixture-poly-api-key".to_string(),
-                api_secret: "fixture-poly-api-secret".to_string(),
-                passphrase: "fixture-poly-passphrase".to_string(),
+                private_key: zeroize::Zeroizing::new("fixture-poly-private-key".to_string()),
+                api_key: zeroize::Zeroizing::new("fixture-poly-api-key".to_string()),
+                api_secret: zeroize::Zeroizing::new("fixture-poly-api-secret".to_string()),
+                passphrase: zeroize::Zeroizing::new("fixture-poly-passphrase".to_string()),
             }),
         );
         clients.insert(
             "binance_reference".to_string(),
             Arc::new(ResolvedBoltV3BinanceSecrets {
-                api_key: "fixture-binance-api-key".to_string(),
-                api_secret: "fixture-binance-api-secret".to_string(),
+                api_key: zeroize::Zeroizing::new("fixture-binance-api-key".to_string()),
+                api_secret: zeroize::Zeroizing::new("fixture-binance-api-secret".to_string()),
             }),
         );
         let resolved = ResolvedBoltV3Secrets { clients };
@@ -1711,10 +4618,7 @@ mod tests {
 
     #[test]
     fn reference_quote_probe_does_not_satisfy_distinct_clients_with_one_quote() {
-        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
-            "tests/fixtures/bolt_v3/root.toml",
-        ))
-        .expect("fixture config should load before direct mutation");
+        let mut loaded = loaded_config_with_primary_reference_data();
         let strategy = loaded
             .strategies
             .first_mut()
@@ -1728,7 +4632,7 @@ mod tests {
         strategy.config.reference_data.insert(
             "secondary".to_string(),
             ReferenceDataBlock {
-                data_client_id: ClientId::from("polymarket_main"),
+                data_client_id: ClientId::from("secondary_reference"),
                 instrument_id: primary.instrument_id,
             },
         );
@@ -1762,13 +4666,11 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn reference_quote_probe_wait_wakes_when_required_quote_records() {
-        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
-            "tests/fixtures/bolt_v3/root.toml",
-        ))
-        .expect("fixture config should load");
+        let loaded = loaded_config_with_primary_reference_data();
         let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::new(&loaded);
         let required = handle
             .required
+            .borrow()
             .first()
             .expect("fixture should require reference quote evidence")
             .clone();
@@ -1785,25 +4687,24 @@ mod tests {
         tokio::pin!(wait);
 
         tokio::select! {
-            () = &mut wait => panic!("wait should not complete before required quote evidence"),
+            result = &mut wait => panic!("wait should not complete before required quote evidence: {result:?}"),
             () = tokio::time::sleep(Duration::from_millis(5)) => {}
         }
 
         handle.record_quote(&quote, 2);
         tokio::time::timeout(Duration::from_millis(100), &mut wait)
             .await
-            .expect("notify must wake required-quote wait");
+            .expect("notify must wake required-quote wait")
+            .expect("required quote wait should succeed");
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn reference_quote_probe_wait_accepts_quote_recorded_before_wait_starts() {
-        let loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
-            "tests/fixtures/bolt_v3/root.toml",
-        ))
-        .expect("fixture config should load");
+        let loaded = loaded_config_with_primary_reference_data();
         let handle = BoltV3NoSubmitReferenceQuoteProbeHandle::new(&loaded);
         let required = handle
             .required
+            .borrow()
             .first()
             .expect("fixture should require reference quote evidence")
             .clone();
@@ -1823,7 +4724,8 @@ mod tests {
             handle.wait_for_all_required_quotes(),
         )
         .await
-        .expect("pre-observed quote must not be lost before wait starts");
+        .expect("pre-observed quote must not be lost before wait starts")
+        .expect("required quote wait should succeed");
     }
 
     #[test]
@@ -1896,6 +4798,155 @@ mod tests {
                  error categories, got {other:?}"
             ),
         }
+    }
+
+    #[test]
+    fn live_runner_zero_admission_writer_outputs_blocked_canary_evidence() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let mut loaded =
+            crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new("config/root.toml"))
+                .expect("root config should load");
+        loaded.root.persistence.catalog_directory =
+            temp.path().join("catalog").to_string_lossy().to_string();
+        let canary_evidence_path = {
+            let live_canary = loaded
+                .root
+                .live_canary
+                .as_mut()
+                .expect("root config should include live canary");
+            live_canary.approval_id = "phase8-zero-admission-test".to_string();
+            live_canary.max_live_order_count = 1;
+            live_canary.max_notional_per_order = "1.00".to_string();
+            let operator_evidence = live_canary
+                .operator_evidence
+                .as_mut()
+                .expect("root config should include operator evidence");
+            operator_evidence.head_sha = "1".repeat(40);
+            operator_evidence.ssm_manifest_path = temp
+                .path()
+                .join("ssm-manifest.json")
+                .to_string_lossy()
+                .to_string();
+            operator_evidence.ssm_manifest_sha256 =
+                write_phase8_live_node_test_file(&operator_evidence.ssm_manifest_path, "{}");
+            operator_evidence.strategy_input_evidence_path = temp
+                .path()
+                .join("strategy-input.json")
+                .to_string_lossy()
+                .to_string();
+            operator_evidence.strategy_input_evidence_sha256 = write_phase8_live_node_test_file(
+                &operator_evidence.strategy_input_evidence_path,
+                "{}",
+            );
+            operator_evidence.financial_envelope_path = temp
+                .path()
+                .join("financial-envelope.json")
+                .to_string_lossy()
+                .to_string();
+            operator_evidence.financial_envelope_sha256 = write_phase8_live_node_test_file(
+                &operator_evidence.financial_envelope_path,
+                r#"{
+  "max_live_order_count": 1,
+  "max_notional_per_order": "1.00",
+  "strategy_instance_id": "bitcoin_updown_main",
+  "oms_type": "netting",
+  "execution_client_id": "polymarket_main",
+  "configured_target_id": "btc_updown_5m",
+  "target_kind": "rotating",
+  "rotating_market_family": "updown",
+  "underlying_asset": "BTC",
+  "cadence_secs": 300,
+  "cadence_slug_token": "5m",
+  "market_selection_rule": "current",
+  "retry_interval_secs": 1,
+  "blocked_after_secs": 1,
+  "price_to_beat_source": "gate_session:decision_reference",
+  "edge_threshold_basis_points": 100,
+  "order_notional_target": "1.00",
+  "maximum_position_notional": "10.00",
+  "book_impact_cap_bps": 50,
+  "entry_side": "buy",
+  "entry_position_side": "long",
+  "entry_order_type": "limit",
+  "entry_time_in_force": "fok",
+  "entry_expire_time_unix_nanos": null,
+  "entry_trigger_price": null,
+  "entry_activation_price": null,
+  "entry_trigger_type": null,
+  "entry_trigger_instrument_id": null,
+  "entry_trailing_offset": null,
+  "entry_trailing_offset_type": null,
+  "entry_is_post_only": false,
+  "entry_is_reduce_only": false,
+  "entry_is_quote_quantity": false,
+  "exit_side": "sell",
+  "exit_position_side": "long",
+  "exit_order_type": "market",
+  "exit_time_in_force": "ioc",
+  "exit_expire_time_unix_nanos": null,
+  "exit_trigger_price": null,
+  "exit_activation_price": null,
+  "exit_trigger_type": null,
+  "exit_trigger_instrument_id": null,
+  "exit_trailing_offset": null,
+  "exit_trailing_offset_type": null,
+  "exit_is_post_only": false,
+  "exit_is_reduce_only": true,
+  "exit_is_quote_quantity": false,
+  "forced_exit_side": "sell",
+  "forced_exit_position_side": "long",
+  "forced_exit_order_type": "market",
+  "forced_exit_time_in_force": "ioc",
+  "forced_exit_expire_time_unix_nanos": null,
+  "forced_exit_trigger_price": null,
+  "forced_exit_activation_price": null,
+  "forced_exit_trigger_type": null,
+  "forced_exit_trigger_instrument_id": null,
+  "forced_exit_trailing_offset": null,
+  "forced_exit_trailing_offset_type": null,
+  "forced_exit_is_post_only": false,
+  "forced_exit_is_reduce_only": true,
+  "forced_exit_is_quote_quantity": false
+}"#,
+            );
+            operator_evidence.canary_evidence_path = temp
+                .path()
+                .join("phase8-canary-evidence.json")
+                .to_string_lossy()
+                .to_string();
+            operator_evidence.canary_evidence_path.clone()
+        };
+
+        let written_path =
+            write_bolt_v3_blocked_before_submit_canary_evidence(&loaded, "phase8-test-run")
+                .expect("zero-admission writer should write blocked evidence");
+
+        assert_eq!(written_path, canary_evidence_path);
+        let evidence: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&canary_evidence_path).expect("canary evidence should be readable"),
+        )
+        .expect("canary evidence should parse");
+        assert_eq!(evidence["outcome"], "blocked_before_submit");
+        assert_eq!(
+            evidence["block_reasons"],
+            serde_json::json!(["runtime_no_admitted_order"])
+        );
+        assert_eq!(
+            evidence["submit_admission_ref"]["reason"],
+            "blocked_before_submit"
+        );
+        assert_eq!(evidence["submit_admission_ref"]["admitted_order_count"], 0);
+        assert_eq!(evidence["runtime_capture_ref"]["run_id"], "phase8-test-run");
+    }
+
+    fn write_phase8_live_node_test_file(path: &str, contents: &str) -> String {
+        write_phase8_live_node_test_bytes(path, contents.as_bytes())
+    }
+
+    fn write_phase8_live_node_test_bytes(path: &str, bytes: &[u8]) -> String {
+        std::fs::write(path, bytes).expect("test evidence file should write");
+        Phase8OperatorApprovalEnvelope::sha256_file(std::path::Path::new(path))
+            .expect("test evidence sha256 should compute")
     }
 
     #[test]
@@ -2009,8 +5060,8 @@ mod tests {
         assert!(!cfg.exec_engine.allow_overfills);
         assert!(!cfg.exec_engine.manage_own_order_books);
         assert!(!cfg.risk_engine.bypass);
-        assert_eq!(cfg.risk_engine.max_order_submit_rate, "100/00:00:01");
-        assert_eq!(cfg.risk_engine.max_order_modify_rate, "100/00:00:01");
+        assert_eq!(cfg.risk_engine.max_order_submit_rate, "40/00:01:00");
+        assert_eq!(cfg.risk_engine.max_order_modify_rate, "40/00:01:00");
         assert!(cfg.risk_engine.max_notional_per_order.is_empty());
         assert!(!cfg.risk_engine.debug);
         assert!(!cfg.risk_engine.graceful_shutdown_on_error);
@@ -2045,25 +5096,25 @@ mod tests {
             .risk
             .nautilus
             .max_notional_per_order
-            .insert("ETHUSDT.BINANCE".to_string(), "12345.00".to_string());
+            .insert("REFERENCE.SOURCE".to_string(), "12345.00".to_string());
         loaded
             .root
             .risk
             .nautilus
             .max_notional_per_order
-            .insert("BTCUSDT.BINANCE".to_string(), "25000.50".to_string());
+            .insert("SECONDARY.SOURCE".to_string(), "25000.50".to_string());
         let cfg = make_live_node_config(&loaded);
 
         assert_eq!(
             cfg.risk_engine
                 .max_notional_per_order
-                .get("ETHUSDT.BINANCE"),
+                .get("REFERENCE.SOURCE"),
             Some(&"12345.00".to_string())
         );
         assert_eq!(
             cfg.risk_engine
                 .max_notional_per_order
-                .get("BTCUSDT.BINANCE"),
+                .get("SECONDARY.SOURCE"),
             Some(&"25000.50".to_string())
         );
     }

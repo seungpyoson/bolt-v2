@@ -59,10 +59,10 @@ fn resolved_provider_secret_debug_redacts_and_zeroizes_on_drop() {
     assert_zeroize_on_drop::<ResolvedBoltV3BinanceSecrets>();
 
     let polymarket = ResolvedBoltV3PolymarketSecrets {
-        private_key: "poly-private-sentinel".to_string(),
-        api_key: "poly-api-key-sentinel".to_string(),
-        api_secret: "poly-api-secret-sentinel".to_string(),
-        passphrase: "poly-passphrase-sentinel".to_string(),
+        private_key: zeroize::Zeroizing::new("poly-private-sentinel".to_string()),
+        api_key: zeroize::Zeroizing::new("poly-api-key-sentinel".to_string()),
+        api_secret: zeroize::Zeroizing::new("poly-api-secret-sentinel".to_string()),
+        passphrase: zeroize::Zeroizing::new("poly-passphrase-sentinel".to_string()),
     };
     let polymarket_debug = format!("{polymarket:?}");
     assert!(polymarket_debug.contains(REDACTED));
@@ -79,8 +79,8 @@ fn resolved_provider_secret_debug_redacts_and_zeroizes_on_drop() {
     }
 
     let binance = ResolvedBoltV3BinanceSecrets {
-        api_key: "binance-api-key-sentinel".to_string(),
-        api_secret: "binance-api-secret-sentinel".to_string(),
+        api_key: zeroize::Zeroizing::new("binance-api-key-sentinel".to_string()),
+        api_secret: zeroize::Zeroizing::new("binance-api-secret-sentinel".to_string()),
     };
     let binance_debug = format!("{binance:?}");
     assert!(binance_debug.contains(REDACTED));

@@ -171,23 +171,40 @@ mod tests {
         }
     }
 
+    fn binance_reference_client() -> crate::bolt_v3_config::ClientBlock {
+        toml::from_str(include_str!(
+            "../tests/fixtures/bolt_v3/binance_reference_client.toml"
+        ))
+        .expect("binance provider fixture client should parse")
+    }
+
+    fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
+        let mut loaded = fixture_loaded_config();
+        loaded
+            .root
+            .clients
+            .insert("binance_reference".to_string(), binance_reference_client());
+        loaded
+    }
+
     fn fixture_polymarket_secrets() -> ResolvedBoltV3PolymarketSecrets {
         ResolvedBoltV3PolymarketSecrets {
             // 32-byte secp256k1 hex; the unit tests in this module never
             // reach NT factory.create, but downstream integration tests
             // use the same shape.
-            private_key: "0x4242424242424242424242424242424242424242424242424242424242424242"
-                .to_string(),
-            api_key: "fixture-poly-api-key".to_string(),
-            api_secret: "YWJj".to_string(),
-            passphrase: "fixture-poly-passphrase".to_string(),
+            private_key: zeroize::Zeroizing::new(
+                "0x4242424242424242424242424242424242424242424242424242424242424242".to_string(),
+            ),
+            api_key: zeroize::Zeroizing::new("fixture-poly-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new("YWJj".to_string()),
+            passphrase: zeroize::Zeroizing::new("fixture-poly-passphrase".to_string()),
         }
     }
 
     fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
         ResolvedBoltV3BinanceSecrets {
-            api_key: "fixture-binance-api-key".to_string(),
-            api_secret: "fixture-binance-api-secret".to_string(),
+            api_key: zeroize::Zeroizing::new("fixture-binance-api-key".to_string()),
+            api_secret: zeroize::Zeroizing::new("fixture-binance-api-secret".to_string()),
         }
     }
 
@@ -210,6 +227,12 @@ mod tests {
         map_bolt_v3_adapters(&loaded, &resolved).expect("adapters should map")
     }
 
+    fn fixture_adapters_with_binance_reference() -> BoltV3AdapterConfigs {
+        let loaded = fixture_loaded_config_with_binance_reference();
+        let resolved = fixture_resolved_secrets();
+        map_bolt_v3_adapters(&loaded, &resolved).expect("adapters should map")
+    }
+
     fn fresh_builder() -> LiveNodeBuilder {
         LiveNode::builder(TraderId::from("BOLT-001"), Environment::Live)
             .expect("Live builder should construct for unit-test fixture")
@@ -217,7 +240,7 @@ mod tests {
 
     #[test]
     fn fixture_clients_register_one_data_and_one_exec_for_polymarket_and_one_data_for_binance() {
-        let adapters = fixture_adapters();
+        let adapters = fixture_adapters_with_binance_reference();
 
         let (_builder, summary) = register_bolt_v3_clients(fresh_builder(), adapters)
             .expect("registration should succeed");

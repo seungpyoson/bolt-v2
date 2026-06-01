@@ -77,7 +77,7 @@ Consolidated findings (deduplicated across reviewers). `Reviewers` column = whic
 | P0-F | P0 | Kimi (1/5; verified by grep) | BLOCKING | T065 [x] behavior lock cites `validate_live_local` — verified absent from tree. | **resolved** | T065 restated SUPERSEDED in `tasks.md`; instrument-id acceptance property pointer redirected to `src/bolt_v3_validate.rs` + `tests/config_parsing.rs`. |
 | P0-G | P0 | GLM (1/5) | BLOCKING | `src/bolt_v3_market_identity.rs` deleted; no T### names it. | **resolved** | T070 added to `tasks.md` — supersedes the family-agnostic market-identity boundary via T060/T066 instrument-filter restructure. |
 | P0-H | P0 | Claude (BLOCKING), Kimi (untraced) | BLOCKING | Shared-runtime rewrites untraced: `lake_batch`, `execution_state`, `venue_contract`, `secrets`, `log_sweep`, `bolt_v3_adapters`, `nt_runtime_capture`. | **resolved** | T073 added to `tasks.md` — explicitly names files, attributes changes to T033–T066 fallout + reapplied SSM raw-value preservation, points to the SSM trim regression test as behavior lock. |
-| P0-I | P0 | Claude (1/5) | BLOCKING | New `config/root.example.toml` and `config/strategies/binary_oracle.example.toml` untraced. | **resolved** | T071 added to `tasks.md` — names the new example-config introduction with `tests/config_parsing.rs` as behavior lock. |
+| P0-I | P0 | Claude (1/5) | BLOCKING | New `config/root.toml` and `config/strategies/binary_oracle.example.toml` untraced. | **resolved** | T071 added to `tasks.md` — names the new example-config introduction with `tests/config_parsing.rs` as behavior lock. |
 | P0-J | P0 | Claude (1/5) | NON_BLOCKING | `docs/bolt-v3/2026-04-25-bolt-v3-schema.md` (+533/−35) heavier than T055. | open | Folded into the audit-report's Current-head Re-anchor narrative implicitly; not separately remediated. May address in follow-up PR. |
 | P0-K | P0 | Claude (1/5) | NON_BLOCKING | `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml` (+1937/−353) untraced. | open | Same as P0-J — not separately remediated in this commit. |
 | P0-L | P0 | Claude, Gemini, GLM (3/5) | NON_BLOCKING | DeepSeek/GLM `source_not_sent` reviews listed in PR body without caveat. | **resolved** | PR body's "After `d606a57`, GLM exact-head shards" block now explicitly notes "DeepSeek and GLM direct-API shards used approval-request output with `source_content_transmission: not_sent`; these approvals confirm the bundle text only, not the source code." |
@@ -331,7 +331,7 @@ IN-SCOPE FILES:
 - src/bolt_v3_live_node.rs
 - src/bolt_v3_adapters.rs
 - src/bounded_config_read.rs (new)
-- config/root.example.toml (new)
+- config/root.toml (new)
 - config/strategies/binary_oracle.example.toml (new)
 - contracts/polymarket.toml
 - tests/fixtures/bolt_v3/root.toml
@@ -348,7 +348,7 @@ CONTEXT: T033 moved `auto_load_debounce_milliseconds` to TOML. T062 moved `trans
 REQUIRED QUESTIONS:
 1. Any `#[serde(default)]`, `#[serde(default = "…")]`, or manual `Default` impl on a production config struct in src/bolt_v3_config.rs or src/bolt_v3_validate.rs? If yes, justify each as protocol/NT-glue or flag as a hardcode regression.
 2. Any `unwrap_or`, `unwrap_or_default`, `or_default`, `Option::get_or_insert`, or `.unwrap_or_else(|| …)` covering for a missing/empty TOML value in the production parse/validate path?
-3. Does config/root.example.toml include every required field that bolt_v3_validate.rs enforces? List any field in the validator that is missing from the example.
+3. Does config/root.toml include every required field that bolt_v3_validate.rs enforces? List any field in the validator that is missing from the example.
 4. Does tests/bolt_v3_adapter_mapping.rs assert that EACH TOML field reaches the corresponding NT config struct field (round-trip), or only a subset?
 5. src/bounded_config_read.rs — what is the byte limit? Is it from TOML or code? If code, is it strictly a resource-exhaustion guard per T059, or does it gate any trading policy?
 6. tests/config_parsing.rs — does it red-test missing-required-field for every required field (not just the happy path)?

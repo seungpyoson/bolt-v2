@@ -16,14 +16,23 @@
 //! stay in core and are called from the per-provider modules.
 
 pub mod binance;
+pub mod market_data;
 pub mod polymarket;
 
-use std::{any::Any, fmt, sync::Arc};
+use std::{any::Any, fmt, future::Future, pin::Pin, sync::Arc};
+
+const EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES: u64 = 0;
+const EXTERNAL_SNAPSHOT_RETRY_DECREMENT: u64 = 1;
 
 use crate::{
     bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3MarketClockFn},
     bolt_v3_config::{BoltV3RootConfig, ClientBlock, LoadedBoltV3Config},
     bolt_v3_market_families::MarketIdentityPlan,
+    bolt_v3_operator_artifacts::{
+        BoltV3OperatorArtifactError, CanaryProofArtifactsCollectionRequest,
+        CanaryProofArtifactsWritten, EntryDecisionSourceCollectionRequest,
+        EntryDecisionSourceInputsWritten,
+    },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     strategies::registry::FeeProvider,
 };
@@ -31,9 +40,11 @@ use crate::{
 pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
     fn provider_key(&self) -> &'static str;
     fn as_any(&self) -> &dyn Any;
-    fn redaction_values(&self) -> Vec<&str> {
-        Vec::new()
-    }
+    /// Required (no default): each provider's resolved-secrets type MUST declare the
+    /// secret strings the post-run residue scan redacts. Removing the default makes a
+    /// missing override a COMPILE error, so a new provider can't silently contribute
+    /// zero redaction values (F10).
+    fn redaction_values(&self) -> Vec<&str>;
 }
 
 pub type ResolvedClientSecrets = Arc<dyn ProviderResolvedSecrets>;
@@ -64,6 +75,64 @@ pub struct ProviderSsmPathReference {
     pub ssm_path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateProviderEvidenceBinding {
+    pub provider_id: String,
+    pub provider_kind: String,
+    pub capabilities: Vec<String>,
+    pub max_age_ms: u64,
+    pub max_clock_skew_ms: u64,
+}
+
+pub fn gate_provider_evidence_binding(
+    loaded: &LoadedBoltV3Config,
+    provider_id: &str,
+) -> Result<GateProviderEvidenceBinding, BoltV3OperatorArtifactError> {
+    let provider = loaded
+        .root
+        .gate_providers
+        .as_ref()
+        .and_then(|providers| providers.get(provider_id))
+        .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "provider_id",
+        })?;
+    let provider_kind = provider.provider_kind.as_deref().ok_or(
+        BoltV3OperatorArtifactError::GateEvidenceInvalid {
+            field: "provider_kind",
+        },
+    )?;
+    let capabilities =
+        provider
+            .capabilities
+            .as_ref()
+            .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+                field: "capabilities",
+            })?;
+    let freshness = provider
+        .freshness
+        .as_ref()
+        .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid { field: "freshness" })?;
+    let max_age_ms =
+        freshness
+            .max_age_ms
+            .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+                field: "freshness.max_age_ms",
+            })?;
+    let max_clock_skew_ms =
+        freshness
+            .max_clock_skew_ms
+            .ok_or(BoltV3OperatorArtifactError::GateEvidenceInvalid {
+                field: "freshness.max_clock_skew_ms",
+            })?;
+    Ok(GateProviderEvidenceBinding {
+        provider_id: provider_id.to_string(),
+        provider_kind: provider_kind.to_string(),
+        capabilities: capabilities.clone(),
+        max_age_ms,
+        max_clock_skew_ms,
+    })
+}
+
 pub struct ProviderAdapterMapContext<'a> {
     pub root: &'a BoltV3RootConfig,
     pub client_key: &'a str,
@@ -78,6 +147,251 @@ type FeeProviderBuilder = fn(
     &ClientBlock,
     &ResolvedBoltV3Secrets,
 ) -> Result<Arc<dyn FeeProvider>, BoltV3AdapterMappingError>;
+
+pub struct EntryDecisionSourceProviderContext<'a> {
+    pub loaded: &'a LoadedBoltV3Config,
+    pub strategy_instance_id: &'a str,
+    pub request: EntryDecisionSourceCollectionRequest<'a>,
+}
+
+pub struct CanaryProofArtifactsProviderContext<'a> {
+    pub loaded: &'a LoadedBoltV3Config,
+    pub strategy_instance_id: &'a str,
+    pub request: CanaryProofArtifactsCollectionRequest<'a>,
+}
+
+pub type EntryDecisionSourceInputCollector = for<'a> fn(
+    EntryDecisionSourceProviderContext<'a>,
+) -> Pin<
+    Box<
+        dyn Future<Output = Result<EntryDecisionSourceInputsWritten, BoltV3OperatorArtifactError>>
+            + 'a,
+    >,
+>;
+
+pub type CanaryProofArtifactsCollector = for<'a> fn(
+    CanaryProofArtifactsProviderContext<'a>,
+) -> Pin<
+    Box<dyn Future<Output = Result<CanaryProofArtifactsWritten, BoltV3OperatorArtifactError>> + 'a>,
+>;
+
+// PROVIDER-SPECIFIC (Polymarket CLOB v2) — DEFER (P3-F3). Every `ClobV2*` type and
+// `*_clob_v2_*` fn below materializes Polymarket CLOB v2 signing / fee / collateral
+// evidence from NT `nautilus_polymarket` sources — they are NOT venue-agnostic despite
+// the neutral `ClobV2` prefix. The provider-leak fence intent is preserved here by this
+// explicit ownership note; a full rename to `PolymarketClobV2*` is deferred to a
+// dedicated PR because it touches ~7 files (src/main.rs, src/bolt_v3_operator_artifacts.rs
+// at ~85 refs, and the polymarket/* submodules) — out of scope for this readiness slice.
+// Recorded in specs/024-production-trade-readiness/external-review/P3-adjudication.md (F3).
+#[derive(Clone, Copy)]
+pub struct ClobV2AdapterSigningSourceMaterializationRequest<'a> {
+    pub schema_version: u32,
+    pub domain_requirements_record_kind: &'static str,
+    pub signed_order_fixture_record_kind: &'static str,
+    pub signature_verification_record_kind: &'static str,
+    pub clob_signing_version: &'a str,
+    pub clob_signing_source_sha256: &'a str,
+    pub clob_signing_source: &'a str,
+}
+
+pub struct ClobV2AdapterSigningSourceMaterialization {
+    pub domain_requirements_sha256: String,
+    pub signed_order_fixture_sha256: String,
+    pub signature_verification_sha256: String,
+    pub signer_recovered_matches_expected: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct ClobV2FeeBehaviorSourceMaterializationRequest<'a> {
+    pub schema_version: u32,
+    pub nt_execution_parse_source: &'a str,
+    pub nt_http_parse_source: &'a str,
+}
+
+pub struct ClobV2FeeBehaviorSourceMaterialization {
+    pub maker_zero_fee_verified: bool,
+    pub taker_fee_schedule_verified: bool,
+    pub market_buy_fee_adjustment_verified: bool,
+    pub price: String,
+    pub fee_rate: String,
+    pub fee_behavior_source_sha256: String,
+    pub fee_assumptions_sha256: String,
+}
+
+#[derive(Clone, Copy)]
+pub struct ClobV2CollateralAccountingSourceMaterializationRequest<'a> {
+    pub schema_version: u32,
+    pub balance_allowance_record_kind: &'static str,
+    pub on_chain_balance_allowance_record_kind: &'static str,
+    pub loaded: &'a LoadedBoltV3Config,
+    pub strategy_instance_id: &'a str,
+    pub resolved: Option<&'a ResolvedBoltV3Secrets>,
+}
+
+pub struct ClobV2CollateralAccountingSourceMaterialization {
+    pub p_usd_balance: String,
+    pub p_usd_allowance: String,
+    pub collateral_accounting_source_sha256: String,
+    pub(crate) confirmation_policy: ExternalSnapshotConfirmationPolicy,
+}
+
+pub struct ClobV2BalanceAllowanceCacheSyncRequest<'a> {
+    pub loaded: &'a LoadedBoltV3Config,
+    pub strategy_instance_id: &'a str,
+    pub resolved: &'a ResolvedBoltV3Secrets,
+}
+
+pub struct ClobV2BalanceAllowanceCacheSync {
+    pub execution_client_id: String,
+    pub request_path: &'static str,
+    pub base_url_http_sha256: String,
+}
+
+pub struct VenueAccountStateSourceMaterializationRequest<'a> {
+    pub schema_version: u32,
+    pub account_state_snapshot_record_kind: &'static str,
+    pub loaded: &'a LoadedBoltV3Config,
+    pub strategy_instance_id: &'a str,
+    pub configured_target_id: &'a str,
+    pub resolved: &'a ResolvedBoltV3Secrets,
+}
+
+pub struct VenueAccountStateSourceMaterialization {
+    pub open_order_count: u64,
+    pub open_position_count: u64,
+    pub account_state_snapshot_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExternalSnapshotConfirmationPolicy {
+    pub max_retries: u64,
+    pub retry_delay_initial_ms: u64,
+    pub retry_delay_max_ms: u64,
+}
+
+impl ExternalSnapshotConfirmationPolicy {
+    pub(crate) fn from_retry_fields(
+        max_retries: u64,
+        retry_delay_initial_ms: u64,
+        retry_delay_max_ms: u64,
+    ) -> Self {
+        Self {
+            max_retries,
+            retry_delay_initial_ms,
+            retry_delay_max_ms,
+        }
+    }
+
+    fn retry_delay_ms(self) -> u64 {
+        self.retry_delay_initial_ms.min(self.retry_delay_max_ms)
+    }
+
+    /// Number of consecutive non-blocking confirmation reads the hard-stop
+    /// loop must observe before it may declare a previously-blocking snapshot
+    /// cleared. Sourced from the configured retry budget (`max_retries`) so the
+    /// confirmation count is config-driven, floored at a single confirmation
+    /// (`EXTERNAL_SNAPSHOT_RETRY_DECREMENT`, the one-read step) so that even a
+    /// zero-retry budget never lets the helper clear an observed exposure
+    /// without at least one corroborating read.
+    fn required_clear_confirmations(self) -> u64 {
+        self.max_retries.max(EXTERNAL_SNAPSHOT_RETRY_DECREMENT)
+    }
+}
+
+pub(crate) async fn fetch_external_snapshot_with_retries<T, E, Fetch, Fut>(
+    policy: ExternalSnapshotConfirmationPolicy,
+    mut fetch: Fetch,
+) -> Result<T, E>
+where
+    Fetch: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let mut result = fetch().await;
+    let mut remaining_retries = policy.max_retries;
+    while result.is_err() && remaining_retries != EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES {
+        sleep_external_snapshot_confirmation_delay(policy).await;
+        result = fetch().await;
+        remaining_retries -= EXTERNAL_SNAPSHOT_RETRY_DECREMENT;
+    }
+    result
+}
+
+/// Confirm whether an account-state snapshot may be treated as cleared (flat)
+/// before a safety hard-stop trusts it. This is the single source of truth used
+/// by every pre-run hard-stop call site (open orders, positions, collateral).
+///
+/// The loop is MONOTONIC and FAIL-CLOSED: once `is_blocking` has been observed
+/// true for any read, a later empty/non-blocking read does NOT clear it. The
+/// cleared state is declared only when the configured number of consecutive
+/// non-blocking confirmations (`required_clear_confirmations`) is observed with
+/// no blocking read and no fetch error interrupting the run. Any fetch `Err`
+/// inside the confirmation window retains the conservative (blocking) snapshot
+/// rather than returning the latest read, so a transient empty venue response
+/// can never defeat the hard-stop.
+///
+/// If the initial snapshot is already non-blocking the cleared state is declared
+/// immediately — there is no observed exposure to confirm away.
+pub(crate) async fn confirm_external_snapshot_before_hard_stop<T, E, Fetch, Fut, IsBlocking>(
+    snapshot: T,
+    policy: ExternalSnapshotConfirmationPolicy,
+    mut fetch: Fetch,
+    is_blocking: IsBlocking,
+) -> T
+where
+    Fetch: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    IsBlocking: Fn(&T) -> bool,
+{
+    if !is_blocking(&snapshot) {
+        return snapshot;
+    }
+    // Exposure observed: retain this conservative snapshot and only release it
+    // after a run of consecutive non-blocking confirmations long enough to
+    // satisfy the configured count. A blocking read or a fetch error resets the
+    // run, so the cleared state is declared only when no exposure is observed
+    // throughout the confirming window.
+    let blocking_snapshot = snapshot;
+    let required_clear_confirmations = policy.required_clear_confirmations();
+    // Countdown of consecutive non-blocking reads still required to declare the
+    // snapshot cleared. It is reset back to the full requirement on any blocking
+    // read or fetch error, and decremented by one per consecutive clear read;
+    // reaching `EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES` (zero) means the full run
+    // was observed without interruption. Tracking the requirement as a countdown
+    // keeps every counter value sourced from named loop-control constants.
+    let mut remaining_required_clears = required_clear_confirmations;
+    let mut remaining_retries = policy.max_retries;
+    while remaining_retries != EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES {
+        sleep_external_snapshot_confirmation_delay(policy).await;
+        match fetch().await {
+            Ok(confirmed_snapshot) if !is_blocking(&confirmed_snapshot) => {
+                remaining_required_clears -= EXTERNAL_SNAPSHOT_RETRY_DECREMENT;
+                if remaining_required_clears == EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES {
+                    // A long-enough run of consecutive non-blocking reads with
+                    // no interruption: the exposure is genuinely cleared.
+                    return confirmed_snapshot;
+                }
+            }
+            // A still-blocking read shows the exposure persists, and a failed
+            // read tells us nothing about clearance. Either way, any non-blocking
+            // reads observed so far were transient: reset the requirement and keep
+            // the conservative blocking snapshot.
+            _ => {
+                remaining_required_clears = required_clear_confirmations;
+            }
+        }
+        remaining_retries -= EXTERNAL_SNAPSHOT_RETRY_DECREMENT;
+    }
+    // The confirmation window closed without a long-enough run of consecutive
+    // non-blocking reads: fail closed by retaining the blocking snapshot.
+    blocking_snapshot
+}
+
+async fn sleep_external_snapshot_confirmation_delay(policy: ExternalSnapshotConfirmationPolicy) {
+    let retry_delay_ms = policy.retry_delay_ms();
+    if retry_delay_ms != 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(retry_delay_ms)).await;
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderCredentialedBlock {
@@ -128,6 +442,8 @@ pub struct ProviderBinding {
     )
         -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError>,
     pub build_fee_provider: Option<FeeProviderBuilder>,
+    pub collect_entry_decision_source_inputs: Option<EntryDecisionSourceInputCollector>,
+    pub collect_canary_proof_artifacts: Option<CanaryProofArtifactsCollector>,
 }
 
 const PROVIDER_BINDINGS: &[ProviderBinding] = &[
@@ -143,6 +459,10 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         configured_secret_paths: polymarket::configured_secret_paths,
         map_adapters: polymarket::map_adapters,
         build_fee_provider: Some(polymarket::build_fee_provider),
+        collect_entry_decision_source_inputs: Some(
+            polymarket::collect_entry_decision_source_inputs,
+        ),
+        collect_canary_proof_artifacts: Some(polymarket::collect_canary_proof_artifacts),
     },
     ProviderBinding {
         key: binance::KEY,
@@ -156,6 +476,98 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         configured_secret_paths: binance::configured_secret_paths,
         map_adapters: binance::map_adapters,
         build_fee_provider: None,
+        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
+    },
+    ProviderBinding {
+        key: market_data::BITMEX_KEY,
+        validate_client: market_data::validate_bitmex_client,
+        supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
+        secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
+        credential_log_modules: market_data::BITMEX_CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: market_data::BITMEX_FORBIDDEN_ENV_VARS,
+        resolve_secrets: market_data::resolve_unsupported_secrets,
+        configured_secret_paths: market_data::configured_secret_paths,
+        map_adapters: market_data::map_bitmex_adapters,
+        build_fee_provider: None,
+        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
+    },
+    ProviderBinding {
+        key: market_data::BYBIT_KEY,
+        validate_client: market_data::validate_bybit_client,
+        supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
+        secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
+        credential_log_modules: market_data::BYBIT_CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: market_data::BYBIT_FORBIDDEN_ENV_VARS,
+        resolve_secrets: market_data::resolve_unsupported_secrets,
+        configured_secret_paths: market_data::configured_secret_paths,
+        map_adapters: market_data::map_bybit_adapters,
+        build_fee_provider: None,
+        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
+    },
+    ProviderBinding {
+        key: market_data::COINBASE_KEY,
+        validate_client: market_data::validate_coinbase_client,
+        supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
+        secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
+        credential_log_modules: market_data::COINBASE_CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: market_data::COINBASE_FORBIDDEN_ENV_VARS,
+        resolve_secrets: market_data::resolve_unsupported_secrets,
+        configured_secret_paths: market_data::configured_secret_paths,
+        map_adapters: market_data::map_coinbase_adapters,
+        build_fee_provider: None,
+        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
+    },
+    ProviderBinding {
+        key: market_data::DERIBIT_KEY,
+        validate_client: market_data::validate_deribit_client,
+        supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
+        secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
+        credential_log_modules: market_data::DERIBIT_CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: market_data::DERIBIT_FORBIDDEN_ENV_VARS,
+        resolve_secrets: market_data::resolve_unsupported_secrets,
+        configured_secret_paths: market_data::configured_secret_paths,
+        map_adapters: market_data::map_deribit_adapters,
+        build_fee_provider: None,
+        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
+    },
+    ProviderBinding {
+        key: market_data::OKX_KEY,
+        validate_client: market_data::validate_okx_client,
+        supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
+        secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
+        credential_log_modules: market_data::OKX_CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: market_data::OKX_FORBIDDEN_ENV_VARS,
+        resolve_secrets: market_data::resolve_unsupported_secrets,
+        configured_secret_paths: market_data::configured_secret_paths,
+        map_adapters: market_data::map_okx_adapters,
+        build_fee_provider: None,
+        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
+    },
+    ProviderBinding {
+        key: market_data::KRAKEN_KEY,
+        validate_client: market_data::validate_kraken_client,
+        supported_market_families: market_data::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: market_data::NO_REQUIRED_SECRET_BLOCKS,
+        secret_field_names: market_data::NO_SECRET_FIELD_NAMES,
+        credential_log_modules: market_data::KRAKEN_CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: market_data::KRAKEN_FORBIDDEN_ENV_VARS,
+        resolve_secrets: market_data::resolve_unsupported_secrets,
+        configured_secret_paths: market_data::configured_secret_paths,
+        map_adapters: market_data::map_kraken_adapters,
+        build_fee_provider: None,
+        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
     },
 ];
 
@@ -167,6 +579,76 @@ pub fn binding_for_provider_key(key: &str) -> Option<&'static ProviderBinding> {
     provider_bindings()
         .iter()
         .find(|binding| binding.key == key)
+}
+
+/// A configured trading venue's modeled REST-egress capabilities. The per-minute
+/// request `cap_per_minute` and the per-order-command request fanout
+/// `max_rest_requests_per_order_command` share the venue's lifecycle, so they are
+/// looked up together (group-by-change). The fanout derates the command-rate
+/// ceiling: an NT order command can issue more than one REST request, so a submit
+/// rate at the raw cap would over-drive the venue's request quota.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VenueEgressModel {
+    pub cap_per_minute: u32,
+    pub max_rest_requests_per_order_command: u32,
+}
+
+/// REST-egress model for a configured trading venue, looked up by NT venue key
+/// from the owning provider module so core validation stays provider-agnostic.
+/// Returns `None` for venues whose egress bolt-v3 does not model; the complete
+/// multi-venue total-REST-budget contract (retries + cancels + status + probes,
+/// across per-client buckets) is tracked in #501.
+pub fn venue_egress_model(venue: &str) -> Option<VenueEgressModel> {
+    match venue {
+        polymarket::KEY => Some(VenueEgressModel {
+            cap_per_minute: polymarket::REST_EGRESS_CAP_PER_MINUTE,
+            max_rest_requests_per_order_command: polymarket::MAX_REST_REQUESTS_PER_ORDER_COMMAND,
+        }),
+        _ => None,
+    }
+}
+
+pub fn materialize_clob_v2_adapter_signing_source_from_nt_signing_source(
+    request: ClobV2AdapterSigningSourceMaterializationRequest<'_>,
+) -> Result<ClobV2AdapterSigningSourceMaterialization, BoltV3OperatorArtifactError> {
+    polymarket::materialize_clob_v2_adapter_signing_source_from_nt_signing_source(request)
+}
+
+pub fn materialize_clob_v2_fee_behavior_source_from_nt_fee_sources(
+    request: ClobV2FeeBehaviorSourceMaterializationRequest<'_>,
+) -> Result<ClobV2FeeBehaviorSourceMaterialization, BoltV3OperatorArtifactError> {
+    polymarket::materialize_clob_v2_fee_behavior_source_from_nt_fee_sources(request)
+}
+
+pub async fn materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
+    request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
+) -> Result<ClobV2CollateralAccountingSourceMaterialization, BoltV3OperatorArtifactError> {
+    polymarket::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance(
+        request,
+    )
+    .await
+}
+
+pub(crate) async fn materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once(
+    request: ClobV2CollateralAccountingSourceMaterializationRequest<'_>,
+) -> Result<ClobV2CollateralAccountingSourceMaterialization, BoltV3OperatorArtifactError> {
+    polymarket::materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once(
+        request,
+    )
+    .await
+}
+
+pub async fn sync_clob_v2_balance_allowance_cache_from_configured_account(
+    request: ClobV2BalanceAllowanceCacheSyncRequest<'_>,
+) -> Result<ClobV2BalanceAllowanceCacheSync, BoltV3OperatorArtifactError> {
+    polymarket::sync_clob_v2_balance_allowance_cache_from_configured_account(request).await
+}
+
+pub async fn materialize_venue_account_state_source_from_configured_account_queries(
+    request: VenueAccountStateSourceMaterializationRequest<'_>,
+) -> Result<VenueAccountStateSourceMaterialization, BoltV3OperatorArtifactError> {
+    polymarket::materialize_venue_account_state_source_from_configured_account_queries(request)
+        .await
 }
 
 /// Provider-owned NT adapter modules whose info logs can expose
@@ -343,6 +825,12 @@ mod tests {
                 .expect("fixture root should parse"),
             strategies: Vec::new(),
         }
+    }
+
+    fn binance_reference_client() -> ClientBlock {
+        client_from_toml(include_str!(
+            "../../tests/fixtures/bolt_v3/binance_reference_client.toml"
+        ))
     }
 
     fn fake_secret_value(path: &str) -> String {
@@ -542,7 +1030,11 @@ mod tests {
 
     #[test]
     fn fee_provider_resolution_rejects_provider_without_fee_binding() {
-        let loaded = fixture_loaded_config();
+        let mut loaded = fixture_loaded_config();
+        loaded
+            .root
+            .clients
+            .insert("binance_reference".to_string(), binance_reference_client());
         let resolved = ResolvedBoltV3Secrets {
             clients: BTreeMap::new(),
         };
@@ -666,10 +1158,10 @@ mod tests {
         clients.insert(
             "polymarket_main".to_string(),
             Arc::new(polymarket::ResolvedBoltV3PolymarketSecrets {
-                private_key: sentinel.to_string(),
-                api_key: "poly-api-key".to_string(),
-                api_secret: "YWJj".to_string(),
-                passphrase: "poly-passphrase".to_string(),
+                private_key: zeroize::Zeroizing::new(sentinel.to_string()),
+                api_key: zeroize::Zeroizing::new("poly-api-key".to_string()),
+                api_secret: zeroize::Zeroizing::new("YWJj".to_string()),
+                passphrase: zeroize::Zeroizing::new("poly-passphrase".to_string()),
             }) as ResolvedBoltV3ClientSecrets,
         );
         let resolved = ResolvedBoltV3Secrets { clients };
@@ -687,5 +1179,284 @@ mod tests {
         ));
         assert!(!display.contains(sentinel), "{display}");
         assert!(!debug.contains(sentinel), "{debug}");
+    }
+
+    mod confirm_external_snapshot_before_hard_stop {
+        use super::*;
+        use std::{cell::RefCell, collections::VecDeque};
+
+        /// A "blocking" snapshot models an account that still has exposure
+        /// (non-empty open orders / active positions); the cleared/flat state is
+        /// the empty snapshot. This mirrors the production `is_blocking`
+        /// predicates at the open-orders and positions call sites.
+        type Snapshot = Vec<u32>;
+
+        const BLOCKING_SNAPSHOT: &[u32] = &[1];
+        const CLEARED_SNAPSHOT: &[u32] = &[];
+
+        fn is_blocking(snapshot: &Snapshot) -> bool {
+            !snapshot.is_empty()
+        }
+
+        /// Confirmation policy with zero retry delays so the helper's sleep
+        /// short-circuits and the test runs without touching the wall clock.
+        /// `max_retries` drives both the read budget and (via
+        /// `required_clear_confirmations`) the consecutive-clear count, exactly
+        /// as the production config does — nothing about the count is hardcoded
+        /// in the test.
+        fn policy_with_max_retries(max_retries: u64) -> ExternalSnapshotConfirmationPolicy {
+            ExternalSnapshotConfirmationPolicy::from_retry_fields(max_retries, 0, 0)
+        }
+
+        /// Drives the confirmation fetch from a fixed sequence of outcomes. A
+        /// fetch beyond the scripted sequence panics, so each test asserts the
+        /// helper consumes exactly the reads it should.
+        struct ScriptedFetch {
+            outcomes: RefCell<VecDeque<Result<Snapshot, ()>>>,
+        }
+
+        impl ScriptedFetch {
+            fn new(outcomes: Vec<Result<Snapshot, ()>>) -> Self {
+                Self {
+                    outcomes: RefCell::new(outcomes.into_iter().collect()),
+                }
+            }
+
+            async fn next(&self) -> Result<Snapshot, ()> {
+                self.outcomes
+                    .borrow_mut()
+                    .pop_front()
+                    .expect("confirmation loop fetched more times than the test scripted")
+            }
+
+            fn remaining(&self) -> usize {
+                self.outcomes.borrow().len()
+            }
+        }
+
+        #[tokio::test]
+        async fn blocking_initial_snapshot_with_zero_retries_stays_blocking() {
+            // No retry budget: the observed exposure can never be confirmed away.
+            let scripted = ScriptedFetch::new(vec![]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(0),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                is_blocking(&result),
+                "exposure must not clear with no retry budget"
+            );
+            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
+            assert_eq!(
+                scripted.remaining(),
+                0,
+                "no confirmation reads should occur"
+            );
+        }
+
+        #[tokio::test]
+        async fn isolated_empty_reads_between_blocking_reads_never_clear() {
+            // The core blocker scenario, generalized: scattered transient empty
+            // venue responses inside the confirmation window must NOT clear an
+            // already-observed exposure. Across a three-read budget the clears
+            // never form a consecutive run long enough to satisfy the required
+            // count, so each isolated empty read is discarded and the hard-stop
+            // is retained. A naive "return the last fetch" helper would have
+            // surfaced the trailing empty read as a false flat.
+            let scripted = ScriptedFetch::new(vec![
+                Ok(CLEARED_SNAPSHOT.to_vec()),
+                Ok(BLOCKING_SNAPSHOT.to_vec()),
+                Ok(CLEARED_SNAPSHOT.to_vec()),
+            ]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(3),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                is_blocking(&result),
+                "isolated transient empty reads must not defeat the hard-stop"
+            );
+            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
+            assert_eq!(
+                scripted.remaining(),
+                0,
+                "the helper must consume the full budget without short-circuiting to clear"
+            );
+        }
+
+        #[tokio::test]
+        async fn blocking_then_empty_then_blocking_resets_and_stays_blocking() {
+            // An empty read followed by a still-blocking read proves the clear
+            // was transient: the consecutive-clear run resets and the budget is
+            // exhausted, so the conservative blocking snapshot is retained.
+            let scripted = ScriptedFetch::new(vec![
+                Ok(CLEARED_SNAPSHOT.to_vec()),
+                Ok(BLOCKING_SNAPSHOT.to_vec()),
+            ]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(2),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                is_blocking(&result),
+                "exposure observed mid-window must keep the hard-stop blocking"
+            );
+            assert_eq!(
+                scripted.remaining(),
+                0,
+                "both scripted reads should be consumed"
+            );
+        }
+
+        #[tokio::test]
+        async fn fetch_error_mid_window_retains_blocking_snapshot() {
+            // A fetch Err inside the confirmation window tells us nothing about
+            // clearance: the helper must retain the conservative blocking
+            // snapshot rather than return the latest read.
+            let scripted = ScriptedFetch::new(vec![Ok(CLEARED_SNAPSHOT.to_vec()), Err(())]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(2),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                is_blocking(&result),
+                "a fetch error must not clear an observed exposure"
+            );
+            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
+            assert_eq!(scripted.remaining(), 0, "the error read should be consumed");
+        }
+
+        #[tokio::test]
+        async fn fetch_error_immediately_retains_blocking_snapshot() {
+            // The very first confirmation read failing must keep blocking, never
+            // surface a non-snapshot/empty result.
+            let scripted = ScriptedFetch::new(vec![Err(()), Err(())]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(2),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                is_blocking(&result),
+                "repeated fetch errors must stay blocking"
+            );
+            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
+        }
+
+        #[tokio::test]
+        async fn blocking_then_consecutive_empty_confirmations_clears() {
+            // The whole confirmation window observes no exposure: every read is
+            // empty, satisfying the configured consecutive-clear count, so the
+            // cleared (flat) snapshot is genuinely declared.
+            let scripted = ScriptedFetch::new(vec![
+                Ok(CLEARED_SNAPSHOT.to_vec()),
+                Ok(CLEARED_SNAPSHOT.to_vec()),
+            ]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(2),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                !is_blocking(&result),
+                "consecutive empty confirmations throughout must clear the snapshot"
+            );
+            assert_eq!(result, CLEARED_SNAPSHOT.to_vec());
+            assert_eq!(
+                scripted.remaining(),
+                0,
+                "exactly two confirmations consumed"
+            );
+        }
+
+        #[tokio::test]
+        async fn genuinely_flat_initial_snapshot_clears_without_reads() {
+            // No exposure observed at all: the cleared state is declared
+            // immediately and no confirmation read is performed.
+            let scripted = ScriptedFetch::new(vec![]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                CLEARED_SNAPSHOT.to_vec(),
+                policy_with_max_retries(3),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                !is_blocking(&result),
+                "an initially-flat snapshot stays flat"
+            );
+            assert_eq!(result, CLEARED_SNAPSHOT.to_vec());
+            assert_eq!(
+                scripted.remaining(),
+                0,
+                "no confirmation reads for a flat snapshot"
+            );
+        }
+
+        #[tokio::test]
+        async fn single_retry_requires_one_clear_confirmation_to_clear() {
+            // max_retries = 1 floors required_clear_confirmations at 1, so a
+            // single empty confirmation read is enough to clear — but only
+            // because the entire window observed no exposure.
+            let scripted = ScriptedFetch::new(vec![Ok(CLEARED_SNAPSHOT.to_vec())]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(1),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                !is_blocking(&result),
+                "one clear read satisfies a one-retry budget"
+            );
+            assert_eq!(result, CLEARED_SNAPSHOT.to_vec());
+            assert_eq!(scripted.remaining(), 0);
+        }
+
+        #[tokio::test]
+        async fn single_retry_blocking_confirmation_stays_blocking() {
+            // max_retries = 1: a still-blocking confirmation read exhausts the
+            // budget without a clear, so the hard-stop is retained.
+            let scripted = ScriptedFetch::new(vec![Ok(BLOCKING_SNAPSHOT.to_vec())]);
+            let result = confirm_external_snapshot_before_hard_stop(
+                BLOCKING_SNAPSHOT.to_vec(),
+                policy_with_max_retries(1),
+                || scripted.next(),
+                is_blocking,
+            )
+            .await;
+
+            assert!(
+                is_blocking(&result),
+                "a persistent exposure must stay blocking"
+            );
+            assert_eq!(result, BLOCKING_SNAPSHOT.to_vec());
+            assert_eq!(scripted.remaining(), 0);
+        }
     }
 }

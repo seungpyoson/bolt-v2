@@ -42,6 +42,7 @@ The root file owns:
 - persistence paths
 - keyed client definitions
 - client secret references
+- keyed gate-provider definitions
 - explicit strategy file list
 
 The root file does not own:
@@ -83,7 +84,7 @@ schema_version = 1
 trader_id = "BOLT-001"
 
 strategy_files = [
-  "strategies/bitcoin_updown_main.toml",
+  "strategies/configured_updown_main.toml",
 ]
 
 [runtime]
@@ -162,8 +163,8 @@ default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
 bypass = false
-max_order_submit_rate = "100/00:00:01"
-max_order_modify_rate = "100/00:00:01"
+max_order_submit_rate = "40/00:01:00"
+max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
 graceful_shutdown_on_error = false
@@ -497,7 +498,7 @@ This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTra
 
 #### `default_max_notional_per_order`
 
-- type: decimal string
+- type: positive decimal string
 - required: yes
 - root-level entity per-order notional cap
 - enforced by bolt-v3 strategy validation: each strategy file's `parameters.order_notional_target` must be `<=` this value
@@ -747,6 +748,46 @@ This section is optional for parse/build-only checks and required before `run_bo
 - must be less than or equal to `risk.default_max_notional_per_order`
 - the run gate does not submit orders; submit-admission code must consume this bound before any live submit
 
+#### Egress-identity fields
+
+These three optional fields bind the approved network egress identity into the live canary gate. They are absent unless the operator pins an egress identity for the run.
+
+- `egress_identity_observed_path`
+  - type: optional path string
+  - path to the observed egress-identity proof the gate reads
+- `egress_identity_observed_max_bytes`
+  - type: optional positive integer
+  - maximum size of the observed egress-identity proof read by the fail-closed gate
+- `approved_egress_identity_sha256`
+  - type: optional sha256 string
+  - approved egress-identity hash the gate compares against the observed proof
+
+### `[live_canary.proof_policy]`
+
+This subtable is optional. When present and `enabled = true`, it configures the least-bad-strategy-candidate proof executor that fires the single tiny-capital canary order; when absent, no proof order is constructed by this path. Config-load validation only enforces the rules below when `enabled = true`.
+
+| Field | Type / Rule | Required |
+|---|---|---|
+| `enabled` | boolean; gates whether the proof policy is active | yes when `[proof_policy]` is present |
+| `policy_kind` | string; must be `least_bad_strategy_candidate` when enabled | yes when `[proof_policy]` is present |
+| `proof_claim` | string; must be `proof_only` when enabled | yes when `[proof_policy]` is present |
+| `executor_strategy_id` | non-blank string; valid NautilusTrader `StrategyId` when enabled | yes when `[proof_policy]` is present |
+| `strategy_instance_id` | non-blank string when enabled | yes when `[proof_policy]` is present |
+| `execution_client_id` | non-blank string when enabled | yes when `[proof_policy]` is present |
+| `book_type` | string enum: `l1_mbp`, `l2_mbp`, or `l3_mbo` | yes when `[proof_policy]` is present |
+| `book_snapshot_interval_millis` | positive integer when enabled | yes when `[proof_policy]` is present |
+| `time_in_force` | string enum: `fok`, `gtc`, or `ioc` | yes when `[proof_policy]` is present |
+| `is_post_only` | boolean | yes when `[proof_policy]` is present |
+| `is_reduce_only` | boolean | yes when `[proof_policy]` is present |
+| `is_quote_quantity` | boolean | yes when `[proof_policy]` is present |
+| `notional_mode` | string; must be `fixed` when enabled | yes when `[proof_policy]` is present |
+| `proof_notional` | positive decimal string; must be `<=` `live_canary.max_notional_per_order` | yes when `[proof_policy]` is present |
+| `candidate_score_source` | string; must be `proof_source` when enabled | yes when `[proof_policy]` is present |
+| `allow_negative_expected_ev` | boolean | yes when `[proof_policy]` is present |
+| `rotation_observation_enabled` | boolean | yes when `[proof_policy]` is present |
+| `rotation_min_distinct_markets` | positive integer when enabled; must be `<=` `rotation_max_attempts` | yes when `[proof_policy]` is present |
+| `rotation_max_attempts` | positive integer when enabled | yes when `[proof_policy]` is present |
+
 ### Phase 8 operator-harness evidence envelope
 
 The `[live_canary]` TOML block is necessary but not sufficient for the one tiny-capital canary operator harness. Before live runner entry, the ignored Phase 8 harness also requires an operator-supplied evidence envelope through these environment fields. Values are evidence paths, sha256s, timestamps, or hashed identifiers; do not put secret values in these fields.
@@ -763,7 +804,9 @@ Required control fields:
 - `max_operator_evidence_file_bytes`: positive integer cap applied to every operator evidence file read by the gate: `approval_envelope_path`, sha256-bound pre-run artifacts, and `approval_consumption_path`
 - `approval_consumption_max_age_seconds`: positive integer maximum age between `consumed_unix_secs` and gate evaluation time
 
-The static operator-artifact manifest is an input to packet assembly, not the final provenance authority. `assemble_operator_packet_from_static_manifest` refuses a manifest with non-empty `blockers`, a `config_bundle_checksum` that differs from the currently loaded TOML bundle, missing required artifact refs, configured path/hash drift, or artifact-file SHA drift. When those checks pass, the assembler writes `approval-envelope.json` using the same non-circular schema parsed by the live canary gate and writes an `operator-evidence-packet.json` containing the `[live_canary.operator_evidence]` path/SHA fields to copy into TOML. The approval-envelope JSON includes `schema_version = 1`, `record_kind = "phase8_operator_approval_envelope"`, `head_sha`, `ssm_manifest_sha256`, `strategy_input_evidence_sha256`, `financial_envelope_sha256`, `pre_run_state_sha256`, `abort_plan_sha256`, `approval_id_hash`, `approval_nonce_sha256`, `approval_not_before_unix_secs`, `approval_not_after_unix_secs`, `canary_evidence_path_hash`, and optional `strategy_cancel_path_hash`. It must not contain `root_toml_sha256`, `approval_envelope_sha256`, `config_bundle_checksum`, raw approval id, raw nonce material, raw SSM paths, or secret values.
+The static operator-artifact manifest is an input to packet assembly, not the final provenance authority. `assemble_operator_packet_from_static_manifest` refuses a manifest with non-empty `blockers`, a `config_bundle_checksum` that differs from the currently loaded TOML bundle, missing required artifact refs, configured path/hash drift, or artifact-file SHA drift. When those checks pass, the assembler writes `approval-envelope.json` using the same non-circular schema parsed by the live canary gate and writes an `operator-evidence-packet.json` containing the `[live_canary.operator_evidence]` path/SHA fields to copy into TOML. The approval-envelope JSON includes `schema_version = 1`, `record_kind = "phase8_operator_approval_envelope"`, `head_sha`, `ssm_manifest_sha256`, `strategy_input_evidence_sha256`, `financial_envelope_sha256`, `pre_run_state_sha256`, `abort_plan_sha256`, `approval_id_hash`, `approval_nonce_sha256`, `approval_not_before_unix_secs`, `approval_not_after_unix_secs`, `canary_evidence_path_hash`, optional `expected_gate_session_sha256`, optional `canary_proof_order_intent_sha256`, and optional `strategy_cancel_path_hash`. It must not contain `root_toml_sha256`, `approval_envelope_sha256`, `config_bundle_checksum`, raw approval id, raw nonce material, raw SSM paths, or secret values.
+
+`expected_gate_session_sha256` and `canary_proof_order_intent_sha256` seal the file-content SHA-256 of the operator-approved entry-readiness gate-session file and canary proof order-intent file directly into the envelope, binding the approval to the exact order that fires. The live canary gate re-computes each file's SHA-256 at evaluation time and rejects it unless it matches the sealed envelope value, not only the self-declared `[live_canary.operator_evidence]` TOML hash — so a post-approval file swap that updates only the TOML self-hash is rejected because the sealed envelope hash no longer matches. On the proof-policy path (the path that fires the live canary order) both fields are mandatory and the gate fails closed when either is absent. Because the envelope file's own SHA-256 is bound by the approval-consumption record's `approval_envelope_sha256`, these sealed hashes are transitively bound into the consumption record without being duplicated there.
 
 The approval-consumption JSON at `approval_consumption_path` must be a JSON object with `schema_version = 1`, `record_kind = "phase8_operator_approval_consumption"`, `head_sha`, `root_toml_sha256`, all configured evidence sha256 fields including `approval_envelope_sha256`, `approval_id_hash`, `approval_not_before_unix_secs`, `approval_not_after_unix_secs`, `canary_evidence_path_hash`, optional `strategy_cancel_path_hash` when `strategy_cancel_path` is configured, and `consumed_unix_secs`. The gate compares `head_sha` to both TOML operator evidence and the build-owned head captured at compile time. The gate computes `root_toml_sha256` from the loaded root TOML path at evaluation time and compares it to the proof; this value is not configured in TOML because hashing the file into itself would be circular.
 
@@ -844,7 +887,7 @@ All Phase 8 operator JSON artifacts are strict: unknown fields reject before liv
 
 - `max_live_order_count`: integer, must equal `1`
 - `max_notional_per_order`: decimal string matching `[live_canary].max_notional_per_order`
-- `strategy_instance_id`, `oms_type`, `execution_client_id`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`: strings matching the loaded strategy/TOML
+- `strategy_instance_id`, `oms_type`, `execution_client_id`, `configured_target_id`, `target_kind`, `rotating_market_family`, `underlying_asset`, `cadence_slug_token`: strings matching the loaded strategy/TOML
 - `cadence_secs`, `retry_interval_secs`, `blocked_after_secs`: integer seconds matching the loaded target runtime
 - `market_selection_rule`: string matching the loaded target runtime
 - `price_to_beat_source`: string matching `[parameters.runtime].price_to_beat_source`
@@ -888,7 +931,7 @@ Live-result proof JSON files:
 - `record_kind`: string, `post_run_hygiene`
 - `run_id`: runtime capture run id
 - `strategy_instance_id_hash`, `client_order_id_hash`, `venue_order_id_hash`: approved live-order hashes
-- `raw_secret_residue_absent`: boolean, must be `true`
+- `raw_secret_residue_absent`: boolean, must be `true`. This is not a hardcoded literal: the post-run writer reads each scanned artifact's bytes once (the same read that produces its `scanned_artifact_hashes` entry) and computes this field as the AND over all scanned artifacts of "none of this run's resolved-secret values appears verbatim in the bytes". The secret-value set is the single secret source of truth — the run's resolved-secret redaction values (`ResolvedBoltV3Secrets::redaction_values`) — so the attestation reflects an actual scan against the exact secret material this run handled. Matched bytes are never logged or surfaced; only the boolean verdict is recorded. An empty resolved-secret set means no secret value can leak.
 - `scanned_artifact_hashes`: non-empty list of sha256 values for scanned artifacts
 - `retention_purge_path_hash`: sha256 binding for the retention/purge path proof
 
@@ -913,6 +956,11 @@ Live-result proof JSON files:
 
 The key is a configuration reference name.
 It is not the trader identifier.
+
+`[clients]` is a map keyed by these identifiers, so each client key must be unique.
+More than one client may target the same `venue`: the schema does not enforce a one-client-per-venue rule.
+A common layout is a trade client and a separate reference-data client on the same venue, distinguished by their keys and their `[data]` / `[execution]` blocks.
+Cross-client collisions are rejected only where two clients would produce indistinguishable runtime evidence: the same `instrument_id` must not be declared under more than one client's `readiness_probe.quote_targets`, and the same reference-data `instrument_id` must not be declared under more than one `data_client_id`, because NautilusTrader `QuoteTick` carries the instrument but not the producing data-client identifier.
 
 #### `venue`
 
@@ -1077,6 +1125,16 @@ The current schema also requires these pinned adapter fields to be explicit:
 `fee_cache_ttl_secs` is a positive integer and controls the provider fee cache lifetime.
 `transport_backend` is a string enum with current allowed value `sockudo` and maps directly to the pinned NT adapter field.
 
+#### `[clients.<identifier>.execution.on_chain_collateral]`
+
+This subtable is optional for a Polymarket `[execution]` block. When present it configures the on-chain collateral-accounting source used by the live canary CLOB V2 collateral proof; when absent the operator artifact path treats on-chain collateral accounting as unconfigured.
+
+| Field | Type / Rule | Required |
+|---|---|---|
+| `rpc_url` | string; must start with `http://` or `https://` | yes when `[on_chain_collateral]` is present |
+| `chain_id` | positive integer EVM chain id | yes when `[on_chain_collateral]` is present |
+| `collateral_token_address` | `0x`-prefixed EVM public address (collateral token contract) | yes when `[on_chain_collateral]` is present |
+
 ### `[clients.<identifier>.secrets]`
 
 Presence of `[secrets]` means the client requires credential resolution.
@@ -1152,11 +1210,69 @@ For current Binance reference-data use:
   - `sockudo`
 - maps directly to `BinanceDataClientConfig.transport_backend`
 
+### `[clients.<identifier>.readiness_probe]`
+
+This subtable is optional. When present it configures the no-submit data-client readiness probe for that client and the client must also declare a `[data]` block. It does not authorize order submission; it only proves the client's market-data path delivers fresh observations.
+
+| Field | Type / Rule | Required |
+|---|---|---|
+| `market_data_kind` | string enum: `quote`, `book`, or `trade` | yes when `[readiness_probe]` is present |
+| `book_type` | string enum: `l1_mbp`, `l2_mbp`, or `l3_mbo` | required when `market_data_kind = "book"`; forbidden otherwise |
+| `quote_target_source` | string enum: `configured` or `metadata_response` | yes when `[readiness_probe]` is present |
+| `max_metadata_quote_targets` | positive integer; cap on sampled metadata targets | required when `quote_target_source = "metadata_response"` and not a trade chunk-count probe; forbidden when `quote_target_source = "configured"` |
+| `allow_metadata_target_sampling` | boolean; whether broad metadata universes may be sampled | must be set explicitly when `quote_target_source = "metadata_response"` and not a trade chunk-count probe; forbidden when `quote_target_source = "configured"` |
+| `min_observed_targets` | positive integer; minimum sampled targets that must produce a fresh observation. When unset the probe requires every sampled target (strict, fail-closed default) | required for a trade chunk-count probe; optional otherwise |
+| `chunk_size` | positive integer; maximum instruments a trade chunk-count probe subscribes to at once while walking the venue universe in chunks | required (and only valid) when `market_data_kind = "trade"` and `quote_target_source = "metadata_response"` |
+| `chunk_observation_window_seconds` | positive integer; seconds a trade chunk-count probe watches each chunk before advancing | required (and only valid) when `market_data_kind = "trade"` and `quote_target_source = "metadata_response"` |
+| `quote_targets` | map of target-id to `{ instrument_id }` blocks | required and non-empty when `quote_target_source = "configured"`; forbidden when `quote_target_source = "metadata_response"` |
+
+A trade chunk-count probe is the combination `market_data_kind = "trade"` with `quote_target_source = "metadata_response"`: it walks the venue's full instrument universe in chunks of `chunk_size`, watches each chunk for `chunk_observation_window_seconds`, and passes once `min_observed_targets` (`m`) distinct markets have traded. It has no fixed sample, so the sampling knobs (`max_metadata_quote_targets`, `allow_metadata_target_sampling`) are rejected for it and the chunk knobs are required instead.
+
+#### `[clients.<identifier>.readiness_probe.quote_targets.<target-id>]`
+
+- `instrument_id`: string; literal NautilusTrader `InstrumentId`, required. Its venue must match the client's `venue`.
+
+The same `instrument_id` must not appear under more than one client's `readiness_probe.quote_targets`, because NautilusTrader `QuoteTick` does not carry the producing data-client identifier and no-submit quote evidence must stay source-disambiguated.
+
+### `[gate_providers.<identifier>]`
+
+This root-level section is optional. It is a map keyed by provider identifier that declares the resolution/reference gate providers (such as the Chainlink Data Streams resolution anchor) the runtime may consume. Each provider key must be unique.
+
+#### `provider_kind`
+
+- type: string enum
+- required: yes when the provider block is present
+- registered kinds: `chainlink_data_streams`, `pyth`, `exchange_index`, `venue_native`, `hyperliquid_hip4`, `deribit_index`, `outcome_oracle`
+- `test_double` is registered for source/unit tests only and is rejected in live/local operator TOML
+
+#### `capabilities`
+
+- type: array of string enums
+- required: yes; must contain one or more entries
+- registered capabilities: `resolution_value`, `reference_value`, `market_metadata`
+
+#### `client_id`
+
+- type: optional keyed reference string
+- when present, must match a root `[clients.<id>]` key
+
+#### `[gate_providers.<identifier>.freshness]`
+
+- required: yes when the provider block is present
+- `max_age_ms`: positive integer; maximum accepted observation age
+- `max_clock_skew_ms`: positive integer; maximum accepted clock skew; must be `<=` `max_age_ms`
+
+#### Provider-specific subtable
+
+- a provider with `provider_kind = "<kind>"` must define exactly one provider-specific subtable named `[gate_providers.<identifier>.<kind>]`, and no other subtable
+- a `ssm_credential_parameter` field inside a provider subtable, when present, must be a non-empty absolute-style SSM path starting with `/`
+- the `chainlink_data_streams` subtable has its own required fields (`endpoint_id`, `rest_base_url`, `report_endpoint_path`, `http_timeout_secs`, `api_key_ssm_parameter`, `api_secret_ssm_parameter`, and one or more `[[...feed_bindings]]`); those provider-specific field rules are owned by the Chainlink gate-provider validator and are not restated here
+
 ## 6. Strategy File: Candidate Schema
 
 ```toml
 schema_version = 2
-strategy_instance_id = "bitcoin_updown_main"
+strategy_instance_id = "configured_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
@@ -1174,18 +1290,17 @@ log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
 
 [target]
-configured_target_id = "btc_updown_5m"
+configured_target_id = "configured_updown_target"
 kind = "rotating_market"
 rotating_market_family = "updown"
-underlying_asset = "BTC"
+underlying_asset = "CONFIGURED_ASSET"
 cadence_secs = 300
+cadence_slug_token = "configuredwindow"
 market_selection_rule = "active_or_next"
 retry_interval_secs = 5
 blocked_after_secs = 60
 
-[reference_data.primary]
-data_client_id = "binance_reference"
-instrument_id = "BTCUSDT.BINANCE"
+[reference_data]
 
 [parameters.entry_order]
 side = "buy"
@@ -1612,16 +1727,16 @@ For the current `binary_oracle_edge_taker` archetype:
 
 #### `order_notional_target`
 
-- type: decimal string
+- type: positive decimal string
 - required
 - strategy-local desired notional target used by the archetype's sizing logic
 - not the global hard cap
-- validation requires `order_notional_target <= root risk.default_max_notional_per_order`
+- validation requires `order_notional_target` is a positive decimal, `order_notional_target <= root risk.default_max_notional_per_order`, and `order_notional_target <= maximum_position_notional`
 - runtime sizing usage is defined by `docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md` Section 7.3
 
 #### `maximum_position_notional`
 
-- type: decimal string
+- type: positive decimal string
 - required
 - maximum cumulative gross pUSD entry-cost exposure the strategy may target for the selected market
 - fees are not included in this cap
@@ -1672,7 +1787,6 @@ Must fail if:
 - a client reference points to a missing client
 - a strategy `execution_client_id` points to a data-only client (no `[execution]` block)
 - a reference-data `data_client_id` points to a client without `[data]`
-- more than one `[clients.<identifier>]` block declares the same `venue` (NT `Venue` identifier) in the current one-client-per-venue slice
 - a `[secrets]` block is present without the same client's consuming adapter block
 - an SSM parameter path is empty or does not start with `/`
 - two listed strategy files declare the same `strategy_instance_id`
@@ -1690,7 +1804,9 @@ Must fail if:
 - a Binance reference-data `base_url_ws` uses NautilusTrader's Binance Spot JSON WebSocket host instead of an SBE endpoint or compatible SBE proxy
 - archetype-specific parameter sections contain fields not allowed for the declared `strategy_archetype`
 - archetype-specific order parameters contain any combination not explicitly allowed for that archetype
+- `order_notional_target` or `maximum_position_notional` is not a positive decimal
 - `order_notional_target` exceeds `root risk.default_max_notional_per_order`
+- `order_notional_target` exceeds `maximum_position_notional`
 - `binary_oracle_edge_taker` is missing `[reference_data.primary]`
 
 ### Live validation
@@ -1709,7 +1825,7 @@ schema_version = 1
 trader_id = "BOLT-001"
 
 strategy_files = [
-  "strategies/bitcoin_updown_main.toml",
+  "strategies/configured_updown_main.toml",
 ]
 
 [runtime]
@@ -1788,8 +1904,8 @@ default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
 bypass = false
-max_order_submit_rate = "100/00:00:01"
-max_order_modify_rate = "100/00:00:01"
+max_order_submit_rate = "40/00:01:00"
+max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
 debug = false
 graceful_shutdown_on_error = false
@@ -1916,7 +2032,7 @@ api_secret_ssm_path = "/bolt/binance_reference/api_secret"
 
 ```toml
 schema_version = 2
-strategy_instance_id = "bitcoin_updown_main"
+strategy_instance_id = "configured_updown_main"
 strategy_archetype = "binary_oracle_edge_taker"
 order_id_tag = "001"
 oms_type = "netting"
@@ -1934,18 +2050,17 @@ log_rejected_due_post_only_as_warning = true
 execution_client_id = "polymarket_main"
 
 [target]
-configured_target_id = "btc_updown_5m"
+configured_target_id = "configured_updown_target"
 kind = "rotating_market"
 rotating_market_family = "updown"
-underlying_asset = "BTC"
+underlying_asset = "CONFIGURED_ASSET"
 cadence_secs = 300
+cadence_slug_token = "configuredwindow"
 market_selection_rule = "active_or_next"
 retry_interval_secs = 5
 blocked_after_secs = 60
 
-[reference_data.primary]
-data_client_id = "binance_reference"
-instrument_id = "BTCUSDT.BINANCE"
+[reference_data]
 
 [parameters.entry_order]
 side = "buy"

@@ -2,11 +2,10 @@
 //! resolution for bolt-v3 clients.
 //!
 //! Per docs/bolt-v3/2026-04-25-bolt-v3-runtime-contracts.md Section 3, every
-//! configured client with a [secrets] block must fail live validation and
-//! startup if any canonical credential environment variables for that provider
-//! are present. The blocklist is owned by the provider handler in
-//! bolt code and must be checked before any NautilusTrader client
-//! constructor is called.
+//! configured client must fail live validation and startup if any canonical
+//! credential environment variables for that provider are present. The
+//! blocklist is owned by the provider handler in bolt code and must be checked
+//! before any NautilusTrader client constructor is called.
 //!
 //! Once the env-var blocklist passes, this module also resolves every
 //! configured `[secrets]` block from Amazon Web Services Systems Manager
@@ -38,7 +37,7 @@ impl std::fmt::Display for ForbiddenEnvVarFinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "clients.{key} (provider={provider}) declares [secrets] but the forbidden credential environment variable `{var}` is set; \
+            "clients.{key} (provider={provider}) has forbidden credential environment variable `{var}` set; \
              the bolt-v3 secret contract requires SSM resolution and forbids env-var fallbacks for this provider",
             key = self.client_key,
             provider = self.provider_key,
@@ -69,6 +68,21 @@ impl std::fmt::Display for ForbiddenEnvVarError {
 
 impl std::error::Error for ForbiddenEnvVarError {}
 
+/// Fails closed if any provider's forbidden credential environment variable is
+/// set, so NT can never silently fall back to env-var credentials behind the
+/// SSM-only bolt-v3 secret contract.
+///
+/// Soundness rests on a single-process, single-threaded *startup* invariant:
+/// bolt-v3 runs this check once at boot, before any NT client is constructed,
+/// and bolt-v3 itself never mutates the process environment. There is a
+/// theoretical time-of-check/time-of-use window — another thread or an
+/// out-of-process actor could `setenv` a forbidden variable between this check
+/// and NT client construction — but the bolt-v3 boot sequence does no
+/// concurrent environment mutation, so the window is not reachable in practice.
+/// Collapsing it entirely would require resolving credentials and constructing
+/// NT clients under a held environment lock, which NT's API does not expose; if
+/// bolt-v3 ever introduces concurrent boot work that touches `std::env`, this
+/// check must be re-derived against that new ordering.
 pub fn check_no_forbidden_credential_env_vars(
     config: &BoltV3RootConfig,
 ) -> Result<(), ForbiddenEnvVarError> {
@@ -84,9 +98,6 @@ where
 {
     let mut findings = Vec::new();
     for (key, client) in &config.clients {
-        if client.secrets.is_none() {
-            continue;
-        }
         let blocklist = match bolt_v3_providers::binding_for_provider_key(client.venue.as_str()) {
             Some(binding) => binding.forbidden_env_vars,
             None => &[],
@@ -303,6 +314,36 @@ mod tests {
         }
     }
 
+    fn binance_reference_client() -> crate::bolt_v3_config::ClientBlock {
+        toml::from_str(include_str!(
+            "../tests/fixtures/bolt_v3/binance_reference_client.toml"
+        ))
+        .expect("binance provider fixture client should parse")
+    }
+
+    fn bybit_data_client_without_secrets() -> crate::bolt_v3_config::ClientBlock {
+        toml::from_str(
+            r#"
+venue = "BYBIT"
+
+[data]
+product_types = ["spot", "linear"]
+environment = "testnet"
+transport_backend = "sockudo"
+"#,
+        )
+        .expect("bybit data-only fixture client should parse")
+    }
+
+    fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
+        let mut loaded = fixture_loaded_config();
+        loaded
+            .root
+            .clients
+            .insert("binance_reference".to_string(), binance_reference_client());
+        loaded
+    }
+
     fn synthetic_binance_secret() -> String {
         // PKCS8-wrapped Ed25519 private key, base64-encoded. Mirrors the
         // shape accepted by the Binance provider secret validator, so the
@@ -349,6 +390,16 @@ mod tests {
                 "BINANCE_ED25519_API_SECRET",
                 "BINANCE_API_KEY",
                 "BINANCE_API_SECRET",
+                "BINANCE_TESTNET_API_KEY",
+                "BINANCE_TESTNET_API_SECRET",
+                "BINANCE_TESTNET_ED25519_API_KEY",
+                "BINANCE_TESTNET_ED25519_API_SECRET",
+                "BINANCE_FUTURES_TESTNET_API_KEY",
+                "BINANCE_FUTURES_TESTNET_API_SECRET",
+                "BINANCE_FUTURES_TESTNET_ED25519_API_KEY",
+                "BINANCE_FUTURES_TESTNET_ED25519_API_SECRET",
+                "BINANCE_DEMO_API_KEY",
+                "BINANCE_DEMO_API_SECRET",
             ]
         );
     }
@@ -367,7 +418,7 @@ mod tests {
 
     #[test]
     fn flags_set_binance_var_for_configured_binance_client() {
-        let root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        let root = fixture_loaded_config_with_binance_reference().root;
         let error =
             check_no_forbidden_credential_env_vars_with(&root, |var| var == "BINANCE_API_SECRET")
                 .expect_err("BINANCE_API_SECRET should trip the binance blocklist");
@@ -375,6 +426,24 @@ mod tests {
         assert_eq!(error.findings[0].client_key, "binance_reference");
         assert_eq!(error.findings[0].provider_key, binance::KEY);
         assert_eq!(error.findings[0].env_var, "BINANCE_API_SECRET");
+    }
+
+    #[test]
+    fn flags_set_provider_var_for_configured_data_only_client_without_secrets() {
+        let mut root: BoltV3RootConfig = toml::from_str(minimal_root_toml()).unwrap();
+        root.clients.insert(
+            "bybit_data".to_string(),
+            bybit_data_client_without_secrets(),
+        );
+
+        let error = check_no_forbidden_credential_env_vars_with(&root, |var| {
+            var == "BYBIT_TESTNET_API_KEY"
+        })
+        .expect_err("BYBIT_TESTNET_API_KEY should trip the bybit blocklist");
+        assert_eq!(error.findings.len(), 1);
+        assert_eq!(error.findings[0].client_key, "bybit_data");
+        assert_eq!(error.findings[0].provider_key, "BYBIT");
+        assert_eq!(error.findings[0].env_var, "BYBIT_TESTNET_API_KEY");
     }
 
     #[test]
@@ -386,7 +455,7 @@ mod tests {
 
     #[test]
     fn resolves_configured_bolt_v3_client_secrets_from_ssm_paths() {
-        let loaded = fixture_loaded_config();
+        let loaded = fixture_loaded_config_with_binance_reference();
         let mut calls = Vec::new();
 
         let resolved = resolve_bolt_v3_secrets_with(&loaded, |region, path| {
@@ -417,16 +486,19 @@ mod tests {
         let polymarket = resolved
             .get_as::<ResolvedBoltV3PolymarketSecrets>("polymarket_main")
             .expect("polymarket_main should resolve to Polymarket secrets");
-        assert_eq!(polymarket.private_key, SYNTHETIC_POLYMARKET_PRIVATE_KEY);
-        assert_eq!(polymarket.api_key, "poly-api-key");
-        assert_eq!(polymarket.api_secret, "YWJj");
-        assert_eq!(polymarket.passphrase, "poly-passphrase");
+        assert_eq!(
+            polymarket.private_key.as_str(),
+            SYNTHETIC_POLYMARKET_PRIVATE_KEY
+        );
+        assert_eq!(polymarket.api_key.as_str(), "poly-api-key");
+        assert_eq!(polymarket.api_secret.as_str(), "YWJj");
+        assert_eq!(polymarket.passphrase.as_str(), "poly-passphrase");
 
         let binance = resolved
             .get_as::<ResolvedBoltV3BinanceSecrets>("binance_reference")
             .expect("binance_reference should resolve to Binance secrets");
-        assert_eq!(binance.api_key, "binance-api-key");
-        assert_eq!(binance.api_secret, synthetic_binance_secret());
+        assert_eq!(binance.api_key.as_str(), "binance-api-key");
+        assert_eq!(binance.api_secret.as_str(), synthetic_binance_secret());
     }
 
     #[test]
@@ -523,7 +595,7 @@ mod tests {
         // The sentinel passes resolve_field's whitespace checks but
         // fails Ed25519 PKCS8 base64 shape validation; the wrapped
         // error must not surface the sentinel bytes.
-        let loaded = fixture_loaded_config();
+        let loaded = fixture_loaded_config_with_binance_reference();
         let sentinel = "BOLTV3_API_SECRET_SENTINEL_DO_NOT_LEAK_8D4F2E1AC3B7";
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
@@ -592,7 +664,7 @@ mod tests {
 
     #[test]
     fn resolved_bolt_v3_secrets_debug_does_not_leak_secret_values() {
-        let loaded = fixture_loaded_config();
+        let loaded = fixture_loaded_config_with_binance_reference();
 
         let resolved = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
             Ok::<_, &'static str>(fake_secret_value(path))
@@ -618,7 +690,7 @@ mod tests {
 
     #[test]
     fn ssm_failure_reports_bolt_v3_client_field_without_path() {
-        let loaded = fixture_loaded_config();
+        let loaded = fixture_loaded_config_with_binance_reference();
 
         let error = resolve_bolt_v3_secrets_with(&loaded, |_, path| {
             if path == "/bolt/binance_reference/api_secret" {

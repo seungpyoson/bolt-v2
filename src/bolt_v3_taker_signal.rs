@@ -59,7 +59,8 @@ pub fn compute_theta_scaler(inputs: &ThetaScalerInputs) -> Option<f64> {
         return None;
     }
 
-    let ratio = clamp_probability(inputs.seconds_to_market_end as f64 / inputs.cadence_seconds as f64);
+    let ratio =
+        clamp_probability(inputs.seconds_to_market_end as f64 / inputs.cadence_seconds as f64);
     Some(UNIT_F64 + inputs.theta_decay_factor * (UNIT_F64 - ratio).powi(POWER_OF_TWO))
 }
 

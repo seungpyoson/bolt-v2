@@ -767,10 +767,10 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''6'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 6;'''
+literal = '''7'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 7;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v6 adds loss-governor halt evidence; it is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v7 adds submit-reservation metadata/fill evidence for startup recovery; it is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -787,6 +787,54 @@ literal = '''"admission_decision"'''
 context = '''kind: "admission_decision",'''
 classification = "decision_evidence_envelope_kind"
 reason = "This is the JSONL envelope discriminator naming the admission-decision payload shape. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_metadata"'''
+context = '''"submit_reservation_metadata" => {'''
+classification = "decision_evidence_envelope_kind"
+reason = "This is the JSONL envelope discriminator naming submit-reservation metadata records used for fail-closed startup recovery. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_metadata"'''
+context = '''"submit_reservation_metadata",'''
+classification = "decision_evidence_envelope_kind"
+reason = "This validates the submit-reservation metadata JSONL envelope discriminator during replay. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_metadata"'''
+context = '''kind: "submit_reservation_metadata",'''
+classification = "decision_evidence_envelope_kind"
+reason = "This writes the submit-reservation metadata JSONL envelope discriminator. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_fill"'''
+context = '''"submit_reservation_fill" => {'''
+classification = "decision_evidence_envelope_kind"
+reason = "This is the JSONL envelope discriminator naming submit-reservation fill records used for fill replay deduplication. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_fill"'''
+context = '''"submit_reservation_fill",'''
+classification = "decision_evidence_envelope_kind"
+reason = "This validates the submit-reservation fill JSONL envelope discriminator during replay. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_fill"'''
+context = '''kind: "submit_reservation_fill",'''
+classification = "decision_evidence_envelope_kind"
+reason = "This writes the submit-reservation fill JSONL envelope discriminator. It is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -811,6 +859,182 @@ literal = '''"bolt_v3.strategy_input_snapshot"'''
 context = '''pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID: &str = "bolt_v3.strategy_input_snapshot";'''
 classification = "decision_evidence_gate_id"
 reason = "This is the stable gate identifier stamped on each strategy-input snapshot evidence record so operators can correlate JSONL records back to the recording gate. It is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"client_order_id"'''
+context = '''("client_order_id", metadata.client_order_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation metadata client-order-id field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_id"'''
+context = '''"submit_reservation_id",'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation metadata reservation-id field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"venue_id"'''
+context = '''("venue_id", metadata.venue_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation metadata venue-id field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"account_id"'''
+context = '''("account_id", metadata.account_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation metadata account-id field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"product_kind"'''
+context = '''("product_kind", metadata.product_kind.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation metadata product-kind field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"collateral_currency"'''
+context = '''("collateral_currency", metadata.collateral_currency.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation metadata collateral-currency field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"capital_pool_id"'''
+context = '''("capital_pool_id", metadata.capital_pool_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation metadata capital-pool-id field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"collateral_group_id"'''
+context = '''("collateral_group_id", metadata.collateral_group_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation metadata collateral-group-id field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"instrument_id"'''
+context = '''("instrument_id", metadata.instrument_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation metadata instrument-id field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"side"'''
+context = '''("side", metadata.side.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation metadata side field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"source"'''
+context = '''("source", metadata.source.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation metadata source field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit reservation metadata submitted_quantity"'''
+context = '''"submit reservation metadata submitted_quantity",'''
+classification = "decision_evidence_validation_label"
+reason = "This labels submit-reservation metadata quantity validation errors during recovery replay; it is diagnostic schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit reservation metadata liability_factor"'''
+context = '''"submit reservation metadata liability_factor",'''
+classification = "decision_evidence_validation_label"
+reason = "This labels submit-reservation metadata liability-factor validation errors during recovery replay; it is diagnostic schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit reservation metadata additive_liability"'''
+context = '''"submit reservation metadata additive_liability",'''
+classification = "decision_evidence_validation_label"
+reason = "This labels submit-reservation metadata additive-liability validation errors during recovery replay; it is diagnostic schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit reservation metadata reserved_liability"'''
+context = '''"submit reservation metadata reserved_liability",'''
+classification = "decision_evidence_validation_label"
+reason = "This labels submit-reservation metadata reserved-liability validation errors during recovery replay; it is diagnostic schema text, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"client_order_id"'''
+context = '''("client_order_id", fill.client_order_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation fill client-order-id field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit_reservation_id"'''
+context = '''("submit_reservation_id", fill.submit_reservation_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation fill reservation-id field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"trade_id"'''
+context = '''("trade_id", fill.trade_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation fill trade-id field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"instrument_id"'''
+context = '''("instrument_id", fill.instrument_id.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation fill instrument-id field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"side"'''
+context = '''("side", fill.side.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation fill side field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"source"'''
+context = '''("source", fill.source.as_str()),'''
+classification = "decision_evidence_field_name"
+reason = "This names the submit-reservation fill source field during recovery validation; it is a schema field label, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"submit reservation fill fill_quantity"'''
+context = '''require_positive_decimal(&fill.fill_quantity, "submit reservation fill fill_quantity")?;'''
+classification = "decision_evidence_validation_label"
+reason = "This labels submit-reservation fill quantity validation errors during recovery replay; it is diagnostic schema text, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -15432,10 +15656,58 @@ reason = "This labels authoritative NT fill events before submit admission reval
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
+literal = '''"bolt_known_reservation_metadata"'''
+context = '''evidence_label: "bolt_known_reservation_metadata".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels startup-recovered reservations attributed through Bolt-owned durable submit-reservation metadata, not through configured-contract inference."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
 literal = '''"bolt_recovered_open_order_reservations"'''
 context = '''evidence_label: "bolt_recovered_open_order_reservations".to_string(),'''
 classification = "position_sizer_evidence_source_label"
 reason = "This labels reservations rebuilt from attributed open orders during startup/reconnect reconciliation; the actual open-order set comes from NT."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"prediction_market_binary"'''
+context = '''BoltV3CompiledProductKind::PredictionMarketBinary => "prediction_market_binary",'''
+classification = "position_sizer_product_kind_tag"
+reason = "This serializes the compiled binary prediction-market product kind into Bolt reservation metadata; it is a schema tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"prediction_market_binary"'''
+context = '''ProductKind::PredictionMarketBinary => "prediction_market_binary",'''
+classification = "position_sizer_product_kind_tag"
+reason = "This serializes the configured binary prediction-market product kind into Bolt reservation metadata; it is a schema tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"Buy"'''
+context = '''BoltV3CompiledOrderSide::Buy => "Buy",'''
+classification = "position_sizer_order_side_tag"
+reason = "This serializes the compiled buy side into Bolt reservation metadata for startup recovery matching; it is a schema tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"Sell"'''
+context = '''BoltV3CompiledOrderSide::Sell => "Sell",'''
+classification = "position_sizer_order_side_tag"
+reason = "This serializes the compiled sell side into Bolt reservation metadata for startup recovery matching; it is a schema tag, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"submit_admission"'''
+context = '''source: "submit_admission".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels durable submit-reservation metadata written by the submit-admission gate before the admitted decision record."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"

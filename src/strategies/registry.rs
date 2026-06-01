@@ -321,6 +321,20 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[derive(Debug)]

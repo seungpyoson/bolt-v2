@@ -41,6 +41,7 @@
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet, HashMap},
+    path::PathBuf,
     rc::Rc,
     str::FromStr,
     sync::{Arc, Mutex},
@@ -91,6 +92,7 @@ use crate::{
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
+        decision_evidence_path, read_submit_reservation_recovery_evidence,
     },
     bolt_v3_live_canary_gate::{
         BoltV3LiveCanaryGateError, build_bolt_v3_live_submit_admission_report_from_config,
@@ -142,7 +144,14 @@ pub struct BoltV3LiveNodeRuntime {
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
     position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
+    submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
     redaction_values: Vec<Zeroizing<String>>,
+}
+
+#[derive(Debug, Clone)]
+struct BoltV3SubmitReservationRecoveryConfig {
+    path: PathBuf,
+    max_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1619,6 +1628,20 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
     ) -> Result<()> {
         Ok(())
     }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl BoltV3LiveNodeRuntime {
@@ -1630,6 +1653,7 @@ impl BoltV3LiveNodeRuntime {
         loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
         position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
         position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
+        submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
         redaction_values: Vec<Zeroizing<String>>,
     ) -> Self {
         Self {
@@ -1640,6 +1664,7 @@ impl BoltV3LiveNodeRuntime {
             loss_runtime_feed_subscription,
             position_sizer_runtime_feed,
             position_sizer_runtime_feed_subscription,
+            submit_reservation_recovery,
             redaction_values,
         }
     }
@@ -1781,16 +1806,46 @@ impl BoltV3LiveNodeRuntime {
                 );
         }
 
+        let recovered_reservations = if open_order_snapshots.is_empty() {
+            None
+        } else {
+            self.submit_reservation_recovery
+                .as_ref()
+                .and_then(|config| {
+                    match read_submit_reservation_recovery_evidence(&config.path, config.max_bytes)
+                    {
+                        Ok(recovery) => Some(recovery),
+                        Err(error) => {
+                            log::warn!(
+                                "bolt-v3 submit admission could not recover Bolt reservation metadata from decision evidence: {error:#}"
+                            );
+                            None
+                        }
+                    }
+                })
+        };
         let mut reservations = Vec::with_capacity(open_order_snapshots.len());
-        let mut all_open_orders_attributed = true;
+        let mut all_open_orders_attributed =
+            open_order_snapshots.is_empty() || recovered_reservations.is_some();
         for order in &open_order_snapshots {
+            let Some(recovered_reservations) = recovered_reservations.as_ref() else {
+                all_open_orders_attributed = false;
+                break;
+            };
             let Some(evidence) = nt_open_order_evidence_from_order(order, now_ns) else {
+                all_open_orders_attributed = false;
+                break;
+            };
+            let Some(recovered) = recovered_reservations
+                .metadata_by_client_order_id
+                .get(&evidence.client_order_id)
+            else {
                 all_open_orders_attributed = false;
                 break;
             };
             let Some(reservation) = self
                 .submit_admission
-                .position_sizing_open_order_reservation_from_evidence(evidence)
+                .position_sizing_open_order_reservation_from_known_metadata(evidence, recovered)
             else {
                 all_open_orders_attributed = false;
                 break;
@@ -3475,6 +3530,11 @@ fn build_live_node_with_clients(
     let startup_observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
     let position_sizer_runtime_feed_config =
         position_sizer_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
+    let submit_reservation_recovery = if position_sizer_runtime_feed_config.is_some() {
+        submit_reservation_recovery_config_from_loaded(loaded)?
+    } else {
+        None
+    };
     let submit_admission = Arc::new(match (loss_policy, position_sizer) {
         (Some(policy), Some(position_sizer)) => {
             BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor_and_position_sizer(
@@ -3570,10 +3630,28 @@ fn build_live_node_with_clients(
             loss_runtime_feed_subscription,
             position_sizer_runtime_feed,
             position_sizer_runtime_feed_subscription,
+            submit_reservation_recovery,
             resolved.redaction_values(),
         ),
         summary,
     ))
+}
+
+fn submit_reservation_recovery_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<BoltV3SubmitReservationRecoveryConfig>, BoltV3LiveNodeError> {
+    let Some(operator_evidence) = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+    else {
+        return Ok(None);
+    };
+    Ok(Some(BoltV3SubmitReservationRecoveryConfig {
+        path: decision_evidence_path(loaded).map_err(BoltV3LiveNodeError::Build)?,
+        max_bytes: operator_evidence.max_operator_evidence_file_bytes,
+    }))
 }
 
 fn loss_governor_runtime_feed_config_from_loaded(

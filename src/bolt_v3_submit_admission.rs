@@ -3,7 +3,8 @@ use crate::bolt_v3_capital_reservation::{
 };
 use crate::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
-    BoltV3PositionSizerRebuildAuditEvidence,
+    BoltV3PositionSizerRebuildAuditEvidence, BoltV3RecoveredSubmitReservationEvidence,
+    BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
 };
 use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
 use crate::bolt_v3_loss_governor::{
@@ -88,6 +89,7 @@ struct BoltV3SubmitReservationFillMetadata {
     additive_liability: Decimal,
     last_lifecycle_observed_at_ns: u64,
     seen_trade_ids: BTreeSet<String>,
+    recovered_from_startup: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,8 +121,12 @@ pub struct BoltV3SubmitPositionSizingOpenOrderReservation {
     pub instrument_id: String,
     pub side: BoltV3CompiledOrderSide,
     pub open_quantity: Decimal,
+    pub original_quantity: Decimal,
+    pub filled_quantity: Decimal,
     pub liability_factor: Decimal,
     pub additive_liability: Decimal,
+    pub seen_trade_ids: BTreeSet<String>,
+    pub recovered_from_startup: bool,
     pub observed_at_ns: u64,
     pub evidence_label: String,
 }
@@ -170,6 +176,7 @@ pub struct BoltV3SubmitPositionSizingFillUpdate {
     pub side: BoltV3CompiledOrderSide,
     pub fill_quantity: Decimal,
     pub observed_at_ns: u64,
+    pub reconciliation: bool,
     pub evidence_label: String,
 }
 
@@ -364,10 +371,92 @@ impl BoltV3SubmitAdmissionState {
             instrument_id: evidence.instrument_id,
             side: evidence.side,
             open_quantity: evidence.open_quantity,
+            original_quantity: evidence.open_quantity,
+            filled_quantity: Decimal::ZERO,
             liability_factor,
             additive_liability,
+            seen_trade_ids: BTreeSet::new(),
+            recovered_from_startup: false,
             observed_at_ns: evidence.observed_at_ns,
             evidence_label: evidence.evidence_label,
+        })
+    }
+
+    pub fn position_sizing_open_order_reservation_from_known_metadata(
+        &self,
+        evidence: BoltV3SubmitPositionSizingOpenOrderEvidence,
+        recovered: &BoltV3RecoveredSubmitReservationEvidence,
+    ) -> Option<BoltV3SubmitPositionSizingOpenOrderReservation> {
+        if evidence.client_order_id.trim().is_empty()
+            || evidence.instrument_id.trim().is_empty()
+            || evidence.evidence_label.trim().is_empty()
+            || evidence.open_quantity <= Decimal::ZERO
+            || evidence.limit_price < Decimal::ZERO
+            || evidence.limit_price > Decimal::ONE
+        {
+            return None;
+        }
+        let inner = lock_inner(&self.inner);
+        let position_sizer = inner.position_sizer.as_ref()?;
+        let state = position_sizer.state.as_ref()?;
+        let ProductSizingSnapshot::PredictionMarketBinary(product) = &state.product_state;
+        let metadata = &recovered.metadata;
+        if metadata.client_order_id != evidence.client_order_id
+            || metadata.venue_id != position_sizer.venue_id
+            || metadata.account_id != position_sizer.account_id
+            || metadata.product_kind != product_kind_evidence_value(position_sizer.product_kind)
+            || metadata.collateral_currency != position_sizer.collateral_currency
+            || metadata.capital_pool_id != position_sizer.capital_pool.pool_id
+            || metadata.collateral_group_id != product.collateral_coupled_group_id
+            || metadata.instrument_id != evidence.instrument_id
+            || metadata.side != compiled_order_side_evidence_value(evidence.side)
+        {
+            return None;
+        }
+        if evidence.instrument_id != product.yes_instrument_id
+            && evidence.instrument_id != product.no_instrument_id
+        {
+            return None;
+        }
+        let submitted_quantity = metadata.submitted_quantity.parse::<Decimal>().ok()?;
+        let liability_factor = metadata.liability_factor.parse::<Decimal>().ok()?;
+        let additive_liability = metadata.additive_liability.parse::<Decimal>().ok()?;
+        let reserved_liability = metadata.reserved_liability.parse::<Decimal>().ok()?;
+        if submitted_quantity <= Decimal::ZERO
+            || evidence.open_quantity > submitted_quantity
+            || liability_factor < Decimal::ZERO
+            || liability_factor > Decimal::ONE
+            || additive_liability < Decimal::ZERO
+            || reserved_liability <= Decimal::ZERO
+        {
+            return None;
+        }
+        let expected_liability_factor = match evidence.side.to_position_sizer() {
+            IntentSide::Buy => evidence.limit_price,
+            IntentSide::Sell => Decimal::ONE - evidence.limit_price,
+        };
+        if liability_factor != expected_liability_factor
+            || reserved_liability != submitted_quantity * liability_factor + additive_liability
+        {
+            return None;
+        }
+        let filled_quantity = submitted_quantity - evidence.open_quantity;
+        Some(BoltV3SubmitPositionSizingOpenOrderReservation {
+            client_order_id: evidence.client_order_id,
+            submit_reservation_id: metadata.submit_reservation_id.clone(),
+            collateral_group_id: metadata.collateral_group_id.clone(),
+            liability: evidence.open_quantity * liability_factor + additive_liability,
+            instrument_id: metadata.instrument_id.clone(),
+            side: evidence.side,
+            open_quantity: evidence.open_quantity,
+            original_quantity: submitted_quantity,
+            filled_quantity,
+            liability_factor,
+            additive_liability,
+            seen_trade_ids: recovered.fill_trade_ids.clone(),
+            recovered_from_startup: true,
+            observed_at_ns: evidence.observed_at_ns,
+            evidence_label: "bolt_known_reservation_metadata".to_string(),
         })
     }
 
@@ -483,9 +572,12 @@ impl BoltV3SubmitAdmissionState {
             let collateral_group_id = reservation.collateral_group_id;
             let instrument_id = reservation.instrument_id;
             let side = reservation.side;
-            let open_quantity = reservation.open_quantity;
+            let original_quantity = reservation.original_quantity;
+            let filled_quantity = reservation.filled_quantity;
             let liability_factor = reservation.liability_factor;
             let additive_liability = reservation.additive_liability;
+            let seen_trade_ids = reservation.seen_trade_ids;
+            let recovered_from_startup = reservation.recovered_from_startup;
             let observed_at_ns = reservation.observed_at_ns;
             rebuilt_index.insert(
                 reservation.client_order_id,
@@ -493,15 +585,17 @@ impl BoltV3SubmitAdmissionState {
                     submit_reservation_id: submit_reservation_id.clone(),
                     collateral_group_id: collateral_group_id.clone(),
                     fill_metadata: Some(BoltV3SubmitReservationFillMetadata {
-                        // NT cache leaves quantity is the residual from this rebuild point forward.
+                        // Known Bolt metadata preserves the original basis; fallback rebuilds use
+                        // the NT cache leaves quantity as both original and residual.
                         instrument_id,
                         side,
-                        original_quantity: open_quantity,
-                        filled_quantity: Decimal::ZERO,
+                        original_quantity,
+                        filled_quantity,
                         liability_factor,
                         additive_liability,
                         last_lifecycle_observed_at_ns: observed_at_ns,
-                        seen_trade_ids: BTreeSet::new(),
+                        seen_trade_ids,
+                        recovered_from_startup,
                     }),
                 },
             );
@@ -689,6 +783,23 @@ impl BoltV3SubmitAdmissionState {
             return BoltV3SubmitPositionSizingLifecycleDecision::unknown();
         };
         let lifecycle_observed_at_ns = update.observed_at_ns.max(next_observed_at_ns);
+        if metadata.recovered_from_startup && update.reconciliation {
+            if let Some(current) = position_sizer
+                .client_order_reservations
+                .get_mut(&update.client_order_id)
+                .filter(|current| current.submit_reservation_id == index.submit_reservation_id)
+                && let Some(current_metadata) = current.fill_metadata.as_mut()
+            {
+                current_metadata.last_lifecycle_observed_at_ns = lifecycle_observed_at_ns;
+                current_metadata.seen_trade_ids.insert(update.trade_id);
+            }
+            refresh_position_sizer_reservation_snapshot(position_sizer, lifecycle_observed_at_ns);
+            return BoltV3SubmitPositionSizingLifecycleDecision {
+                accepted: true,
+                unknown_reservation: false,
+                action: PositionSizingLifecycleAction::None,
+            };
+        }
         let lifecycle_now_ns = now_ns.max(lifecycle_observed_at_ns);
         let unclamped_filled_quantity = metadata.filled_quantity + update.fill_quantity;
         let new_filled_quantity = metadata.original_quantity.min(unclamped_filled_quantity);
@@ -707,7 +818,7 @@ impl BoltV3SubmitAdmissionState {
             evidence_label: if clamped {
                 "nt_order_fill_clamped".to_string()
             } else {
-                update.evidence_label
+                update.evidence_label.clone()
             },
             kind: if remaining_quantity > Decimal::ZERO {
                 PositionSizingLifecycleKind::LiveResidual
@@ -715,6 +826,28 @@ impl BoltV3SubmitAdmissionState {
                 PositionSizingLifecycleKind::Terminal
             },
         };
+        let fill_evidence = BoltV3SubmitReservationFillEvidence {
+            client_order_id: update.client_order_id.clone(),
+            submit_reservation_id: index.submit_reservation_id.clone(),
+            trade_id: update.trade_id.clone(),
+            instrument_id: update.instrument_id.clone(),
+            side: compiled_order_side_evidence_value(update.side).to_string(),
+            fill_quantity: update.fill_quantity.to_string(),
+            observed_at_ns: update.observed_at_ns,
+            reconciliation: update.reconciliation,
+            source: update.evidence_label.clone(),
+        };
+        if self
+            .decision_evidence
+            .record_submit_reservation_fill(&fill_evidence)
+            .is_err()
+        {
+            return BoltV3SubmitPositionSizingLifecycleDecision {
+                accepted: false,
+                unknown_reservation: false,
+                action: PositionSizingLifecycleAction::None,
+            };
+        }
         let decision = position_sizer.gate.apply_lifecycle_update(
             &position_sizer.capital_pool,
             &lifecycle_update,
@@ -831,6 +964,19 @@ impl BoltV3SubmitAdmissionState {
     ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
         let mut inner = lock_inner(&self.inner);
         let evaluation = Self::evaluate(&mut inner, request, now_ns);
+        if evaluation.outcome == BoltV3AdmissionOutcome::Admitted
+            && let Some(metadata) = evaluation.reservation_metadata.as_ref()
+            && let Err(err) = self
+                .decision_evidence
+                .record_submit_reservation_metadata(metadata)
+        {
+            if let Some(rollback) = evaluation.rollback.as_ref() {
+                rollback_position_sizer_reservation(&mut inner, rollback);
+            }
+            return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+                reason: format!("{err:#}"),
+            });
+        }
         let evidence = BoltV3AdmissionDecisionEvidence {
             strategy_id: request.strategy_id.clone(),
             client_order_id: request.client_order_id.clone(),
@@ -1000,7 +1146,10 @@ impl BoltV3SubmitAdmissionState {
             if !decision.accepted {
                 return BoltV3SubmitAdmissionEvaluation::position_sizer_rejected(decision.reason);
             }
-            return BoltV3SubmitAdmissionEvaluation::admitted_with_rollback(decision.rollback);
+            return BoltV3SubmitAdmissionEvaluation::admitted_with_rollback(
+                decision.rollback,
+                decision.reservation_metadata,
+            );
         }
         BoltV3SubmitAdmissionEvaluation::without_loss_halt(BoltV3AdmissionOutcome::Admitted)
     }
@@ -1066,6 +1215,7 @@ struct BoltV3SubmitAdmissionEvaluation {
     loss_halt_reasons: Vec<LossHaltReason>,
     position_sizer_rejection: Option<BoltV3PositionSizerRejectReason>,
     rollback: Option<BoltV3PositionSizerReservationRollback>,
+    reservation_metadata: Option<BoltV3SubmitReservationMetadataEvidence>,
 }
 
 impl BoltV3SubmitAdmissionEvaluation {
@@ -1075,6 +1225,7 @@ impl BoltV3SubmitAdmissionEvaluation {
             loss_halt_reasons: Vec::new(),
             position_sizer_rejection: None,
             rollback: None,
+            reservation_metadata: None,
         }
     }
 
@@ -1084,6 +1235,7 @@ impl BoltV3SubmitAdmissionEvaluation {
             loss_halt_reasons,
             position_sizer_rejection: None,
             rollback: None,
+            reservation_metadata: None,
         }
     }
 
@@ -1093,15 +1245,20 @@ impl BoltV3SubmitAdmissionEvaluation {
             loss_halt_reasons: Vec::new(),
             position_sizer_rejection: Some(reason),
             rollback: None,
+            reservation_metadata: None,
         }
     }
 
-    fn admitted_with_rollback(rollback: Option<BoltV3PositionSizerReservationRollback>) -> Self {
+    fn admitted_with_rollback(
+        rollback: Option<BoltV3PositionSizerReservationRollback>,
+        reservation_metadata: Option<BoltV3SubmitReservationMetadataEvidence>,
+    ) -> Self {
         Self {
             outcome: BoltV3AdmissionOutcome::Admitted,
             loss_halt_reasons: Vec::new(),
             position_sizer_rejection: None,
             rollback,
+            reservation_metadata,
         }
     }
 }
@@ -1215,6 +1372,18 @@ impl BoltV3CompiledProductKind {
     }
 }
 
+fn compiled_product_kind_evidence_value(product_kind: BoltV3CompiledProductKind) -> &'static str {
+    match product_kind {
+        BoltV3CompiledProductKind::PredictionMarketBinary => "prediction_market_binary",
+    }
+}
+
+fn product_kind_evidence_value(product_kind: ProductKind) -> &'static str {
+    match product_kind {
+        ProductKind::PredictionMarketBinary => "prediction_market_binary",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3CompiledOrderSide {
     Buy,
@@ -1227,6 +1396,13 @@ impl BoltV3CompiledOrderSide {
             Self::Buy => IntentSide::Buy,
             Self::Sell => IntentSide::Sell,
         }
+    }
+}
+
+fn compiled_order_side_evidence_value(side: BoltV3CompiledOrderSide) -> &'static str {
+    match side {
+        BoltV3CompiledOrderSide::Buy => "Buy",
+        BoltV3CompiledOrderSide::Sell => "Sell",
     }
 }
 
@@ -1277,6 +1453,7 @@ struct BoltV3PositionSizerSubmitDecision {
     accepted: bool,
     reason: BoltV3PositionSizerRejectReason,
     rollback: Option<BoltV3PositionSizerReservationRollback>,
+    reservation_metadata: Option<BoltV3SubmitReservationMetadataEvidence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1794,6 +1971,9 @@ fn evaluate_position_sizer_submit(
     let admitted_quantity = decision
         .sized_quantity
         .expect("accepted position sizing decision should carry sized quantity");
+    let reserved_liability = decision
+        .liability_after_sizing
+        .expect("accepted position sizing decision should carry liability");
     let additive_liability = position_sizer
         .policy
         .fee_slippage_policy
@@ -1803,6 +1983,24 @@ fn evaluate_position_sizer_submit(
     let liability_factor = match evidence.side.to_position_sizer() {
         IntentSide::Buy => evidence.effective_price,
         IntentSide::Sell => Decimal::ONE - evidence.effective_price,
+    };
+    let reservation_metadata = BoltV3SubmitReservationMetadataEvidence {
+        client_order_id: request.client_order_id.clone(),
+        submit_reservation_id: submit_reservation_id.clone(),
+        venue_id: position_sizer.venue_id.clone(),
+        account_id: position_sizer.account_id.clone(),
+        product_kind: compiled_product_kind_evidence_value(evidence.product_kind).to_string(),
+        collateral_currency: position_sizer.collateral_currency.clone(),
+        capital_pool_id: position_sizer.capital_pool.pool_id.clone(),
+        collateral_group_id: product.collateral_coupled_group_id.clone(),
+        instrument_id: request.instrument_id.clone(),
+        side: compiled_order_side_evidence_value(evidence.side).to_string(),
+        submitted_quantity: admitted_quantity.to_string(),
+        liability_factor: liability_factor.to_string(),
+        additive_liability: additive_liability.to_string(),
+        reserved_liability: reserved_liability.to_string(),
+        observed_at_ns: now_ns,
+        source: "submit_admission".to_string(),
     };
     position_sizer.client_order_reservations.insert(
         request.client_order_id.clone(),
@@ -1818,6 +2016,7 @@ fn evaluate_position_sizer_submit(
                 additive_liability,
                 last_lifecycle_observed_at_ns: now_ns,
                 seen_trade_ids: BTreeSet::new(),
+                recovered_from_startup: false,
             }),
         },
     );
@@ -1830,6 +2029,7 @@ fn evaluate_position_sizer_submit(
             pool_id: position_sizer.capital_pool.pool_id.clone(),
             observed_at_ns: now_ns,
         }),
+        reservation_metadata: Some(reservation_metadata),
     }
 }
 
@@ -1901,10 +2101,17 @@ fn rebuilt_open_order_reservation_metadata_valid(
 ) -> bool {
     if reservation.instrument_id.trim().is_empty()
         || reservation.open_quantity <= Decimal::ZERO
+        || reservation.original_quantity <= Decimal::ZERO
+        || reservation.filled_quantity < Decimal::ZERO
+        || reservation.filled_quantity > reservation.original_quantity
+        || reservation.open_quantity > reservation.original_quantity
         || reservation.liability_factor < Decimal::ZERO
         || reservation.liability_factor > Decimal::ONE
         || reservation.additive_liability < Decimal::ZERO
     {
+        return false;
+    }
+    if reservation.original_quantity - reservation.filled_quantity != reservation.open_quantity {
         return false;
     }
     reservation.liability
@@ -1955,6 +2162,7 @@ fn accepted_without_reservation() -> BoltV3PositionSizerSubmitDecision {
         accepted: true,
         reason: BoltV3PositionSizerRejectReason::Rejected,
         rollback: None,
+        reservation_metadata: None,
     }
 }
 
@@ -1965,6 +2173,7 @@ fn rejected_position_sizer(
         accepted: false,
         reason,
         rollback: None,
+        reservation_metadata: None,
     }
 }
 
@@ -2156,6 +2365,20 @@ mod tests {
         fn record_position_sizer_rebuild_audit(
             &self,
             _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &BoltV3SubmitReservationMetadataEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &BoltV3SubmitReservationFillEvidence,
         ) -> Result<()> {
             Ok(())
         }

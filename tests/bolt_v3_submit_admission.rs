@@ -5,7 +5,9 @@ use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
     BoltV3OrderIntentEvidence, BoltV3PositionSizerRebuildAuditEvidence,
-    BoltV3StrategyInputEvidenceSnapshot, decision_evidence_path,
+    BoltV3RecoveredSubmitReservationEvidence, BoltV3StrategyInputEvidenceSnapshot,
+    BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+    decision_evidence_path,
 };
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, LossSnapshot};
@@ -136,6 +138,32 @@ fn live_node_runner_arms_submit_admission_from_config_before_nt_run() {
     assert!(
         !runner.contains("consume_bolt_v3_live_runner_approval"),
         "live runner must not block startup on operator approval consumption"
+    );
+}
+
+#[test]
+fn live_node_position_sizer_startup_rebuild_uses_only_known_reservation_metadata() {
+    let source = support::repo_text("src/bolt_v3_live_node.rs");
+    let start = source
+        .find("pub fn rebuild_position_sizer_from_nt_cache")
+        .expect("live runtime should expose startup position-sizer rebuild");
+    let end = source[start..]
+        .find("fn nt_open_order_evidence_from_order")
+        .map(|offset| start + offset)
+        .expect("open-order evidence helper should bound startup rebuild source");
+    let rebuild = &source[start..end];
+
+    assert!(
+        rebuild.contains("read_submit_reservation_recovery_evidence"),
+        "startup rebuild must read Bolt-owned reservation metadata before attributing live NT open orders"
+    );
+    assert!(
+        rebuild.contains("position_sizing_open_order_reservation_from_known_metadata"),
+        "startup rebuild must recover open-order reservations from Bolt-owned metadata"
+    );
+    assert!(
+        !rebuild.contains("position_sizing_open_order_reservation_from_evidence("),
+        "production startup rebuild must not use configured-contract fallback attribution for live NT open orders"
     );
 }
 
@@ -1320,6 +1348,7 @@ fn configured_submit_sizer_rebuilt_reservation_partial_fill_revalues_residual() 
             side: BoltV3CompiledOrderSide::Buy,
             fill_quantity: Decimal::new(4, 0),
             observed_at_ns: 1_100,
+            reconciliation: false,
             evidence_label: "nt_order_fill".to_string(),
         },
         1_100,
@@ -1365,6 +1394,199 @@ fn configured_submit_sizer_open_order_evidence_builds_rebuild_reservation() {
     assert_eq!(reservation.additive_liability, Decimal::new(3, 1));
     assert_eq!(reservation.observed_at_ns, 1_000);
     assert_eq!(reservation.evidence_label, "nt_open_order_cache");
+}
+
+#[test]
+fn configured_submit_sizer_known_metadata_builds_rebuild_reservation() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    let recovered = BoltV3RecoveredSubmitReservationEvidence {
+        metadata: BoltV3SubmitReservationMetadataEvidence {
+            client_order_id: "client-order-1".to_string(),
+            submit_reservation_id: "client-order-1#1".to_string(),
+            venue_id: "VENUE-A".to_string(),
+            account_id: "ACCOUNT-001".to_string(),
+            product_kind: "prediction_market_binary".to_string(),
+            collateral_currency: "USD".to_string(),
+            capital_pool_id: "pool-1".to_string(),
+            collateral_group_id: "group-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: "Buy".to_string(),
+            submitted_quantity: "10".to_string(),
+            liability_factor: "0.4".to_string(),
+            additive_liability: "0.3".to_string(),
+            reserved_liability: "4.3".to_string(),
+            observed_at_ns: 950,
+            source: "submit_admission".to_string(),
+        },
+        fill_trade_ids: ["trade-before-restart".to_string()].into(),
+    };
+
+    let reservation = admission
+        .position_sizing_open_order_reservation_from_known_metadata(
+            BoltV3SubmitPositionSizingOpenOrderEvidence {
+                client_order_id: "client-order-1".to_string(),
+                instrument_id: "instrument-yes.VENUE-A".to_string(),
+                side: BoltV3CompiledOrderSide::Buy,
+                open_quantity: Decimal::new(6, 0),
+                limit_price: Decimal::new(4, 1),
+                observed_at_ns: 1_000,
+                evidence_label: "nt_open_order_cache".to_string(),
+            },
+            &recovered,
+        )
+        .expect("known Bolt metadata should rebuild residual open order");
+
+    assert_eq!(reservation.submit_reservation_id, "client-order-1#1");
+    assert_eq!(reservation.liability, Decimal::new(27, 1));
+    assert_eq!(reservation.open_quantity, Decimal::new(6, 0));
+    assert_eq!(reservation.original_quantity, Decimal::new(10, 0));
+    assert_eq!(reservation.filled_quantity, Decimal::new(4, 0));
+    assert!(reservation.seen_trade_ids.contains("trade-before-restart"));
+    assert_eq!(
+        reservation.evidence_label,
+        "bolt_known_reservation_metadata"
+    );
+}
+
+#[test]
+fn configured_submit_sizer_known_metadata_rejects_residual_over_submitted_quantity() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    let recovered = BoltV3RecoveredSubmitReservationEvidence {
+        metadata: BoltV3SubmitReservationMetadataEvidence {
+            client_order_id: "client-order-1".to_string(),
+            submit_reservation_id: "client-order-1#1".to_string(),
+            venue_id: "VENUE-A".to_string(),
+            account_id: "ACCOUNT-001".to_string(),
+            product_kind: "prediction_market_binary".to_string(),
+            collateral_currency: "USD".to_string(),
+            capital_pool_id: "pool-1".to_string(),
+            collateral_group_id: "group-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: "Buy".to_string(),
+            submitted_quantity: "10".to_string(),
+            liability_factor: "0.4".to_string(),
+            additive_liability: "0.3".to_string(),
+            reserved_liability: "4.3".to_string(),
+            observed_at_ns: 950,
+            source: "submit_admission".to_string(),
+        },
+        fill_trade_ids: Default::default(),
+    };
+
+    let reservation = admission.position_sizing_open_order_reservation_from_known_metadata(
+        BoltV3SubmitPositionSizingOpenOrderEvidence {
+            client_order_id: "client-order-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            open_quantity: Decimal::new(11, 0),
+            limit_price: Decimal::new(4, 1),
+            observed_at_ns: 1_000,
+            evidence_label: "nt_open_order_cache".to_string(),
+        },
+        &recovered,
+    );
+
+    assert!(reservation.is_none());
+}
+
+#[test]
+fn configured_submit_sizer_recovered_reconciliation_fill_does_not_reduce_liability() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    let recovered = BoltV3RecoveredSubmitReservationEvidence {
+        metadata: BoltV3SubmitReservationMetadataEvidence {
+            client_order_id: "client-order-1".to_string(),
+            submit_reservation_id: "client-order-1#1".to_string(),
+            venue_id: "VENUE-A".to_string(),
+            account_id: "ACCOUNT-001".to_string(),
+            product_kind: "prediction_market_binary".to_string(),
+            collateral_currency: "USD".to_string(),
+            capital_pool_id: "pool-1".to_string(),
+            collateral_group_id: "group-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: "Buy".to_string(),
+            submitted_quantity: "10".to_string(),
+            liability_factor: "0.4".to_string(),
+            additive_liability: "0.3".to_string(),
+            reserved_liability: "4.3".to_string(),
+            observed_at_ns: 950,
+            source: "submit_admission".to_string(),
+        },
+        fill_trade_ids: Default::default(),
+    };
+    let reservation = admission
+        .position_sizing_open_order_reservation_from_known_metadata(
+            BoltV3SubmitPositionSizingOpenOrderEvidence {
+                client_order_id: "client-order-1".to_string(),
+                instrument_id: "instrument-yes.VENUE-A".to_string(),
+                side: BoltV3CompiledOrderSide::Buy,
+                open_quantity: Decimal::new(6, 0),
+                limit_price: Decimal::new(4, 1),
+                observed_at_ns: 1_000,
+                evidence_label: "nt_open_order_cache".to_string(),
+            },
+            &recovered,
+        )
+        .expect("known Bolt metadata should rebuild residual open order");
+    let rebuild =
+        admission.rebuild_position_sizing_open_order_reservations(vec![reservation], 1_000);
+    assert!(rebuild.accepted);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(27, 1))
+    );
+
+    let reconciliation = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-replayed-by-reconciliation".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            fill_quantity: Decimal::new(2, 0),
+            observed_at_ns: 1_100,
+            reconciliation: true,
+            evidence_label: "nt_reconciliation_fill".to_string(),
+        },
+        1_100,
+    );
+
+    assert!(reconciliation.accepted);
+    assert!(!reconciliation.unknown_reservation);
+    assert_eq!(reconciliation.action, PositionSizingLifecycleAction::None);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(27, 1))
+    );
+
+    let replayed_as_incremental = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-replayed-by-reconciliation".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            fill_quantity: Decimal::new(2, 0),
+            observed_at_ns: 1_101,
+            reconciliation: false,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_101,
+    );
+
+    assert!(replayed_as_incremental.accepted);
+    assert!(!replayed_as_incremental.unknown_reservation);
+    assert_eq!(
+        replayed_as_incremental.action,
+        PositionSizingLifecycleAction::None
+    );
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(27, 1))
+    );
 }
 
 #[test]
@@ -1519,6 +1741,102 @@ fn configured_submit_sizer_reserves_entry_from_compiled_order_values() {
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::ZERO)
+    );
+}
+
+#[test]
+fn configured_submit_sizer_records_reservation_metadata_before_admitted_decision() {
+    let writer = Arc::new(SequencedSubmitReservationWriter::default());
+    let admission = position_sized_admission_with_writer(writer.clone());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit");
+
+    let events = writer.events();
+    assert_eq!(events.len(), 2);
+    let SequencedSubmitReservationEvent::Metadata(metadata) = &events[0] else {
+        panic!("metadata must be recorded before admission decision: {events:?}");
+    };
+    assert_eq!(metadata.client_order_id, "client-order-1");
+    assert_eq!(metadata.submit_reservation_id, "client-order-1#1");
+    assert_eq!(metadata.venue_id, "VENUE-A");
+    assert_eq!(metadata.account_id, "ACCOUNT-001");
+    assert_eq!(metadata.product_kind, "prediction_market_binary");
+    assert_eq!(metadata.collateral_currency, "USD");
+    assert_eq!(metadata.capital_pool_id, "pool-1");
+    assert_eq!(metadata.collateral_group_id, "group-1");
+    assert_eq!(metadata.instrument_id, "instrument-yes.VENUE-A");
+    assert_eq!(metadata.side, "Buy");
+    assert_eq!(
+        metadata
+            .submitted_quantity
+            .parse::<Decimal>()
+            .expect("submitted quantity should parse"),
+        Decimal::new(10, 0)
+    );
+    assert_eq!(
+        metadata
+            .liability_factor
+            .parse::<Decimal>()
+            .expect("liability factor should parse"),
+        Decimal::new(40, 2)
+    );
+    assert_eq!(
+        metadata
+            .additive_liability
+            .parse::<Decimal>()
+            .expect("additive liability should parse"),
+        Decimal::new(3, 1)
+    );
+    assert_eq!(
+        metadata
+            .reserved_liability
+            .parse::<Decimal>()
+            .expect("reserved liability should parse"),
+        Decimal::new(43, 1)
+    );
+    assert_eq!(metadata.observed_at_ns, 1_000);
+    assert_eq!(metadata.source, "submit_admission");
+    assert!(matches!(
+        &events[1],
+        SequencedSubmitReservationEvent::Admission(decision)
+            if decision.client_order_id == "client-order-1"
+                && decision.outcome == BoltV3AdmissionOutcome::Admitted
+    ));
+}
+
+#[test]
+fn configured_submit_sizer_metadata_write_failure_rolls_back_without_admitted_decision() {
+    let writer = Arc::new(FailingSubmitReservationMetadataWriter::default());
+    let admission = position_sized_admission_with_writer(writer.clone());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+
+    let error = admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect_err("metadata write failure must reject before admitted decision evidence");
+
+    match error {
+        BoltV3SubmitAdmissionError::EvidenceWriteFailed { reason } => {
+            assert!(
+                reason.contains("synthetic submit reservation metadata write failure"),
+                "unexpected evidence write failure reason: {reason}"
+            );
+        }
+        other => panic!("expected EvidenceWriteFailed, got {other:?}"),
+    }
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    assert!(
+        writer.admission_decisions().is_empty(),
+        "admitted admission decision must not be written after metadata write failure"
     );
 }
 
@@ -1683,6 +2001,7 @@ fn configured_submit_sizer_revalues_residual_liability_from_fill_metadata() {
             side: BoltV3CompiledOrderSide::Buy,
             fill_quantity: Decimal::new(4, 0),
             observed_at_ns: 1_100,
+            reconciliation: false,
             evidence_label: "nt_order_fill".to_string(),
         },
         1_100,
@@ -1694,6 +2013,94 @@ fn configured_submit_sizer_revalues_residual_liability_from_fill_metadata() {
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::new(27, 1))
+    );
+}
+
+#[test]
+fn configured_submit_sizer_records_fill_evidence_before_revaluing_liability() {
+    let writer = Arc::new(SequencedSubmitReservationWriter::default());
+    let admission = position_sized_admission_with_writer(writer.clone());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+
+    let decision = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            fill_quantity: Decimal::new(4, 0),
+            observed_at_ns: 1_100,
+            reconciliation: false,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_100,
+    );
+
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Revalued);
+    let events = writer.events();
+    assert_eq!(events.len(), 3);
+    let SequencedSubmitReservationEvent::Fill(fill) = &events[2] else {
+        panic!("fill evidence must be recorded before liability is reduced: {events:?}");
+    };
+    assert_eq!(fill.client_order_id, "client-order-1");
+    assert_eq!(fill.submit_reservation_id, "client-order-1#1");
+    assert_eq!(fill.trade_id, "trade-1");
+    assert_eq!(fill.instrument_id, "instrument-yes.VENUE-A");
+    assert_eq!(fill.side, "Buy");
+    assert_eq!(
+        fill.fill_quantity
+            .parse::<Decimal>()
+            .expect("fill quantity should parse"),
+        Decimal::new(4, 0)
+    );
+    assert_eq!(fill.observed_at_ns, 1_100);
+    assert!(!fill.reconciliation);
+    assert_eq!(fill.source, "nt_order_fill");
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(27, 1))
+    );
+}
+
+#[test]
+fn configured_submit_sizer_fill_evidence_write_failure_leaves_liability_unchanged() {
+    let writer = Arc::new(FailingSubmitReservationFillWriter);
+    let admission = position_sized_admission_with_writer(writer);
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+
+    let decision = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            fill_quantity: Decimal::new(4, 0),
+            observed_at_ns: 1_100,
+            reconciliation: false,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_100,
+    );
+
+    assert!(!decision.accepted);
+    assert!(!decision.unknown_reservation);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::None);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
     );
 }
 
@@ -1716,6 +2123,7 @@ fn configured_submit_sizer_keeps_per_order_additive_liability_after_partial_fill
             side: BoltV3CompiledOrderSide::Buy,
             fill_quantity: Decimal::new(9, 0),
             observed_at_ns: 1_100,
+            reconciliation: false,
             evidence_label: "nt_order_fill".to_string(),
         },
         1_100,
@@ -1747,6 +2155,7 @@ fn configured_submit_sizer_applies_same_timestamp_fills_in_order() {
         side: BoltV3CompiledOrderSide::Buy,
         fill_quantity: Decimal::new(4, 0),
         observed_at_ns: 1_100,
+        reconciliation: false,
         evidence_label: "nt_order_fill".to_string(),
     };
     let second = BoltV3SubmitPositionSizingFillUpdate {
@@ -1792,6 +2201,7 @@ fn configured_submit_sizer_ignores_duplicate_fill_trade_id() {
         side: BoltV3CompiledOrderSide::Buy,
         fill_quantity: Decimal::new(4, 0),
         observed_at_ns: 1_100,
+        reconciliation: false,
         evidence_label: "nt_order_fill".to_string(),
     };
 
@@ -1827,6 +2237,7 @@ fn configured_submit_sizer_full_fill_releases_reservation() {
             side: BoltV3CompiledOrderSide::Buy,
             fill_quantity: Decimal::new(10, 0),
             observed_at_ns: 1_100,
+            reconciliation: false,
             evidence_label: "nt_order_fill".to_string(),
         },
         1_100,
@@ -1868,6 +2279,7 @@ fn configured_submit_sizer_rejects_mismatched_fill_without_mutation() {
             side: BoltV3CompiledOrderSide::Buy,
             fill_quantity: Decimal::new(4, 0),
             observed_at_ns: 1_100,
+            reconciliation: false,
             evidence_label: "nt_order_fill".to_string(),
         },
         1_100,
@@ -1899,6 +2311,7 @@ fn configured_submit_sizer_rejects_invalid_fill_fields_without_mutation() {
         side: BoltV3CompiledOrderSide::Buy,
         fill_quantity: Decimal::new(4, 0),
         observed_at_ns: 1_100,
+        reconciliation: false,
         evidence_label: "nt_order_fill".to_string(),
     };
     for invalid in [
@@ -1947,6 +2360,7 @@ fn configured_submit_sizer_rejects_duplicate_trade_id_with_mismatched_content() 
         side: BoltV3CompiledOrderSide::Buy,
         fill_quantity: Decimal::new(4, 0),
         observed_at_ns: 1_100,
+        reconciliation: false,
         evidence_label: "nt_order_fill".to_string(),
     };
     let mismatched = BoltV3SubmitPositionSizingFillUpdate {
@@ -1999,6 +2413,7 @@ fn configured_submit_sizer_revalues_sell_residual_liability_from_fill_metadata()
             side: BoltV3CompiledOrderSide::Sell,
             fill_quantity: Decimal::new(4, 0),
             observed_at_ns: 1_100,
+            reconciliation: false,
             evidence_label: "nt_order_fill".to_string(),
         },
         1_100,
@@ -2035,6 +2450,7 @@ fn configured_submit_sizer_rebuilt_reservation_full_fill_releases_reservation() 
             side: BoltV3CompiledOrderSide::Buy,
             fill_quantity: Decimal::new(10, 0),
             observed_at_ns: 1_100,
+            reconciliation: false,
             evidence_label: "nt_order_fill".to_string(),
         },
         1_100,
@@ -2067,6 +2483,7 @@ fn configured_submit_sizer_clamps_overfill_to_full_release() {
             side: BoltV3CompiledOrderSide::Buy,
             fill_quantity: Decimal::new(12, 0),
             observed_at_ns: 1_100,
+            reconciliation: false,
             evidence_label: "nt_order_fill".to_string(),
         },
         1_100,
@@ -2438,8 +2855,12 @@ fn open_order_reservation(
         instrument_id: "instrument-yes.VENUE-A".to_string(),
         side: BoltV3CompiledOrderSide::Buy,
         open_quantity: Decimal::new(10, 0),
+        original_quantity: Decimal::new(10, 0),
+        filled_quantity: Decimal::ZERO,
         liability_factor: Decimal::new(4, 1),
         additive_liability: Decimal::new(3, 1),
+        seen_trade_ids: Default::default(),
+        recovered_from_startup: false,
         observed_at_ns: 900,
         evidence_label: "nt_open_order_rebuild".to_string(),
     }
@@ -2527,6 +2948,187 @@ fn components_from_state(state: NtDerivedSizingState) -> BoltV3SubmitPositionSiz
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SequencedSubmitReservationEvent {
+    Metadata(BoltV3SubmitReservationMetadataEvidence),
+    Admission(BoltV3AdmissionDecisionEvidence),
+    Fill(BoltV3SubmitReservationFillEvidence),
+}
+
+#[derive(Debug, Default)]
+struct SequencedSubmitReservationWriter {
+    events: Mutex<Vec<SequencedSubmitReservationEvent>>,
+}
+
+impl SequencedSubmitReservationWriter {
+    fn events(&self) -> Vec<SequencedSubmitReservationEvent> {
+        self.events
+            .lock()
+            .expect("sequenced submit reservation writer mutex should not be poisoned")
+            .clone()
+    }
+}
+
+impl BoltV3DecisionEvidenceWriter for SequencedSubmitReservationWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        decision: &BoltV3AdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        self.events
+            .lock()
+            .expect("sequenced submit reservation writer mutex should not be poisoned")
+            .push(SequencedSubmitReservationEvent::Admission(decision.clone()));
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        self.events
+            .lock()
+            .expect("sequenced submit reservation writer mutex should not be poisoned")
+            .push(SequencedSubmitReservationEvent::Metadata(metadata.clone()));
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
+        self.events
+            .lock()
+            .expect("sequenced submit reservation writer mutex should not be poisoned")
+            .push(SequencedSubmitReservationEvent::Fill(fill.clone()));
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+struct FailingSubmitReservationMetadataWriter {
+    admission_decisions: Mutex<Vec<BoltV3AdmissionDecisionEvidence>>,
+}
+
+impl FailingSubmitReservationMetadataWriter {
+    fn admission_decisions(&self) -> Vec<BoltV3AdmissionDecisionEvidence> {
+        self.admission_decisions
+            .lock()
+            .expect("failing metadata writer mutex should not be poisoned")
+            .clone()
+    }
+}
+
+impl BoltV3DecisionEvidenceWriter for FailingSubmitReservationMetadataWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        decision: &BoltV3AdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        self.admission_decisions
+            .lock()
+            .expect("failing metadata writer mutex should not be poisoned")
+            .push(decision.clone());
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "synthetic submit reservation metadata write failure"
+        ))
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct FailingSubmitReservationFillWriter;
+
+impl BoltV3DecisionEvidenceWriter for FailingSubmitReservationFillWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        _decision: &BoltV3AdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "synthetic submit reservation fill write failure"
+        ))
+    }
+}
+
 #[derive(Debug)]
 struct FailingDecisionEvidenceWriter;
 
@@ -2554,6 +3156,20 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
     fn record_position_sizer_rebuild_audit(
         &self,
         _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -2588,6 +3204,20 @@ impl BoltV3DecisionEvidenceWriter for FailingPositionSizerRebuildAuditWriter {
         Err(anyhow::anyhow!(
             "synthetic position-sizer rebuild audit write failure"
         ))
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
@@ -2674,6 +3304,20 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
     fn record_position_sizer_rebuild_audit(
         &self,
         _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
     ) -> anyhow::Result<()> {
         Ok(())
     }

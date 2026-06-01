@@ -321,6 +321,7 @@ impl PositionSizerRuntimeFeed {
                 side,
                 fill_quantity: fill.last_qty.as_decimal(),
                 observed_at_ns,
+                reconciliation: fill.reconciliation,
                 evidence_label: "nt_order_fill".to_string(),
             },
             observed_at_ns,

@@ -62,6 +62,10 @@ pub struct RecordingDecisionEvidenceWriter {
         Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence>>,
     position_sizer_rebuild_audits:
         Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence>>,
+    submit_reservation_metadata:
+        Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence>>,
+    submit_reservation_fills:
+        Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence>>,
 }
 
 impl RecordingDecisionEvidenceWriter {
@@ -85,6 +89,24 @@ impl RecordingDecisionEvidenceWriter {
         &self,
     ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence> {
         self.position_sizer_rebuild_audits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn submit_reservation_metadata(
+        &self,
+    ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence> {
+        self.submit_reservation_metadata
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn submit_reservation_fills(
+        &self,
+    ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence> {
+        self.submit_reservation_fills
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -131,6 +153,28 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(audit.clone());
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        metadata: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        self.submit_reservation_metadata
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(metadata.clone());
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        fill: &bolt_v2::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
+        self.submit_reservation_fills
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(fill.clone());
         Ok(())
     }
 }

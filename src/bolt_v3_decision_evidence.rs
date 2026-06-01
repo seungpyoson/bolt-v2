@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
@@ -8,13 +8,14 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use nautilus_model::orders::{Order, OrderAny};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::bolt_v3_capital_reservation::ReservationRejectionReason;
 use crate::bolt_v3_config::LoadedBoltV3Config;
 use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 6;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 7;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";
@@ -142,6 +143,14 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
     fn record_position_sizer_rebuild_audit(
         &self,
         audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()>;
+    fn record_submit_reservation_metadata(
+        &self,
+        metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()>;
+    fn record_submit_reservation_fill(
+        &self,
+        fill: &BoltV3SubmitReservationFillEvidence,
     ) -> Result<()>;
 }
 
@@ -344,6 +353,39 @@ pub struct BoltV3PositionSizerRebuildAuditEvidence {
     pub live_reserved_liability: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3SubmitReservationMetadataEvidence {
+    pub client_order_id: String,
+    pub submit_reservation_id: String,
+    pub venue_id: String,
+    pub account_id: String,
+    pub product_kind: String,
+    pub collateral_currency: String,
+    pub capital_pool_id: String,
+    pub collateral_group_id: String,
+    pub instrument_id: String,
+    pub side: String,
+    pub submitted_quantity: String,
+    pub liability_factor: String,
+    pub additive_liability: String,
+    pub reserved_liability: String,
+    pub observed_at_ns: u64,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3SubmitReservationFillEvidence {
+    pub client_order_id: String,
+    pub submit_reservation_id: String,
+    pub trade_id: String,
+    pub instrument_id: String,
+    pub side: String,
+    pub fill_quantity: String,
+    pub observed_at_ns: u64,
+    pub reconciliation: bool,
+    pub source: String,
+}
+
 #[derive(Debug)]
 pub struct JsonlBoltV3DecisionEvidenceWriter {
     file: Mutex<std::fs::File>,
@@ -407,6 +449,22 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
         let line = encode_position_sizer_rebuild_audit_line(audit)?;
         self.append_line(&line)
     }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        let line = encode_submit_reservation_metadata_line(metadata)?;
+        self.append_line(&line)
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> Result<()> {
+        let line = encode_submit_reservation_fill_line(fill)?;
+        self.append_line(&line)
+    }
 }
 
 /// Validates `persistence.decision_evidence.order_intents_relative_path` as the
@@ -445,6 +503,17 @@ pub struct BoltV3EntryDecisionEvidenceChain {
     pub snapshot: BoltV3StrategyInputEvidenceSnapshot,
     pub intent: BoltV3OrderIntentEvidence,
     pub admission: BoltV3AdmissionDecisionEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3SubmitReservationRecoveryEvidence {
+    pub metadata_by_client_order_id: BTreeMap<String, BoltV3RecoveredSubmitReservationEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3RecoveredSubmitReservationEvidence {
+    pub metadata: BoltV3SubmitReservationMetadataEvidence,
+    pub fill_trade_ids: BTreeSet<String>,
 }
 
 pub fn read_latest_entry_decision_evidence_chain(
@@ -541,6 +610,32 @@ pub fn read_latest_entry_decision_evidence_chain(
                     index,
                 )?;
             }
+            "submit_reservation_metadata" => {
+                let decoded: SubmitReservationMetadataLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 submit reservation metadata line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    "submit_reservation_metadata",
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+            }
+            "submit_reservation_fill" => {
+                let decoded: SubmitReservationFillLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 submit reservation fill line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    "submit_reservation_fill",
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+            }
             other => {
                 return Err(anyhow!(
                     "unsupported bolt-v3 decision evidence kind `{other}` at line index {index}"
@@ -549,6 +644,153 @@ pub fn read_latest_entry_decision_evidence_chain(
         }
     }
     latest.ok_or_else(|| anyhow!("bolt-v3 decision evidence has no complete entry decision chain"))
+}
+
+pub fn read_submit_reservation_recovery_evidence(
+    path: impl AsRef<Path>,
+    max_bytes: u64,
+) -> Result<BoltV3SubmitReservationRecoveryEvidence> {
+    let path = path.as_ref();
+    let mut file = open_regular_decision_evidence_file(path)
+        .context("failed to open regular file bolt-v3 decision evidence")?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .context("failed to read bolt-v3 decision evidence file")?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(anyhow!(
+            "bolt-v3 decision evidence file exceeds max_bytes={max_bytes}"
+        ));
+    }
+
+    let mut metadata_by_client_order_id =
+        BTreeMap::<String, BoltV3SubmitReservationMetadataEvidence>::new();
+    let mut fills = Vec::<BoltV3SubmitReservationFillEvidence>::new();
+    for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let header: DecisionEvidenceEnvelopeHeader =
+            serde_json::from_slice(line).with_context(|| {
+                format!("failed to parse bolt-v3 decision evidence envelope at line index {index}")
+            })?;
+        match header.kind.as_str() {
+            "strategy_input_snapshot" => {
+                let decoded: StrategyInputSnapshotLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 strategy input snapshot line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    "strategy_input_snapshot",
+                    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+                    index,
+                )?;
+            }
+            "order_intent" => {
+                let decoded: OrderIntentLineOwned =
+                    serde_json::from_slice(line).with_context(|| {
+                        format!("failed to parse bolt-v3 order intent line at index {index}")
+                    })?;
+                decoded.validate_header("order_intent", BOLT_V3_ORDER_INTENT_GATE_ID, index)?;
+            }
+            "admission_decision" => {
+                let decoded: AdmissionDecisionLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!("failed to parse bolt-v3 admission decision line at index {index}")
+                    })?;
+                decoded.validate_header(
+                    "admission_decision",
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+            }
+            "position_sizer_rebuild" => {
+                let decoded: PositionSizerRebuildAuditLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 position sizer rebuild audit line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    "position_sizer_rebuild",
+                    BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+                    index,
+                )?;
+            }
+            "submit_reservation_metadata" => {
+                let decoded: SubmitReservationMetadataLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 submit reservation metadata line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    "submit_reservation_metadata",
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                validate_submit_reservation_metadata(&decoded.metadata).with_context(|| {
+                    format!("invalid submit reservation metadata at line index {index}")
+                })?;
+                let replace = metadata_by_client_order_id
+                    .get(&decoded.metadata.client_order_id)
+                    .map(|existing| decoded.metadata.observed_at_ns > existing.observed_at_ns)
+                    .unwrap_or(true);
+                if replace {
+                    metadata_by_client_order_id
+                        .insert(decoded.metadata.client_order_id.clone(), decoded.metadata);
+                }
+            }
+            "submit_reservation_fill" => {
+                let decoded: SubmitReservationFillLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 submit reservation fill line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    "submit_reservation_fill",
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
+                validate_submit_reservation_fill(&decoded.fill).with_context(|| {
+                    format!("invalid submit reservation fill at line index {index}")
+                })?;
+                fills.push(decoded.fill);
+            }
+            other => {
+                return Err(anyhow!(
+                    "unsupported bolt-v3 decision evidence kind `{other}` at line index {index}"
+                ));
+            }
+        }
+    }
+
+    let mut recovered = BTreeMap::new();
+    for (client_order_id, metadata) in metadata_by_client_order_id {
+        let fill_trade_ids = fills
+            .iter()
+            .filter(|fill| {
+                fill.client_order_id == client_order_id
+                    && fill.submit_reservation_id == metadata.submit_reservation_id
+            })
+            .map(|fill| fill.trade_id.clone())
+            .collect::<BTreeSet<_>>();
+        recovered.insert(
+            client_order_id,
+            BoltV3RecoveredSubmitReservationEvidence {
+                metadata,
+                fill_trade_ids,
+            },
+        );
+    }
+
+    Ok(BoltV3SubmitReservationRecoveryEvidence {
+        metadata_by_client_order_id: recovered,
+    })
 }
 
 fn open_regular_decision_evidence_file(path: &Path) -> std::io::Result<fs::File> {
@@ -799,6 +1041,99 @@ fn ensure_non_empty(value: &str, message: &'static str) -> Result<()> {
     Ok(())
 }
 
+fn validate_submit_reservation_metadata(
+    metadata: &BoltV3SubmitReservationMetadataEvidence,
+) -> Result<()> {
+    for (field, value) in [
+        ("client_order_id", metadata.client_order_id.as_str()),
+        (
+            "submit_reservation_id",
+            metadata.submit_reservation_id.as_str(),
+        ),
+        ("venue_id", metadata.venue_id.as_str()),
+        ("account_id", metadata.account_id.as_str()),
+        ("product_kind", metadata.product_kind.as_str()),
+        ("collateral_currency", metadata.collateral_currency.as_str()),
+        ("capital_pool_id", metadata.capital_pool_id.as_str()),
+        ("collateral_group_id", metadata.collateral_group_id.as_str()),
+        ("instrument_id", metadata.instrument_id.as_str()),
+        ("side", metadata.side.as_str()),
+        ("source", metadata.source.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(anyhow!(
+                "submit reservation metadata {field} must be non-empty"
+            ));
+        }
+    }
+    if metadata.observed_at_ns == 0 {
+        return Err(anyhow!(
+            "submit reservation metadata observed_at_ns must be positive"
+        ));
+    }
+    require_positive_decimal(
+        &metadata.submitted_quantity,
+        "submit reservation metadata submitted_quantity",
+    )?;
+    require_non_negative_decimal(
+        &metadata.liability_factor,
+        "submit reservation metadata liability_factor",
+    )?;
+    require_non_negative_decimal(
+        &metadata.additive_liability,
+        "submit reservation metadata additive_liability",
+    )?;
+    require_positive_decimal(
+        &metadata.reserved_liability,
+        "submit reservation metadata reserved_liability",
+    )?;
+    Ok(())
+}
+
+fn validate_submit_reservation_fill(fill: &BoltV3SubmitReservationFillEvidence) -> Result<()> {
+    for (field, value) in [
+        ("client_order_id", fill.client_order_id.as_str()),
+        ("submit_reservation_id", fill.submit_reservation_id.as_str()),
+        ("trade_id", fill.trade_id.as_str()),
+        ("instrument_id", fill.instrument_id.as_str()),
+        ("side", fill.side.as_str()),
+        ("source", fill.source.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(anyhow!("submit reservation fill {field} must be non-empty"));
+        }
+    }
+    if fill.observed_at_ns == 0 {
+        return Err(anyhow!(
+            "submit reservation fill observed_at_ns must be positive"
+        ));
+    }
+    require_positive_decimal(&fill.fill_quantity, "submit reservation fill fill_quantity")?;
+    Ok(())
+}
+
+fn require_positive_decimal(value: &str, field: &str) -> Result<Decimal> {
+    let decimal = parse_decimal(value, field)?;
+    if decimal <= Decimal::ZERO {
+        return Err(anyhow!("{field} must be positive"));
+    }
+    Ok(decimal)
+}
+
+fn require_non_negative_decimal(value: &str, field: &str) -> Result<Decimal> {
+    let decimal = parse_decimal(value, field)?;
+    if decimal < Decimal::ZERO {
+        return Err(anyhow!("{field} must be non-negative"));
+    }
+    Ok(decimal)
+}
+
+fn parse_decimal(value: &str, field: &str) -> Result<Decimal> {
+    value
+        .parse::<Decimal>()
+        .with_context(|| format!("{field} must parse as decimal"))
+}
+
 #[derive(Deserialize)]
 struct DecisionEvidenceEnvelopeHeader {
     schema_version: u32,
@@ -889,6 +1224,20 @@ struct PositionSizerRebuildAuditLineOwned {
     audit: BoltV3PositionSizerRebuildAuditEvidence,
 }
 
+#[derive(Deserialize)]
+struct SubmitReservationMetadataLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    metadata: BoltV3SubmitReservationMetadataEvidence,
+}
+
+#[derive(Deserialize)]
+struct SubmitReservationFillLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    fill: BoltV3SubmitReservationFillEvidence,
+}
+
 impl AdmissionDecisionLineOwned {
     fn validate_header(
         &self,
@@ -908,6 +1257,30 @@ impl PositionSizerRebuildAuditLineOwned {
         index: usize,
     ) -> Result<()> {
         let _ = &self.audit;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+impl SubmitReservationMetadataLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.metadata;
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+impl SubmitReservationFillLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.fill;
         self.header.validate(expected_kind, expected_gate_id, index)
     }
 }
@@ -950,6 +1323,26 @@ struct PositionSizerRebuildAuditLine<'a> {
     gate_version: &'static str,
     kind: &'static str,
     audit: &'a BoltV3PositionSizerRebuildAuditEvidence,
+}
+
+#[derive(Serialize)]
+struct SubmitReservationMetadataLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    metadata: &'a BoltV3SubmitReservationMetadataEvidence,
+}
+
+#[derive(Serialize)]
+struct SubmitReservationFillLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    fill: &'a BoltV3SubmitReservationFillEvidence,
 }
 
 fn current_utc_ns() -> i64 {
@@ -1018,6 +1411,40 @@ fn encode_position_sizer_rebuild_audit_line(
     };
     let mut line = serde_json::to_vec(&envelope)
         .context("failed to serialize position sizer rebuild audit evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+fn encode_submit_reservation_metadata_line(
+    metadata: &BoltV3SubmitReservationMetadataEvidence,
+) -> Result<Vec<u8>> {
+    let envelope = SubmitReservationMetadataLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: "submit_reservation_metadata",
+        metadata,
+    };
+    let mut line = serde_json::to_vec(&envelope)
+        .context("failed to serialize submit reservation metadata evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+fn encode_submit_reservation_fill_line(
+    fill: &BoltV3SubmitReservationFillEvidence,
+) -> Result<Vec<u8>> {
+    let envelope = SubmitReservationFillLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: "submit_reservation_fill",
+        fill,
+    };
+    let mut line = serde_json::to_vec(&envelope)
+        .context("failed to serialize submit reservation fill evidence")?;
     line.extend_from_slice(b"\n");
     Ok(line)
 }

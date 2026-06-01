@@ -7795,6 +7795,20 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[derive(Debug)]
@@ -7829,6 +7843,20 @@ mod tests {
             _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
         ) -> Result<()> {
             anyhow::bail!("position sizer rebuild audit write failed")
+        }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("submit reservation metadata write failed")
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("submit reservation fill write failed")
         }
     }
 
@@ -7898,6 +7926,20 @@ mod tests {
         fn record_position_sizer_rebuild_audit(
             &self,
             _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &crate::bolt_v3_decision_evidence::BoltV3SubmitReservationFillEvidence,
         ) -> Result<()> {
             Ok(())
         }

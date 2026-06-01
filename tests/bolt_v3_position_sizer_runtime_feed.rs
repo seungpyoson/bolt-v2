@@ -1113,8 +1113,12 @@ fn open_order_reservation(
         instrument_id: "instrument-yes.VENUE-A".to_string(),
         side: BoltV3CompiledOrderSide::Buy,
         open_quantity: Decimal::new(10, 0),
+        original_quantity: Decimal::new(10, 0),
+        filled_quantity: Decimal::ZERO,
         liability_factor: Decimal::new(4, 1),
         additive_liability: Decimal::new(3, 1),
+        seen_trade_ids: Default::default(),
+        recovered_from_startup: false,
         observed_at_ns: 1_000,
         evidence_label: "nt_open_order_cache".to_string(),
     }

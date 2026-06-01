@@ -14,8 +14,10 @@ use bolt_v2::{
         BoltV3GateEvidenceIdentity, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
         BoltV3OrderIntentOrderFields, BoltV3PositionSizerRebuildAuditEvidence,
         BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
-        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
-        read_latest_entry_decision_evidence_chain,
+        BoltV3SubmitReservationFillEvidence,
+        BoltV3SubmitReservationMetadataEvidence, JsonlBoltV3DecisionEvidenceWriter,
+        decision_evidence_path, read_latest_entry_decision_evidence_chain,
+        read_submit_reservation_recovery_evidence,
     },
     strategies::registry::FeeProvider,
     strategies::registry::StrategyBuildContext,
@@ -71,8 +73,24 @@ fn latest_entry_decision_evidence_chain_accepts_position_sizer_rebuild_audit_rec
 }
 
 #[test]
-fn admission_decision_evidence_records_loss_governor_halt_reasons_in_schema_v6() {
-    assert_eq!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION, 6);
+fn latest_entry_decision_evidence_chain_accepts_submit_reservation_records() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut lines = Vec::from(sample_entry_decision_evidence_lines());
+    lines.insert(1, sample_submit_reservation_metadata_line());
+    lines.insert(2, sample_submit_reservation_fill_line());
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let chain = read_latest_entry_decision_evidence_chain(&evidence_path, 100_000)
+        .expect("submit reservation evidence should not break entry evidence parsing");
+
+    assert_eq!(chain.snapshot.client_order_id, "client-order-one");
+    assert_eq!(chain.admission.client_order_id, "client-order-one");
+}
+
+#[test]
+fn admission_decision_evidence_records_loss_governor_halt_reasons_in_schema_v7() {
+    assert_eq!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION, 7);
 
     let admission = BoltV3AdmissionDecisionEvidence {
         strategy_id: "strategy-one".to_string(),
@@ -93,6 +111,124 @@ fn admission_decision_evidence_records_loss_governor_halt_reasons_in_schema_v6()
     assert_eq!(
         encoded["loss_halt_reasons"],
         serde_json::json!(["per_trade_loss_limit", "daily_loss_limit"])
+    );
+}
+
+#[test]
+fn submit_reservation_metadata_evidence_is_written_to_jsonl() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    let writer = JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(&loaded)
+        .expect("writer should open configured evidence path");
+
+    writer
+        .record_submit_reservation_metadata(&sample_submit_reservation_metadata())
+        .expect("submit reservation metadata should persist");
+
+    let path = decision_evidence_path(&loaded).expect("evidence path should resolve");
+    let body = std::fs::read_to_string(path).expect("evidence should be readable");
+    let decoded: serde_json::Value =
+        serde_json::from_str(body.trim()).expect("evidence line should decode");
+
+    assert_eq!(
+        decoded["schema_version"],
+        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+    );
+    assert_eq!(decoded["gate_id"], BOLT_V3_SUBMIT_ADMISSION_GATE_ID);
+    assert_eq!(decoded["kind"], "submit_reservation_metadata");
+    assert_eq!(
+        decoded["metadata"]["submit_reservation_id"],
+        "client-order-one#1"
+    );
+    assert_eq!(decoded["metadata"]["venue_id"], "venue-one");
+    assert_eq!(decoded["metadata"]["account_id"], "account-one");
+    assert_eq!(
+        decoded["metadata"]["product_kind"],
+        "prediction_market_binary"
+    );
+    assert_eq!(decoded["metadata"]["submitted_quantity"], "10");
+    assert_eq!(decoded["metadata"]["reserved_liability"], "4.3");
+}
+
+#[test]
+fn submit_reservation_fill_evidence_is_written_to_jsonl() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    let writer = JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(&loaded)
+        .expect("writer should open configured evidence path");
+
+    writer
+        .record_submit_reservation_fill(&sample_submit_reservation_fill())
+        .expect("submit reservation fill should persist");
+
+    let path = decision_evidence_path(&loaded).expect("evidence path should resolve");
+    let body = std::fs::read_to_string(path).expect("evidence should be readable");
+    let decoded: serde_json::Value =
+        serde_json::from_str(body.trim()).expect("evidence line should decode");
+
+    assert_eq!(
+        decoded["schema_version"],
+        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+    );
+    assert_eq!(decoded["gate_id"], BOLT_V3_SUBMIT_ADMISSION_GATE_ID);
+    assert_eq!(decoded["kind"], "submit_reservation_fill");
+    assert_eq!(decoded["fill"]["trade_id"], "trade-one");
+    assert_eq!(decoded["fill"]["fill_quantity"], "2");
+    assert_eq!(decoded["fill"]["reconciliation"], false);
+}
+
+#[test]
+fn submit_reservation_recovery_reads_latest_metadata_and_fill_trade_ids() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut older_metadata = sample_submit_reservation_metadata_line();
+    older_metadata["metadata"]["submit_reservation_id"] = serde_json::json!("client-order-one#old");
+    older_metadata["metadata"]["observed_at_ns"] = serde_json::json!(900_u64);
+    let mut old_fill = sample_submit_reservation_fill_line();
+    old_fill["fill"]["submit_reservation_id"] = serde_json::json!("client-order-one#old");
+    old_fill["fill"]["trade_id"] = serde_json::json!("old-trade");
+    let lines = vec![
+        older_metadata,
+        old_fill,
+        sample_submit_reservation_metadata_line(),
+        sample_submit_reservation_fill_line(),
+    ];
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let recovered = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+        .expect("submit reservation evidence should recover");
+    let reservation = recovered
+        .metadata_by_client_order_id
+        .get("client-order-one")
+        .expect("client order metadata should recover");
+
+    assert_eq!(
+        reservation.metadata.submit_reservation_id,
+        "client-order-one#1"
+    );
+    assert!(reservation.fill_trade_ids.contains("trade-one"));
+    assert!(!reservation.fill_trade_ids.contains("old-trade"));
+}
+
+#[test]
+fn submit_reservation_recovery_rejects_invalid_metadata_fields() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut line = sample_submit_reservation_metadata_line();
+    line["metadata"]["reserved_liability"] = serde_json::json!("0");
+    write_decision_evidence_lines(&evidence_path, &[line]);
+
+    let error = read_submit_reservation_recovery_evidence(&evidence_path, 100_000)
+        .expect_err("non-positive reserved liability must reject");
+    let error = format!("{error:#}");
+
+    assert!(
+        error.contains("submit reservation metadata reserved_liability must be positive"),
+        "unexpected recovery error: {error}"
     );
 }
 
@@ -475,6 +611,63 @@ fn sample_position_sizer_rebuild_audit_line() -> serde_json::Value {
     })
 }
 
+fn sample_submit_reservation_metadata() -> BoltV3SubmitReservationMetadataEvidence {
+    BoltV3SubmitReservationMetadataEvidence {
+        client_order_id: "client-order-one".to_string(),
+        submit_reservation_id: "client-order-one#1".to_string(),
+        venue_id: "venue-one".to_string(),
+        account_id: "account-one".to_string(),
+        product_kind: "prediction_market_binary".to_string(),
+        collateral_currency: "USD".to_string(),
+        capital_pool_id: "pool-one".to_string(),
+        collateral_group_id: "group-one".to_string(),
+        instrument_id: "instrument-up".to_string(),
+        side: "Buy".to_string(),
+        submitted_quantity: "10".to_string(),
+        liability_factor: "0.40".to_string(),
+        additive_liability: "0.3".to_string(),
+        reserved_liability: "4.3".to_string(),
+        observed_at_ns: 1_000,
+        source: "submit_admission".to_string(),
+    }
+}
+
+fn sample_submit_reservation_fill() -> BoltV3SubmitReservationFillEvidence {
+    BoltV3SubmitReservationFillEvidence {
+        client_order_id: "client-order-one".to_string(),
+        submit_reservation_id: "client-order-one#1".to_string(),
+        trade_id: "trade-one".to_string(),
+        instrument_id: "instrument-up".to_string(),
+        side: "Buy".to_string(),
+        fill_quantity: "2".to_string(),
+        observed_at_ns: 1_100,
+        reconciliation: false,
+        source: "nt_order_fill".to_string(),
+    }
+}
+
+fn sample_submit_reservation_metadata_line() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 2_i64,
+        "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": "submit_reservation_metadata",
+        "metadata": sample_submit_reservation_metadata(),
+    })
+}
+
+fn sample_submit_reservation_fill_line() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 2_i64,
+        "gate_id": BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": "submit_reservation_fill",
+        "fill": sample_submit_reservation_fill(),
+    })
+}
+
 fn write_decision_evidence_lines(path: &std::path::Path, lines: &[serde_json::Value]) {
     let mut body = String::new();
     for line in lines {
@@ -506,6 +699,20 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     fn record_position_sizer_rebuild_audit(
         &self,
         _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        _metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
     ) -> Result<()> {
         Ok(())
     }

@@ -1,0 +1,123 @@
+# Implementation Plan: Hyperliquid Execution Adapter
+
+**Branch**: `codex/025-hyperliquid-execution-adapter` | **Date**: 2026-06-01 | **Spec**: `specs/025-hyperliquid-execution-adapter/spec.md`
+**Input**: Feature specification from `specs/025-hyperliquid-execution-adapter/spec.md`
+
+## Summary
+
+Enable Hyperliquid as a production-grade NautilusTrader-backed execution provider for standard perps, spot, HIP-3 builder perps, and HIP-4 outcomes without adding a bespoke client or strategy-level submit mechanics. The first accepted slice registers the NT Hyperliquid Rust adapter behind Bolt's provider registry, proves public product discovery and SSM-only credential handling, and leaves every live submit path fail-closed until no-submit proof and an explicit, bounded live-submit approval artifact exist for the exact product surface.
+
+Colocated low-latency operation is planned as configuration and runbook surface only: local Hyperliquid info node and infrastructure placement may reduce latency, but the adapter must not hardcode endpoints, placement assumptions, fee weights, product IDs, or submit policy in code.
+
+## Technical Context
+
+**Language/Version**: Rust, current repository toolchain
+**Primary Dependencies**: `nautilus_trader` pinned git revision already used by the repo; add the matching `nautilus-hyperliquid` crate from the same pinned revision after re-verifying current `Cargo.lock` compatibility
+**Storage**: TOML runtime config and operator artifacts only; secrets resolve from AWS SSM through Rust SDK
+**Testing**: TDD with focused Rust unit/integration tests, `cargo fmt --check`, `cargo clippy --locked --lib -- -D warnings`, relevant `cargo test` slices, and no-submit artifact verification before any live path
+**Target Platform**: Pure Rust `LiveNode` runtime
+**Project Type**: Trading execution adapter integration inside existing Rust binary
+**Performance Goals**: No hard latency claim. Provide TOML-driven local-info-node and region/AZ profile fields so ops can place the process near Hyperliquid infrastructure and measure actual latency.
+**Constraints**: No Python layer, no raw Hyperliquid client, no environment secret fallback, no strategy submit mechanics, one signer owner per runtime, official rate-limit weights, fail-closed product surfaces until proof exists
+**Scale/Scope**: One Hyperliquid provider family with four product surfaces: standard perps, spot, HIP-3 builder perps, HIP-4 outcomes
+
+## Evidence Baseline
+
+- Fresh base: `origin/main` is `2938bc6f6e7553e436f074163a9e5db8b4c56b11`, merge `#519` on top of PR 480 merge `92ef8e7dfeee7baa7f5eb4eb2d13017c18fa0afe`.
+- NT source exists at the pinned checkout: `crates/adapters/hyperliquid`.
+- NT adapter currently contains environment fallbacks for Hyperliquid credentials and account address; Bolt must fence these through SSM-only config before handoff.
+- NT Hyperliquid source exposes public discovery surfaces for standard perp metadata, spot metadata, all perp metas, outcome metadata, and user fee queries.
+- Public no-secret probes on 2026-06-01 showed non-empty `meta`, `spotMeta`, `allPerpMetas`, `outcomeMeta`, and `exchangeStatus` responses.
+- Official Hyperliquid docs identify nonce/API wallet constraints, asset-id differences by product surface, `userFees` request weight, and latency optimization guidance.
+
+## Constitution Check
+
+*GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
+
+- PASS - NT-first thin layer: use `nautilus-hyperliquid`, not a raw `src/clients/hyperliquid.rs` implementation.
+- PASS - Generic core, concrete edge: Hyperliquid registers as one provider binding; provider registry and execution admission stay shared.
+- PASS - Single config and secret source: runtime values come from TOML; secrets come from AWS SSM via Rust SDK.
+- PASS - Live trading fail-closed: live submit paths remain disabled until exact no-submit and approval artifacts pass.
+- PASS - TDD and evidence: every phase has tests or direct source/doc evidence before claims.
+- PASS - Minimal slice: MVP stops at provider registration, discovery, fees, credential fences, and no-submit proof. Live perps, spot, HIP-3, and HIP-4 submit are follow-up gated slices.
+- PASS - Strategy intent only: no changes under `src/strategies/*` may submit, round, size, validate venue rules, or handle fills.
+
+## Project Structure
+
+### Documentation
+
+```text
+specs/025-hyperliquid-execution-adapter/
+├── plan.md
+├── spec.md
+├── research.md
+├── data-model.md
+├── quickstart.md
+├── contracts/
+│   └── hyperliquid-provider-contract.md
+└── tasks.md
+```
+
+### Source Code
+
+```text
+Cargo.toml
+Cargo.lock
+src/
+├── bolt_v3_config.rs
+├── bolt_v3_operator_artifacts.rs
+├── bolt_v3_providers/
+│   └── mod.rs
+├── execution_admission/
+└── lib.rs
+
+tests/
+├── bolt_v3_provider_binding.rs
+├── bolt_v3_production_entrypoint.rs
+└── hyperliquid_*.rs
+```
+
+**Structure Decision**: Extend the existing provider registry and shared execution/admission modules. Do not add a raw Hyperliquid client module and do not put venue mechanics in strategies.
+
+## Phase Plan
+
+### Phase 0 - Evidence And Research
+
+1. Re-verify `origin/main`, `Cargo.lock`, and pinned NT checkout after PR 480 and any later base merges.
+2. Inventory NT Hyperliquid Rust adapter source for config, credentials, signer, nonce, metadata, fees, submit, cancel, and product-surface support.
+3. Confirm official Hyperliquid docs for latency, nonces/API wallets, asset IDs, rate limits, and supported request weights.
+4. Record product-surface support as evidence, gap, or fail-closed.
+5. Send this plan to relay-Claude adversarial review before implementation.
+
+### Phase 1 - Design And Contracts
+
+1. Define Hyperliquid provider contract at the Bolt provider-binding boundary.
+2. Define TOML/SSM config entities and signer-owner lifecycle.
+3. Define public discovery matrix for standard perps, spot, HIP-3 builder perps, and HIP-4 outcomes.
+4. Define no-submit readiness and live-submit approval artifacts.
+5. Define local-info-node and colocation profile as ops-only configuration.
+
+### Phase 2 - MVP Implementation
+
+MVP includes only provider registration, dependency wiring, config validation, SSM-only credential resolution, environment-fallback fencing, signer ownership, product discovery, official fee/rate accounting, and no-submit proof.
+
+### Phase 3 - Gated Live Execution
+
+Standard perps live submit may proceed only after MVP proof, operator approval artifact, bounded order limits, and no-submit replay proof. Spot, HIP-3, and HIP-4 remain fail-closed until their own submit/cancel/fill/fee/provenance proof exists.
+
+## Implementation Rules
+
+- Add `nautilus-hyperliquid` only from the same pinned NT revision used by the repo.
+- Register Hyperliquid only through `ProviderBinding`.
+- Reject raw secret material in TOML.
+- Resolve all secrets from SSM before constructing NT config.
+- Scrub or reject `HYPERLIQUID_*` environment variables before NT handoff.
+- Require account address for API-wallet mode.
+- Enforce one signer/API-wallet owner per process.
+- Charge `userFees` using the official request weight.
+- Treat local info node as read-only market-data optimization; it must not bypass rate accounting, submit gates, or provenance.
+- Require exact base SHA, TOML checksum, provider id, product surface, order limits, expiry, and one-time id in live-submit approval artifacts.
+
+## Complexity Tracking
+
+No constitution violations are accepted for this feature. Any implementation pressure to add a raw client, strategy submit path, environment fallback, hardcoded runtime value, or ungated live submit path blocks the feature.

@@ -1,0 +1,116 @@
+# Data Model: Hyperliquid Execution Adapter
+
+## HyperliquidClientBlock
+
+- `provider_id`: existing Bolt provider identifier.
+- `environment`: explicit network/profile name from TOML.
+- `execution_mode`: `HyperliquidExecutionMode`.
+- `secret_set`: `HyperliquidSecretSet`.
+- `product_surfaces`: enabled discovery surfaces.
+- `latency_profile`: optional `HyperliquidLatencyProfile`.
+
+Validation:
+- Must be declared in TOML.
+- Must not contain raw secret material.
+- Must map through `ProviderBinding`.
+
+## HyperliquidSecretSet
+
+- `private_key_ssm_path`
+- `account_address_ssm_path`
+- `vault_address_ssm_path`
+- `api_wallet_label`
+
+Validation:
+- Every secret value resolves from SSM via Rust AWS SDK.
+- Raw private keys and environment fallback are rejected.
+- API-wallet modes require account address.
+
+## HyperliquidExecutionMode
+
+Values:
+- `direct_account`
+- `vault`
+- `master_account_api_wallet`
+- `subaccount_api_wallet`
+
+Validation:
+- Mode controls required SSM paths and NT config construction.
+- Mode is part of approval-artifact binding.
+
+## HyperliquidSignerOwner
+
+- `signer_fingerprint`
+- `provider_id`
+- `execution_mode`
+- `account_address`
+- `process_owner_id`
+
+Validation:
+- One owner per signer/API wallet in the runtime.
+- Duplicate owners fail closed.
+
+## HyperliquidProductMatrix
+
+- `standard_perps`: discovery status, submit status, source evidence.
+- `spot`: discovery status, submit status, source evidence.
+- `hip3_builder_perps`: discovery status, submit status, source evidence.
+- `hip4_outcomes`: discovery status, submit status, source evidence.
+
+Validation:
+- Discovery does not imply submit readiness.
+- Unknown or unsupported surfaces remain fail-closed.
+
+## HyperliquidNoSubmitReadiness
+
+- `base_sha`
+- `provider_id`
+- `toml_checksum`
+- `signer_fingerprint`
+- `product_surface`
+- `metadata_evidence`
+- `fee_evidence`
+- `admission_evidence`
+- `exchange_mutation_count`
+
+Validation:
+- `exchange_mutation_count` must be zero.
+- Any submit/cancel/modify/transfer/account mutation blocks readiness.
+
+## HyperliquidLiveSubmitApprovalArtifact
+
+- `approval_id`
+- `base_sha`
+- `provider_id`
+- `product_surface`
+- `toml_checksum`
+- `signer_fingerprint`
+- `order_limits`
+- `expires_at`
+- `used_at`
+
+Validation:
+- One-time use.
+- Current runtime must match every bound field.
+- Expired, stale, reused, or broader-than-config artifacts are rejected.
+
+## HyperliquidEgressModel
+
+- `read_requests`
+- `fee_requests`
+- `exchange_mutation_requests`
+- `request_weights`
+
+Validation:
+- Official request weights are used.
+- Local info-node reads do not bypass accounting.
+
+## HyperliquidLatencyProfile
+
+- `local_info_node_url`
+- `placement_profile`
+- `measurement_artifact_path`
+
+Validation:
+- Values come from TOML.
+- Profile cannot change submit gates or signer ownership.

@@ -6,6 +6,8 @@ pub mod bolt_v3_client_registration;
 pub mod bolt_v3_config;
 pub mod bolt_v3_decision_evidence;
 pub mod bolt_v3_instrument_filters;
+pub mod bolt_v3_kill_switch;
+pub mod bolt_v3_kill_switch_store;
 pub mod bolt_v3_live_canary_gate;
 pub mod bolt_v3_live_node;
 pub mod bolt_v3_market_families;

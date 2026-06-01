@@ -96,6 +96,35 @@ pub fn gm_half_spread(fair_p_up: f64, informed_fraction: f64) -> Option<f64> {
     Some((quote.ask - quote.bid) / TWO_F64)
 }
 
+/// The secondary inventory skew the maker applies on top of the
+/// Glosten-Milgrom half-spread, leaning its quotes to reduce a net position.
+///
+/// Linear in the net position with a configured `skew_gain` (price units per
+/// share): a positive return leans a net-long-YES maker's quotes down on YES and
+/// up on NO (see [`crate::strategies::maker_quote::FamilyQuoteInputs`] and
+/// [`crate::strategies::maker_inventory::MakerInventory`]). The skew is bounded
+/// by `position_cap * skew_gain`, since the position itself is capped below.
+///
+/// Fail-closed (returns `None`) when:
+/// - `net_position` is not finite;
+/// - `skew_gain` is negative or not finite (a gain of zero disables the skew);
+/// - `position_cap` is not a positive finite share count;
+/// - `|net_position|` exceeds `position_cap` — the maker has breached its hard
+///   inventory limit and must stop quoting to add; the governor reads the `None`
+///   as the signal to go reduce-only.
+pub fn inventory_skew(net_position: f64, skew_gain: f64, position_cap: f64) -> Option<f64> {
+    if !net_position.is_finite() || !skew_gain.is_finite() || skew_gain < ZERO_F64 {
+        return None;
+    }
+    if !is_positive_finite(position_cap) {
+        return None;
+    }
+    if net_position.abs() > position_cap {
+        return None;
+    }
+    Some(net_position * skew_gain)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,5 +204,39 @@ mod tests {
         assert!(gm_binary_quote(0.5, 1.1).is_none());
         assert!(gm_binary_quote(0.5, f64::NAN).is_none());
         assert!(gm_half_spread(f64::INFINITY, 0.3).is_none());
+    }
+
+    #[test]
+    fn inventory_skew_is_linear_and_leans_to_reduce_a_long() {
+        // Net long YES -> positive skew (the layout leans YES bid down, NO up).
+        let skew = inventory_skew(4.0, 0.01, 100.0).expect("within cap");
+        assert!((skew - 0.04).abs() < EPSILON);
+        // Linear: doubling the position doubles the skew.
+        let double = inventory_skew(8.0, 0.01, 100.0).unwrap();
+        assert!((double - 2.0 * skew).abs() < EPSILON);
+        // A net short flips the sign.
+        assert!(inventory_skew(-4.0, 0.01, 100.0).unwrap() < ZERO_F64);
+    }
+
+    #[test]
+    fn inventory_skew_zero_gain_disables_the_skew() {
+        assert_eq!(inventory_skew(7.0, 0.0, 100.0), Some(0.0));
+    }
+
+    #[test]
+    fn inventory_skew_fails_closed_beyond_the_position_cap() {
+        // Inside the cap it quotes; over the cap the maker must go reduce-only.
+        assert!(inventory_skew(50.0, 0.01, 50.0).is_some());
+        assert!(inventory_skew(50.0001, 0.01, 50.0).is_none());
+    }
+
+    #[test]
+    fn inventory_skew_fails_closed_on_bad_inputs() {
+        assert!(inventory_skew(f64::NAN, 0.01, 100.0).is_none());
+        assert!(inventory_skew(1.0, -0.01, 100.0).is_none());
+        assert!(inventory_skew(1.0, f64::INFINITY, 100.0).is_none());
+        // A non-positive cap is degenerate.
+        assert!(inventory_skew(1.0, 0.01, 0.0).is_none());
+        assert!(inventory_skew(1.0, 0.01, -5.0).is_none());
     }
 }

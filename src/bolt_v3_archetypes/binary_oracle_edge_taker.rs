@@ -115,6 +115,10 @@ pub struct RuntimeParametersBlock {
     pub vol_gap_reset_secs: u64,
     pub vol_min_observations: u64,
     pub vol_bridge_valid_secs: u64,
+    pub trade_flow_window_secs: u64,
+    pub trade_flow_max_samples: u64,
+    pub spike_guard_return_threshold: f64,
+    pub spike_guard_cooldown_secs: u64,
     pub pricing_kurtosis: f64,
     pub theta_decay_factor: f64,
     pub forced_flat_thin_book_min_liquidity: f64,
@@ -140,6 +144,10 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             vol_gap_reset_secs: u64,
             vol_min_observations: u64,
             vol_bridge_valid_secs: u64,
+            trade_flow_window_secs: u64,
+            trade_flow_max_samples: u64,
+            spike_guard_return_threshold: f64,
+            spike_guard_cooldown_secs: u64,
             pricing_kurtosis: f64,
             theta_decay_factor: f64,
             forced_flat_thin_book_min_liquidity: f64,
@@ -196,6 +204,10 @@ impl<'de> Deserialize<'de> for RuntimeParametersBlock {
             vol_gap_reset_secs: wire.vol_gap_reset_secs,
             vol_min_observations: wire.vol_min_observations,
             vol_bridge_valid_secs: wire.vol_bridge_valid_secs,
+            trade_flow_window_secs: wire.trade_flow_window_secs,
+            trade_flow_max_samples: wire.trade_flow_max_samples,
+            spike_guard_return_threshold: wire.spike_guard_return_threshold,
+            spike_guard_cooldown_secs: wire.spike_guard_cooldown_secs,
             pricing_kurtosis: wire.pricing_kurtosis,
             theta_decay_factor: wire.theta_decay_factor,
             forced_flat_thin_book_min_liquidity: wire.forced_flat_thin_book_min_liquidity,
@@ -687,6 +699,29 @@ pub fn raw_taker_config(
         strategy_instance_id,
         "vol_bridge_valid_secs",
         parameters.runtime.vol_bridge_valid_secs,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "trade_flow_window_secs",
+        parameters.runtime.trade_flow_window_secs,
+    )?;
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "trade_flow_max_samples",
+        parameters.runtime.trade_flow_max_samples,
+    )?;
+    insert_float(
+        &mut table,
+        "spike_guard_return_threshold",
+        parameters.runtime.spike_guard_return_threshold,
+    );
+    insert_u64(
+        &mut table,
+        strategy_instance_id,
+        "spike_guard_cooldown_secs",
+        parameters.runtime.spike_guard_cooldown_secs,
     )?;
     insert_float(
         &mut table,

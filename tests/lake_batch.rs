@@ -75,12 +75,7 @@ fn all_supported_optional_contract() -> VenueContract {
         })
         .collect::<BTreeMap<_, _>>();
 
-    VenueContract {
-        schema_version: 1,
-        venue: "test".to_string(),
-        adapter_version: "bolt-v2".to_string(),
-        streams,
-    }
+    support::sample_contract_with_streams(streams)
 }
 
 fn collect_paths(root: &Path) -> Vec<std::path::PathBuf> {

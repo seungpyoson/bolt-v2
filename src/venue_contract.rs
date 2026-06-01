@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 pub const STREAM_CLASS_QUOTES: &str = "quotes";
 pub const STREAM_CLASS_TRADES: &str = "trades";
@@ -55,6 +55,37 @@ pub enum Provenance {
     Derived,
 }
 
+/// Payout/settlement structure for instruments on a venue.
+///
+/// This describes only the *payout* shape (what an outcome is worth at
+/// resolution), not the *resolution rule* (at-expiry vs path-dependent), which
+/// is instrument-type math owned by the market-family layer.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SettlementKind {
+    /// Winner-take-all outcome tokens that settle to 0 or 1 at resolution
+    /// (e.g. Polymarket binary markets).
+    Binary,
+}
+
+/// Per-minute REST request budget and batch limits the strategy must respect
+/// when pacing order traffic to a venue.
+///
+/// These values mirror the venue's published limits and inform strategy-side
+/// pacing. `validate()` only enforces positivity; the execution adapter remains
+/// the authoritative enforcer of the physical ceiling, so a budget set above the
+/// adapter's real limit is clamped or rejected by the adapter at runtime rather
+/// than here.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RateBudget {
+    /// Sustained CLOB REST requests permitted per minute.
+    pub clob_per_minute: u32,
+    /// Sustained Gamma REST requests permitted per minute.
+    pub gamma_per_minute: u32,
+    /// Maximum number of orders accepted in a single batch submit.
+    pub batch_submit_limit: u32,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StreamContract {
     pub capability: Capability,
@@ -69,6 +100,13 @@ pub struct VenueContract {
     pub schema_version: u32,
     pub venue: String,
     pub adapter_version: String,
+    /// Whether the venue supports in-place order modification. When `false`,
+    /// the strategy must requote by cancel + resubmit.
+    pub supports_modify: bool,
+    /// Payout/settlement structure for instruments on this venue.
+    pub settlement_kind: SettlementKind,
+    /// REST rate budget and batch limits for order-traffic pacing.
+    pub rate_budget: RateBudget,
     pub streams: BTreeMap<String, StreamContract>,
 }
 
@@ -207,6 +245,37 @@ pub struct CompletenessReport {
     pub classes: BTreeMap<String, ClassReport>,
 }
 
+/// Test-only contract fixture: discover whichever venue contract(s) ship under
+/// the repo's `contracts/` directory, load the first via the production loader,
+/// then swap in caller-supplied `streams`. No venue name, budget value,
+/// settlement kind, or policy is written here — the envelope is sourced entirely
+/// from the shipped config (the single source of truth), so the fixtures carry no
+/// literals. It selects the lexically-first contract under `contracts/` as an
+/// arbitrary valid envelope; tests that assert venue-specific facts load their
+/// contract explicitly rather than relying on this selection. Integration
+/// tests use the mirror in `tests/support`; Rust's lib/integration-test boundary
+/// forces the two copies of this discovery logic (it carries no config values,
+/// only the lookup).
+#[cfg(test)]
+pub(crate) fn sample_contract_with_streams(
+    streams: BTreeMap<String, StreamContract>,
+) -> VenueContract {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("contracts");
+    let mut paths: Vec<PathBuf> = fs::read_dir(&dir)
+        .unwrap_or_else(|error| panic!("contracts dir {} must be readable: {error}", dir.display()))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("toml"))
+        .collect();
+    paths.sort();
+    let path = paths
+        .first()
+        .unwrap_or_else(|| panic!("at least one venue contract must ship in {}", dir.display()));
+    let mut contract = VenueContract::load_and_validate(path)
+        .unwrap_or_else(|error| panic!("shipped contract {} must load: {error}", path.display()));
+    contract.streams = streams;
+    contract
+}
+
 impl VenueContract {
     pub fn load_and_validate(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path)
@@ -222,6 +291,19 @@ impl VenueContract {
             self.schema_version == CURRENT_SCHEMA_VERSION,
             "unsupported contract schema_version {}, expected {CURRENT_SCHEMA_VERSION}",
             self.schema_version
+        );
+
+        ensure!(
+            self.rate_budget.clob_per_minute > 0,
+            "rate_budget.clob_per_minute must be positive"
+        );
+        ensure!(
+            self.rate_budget.gamma_per_minute > 0,
+            "rate_budget.gamma_per_minute must be positive"
+        );
+        ensure!(
+            self.rate_budget.batch_submit_limit > 0,
+            "rate_budget.batch_submit_limit must be positive"
         );
 
         for cls in supported_stream_classes() {

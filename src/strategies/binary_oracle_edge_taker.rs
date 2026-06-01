@@ -14,11 +14,14 @@ use nautilus_common::{
 use nautilus_core::{Params, UnixNanos};
 #[cfg(not(test))]
 use nautilus_model::enums::BookType;
-use nautilus_model::{data::QuoteTick, enums::PositionSide};
+use nautilus_model::{
+    data::{QuoteTick, TradeTick},
+    enums::PositionSide,
+};
 use nautilus_model::{
     enums::{
-        BookAction, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce, TrailingOffsetType,
-        TriggerType,
+        AggressorSide, BookAction, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce,
+        TrailingOffsetType, TriggerType,
     },
     identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId, Venue},
     instruments::{Instrument, InstrumentAny},
@@ -45,7 +48,12 @@ use crate::{
         validate_readiness_gate_evidence_snapshot,
     },
     bolt_v3_market_families::{
-        self, MarketSelectionOutcome, MarketSelectionTarget, SelectedMarketSourceIdentity,
+        self, FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget,
+        SelectedMarketSourceIdentity,
+    },
+    bolt_v3_numeric::{
+        MILLIS_PER_SECOND_U64, POWER_OF_TWO, UNIT_F64, ZERO_F64, is_positive_finite,
+        sanitize_probability,
     },
     bolt_v3_operator_artifacts::{EntryReadinessGateSession, GateSatisfaction},
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
@@ -58,6 +66,7 @@ use crate::{
         admission_base_notional_from_order, base_quantity_admission_notional,
         fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
     },
+    bolt_v3_volatility::{RealizedVolConfig, RealizedVolEstimator},
     strategies::registry::{
         BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
     },
@@ -113,6 +122,10 @@ macro_rules! binary_oracle_edge_taker_config_fields {
             vol_gap_reset_secs: u64 => Integer;
             vol_min_observations: u64 => Integer;
             vol_bridge_valid_secs: u64 => Integer;
+            trade_flow_window_secs: u64 => Integer;
+            trade_flow_max_samples: u64 => Integer;
+            spike_guard_return_threshold: f64 => Float;
+            spike_guard_cooldown_secs: u64 => Integer;
             price_to_beat_source: String => String;
             pricing_kurtosis: f64 => Float;
             theta_decay_factor: f64 => Float;
@@ -516,6 +529,18 @@ impl OutcomeBookState {
         self.best_bid.is_some() && self.best_ask.is_some()
     }
 
+    /// Whether this book is priced and strictly crossed (`best_bid > best_ask`).
+    ///
+    /// A locked book (`best_bid == best_ask`) is not crossed and is intentionally
+    /// not flagged. An unpriced book (either side missing) is not crossed either;
+    /// the [`EntryBlockReason::ActiveBookNotPriced`] gate already covers that case.
+    fn is_crossed(&self) -> bool {
+        matches!(
+            (self.best_bid, self.best_ask),
+            (Some(best_bid), Some(best_ask)) if best_bid > best_ask
+        )
+    }
+
     fn metadata_matches_selection(&self) -> bool {
         self.last_observed_instrument_id.is_some()
             && self.last_observed_instrument_id == self.instrument_id
@@ -715,6 +740,15 @@ impl OutcomePreparedBooks {
         self.up.is_priced() && self.down.is_priced()
     }
 
+    /// Whether either active outcome book is priced and strictly crossed.
+    ///
+    /// Mirrors how [`OutcomePreparedBooks::is_priced`] treats both outcome books
+    /// as the active book for the entry gate: a cross on either side is an invalid
+    /// market state that must block entry.
+    fn any_crossed(&self) -> bool {
+        self.up.is_crossed() || self.down.is_crossed()
+    }
+
     fn metadata_matches_selection(&self) -> bool {
         self.up.metadata_matches_selection() && self.down.metadata_matches_selection()
     }
@@ -758,6 +792,7 @@ struct ActiveMarketState {
     warmup_count: u64,
     warmup_target: u64,
     books: OutcomePreparedBooks,
+    trade_flow: BTreeMap<InstrumentId, SignedTradeFlow>,
     fast_venue_incoherent: bool,
     forced_flat: bool,
 }
@@ -784,164 +819,136 @@ impl VenueTimingState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct VolatilitySample {
-    ts_ms: u64,
-    price: f64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ImpactCappedExecution {
     quantity: f64,
     vwap_price: f64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct RealizedVolEstimator {
-    window_ms: u64,
-    gap_reset_ms: u64,
-    min_observations: u64,
-    bridge_valid_ms: u64,
-    active_venue_name: Option<String>,
-    samples: VecDeque<VolatilitySample>,
-    last_ready_vol: Option<f64>,
-    last_ready_ts_ms: Option<u64>,
+/// A single signed trade retained for downstream adverse-selection / VPIN analysis.
+///
+/// This is the per-trade element stored by [`SignedTradeFlow`]; the signed
+/// aggressor side, price, and size are the inputs the W3 Glosten-Milgrom / VPIN
+/// stage will read. Fields are public because this struct is the read seam for
+/// that later stage.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SignedTrade {
+    pub ts_ms: u64,
+    pub aggressor: AggressorSide,
+    pub price: f64,
+    pub size: f64,
 }
 
-impl RealizedVolEstimator {
-    fn from_config(config: &BinaryOracleEdgeTakerConfig) -> Self {
+/// Runtime view of the trade-flow buffer's window/cap knobs.
+///
+/// Plain runtime config view without a serde derive: the strategy owns TOML
+/// deserialization and projects the relevant fields here at the call site
+/// (mirroring [`RealizedVolConfig`] for the volatility estimator), so the buffer
+/// never depends on the strategy's config type and moves cleanly into a shared
+/// module when the W3 consumer is built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignedTradeFlowConfig {
+    pub window_secs: u64,
+    pub max_samples: u64,
+}
+
+/// Project the strategy's trade-flow TOML knobs into the buffer's runtime config
+/// view. Single place that maps those fields onto [`SignedTradeFlowConfig`]
+/// (mirrors [`realized_vol_config`]).
+fn signed_trade_flow_config(config: &BinaryOracleEdgeTakerConfig) -> SignedTradeFlowConfig {
+    SignedTradeFlowConfig {
+        window_secs: config.trade_flow_window_secs,
+        max_samples: config.trade_flow_max_samples,
+    }
+}
+
+/// Bounded rolling buffer of signed trades for a single quoted instrument.
+///
+/// Mirrors [`RealizedVolEstimator`]'s config-driven rolling-window shape: the
+/// retention window and hard sample cap both come from a projected
+/// [`SignedTradeFlowConfig`], and the buffer is bounded by time (`window_ms`) and
+/// count (`max_samples`). It only retains signed trade flow; the W3 stage reads
+/// it to compute adverse-selection signals.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignedTradeFlow {
+    window_ms: u64,
+    max_samples: usize,
+    samples: VecDeque<SignedTrade>,
+}
+
+impl SignedTradeFlow {
+    fn from_config(config: &SignedTradeFlowConfig) -> Self {
         Self {
-            window_ms: config.vol_window_secs.saturating_mul(MILLIS_PER_SECOND_U64),
-            gap_reset_ms: config
-                .vol_gap_reset_secs
-                .saturating_mul(MILLIS_PER_SECOND_U64),
-            min_observations: config.vol_min_observations,
-            bridge_valid_ms: config
-                .vol_bridge_valid_secs
-                .saturating_mul(MILLIS_PER_SECOND_U64),
-            active_venue_name: None,
+            window_ms: config.window_secs.saturating_mul(MILLIS_PER_SECOND_U64),
+            max_samples: config.max_samples as usize,
             samples: VecDeque::new(),
-            last_ready_vol: None,
-            last_ready_ts_ms: None,
         }
     }
 
-    fn empty_like(&self) -> Self {
-        Self {
-            window_ms: self.window_ms,
-            gap_reset_ms: self.gap_reset_ms,
-            min_observations: self.min_observations,
-            bridge_valid_ms: self.bridge_valid_ms,
-            active_venue_name: None,
-            samples: VecDeque::new(),
-            last_ready_vol: None,
-            last_ready_ts_ms: None,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.active_venue_name = None;
-        self.samples.clear();
-        self.last_ready_vol = None;
-        self.last_ready_ts_ms = None;
-    }
-
-    fn observe(&mut self, sample: &FastSpotObservation) -> Option<f64> {
-        if !is_positive_finite(sample.price) {
-            return None;
-        }
-
-        if self.active_venue_name.as_deref() != Some(sample.venue_name.as_str()) {
-            self.reset();
-            self.active_venue_name = Some(sample.venue_name.clone());
-        }
-
-        if let Some(previous) = self.samples.back() {
-            if sample.observed_ts_ms <= previous.ts_ms {
-                return self.current_vol_at(sample.observed_ts_ms);
-            }
-            if sample.observed_ts_ms.saturating_sub(previous.ts_ms) > self.gap_reset_ms {
-                self.reset();
-                self.active_venue_name = Some(sample.venue_name.clone());
-            }
-        }
-
-        self.samples.push_back(VolatilitySample {
-            ts_ms: sample.observed_ts_ms,
-            price: sample.price,
-        });
-        self.evict_old_samples(sample.observed_ts_ms);
-
-        if let Some(vol) = self.compute_ready_vol() {
-            self.last_ready_vol = Some(vol);
-            self.last_ready_ts_ms = Some(sample.observed_ts_ms);
-        }
-
-        self.current_vol_at(sample.observed_ts_ms)
-    }
-
-    fn current_vol_at(&self, now_ms: u64) -> Option<f64> {
-        let last_ready_ts_ms = self.last_ready_ts_ms?;
-        if now_ms.saturating_sub(last_ready_ts_ms) <= self.bridge_valid_ms {
-            self.last_ready_vol
-        } else {
-            None
-        }
-    }
-
-    fn evict_old_samples(&mut self, now_ms: u64) {
-        let cutoff_ms = now_ms.saturating_sub(self.window_ms);
-        while self.samples.len() > 1
-            && self
-                .samples
-                .front()
-                .is_some_and(|sample| sample.ts_ms < cutoff_ms)
+    fn observe(&mut self, trade: &TradeTick) {
+        let ts_ms = trade.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        // Reject non-monotonic observations, mirroring `RealizedVolEstimator`: a
+        // timestamp at or before the latest retained sample would break the
+        // oldest-first ordering and the time-window eviction cutoff.
+        if self
+            .samples
+            .back()
+            .is_some_and(|previous| ts_ms <= previous.ts_ms)
         {
+            return;
+        }
+        self.samples.push_back(SignedTrade {
+            ts_ms,
+            aggressor: trade.aggressor_side,
+            price: trade.price.as_f64(),
+            size: trade.size.as_f64(),
+        });
+        self.evict(ts_ms);
+    }
+
+    fn evict(&mut self, now_ms: u64) {
+        let cutoff_ms = now_ms.saturating_sub(self.window_ms);
+        while self
+            .samples
+            .front()
+            .is_some_and(|trade| trade.ts_ms < cutoff_ms)
+        {
+            let _ = self.samples.pop_front();
+        }
+        while self.samples.len() > self.max_samples {
             let _ = self.samples.pop_front();
         }
     }
 
-    fn compute_ready_vol(&self) -> Option<f64> {
-        let min_observations = self.min_observations.max(MIN_OBSERVATION_COUNT) as usize;
-        let mut observation_count = INITIAL_COUNTER_USIZE;
-        let mut elapsed_ms = INITIAL_COUNTER_U64;
-        let mut sum_squared_returns = ZERO_F64;
+    /// Number of signed trades currently retained. Read seam for the W3 stage.
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
 
-        let mut iter = self.samples.iter();
-        let mut previous = iter.next()?;
-        for current in iter {
-            let dt_ms = current.ts_ms.saturating_sub(previous.ts_ms);
-            if dt_ms == 0 {
-                previous = current;
-                continue;
-            }
-            if !is_positive_finite(current.price) || !is_positive_finite(previous.price) {
-                return None;
-            }
+    /// Whether the buffer currently holds no retained trades.
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
+    }
 
-            let log_return = (current.price / previous.price).ln();
-            if !log_return.is_finite() {
-                return None;
-            }
+    /// Retained signed trades, oldest first. Read seam for the W3 stage.
+    ///
+    /// These are evicted only as of the last [`observe`](Self::observe); in a
+    /// quiet market some may have aged out of the window. A point-in-time
+    /// consumer should read through [`samples_within`](Self::samples_within).
+    pub fn samples(&self) -> &VecDeque<SignedTrade> {
+        &self.samples
+    }
 
-            sum_squared_returns += log_return.powi(POWER_OF_TWO);
-            elapsed_ms = elapsed_ms.saturating_add(dt_ms);
-            observation_count += COUNTER_INCREMENT;
-            previous = current;
-        }
-
-        if observation_count < min_observations || elapsed_ms == 0 {
-            return None;
-        }
-
-        let elapsed_secs = elapsed_ms as f64 / MILLIS_PER_SECOND_F64;
-        let annualized_variance = (sum_squared_returns / elapsed_secs) * SECONDS_PER_YEAR_F64;
-        let vol = annualized_variance.sqrt();
-        if is_positive_finite(vol) {
-            Some(vol)
-        } else {
-            None
-        }
+    /// Signed trades still inside the retention window as of `now_ms`, oldest
+    /// first. Unlike [`samples`](Self::samples) this filters against the caller's
+    /// clock rather than the last `observe` timestamp, so a quiet market does not
+    /// surface trades that have aged out of the window. Read seam for the W3
+    /// stage's point-in-time adverse-selection reads.
+    pub fn samples_within(&self, now_ms: u64) -> impl Iterator<Item = &SignedTrade> {
+        let cutoff_ms = now_ms.saturating_sub(self.window_ms);
+        self.samples
+            .iter()
+            .filter(move |trade| trade.ts_ms >= cutoff_ms)
     }
 }
 
@@ -960,6 +967,10 @@ struct PricingState {
     last_fast_venue_jitter_ms: Option<u64>,
     fast_venue_incoherent: bool,
     lead_quality_policy_applied: bool,
+    /// Reference-spot spike cooldown deadline (ms). When set, entry is blocked
+    /// until `now_ms >= spike_until_ms`. Set when a single-step reference-spot
+    /// move clears the configured spike threshold; `None` outside any cooldown.
+    spike_until_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1310,12 +1321,24 @@ fn managed_position_effective_entry_cost(
         .filter(|effective_cost| is_positive_finite(*effective_cost))
 }
 
+/// Project the strategy's volatility-window TOML knobs into the foundational
+/// estimator's runtime config view. The strategy owns deserialization; this is
+/// the single place that maps those fields onto [`RealizedVolConfig`].
+fn realized_vol_config(config: &BinaryOracleEdgeTakerConfig) -> RealizedVolConfig {
+    RealizedVolConfig {
+        window_secs: config.vol_window_secs,
+        gap_reset_secs: config.vol_gap_reset_secs,
+        min_observations: config.vol_min_observations,
+        bridge_valid_secs: config.vol_bridge_valid_secs,
+    }
+}
+
 impl PricingState {
     fn from_config(config: &BinaryOracleEdgeTakerConfig) -> Self {
         Self {
             last_reference_fair_value: None,
             fast_spot: None,
-            realized_vol: RealizedVolEstimator::from_config(config),
+            realized_vol: RealizedVolEstimator::from_config(&realized_vol_config(config)),
             realized_vol_source_venue: None,
             realized_vol_by_venue: BTreeMap::new(),
             venue_timing: BTreeMap::new(),
@@ -1326,6 +1349,7 @@ impl PricingState {
             last_fast_venue_jitter_ms: None,
             fast_venue_incoherent: false,
             lead_quality_policy_applied: false,
+            spike_until_ms: None,
         }
     }
 
@@ -1334,10 +1358,14 @@ impl PricingState {
         quote: &FastSpotObservation,
         min_agreement_corr: f64,
         max_jitter_ms: u64,
+        spike_return_threshold: f64,
+        spike_cooldown_secs: u64,
     ) {
         if !is_positive_finite(quote.price) {
             return;
         }
+
+        self.detect_reference_spike(quote, spike_return_threshold, spike_cooldown_secs);
 
         self.last_reference_fair_value = Some(quote.price);
         self.lead_quality_policy_applied = true;
@@ -1358,7 +1386,7 @@ impl PricingState {
                     .realized_vol_by_venue
                     .entry(quote.venue_name.clone())
                     .or_insert_with(|| estimator_template.clone());
-                let _ = estimator.observe(quote);
+                let _ = estimator.observe(&quote.venue_name, quote.price, quote.observed_ts_ms);
                 estimator.clone()
             };
             self.realized_vol = selected_realized_vol;
@@ -1386,6 +1414,45 @@ impl PricingState {
             self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
             self.last_fast_venue_jitter_ms = Some(jitter_ms);
             self.fast_venue_incoherent = true;
+        }
+    }
+
+    /// Arm the spike cooldown when a new reference-spot observation jumps past
+    /// the configured single-step return threshold.
+    ///
+    /// Reads the still-current `fast_spot` as the previous observation, before
+    /// `observe_reference_quote` overwrites it. The single-step relative move is
+    /// `m = (new_price / prev_price - 1).abs()`; when `m >=
+    /// spike_return_threshold` the cooldown deadline is extended to the later of
+    /// its current value and `new_observed_ts_ms + spike_cooldown_secs *
+    /// MILLIS_PER_SECOND_U64`, so an out-of-order quote can never retract an
+    /// active cooldown. With no valid previous observation there is no spike.
+    /// This is an additive read of
+    /// previous vs new and does not alter `fast_spot` or realized-vol behavior.
+    fn detect_reference_spike(
+        &mut self,
+        quote: &FastSpotObservation,
+        spike_return_threshold: f64,
+        spike_cooldown_secs: u64,
+    ) {
+        let Some(previous) = self.fast_spot.as_ref() else {
+            return;
+        };
+        if !is_positive_finite(previous.price) || !is_positive_finite(quote.price) {
+            return;
+        }
+        let relative_move = (quote.price / previous.price - UNIT_F64).abs();
+        if relative_move >= spike_return_threshold {
+            let new_deadline = quote
+                .observed_ts_ms
+                .saturating_add(spike_cooldown_secs.saturating_mul(MILLIS_PER_SECOND_U64));
+            // Fail closed: the cooldown deadline only ever extends. An
+            // out-of-order spike carrying an earlier timestamp must never shorten
+            // an active cooldown and re-enable entry during volatility.
+            self.spike_until_ms = Some(match self.spike_until_ms {
+                Some(existing) => existing.max(new_deadline),
+                None => new_deadline,
+            });
         }
     }
 
@@ -1483,11 +1550,7 @@ impl PricingState {
                 .realized_vol_by_venue
                 .entry(candidate.venue_name.clone())
                 .or_insert_with(|| estimator_template.clone());
-            let _ = estimator.observe(&FastSpotObservation {
-                venue_name: candidate.venue_name.clone(),
-                price,
-                observed_ts_ms,
-            });
+            let _ = estimator.observe(&candidate.venue_name, price, observed_ts_ms);
         }
     }
 
@@ -1521,7 +1584,7 @@ impl PricingState {
             self.realized_vol_source_venue
                 .clone()
                 .or_else(|| self.fast_spot.as_ref().map(|spot| spot.venue_name.clone()))
-                .or_else(|| self.realized_vol.active_venue_name.clone()),
+                .or_else(|| self.realized_vol.active_venue.clone()),
             self.realized_vol.last_ready_ts_ms,
         )
     }
@@ -1698,6 +1761,7 @@ impl ActiveMarketState {
             warmup_count: INITIAL_COUNTER_U64,
             warmup_target: INITIAL_COUNTER_U64,
             books: OutcomePreparedBooks::empty(),
+            trade_flow: BTreeMap::new(),
             fast_venue_incoherent: false,
             forced_flat: false,
         }
@@ -1743,6 +1807,7 @@ impl ActiveMarketState {
             warmup_count: INITIAL_COUNTER_U64,
             warmup_target,
             books: OutcomePreparedBooks::from_market(market),
+            trade_flow: BTreeMap::new(),
             fast_venue_incoherent: false,
             forced_flat,
         }
@@ -2026,6 +2091,8 @@ impl BinaryOracleEdgeTaker {
             quote,
             self.config.lead_agreement_min_corr,
             self.config.lead_jitter_max_ms,
+            self.config.spike_guard_return_threshold,
+            self.config.spike_guard_cooldown_secs,
         );
         self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
         self.refresh_fee_readiness();
@@ -2556,6 +2623,9 @@ impl BinaryOracleEdgeTaker {
         if !self.active.books.is_priced() {
             blocked_by.push(EntryBlockReason::ActiveBookNotPriced);
         }
+        if self.active.books.any_crossed() {
+            blocked_by.push(EntryBlockReason::BookCrossed);
+        }
         if self.active.interval_open.is_none() {
             blocked_by.push(EntryBlockReason::IntervalOpenMissing);
         }
@@ -2573,6 +2643,13 @@ impl BinaryOracleEdgeTaker {
             .is_some_and(|market_id| self.market_in_cooldown(market_id, now_ms))
         {
             blocked_by.push(EntryBlockReason::MarketCoolingDown);
+        }
+        if self
+            .pricing
+            .spike_until_ms
+            .is_some_and(|spike_until_ms| now_ms < spike_until_ms)
+        {
+            blocked_by.push(EntryBlockReason::SpotSpikeCooldown);
         }
         for reason in self
             .active_forced_flat_reasons_at(now_ms)
@@ -2721,13 +2798,16 @@ impl BinaryOracleEdgeTaker {
 
     fn current_fair_probability_up_at(&self, now_ms: u64) -> Option<f64> {
         let inputs = self.current_entry_pricing_inputs_at(now_ms).ok()?;
-        compute_fair_probability_up(&FairProbabilityInputs {
-            spot_price: inputs.spot_price,
-            strike_price: inputs.strike_price,
-            seconds_to_expiry: inputs.seconds_to_expiry,
-            realized_vol: inputs.realized_vol,
-            pricing_kurtosis: self.config.pricing_kurtosis,
-        })
+        bolt_v3_market_families::fair_probability_up_for_family(
+            &self.config.rotating_market_family,
+            &FairProbabilityInputs {
+                spot_price: inputs.spot_price,
+                strike_price: inputs.strike_price,
+                seconds_to_market_end: inputs.seconds_to_expiry,
+                realized_vol: inputs.realized_vol,
+                pricing_kurtosis: self.config.pricing_kurtosis,
+            },
+        )
     }
 
     fn current_position_fast_spot(&self) -> Option<&FastSpotObservation> {
@@ -3532,13 +3612,16 @@ impl BinaryOracleEdgeTaker {
         let realized_vol = self
             .current_realized_vol_at(now_ms)
             .filter(|value| is_positive_finite(*value))?;
-        compute_fair_probability_up(&FairProbabilityInputs {
-            spot_price,
-            strike_price,
-            seconds_to_expiry,
-            realized_vol,
-            pricing_kurtosis: self.config.pricing_kurtosis,
-        })
+        bolt_v3_market_families::fair_probability_up_for_family(
+            &self.config.rotating_market_family,
+            &FairProbabilityInputs {
+                spot_price,
+                strike_price,
+                seconds_to_market_end: seconds_to_expiry,
+                realized_vol,
+                pricing_kurtosis: self.config.pricing_kurtosis,
+            },
+        )
     }
 
     fn current_position_uncertainty_band_probability_at(&self, now_ms: u64) -> Option<f64> {
@@ -3562,13 +3645,16 @@ impl BinaryOracleEdgeTaker {
         let realized_vol = self
             .current_realized_vol_at(now_ms)
             .filter(|value| is_positive_finite(*value))?;
-        let fair_probability_up = compute_fair_probability_up(&FairProbabilityInputs {
-            spot_price,
-            strike_price,
-            seconds_to_expiry,
-            realized_vol,
-            pricing_kurtosis: self.config.pricing_kurtosis,
-        })?;
+        let fair_probability_up = bolt_v3_market_families::fair_probability_up_for_family(
+            &self.config.rotating_market_family,
+            &FairProbabilityInputs {
+                spot_price,
+                strike_price,
+                seconds_to_market_end: seconds_to_expiry,
+                realized_vol,
+                pricing_kurtosis: self.config.pricing_kurtosis,
+            },
+        )?;
         let up_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Up)?;
         let down_fee_bps = self.position_outcome_fee_bps(OutcomeSide::Down)?;
         let uncertainty_band_probability = self.uncertainty_band_probability_for_seconds(
@@ -5069,6 +5155,13 @@ impl DataActor for BinaryOracleEdgeTaker {
         Ok(())
     }
 
+    fn on_trade(&mut self, trade: &TradeTick) -> anyhow::Result<()> {
+        if let Some(trade_flow) = self.active.trade_flow.get_mut(&trade.instrument_id) {
+            trade_flow.observe(trade);
+        }
+        Ok(())
+    }
+
     fn on_order_filled(
         &mut self,
         event: &nautilus_model::events::OrderFilled,
@@ -5294,9 +5387,29 @@ const TARGET_MARKET_NOT_FOUND_REASON: &str = stringify!(target_market_not_found)
 
 impl BinaryOracleEdgeTakerBuilder {
     fn parse_config(raw: &Value) -> Result<BinaryOracleEdgeTakerConfig> {
-        raw.clone()
+        let config: BinaryOracleEdgeTakerConfig = raw
+            .clone()
             .try_into()
-            .context("binary_oracle_edge_taker builder requires a valid config table")
+            .context("binary_oracle_edge_taker builder requires a valid config table")?;
+        // Fail loud at load: a non-positive spike_guard_return_threshold makes the
+        // spike guard's `relative_move >= threshold` test (relative_move is an
+        // abs(), always >= 0) always true, arming the cooldown on every reference
+        // quote and silently blocking all entry. The TOML type check accepts
+        // 0.0/negatives, so the range is validated here, matching the build-path
+        // `is_positive_finite` precedent (price_from_config / trailing_offset_from_config).
+        anyhow::ensure!(
+            is_positive_finite(config.spike_guard_return_threshold),
+            "spike_guard_return_threshold must be positive and finite"
+        );
+        // Fail loud at load: a zero trade-flow sample cap makes the count-cap
+        // evict every observation, permanently emptying the buffer and starving
+        // the W3 read seam. The TOML type check accepts 0, so the bound is checked
+        // here.
+        anyhow::ensure!(
+            config.trade_flow_max_samples > 0,
+            "trade_flow_max_samples must be positive"
+        );
+        Ok(config)
     }
 
     fn push_missing(
@@ -5700,7 +5813,7 @@ pub fn derive_entry_reference_proofs_from_quote_observations(
     })?;
     let mut sorted_observations = observations.to_vec();
     sorted_observations.sort_by_key(|observation| observation.ts_event_unix_nanos);
-    let mut estimator = RealizedVolEstimator::from_config(&config);
+    let mut estimator = RealizedVolEstimator::from_config(&realized_vol_config(&config));
     let mut latest_quote = None;
     let mut latest_ready_volatility = None;
 
@@ -5729,7 +5842,7 @@ pub fn derive_entry_reference_proofs_from_quote_observations(
             price: midpoint,
             observed_ts_ms,
         };
-        if let Some(value) = estimator.observe(&quote)
+        if let Some(value) = estimator.observe(&quote.venue_name, quote.price, quote.observed_ts_ms)
             && observed_ts_ms >= market_selection_timestamp_ms
         {
             latest_ready_volatility = Some(BinaryOracleEntryRealizedVolatilitySource {
@@ -6084,11 +6197,13 @@ fn apply_selection_snapshot_to_active(
     warmup_target: u64,
 ) {
     let previous_books = active.books.clone();
+    let previous_trade_flow = std::mem::take(&mut active.trade_flow);
     let next = ActiveMarketState::from_snapshot(snapshot, warmup_target);
     let preserve_books = active.market_id.is_some()
         && active.market_id == next.market_id
         && active.instrument_id == next.instrument_id;
     if active.same_boundary(&next) {
+        active.trade_flow = previous_trade_flow;
         return;
     }
     if same_market_transition(active, &next) {
@@ -6096,9 +6211,11 @@ fn apply_selection_snapshot_to_active(
         active.forced_flat = next.forced_flat;
         active.market_selection_outcome = next.market_selection_outcome;
         active.interval_end_ms = next.interval_end_ms;
+        active.trade_flow = previous_trade_flow;
         return;
     }
     *active = next;
+    active.trade_flow = previous_trade_flow;
     if preserve_books {
         active.books = previous_books;
     }
@@ -6312,6 +6429,9 @@ fn unsubscribe_missing_books(
     {
         #[cfg(not(test))]
         strategy.unsubscribe_book_deltas(instrument_id, None, None);
+        #[cfg(not(test))]
+        strategy.unsubscribe_trades(instrument_id, None, None);
+        strategy.active.trade_flow.remove(&instrument_id);
         strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
     }
     if let Some(instrument_id) = current.down_instrument_id
@@ -6319,6 +6439,9 @@ fn unsubscribe_missing_books(
     {
         #[cfg(not(test))]
         strategy.unsubscribe_book_deltas(instrument_id, None, None);
+        #[cfg(not(test))]
+        strategy.unsubscribe_trades(instrument_id, None, None);
+        strategy.active.trade_flow.remove(&instrument_id);
         strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
     }
     if let Some(instrument_id) = current.tracked_position_instrument_id
@@ -6326,6 +6449,9 @@ fn unsubscribe_missing_books(
     {
         #[cfg(not(test))]
         strategy.unsubscribe_book_deltas(instrument_id, None, None);
+        #[cfg(not(test))]
+        strategy.unsubscribe_trades(instrument_id, None, None);
+        strategy.active.trade_flow.remove(&instrument_id);
         strategy.record_book_subscription_event(BookSubscriptionEvent::unsubscribe(instrument_id));
     }
 }
@@ -6340,6 +6466,10 @@ fn subscribe_new_books(
     {
         #[cfg(not(test))]
         strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
+        #[cfg(not(test))]
+        strategy.subscribe_trades(instrument_id, None, None);
+        let trade_flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&strategy.config));
+        strategy.active.trade_flow.insert(instrument_id, trade_flow);
         strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
     }
     if let Some(instrument_id) = next.down_instrument_id
@@ -6347,6 +6477,10 @@ fn subscribe_new_books(
     {
         #[cfg(not(test))]
         strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
+        #[cfg(not(test))]
+        strategy.subscribe_trades(instrument_id, None, None);
+        let trade_flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&strategy.config));
+        strategy.active.trade_flow.insert(instrument_id, trade_flow);
         strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
     }
     if let Some(instrument_id) = next.tracked_position_instrument_id
@@ -6354,6 +6488,10 @@ fn subscribe_new_books(
     {
         #[cfg(not(test))]
         strategy.subscribe_book_deltas(instrument_id, BookType::L2_MBP, None, None, false, None);
+        #[cfg(not(test))]
+        strategy.subscribe_trades(instrument_id, None, None);
+        let trade_flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&strategy.config));
+        strategy.active.trade_flow.insert(instrument_id, trade_flow);
         strategy.record_book_subscription_event(BookSubscriptionEvent::subscribe(instrument_id));
     }
 }
@@ -6493,36 +6631,15 @@ fn refresh_fee_readiness_for_active(
         .is_some();
 }
 
-const ZERO_F64: f64 = 0.0;
-const UNIT_F64: f64 = 1.0;
-const INITIAL_COUNTER_U64: u64 = 0;
 const INITIAL_COUNTER_USIZE: usize = 0;
-const MIN_OBSERVATION_COUNT: u64 = 1;
+const INITIAL_COUNTER_U64: u64 = 0;
 const COUNTER_INCREMENT: usize = 1;
 const COUNTER_INCREMENT_U64: u64 = 1;
-const POWER_OF_TWO: i32 = 2;
 const BPS_DENOMINATOR: f64 = 10_000.0;
 const MIDPOINT_DIVISOR_F64: f64 = 2.0;
 const QUADRATIC_RISK_DIVISOR: f64 = 2.0;
-const MILLIS_PER_SECOND_U64: u64 = 1_000;
-const MILLIS_PER_SECOND_F64: f64 = 1_000.0;
 const NANOS_PER_MILLI_U64: u64 = 1_000_000;
 const NANOS_PER_SECOND_U64: u64 = 1_000_000_000;
-const DAYS_PER_YEAR_F64: f64 = 365.25;
-const HOURS_PER_DAY_F64: f64 = 24.0;
-const MINUTES_PER_HOUR_F64: f64 = 60.0;
-const SECONDS_PER_MINUTE_F64: f64 = 60.0;
-const SECONDS_PER_YEAR_F64: f64 =
-    DAYS_PER_YEAR_F64 * HOURS_PER_DAY_F64 * MINUTES_PER_HOUR_F64 * SECONDS_PER_MINUTE_F64;
-const KURTOSIS_NORMALIZATION: f64 = 6.0;
-const NORMAL_DENSITY_EXPONENT_DIVISOR: f64 = 2.0;
-const NORMAL_CDF_T_SCALE: f64 = 0.231_641_9;
-const NORMAL_CDF_DENSITY_SCALE: f64 = 0.398_942_3;
-const NORMAL_CDF_POLY_A1: f64 = 0.319_381_5;
-const NORMAL_CDF_POLY_A2: f64 = -0.356_563_8;
-const NORMAL_CDF_POLY_A3: f64 = 1.781_478;
-const NORMAL_CDF_POLY_A4: f64 = -1.821_256;
-const NORMAL_CDF_POLY_A5: f64 = 1.330_274;
 const CONFIG_FIELD_OMS_TYPE: &str = "oms_type";
 const CONFIG_FIELD_ENTRY_ORDER_SIDE: &str = "entry_order_side";
 const CONFIG_FIELD_ENTRY_ORDER_POSITION_SIDE: &str = "entry_order_position_side";
@@ -6575,10 +6692,6 @@ const EXIT_BLOCK_REASON_EXIT_ORDER_CONFIG_INVALID: &str = "exit_order_config_inv
 const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quantity_unsupported";
 const EXIT_BLOCK_REASON_EXIT_PRICE_MISSING: &str = "exit_price_missing";
 const EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE: &str = "exit_quantity_not_positive";
-
-fn is_positive_finite(value: f64) -> bool {
-    value.is_finite() && value > ZERO_F64
-}
 
 fn is_non_negative_finite(value: f64) -> bool {
     value.is_finite() && value >= ZERO_F64
@@ -6740,53 +6853,6 @@ struct WorstCaseEvInputs {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct FairProbabilityInputs {
-    spot_price: f64,
-    strike_price: f64,
-    seconds_to_expiry: u64,
-    realized_vol: f64,
-    pricing_kurtosis: f64,
-}
-
-fn compute_fair_probability_up(inputs: &FairProbabilityInputs) -> Option<f64> {
-    if !inputs.spot_price.is_finite()
-        || !is_positive_finite(inputs.spot_price)
-        || !is_positive_finite(inputs.strike_price)
-        || !is_positive_finite(inputs.realized_vol)
-        || !inputs.pricing_kurtosis.is_finite()
-    {
-        return None;
-    }
-
-    let sigma_eff =
-        inputs.realized_vol * (UNIT_F64 + inputs.pricing_kurtosis / KURTOSIS_NORMALIZATION);
-    if !is_positive_finite(sigma_eff) {
-        return None;
-    }
-
-    let time_to_expiry_years = inputs.seconds_to_expiry as f64 / SECONDS_PER_YEAR_F64;
-    if time_to_expiry_years <= ZERO_F64 {
-        return None;
-    }
-
-    let d2 = ((inputs.spot_price / inputs.strike_price).ln()
-        - (sigma_eff.powi(POWER_OF_TWO) / QUADRATIC_RISK_DIVISOR) * time_to_expiry_years)
-        / (sigma_eff * time_to_expiry_years.sqrt());
-    sanitize_probability(standard_normal_cdf(d2))
-}
-
-fn standard_normal_cdf(x: f64) -> f64 {
-    let t = UNIT_F64 / (UNIT_F64 + NORMAL_CDF_T_SCALE * x.abs());
-    let d = NORMAL_CDF_DENSITY_SCALE * (-x * x / NORMAL_DENSITY_EXPONENT_DIVISOR).exp();
-    let prob = d
-        * t
-        * (NORMAL_CDF_POLY_A1
-            + t * (NORMAL_CDF_POLY_A2
-                + t * (NORMAL_CDF_POLY_A3 + t * (NORMAL_CDF_POLY_A4 + t * NORMAL_CDF_POLY_A5))));
-    if x > ZERO_F64 { UNIT_F64 - prob } else { prob }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
 struct ThetaScalerInputs {
     seconds_to_expiry: u64,
     cadence_seconds: u64,
@@ -6893,14 +6959,6 @@ fn choose_robust_size(inputs: &RobustSizingInputs) -> f64 {
     (inputs.expected_ev_per_notional / (QUADRATIC_RISK_DIVISOR * inputs.risk_lambda)).min(cap)
 }
 
-fn sanitize_probability(value: f64) -> Option<f64> {
-    if value.is_finite() && (ZERO_F64..=UNIT_F64).contains(&value) {
-        Some(value)
-    } else {
-        None
-    }
-}
-
 fn sanitize_non_negative(value: f64) -> f64 {
     if value.is_finite() {
         value.max(ZERO_F64)
@@ -6933,11 +6991,13 @@ enum EntryBlockReason {
     PhaseNotActive,
     MetadataMismatch,
     ActiveBookNotPriced,
+    BookCrossed,
     IntervalOpenMissing,
     WarmupIncomplete,
     FeesNotReady,
     RecoveryMode,
     MarketCoolingDown,
+    SpotSpikeCooldown,
     ForcedFlat(ForcedFlatReason),
     OnePositionInvariant(ExposureOccupancy),
 }
@@ -7440,6 +7500,10 @@ mod tests {
             vol_gap_reset_secs = 10
             vol_min_observations = 20
             vol_bridge_valid_secs = 10
+            trade_flow_window_secs = 30
+            trade_flow_max_samples = 100
+            spike_guard_return_threshold = 0.05
+            spike_guard_cooldown_secs = 5
             price_to_beat_source = "chainlink_data_streams.report_at_boundary"
             pricing_kurtosis = 0.0
             theta_decay_factor = 0.0
@@ -7907,6 +7971,10 @@ mod tests {
                 vol_gap_reset_secs: 10,
                 vol_min_observations: 20,
                 vol_bridge_valid_secs: 10,
+                trade_flow_window_secs: 30,
+                trade_flow_max_samples: 100,
+                spike_guard_return_threshold: 0.05,
+                spike_guard_cooldown_secs: 5,
                 price_to_beat_source: "chainlink_data_streams.report_at_boundary".to_string(),
                 pricing_kurtosis: 0.0,
                 theta_decay_factor: 0.0,
@@ -7988,6 +8056,50 @@ mod tests {
     }
 
     #[test]
+    fn parse_config_rejects_non_positive_spike_guard_return_threshold() {
+        // A non-positive spike_guard_return_threshold makes the spike guard's
+        // `relative_move >= threshold` test (relative_move is an abs(), always
+        // >= 0) always true, arming the cooldown on every reference quote and
+        // silently blocking all entry. 0.0 and negatives are valid TOML floats so
+        // the type check cannot catch them; they must be rejected fail-loud at
+        // config load.
+        for bad in [0.0_f64, -0.01_f64] {
+            let mut raw = valid_raw_config();
+            raw.as_table_mut()
+                .expect("raw config should be a TOML table")
+                .insert(
+                    "spike_guard_return_threshold".to_string(),
+                    Value::Float(bad),
+                );
+            let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+                .expect_err("non-positive spike_guard_return_threshold must be rejected");
+            assert!(
+                err.to_string()
+                    .contains("spike_guard_return_threshold must be positive and finite"),
+                "expected positivity rejection for {bad}, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_config_rejects_zero_trade_flow_max_samples() {
+        // A zero sample cap makes the count-cap evict every observation, leaving
+        // the buffer permanently empty. 0 is a valid TOML integer so the type
+        // check cannot catch it; it must be rejected fail-loud at config load.
+        let mut raw = valid_raw_config();
+        raw.as_table_mut()
+            .expect("raw config should be a TOML table")
+            .insert("trade_flow_max_samples".to_string(), Value::Integer(0));
+        let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("zero trade_flow_max_samples must be rejected");
+        assert!(
+            err.to_string()
+                .contains("trade_flow_max_samples must be positive"),
+            "expected positivity rejection, got: {err}"
+        );
+    }
+
+    #[test]
     fn runtime_config_parse_normalizes_order_fields_to_nt_enums() {
         let config = BinaryOracleEdgeTakerBuilder::parse_config(&valid_raw_config())
             .expect("valid raw config should parse into runtime config");
@@ -8056,11 +8168,27 @@ mod tests {
     }
 
     fn trade_tick(instrument_id: &str, price: f64, ts_ms: u64) -> nautilus_model::data::TradeTick {
+        trade_tick_with_aggressor(
+            instrument_id,
+            price,
+            1.0,
+            nautilus_model::enums::AggressorSide::Buyer,
+            ts_ms,
+        )
+    }
+
+    fn trade_tick_with_aggressor(
+        instrument_id: &str,
+        price: f64,
+        size: f64,
+        aggressor: nautilus_model::enums::AggressorSide,
+        ts_ms: u64,
+    ) -> nautilus_model::data::TradeTick {
         nautilus_model::data::TradeTick::new_checked(
             InstrumentId::from(instrument_id),
             Price::new(price, 2),
-            Quantity::new(1.0, 0),
-            nautilus_model::enums::AggressorSide::Buyer,
+            Quantity::new(size, 0),
+            aggressor,
             nautilus_model::identifiers::TradeId::from("TRADE-TICK-001"),
             nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
             nautilus_core::UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
@@ -10628,6 +10756,26 @@ mod tests {
         assert!(
             errors
                 .iter()
+                .any(|e| e.field == "strategies[0].config.trade_flow_window_secs")
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.field == "strategies[0].config.trade_flow_max_samples")
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.field == "strategies[0].config.spike_guard_return_threshold")
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.field == "strategies[0].config.spike_guard_cooldown_secs")
+        );
+        assert!(
+            errors
+                .iter()
                 .any(|e| e.field == "strategies[0].config.pricing_kurtosis")
         );
         assert!(
@@ -10781,70 +10929,6 @@ mod tests {
         assert_eq!(state.best_bid, None);
         assert_eq!(state.best_ask, Some(0.45));
         assert_eq!(state.liquidity_available, Some(12.0));
-    }
-
-    #[test]
-    fn realized_vol_estimator_warms_bridges_and_resets_after_gap() {
-        let mut config = test_strategy().config.clone();
-        config.vol_window_secs = 60;
-        config.vol_gap_reset_secs = 10;
-        config.vol_min_observations = 3;
-        config.vol_bridge_valid_secs = 10;
-        let mut estimator = RealizedVolEstimator::from_config(&config);
-
-        assert!(estimator.observe(&fast_spot("bybit", 3_100.0, 0)).is_none());
-        assert!(
-            estimator
-                .observe(&fast_spot("bybit", 3_101.0, 1_000))
-                .is_none()
-        );
-        assert!(
-            estimator
-                .observe(&fast_spot("bybit", 3_099.5, 2_000))
-                .is_none()
-        );
-        let ready_vol = estimator
-            .observe(&fast_spot("bybit", 3_102.0, 3_000))
-            .expect("vol should be ready after min observations");
-        assert!(ready_vol > 0.0);
-        assert_eq!(estimator.current_vol_at(12_000), Some(ready_vol));
-        assert!(estimator.current_vol_at(13_001).is_none());
-
-        assert!(
-            estimator
-                .observe(&fast_spot("bybit", 3_103.0, 20_000))
-                .is_none()
-        );
-        assert_eq!(estimator.samples.len(), 1);
-        assert!(estimator.last_ready_vol.is_none());
-    }
-
-    #[test]
-    fn realized_vol_estimator_ignores_non_monotonic_samples_within_same_venue() {
-        let mut config = test_strategy().config.clone();
-        config.vol_min_observations = 1;
-        let mut estimator = RealizedVolEstimator::from_config(&config);
-
-        assert!(
-            estimator
-                .observe(&fast_spot("bybit", 3_100.0, 1_000))
-                .is_none()
-        );
-        let ready_vol = estimator
-            .observe(&fast_spot("bybit", 3_101.0, 2_000))
-            .expect("vol should be ready after min observations");
-        let sample_count = estimator.samples.len();
-
-        assert_eq!(
-            estimator.observe(&fast_spot("bybit", 3_200.0, 1_500)),
-            Some(ready_vol)
-        );
-        assert_eq!(estimator.samples.len(), sample_count);
-        assert_eq!(
-            estimator.samples.back().map(|sample| sample.ts_ms),
-            Some(2_000)
-        );
-        assert_eq!(estimator.last_ready_ts_ms, Some(2_000));
     }
 
     #[test]
@@ -11149,61 +11233,6 @@ mod tests {
         assert_eq!(fields.realized_vol, Some(2.5));
         assert_eq!(fields.realized_vol_source_venue.as_deref(), Some("bybit"));
         assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
-    }
-
-    #[test]
-    fn fair_probability_helper_is_directional_and_fail_closed_on_invalid_inputs() {
-        let above = compute_fair_probability_up(&FairProbabilityInputs {
-            spot_price: 3_105.0,
-            strike_price: 3_100.0,
-            seconds_to_expiry: 60,
-            realized_vol: 0.45,
-            pricing_kurtosis: 0.0,
-        })
-        .expect("valid inputs should produce fair probability");
-        let below = compute_fair_probability_up(&FairProbabilityInputs {
-            spot_price: 3_095.0,
-            strike_price: 3_100.0,
-            seconds_to_expiry: 60,
-            realized_vol: 0.45,
-            pricing_kurtosis: 0.0,
-        })
-        .expect("valid inputs should produce fair probability");
-
-        assert!(
-            above > 0.5,
-            "above-strike spot should imply >50% up probability"
-        );
-        assert!(
-            below < 0.5,
-            "below-strike spot should imply <50% up probability"
-        );
-        assert!(above > below);
-        assert!(
-            compute_fair_probability_up(&FairProbabilityInputs {
-                spot_price: 3_100.0,
-                strike_price: 3_100.0,
-                seconds_to_expiry: 60,
-                realized_vol: 0.0,
-                pricing_kurtosis: 0.0,
-            })
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn fair_probability_helper_fails_closed_when_expired() {
-        assert!(
-            compute_fair_probability_up(&FairProbabilityInputs {
-                spot_price: 3_105.0,
-                strike_price: 3_100.0,
-                seconds_to_expiry: 0,
-                realized_vol: 0.45,
-                pricing_kurtosis: 0.0,
-            })
-            .is_none(),
-            "expired markets must not produce a step-function entry probability"
-        );
     }
 
     #[test]
@@ -14947,6 +14976,417 @@ mod tests {
     }
 
     #[test]
+    fn signed_trade_flow_observe_appends_signed_price_and_size() {
+        let mut config = test_strategy().config.clone();
+        config.trade_flow_window_secs = 30;
+        config.trade_flow_max_samples = 100;
+        let mut flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&config));
+
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.42,
+            3.0,
+            AggressorSide::Buyer,
+            1_000,
+        ));
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.41,
+            2.0,
+            AggressorSide::Seller,
+            1_500,
+        ));
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.40,
+            1.0,
+            AggressorSide::NoAggressor,
+            2_000,
+        ));
+
+        assert_eq!(flow.len(), 3);
+        assert!(!flow.is_empty());
+        let samples: Vec<SignedTrade> = flow.samples().iter().copied().collect();
+        // Prices/sizes are compared through the same fixed-point round-trip the
+        // production path uses, so the test does not depend on literal f64 bits.
+        assert_eq!(
+            samples,
+            vec![
+                SignedTrade {
+                    ts_ms: 1_000,
+                    aggressor: AggressorSide::Buyer,
+                    price: Price::new(0.42, 2).as_f64(),
+                    size: Quantity::new(3.0, 0).as_f64(),
+                },
+                SignedTrade {
+                    ts_ms: 1_500,
+                    aggressor: AggressorSide::Seller,
+                    price: Price::new(0.41, 2).as_f64(),
+                    size: Quantity::new(2.0, 0).as_f64(),
+                },
+                SignedTrade {
+                    ts_ms: 2_000,
+                    aggressor: AggressorSide::NoAggressor,
+                    price: Price::new(0.40, 2).as_f64(),
+                    size: Quantity::new(1.0, 0).as_f64(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn signed_trade_flow_drops_out_of_order_and_duplicate_timestamps() {
+        // The buffer doc promises samples "oldest first" and that it mirrors
+        // RealizedVolEstimator, which rejects non-monotonic observations. A trade
+        // whose timestamp is not strictly greater than the latest retained sample
+        // would otherwise corrupt ordering and the time-window eviction cutoff, so
+        // it must be dropped.
+        let mut config = test_strategy().config.clone();
+        config.trade_flow_window_secs = 600;
+        config.trade_flow_max_samples = 100;
+        let mut flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&config));
+
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.50,
+            1.0,
+            AggressorSide::Buyer,
+            1_000,
+        ));
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.51,
+            1.0,
+            AggressorSide::Buyer,
+            2_000,
+        ));
+        // Out-of-order: an earlier timestamp than the latest retained sample.
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.52,
+            1.0,
+            AggressorSide::Seller,
+            1_500,
+        ));
+        // Duplicate: equal to the latest retained timestamp.
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.53,
+            1.0,
+            AggressorSide::Seller,
+            2_000,
+        ));
+
+        assert_eq!(flow.len(), 2);
+        assert_eq!(
+            flow.samples()
+                .iter()
+                .map(|trade| trade.ts_ms)
+                .collect::<Vec<_>>(),
+            vec![1_000, 2_000],
+            "out-of-order and duplicate-timestamp trades must be dropped to keep \
+             the buffer monotonic"
+        );
+    }
+
+    #[test]
+    fn signed_trade_flow_samples_within_excludes_trades_aged_out_by_caller_clock() {
+        // Eviction only runs inside `observe`, so in a quiet market `samples()`
+        // can still hold trades that have aged out of the window. A point-in-time
+        // consumer reads through `samples_within(now)`, which filters against the
+        // caller's clock.
+        let mut config = test_strategy().config.clone();
+        config.trade_flow_window_secs = 10; // 10_000ms window
+        config.trade_flow_max_samples = 100;
+        let mut flow = SignedTradeFlow::from_config(&signed_trade_flow_config(&config));
+
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.50,
+            1.0,
+            AggressorSide::Buyer,
+            1_000,
+        ));
+        flow.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.51,
+            1.0,
+            AggressorSide::Buyer,
+            5_000,
+        ));
+
+        // observe-time eviction at 5_000ms (cutoff 5_000 - 10_000 saturates to 0)
+        // retains both; the raw buffer is not filtered by the caller's clock.
+        assert_eq!(flow.len(), 2);
+
+        // As of now = 20_000ms the window is [10_000, 20_000]; both trades have
+        // aged out, so a point-in-time read reports none.
+        assert!(flow.samples_within(20_000).next().is_none());
+
+        // As of now = 12_000ms the window is [2_000, 12_000]: the 5_000ms trade is
+        // in-window, the 1_000ms trade has aged out.
+        assert_eq!(
+            flow.samples_within(12_000)
+                .map(|trade| trade.ts_ms)
+                .collect::<Vec<_>>(),
+            vec![5_000]
+        );
+    }
+
+    #[test]
+    fn signed_trade_flow_evicts_by_window_then_caps_by_max_samples() {
+        // Window eviction: a 10-second window drops trades older than now - window.
+        let mut window_config = test_strategy().config.clone();
+        window_config.trade_flow_window_secs = 10;
+        window_config.trade_flow_max_samples = 100;
+        let mut windowed = SignedTradeFlow::from_config(&signed_trade_flow_config(&window_config));
+
+        windowed.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.50,
+            1.0,
+            AggressorSide::Buyer,
+            1_000,
+        ));
+        windowed.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.51,
+            1.0,
+            AggressorSide::Buyer,
+            5_000,
+        ));
+        // Latest trade at 15_000ms makes the window cutoff 5_000ms; the 1_000ms
+        // sample is strictly older than the cutoff and is evicted, the 5_000ms
+        // sample sits exactly on the cutoff and is retained.
+        windowed.observe(&trade_tick_with_aggressor(
+            "condition-A-A-UP.POLYMARKET",
+            0.52,
+            1.0,
+            AggressorSide::Seller,
+            15_000,
+        ));
+
+        assert_eq!(windowed.len(), 2);
+        assert_eq!(
+            windowed
+                .samples()
+                .iter()
+                .map(|trade| trade.ts_ms)
+                .collect::<Vec<_>>(),
+            vec![5_000, 15_000]
+        );
+
+        // Count cap: with a wide window, max_samples bounds retained trades and
+        // drops the oldest first.
+        let mut cap_config = test_strategy().config.clone();
+        cap_config.trade_flow_window_secs = 600;
+        cap_config.trade_flow_max_samples = 2;
+        let mut capped = SignedTradeFlow::from_config(&signed_trade_flow_config(&cap_config));
+
+        for index in 0..4_u64 {
+            capped.observe(&trade_tick_with_aggressor(
+                "condition-A-A-UP.POLYMARKET",
+                0.50,
+                1.0,
+                AggressorSide::Buyer,
+                1_000 + index,
+            ));
+        }
+
+        assert_eq!(capped.len(), 2);
+        assert_eq!(
+            capped
+                .samples()
+                .iter()
+                .map(|trade| trade.ts_ms)
+                .collect::<Vec<_>>(),
+            vec![1_002, 1_003]
+        );
+    }
+
+    #[test]
+    fn on_trade_routes_to_subscribed_instrument_and_ignores_untracked() {
+        let mut strategy = test_strategy();
+        strategy.apply_selection_snapshot(active_snapshot("A"));
+
+        let up_instrument = "condition-A-A-UP.POLYMARKET";
+        let down_instrument = "condition-A-A-DOWN.POLYMARKET";
+        let untracked_instrument = "condition-Z-Z-UP.POLYMARKET";
+
+        strategy
+            .on_trade(&trade_tick_with_aggressor(
+                up_instrument,
+                0.42,
+                2.0,
+                AggressorSide::Buyer,
+                1_000,
+            ))
+            .expect("trade on subscribed instrument should process");
+        strategy
+            .on_trade(&trade_tick_with_aggressor(
+                untracked_instrument,
+                0.99,
+                1.0,
+                AggressorSide::Seller,
+                1_100,
+            ))
+            .expect("trade on untracked instrument should be ignored without error");
+
+        let up_flow = strategy
+            .active
+            .trade_flow
+            .get(&InstrumentId::from(up_instrument))
+            .expect("subscribed up instrument should have a trade-flow buffer");
+        assert_eq!(up_flow.len(), 1);
+        assert_eq!(up_flow.samples()[0].aggressor, AggressorSide::Buyer);
+
+        let down_flow = strategy
+            .active
+            .trade_flow
+            .get(&InstrumentId::from(down_instrument))
+            .expect("subscribed down instrument should have a trade-flow buffer");
+        assert!(down_flow.is_empty());
+
+        assert!(
+            !strategy
+                .active
+                .trade_flow
+                .contains_key(&InstrumentId::from(untracked_instrument)),
+            "untracked instrument must not create a trade-flow buffer"
+        );
+    }
+
+    #[test]
+    fn market_switch_creates_and_removes_trade_flow_buffers_in_lockstep_with_books() {
+        let mut strategy = test_strategy();
+
+        strategy.apply_selection_snapshot(active_snapshot("A"));
+        assert_eq!(
+            strategy.active.trade_flow.keys().collect::<Vec<_>>(),
+            vec![
+                &InstrumentId::from("condition-A-A-DOWN.POLYMARKET"),
+                &InstrumentId::from("condition-A-A-UP.POLYMARKET"),
+            ]
+        );
+
+        strategy.apply_selection_snapshot(active_snapshot("B"));
+        assert_eq!(
+            strategy.active.trade_flow.keys().collect::<Vec<_>>(),
+            vec![
+                &InstrumentId::from("condition-B-B-DOWN.POLYMARKET"),
+                &InstrumentId::from("condition-B-B-UP.POLYMARKET"),
+            ]
+        );
+    }
+
+    #[test]
+    fn same_market_refresh_preserves_accumulated_trade_flow() {
+        let mut strategy = test_strategy();
+        strategy.apply_selection_snapshot(active_snapshot_with_start("A", 1_000));
+
+        strategy
+            .on_trade(&trade_tick_with_aggressor(
+                "condition-A-A-UP.POLYMARKET",
+                0.42,
+                2.0,
+                AggressorSide::Buyer,
+                1_200,
+            ))
+            .expect("trade on subscribed instrument should process");
+
+        // A new interval for the same market must not discard accumulated flow.
+        strategy.apply_selection_snapshot(active_snapshot_with_start("A", 2_000));
+
+        let up_flow = strategy
+            .active
+            .trade_flow
+            .get(&InstrumentId::from("condition-A-A-UP.POLYMARKET"))
+            .expect("same-market refresh should retain the trade-flow buffer");
+        assert_eq!(up_flow.len(), 1);
+    }
+
+    #[test]
+    fn real_market_change_preserves_retained_instrument_trade_flow() {
+        // Regression: on a real market change (preserve_books == false), the
+        // trade_flow restore must be unconditional. An instrument that is
+        // RETAINED across the rotation (here, the open position's instrument,
+        // tracked via `tracked_position_instrument_id`) is touched by neither
+        // `unsubscribe_missing_books` (it did not change away) nor
+        // `subscribe_new_books` (it is not new), so dropping its buffer in
+        // `apply_selection_snapshot_to_active` would silently lose all
+        // accumulated SignedTradeFlow for the live position.
+        let mut strategy = ready_to_trade_strategy();
+        let entry_client_order_id = ClientOrderId::from("ENTRY-A");
+        let position_id = PositionId::from("P-A");
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let retained_instrument = pending.instrument_id;
+        set_pending_entry(&mut strategy, pending);
+
+        // Rotate to a different market, then fill: the position materializes on
+        // the original (now non-active) instrument, which becomes the tracked
+        // position instrument with its own freshly subscribed trade-flow buffer.
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-2", 2_000));
+        strategy
+            .on_order_filled(&order_filled_event(
+                entry_client_order_id,
+                retained_instrument,
+                position_id,
+            ))
+            .expect("fill bookkeeping should succeed");
+        assert_eq!(
+            strategy.book_subscriptions.tracked_position_instrument_id,
+            Some(retained_instrument),
+            "open position instrument must be the retained tracked instrument",
+        );
+        assert!(
+            strategy
+                .active
+                .trade_flow
+                .contains_key(&retained_instrument),
+            "fill must subscribe a trade-flow buffer for the tracked instrument",
+        );
+
+        // Accumulate signed trade flow on the retained instrument.
+        strategy
+            .on_trade(&trade_tick_with_aggressor(
+                retained_instrument.to_string().as_str(),
+                0.42,
+                2.0,
+                AggressorSide::Buyer,
+                2_200,
+            ))
+            .expect("trade on the tracked instrument should process");
+        assert!(
+            !strategy
+                .active
+                .trade_flow
+                .get(&retained_instrument)
+                .expect("tracked instrument buffer must exist before rotation")
+                .is_empty(),
+            "seeded trade should be retained before the rotation",
+        );
+
+        // Real market change (preserve_books == false). The retained instrument
+        // is unchanged across the rotation, so its buffer must survive.
+        strategy.apply_selection_snapshot(active_snapshot_with_start("MKT-3", 3_000));
+        assert_eq!(
+            strategy.book_subscriptions.tracked_position_instrument_id,
+            Some(retained_instrument),
+            "instrument should remain the tracked instrument across the rotation",
+        );
+        let retained_flow = strategy
+            .active
+            .trade_flow
+            .get(&retained_instrument)
+            .expect("retained instrument trade-flow buffer must survive a real market change");
+        assert!(
+            !retained_flow.is_empty(),
+            "retained instrument must keep its accumulated SignedTradeFlow across a real market change",
+        );
+        assert_eq!(retained_flow.len(), 1);
+    }
+
+    #[test]
     fn strategy_selects_configured_updown_target_from_nt_binary_option_metadata() {
         let strategy = test_strategy();
         let current_start = 1_746_000_000_i64;
@@ -15621,6 +16061,256 @@ mod tests {
             strategy.last_reported_exposure_occupancy.get(),
             Some(ExposureOccupancy::BlindRecovery)
         );
+    }
+
+    #[test]
+    fn entry_gate_blocks_when_active_outcome_book_is_strictly_crossed() {
+        // Normal book: bid < ask is not crossed.
+        let normal = ready_to_trade_strategy();
+        assert!(
+            normal.active.books.up.best_bid.unwrap() < normal.active.books.up.best_ask.unwrap()
+        );
+        assert!(
+            !normal
+                .entry_gate_decision_at(2_000)
+                .blocked_by
+                .contains(&EntryBlockReason::BookCrossed),
+            "normal bid<ask book must not trip the crossed-book guard"
+        );
+
+        // Up book strictly crossed: best_bid > best_ask blocks entry.
+        let mut up_crossed = ready_to_trade_strategy();
+        up_crossed.active.books.up.best_bid = Some(0.46);
+        up_crossed.active.books.up.best_ask = Some(0.45);
+        assert!(
+            up_crossed
+                .entry_gate_decision_at(2_000)
+                .blocked_by
+                .contains(&EntryBlockReason::BookCrossed),
+            "strictly crossed up book must block entry"
+        );
+
+        // Down book strictly crossed is detected too (gate treats both books as active).
+        let mut down_crossed = ready_to_trade_strategy();
+        down_crossed.active.books.down.best_bid = Some(0.46);
+        down_crossed.active.books.down.best_ask = Some(0.45);
+        assert!(
+            down_crossed
+                .entry_gate_decision_at(2_000)
+                .blocked_by
+                .contains(&EntryBlockReason::BookCrossed),
+            "strictly crossed down book must block entry"
+        );
+
+        // Locked book (bid == ask) is intentionally not crossed.
+        let mut locked = ready_to_trade_strategy();
+        locked.active.books.up.best_bid = Some(0.45);
+        locked.active.books.up.best_ask = Some(0.45);
+        assert!(
+            !locked
+                .entry_gate_decision_at(2_000)
+                .blocked_by
+                .contains(&EntryBlockReason::BookCrossed),
+            "locked bid==ask book must not trip the crossed-book guard"
+        );
+    }
+
+    #[test]
+    fn reference_spot_spike_sets_cooldown_and_blocks_then_allows_entry() {
+        let mut strategy = ready_to_trade_strategy();
+        // Threshold from the test config fixture.
+        assert_eq!(strategy.config.spike_guard_return_threshold, 0.05);
+        assert_eq!(strategy.config.spike_guard_cooldown_secs, 5);
+
+        // Seed a previous reference-spot observation so the next one has a baseline.
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
+
+        // A jump from 100.0 -> 110.0 is a 10% single-step move, >= the 5% threshold.
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 110.0, 2_000),
+            strategy.config.lead_agreement_min_corr,
+            strategy.config.lead_jitter_max_ms,
+            strategy.config.spike_guard_return_threshold,
+            strategy.config.spike_guard_cooldown_secs,
+        );
+
+        // Cooldown deadline = observed_ts (2_000ms) + 5s * 1_000ms = 7_000ms.
+        assert_eq!(strategy.pricing.spike_until_ms, Some(7_000));
+
+        // Entry is blocked while now_ms < spike_until_ms.
+        assert!(
+            strategy
+                .entry_gate_decision_at(6_999)
+                .blocked_by
+                .contains(&EntryBlockReason::SpotSpikeCooldown),
+            "entry must be blocked before the spike cooldown deadline"
+        );
+        // Boundary: at the deadline the cooldown has elapsed (now_ms < deadline is false).
+        assert!(
+            !strategy
+                .entry_gate_decision_at(7_000)
+                .blocked_by
+                .contains(&EntryBlockReason::SpotSpikeCooldown),
+            "entry must be allowed once now_ms reaches the spike cooldown deadline"
+        );
+        assert!(
+            !strategy
+                .entry_gate_decision_at(7_001)
+                .blocked_by
+                .contains(&EntryBlockReason::SpotSpikeCooldown),
+            "entry must be allowed after the spike cooldown deadline"
+        );
+    }
+
+    #[test]
+    fn sub_threshold_reference_spot_move_does_not_arm_spike_cooldown() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.pricing.spike_until_ms = None;
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
+
+        // A 2% move (100.0 -> 102.0) is below the 5% threshold.
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 102.0, 2_000),
+            strategy.config.lead_agreement_min_corr,
+            strategy.config.lead_jitter_max_ms,
+            strategy.config.spike_guard_return_threshold,
+            strategy.config.spike_guard_cooldown_secs,
+        );
+
+        assert_eq!(
+            strategy.pricing.spike_until_ms, None,
+            "sub-threshold move must not arm the spike cooldown"
+        );
+        assert!(
+            !strategy
+                .entry_gate_decision_at(2_001)
+                .blocked_by
+                .contains(&EntryBlockReason::SpotSpikeCooldown)
+        );
+    }
+
+    #[test]
+    fn spike_detection_requires_a_valid_previous_observation() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.pricing.fast_spot = None;
+        strategy.pricing.spike_until_ms = None;
+
+        // First observation has no baseline; a spike cannot be inferred.
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 110.0, 2_000),
+            strategy.config.lead_agreement_min_corr,
+            strategy.config.lead_jitter_max_ms,
+            strategy.config.spike_guard_return_threshold,
+            strategy.config.spike_guard_cooldown_secs,
+        );
+
+        assert_eq!(
+            strategy.pricing.spike_until_ms, None,
+            "no previous observation means no spike"
+        );
+    }
+
+    #[test]
+    fn spike_cooldown_deadline_only_extends_never_retracts() {
+        // The spike cooldown is a fail-closed safety gate: an out-of-order spike
+        // quote carrying an earlier timestamp must never shorten an active
+        // cooldown (which would prematurely re-enable entry during volatility).
+        let mut strategy = ready_to_trade_strategy();
+
+        // Pre-arm an active cooldown deadline at 7_000ms with a seeded baseline.
+        strategy.pricing.spike_until_ms = Some(7_000);
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
+
+        // Out-of-order spike: 100 -> 130 (30% >= 5% threshold) at an earlier ts
+        // (1_500ms). Its naive deadline 1_500 + 5_000 = 6_500ms is before the
+        // active 7_000ms and must not retract it.
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 130.0, 1_500),
+            strategy.config.lead_agreement_min_corr,
+            strategy.config.lead_jitter_max_ms,
+            strategy.config.spike_guard_return_threshold,
+            strategy.config.spike_guard_cooldown_secs,
+        );
+        assert_eq!(
+            strategy.pricing.spike_until_ms,
+            Some(7_000),
+            "an out-of-order spike must not shorten an active cooldown deadline"
+        );
+
+        // A later spike further into the future extends the deadline forward.
+        // Reset the baseline so detection is independent of eligibility chaining.
+        strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 130.0, 4_000),
+            strategy.config.lead_agreement_min_corr,
+            strategy.config.lead_jitter_max_ms,
+            strategy.config.spike_guard_return_threshold,
+            strategy.config.spike_guard_cooldown_secs,
+        );
+        assert_eq!(
+            strategy.pricing.spike_until_ms,
+            Some(9_000),
+            "a later spike (ts 4_000 + 5s) must extend the deadline to 9_000ms"
+        );
+    }
+
+    #[test]
+    fn taker_hardening_guards_are_entry_only_and_do_not_block_exits() {
+        // Exits must always be able to fire (risk-off), even with a crossed book
+        // and an armed spike cooldown. The exit path is structurally independent
+        // of `entry_gate_decision_at`, so neither new gate reason can reach it.
+        let configured_instruments = configured_outcome_instruments(
+            &ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO),
+        );
+        for instrument_id in configured_instruments {
+            let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+            strategy.config.exit_order.order_type = OrderType::Limit;
+            strategy.config.exit_order.time_in_force = TimeInForce::Gtc;
+            strategy.config.exit_order.is_post_only = true;
+            strategy.active.phase = SelectionPhase::Freeze;
+            let position_quantity = Quantity::new(strategy.config.order_notional_target, 2);
+            materialize_managed_position_with_resting_pending_entry(
+                &mut strategy,
+                instrument_id,
+                PositionId::from(format!("POSITION-ENTRY-ONLY-{instrument_id}").as_str()),
+                position_quantity,
+            );
+
+            // Cross both active books and arm the spike cooldown well into the future.
+            strategy.active.books.up.best_bid = Some(0.46);
+            strategy.active.books.up.best_ask = Some(0.45);
+            strategy.active.books.down.best_bid = Some(0.46);
+            strategy.active.books.down.best_ask = Some(0.45);
+            strategy.pricing.spike_until_ms = Some(1_000_000);
+
+            // The entry gate is blocked by both new guards...
+            let gate = strategy.entry_gate_decision_at(1_200);
+            assert!(
+                gate.blocked_by.contains(&EntryBlockReason::BookCrossed),
+                "{instrument_id}: crossed book must block entry"
+            );
+            assert!(
+                gate.blocked_by
+                    .contains(&EntryBlockReason::SpotSpikeCooldown),
+                "{instrument_id}: armed spike cooldown must block entry"
+            );
+
+            // ...but the exit still submits.
+            let decision = strategy.exit_submission_decision_at(1_200);
+            assert_eq!(decision.blocked_reason, None, "{instrument_id}");
+            assert_eq!(
+                decision.forced_flat_reasons,
+                vec![ForcedFlatReason::Freeze],
+                "{instrument_id}"
+            );
+            assert_eq!(
+                decision.order_side,
+                Some(OrderSide::Sell),
+                "{instrument_id}"
+            );
+            assert!(decision.instrument_id.is_some(), "{instrument_id}");
+            assert!(decision.quantity.is_some(), "{instrument_id}");
+        }
     }
 
     #[test]

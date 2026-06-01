@@ -61,6 +61,28 @@ pub struct MarketFamilyValidationBinding {
         u64,
     )
         -> Result<SelectedMarketRequirement, InstrumentFilterError>,
+    /// Family-owned fair-value model. The binary up/down pricing math
+    /// is instrument-type-specific, so it lives at the family seam
+    /// rather than inlined in a strategy. Returns the model's fair
+    /// probability that the underlying finishes *up*, or `None` when
+    /// the family's inputs are degenerate (the strategy already treats
+    /// `None` as "pricing unavailable").
+    pub fair_probability_up: fn(&FairProbabilityInputs) -> Option<f64>,
+}
+
+/// Shared pricing contract handed to a family's fair-value model.
+///
+/// These inputs are family-agnostic: a spot reference, the binary's
+/// strike, the time remaining, and the realized-volatility / kurtosis
+/// estimates the strategy already maintains. The family binding owns
+/// how it turns them into a fair probability.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FairProbabilityInputs {
+    pub spot_price: f64,
+    pub strike_price: f64,
+    pub seconds_to_market_end: u64,
+    pub realized_vol: f64,
+    pub pricing_kurtosis: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +263,7 @@ const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[MarketFamilyVali
     select_binary_option_market: updown::select_binary_option_market,
     market_selection_candidate_windows: updown::market_selection_candidate_windows,
     selected_market_requirement: updown::selected_market_requirement,
+    fair_probability_up: updown::fair_probability_up,
 }];
 
 pub fn validation_bindings() -> &'static [MarketFamilyValidationBinding] {
@@ -355,6 +378,24 @@ pub fn select_binary_option_market_from_target_with_bindings(
         return None;
     };
     (binding.select_binary_option_market)(target, instruments, now_milliseconds)
+}
+
+pub fn fair_probability_up_for_family(
+    family_key: &str,
+    inputs: &FairProbabilityInputs,
+) -> Option<f64> {
+    fair_probability_up_for_family_with_bindings(family_key, inputs, validation_bindings())
+}
+
+pub fn fair_probability_up_for_family_with_bindings(
+    family_key: &str,
+    inputs: &FairProbabilityInputs,
+    bindings: &[MarketFamilyValidationBinding],
+) -> Option<f64> {
+    bindings
+        .iter()
+        .find(|binding| binding.key == family_key)
+        .and_then(|binding| (binding.fair_probability_up)(inputs))
 }
 
 pub fn market_selection_candidate_windows_from_target(
@@ -673,6 +714,7 @@ mod tests {
             select_binary_option_market: fake_select_binary_option_market,
             market_selection_candidate_windows: fake_market_selection_candidate_windows,
             selected_market_requirement: fake_selected_market_requirement,
+            fair_probability_up: fake_fair_probability_up,
         }];
 
     fn fake_plan_strategy_target(
@@ -786,6 +828,10 @@ mod tests {
             market_slug: "fixture-market".to_string(),
             start_timestamp_milliseconds: 1_000,
         }])
+    }
+
+    fn fake_fair_probability_up(_inputs: &FairProbabilityInputs) -> Option<f64> {
+        Some(0.5)
     }
 
     fn fixture_loaded_config() -> LoadedBoltV3Config {
@@ -1033,6 +1079,31 @@ mod tests {
         .expect("injected family binding should own market selection dispatch");
 
         assert_eq!(selected.market_id, "fixture-market");
+    }
+
+    #[test]
+    fn fair_probability_routes_to_injected_family_binding_without_parent_family_branch() {
+        let inputs = FairProbabilityInputs {
+            spot_price: 3_105.0,
+            strike_price: 3_100.0,
+            seconds_to_market_end: 60,
+            realized_vol: 0.45,
+            pricing_kurtosis: 0.0,
+        };
+
+        assert!(
+            fair_probability_up_for_family("fixture_family", &inputs).is_none(),
+            "production registry should not know the test family"
+        );
+
+        let routed = fair_probability_up_for_family_with_bindings(
+            "fixture_family",
+            &inputs,
+            FAKE_FAMILY_BINDINGS,
+        )
+        .expect("injected family binding should own fair-value dispatch");
+
+        assert_eq!(routed, 0.5);
     }
 
     #[test]

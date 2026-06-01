@@ -6100,7 +6100,7 @@ reason = "This marker verifies client-order correlation before terminal handling
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"if !self.event_instrument_matches_held_exposure(event_instrument_id) {\n            return;\n        }"'''
-context = '''"if !self.event_instrument_matches_held_exposure(event_instrument_id) {\n            return;\n        }";'''
+context = '''const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_INSTRUMENT_GUARD_MARKER: &str = "if !self.event_instrument_matches_held_exposure(event_instrument_id) {\n            return;\n        }";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies terminal events are guarded by the held exposure instrument before state mutation; it is source evidence, not an operator runtime value."
 
@@ -6236,7 +6236,7 @@ reason = "This marker identifies the exit-fill branch so the partial-fill proof 
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return Ok(());\n            }"'''
-context = '''"if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return Ok(());\n            }";'''
+context = '''const ABORT_PLAN_PARTIAL_FILL_EXIT_FILL_INSTRUMENT_GUARD_MARKER: &str = "if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return Ok(());\n            }";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies exit-fill events return from the held exposure instrument guard before recording fill receipt; it is source evidence, not an operator runtime value."
 
@@ -6276,7 +6276,7 @@ reason = "This marker identifies the exit-pending close branch so the partial-fi
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
 literal = '''"if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return;\n            }"'''
-context = '''"if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return;\n            }";'''
+context = '''const ABORT_PLAN_PARTIAL_FILL_POSITION_CLOSE_INSTRUMENT_GUARD_MARKER: &str = "if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return;\n            }";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies position-close events return from the held exposure instrument guard before recording close receipt; it is source evidence, not an operator runtime value."
 

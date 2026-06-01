@@ -133,6 +133,8 @@ const HYPERLIQUID_PRODUCT_MATRIX_RECORD_KIND: &str = "bolt_v3.hyperliquid_produc
 const HYPERLIQUID_NO_SUBMIT_READINESS_SCHEMA_VERSION: u32 = 1;
 const HYPERLIQUID_NO_SUBMIT_READINESS_RECORD_KIND: &str =
     "bolt_v3.hyperliquid_no_submit_readiness.v1";
+const HYPERLIQUID_LATENCY_PROFILE_SCHEMA_VERSION: u32 = 1;
+const HYPERLIQUID_LATENCY_PROFILE_RECORD_KIND: &str = "bolt_v3.hyperliquid_latency_profile.v1";
 const HYPERLIQUID_LIVE_SUBMIT_APPROVAL_SCHEMA_VERSION: u32 = 1;
 const HYPERLIQUID_LIVE_SUBMIT_APPROVAL_RECORD_KIND: &str =
     "bolt_v3.hyperliquid_live_submit_approval.v1";
@@ -1249,6 +1251,9 @@ pub enum BoltV3OperatorArtifactError {
     HyperliquidNoSubmitReadinessInvalid {
         field: &'static str,
     },
+    HyperliquidLatencyProfileInvalid {
+        field: &'static str,
+    },
     HyperliquidLiveSubmitApprovalInvalid {
         field: &'static str,
     },
@@ -1636,6 +1641,10 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::HyperliquidNoSubmitReadinessInvalid { field } => write!(
                 f,
                 "Hyperliquid no-submit readiness field `{field}` is invalid or unproven"
+            ),
+            Self::HyperliquidLatencyProfileInvalid { field } => write!(
+                f,
+                "Hyperliquid latency profile field `{field}` is invalid or unproven"
             ),
             Self::HyperliquidLiveSubmitApprovalInvalid { field } => write!(
                 f,
@@ -3170,6 +3179,103 @@ pub fn write_hyperliquid_product_matrix_artifact(
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
     let artifact = build_hyperliquid_product_matrix_artifact();
     write_json_artifact_create_new(output_path, &artifact)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidLatencyProfileArtifactInput {
+    pub provider_id: String,
+    pub toml_checksum: String,
+    pub latency_profile: hyperliquid::HyperliquidLatencyProfileConfig,
+    pub exchange_mutations: BoltV3ExchangeMutationCounts,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HyperliquidLatencyProfileArtifact {
+    pub schema_version: u32,
+    pub record_kind: &'static str,
+    pub provider_key: &'static str,
+    pub provider_id: String,
+    pub toml_checksum: String,
+    pub latency_profile: hyperliquid::HyperliquidLatencyProfileConfig,
+    pub exchange_mutation_count: u64,
+}
+
+pub fn build_hyperliquid_latency_profile_artifact(
+    input: HyperliquidLatencyProfileArtifactInput,
+) -> Result<HyperliquidLatencyProfileArtifact, BoltV3OperatorArtifactError> {
+    let exchange_mutation_count = validate_hyperliquid_latency_profile_input(&input)?;
+    Ok(HyperliquidLatencyProfileArtifact {
+        schema_version: HYPERLIQUID_LATENCY_PROFILE_SCHEMA_VERSION,
+        record_kind: HYPERLIQUID_LATENCY_PROFILE_RECORD_KIND,
+        provider_key: hyperliquid::KEY,
+        provider_id: input.provider_id,
+        toml_checksum: input.toml_checksum,
+        latency_profile: input.latency_profile,
+        exchange_mutation_count,
+    })
+}
+
+pub fn write_hyperliquid_latency_profile_artifact(
+    input: HyperliquidLatencyProfileArtifactInput,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let artifact = build_hyperliquid_latency_profile_artifact(input)?;
+    write_json_artifact_create_new(output_path, &artifact)
+}
+
+fn validate_hyperliquid_latency_profile_input(
+    input: &HyperliquidLatencyProfileArtifactInput,
+) -> Result<u64, BoltV3OperatorArtifactError> {
+    if input.provider_id.trim().is_empty() {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLatencyProfileInvalid {
+                field: "provider_id",
+            },
+        );
+    }
+    if !is_lowercase_sha256(&input.toml_checksum) {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLatencyProfileInvalid {
+                field: "toml_checksum",
+            },
+        );
+    }
+    validate_hyperliquid_latency_profile_config(&input.latency_profile)?;
+    validate_no_exchange_mutations(input.exchange_mutations).map_err(|_| {
+        BoltV3OperatorArtifactError::HyperliquidLatencyProfileInvalid {
+            field: "exchange_mutation_count",
+        }
+    })
+}
+
+fn validate_hyperliquid_latency_profile_config(
+    latency_profile: &hyperliquid::HyperliquidLatencyProfileConfig,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if latency_profile.local_info_node_url.trim().is_empty()
+        || !(latency_profile.local_info_node_url.starts_with("http://")
+            || latency_profile.local_info_node_url.starts_with("https://"))
+    {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLatencyProfileInvalid {
+                field: "latency_profile.local_info_node_url",
+            },
+        );
+    }
+    if latency_profile.placement_profile.trim().is_empty() {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLatencyProfileInvalid {
+                field: "latency_profile.placement_profile",
+            },
+        );
+    }
+    if latency_profile.measurement_artifact_path.trim().is_empty() {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLatencyProfileInvalid {
+                field: "latency_profile.measurement_artifact_path",
+            },
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -89,6 +89,15 @@ pub struct HyperliquidExecutionConfig {
     pub transport_backend: TransportBackend,
     pub ws_post_timeout_secs: u64,
     pub outcome_settlement_poll_secs: u64,
+    pub latency_profile: Option<HyperliquidLatencyProfileConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HyperliquidLatencyProfileConfig {
+    pub local_info_node_url: String,
+    pub placement_profile: String,
+    pub measurement_artifact_path: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -425,6 +434,35 @@ fn validate_execution_config(key: &str, execution: &HyperliquidExecutionConfig) 
         errors.push(format!(
             "clients.{key}.execution.retry_delay_initial_ms ({}) must be <= retry_delay_max_ms ({})",
             execution.retry_delay_initial_ms, execution.retry_delay_max_ms
+        ));
+    }
+    if let Some(latency_profile) = &execution.latency_profile {
+        errors.extend(validate_latency_profile_config(key, latency_profile));
+    }
+    errors
+}
+
+fn validate_latency_profile_config(
+    key: &str,
+    latency_profile: &HyperliquidLatencyProfileConfig,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if latency_profile.local_info_node_url.trim().is_empty()
+        || !(latency_profile.local_info_node_url.starts_with("http://")
+            || latency_profile.local_info_node_url.starts_with("https://"))
+    {
+        errors.push(format!(
+            "clients.{key}.execution.latency_profile.local_info_node_url must be a non-empty HTTP(S) URL"
+        ));
+    }
+    if latency_profile.placement_profile.trim().is_empty() {
+        errors.push(format!(
+            "clients.{key}.execution.latency_profile.placement_profile must be non-empty"
+        ));
+    }
+    if latency_profile.measurement_artifact_path.trim().is_empty() {
+        errors.push(format!(
+            "clients.{key}.execution.latency_profile.measurement_artifact_path must be non-empty"
         ));
     }
     errors

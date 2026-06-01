@@ -3166,7 +3166,7 @@ fn bolt_v3_archetype_rejects_stop_limit_gtd_entry_without_expiry() {
 }
 
 #[test]
-fn bolt_v3_archetype_accepts_stop_limit_entry_quote_quantity_flag() {
+fn bolt_v3_archetype_rejects_stop_limit_entry_quote_quantity() {
     use bolt_v2::{
         bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
         bolt_v3_validate::validate_strategies,
@@ -3199,9 +3199,19 @@ fn bolt_v3_archetype_accepts_stop_limit_entry_quote_quantity_flag() {
     }];
     let messages = validate_strategies(&stable_root, &loaded);
 
+    // The StopLimit order template (trigger_price + gtc) parses as a valid NT order
+    // field set (the toml::from_str above succeeds), but a non-market quote-quantity
+    // ENTRY is forbidden by R12: quote->base sizing reads an unguarded top-of-book
+    // cache tick with no submit-time freshness bound. Re-enable is tracked in #506.
+    // Assert the base-quantity guard fails closed via the same non-market branch as
+    // the limit case (message excludes the market-fanout variant).
     assert!(
-        messages.is_empty(),
-        "StopLimit entry quote-quantity flag should be accepted as an NT order field: {messages:#?}"
+        messages.iter().any(|message| {
+            message.contains("parameters.entry_order")
+                && message.contains("is_quote_quantity")
+                && !message.contains("order_type=market")
+        }),
+        "StopLimit (non-market) quote-quantity entry must fail closed at load via the base-quantity guard (R12, #506): {messages:#?}"
     );
 }
 

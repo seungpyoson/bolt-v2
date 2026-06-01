@@ -86,3 +86,35 @@ Re-verified vs HEAD (verification workflow + personal spot-checks):
   `credential_env_vars()` accessor across all environment variants (Bitmex/Bybit/Deribit/Kraken envs,
   Coinbase/OKX argless). Drift now fails CI. The env path is itself only reachable for data-only clients
   passing `None` credentials; the blocklist is the fail-closed guard for that path.
+
+## ADJUDICATED — CLOSED (2026-06-01, re-verified at HEAD `c80aa5a6`)
+
+Provider/secrets layer is **unchanged by the `main`→PR#480 merge** (`git diff 247bafec c80aa5a6 --
+src/bolt_v3_providers/ src/bolt_v3_config.rs` = empty), so the `1f6ee056` review remains valid for
+current code. Personally re-verified at HEAD `c80aa5a6` (not subagent-trusted):
+
+- Fix commit `dfb4a44e` is an ancestor of HEAD (`git merge-base --is-ancestor` ✓).
+- **F5** present: `BINANCE_TESTNET_*` / `BINANCE_FUTURES_TESTNET_*` / `BINANCE_DEMO_*` in
+  `binance.rs FORBIDDEN_ENV_VARS` (lines 105+).
+- **F8** present: per-field `Zeroizing<String>` on `binance.rs:170-171` (api_key/api_secret) and
+  `polymarket.rs:230-241` (private_key/api_key/api_secret/passphrase).
+- **F10** present: `redaction_values(&self) -> Vec<&str>;` is a required trait method (`mod.rs:47`,
+  no default body) — a missing override is a compile error.
+- **Coverage cross-check** present: `forbidden_env_vars_cover_nt_credential_env_vars` test
+  (`market_data.rs:573`).
+- **F1/F2** present: leak fence handles bare `use`, `as`-aliased, and `extern crate` NT imports.
+- **Live gate:** `python3 scripts/verify_bolt_v3_provider_leaks.py` → exit 0, "verifier passed."
+  No secret-printing in `src/bolt_v3_providers/` (grep clean).
+
+**Terminal classification (every finding FIXED or DISPROVEN — no open/deferred blocker):**
+- FIXED-IN-CODE (verified at HEAD): F1, F2, F5, F7, F8, F10, F12, F16, F17, F19 + DeepSeek/Grok
+  data-only-blocklist cross-check.
+- FIXED via mitigation: F3 (fence intent preserved by explicit ownership comment; the cosmetic
+  `ClobV2*`→`PolymarketClobV2*` rename is a tracked non-security follow-up, ~7-file blast radius),
+  F4 (leak verifier derives its denylist from Cargo `nautilus-*` deps — compensating control).
+- DISPROVEN: F6, F11, F13/F15 (scope-drift to P4), F14, F18.
+- NT-boundary (not a Bolt-fixable bug; mitigated on Bolt's side + recorded): F9 (NT clones secret
+  into its own non-zeroized config), F20 (NT `Credential` Debug leak — mitigated by WARN filter).
+
+**Verdict: P3 CLOSED — HARDENING-ONLY.** No live-money / secret-critical blocker. External
+consensus 6/6 CLOSE-CONFIRMED; main-session re-verified at HEAD `c80aa5a6`.

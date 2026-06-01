@@ -3645,6 +3645,10 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         &mut uppercase_order_enums_loaded,
         &uppercase_loaded_order_enums_consumption_path,
     );
+    // The previous canonicalization sub-case consumed (and therefore SPENT) the
+    // one-time approval nonce; re-arm a fresh approved nonce so this independent
+    // loaded-order-enum canonicalization case can consume in turn.
+    write_fresh_phase8_approval_nonce(&approval_nonce_path);
     uppercase_loaded_order_enums_envelope
         .validate_and_consume_against(
             "expected-head",
@@ -3802,6 +3806,9 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         &mut multi_strategy_loaded,
         &multi_strategy_consumption_path,
     );
+    // Each successful consume spends the one-time nonce; re-arm a fresh approved
+    // nonce before this positive multi-strategy binding case.
+    write_fresh_phase8_approval_nonce(&approval_nonce_path);
     multi_strategy_envelope
         .validate_and_consume_against(
             "expected-head",
@@ -3820,6 +3827,8 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
     std::fs::remove_file(&multi_strategy_consumption_path)
         .expect("multi-strategy consumption evidence should remove");
 
+    // Re-arm before the final positive consume (the previous case spent the nonce).
+    write_fresh_phase8_approval_nonce(&approval_nonce_path);
     envelope
         .validate_and_consume_against(
             "expected-head",

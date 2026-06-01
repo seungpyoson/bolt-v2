@@ -65,3 +65,11 @@
 - NT config/env fallback lines for private key, vault, and account address.
 - NT metadata and fee methods for `meta`, `spotMeta`, `allPerpMetas`, `outcomeMeta`, and `userFees`.
 - Official docs for nonces/API wallets, asset IDs, latency optimization, and rate-limit weights.
+
+## Implementation Refresh - 2026-06-02
+
+- Branch: `codex/025-hyperliquid-execution-adapter`.
+- Base: `origin/main` at `2938bc6f6e7553e436f074163a9e5db8b4c56b11`.
+- PR 480 merge present at `92ef8e7dfeee7baa7f5eb4eb2d13017c18fa0afe`.
+- NT pin: all Nautilus crates, including `nautilus-hyperliquid`, use `nautilus_trader` rev `6e059dcbb59ac1e582132fc431a581936c216c3c`.
+- Implementation commits: `4355c974`, `bacb0a80`, `9fff450d`, `af8cb7b3`, `b3bc0965`, `cb7a2399`, `27046f0d`, `45ffdde4`.

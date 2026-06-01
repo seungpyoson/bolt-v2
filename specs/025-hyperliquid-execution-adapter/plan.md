@@ -30,6 +30,11 @@ Colocated low-latency operation is planned as configuration and runbook surface 
 - Public no-secret probes on 2026-06-01 showed non-empty `meta`, `spotMeta`, `allPerpMetas`, `outcomeMeta`, and `exchangeStatus` responses.
 - Official Hyperliquid docs identify nonce/API wallet constraints, asset-id differences by product surface, `userFees` request weight, and latency optimization guidance.
 
+## Plan Review Gate
+
+- Relay-Claude adversarial plan review job `33d2b208-23d3-454b-9024-15719c585a09` approved exact planning head `3da058eea22a9863ddf3b068b625947fab88f004`.
+- Implementation started only after PR 480 was present in `origin/main` at `2938bc6f6e7553e436f074163a9e5db8b4c56b11`.
+
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*

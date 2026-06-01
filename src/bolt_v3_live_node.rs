@@ -470,11 +470,16 @@ impl BoltV3LossGovernorRuntimeFeed {
                 observed_at_ns,
                 value,
             } => {
-                if let Some(value) = value {
-                    let value = self
-                        .position_pnls
-                        .get(&position_id)
-                        .map_or(value, |fact| fact.value + value);
+                if let Some(fact) = self.position_pnls.get(&position_id).copied() {
+                    let value = value.map_or(fact.value, |delta| fact.value + delta);
+                    self.position_pnls.insert(
+                        position_id,
+                        TimedLossFact {
+                            observed_at_ns,
+                            value,
+                        },
+                    );
+                } else if let Some(value) = value {
                     self.position_pnls.insert(
                         position_id,
                         TimedLossFact {
@@ -2213,6 +2218,49 @@ mod tests {
     }
 
     #[test]
+    fn loss_governor_feed_refreshes_position_timestamp_on_adjustment_without_pnl_change() {
+        let account_id = AccountId::from("POLYMARKET-001");
+        let position_id = PositionId::from("P-001");
+        let mut feed = BoltV3LossGovernorRuntimeFeed::new(account_id, 1_000);
+
+        feed.record_portfolio_snapshot(&portfolio_snapshot(
+            account_id,
+            300,
+            Decimal::ZERO,
+            Decimal::ZERO,
+            Decimal::new(100, 0),
+        ))
+        .expect("portfolio snapshot should produce loss snapshot");
+
+        feed.record_position_event(&position_changed_event_for_position(
+            account_id,
+            position_id,
+            150,
+            Decimal::ZERO,
+            Decimal::new(-5, 0),
+        ))
+        .expect("position change should seed per-trade PnL");
+
+        let adjusted = feed
+            .record_position_event(&position_adjusted_event_for_position_with_pnl_change(
+                account_id,
+                position_id,
+                250,
+                None,
+            ))
+            .expect("position adjustment without PnL change should refresh per-trade timestamp");
+
+        assert_eq!(adjusted.observed_at_ns, 250);
+        assert_eq!(adjusted.per_trade_pnl, Some(Decimal::new(-5, 0)));
+        assert_eq!(
+            feed.latest_per_trade_pnl()
+                .expect("per-trade PnL should remain populated")
+                .observed_at_ns,
+            250
+        );
+    }
+
+    #[test]
     fn loss_governor_feed_removes_closed_positions_from_current_trade_context() {
         let account_id = AccountId::from("POLYMARKET-001");
         let position_id = PositionId::from("P-001");
@@ -2567,6 +2615,20 @@ mod tests {
         ts_event: u64,
         pnl_change: Decimal,
     ) -> PositionEvent {
+        position_adjusted_event_for_position_with_pnl_change(
+            account_id,
+            position_id,
+            ts_event,
+            Some(pnl_change),
+        )
+    }
+
+    fn position_adjusted_event_for_position_with_pnl_change(
+        account_id: AccountId,
+        position_id: PositionId,
+        ts_event: u64,
+        pnl_change: Option<Decimal>,
+    ) -> PositionEvent {
         PositionEvent::PositionAdjusted(PositionAdjusted {
             trader_id: TraderId::from("TESTER-001"),
             strategy_id: StrategyId::from("binary_oracle_edge_taker-001"),
@@ -2575,7 +2637,7 @@ mod tests {
             account_id,
             adjustment_type: PositionAdjustmentType::Funding,
             quantity_change: None,
-            pnl_change: Some(Money::from_decimal(pnl_change, Currency::USD()).unwrap()),
+            pnl_change: pnl_change.map(|pnl| Money::from_decimal(pnl, Currency::USD()).unwrap()),
             reason: None,
             event_id: UUID4::default(),
             ts_event: ts_event.into(),

@@ -61,6 +61,11 @@ pub enum LegEvent {
     Modified,
     /// The venue rejected the in-flight in-place modify.
     ModifyRejected,
+    /// The venue rejected the in-flight cancel (order already gone, a duplicate
+    /// cancel, or a transient venue error). The leg cannot assume the order is
+    /// gone, so it keeps hunting rather than wait forever for a `Canceled` that
+    /// may never arrive.
+    CancelRejected,
     /// The resting (or in-flight) order **fully** filled and left the book.
     ///
     /// A *partial* fill — a remainder still rests — is deliberately NOT a
@@ -204,6 +209,17 @@ impl QuoteLeg {
                 self.state = LegState::Idle;
                 None
             }
+            // Cancel-rejected: an outstanding cancel — a requote cancel in
+            // RequotePending, or a wind-down cancel in CancelPending — was refused
+            // by the venue. The order may still be live, so re-emit the Cancel and
+            // stay in the retryable state rather than wait forever for a `Canceled`
+            // that may never come (the stuck-leg hazard) or silently abandon a live
+            // order. The retry is ultimately bounded by the governor /
+            // reconnect-resync (a later slice); a full fill resolves it via the
+            // `Filled` arm below.
+            (LegState::RequotePending | LegState::CancelPending, LegEvent::CancelRejected) => {
+                Some(LifecycleAction::Cancel)
+            }
             // Fill: a full fill removes the order from the book entirely, from
             // any state that holds or is working an order, so the leg returns to
             // Idle — there is no resting quote left to cancel or modify. This is
@@ -225,6 +241,18 @@ impl QuoteLeg {
                 self.state = LegState::Idle;
                 None
             }
+            // Idle-orphan-guard: the leg believes it holds no order, yet the venue
+            // reports one live — a late `Accepted` (a submit we treated as dropped
+            // actually rested), a `Modified`, or a `ModifyRejected` (the original
+            // still rests). Hunt it down rather than leave it resting untracked.
+            // Stay Idle: the resulting `Canceled` is a no-op here, and if the event
+            // was merely stale the Cancel hits nothing. Mirrors the CancelPending
+            // orphan guard. (`Filled` in Idle is a stale/duplicate fill and stays a
+            // no-op below.)
+            (
+                LegState::Idle,
+                LegEvent::Accepted | LegEvent::Modified | LegEvent::ModifyRejected,
+            ) => Some(LifecycleAction::Cancel),
             // Everything else is a no-op: a no-move trigger while Resting, any
             // trigger while a command is in flight, or an event that does not
             // match the current state.
@@ -437,6 +465,66 @@ mod tests {
         let action = leg.on_event(LegEvent::Canceled);
         assert_eq!(action, Some(LifecycleAction::Submit));
         assert_eq!(leg.state(), LegState::SubmitPending);
+    }
+
+    #[test]
+    fn cancel_rejected_retries_in_requote_pending() {
+        let mut leg = resting_leg(false);
+        leg.on_event(LegEvent::QuoteTrigger {
+            requote_needed: true,
+        });
+        assert_eq!(leg.state(), LegState::RequotePending);
+        // The venue rejects the requote cancel: re-emit Cancel, stay retryable —
+        // do not abandon a possibly-live order or wait forever for a Canceled.
+        let action = leg.on_event(LegEvent::CancelRejected);
+        assert_eq!(action, Some(LifecycleAction::Cancel));
+        assert_eq!(leg.state(), LegState::RequotePending);
+        // A later Canceled still drives the replacement submit (T5).
+        assert_eq!(
+            leg.on_event(LegEvent::Canceled),
+            Some(LifecycleAction::Submit)
+        );
+    }
+
+    #[test]
+    fn cancel_rejected_retries_in_cancel_pending() {
+        let mut leg = resting_leg(false);
+        leg.request_cancel();
+        assert_eq!(leg.state(), LegState::CancelPending);
+        let action = leg.on_event(LegEvent::CancelRejected);
+        assert_eq!(action, Some(LifecycleAction::Cancel));
+        assert_eq!(leg.state(), LegState::CancelPending);
+        // The eventual Canceled winds the leg down with no resubmit.
+        assert_eq!(leg.on_event(LegEvent::Canceled), None);
+        assert_eq!(leg.state(), LegState::Idle);
+    }
+
+    #[test]
+    fn cancel_rejected_without_an_outstanding_cancel_is_a_noop() {
+        // Resting, no in-flight cancel: a stale CancelRejected changes nothing.
+        let mut leg = resting_leg(false);
+        assert_eq!(leg.on_event(LegEvent::CancelRejected), None);
+        assert_eq!(leg.state(), LegState::Resting);
+    }
+
+    #[test]
+    fn idle_orphan_guard_cancels_an_unexpected_live_order() {
+        // An Idle leg that learns the venue holds a live order (late Accepted /
+        // Modified / ModifyRejected) hunts it down instead of abandoning it.
+        for event in [
+            LegEvent::Accepted,
+            LegEvent::Modified,
+            LegEvent::ModifyRejected,
+        ] {
+            let mut leg = QuoteLeg::new(false);
+            assert_eq!(leg.state(), LegState::Idle);
+            assert_eq!(leg.on_event(event), Some(LifecycleAction::Cancel));
+            assert_eq!(leg.state(), LegState::Idle, "stays Idle and re-hunts");
+        }
+        // A stale/duplicate Filled in Idle remains a no-op (not an orphan).
+        let mut leg = QuoteLeg::new(false);
+        assert_eq!(leg.on_event(LegEvent::Filled), None);
+        assert_eq!(leg.state(), LegState::Idle);
     }
 
     #[test]

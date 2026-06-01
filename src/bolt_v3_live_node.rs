@@ -1581,11 +1581,13 @@ fn build_live_node_with_clients(
 fn configured_loss_governor_policy(
     loaded: &LoadedBoltV3Config,
 ) -> Result<Option<LossGovernorPolicy>> {
-    let validation_messages = crate::bolt_v3_validate::validate_root_only(&loaded.root);
-    if !validation_messages.is_empty() {
-        return Err(
-            crate::bolt_v3_validate::BoltV3ValidationError::new(validation_messages).into(),
-        );
+    if let Some(block) = loaded.root.risk.loss_governor.as_ref() {
+        let validation_messages = crate::bolt_v3_validate::validate_loss_governor_block(block);
+        if !validation_messages.is_empty() {
+            return Err(
+                crate::bolt_v3_validate::BoltV3ValidationError::new(validation_messages).into(),
+            );
+        }
     }
     let Some(block) = loaded
         .root

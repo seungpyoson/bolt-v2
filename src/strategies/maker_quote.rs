@@ -137,6 +137,9 @@ pub fn resolve_band(
         return None;
     }
     let half_spread = (reservation_ask - reservation_bid) / TWO_F64;
+    // Redundant with the bracket guard above (which forces reservation_bid <=
+    // reservation_ask, so a finite half-spread is non-negative) — kept as
+    // defense-in-depth on this money path; a crossed band never reaches here.
     if half_spread < ZERO_F64 {
         return None;
     }
@@ -189,7 +192,9 @@ impl MakerFamily for BinaryFamily {
         // The two bids must leave positive edge: a YES bid plus a NO bid summing
         // to ≥ 1 is a guaranteed loss, since exactly one token resolves to 1. The
         // floor on the half-spread normally guarantees this; this is the final
-        // fail-closed net.
+        // fail-closed net. Together with the per-leg sanitize_probability above,
+        // this is the binary analogue of the perp post-skew bracket guard — it
+        // re-asserts a valid layout AFTER the inventory skew, not just before.
         if yes_price + no_price >= UNIT_F64 {
             return None;
         }
@@ -226,6 +231,17 @@ impl MakerFamily for LinearPerpFamily {
         let bid = resolved_bid - inputs.inventory_skew;
         let ask = resolved_ask - inputs.inventory_skew;
         if !is_positive_finite(bid) || bid >= ask {
+            return None;
+        }
+        // Re-assert the band invariant AFTER the skew: the skew may lean the pair
+        // but must not flip it to one side of fair. Skew shifts both quotes by the
+        // same amount while preserving the spread, so the positivity / bid<ask
+        // guards alone would admit a |skew| > half_spread that drifts the whole
+        // quote off fair (e.g. a large negative skew puts both quotes above fair)
+        // — the perp analogue of the crossed band the shared resolver rejects
+        // pre-skew. (The binary impl gets this for free from its
+        // sanitize_probability + yes+no<1 guards below.)
+        if !(bid <= inputs.fair && inputs.fair <= ask) {
             return None;
         }
         Some(QuoteTargets {
@@ -361,6 +377,24 @@ mod tests {
                 .quote_targets(symmetric_inputs(f64::INFINITY, 0.5, 0.0))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn perp_rejects_skew_that_flips_quotes_off_fair() {
+        // A negative skew larger than the half-spread shifts BOTH quotes above
+        // fair while preserving the spread (bid < ask, both positive) — the perp
+        // analogue of a crossed band. It must fail closed post-skew.
+        assert!(
+            LinearPerpFamily
+                .quote_targets(symmetric_inputs(100.0, 0.5, -50.0))
+                .is_none()
+        );
+        // A lean within the half-spread still quotes (leans up for a net short)
+        // and keeps fair bracketed.
+        let leaned = LinearPerpFamily
+            .quote_targets(symmetric_inputs(100.0, 0.5, -0.3))
+            .expect("a skew within the half-spread still brackets fair");
+        assert!(leaned.leg_a.price <= 100.0 && 100.0 <= leaned.leg_b.price);
     }
 
     #[test]

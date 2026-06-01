@@ -55,6 +55,14 @@ impl MakerInventory {
     /// finite share count — fail-closed against a malformed fill (a zero or
     /// negative quantity is never a real fill and must not silently corrupt the
     /// net position).
+    ///
+    /// Accumulation is raw f64: over a long fill history `net_position` can drift
+    /// by a floating-point epsilon, which only ever trips the downstream
+    /// reduce-only cap ([`crate::strategies::maker_model::inventory_skew`])
+    /// marginally *early* — the fail-closed direction. Exact on-grid quantisation
+    /// (so the cap comparison is reproducible regardless of fill order) arrives
+    /// when fills are sized through NautilusTrader's `make_qty` in the live shell;
+    /// it is intentionally not duplicated here (NT owns size/tick rounding).
     pub fn apply_fill(&mut self, leg: Leg, side: QuoteSide, qty: f64) -> bool {
         if !is_positive_finite(qty) {
             return false;

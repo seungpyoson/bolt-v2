@@ -428,22 +428,60 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
     }
 }
 
-/// Seals the genuine no-submit readiness-report file hash into a NON-proof
-/// (proof-disabled production strategy run) operator-evidence fixture.
+/// Seals the genuine no-submit readiness-report file hash into a pre-consumption
+/// operator-evidence fixture without creating an approval-consumption proof.
 ///
 /// The no-submit readiness report is read and consumed to arm `submit_admission`
 /// on EVERY live-node path — both the proof-policy canary and the proof-disabled
 /// production run — so the gate now binds the report to the operator-sealed
-/// approval envelope unconditionally. A legitimate production-path fixture must
-/// therefore seal the report hash into the self-declared TOML evidence AND the
-/// approval envelope exactly as the production producer does. This helper:
-///   1. sets the self-declared TOML `no_submit_readiness_report_sha256`,
-///   2. inserts the same hash into the on-disk approval-envelope JSON and
-///      recomputes `approval_envelope_sha256`,
-///   3. rewrites the approval-consumption proof, if it already exists, so its
-///      bound `approval_envelope_sha256` matches the rewritten envelope.
+/// approval envelope unconditionally. A pre-consumption fixture must seal the
+/// report hash into TOML evidence and the approval envelope while keeping the
+/// configured approval-consumption path absent.
 /// The caller must write the report file before invoking this helper.
-pub fn seal_no_submit_readiness_report_into_operator_evidence(
+pub fn seal_no_submit_readiness_report_into_pre_consumption_operator_evidence(
+    evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    report_path: &Path,
+) {
+    let consumption_path = Path::new(&evidence.approval_consumption_path);
+    assert!(
+        !consumption_path.exists(),
+        "pre-consumption approval proof must be absent before sealing readiness report"
+    );
+    seal_no_submit_readiness_report_into_operator_evidence_and_envelope(evidence, report_path);
+}
+
+/// Seals the genuine no-submit readiness-report file hash into a post-consumption
+/// operator-evidence fixture and rewrites the existing approval-consumption proof
+/// to the recomputed approval-envelope hash.
+///
+/// The caller must write the report file before invoking this helper, and the
+/// configured approval-consumption proof must already exist.
+pub fn seal_no_submit_readiness_report_into_post_consumption_operator_evidence(
+    evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    report_path: &Path,
+) {
+    seal_no_submit_readiness_report_into_operator_evidence_and_envelope(evidence, report_path);
+
+    let consumption_path = Path::new(&evidence.approval_consumption_path);
+    let mut consumption: serde_json::Value = serde_json::from_slice(
+        &fs::read(consumption_path).expect("approval consumption proof should read"),
+    )
+    .expect("approval consumption proof should parse");
+    consumption
+        .as_object_mut()
+        .expect("approval consumption proof should be an object")
+        .insert(
+            "approval_envelope_sha256".to_string(),
+            serde_json::json!(evidence.approval_envelope_sha256),
+        );
+    fs::write(
+        consumption_path,
+        serde_json::to_vec(&consumption).expect("approval consumption proof should re-encode"),
+    )
+    .expect("approval consumption proof should rewrite");
+}
+
+fn seal_no_submit_readiness_report_into_operator_evidence_and_envelope(
     evidence: &mut LiveCanaryOperatorEvidenceBlock,
     report_path: &Path,
 ) {
@@ -465,27 +503,6 @@ pub fn seal_no_submit_readiness_report_into_operator_evidence(
     let envelope_bytes = serde_json::to_vec(&envelope).expect("approval envelope should re-encode");
     fs::write(envelope_path, &envelope_bytes).expect("approval envelope should rewrite");
     evidence.approval_envelope_sha256 = sha256_hex(&envelope_bytes);
-
-    let consumption_path = Path::new(&evidence.approval_consumption_path);
-    if !consumption_path.exists() {
-        return;
-    }
-    let mut consumption: serde_json::Value = serde_json::from_slice(
-        &fs::read(consumption_path).expect("approval consumption proof should read"),
-    )
-    .expect("approval consumption proof should parse");
-    consumption
-        .as_object_mut()
-        .expect("approval consumption proof should be an object")
-        .insert(
-            "approval_envelope_sha256".to_string(),
-            serde_json::json!(evidence.approval_envelope_sha256),
-        );
-    fs::write(
-        consumption_path,
-        serde_json::to_vec(&consumption).expect("approval consumption proof should re-encode"),
-    )
-    .expect("approval consumption proof should rewrite");
 }
 
 fn write_valid_decision_evidence_chain(path: &Path, now_ms: u64, notional: &str) {
@@ -727,7 +744,10 @@ pub fn loaded_bolt_v3_live_canary_with_satisfied_report(
     // Seal the genuine readiness-report hash into the operator evidence + envelope:
     // the report binding is mandatory on the production (proof-disabled) path too.
     let mut operator_evidence = valid_live_canary_operator_evidence();
-    seal_no_submit_readiness_report_into_operator_evidence(&mut operator_evidence, &report_path);
+    seal_no_submit_readiness_report_into_post_consumption_operator_evidence(
+        &mut operator_evidence,
+        &report_path,
+    );
     loaded.root.live_canary = Some(bolt_v2::bolt_v3_config::LiveCanaryBlock {
         approval_id: "operator-approved-canary-001".to_string(),
         no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),

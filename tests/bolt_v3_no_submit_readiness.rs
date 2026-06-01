@@ -74,7 +74,7 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
     // Seal the genuine readiness-report hash into the operator evidence +
     // envelope now that the report file exists: the report binding is mandatory
     // on the production (proof-disabled) path too.
-    support::seal_no_submit_readiness_report_into_operator_evidence(
+    support::seal_no_submit_readiness_report_into_post_consumption_operator_evidence(
         loaded
             .root
             .live_canary
@@ -1387,7 +1387,7 @@ fn seal_configured_no_submit_readiness_report(loaded: &mut LoadedBoltV3Config) {
         .as_mut()
         .and_then(|live_canary| live_canary.operator_evidence.as_mut())
         .expect("live canary fixture should carry operator evidence");
-    support::seal_no_submit_readiness_report_into_operator_evidence(
+    support::seal_no_submit_readiness_report_into_post_consumption_operator_evidence(
         operator_evidence,
         &report_path,
     );

@@ -301,7 +301,7 @@ async fn preflight_blocks_strategy_input_safety_audit_before_build() {
     write_satisfied_no_submit_readiness_report(&report_path);
     let mut loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
     bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
-    seal_loaded_no_submit_readiness_report(&mut loaded, &report_path);
+    seal_loaded_no_submit_readiness_report_for_pre_consumption(&mut loaded, &report_path);
 
     let report = evaluate_phase8_canary_preflight(
         &loaded,
@@ -332,7 +332,7 @@ async fn preflight_blocks_live_order_count_above_one_before_build() {
     write_satisfied_no_submit_readiness_report(&report_path);
     let mut loaded = loaded_with_live_canary(report_path.to_str().expect("utf8 report path"));
     bind_loaded_approval_consumption_path(&mut loaded, &approval_consumption_path);
-    seal_loaded_no_submit_readiness_report(&mut loaded, &report_path);
+    seal_loaded_no_submit_readiness_report_for_pre_consumption(&mut loaded, &report_path);
     loaded
         .root
         .live_canary
@@ -2265,7 +2265,7 @@ async fn operator_approval_consumption_writer_output_is_accepted_by_live_gate() 
     // Seal the genuine readiness-report hash into the operator evidence +
     // envelope before the producer reads `approval_envelope_sha256`: the report
     // binding is mandatory on the production (proof-disabled) path too.
-    support::seal_no_submit_readiness_report_into_operator_evidence(
+    support::seal_no_submit_readiness_report_into_pre_consumption_operator_evidence(
         operator_evidence,
         &report_path,
     );
@@ -4286,14 +4286,17 @@ fn bind_loaded_approval_consumption_path(
         .approval_consumption_path = approval_consumption_path.to_string_lossy().to_string();
 }
 
-fn seal_loaded_no_submit_readiness_report(loaded: &mut LoadedBoltV3Config, report_path: &Path) {
+fn seal_loaded_no_submit_readiness_report_for_pre_consumption(
+    loaded: &mut LoadedBoltV3Config,
+    report_path: &Path,
+) {
     let operator_evidence = loaded
         .root
         .live_canary
         .as_mut()
         .and_then(|live_canary| live_canary.operator_evidence.as_mut())
         .expect("live canary operator evidence should exist");
-    support::seal_no_submit_readiness_report_into_operator_evidence(
+    support::seal_no_submit_readiness_report_into_pre_consumption_operator_evidence(
         operator_evidence,
         report_path,
     );

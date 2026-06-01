@@ -35,6 +35,7 @@
 - [x] Release fully filled rebuilt pre-existing orders from reconstructed contract metadata and authoritative NT fill events.
 - [x] Invoke NT cache open-order reconciliation from the live runner before submit admission can arm.
 - [x] Block live-runner startup before submit admission arming when NT cache reports pre-existing open orders that cannot be reconciled.
+- [x] Emit durable position-sizer rebuild audit evidence with source, observation time, attribution status, attempted/recovered counts, acceptance reason, and live reserved liability.
 
 ## Remaining For Production Grade
 
@@ -42,7 +43,6 @@
 - [ ] Revalue residual liability for rebuilt pre-existing orders when known Bolt reservation metadata exists.
 - [ ] Release or revalue fully filled rebuilt pre-existing orders when known Bolt reservation metadata exists.
 - [ ] Rebuild non-empty pre-existing NT/exchange committed liability into the capital pool when cache orders can be attributed to known Bolt reservations.
-- [ ] Emit durable rebuild audit evidence with recovered reservation count, liability, source, and observation time.
 - [ ] Add configured halt actions for threshold breach: stop entries, cancel orders, and optional flatten.
 - [ ] Document and implement a safe replace-submit model before enabling `ReplaceSubmit`.
 - [ ] Replace static configured prediction-market metadata with dynamic market-selection metadata when rotating markets.

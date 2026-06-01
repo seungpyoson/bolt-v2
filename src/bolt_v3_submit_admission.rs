@@ -3,6 +3,7 @@ use crate::bolt_v3_capital_reservation::{
 };
 use crate::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
+    BoltV3PositionSizerRebuildAuditEvidence,
 };
 use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
 use crate::bolt_v3_loss_governor::{
@@ -151,6 +152,14 @@ pub struct BoltV3SubmitPositionSizingRebuildDecision {
     pub attempted_reservation_count: usize,
     pub rebuilt_reservation_count: usize,
     pub live_reserved_liability: Decimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BoltV3SubmitPositionSizingRebuildAuditContext {
+    observed_at_ns: u64,
+    source: String,
+    observed_open_order_count: usize,
+    all_open_orders_attributed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -384,6 +393,12 @@ impl BoltV3SubmitAdmissionState {
         snapshot: BoltV3SubmitPositionSizingOpenOrderSnapshot,
         now_ns: u64,
     ) -> BoltV3SubmitPositionSizingRebuildDecision {
+        let audit_context = BoltV3SubmitPositionSizingRebuildAuditContext {
+            observed_at_ns: snapshot.observed_at_ns,
+            source: snapshot.evidence_label.clone(),
+            observed_open_order_count: snapshot.observed_open_order_count,
+            all_open_orders_attributed: snapshot.all_open_orders_attributed,
+        };
         let attempted_reservation_count = snapshot.observed_open_order_count;
         let mut inner = lock_inner(&self.inner);
         let Some(position_sizer) = inner.position_sizer.as_mut() else {
@@ -404,7 +419,7 @@ impl BoltV3SubmitAdmissionState {
                 snapshot.evidence_label,
                 false,
             );
-            return BoltV3SubmitPositionSizingRebuildDecision {
+            let decision = BoltV3SubmitPositionSizingRebuildDecision {
                 accepted: false,
                 reason: Some(ReservationRejectionReason::MissingEvidence),
                 attempted_reservation_count,
@@ -413,11 +428,12 @@ impl BoltV3SubmitAdmissionState {
                     .gate
                     .live_reserved_liability(&position_sizer.capital_pool.pool_id),
             };
+            return self.finish_position_sizer_rebuild(&mut inner, &audit_context, decision);
         }
         let Some(state) = position_sizer.state.as_ref() else {
             position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
             position_sizer.client_order_reservations.clear();
-            return BoltV3SubmitPositionSizingRebuildDecision {
+            let decision = BoltV3SubmitPositionSizingRebuildDecision {
                 accepted: false,
                 reason: Some(ReservationRejectionReason::MissingEvidence),
                 attempted_reservation_count,
@@ -426,6 +442,7 @@ impl BoltV3SubmitAdmissionState {
                     .gate
                     .live_reserved_liability(&position_sizer.capital_pool.pool_id),
             };
+            return self.finish_position_sizer_rebuild(&mut inner, &audit_context, decision);
         };
         position_sizer.capital_pool.source = state.portfolio.source.clone();
         position_sizer.capital_pool.observed_at_ns = state.portfolio.observed_at_ns;
@@ -436,7 +453,7 @@ impl BoltV3SubmitAdmissionState {
             if rebuilt_index.contains_key(&reservation.client_order_id) {
                 position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
                 position_sizer.client_order_reservations.clear();
-                return BoltV3SubmitPositionSizingRebuildDecision {
+                let decision = BoltV3SubmitPositionSizingRebuildDecision {
                     accepted: false,
                     reason: Some(ReservationRejectionReason::DuplicateReservation),
                     attempted_reservation_count: index + 1,
@@ -445,11 +462,12 @@ impl BoltV3SubmitAdmissionState {
                         .gate
                         .live_reserved_liability(&position_sizer.capital_pool.pool_id),
                 };
+                return self.finish_position_sizer_rebuild(&mut inner, &audit_context, decision);
             }
             if !rebuilt_open_order_reservation_metadata_valid(&reservation) {
                 position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
                 position_sizer.client_order_reservations.clear();
-                return BoltV3SubmitPositionSizingRebuildDecision {
+                let decision = BoltV3SubmitPositionSizingRebuildDecision {
                     accepted: false,
                     reason: Some(ReservationRejectionReason::MissingEvidence),
                     attempted_reservation_count: index + 1,
@@ -458,6 +476,7 @@ impl BoltV3SubmitAdmissionState {
                         .gate
                         .live_reserved_liability(&position_sizer.capital_pool.pool_id),
                 };
+                return self.finish_position_sizer_rebuild(&mut inner, &audit_context, decision);
             }
 
             let submit_reservation_id = reservation.submit_reservation_id;
@@ -508,12 +527,65 @@ impl BoltV3SubmitAdmissionState {
             refresh_position_sizer_reservation_snapshot(position_sizer, now_ns);
         }
 
-        BoltV3SubmitPositionSizingRebuildDecision {
+        let decision = BoltV3SubmitPositionSizingRebuildDecision {
             accepted: decision.accepted,
             reason: decision.reason,
             attempted_reservation_count: decision.attempted_reservation_count,
             rebuilt_reservation_count: decision.rebuilt_reservation_count,
             live_reserved_liability: decision.live_reserved_liability,
+        };
+        self.finish_position_sizer_rebuild(&mut inner, &audit_context, decision)
+    }
+
+    fn finish_position_sizer_rebuild(
+        &self,
+        inner: &mut BoltV3SubmitAdmissionInner,
+        context: &BoltV3SubmitPositionSizingRebuildAuditContext,
+        decision: BoltV3SubmitPositionSizingRebuildDecision,
+    ) -> BoltV3SubmitPositionSizingRebuildDecision {
+        let audit = BoltV3PositionSizerRebuildAuditEvidence {
+            observed_at_ns: context.observed_at_ns,
+            source: context.source.clone(),
+            observed_open_order_count: context.observed_open_order_count,
+            all_open_orders_attributed: context.all_open_orders_attributed,
+            accepted: decision.accepted,
+            reason: decision.reason,
+            attempted_reservation_count: decision.attempted_reservation_count,
+            recovered_reservation_count: decision.rebuilt_reservation_count,
+            live_reserved_liability: decision.live_reserved_liability.to_string(),
+        };
+        if self
+            .decision_evidence
+            .record_position_sizer_rebuild_audit(&audit)
+            .is_ok()
+        {
+            return decision;
+        }
+
+        if let Some(position_sizer) = inner.position_sizer.as_mut() {
+            position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
+            position_sizer.client_order_reservations.clear();
+            refresh_position_sizer_reservation_snapshot_with_source(
+                position_sizer,
+                context.observed_at_ns,
+                context.source.clone(),
+                false,
+            );
+        }
+        BoltV3SubmitPositionSizingRebuildDecision {
+            accepted: false,
+            reason: Some(ReservationRejectionReason::MissingEvidence),
+            attempted_reservation_count: decision.attempted_reservation_count,
+            rebuilt_reservation_count: 0,
+            live_reserved_liability: inner
+                .position_sizer
+                .as_ref()
+                .map(|position_sizer| {
+                    position_sizer
+                        .gate
+                        .live_reserved_liability(&position_sizer.capital_pool.pool_id)
+                })
+                .unwrap_or(Decimal::ZERO),
         }
     }
 
@@ -2077,6 +2149,13 @@ mod tests {
         fn record_admission_decision(
             &self,
             _decision: &BoltV3AdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
         ) -> Result<()> {
             Ok(())
         }

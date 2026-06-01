@@ -1612,6 +1612,13 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
     fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
         Ok(())
     }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl BoltV3LiveNodeRuntime {
@@ -3449,8 +3456,10 @@ fn build_live_node_with_clients(
     adapters: BoltV3AdapterConfigs,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
     let proof_executor_enabled = canary_proof_executor_enabled(loaded);
+    let loss_policy = loss_governor_policy_from_loaded(loaded)?;
+    let position_sizer = position_sizer_config_from_loaded(loaded)?;
     let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> =
-        if loaded.strategies.is_empty() && !proof_executor_enabled {
+        if loaded.strategies.is_empty() && !proof_executor_enabled && position_sizer.is_none() {
             Arc::new(NoStrategyDecisionEvidenceWriter)
         } else {
             Arc::new(
@@ -3463,8 +3472,6 @@ fn build_live_node_with_clients(
                 })?,
             )
         };
-    let loss_policy = loss_governor_policy_from_loaded(loaded)?;
-    let position_sizer = position_sizer_config_from_loaded(loaded)?;
     let startup_observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
     let position_sizer_runtime_feed_config =
         position_sizer_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);

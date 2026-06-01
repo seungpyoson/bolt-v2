@@ -7788,6 +7788,13 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[derive(Debug)]
@@ -7815,6 +7822,13 @@ mod tests {
             _decision: &crate::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence,
         ) -> Result<()> {
             anyhow::bail!("admission decision write failed")
+        }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> Result<()> {
+            anyhow::bail!("position sizer rebuild audit write failed")
         }
     }
 
@@ -7878,6 +7892,13 @@ mod tests {
                 .push(RecordedDecisionEvidenceEvent::AdmissionDecision(
                     decision.clone(),
                 ));
+            Ok(())
+        }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> Result<()> {
             Ok(())
         }
     }

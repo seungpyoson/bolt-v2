@@ -10,12 +10,14 @@ use anyhow::{Context, Result, anyhow};
 use nautilus_model::orders::{Order, OrderAny};
 use serde::{Deserialize, Serialize};
 
+use crate::bolt_v3_capital_reservation::ReservationRejectionReason;
 use crate::bolt_v3_config::LoadedBoltV3Config;
 use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
 
 pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 6;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
+pub const BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
 pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID: &str = "bolt_v3.strategy_input_snapshot";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
@@ -137,6 +139,10 @@ pub trait BoltV3DecisionEvidenceWriter: std::fmt::Debug + Send + Sync {
 
     fn record_order_intent(&self, intent: &BoltV3OrderIntentEvidence) -> Result<()>;
     fn record_admission_decision(&self, decision: &BoltV3AdmissionDecisionEvidence) -> Result<()>;
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,6 +331,19 @@ pub struct BoltV3AdmissionDecisionEvidence {
     pub loss_halt_reasons: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoltV3PositionSizerRebuildAuditEvidence {
+    pub observed_at_ns: u64,
+    pub source: String,
+    pub observed_open_order_count: usize,
+    pub all_open_orders_attributed: bool,
+    pub accepted: bool,
+    pub reason: Option<ReservationRejectionReason>,
+    pub attempted_reservation_count: usize,
+    pub recovered_reservation_count: usize,
+    pub live_reserved_liability: String,
+}
+
 #[derive(Debug)]
 pub struct JsonlBoltV3DecisionEvidenceWriter {
     file: Mutex<std::fs::File>,
@@ -378,6 +397,14 @@ impl BoltV3DecisionEvidenceWriter for JsonlBoltV3DecisionEvidenceWriter {
 
     fn record_admission_decision(&self, decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
         let line = encode_admission_decision_line(decision)?;
+        self.append_line(&line)
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
+        let line = encode_position_sizer_rebuild_audit_line(audit)?;
         self.append_line(&line)
     }
 }
@@ -500,6 +527,19 @@ pub fn read_latest_entry_decision_evidence_chain(
                         )?);
                     }
                 }
+            }
+            "position_sizer_rebuild" => {
+                let decoded: PositionSizerRebuildAuditLineOwned = serde_json::from_slice(line)
+                    .with_context(|| {
+                        format!(
+                            "failed to parse bolt-v3 position sizer rebuild audit line at index {index}"
+                        )
+                    })?;
+                decoded.validate_header(
+                    "position_sizer_rebuild",
+                    BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+                    index,
+                )?;
             }
             other => {
                 return Err(anyhow!(
@@ -842,6 +882,13 @@ struct AdmissionDecisionLineOwned {
     decision: BoltV3AdmissionDecisionEvidence,
 }
 
+#[derive(Deserialize)]
+struct PositionSizerRebuildAuditLineOwned {
+    #[serde(flatten)]
+    header: DecisionEvidenceEnvelopeHeader,
+    audit: BoltV3PositionSizerRebuildAuditEvidence,
+}
+
 impl AdmissionDecisionLineOwned {
     fn validate_header(
         &self,
@@ -849,6 +896,18 @@ impl AdmissionDecisionLineOwned {
         expected_gate_id: &str,
         index: usize,
     ) -> Result<()> {
+        self.header.validate(expected_kind, expected_gate_id, index)
+    }
+}
+
+impl PositionSizerRebuildAuditLineOwned {
+    fn validate_header(
+        &self,
+        expected_kind: &str,
+        expected_gate_id: &str,
+        index: usize,
+    ) -> Result<()> {
+        let _ = &self.audit;
         self.header.validate(expected_kind, expected_gate_id, index)
     }
 }
@@ -881,6 +940,16 @@ struct AdmissionDecisionLine<'a> {
     gate_version: &'static str,
     kind: &'static str,
     decision: &'a BoltV3AdmissionDecisionEvidence,
+}
+
+#[derive(Serialize)]
+struct PositionSizerRebuildAuditLine<'a> {
+    schema_version: u32,
+    recorded_at_utc_ns: i64,
+    gate_id: &'static str,
+    gate_version: &'static str,
+    kind: &'static str,
+    audit: &'a BoltV3PositionSizerRebuildAuditEvidence,
 }
 
 fn current_utc_ns() -> i64 {
@@ -932,6 +1001,23 @@ fn encode_admission_decision_line(decision: &BoltV3AdmissionDecisionEvidence) ->
     };
     let mut line =
         serde_json::to_vec(&envelope).context("failed to serialize admission decision evidence")?;
+    line.extend_from_slice(b"\n");
+    Ok(line)
+}
+
+fn encode_position_sizer_rebuild_audit_line(
+    audit: &BoltV3PositionSizerRebuildAuditEvidence,
+) -> Result<Vec<u8>> {
+    let envelope = PositionSizerRebuildAuditLine {
+        schema_version: BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        recorded_at_utc_ns: current_utc_ns(),
+        gate_id: BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+        gate_version: BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        kind: "position_sizer_rebuild",
+        audit,
+    };
+    let mut line = serde_json::to_vec(&envelope)
+        .context("failed to serialize position sizer rebuild audit evidence")?;
     line.extend_from_slice(b"\n");
     Ok(line)
 }

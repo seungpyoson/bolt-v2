@@ -314,6 +314,13 @@ mod tests {
         ) -> Result<()> {
             Ok(())
         }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &crate::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[derive(Debug)]

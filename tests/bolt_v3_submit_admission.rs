@@ -4,7 +4,8 @@ use bolt_v2::bolt_v3_capital_reservation::{CapitalPoolSnapshot, ReservationRejec
 use bolt_v2::bolt_v3_config::load_bolt_v3_config;
 use bolt_v2::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
-    BoltV3OrderIntentEvidence, BoltV3StrategyInputEvidenceSnapshot,
+    BoltV3OrderIntentEvidence, BoltV3PositionSizerRebuildAuditEvidence,
+    BoltV3StrategyInputEvidenceSnapshot, decision_evidence_path,
 };
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, LossSnapshot};
@@ -905,6 +906,36 @@ fn live_node_position_sizer_cache_rebuild_stays_closed_without_components() {
 }
 
 #[test]
+fn live_node_position_sizer_without_strategies_records_rebuild_audit_evidence() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.strategies.clear();
+    loaded
+        .root
+        .risk
+        .capital_pools
+        .as_mut()
+        .expect("fixture should configure capital pools")[0]
+        .enforce_submit_admission = true;
+    let temp = support::TempCaseDir::new("bolt-v3-position-sizer-no-strategy-rebuild-evidence");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+        .expect("position-sizer LiveNode without strategies should build");
+
+    let rebuild = runtime.rebuild_position_sizer_from_nt_cache(1_000);
+
+    assert!(!rebuild.accepted);
+    let evidence_path = decision_evidence_path(&loaded).expect("evidence path should resolve");
+    let evidence = std::fs::read_to_string(evidence_path)
+        .expect("position-sizer rebuild audit evidence should be durable");
+    assert!(
+        evidence.contains("\"kind\":\"position_sizer_rebuild\""),
+        "rebuild audit evidence must be written through the configured JSONL writer"
+    );
+}
+
+#[test]
 fn strategy_build_context_carries_shared_submit_admission_handle() {
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
@@ -1137,6 +1168,82 @@ fn rebuild_snapshot_preserves_client_order_id_for_terminal_release() {
 
     assert!(release.accepted);
     assert!(!release.unknown_reservation);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+}
+
+#[test]
+fn rebuild_snapshot_records_durable_position_sizer_audit_evidence() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = position_sized_admission_with_writer(writer.clone());
+    admission.update_position_sizing_nt_components(fresh_components(900));
+
+    let rebuild = admission.rebuild_position_sizing_open_order_snapshot(
+        BoltV3SubmitPositionSizingOpenOrderSnapshot {
+            observed_at_ns: 1_000,
+            evidence_label: "nt_open_order_cache".to_string(),
+            observed_open_order_count: 1,
+            all_open_orders_attributed: true,
+            reservations: vec![open_order_reservation(
+                "client-1",
+                "reservation-1",
+                Decimal::new(43, 1),
+            )],
+        },
+        1_000,
+    );
+
+    assert!(rebuild.accepted);
+    assert_eq!(
+        writer.position_sizer_rebuild_audits(),
+        vec![BoltV3PositionSizerRebuildAuditEvidence {
+            observed_at_ns: 1_000,
+            source: "nt_open_order_cache".to_string(),
+            observed_open_order_count: 1,
+            all_open_orders_attributed: true,
+            accepted: true,
+            reason: None,
+            attempted_reservation_count: 1,
+            recovered_reservation_count: 1,
+            live_reserved_liability: Decimal::new(43, 1).to_string(),
+        }]
+    );
+}
+
+#[test]
+fn rebuild_snapshot_fails_closed_when_position_sizer_audit_write_fails() {
+    let admission =
+        position_sized_admission_with_writer(Arc::new(FailingPositionSizerRebuildAuditWriter));
+    admission.update_position_sizing_nt_components(fresh_components(900));
+
+    let rebuild = admission.rebuild_position_sizing_open_order_snapshot(
+        BoltV3SubmitPositionSizingOpenOrderSnapshot {
+            observed_at_ns: 1_000,
+            evidence_label: "nt_open_order_cache".to_string(),
+            observed_open_order_count: 1,
+            all_open_orders_attributed: true,
+            reservations: vec![open_order_reservation(
+                "client-1",
+                "reservation-1",
+                Decimal::new(43, 1),
+            )],
+        },
+        1_000,
+    );
+
+    assert_eq!(
+        rebuild,
+        BoltV3SubmitPositionSizingRebuildDecision {
+            accepted: false,
+            reason: Some(ReservationRejectionReason::MissingEvidence),
+            attempted_reservation_count: 1,
+            rebuilt_reservation_count: 0,
+            live_reserved_liability: Decimal::ZERO,
+        }
+    );
+    assert_eq!(admission.position_sizer_reconciled(), Some(false));
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::ZERO)
@@ -2244,8 +2351,33 @@ fn position_sized_admission_with_policy(
     pool_observed_at_ns: u64,
     fee_slippage_policy: Option<FeeSlippagePolicy>,
 ) -> BoltV3SubmitAdmissionState {
-    BoltV3SubmitAdmissionState::new_unarmed_with_position_sizer(
+    position_sized_admission_with_policy_and_writer(
+        pool_observed_at_ns,
+        fee_slippage_policy,
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
+    )
+}
+
+fn position_sized_admission_with_writer(
+    writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
+) -> BoltV3SubmitAdmissionState {
+    position_sized_admission_with_policy_and_writer(
+        900,
+        Some(FeeSlippagePolicy {
+            max_fee_liability: Decimal::new(10, 2),
+            max_slippage_liability: Decimal::new(20, 2),
+        }),
+        writer,
+    )
+}
+
+fn position_sized_admission_with_policy_and_writer(
+    pool_observed_at_ns: u64,
+    fee_slippage_policy: Option<FeeSlippagePolicy>,
+    writer: Arc<dyn BoltV3DecisionEvidenceWriter>,
+) -> BoltV3SubmitAdmissionState {
+    BoltV3SubmitAdmissionState::new_unarmed_with_position_sizer(
+        writer,
         BoltV3SubmitPositionSizerConfig {
             venue_id: "VENUE-A".to_string(),
             account_id: "ACCOUNT-001".to_string(),
@@ -2418,6 +2550,45 @@ impl BoltV3DecisionEvidenceWriter for FailingDecisionEvidenceWriter {
             "synthetic admission-decision write failure"
         ))
     }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct FailingPositionSizerRebuildAuditWriter;
+
+impl BoltV3DecisionEvidenceWriter for FailingPositionSizerRebuildAuditWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        _decision: &BoltV3AdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Err(anyhow::anyhow!(
+            "synthetic position-sizer rebuild audit write failure"
+        ))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2497,6 +2668,13 @@ impl BoltV3DecisionEvidenceWriter for BlockingFirstAdmissionDecisionWriter {
             }
         }
         state.admission_decisions.push(decision.clone());
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 }

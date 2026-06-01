@@ -7867,6 +7867,14 @@ reason = "This is a fail-closed diagnostic template for bounded decision-evidenc
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
+literal = '''"bolt_v3.position_sizer_rebuild"'''
+context = '''pub const BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID: &str = "bolt_v3.position_sizer_rebuild";'''
+classification = "decision_evidence_gate_id"
+reason = "This is the fixed JSONL gate id for position-sizer rebuild audit evidence, not a venue, market, quantity, timeout, path, or operator policy value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
 literal = '''"strategy_input_snapshot"'''
 context = '''"strategy_input_snapshot" => {'''
 classification = "decision_evidence_record_kind"
@@ -7891,6 +7899,14 @@ reason = "This is the JSONL decision-evidence record kind emitted by the submit-
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
+literal = '''"position_sizer_rebuild"'''
+context = '''"position_sizer_rebuild" => {'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL decision-evidence record kind emitted by position-sizer startup rebuild audit, not a venue, market, quantity, timeout, path, or policy value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
 literal = '''"strategy_input_snapshot"'''
 context = '''"strategy_input_snapshot",'''
 classification = "decision_evidence_record_kind_validation"
@@ -7911,6 +7927,22 @@ literal = '''"admission_decision"'''
 context = '''"admission_decision",'''
 classification = "decision_evidence_record_kind_validation"
 reason = "This is the expected JSONL envelope discriminator used when validating runtime decision-evidence provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"position_sizer_rebuild"'''
+context = '''"position_sizer_rebuild",'''
+classification = "decision_evidence_record_kind_validation"
+reason = "This is the expected JSONL envelope discriminator used when validating position-sizer rebuild audit provenance, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"position_sizer_rebuild"'''
+context = '''kind: "position_sizer_rebuild",'''
+classification = "decision_evidence_record_kind_envelope"
+reason = "This is the JSONL envelope discriminator emitted for position-sizer rebuild audit evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"

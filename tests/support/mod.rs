@@ -60,6 +60,8 @@ pub struct RecordingDecisionEvidenceWriter {
     records: Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3OrderIntentEvidence>>,
     admission_decisions:
         Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence>>,
+    position_sizer_rebuild_audits:
+        Mutex<Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence>>,
 }
 
 impl RecordingDecisionEvidenceWriter {
@@ -74,6 +76,15 @@ impl RecordingDecisionEvidenceWriter {
         &self,
     ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3AdmissionDecisionEvidence> {
         self.admission_decisions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    pub fn position_sizer_rebuild_audits(
+        &self,
+    ) -> Vec<bolt_v2::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence> {
+        self.position_sizer_rebuild_audits
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
@@ -109,6 +120,17 @@ impl bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(decision.clone());
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        audit: &bolt_v2::bolt_v3_decision_evidence::BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        self.position_sizer_rebuild_audits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(audit.clone());
         Ok(())
     }
 }

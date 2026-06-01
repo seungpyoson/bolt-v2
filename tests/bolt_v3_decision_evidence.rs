@@ -4,14 +4,18 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::Result;
 use bolt_v2::{
+    bolt_v3_capital_reservation::ReservationRejectionReason,
     bolt_v3_config::load_bolt_v3_config,
     bolt_v3_decision_evidence::{
         BOLT_V3_DECISION_EVIDENCE_GATE_VERSION, BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
-        BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
-        BOLT_V3_SUBMIT_ADMISSION_GATE_ID, BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome,
-        BoltV3DecisionEvidenceWriter, BoltV3GateEvidenceIdentity, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot,
-        BoltV3SubmitIntentKind, decision_evidence_path, read_latest_entry_decision_evidence_chain,
+        BOLT_V3_ORDER_INTENT_GATE_ID, BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+        BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID, BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
+        BoltV3GateEvidenceIdentity, BoltV3OrderIntentEvidence, BoltV3OrderIntentKind,
+        BoltV3OrderIntentOrderFields, BoltV3PositionSizerRebuildAuditEvidence,
+        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind,
+        JsonlBoltV3DecisionEvidenceWriter, decision_evidence_path,
+        read_latest_entry_decision_evidence_chain,
     },
     strategies::registry::FeeProvider,
     strategies::registry::StrategyBuildContext,
@@ -52,6 +56,21 @@ fn latest_entry_decision_evidence_chain_binds_snapshot_order_intent_and_admissio
 }
 
 #[test]
+fn latest_entry_decision_evidence_chain_accepts_position_sizer_rebuild_audit_records() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut lines = Vec::from(sample_entry_decision_evidence_lines());
+    lines.insert(1, sample_position_sizer_rebuild_audit_line());
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let chain = read_latest_entry_decision_evidence_chain(&evidence_path, 100_000)
+        .expect("audit evidence should not break entry evidence parsing");
+
+    assert_eq!(chain.snapshot.client_order_id, "client-order-one");
+    assert_eq!(chain.admission.client_order_id, "client-order-one");
+}
+
+#[test]
 fn admission_decision_evidence_records_loss_governor_halt_reasons_in_schema_v6() {
     assert_eq!(BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION, 6);
 
@@ -75,6 +94,51 @@ fn admission_decision_evidence_records_loss_governor_halt_reasons_in_schema_v6()
         encoded["loss_halt_reasons"],
         serde_json::json!(["per_trade_loss_limit", "daily_loss_limit"])
     );
+}
+
+#[test]
+fn position_sizer_rebuild_audit_evidence_is_written_to_jsonl() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    let writer = JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(&loaded)
+        .expect("writer should open configured evidence path");
+
+    writer
+        .record_position_sizer_rebuild_audit(&BoltV3PositionSizerRebuildAuditEvidence {
+            observed_at_ns: 1_000,
+            source: "nt_open_order_cache".to_string(),
+            observed_open_order_count: 2,
+            all_open_orders_attributed: false,
+            accepted: false,
+            reason: Some(ReservationRejectionReason::MissingEvidence),
+            attempted_reservation_count: 2,
+            recovered_reservation_count: 0,
+            live_reserved_liability: "0".to_string(),
+        })
+        .expect("audit evidence should persist");
+
+    let path = decision_evidence_path(&loaded).expect("evidence path should resolve");
+    let body = std::fs::read_to_string(path).expect("evidence should be readable");
+    let decoded: serde_json::Value =
+        serde_json::from_str(body.trim()).expect("evidence line should decode");
+
+    assert_eq!(
+        decoded["schema_version"],
+        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION
+    );
+    assert_eq!(decoded["gate_id"], BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID);
+    assert_eq!(decoded["kind"], "position_sizer_rebuild");
+    assert_eq!(decoded["audit"]["source"], "nt_open_order_cache");
+    assert_eq!(decoded["audit"]["observed_at_ns"], 1_000);
+    assert_eq!(decoded["audit"]["observed_open_order_count"], 2);
+    assert_eq!(decoded["audit"]["all_open_orders_attributed"], false);
+    assert_eq!(decoded["audit"]["accepted"], false);
+    assert_eq!(decoded["audit"]["reason"], "missing_evidence");
+    assert_eq!(decoded["audit"]["attempted_reservation_count"], 2);
+    assert_eq!(decoded["audit"]["recovered_reservation_count"], 0);
+    assert_eq!(decoded["audit"]["live_reserved_liability"], "0");
 }
 
 #[test]
@@ -390,6 +454,27 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
     ]
 }
 
+fn sample_position_sizer_rebuild_audit_line() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
+        "recorded_at_utc_ns": 2_i64,
+        "gate_id": BOLT_V3_POSITION_SIZER_REBUILD_GATE_ID,
+        "gate_version": BOLT_V3_DECISION_EVIDENCE_GATE_VERSION,
+        "kind": "position_sizer_rebuild",
+        "audit": {
+            "observed_at_ns": 1_000_u64,
+            "source": "nt_open_order_cache",
+            "observed_open_order_count": 1,
+            "all_open_orders_attributed": true,
+            "accepted": true,
+            "reason": null,
+            "attempted_reservation_count": 1,
+            "recovered_reservation_count": 1,
+            "live_reserved_liability": "4.3",
+        },
+    })
+}
+
 fn write_decision_evidence_lines(path: &std::path::Path, lines: &[serde_json::Value]) {
     let mut body = String::new();
     for line in lines {
@@ -415,6 +500,13 @@ impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
     }
 
     fn record_admission_decision(&self, _decision: &BoltV3AdmissionDecisionEvidence) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> Result<()> {
         Ok(())
     }
 }

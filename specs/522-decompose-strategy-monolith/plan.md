@@ -35,6 +35,7 @@ src/strategies/binary_oracle_edge_taker/
 src/bolt_v3_taker_signal.rs   # SHARED: pure decision/sizing/EV/side-selection/uncertainty math (maker-reusable)
 src/bolt_v3_taker_pricing.rs  # SHARED: reference-quote/RV/lead-venue pricing state (maker-reusable)
 src/bolt_v3_book_sizing.rs    # SHARED: OutcomeBookState + VWAP/slippage execution sizing (rule #9)
+# OutcomeSide (binary up/down side) consolidates INTO src/bolt_v3_market_families/ (merges with UpdownOutcomeSide; A2) — NOT taker_signal
 # admission-request construction folds INTO existing src/bolt_v3_submit_admission.rs (rule #9)
 
 src/bolt_v3_operator_artifacts/   # Track B: mod.rs (core-glue: json-io, error enum, constants, re-exports) + submodules
@@ -45,25 +46,27 @@ Naming is a reviewable proposal; the agnostic shared names follow the spec-023 c
 
 ## Slice Sequencing
 
-Each row is one gated PR. Line ranges are current-main anchors (verified per-slice in
-that slice's speckit before movement). "Touches in-flight" notes where another open PR
-edits the same region; operator has directed those PRs rebase onto this work, so this
-work leads — but early slices deliberately avoid the hottest regions to prove the
-method before forcing rebases.
+Each row is one gated PR, ordered **by internal dependency only** (execution order =
+A1→A10; A2 is foundational because A4/A6/A9 consume the side type it homes). Per
+operator direction **#522 LEADS**: the in-flight PRs (#507/#510/#520/#508) are NOT
+prerequisites here — they rebase onto each merged slice (see the Rebase Matrix). The
+last column names which in-flight PR must rebase after a slice lands. Line ranges are
+current-main anchors, re-verified per-slice before movement.
 
 ### Track A — strategy monolith
 
-| Slice | Scope | Source anchor | Class | In-flight overlap |
+| Slice | Scope | Source anchor | Class | Rebases onto it |
 |---|---|---|---|---|
-| **A1** | Pure decision/sizing/EV/side-selection/uncertainty math → `bolt_v3_taker_signal.rs` (+ tests) | ~6797–7544 | pure-logic | none (clear of #520/#508/#507 source edits) — **first slice** |
-| **A2** | Market selection + candidate snapshot construction (pure) → `selection.rs` | 407–482, 6419–6601 | pure-logic | none |
-| **A3** | Order-book state + VWAP/slippage sizing → `bolt_v3_book_sizing.rs` (rule #9) | 493–777 | state-struct + pure | none |
-| **A4** | Pricing state (reference/RV/lead-venue) → `bolt_v3_taker_pricing.rs` | 956–1666 | NT-actor-coupled state | #508 (864–974), #520 (835–955 SignedTradeFlow) — sequence after they land |
-| **A5** | Exposure/recovery state machine → `exposure.rs` | 977–1258, 2415–2655 | state-struct | none direct |
-| **A6** | Source-proof / replay / evidence derivation → `source_proof.rs` | 5931–6317 | pure-logic | none |
-| **A7** | Config structs + parse/validate → `config.rs` (or archetype) | 86–403, 5557–5886 | pure-logic | #508 (5150+) |
-| **A8** | Admission-request construction + valuation → `bolt_v3_submit_admission.rs` (rule #9; kill test-only dup :7546) | 4228–4400, 7546 | pure-logic | #507 (4216–4358), #510 — sequence after they land |
-| **A9** | Split the 229 tests to mirror submodules; `mod.rs` left as struct + `DataActor` + glue | 7599–18205 | tests | trails A1–A8 |
+| **A1** | **OutcomeSide-free** pure math → new `bolt_v3_taker_signal.rs`; generic numeric primitives → existing `bolt_v3_numeric.rs` | consts 6817–6819; fns 6875–6929, 7017–7053, 7119–7147; structs 7009, 7034, 7110 | pure-logic | — (first slice; no overlap) |
+| **A2** | Consolidate `OutcomeSide` into the market-family layer (merge with `UpdownOutcomeSide`; **resolves findings-doc #13**); move the side-using math (`compute_worst_case_ev_bps`+`WorstCaseEvInputs`, `choose_entry_side`+`SideSelectionInputs`, `outcome_side_evidence_label`) into `bolt_v3_taker_signal` depending on that owner | 6883–6894, 7026–7032, 7056–7108; 93 refs repointed | cross-cutting type move | — |
+| **A3** | Market selection + candidate snapshot construction (pure) → `selection.rs` | 407–482, 6419–6601 | pure-logic | — |
+| **A4** | Order-book state + VWAP/slippage sizing → `bolt_v3_book_sizing.rs` (rule #9) | 493–777 | state-struct + pure | — |
+| **A5** | Pricing state (reference/RV/lead-venue) → `bolt_v3_taker_pricing.rs` | 956–1666 | NT-actor-coupled state | #520 (SignedTradeFlow 835–955), #508 (864–974) |
+| **A6** | Exposure/recovery state machine → `exposure.rs` | 977–1258, 2415–2655 | state-struct | #507 (sizer evidence on position state) |
+| **A7** | Source-proof / replay / evidence derivation → `source_proof.rs` | 5931–6317 | pure-logic | — |
+| **A8** | Config structs + parse/validate → `config.rs` (or archetype) | 86–403, 5557–5886 | pure-logic | #508 (config guards 5150+) |
+| **A9** | Admission-request construction + valuation → `bolt_v3_submit_admission.rs` (rule #9; kill test-only dup :7546). **Owns the base — #507/#510 rebase their admission edits onto it.** | 4228–4400, 7546 | pure-logic | #507 (+1946), #510 (+134) |
+| **A10** | Split the 229 tests to mirror submodules; `mod.rs` = struct + `DataActor` + glue | 7599–18205 | tests | — |
 
 ### Track B — operator_artifacts (parallel, conflict-free with Track A)
 
@@ -81,6 +84,24 @@ canary-proof claim decoupling from shared admission (#502); `polymarket_*`→`ma
 evidence rename (finding #12); provider credential/HTTP dedup (#447) + CLOB-v2
 vendor-type relocation + fee-provider coupling (#446); live-node probe-orchestration
 extraction. Tracked here, planned when their prerequisite slices land.
+
+## Rebase Matrix (#522 leads; in-flight PRs rebase onto merged slices)
+
+Resolves the ordering ambiguity: the in-flight PRs are **not** prerequisites for any
+#522 slice. Each rebases its edits onto the relevant slice **after** that slice merges.
+The admission slice (A9) deliberately owns the base for the rule-#9 region so the
+heavy admission editors rebase onto the cleaned module — not the reverse.
+
+| In-flight PR | Region it edits | Rebases after | What it rebases |
+|---|---|---|---|
+| #520 hoist SignedTradeFlow | strategy 835–955 | A5 | the hoist re-targets the extracted pricing/trade-flow module |
+| #508 causality/config hardening | strategy 864–974, 5150+ | A5, A8 | guards re-applied on the extracted pricing + config modules |
+| #507 position-sizer | `submit_admission` +1946, `decision_evidence` +538, strategy 4216–4358 | A9 (and A6) | admission/evidence integration re-applied on the extracted admission-request module |
+| #510 loss-governor | `submit_admission` +134, `live_node`, `decision_evidence` | A9 | admission rejection path re-applied on the extracted module |
+
+If product priorities require an in-flight PR to merge *before* its dependent slice,
+that slice instead rebases onto the PR — but the default, per operator direction, is
+#522-leads. Either way there is exactly one deterministic base at any time.
 
 ## Per-Slice Method (RED → GREEN → move → verify)
 

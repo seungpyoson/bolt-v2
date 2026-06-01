@@ -14,17 +14,21 @@ unanimous 6-model review (or recorded waiver) · operator merge permission.
 
 ## Track A — strategy monolith
 
+Execution order = A1→A10 by internal dependency (#522 leads; in-flight PRs rebase per
+the plan's Rebase Matrix). A2 is foundational (A4/A6/A9 consume the side type it homes).
+
 | Item | Scope | Target | RED/GREEN | Diff = pure move | CI | Review | State |
 |---|---|---|---|---|---|---|---|
-| A1 | pure decision/sizing/EV math (~6797–7544) | `bolt_v3_taker_signal.rs` | — | — | — | — | planned |
-| A2 | market selection (pure) | `…/selection.rs` | — | — | — | — | planned |
-| A3 | book state + VWAP/slippage sizing | `bolt_v3_book_sizing.rs` | — | — | — | — | planned |
-| A4 | pricing state | `bolt_v3_taker_pricing.rs` | — | — | — | — | planned (after #508/#520) |
-| A5 | exposure/recovery state machine | `…/exposure.rs` | — | — | — | — | planned |
-| A6 | source-proof / replay | `…/source_proof.rs` | — | — | — | — | planned |
-| A7 | config parse/validate | `…/config.rs` | — | — | — | — | planned (after #508) |
-| A8 | admission-request construction (kill dup :7546) | `bolt_v3_submit_admission.rs` | — | — | — | — | planned (after #507/#510) |
-| A9 | split 229 tests; mod.rs = struct + DataActor + glue | `…/tests/` | — | — | — | — | planned (trails A1–A8) |
+| A1 | OutcomeSide-free math + numeric primitives | `bolt_v3_taker_signal.rs` + `bolt_v3_numeric.rs` | — | — | — | — | in progress (plan codex-reviewed) |
+| A2 | consolidate `OutcomeSide` → market-family (resolves #13) + side-using math | `bolt_v3_market_families/` + `bolt_v3_taker_signal.rs` | — | — | — | — | planned |
+| A3 | market selection (pure) | `…/selection.rs` | — | — | — | — | planned |
+| A4 | book state + VWAP/slippage sizing | `bolt_v3_book_sizing.rs` | — | — | — | — | planned |
+| A5 | pricing state | `bolt_v3_taker_pricing.rs` | — | — | — | — | planned (#520/#508 rebase onto it) |
+| A6 | exposure/recovery state machine | `…/exposure.rs` | — | — | — | — | planned (#507 rebases) |
+| A7 | source-proof / replay | `…/source_proof.rs` | — | — | — | — | planned |
+| A8 | config parse/validate | `…/config.rs` | — | — | — | — | planned (#508 rebases) |
+| A9 | admission-request construction (kill dup :7546) — owns base | `bolt_v3_submit_admission.rs` | — | — | — | — | planned (#507/#510 rebase onto it) |
+| A10 | split 229 tests; mod.rs = struct + DataActor + glue | `…/tests/` | — | — | — | — | planned (trails A1–A9) |
 
 ## Track B — operator_artifacts
 

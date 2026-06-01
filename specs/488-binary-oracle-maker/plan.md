@@ -69,7 +69,25 @@ var/mm-research/ (offline)             # backtest-scoring tooling (unbiased repl
 
 **W1 — Foundation & agnostic seams.** Extend the venue capability contract schema + validation (architecture layer 2). Hoist fair value behind the `MarketFamily` seam (file the correct tracking issue — #451 is the order-submission wrapper, not this). Add the **signed trade-flow subscription** (FR-021; GM + VPIN both need it). Taker hardening: crossed-book + spike guards.
 
-**W2 — Quote Lifecycle / Execution Control (the missing core).** Multi-resting-quote state; requote loop using `supports_modify` (cancel+resubmit) and the rate-budget variable; order-accepted reconciliation + deferred-cancel handling; post-only-reject requote; two-leg cancel-scope; reconnect resync + cancel-all-on-kill. Carries its own no-submit/canary proof against a simulated venue at the real budget.
+**W2 — Quote Lifecycle / Execution Control (the missing core).** Multi-resting-quote state; requote loop using `supports_modify` (cancel+resubmit) and the rate-budget variable; order-accepted reconciliation + deferred-cancel handling; post-only-reject requote; two-leg cancel-scope; reconnect resync + cancel-all-on-kill. Carries its own no-submit/canary proof against a simulated venue at the real budget. *(Built as pure NT-free modules `src/strategies/quote_lifecycle.rs` + `requote_budget.rs`, slices 1–4 landed: single-leg lifecycle, `supports_modify` modify-in-place branch, two-leg `MarketQuote` + cancel scope, sliding-window requote throttle.)*
+
+**WG — Instrument-type generalization (2nd family: linear perpetual futures).** *Direction change (user, 2026-06-01): override the "design the seams now, implement ONLY the Polymarket-binary path first, generalize when a 2nd venue actually arrives" discipline — enable a 2nd instrument type **now** to prove the agnostic design end-to-end. The binary maker (W2/W3/W4) is unaffected ("MM for binary is okay").* The `MarketFamily` seam today is binary-shaped (`select_binary_option_market`, `market_selection_candidate_windows`, `fair_probability_up`/`FairProbabilityInputs` → P(up)); generalize its *making* surface to an instrument-agnostic **quote-target** contract (fair value + each leg's instrument/side/price + settlement rule), re-express the binary family through it unchanged, then add a **lean** linear-perp family. The agnostic engine (`quote_lifecycle` + `RequoteBudget`) is reused untouched; `Leg::Yes/No` naming stays (binary-first) and generalizes when the leg vocabulary actually needs it.
+
+  **Lean (this pass) vs production-grade — explicit gap. The lean perp family is NOT live-tradeable; it proves the architecture only.**
+
+  | Dimension | Lean (now) | Production-grade (deferred) |
+  |---|---|---|
+  | Pricing | micro/mid-price + **fixed** half-spread + **linear** inventory skew (TOML knobs) | A-S/GLFT optimal spread, queue-imbalance micro-price, vol-scaled spread, VPIN/toxicity skew |
+  | Funding | ignored | priced into fair value + carry PnL + funding-aware skew |
+  | Margin/leverage | none (plain position) | margin accounting, leverage caps, liquidation-distance risk, cross/isolated |
+  | Mark/index price | order-book mid | exchange mark/index feed + basis (mark−index) for PnL/liquidation |
+  | Settlement/PnL | stub (continuous mark, no expiry) | real perp mark-to-market + funding wired into NT PnL (perp arm of W4) |
+  | Venue contract + adapter | minimal/placeholder contract, **no live adapter** | populated real contract (tick/lot, fees+maker rebate, max leverage, funding interval) + live NT execution/data adapter + SSM creds |
+  | Instrument math | linear only, simple units | contract multiplier, tick/lot/min-notional, linear **vs inverse** |
+  | Risk/governor | reuse the binary governor | perp risk (position/leverage caps, funding-aware kill) |
+  | Calibration + BT gate | placeholder params, **not** backtest-gated | calibrated params, must pass the pre-live perp backtest |
+
+  Net: lean = the seam genuinely drives a non-binary instrument and the engine is reused unchanged; production-grade perp trading needs the entire right column (notably the A-S/GLFT model the plan had cut for binaries, funding, margin/liquidation, a real adapter, and the BT gate).
 
 **W3 — Maker model.** GM/CG half-spread with a defined parameter source + calibration (from the historical full-depth corpus); two-sided YES/NO joint quote + inventory; book-imbalance term; inventory→skew functional form; new kill predicates (σ-floor/basis-cap/τ-floor) as TOML thresholds, fail-closed; graduated governor states (cancel-only/reduce-only/hard-flat/reward-preserving soft-hold); offset-composition precedence + (ε,1−ε) clamp/prune.
 
@@ -83,7 +101,7 @@ var/mm-research/ (offline)             # backtest-scoring tooling (unbiased repl
 
 **W8 — Dual-path kill.** Remove the hand-rolled N(d2) digital once NT greeks/IV is the single fair-value source.
 
-**Sequence**: W1 + W2 → W3 → W4 (incl. shared settlement) → **BT (pre-live backtest gate)** → W5/W6 → W7/W8. A later validation gate decides whether any cut math (A-S/GLFT/SVI) returns for longer-tenor instruments.
+**Sequence**: W1 + W2 → **WG (lean perp family — proves the agnostic seam; binary path unchanged)** → W3 → W4 (incl. shared settlement) → **BT (pre-live backtest gate)** → W5/W6 → W7/W8. Production-grade perp pricing (A-S/GLFT), funding, margin/liquidation, a real perp adapter, and the perp BT gate remain deferred per the WG gap table. A later validation gate decides whether the cut math (A-S/GLFT/SVI) returns for longer-tenor instruments — for perps it is the correct model and returns at WG-production.
 
 ## Implementation Rules
 

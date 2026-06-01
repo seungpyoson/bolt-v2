@@ -3627,6 +3627,14 @@ reason = "This is the named unit invariant shared by the updown family pricing a
 [[allowed]]
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
+literal = '''2.0'''
+context = '''pub const TWO_F64: f64 = 2.0;'''
+classification = "shared_numeric_math_invariant"
+reason = "This is the named two/half-spread divisor invariant shared by the maker quote model midpoint math and the strategy, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_numeric.rs"
+kind = "number"
 literal = '''2'''
 context = '''pub const POWER_OF_TWO: i32 = 2;'''
 classification = "shared_numeric_math_invariant"

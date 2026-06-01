@@ -234,7 +234,6 @@ impl ReservationLedger {
         }
         if stale(pool.observed_at_ns, now_ns, max_snapshot_age_ns)
             || stale(request.observed_at_ns, now_ns, max_snapshot_age_ns)
-            || request.observed_at_ns < pool.observed_at_ns
         {
             return rejected_release(ReservationRejectionReason::StaleRequest);
         }
@@ -290,7 +289,6 @@ impl ReservationLedger {
         }
         if stale(pool.observed_at_ns, now_ns, max_snapshot_age_ns)
             || stale(request.observed_at_ns, now_ns, max_snapshot_age_ns)
-            || request.observed_at_ns < pool.observed_at_ns
         {
             return rejected_revalue(ReservationRejectionReason::StaleRequest);
         }
@@ -418,6 +416,21 @@ mod tests {
         }
     }
 
+    fn revalue_request(
+        request_id: &str,
+        liability: Decimal,
+        observed_at_ns: u64,
+    ) -> ReservationRevalueRequest {
+        ReservationRevalueRequest {
+            request_id: request_id.to_string(),
+            pool_id: "polymarket-live".to_string(),
+            collateral_group_id: "btc-updown-15m".to_string(),
+            liability,
+            observed_at_ns,
+            evidence_label: "nt-order-live-residual".to_string(),
+        }
+    }
+
     #[test]
     fn fitting_reservation_is_accepted_and_recorded_with_remaining_budget_evidence() {
         let pool = CapitalPoolSnapshot {
@@ -542,6 +555,60 @@ mod tests {
         assert_eq!(
             ledger.live_reserved_liability("polymarket-live"),
             Decimal::new(40, 0)
+        );
+    }
+
+    #[test]
+    fn release_accepts_terminal_evidence_older_than_newer_pool_snapshot() {
+        let pool = pool();
+        let request = reservation_request("request-async-release");
+        let mut ledger = ReservationLedger::reconciled();
+        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+        let newer_pool = CapitalPoolSnapshot {
+            observed_at_ns: 1_060,
+            ..pool
+        };
+
+        let release = ledger.release(
+            &newer_pool,
+            &release_request("request-async-release", 1_050),
+            1_070,
+            100,
+        );
+
+        assert!(release.accepted);
+        assert_eq!(release.released_liability, Some(Decimal::new(40, 0)));
+        assert_eq!(
+            ledger.live_reserved_liability("polymarket-live"),
+            Decimal::ZERO
+        );
+    }
+
+    #[test]
+    fn revalue_accepts_live_residual_evidence_older_than_newer_pool_snapshot() {
+        let pool = pool();
+        let request = reservation_request("request-async-revalue");
+        let mut ledger = ReservationLedger::reconciled();
+        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+        let newer_pool = CapitalPoolSnapshot {
+            observed_at_ns: 1_060,
+            ..pool
+        };
+
+        let revalue = ledger.revalue(
+            &newer_pool,
+            &revalue_request("request-async-revalue", Decimal::new(25, 0), 1_050),
+            1_070,
+            100,
+            None,
+        );
+
+        assert!(revalue.accepted);
+        assert_eq!(revalue.previous_liability, Some(Decimal::new(40, 0)));
+        assert_eq!(revalue.revalued_liability, Some(Decimal::new(25, 0)));
+        assert_eq!(
+            ledger.live_reserved_liability("polymarket-live"),
+            Decimal::new(25, 0)
         );
     }
 

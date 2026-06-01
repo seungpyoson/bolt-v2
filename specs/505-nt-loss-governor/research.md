@@ -128,6 +128,7 @@
   - `lifecycle_live_residual_min_remaining_balance_rejects_without_mutation`: proves live residual lifecycle facts preserve the configured residual-balance guard.
   - `lifecycle_invalid_residual_shapes_reject_before_mutation`: proves zero/negative live residuals and non-zero terminal residuals fail closed.
   - `lifecycle_terminal_then_live_residual_rejects_unknown_without_mutation`: proves residual updates after release cannot recreate or mutate a released reservation.
+  - `release_accepts_terminal_evidence_older_than_newer_pool_snapshot` and `revalue_accepts_live_residual_evidence_older_than_newer_pool_snapshot`: prove asynchronous order-lifecycle evidence is ordered against the live reservation, not rejected merely because an account/pool snapshot arrived later.
   - `configured_loss_governor_rejects_entry_without_fresh_snapshot_before_nt_submit`: proves configured submit admission fails closed before NT submit when no loss snapshot exists.
   - `configured_loss_governor_admits_entry_after_fresh_below_limit_snapshot`: proves explicit fresh below-limit snapshots admit otherwise-valid entries.
   - `configured_loss_governor_admit_uses_runtime_clock_after_fresh_snapshot_update`: failed while the live-facing `admit()` path had no runtime clock, then passed after `admit()` evaluated snapshots against system time.

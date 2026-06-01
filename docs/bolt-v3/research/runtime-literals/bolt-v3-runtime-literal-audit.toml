@@ -1344,14 +1344,6 @@ reason = "This is the compile-time size of the operator evidence path field tabl
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"
 kind = "string"
-literal = '''"approval_envelope_path"'''
-context = '''"approval_envelope_path",'''
-classification = "approval_envelope_schema_field"
-reason = "This names the TOML-owned approval-envelope path while resolving and validating the configured evidence file; the path value remains config-owned."
-
-[[allowed]]
-path = "src/bolt_v3_live_canary_gate.rs"
-kind = "string"
 literal = '''"head_sha"'''
 context = '''"head_sha",'''
 classification = "approval_envelope_schema_field"
@@ -1628,6 +1620,14 @@ literal = '''"approval_nonce_path"'''
 context = '''path_field: "approval_nonce_path",'''
 classification = "operator_evidence_schema_field"
 reason = "This is an operator evidence path field name used to validate TOML-owned path shape before resolving and hashing the bound artifact."
+
+[[allowed]]
+path = "src/bolt_v3_live_canary_gate.rs"
+kind = "string"
+literal = '''"approval_envelope_sha256"'''
+context = '''let (actual, hashed_bytes) = if binding.hash_field == "approval_envelope_sha256" {'''
+classification = "operator_evidence_schema_field"
+reason = "This is the operator evidence hash field used to retain already-hashed approval-envelope bytes; the runtime hash value remains TOML-owned and validated fail-closed."
 
 [[allowed]]
 path = "src/bolt_v3_live_canary_gate.rs"

@@ -257,6 +257,8 @@ mod tests {
                 PredictionMarketSizingSnapshot {
                     source: "nt_prediction_market_snapshot".to_string(),
                     observed_at_ns: 1_000,
+                    yes_instrument_id: "instrument-1".to_string(),
+                    no_instrument_id: "instrument-1-no".to_string(),
                     yes_position: Decimal::new(10, 0),
                     no_position: Decimal::ZERO,
                     pusd_allowance: Decimal::new(100, 0),

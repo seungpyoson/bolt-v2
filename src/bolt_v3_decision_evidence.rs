@@ -311,6 +311,7 @@ pub enum BoltV3AdmissionOutcome {
     RejectedInvalidCanaryProofClaim,
     RejectedInvalidRiskReducingExitProof,
     RejectedCountCapExhausted,
+    RejectedPositionSizing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1223,6 +1224,7 @@ mod tests {
             BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim,
             BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+            BoltV3AdmissionOutcome::RejectedPositionSizing,
         ] {
             let decision = BoltV3AdmissionDecisionEvidence {
                 strategy_id: "strategy-one".to_string(),
@@ -1286,6 +1288,7 @@ mod tests {
                     "rejected_invalid_risk_reducing_exit_proof"
                 }
                 BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",
+                BoltV3AdmissionOutcome::RejectedPositionSizing => "rejected_position_sizing",
             };
             assert_eq!(decision_field["outcome"], expected_outcome);
             if outcome == BoltV3AdmissionOutcome::RejectedLossGovernorHalted {

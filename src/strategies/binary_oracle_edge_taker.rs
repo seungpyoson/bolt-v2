@@ -63,8 +63,10 @@ use crate::{
     },
     bolt_v3_providers::normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     bolt_v3_submit_admission::{
-        BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind,
-        BoltV3SubmitLifecyclePolicy, admission_base_notional_from_order,
+        BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
+        BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind, BoltV3RiskReducingExitProof,
+        BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+        PredictionMarketOutcomeSide, admission_base_notional_from_order,
         base_quantity_admission_notional, fee_inclusive_admission_notional,
         market_style_admission_ceiling_notional,
     },
@@ -4239,13 +4241,17 @@ impl BinaryOracleEdgeTaker {
         self.context
             .decision_evidence()
             .record_order_intent(&intent)?;
-        let _permit = self.context.submit_admission().admit(&request)?;
-        self.submit_order(
+        let permit = self.context.submit_admission().admit(&request)?;
+        let result = self.submit_order(
             order,
             submit_context.position_id,
             submit_context.client_id,
             submit_context.params,
-        )
+        );
+        if result.is_ok() {
+            permit.commit_submitted();
+        }
+        result
     }
 
     fn submit_admission_request_from_order(
@@ -4406,7 +4412,58 @@ impl BinaryOracleEdgeTaker {
             lifecycle_policy: self.submit_lifecycle_policy(),
             canary_proof_claim: None,
             risk_reducing_exit_proof,
+            position_sizing: self.compiled_order_sizing_evidence(order, quantity, price),
         })
+    }
+
+    fn compiled_order_sizing_evidence(
+        &self,
+        order: &nautilus_model::orders::OrderAny,
+        quantity: Decimal,
+        effective_price: Decimal,
+    ) -> Option<BoltV3CompiledOrderSizingEvidence> {
+        let instrument_id = order.instrument_id();
+        let venue_id = instrument_id.venue.as_str().to_string();
+        let side = match order.order_side() {
+            OrderSide::Buy => BoltV3CompiledOrderSide::Buy,
+            OrderSide::Sell => BoltV3CompiledOrderSide::Sell,
+            _ => return None,
+        };
+        Some(BoltV3CompiledOrderSizingEvidence {
+            venue_id,
+            product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
+            side,
+            quantity,
+            effective_price,
+            order_kind: BoltV3CompiledOrderKind::Limit,
+            liquidity: if order.is_post_only() {
+                BoltV3CompiledOrderLiquidity::RestingMaker
+            } else {
+                BoltV3CompiledOrderLiquidity::Taker
+            },
+            quote_set_id: None,
+            prediction_market_outcome: self.prediction_market_outcome_for_instrument(instrument_id),
+        })
+    }
+
+    fn prediction_market_outcome_for_instrument(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> Option<PredictionMarketOutcomeSide> {
+        prediction_market_outcome_from_fees(&self.active.outcome_fees, instrument_id)
+            .or_else(|| {
+                self.pending_entry().and_then(|pending| {
+                    prediction_market_outcome_from_fees(&pending.outcome_fees, instrument_id)
+                })
+            })
+            .or_else(|| {
+                self.managed_position().and_then(|managed| {
+                    prediction_market_outcome_from_fees(
+                        &managed.position.outcome_fees,
+                        instrument_id,
+                    )
+                })
+            })
     }
 
     fn quote_quantity_last_price_for_order(
@@ -6662,6 +6719,19 @@ fn strategy_input_market_selection_outcome(outcome: MarketSelectionOutcome) -> &
     }
 }
 
+fn prediction_market_outcome_from_fees(
+    fees: &OutcomeFeeState,
+    instrument_id: InstrumentId,
+) -> Option<PredictionMarketOutcomeSide> {
+    if fees.up_instrument_id == Some(instrument_id) {
+        return Some(PredictionMarketOutcomeSide::Yes);
+    }
+    if fees.down_instrument_id == Some(instrument_id) {
+        return Some(PredictionMarketOutcomeSide::No);
+    }
+    None
+}
+
 fn should_replace_book_subscriptions(
     current: &OutcomeBookSubscriptions,
     next: &OutcomeBookSubscriptions,
@@ -7485,6 +7555,7 @@ fn submit_admission_request_from_order(
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         canary_proof_claim: None,
         risk_reducing_exit_proof: None,
+        position_sizing: None,
     })
 }
 
@@ -8746,6 +8817,57 @@ mod tests {
     }
 
     #[test]
+    fn submit_sizing_evidence_uses_configured_outcome_metadata() {
+        let strategy = ready_to_trade_strategy();
+        let quantity = Quantity::new(1.0, 2);
+        let price = Price::new(0.50, 2);
+        let down_instrument_id = strategy
+            .active
+            .outcome_fees
+            .down_instrument_id
+            .expect("fixture should configure down outcome instrument");
+        let order = nautilus_model::orders::OrderAny::Limit(
+            nautilus_model::orders::LimitOrder::new_checked(
+                nautilus_model::identifiers::TraderId::from("TRADER-001"),
+                StrategyId::from(strategy.config.strategy_id.as_str()),
+                down_instrument_id,
+                ClientOrderId::from("O-19700101-000000-001-DOWN-1"),
+                OrderSide::Buy,
+                quantity,
+                price,
+                TimeInForce::Fok,
+                None,
+                false,
+                false,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                nautilus_core::UUID4::new(),
+                nautilus_core::UnixNanos::from(1_u64),
+            )
+            .expect("configured down outcome order should build"),
+        );
+
+        let evidence = strategy
+            .compiled_order_sizing_evidence(&order, Decimal::new(1, 0), Decimal::new(50, 2))
+            .expect("configured outcome order should produce sizing evidence");
+
+        assert_eq!(
+            evidence.prediction_market_outcome,
+            Some(PredictionMarketOutcomeSide::No)
+        );
+    }
+
+    #[test]
     fn quote_quantity_submit_admission_matches_nt_effective_notional_for_limit_buy() {
         let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
         let cache = register_test_strategy(&mut strategy);
@@ -9655,6 +9777,7 @@ mod tests {
                         crate::bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy::new(true),
                     canary_proof_claim: None,
                     risk_reducing_exit_proof: None,
+                    position_sizing: None,
                 },
             )
             .expect("first admission should consume the only slot");

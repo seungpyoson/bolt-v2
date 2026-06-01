@@ -210,6 +210,13 @@ impl ReservationLedger {
             .sum()
     }
 
+    pub fn rollback_uncommitted(&mut self, pool_id: &str, request_id: &str) -> Option<Decimal> {
+        let index = self.live_reservations.iter().position(|reservation| {
+            reservation.pool_id == pool_id && reservation.request_id == request_id
+        })?;
+        Some(self.live_reservations.remove(index).liability)
+    }
+
     pub fn release(
         &mut self,
         pool: &CapitalPoolSnapshot,

@@ -15228,3 +15228,67 @@ literal = '''"reject_only"'''
 context = '''"reject_only" | "explicit_clip_to_available"'''
 classification = "capital_pool_config_enum_value"
 reason = "This is a supported TOML schema discriminator for the capital-pool sizing policy; the selected mode remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "number"
+literal = '''0'''
+context = '''observed_at_ns: 0,'''
+classification = "capital_pool_bootstrap_snapshot_identity"
+reason = "This initializes the submit-sizer capital-pool bootstrap snapshot timestamp before authoritative NT-derived state is connected; runtime admission still fails closed until fresh state arrives."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
+literal = '''"explicit_clip_to_available"'''
+context = '''"explicit_clip_to_available" => SizingMode::ExplicitClipToAvailable,'''
+classification = "capital_pool_config_enum_value"
+reason = "This maps a TOML sizing-policy discriminator into the internal enum; the selected sizing mode remains config-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''0'''
+context = '''next_sequence: 0,'''
+classification = "position_sizer_reservation_sequence_identity"
+reason = "This initializes the in-memory submit reservation sequence for a fresh admission state; it is an identity counter, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''position_sizer.next_sequence += 1;'''
+classification = "position_sizer_reservation_sequence_increment"
+reason = "Each accepted submit reservation advances the in-memory sequence by one to produce a unique request id under the configured pool."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"{}#{}"'''
+context = '''"{}#{}",'''
+classification = "position_sizer_reservation_id_template"
+reason = "This is an internal composite-id formatting template for client order id plus sequence; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''0usize'''
+context = '''let mut enforced_pool_count = 0usize;'''
+classification = "capital_pool_validation_counter_identity"
+reason = "This initializes the validation count of pools that enabled submit-admission enforcement; configured pool data still comes from TOML."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "number"
+literal = '''1'''
+context = '''enforced_pool_count += 1;'''
+classification = "capital_pool_validation_counter_increment"
+reason = "This increments the validation count of TOML pools that enabled submit-admission enforcement."
+
+[[allowed]]
+path = "src/bolt_v3_validate.rs"
+kind = "string"
+literal = '''"explicit_clip_to_available"'''
+context = '''&& pool.sizing_policy.mode == "explicit_clip_to_available"'''
+classification = "capital_pool_config_enum_value"
+reason = "This compares against a supported TOML sizing-policy discriminator to reject unsafe submit-admission enforcement with clipping."

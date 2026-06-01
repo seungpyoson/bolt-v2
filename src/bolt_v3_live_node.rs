@@ -78,13 +78,14 @@ use zeroize::Zeroizing;
 use crate::{
     bolt_v3_adapters::{BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters},
     bolt_v3_canary_proof_executor::register_canary_proof_executor_on_node,
+    bolt_v3_capital_reservation::CapitalPoolSnapshot,
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
     },
     bolt_v3_config::{
-        DataClientReadinessProbeBlock, DataClientReadinessProbeBookType,
-        DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetSource,
-        LoadedBoltV3Config,
+        CapitalPoolBlock, CapitalPoolSizingPolicyBlock, DataClientReadinessProbeBlock,
+        DataClientReadinessProbeBookType, DataClientReadinessProbeMarketDataKind,
+        DataClientReadinessProbeQuoteTargetSource, LoadedBoltV3Config,
     },
     bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
@@ -99,6 +100,7 @@ use crate::{
         LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
         LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
     },
+    bolt_v3_position_sizer::{FeeSlippagePolicy, ProductKind, SizingMode, SizingPolicy},
     bolt_v3_providers,
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
@@ -109,7 +111,9 @@ use crate::{
         BoltV3StrategyRegistrationError, BoltV3StrategyRegistrationSummary,
         register_bolt_v3_strategies_on_node_with_bindings,
     },
-    bolt_v3_submit_admission::{BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState},
+    bolt_v3_submit_admission::{
+        BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState, BoltV3SubmitPositionSizerConfig,
+    },
     bolt_v3_tiny_canary_evidence::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
         Phase8EvidenceRef, Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef,
@@ -1676,6 +1680,10 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn loss_governor_runtime_feed_configured(&self) -> bool {
         self.loss_runtime_feed.is_some() && self.loss_runtime_feed_subscription.is_some()
+    }
+
+    pub fn position_sizer_configured(&self) -> bool {
+        self.submit_admission.position_sizer_configured()
     }
 }
 
@@ -3272,12 +3280,26 @@ fn build_live_node_with_clients(
             )
         };
     let loss_policy = loss_governor_policy_from_loaded(loaded)?;
-    let submit_admission = Arc::new(match loss_policy {
-        Some(policy) => BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+    let position_sizer = position_sizer_config_from_loaded(loaded)?;
+    let submit_admission = Arc::new(match (loss_policy, position_sizer) {
+        (Some(policy), Some(position_sizer)) => {
+            BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor_and_position_sizer(
+                decision_evidence.clone(),
+                policy,
+                position_sizer,
+            )
+        }
+        (Some(policy), None) => BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
             decision_evidence.clone(),
             policy,
         ),
-        None => BoltV3SubmitAdmissionState::new_unarmed(decision_evidence.clone()),
+        (None, Some(position_sizer)) => {
+            BoltV3SubmitAdmissionState::new_unarmed_with_position_sizer(
+                decision_evidence.clone(),
+                position_sizer,
+            )
+        }
+        (None, None) => BoltV3SubmitAdmissionState::new_unarmed(decision_evidence.clone()),
     });
     let (loss_runtime_feed, loss_runtime_feed_subscription) =
         match loss_governor_runtime_feed_config_from_loaded(loaded) {
@@ -3354,6 +3376,83 @@ fn loss_governor_runtime_feed_config_from_loaded(
         account_id: block.account_id,
         rolling_window_ns: block.rolling_window_ns,
     })
+}
+
+fn position_sizer_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<BoltV3SubmitPositionSizerConfig>, BoltV3LiveNodeError> {
+    let Some(pools) = loaded.root.risk.capital_pools.as_ref() else {
+        return Ok(None);
+    };
+    let Some(pool) = pools.iter().find(|pool| pool.enforce_submit_admission) else {
+        return Ok(None);
+    };
+    Ok(Some(BoltV3SubmitPositionSizerConfig {
+        venue_id: pool.venue_id.clone(),
+        product_kind: ProductKind::PredictionMarketBinary,
+        collateral_currency: pool.collateral_currency.clone(),
+        capital_pool: CapitalPoolSnapshot {
+            source: pool.pool_id.clone(),
+            observed_at_ns: 0,
+            pool_id: pool.pool_id.clone(),
+            max_pool_liability: required_pool_decimal(
+                "risk.capital_pools.max_pool_liability",
+                &pool.max_pool_liability,
+            )?,
+            committed_liability: Decimal::ZERO,
+            max_snapshot_age_ns: pool.max_snapshot_age_ns,
+        },
+        policy: sizing_policy_from_pool(pool)?,
+    }))
+}
+
+fn sizing_policy_from_pool(pool: &CapitalPoolBlock) -> Result<SizingPolicy, BoltV3LiveNodeError> {
+    let sizing = &pool.sizing_policy;
+    Ok(SizingPolicy {
+        mode: sizing_mode_from_block(sizing),
+        max_order_liability: optional_pool_decimal(
+            "risk.capital_pools.sizing_policy.max_order_liability",
+            sizing.max_order_liability.as_deref(),
+        )?,
+        min_remaining_pool_balance: optional_pool_decimal(
+            "risk.capital_pools.sizing_policy.min_remaining_pool_balance",
+            sizing.min_remaining_pool_balance.as_deref(),
+        )?,
+        fee_slippage_policy: Some(FeeSlippagePolicy {
+            max_fee_liability: required_pool_decimal(
+                "risk.capital_pools.sizing_policy.fee_slippage.max_fee_liability",
+                &sizing.fee_slippage.max_fee_liability,
+            )?,
+            max_slippage_liability: required_pool_decimal(
+                "risk.capital_pools.sizing_policy.fee_slippage.max_slippage_liability",
+                &sizing.fee_slippage.max_slippage_liability,
+            )?,
+        }),
+    })
+}
+
+fn sizing_mode_from_block(block: &CapitalPoolSizingPolicyBlock) -> SizingMode {
+    match block.mode.as_str() {
+        "explicit_clip_to_available" => SizingMode::ExplicitClipToAvailable,
+        _ => SizingMode::RejectOnly,
+    }
+}
+
+fn required_pool_decimal(label: &str, value: &str) -> Result<Decimal, BoltV3LiveNodeError> {
+    parse_decimal_string(value).map_err(|message| {
+        BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!(
+            "{label} must be a decimal string: {message}"
+        ))
+    })
+}
+
+fn optional_pool_decimal(
+    label: &str,
+    value: Option<&str>,
+) -> Result<Option<Decimal>, BoltV3LiveNodeError> {
+    value
+        .map(|value| required_pool_decimal(label, value))
+        .transpose()
 }
 
 fn loss_governor_policy_from_loaded(

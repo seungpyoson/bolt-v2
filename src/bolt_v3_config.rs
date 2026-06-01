@@ -191,6 +191,7 @@ pub struct CapitalPoolBlock {
     pub account_id: AccountId,
     pub collateral_currency: String,
     pub product_kind: String,
+    pub enforce_submit_admission: bool,
     pub max_pool_liability: String,
     pub max_snapshot_age_ns: u64,
     pub sizing_policy: CapitalPoolSizingPolicyBlock,

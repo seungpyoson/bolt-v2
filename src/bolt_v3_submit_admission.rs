@@ -1,3 +1,4 @@
+use crate::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use crate::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
 };
@@ -5,6 +6,12 @@ use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
 use crate::bolt_v3_loss_governor::{
     LossGovernorPolicy, LossHaltReason, LossSnapshot, evaluate_loss_admission,
 };
+use crate::bolt_v3_position_sizer::{
+    IntentLiquidity, IntentOrderKind, IntentSide, PositionSizingAdmissionGate,
+    PositionSizingGateInputs, PositionSizingLifecycleKind, PositionSizingLifecycleUpdate,
+    PositionSizingRequest, ProductKind, ProductSizingSnapshot, SizingPolicy,
+};
+use crate::bolt_v3_sizing_state::NtDerivedSizingState;
 use nautilus_model::{
     enums::{OrderSide, PositionSide},
     instruments::{Instrument, InstrumentAny},
@@ -13,6 +20,7 @@ use nautilus_model::{
 };
 use rust_decimal::Decimal;
 use std::{
+    collections::BTreeMap,
     str::FromStr,
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -25,7 +33,7 @@ const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
 
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionState {
-    inner: Mutex<BoltV3SubmitAdmissionInner>,
+    inner: Arc<Mutex<BoltV3SubmitAdmissionInner>>,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
 }
 
@@ -38,6 +46,29 @@ struct BoltV3SubmitAdmissionInner {
     admitted_replace_submit_order_count: u32,
     loss_policy: Option<LossGovernorPolicy>,
     loss_snapshot: Option<LossSnapshot>,
+    position_sizer: Option<BoltV3SubmitPositionSizerState>,
+}
+
+#[derive(Debug)]
+struct BoltV3SubmitPositionSizerState {
+    venue_id: String,
+    product_kind: ProductKind,
+    collateral_currency: String,
+    capital_pool: CapitalPoolSnapshot,
+    policy: SizingPolicy,
+    state: Option<NtDerivedSizingState>,
+    gate: PositionSizingAdmissionGate,
+    next_sequence: u64,
+    client_order_reservations: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3SubmitPositionSizerConfig {
+    pub venue_id: String,
+    pub product_kind: ProductKind,
+    pub collateral_currency: String,
+    pub capital_pool: CapitalPoolSnapshot,
+    pub policy: SizingPolicy,
 }
 
 impl BoltV3SubmitAdmissionState {
@@ -52,12 +83,39 @@ impl BoltV3SubmitAdmissionState {
         Self::new_unarmed_with_optional_loss_governor(decision_evidence, Some(loss_policy))
     }
 
+    pub fn new_unarmed_with_position_sizer(
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        position_sizer: BoltV3SubmitPositionSizerConfig,
+    ) -> Self {
+        Self::new_unarmed_with_optional_controls(decision_evidence, None, Some(position_sizer))
+    }
+
+    pub fn new_unarmed_with_loss_governor_and_position_sizer(
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        loss_policy: LossGovernorPolicy,
+        position_sizer: BoltV3SubmitPositionSizerConfig,
+    ) -> Self {
+        Self::new_unarmed_with_optional_controls(
+            decision_evidence,
+            Some(loss_policy),
+            Some(position_sizer),
+        )
+    }
+
     fn new_unarmed_with_optional_loss_governor(
         decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
         loss_policy: Option<LossGovernorPolicy>,
     ) -> Self {
+        Self::new_unarmed_with_optional_controls(decision_evidence, loss_policy, None)
+    }
+
+    fn new_unarmed_with_optional_controls(
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        loss_policy: Option<LossGovernorPolicy>,
+        position_sizer: Option<BoltV3SubmitPositionSizerConfig>,
+    ) -> Self {
         Self {
-            inner: Mutex::new(BoltV3SubmitAdmissionInner {
+            inner: Arc::new(Mutex::new(BoltV3SubmitAdmissionInner {
                 gate_report: None,
                 admitted_order_count: 0,
                 admitted_entry_order_count: 0,
@@ -65,7 +123,18 @@ impl BoltV3SubmitAdmissionState {
                 admitted_replace_submit_order_count: 0,
                 loss_policy,
                 loss_snapshot: None,
-            }),
+                position_sizer: position_sizer.map(|config| BoltV3SubmitPositionSizerState {
+                    venue_id: config.venue_id,
+                    product_kind: config.product_kind,
+                    collateral_currency: config.collateral_currency,
+                    capital_pool: config.capital_pool,
+                    policy: config.policy,
+                    state: None,
+                    gate: PositionSizingAdmissionGate::reconciled(),
+                    next_sequence: 0,
+                    client_order_reservations: BTreeMap::new(),
+                }),
+            })),
             decision_evidence,
         }
     }
@@ -74,10 +143,7 @@ impl BoltV3SubmitAdmissionState {
         &self,
         report: BoltV3LiveCanaryGateReport,
     ) -> Result<(), BoltV3SubmitAdmissionError> {
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned");
+        let mut inner = lock_inner(&self.inner);
         if inner.gate_report.is_some() {
             return Err(BoltV3SubmitAdmissionError::AlreadyArmed);
         }
@@ -90,10 +156,79 @@ impl BoltV3SubmitAdmissionState {
     }
 
     pub fn update_loss_snapshot(&self, snapshot: LossSnapshot) {
-        self.inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned")
-            .loss_snapshot = Some(snapshot);
+        lock_inner(&self.inner).loss_snapshot = Some(snapshot);
+    }
+
+    pub fn update_position_sizing_state(&self, state: NtDerivedSizingState) {
+        if let Some(position_sizer) = lock_inner(&self.inner).position_sizer.as_mut() {
+            position_sizer.state = Some(state);
+        }
+    }
+
+    pub fn position_sizer_configured(&self) -> bool {
+        lock_inner(&self.inner).position_sizer.is_some()
+    }
+
+    pub fn position_sizer_live_reserved_liability(&self) -> Option<Decimal> {
+        let inner = lock_inner(&self.inner);
+        let position_sizer = inner.position_sizer.as_ref()?;
+        Some(
+            position_sizer
+                .gate
+                .live_reserved_liability(&position_sizer.capital_pool.pool_id),
+        )
+    }
+
+    pub fn apply_position_sizing_lifecycle_update(
+        &self,
+        update: BoltV3SubmitPositionSizingLifecycleUpdate,
+        now_ns: u64,
+    ) -> BoltV3SubmitPositionSizingLifecycleDecision {
+        let mut inner = lock_inner(&self.inner);
+        let Some(position_sizer) = inner.position_sizer.as_mut() else {
+            return BoltV3SubmitPositionSizingLifecycleDecision::unknown();
+        };
+        let Some(submit_reservation_id) = position_sizer
+            .client_order_reservations
+            .get(&update.client_order_id)
+            .cloned()
+        else {
+            log::warn!(
+                "bolt-v3 submit admission received position-sizer lifecycle update for unknown client_order_id={}",
+                update.client_order_id
+            );
+            return BoltV3SubmitPositionSizingLifecycleDecision::unknown();
+        };
+        let lifecycle_update = PositionSizingLifecycleUpdate {
+            intent_id: submit_reservation_id.clone(),
+            pool_id: position_sizer.capital_pool.pool_id.clone(),
+            collateral_group_id: update.collateral_group_id,
+            remaining_liability: update.remaining_liability,
+            observed_at_ns: update.observed_at_ns,
+            evidence_label: update.evidence_label,
+            kind: update.kind,
+        };
+        let decision = position_sizer.gate.apply_lifecycle_update(
+            &position_sizer.capital_pool,
+            &lifecycle_update,
+            now_ns,
+            position_sizer.policy.min_remaining_pool_balance,
+        );
+        if decision.accepted
+            && update.kind == PositionSizingLifecycleKind::Terminal
+            && position_sizer
+                .client_order_reservations
+                .get(&update.client_order_id)
+                == Some(&submit_reservation_id)
+        {
+            position_sizer
+                .client_order_reservations
+                .remove(&update.client_order_id);
+        }
+        BoltV3SubmitPositionSizingLifecycleDecision {
+            accepted: decision.accepted,
+            unknown_reservation: false,
+        }
     }
 
     pub fn admit(
@@ -116,11 +251,8 @@ impl BoltV3SubmitAdmissionState {
         request: &BoltV3SubmitAdmissionRequest,
         now_ns: u64,
     ) -> Result<BoltV3SubmitAdmissionPermit, BoltV3SubmitAdmissionError> {
-        let mut inner = self
-            .inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned");
-        let evaluation = Self::evaluate(&inner, request, now_ns);
+        let mut inner = lock_inner(&self.inner);
+        let evaluation = Self::evaluate(&mut inner, request, now_ns);
         let evidence = BoltV3AdmissionDecisionEvidence {
             strategy_id: request.strategy_id.clone(),
             client_order_id: request.client_order_id.clone(),
@@ -134,11 +266,14 @@ impl BoltV3SubmitAdmissionState {
                 .map(|reason| reason.as_str().to_string())
                 .collect(),
         };
-        self.decision_evidence
-            .record_admission_decision(&evidence)
-            .map_err(|err| BoltV3SubmitAdmissionError::EvidenceWriteFailed {
+        if let Err(err) = self.decision_evidence.record_admission_decision(&evidence) {
+            if let Some(rollback) = evaluation.rollback.as_ref() {
+                rollback_position_sizer_reservation(&mut inner, rollback);
+            }
+            return Err(BoltV3SubmitAdmissionError::EvidenceWriteFailed {
                 reason: format!("{err:#}"),
-            })?;
+            });
+        }
         match evaluation.outcome {
             BoltV3AdmissionOutcome::Admitted => {
                 inner.admitted_order_count += 1;
@@ -153,7 +288,11 @@ impl BoltV3SubmitAdmissionState {
                         inner.admitted_replace_submit_order_count += 1;
                     }
                 }
-                Ok(BoltV3SubmitAdmissionPermit(()))
+                Ok(BoltV3SubmitAdmissionPermit {
+                    inner: self.inner.clone(),
+                    rollback: evaluation.rollback,
+                    committed: false,
+                })
             }
             BoltV3AdmissionOutcome::RejectedNotArmed => Err(BoltV3SubmitAdmissionError::NotArmed),
             BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
@@ -181,11 +320,18 @@ impl BoltV3SubmitAdmissionState {
             BoltV3AdmissionOutcome::RejectedCountCapExhausted => {
                 Err(BoltV3SubmitAdmissionError::CountCapExhausted)
             }
+            BoltV3AdmissionOutcome::RejectedPositionSizing => {
+                Err(BoltV3SubmitAdmissionError::PositionSizingRejected {
+                    reason: evaluation
+                        .position_sizer_rejection
+                        .unwrap_or(BoltV3PositionSizerRejectReason::Rejected),
+                })
+            }
         }
     }
 
     fn evaluate(
-        inner: &BoltV3SubmitAdmissionInner,
+        inner: &mut BoltV3SubmitAdmissionInner,
         request: &BoltV3SubmitAdmissionRequest,
         now_ns: u64,
     ) -> BoltV3SubmitAdmissionEvaluation {
@@ -271,14 +417,18 @@ impl BoltV3SubmitAdmissionState {
                 }
             }
         }
+        if inner.position_sizer.is_some() {
+            let decision = evaluate_position_sizer_submit(inner, request, now_ns);
+            if !decision.accepted {
+                return BoltV3SubmitAdmissionEvaluation::position_sizer_rejected(decision.reason);
+            }
+            return BoltV3SubmitAdmissionEvaluation::admitted_with_rollback(decision.rollback);
+        }
         BoltV3SubmitAdmissionEvaluation::without_loss_halt(BoltV3AdmissionOutcome::Admitted)
     }
 
     pub fn admitted_order_count(&self) -> u32 {
-        self.inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned")
-            .admitted_order_count
+        lock_inner(&self.inner).admitted_order_count
     }
 
     /// Gate-approved maximum reference-quote age (seconds) carried by the armed
@@ -299,21 +449,58 @@ impl BoltV3SubmitAdmissionState {
     }
 
     pub fn loss_governor_configured(&self) -> bool {
-        self.inner
-            .lock()
-            .expect("submit admission state mutex should not be poisoned")
-            .loss_policy
-            .is_some()
+        lock_inner(&self.inner).loss_policy.is_some()
     }
 }
 
 #[derive(Debug)]
-pub struct BoltV3SubmitAdmissionPermit(());
+pub struct BoltV3SubmitAdmissionPermit {
+    inner: Arc<Mutex<BoltV3SubmitAdmissionInner>>,
+    rollback: Option<BoltV3PositionSizerReservationRollback>,
+    committed: bool,
+}
+
+impl BoltV3SubmitAdmissionPermit {
+    pub fn commit_submitted(mut self) {
+        self.committed = true;
+        self.rollback = None;
+    }
+}
+
+impl Drop for BoltV3SubmitAdmissionPermit {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let Some(rollback) = self.rollback.as_ref() else {
+            return;
+        };
+        match self.inner.try_lock() {
+            Ok(mut inner) => {
+                rollback_position_sizer_reservation(&mut inner, rollback);
+            }
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                let mut inner = poisoned.into_inner();
+                rollback_position_sizer_reservation(&mut inner, rollback);
+            }
+            Err(std::sync::TryLockError::WouldBlock) => {
+                log::warn!(
+                    "bolt-v3 submit admission could not roll back uncommitted position-sizer reservation because admission lock is held: client_order_id={} submit_reservation_id={} pool_id={}",
+                    rollback.client_order_id,
+                    rollback.submit_reservation_id,
+                    rollback.pool_id
+                );
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 struct BoltV3SubmitAdmissionEvaluation {
     outcome: BoltV3AdmissionOutcome,
     loss_halt_reasons: Vec<LossHaltReason>,
+    position_sizer_rejection: Option<BoltV3PositionSizerRejectReason>,
+    rollback: Option<BoltV3PositionSizerReservationRollback>,
 }
 
 impl BoltV3SubmitAdmissionEvaluation {
@@ -321,6 +508,8 @@ impl BoltV3SubmitAdmissionEvaluation {
         Self {
             outcome,
             loss_halt_reasons: Vec::new(),
+            position_sizer_rejection: None,
+            rollback: None,
         }
     }
 
@@ -328,6 +517,26 @@ impl BoltV3SubmitAdmissionEvaluation {
         Self {
             outcome: BoltV3AdmissionOutcome::RejectedLossGovernorHalted,
             loss_halt_reasons,
+            position_sizer_rejection: None,
+            rollback: None,
+        }
+    }
+
+    fn position_sizer_rejected(reason: BoltV3PositionSizerRejectReason) -> Self {
+        Self {
+            outcome: BoltV3AdmissionOutcome::RejectedPositionSizing,
+            loss_halt_reasons: Vec::new(),
+            position_sizer_rejection: Some(reason),
+            rollback: None,
+        }
+    }
+
+    fn admitted_with_rollback(rollback: Option<BoltV3PositionSizerReservationRollback>) -> Self {
+        Self {
+            outcome: BoltV3AdmissionOutcome::Admitted,
+            loss_halt_reasons: Vec::new(),
+            position_sizer_rejection: None,
+            rollback,
         }
     }
 }
@@ -412,6 +621,142 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub canary_proof_claim: Option<String>,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
+    pub position_sizing: Option<BoltV3CompiledOrderSizingEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3CompiledOrderSizingEvidence {
+    pub venue_id: String,
+    pub product_kind: BoltV3CompiledProductKind,
+    pub side: BoltV3CompiledOrderSide,
+    pub quantity: Decimal,
+    pub effective_price: Decimal,
+    pub order_kind: BoltV3CompiledOrderKind,
+    pub liquidity: BoltV3CompiledOrderLiquidity,
+    pub quote_set_id: Option<String>,
+    pub prediction_market_outcome: Option<PredictionMarketOutcomeSide>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3CompiledProductKind {
+    PredictionMarketBinary,
+}
+
+impl BoltV3CompiledProductKind {
+    fn to_position_sizer(self) -> ProductKind {
+        match self {
+            Self::PredictionMarketBinary => ProductKind::PredictionMarketBinary,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3CompiledOrderSide {
+    Buy,
+    Sell,
+}
+
+impl BoltV3CompiledOrderSide {
+    fn to_position_sizer(self) -> IntentSide {
+        match self {
+            Self::Buy => IntentSide::Buy,
+            Self::Sell => IntentSide::Sell,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3CompiledOrderKind {
+    Limit,
+}
+
+impl BoltV3CompiledOrderKind {
+    fn to_position_sizer(self) -> IntentOrderKind {
+        match self {
+            Self::Limit => IntentOrderKind::Limit,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3CompiledOrderLiquidity {
+    Taker,
+    RestingMaker,
+}
+
+impl BoltV3CompiledOrderLiquidity {
+    fn to_position_sizer(self) -> IntentLiquidity {
+        match self {
+            Self::Taker => IntentLiquidity::Taker,
+            Self::RestingMaker => IntentLiquidity::RestingMaker,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PredictionMarketOutcomeSide {
+    Yes,
+    No,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BoltV3PositionSizerReservationRollback {
+    client_order_id: String,
+    submit_reservation_id: String,
+    pool_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BoltV3PositionSizerSubmitDecision {
+    accepted: bool,
+    reason: BoltV3PositionSizerRejectReason,
+    rollback: Option<BoltV3PositionSizerReservationRollback>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3PositionSizerRejectReason {
+    Rejected,
+    MissingSizingEvidence,
+    VenueMismatch,
+    ProductKindMismatch,
+    CollateralCurrencyMismatch,
+    UnsupportedProductKind,
+    MissingPredictionMarketOutcome,
+    NoOutcomeUnsupported,
+    OutcomeInstrumentMismatch,
+    ReplaceSubmitUnsupported,
+    DuplicateClientOrderId,
+    MissingNtState,
+    StaleNtState,
+    UnattributedNtState,
+    OverBudget,
+    SizingRejected,
+    SizedQuantityMismatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3SubmitPositionSizingLifecycleUpdate {
+    pub client_order_id: String,
+    pub collateral_group_id: String,
+    pub remaining_liability: Decimal,
+    pub observed_at_ns: u64,
+    pub evidence_label: String,
+    pub kind: PositionSizingLifecycleKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3SubmitPositionSizingLifecycleDecision {
+    pub accepted: bool,
+    pub unknown_reservation: bool,
+}
+
+impl BoltV3SubmitPositionSizingLifecycleDecision {
+    fn unknown() -> Self {
+        Self {
+            accepted: true,
+            unknown_reservation: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -667,15 +1012,18 @@ pub enum BoltV3SubmitAdmissionError {
     CountCapExhausted,
     NonPositiveNotional,
     NotionalCapExceeded,
-    SystemClock {
-        reason: String,
-    },
     MissingPriceCeiling,
     RoundedNotionalExceedsIntent {
         rounded_base_notional: Decimal,
         intended_notional: Decimal,
     },
     InvalidCanaryProofClaim,
+    PositionSizingRejected {
+        reason: BoltV3PositionSizerRejectReason,
+    },
+    SystemClock {
+        reason: String,
+    },
     InvalidRiskReducingExitProof,
     EvidenceWriteFailed {
         reason: String,
@@ -711,6 +1059,12 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             Self::NotionalCapExceeded => {
                 write!(f, "bolt-v3 submit admission notional cap is exceeded")
             }
+            Self::PositionSizingRejected { reason } => {
+                write!(
+                    f,
+                    "bolt-v3 submit admission position sizing rejected: {reason:?}"
+                )
+            }
             Self::SystemClock { reason } => {
                 write!(f, "bolt-v3 submit admission system clock failed: {reason}")
             }
@@ -741,6 +1095,215 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             }
         }
     }
+}
+
+fn lock_inner(
+    inner: &Arc<Mutex<BoltV3SubmitAdmissionInner>>,
+) -> std::sync::MutexGuard<'_, BoltV3SubmitAdmissionInner> {
+    inner
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn evaluate_position_sizer_submit(
+    inner: &mut BoltV3SubmitAdmissionInner,
+    request: &BoltV3SubmitAdmissionRequest,
+    now_ns: u64,
+) -> BoltV3PositionSizerSubmitDecision {
+    let Some(position_sizer) = inner.position_sizer.as_mut() else {
+        return accepted_without_reservation();
+    };
+    if request.intent_kind == BoltV3SubmitIntentKind::ReplaceSubmit {
+        return rejected_position_sizer(BoltV3PositionSizerRejectReason::ReplaceSubmitUnsupported);
+    }
+    let Some(evidence) = request.position_sizing.as_ref() else {
+        return rejected_position_sizer(BoltV3PositionSizerRejectReason::MissingSizingEvidence);
+    };
+    if evidence.venue_id != position_sizer.venue_id {
+        return rejected_position_sizer(BoltV3PositionSizerRejectReason::VenueMismatch);
+    }
+    let product_kind = evidence.product_kind.to_position_sizer();
+    if product_kind != position_sizer.product_kind {
+        return rejected_position_sizer(BoltV3PositionSizerRejectReason::ProductKindMismatch);
+    }
+    if product_kind != ProductKind::PredictionMarketBinary {
+        return rejected_position_sizer(BoltV3PositionSizerRejectReason::UnsupportedProductKind);
+    }
+    if position_sizer
+        .client_order_reservations
+        .contains_key(&request.client_order_id)
+    {
+        return rejected_position_sizer(BoltV3PositionSizerRejectReason::DuplicateClientOrderId);
+    }
+    let Some(state) = position_sizer.state.as_ref() else {
+        return rejected_position_sizer(BoltV3PositionSizerRejectReason::MissingNtState);
+    };
+    if state.portfolio.venue_id != position_sizer.venue_id {
+        return rejected_position_sizer(BoltV3PositionSizerRejectReason::VenueMismatch);
+    }
+    if state.portfolio.collateral_currency != position_sizer.collateral_currency {
+        return rejected_position_sizer(
+            BoltV3PositionSizerRejectReason::CollateralCurrencyMismatch,
+        );
+    }
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = &state.product_state;
+    let Some(outcome) = evidence.prediction_market_outcome else {
+        return rejected_position_sizer(
+            BoltV3PositionSizerRejectReason::MissingPredictionMarketOutcome,
+        );
+    };
+    match outcome {
+        PredictionMarketOutcomeSide::Yes => {
+            if request.instrument_id != product.yes_instrument_id {
+                return rejected_position_sizer(
+                    BoltV3PositionSizerRejectReason::OutcomeInstrumentMismatch,
+                );
+            }
+        }
+        PredictionMarketOutcomeSide::No => {
+            return rejected_position_sizer(BoltV3PositionSizerRejectReason::NoOutcomeUnsupported);
+        }
+    }
+
+    if request.intent_kind == BoltV3SubmitIntentKind::RiskReducingExit {
+        if evidence.side == BoltV3CompiledOrderSide::Sell
+            && evidence.quantity <= product.yes_position
+        {
+            return accepted_without_reservation();
+        }
+        return rejected_position_sizer(BoltV3PositionSizerRejectReason::SizingRejected);
+    }
+
+    position_sizer.next_sequence += 1;
+    let submit_reservation_id = format!(
+        "{}#{}",
+        request.client_order_id, position_sizer.next_sequence
+    );
+    let sizing_request = PositionSizingRequest {
+        intent_id: submit_reservation_id.clone(),
+        strategy_id: request.strategy_id.clone(),
+        instrument_id: request.instrument_id.clone(),
+        pool_id: position_sizer.capital_pool.pool_id.clone(),
+        product_kind,
+        side: evidence.side.to_position_sizer(),
+        quantity: evidence.quantity,
+        limit_price: evidence.effective_price,
+        order_kind: evidence.order_kind.to_position_sizer(),
+        liquidity: evidence.liquidity.to_position_sizer(),
+        quote_set_id: evidence.quote_set_id.clone(),
+        now_ns,
+    };
+    let decision = position_sizer
+        .gate
+        .evaluate_and_reserve(PositionSizingGateInputs {
+            request: &sizing_request,
+            state: Some(state),
+            policy: &position_sizer.policy,
+            loss_policy: None,
+            capital_pool: &position_sizer.capital_pool,
+        });
+    if !decision.accepted {
+        return rejected_position_sizer(map_sized_rejection(&decision.reasons));
+    }
+    if decision.sized_quantity != Some(evidence.quantity) {
+        position_sizer.gate.rollback_uncommitted_reservation(
+            &position_sizer.capital_pool.pool_id,
+            &submit_reservation_id,
+        );
+        return rejected_position_sizer(BoltV3PositionSizerRejectReason::SizedQuantityMismatch);
+    }
+    position_sizer.client_order_reservations.insert(
+        request.client_order_id.clone(),
+        submit_reservation_id.clone(),
+    );
+    BoltV3PositionSizerSubmitDecision {
+        accepted: true,
+        reason: BoltV3PositionSizerRejectReason::Rejected,
+        rollback: Some(BoltV3PositionSizerReservationRollback {
+            client_order_id: request.client_order_id.clone(),
+            submit_reservation_id,
+            pool_id: position_sizer.capital_pool.pool_id.clone(),
+        }),
+    }
+}
+
+fn accepted_without_reservation() -> BoltV3PositionSizerSubmitDecision {
+    BoltV3PositionSizerSubmitDecision {
+        accepted: true,
+        reason: BoltV3PositionSizerRejectReason::Rejected,
+        rollback: None,
+    }
+}
+
+fn rejected_position_sizer(
+    reason: BoltV3PositionSizerRejectReason,
+) -> BoltV3PositionSizerSubmitDecision {
+    BoltV3PositionSizerSubmitDecision {
+        accepted: false,
+        reason,
+        rollback: None,
+    }
+}
+
+fn rollback_position_sizer_reservation(
+    inner: &mut BoltV3SubmitAdmissionInner,
+    rollback: &BoltV3PositionSizerReservationRollback,
+) {
+    let Some(position_sizer) = inner.position_sizer.as_mut() else {
+        return;
+    };
+    position_sizer
+        .gate
+        .rollback_uncommitted_reservation(&rollback.pool_id, &rollback.submit_reservation_id);
+    if position_sizer
+        .client_order_reservations
+        .get(&rollback.client_order_id)
+        == Some(&rollback.submit_reservation_id)
+    {
+        position_sizer
+            .client_order_reservations
+            .remove(&rollback.client_order_id);
+    }
+}
+
+fn map_sized_rejection(
+    reasons: &[crate::bolt_v3_position_sizer::SizedAdmissionReason],
+) -> BoltV3PositionSizerRejectReason {
+    if reasons.iter().any(|reason| {
+        matches!(
+            reason,
+            crate::bolt_v3_position_sizer::SizedAdmissionReason::MissingNtState
+        )
+    }) {
+        return BoltV3PositionSizerRejectReason::MissingNtState;
+    }
+    if reasons.iter().any(|reason| {
+        matches!(
+            reason,
+            crate::bolt_v3_position_sizer::SizedAdmissionReason::StaleNtState(_)
+        )
+    }) {
+        return BoltV3PositionSizerRejectReason::StaleNtState;
+    }
+    if reasons.iter().any(|reason| {
+        matches!(
+            reason,
+            crate::bolt_v3_position_sizer::SizedAdmissionReason::UnattributedNtState(_)
+        )
+    }) {
+        return BoltV3PositionSizerRejectReason::UnattributedNtState;
+    }
+    if reasons.iter().any(|reason| {
+        matches!(
+            reason,
+            crate::bolt_v3_position_sizer::SizedAdmissionReason::Reservation(
+                crate::bolt_v3_capital_reservation::ReservationRejectionReason::OverBudget,
+            ) | crate::bolt_v3_position_sizer::SizedAdmissionReason::OverMaxOrderLiability
+        )
+    }) {
+        return BoltV3PositionSizerRejectReason::OverBudget;
+    }
+    BoltV3PositionSizerRejectReason::SizingRejected
 }
 
 fn current_unix_ns() -> Result<u64, BoltV3SubmitAdmissionError> {

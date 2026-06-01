@@ -1050,9 +1050,13 @@ const SECONDS_PER_MINUTE: u64 = 60;
 fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
     let mut errors = Vec::new();
     let mut pool_ids = HashSet::new();
+    let mut enforced_pool_count = 0usize;
 
     for pool in pools {
         let label = format!("risk.capital_pools[{}]", pool.pool_id);
+        if pool.enforce_submit_admission {
+            enforced_pool_count += 1;
+        }
         if pool.pool_id.trim().is_empty() {
             errors.push("risk.capital_pools pool_id must be a non-empty string".to_string());
         } else if !pool_ids.insert(pool.pool_id.as_str()) {
@@ -1060,6 +1064,12 @@ fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
         }
         if pool.venue_id.trim().is_empty() {
             errors.push(format!("{label}.venue_id must be a non-empty string"));
+        } else if pool.enforce_submit_admission
+            && pool.venue_id != pool.venue_id.to_ascii_uppercase()
+        {
+            errors.push(format!(
+                "{label}.venue_id must be canonical uppercase when submit admission enforcement is enabled"
+            ));
         }
         if pool.collateral_currency.trim().is_empty() {
             errors.push(format!(
@@ -1088,6 +1098,12 @@ fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
             errors.push(format!(
                 "{label}.sizing_policy.mode must be `reject_only` or `explicit_clip_to_available`"
             ));
+        } else if pool.enforce_submit_admission
+            && pool.sizing_policy.mode == "explicit_clip_to_available"
+        {
+            errors.push(format!(
+                "{label}.sizing_policy.mode must be `reject_only` when submit admission enforcement is enabled"
+            ));
         }
         if let Some(max_order_liability) = pool.sizing_policy.max_order_liability.as_ref() {
             validate_positive_decimal(
@@ -1114,6 +1130,13 @@ fn validate_capital_pools(pools: &[CapitalPoolBlock]) -> Vec<String> {
             &format!("{label}.sizing_policy.fee_slippage.max_slippage_liability"),
             &pool.sizing_policy.fee_slippage.max_slippage_liability,
             &mut errors,
+        );
+    }
+
+    if enforced_pool_count > 1 {
+        errors.push(
+            "risk.capital_pools may enable submit admission enforcement for at most one pool"
+                .to_string(),
         );
     }
 

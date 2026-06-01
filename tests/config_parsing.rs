@@ -5734,6 +5734,7 @@ fn bolt_v3_capital_pool_config_uses_explicit_account_product_and_sizing_policy()
     assert_eq!(pool.account_id, AccountId::from("POLYMARKET-001"));
     assert_eq!(pool.collateral_currency, "PUSD");
     assert_eq!(pool.product_kind, "prediction_market_binary");
+    assert!(!pool.enforce_submit_admission);
     assert_eq!(pool.max_pool_liability, "25.00");
     assert_eq!(pool.max_snapshot_age_ns, 5_000_000_000);
     assert_eq!(pool.sizing_policy.mode, "reject_only");
@@ -5784,6 +5785,70 @@ fn rejects_invalid_capital_pool_sizing_runtime_values() {
             "expected `{needle}` validation message, got: {messages:#?}"
         );
     }
+}
+
+#[test]
+fn rejects_unsafe_capital_pool_submit_enforcement_config() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("venue_id = \"POLYMARKET\"", "venue_id = \"polymarket\"")
+        .replace(
+            "enforce_submit_admission = false",
+            "enforce_submit_admission = true",
+        )
+        .replace(
+            "mode = \"reject_only\"",
+            "mode = \"explicit_clip_to_available\"",
+        );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("unsafe submit-enforcement fixture should parse");
+    let messages = validate_root_only(&root);
+
+    for needle in [
+        "risk.capital_pools[polymarket-prediction-live].venue_id must be canonical uppercase when submit admission enforcement is enabled",
+        "risk.capital_pools[polymarket-prediction-live].sizing_policy.mode must be `reject_only` when submit admission enforcement is enabled",
+    ] {
+        assert!(
+            messages.iter().any(|message| message.contains(needle)),
+            "expected `{needle}` validation message, got: {messages:#?}"
+        );
+    }
+
+    let second_enforced_pool = r#"
+
+[[risk.capital_pools]]
+pool_id = "polymarket-second-live"
+venue_id = "POLYMARKET"
+account_id = "POLYMARKET-001"
+collateral_currency = "PUSD"
+product_kind = "prediction_market_binary"
+enforce_submit_admission = true
+max_pool_liability = "25.00"
+max_snapshot_age_ns = 5000000000
+
+[risk.capital_pools.sizing_policy]
+mode = "reject_only"
+max_order_liability = "5.00"
+min_remaining_pool_balance = "1.00"
+
+[risk.capital_pools.sizing_policy.fee_slippage]
+max_fee_liability = "0.10"
+max_slippage_liability = "0.20"
+"#;
+    let mutated = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    ) + second_enforced_pool;
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("two enforced capital-pool fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| message.contains(
+            "risk.capital_pools may enable submit admission enforcement for at most one pool"
+        )),
+        "expected single-enforced-pool validation message, got: {messages:#?}"
+    );
 }
 
 #[test]

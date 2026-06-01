@@ -78,6 +78,8 @@ pub enum ProductSizingSnapshot {
 pub struct PredictionMarketSizingSnapshot {
     pub source: String,
     pub observed_at_ns: u64,
+    pub yes_instrument_id: String,
+    pub no_instrument_id: String,
     pub yes_position: Decimal,
     pub no_position: Decimal,
     pub pusd_allowance: Decimal,
@@ -348,6 +350,15 @@ impl PositionSizingAdmissionGate {
 
     pub fn live_reserved_liability(&self, pool_id: &str) -> Decimal {
         self.reservation_ledger.live_reserved_liability(pool_id)
+    }
+
+    pub fn rollback_uncommitted_reservation(
+        &mut self,
+        pool_id: &str,
+        request_id: &str,
+    ) -> Option<Decimal> {
+        self.reservation_ledger
+            .rollback_uncommitted(pool_id, request_id)
     }
 }
 
@@ -844,6 +855,8 @@ mod tests {
         ProductSizingSnapshot::PredictionMarketBinary(PredictionMarketSizingSnapshot {
             source: "nt_account_and_position_snapshot".to_string(),
             observed_at_ns: 900,
+            yes_instrument_id: "instrument-1".to_string(),
+            no_instrument_id: "instrument-1-no".to_string(),
             yes_position: Decimal::new(10, 0),
             no_position: Decimal::ZERO,
             pusd_allowance: Decimal::new(100, 0),

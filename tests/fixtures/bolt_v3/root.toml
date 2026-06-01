@@ -95,6 +95,7 @@ venue_id = "POLYMARKET"
 account_id = "POLYMARKET-001"
 collateral_currency = "PUSD"
 product_kind = "prediction_market_binary"
+enforce_submit_admission = false
 max_pool_liability = "25.00"
 max_snapshot_age_ns = 5000000000
 

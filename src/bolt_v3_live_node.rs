@@ -1581,54 +1581,53 @@ fn build_live_node_with_clients(
 fn configured_loss_governor_policy(
     loaded: &LoadedBoltV3Config,
 ) -> Result<Option<LossGovernorPolicy>> {
-    let Some(block) = loaded.root.risk.loss_governor.as_ref() else {
+    let validation_messages = crate::bolt_v3_validate::validate_root_only(&loaded.root);
+    if !validation_messages.is_empty() {
+        return Err(
+            crate::bolt_v3_validate::BoltV3ValidationError::new(validation_messages).into(),
+        );
+    }
+    let Some(block) = loaded
+        .root
+        .risk
+        .loss_governor
+        .as_ref()
+        .filter(|block| block.enabled)
+    else {
         return Ok(None);
     };
-    loss_governor_policy_from_block(block)
+    loss_governor_policy_from_validated_block(block).map(Some)
 }
 
-fn loss_governor_policy_from_block(
+fn loss_governor_policy_from_validated_block(
     block: &LossGovernorBlock,
-) -> Result<Option<LossGovernorPolicy>> {
-    if !block.enabled {
-        return Ok(None);
-    }
-    if block.max_snapshot_age_ns == 0 {
-        return Err(anyhow!(
-            "risk.loss_governor.max_snapshot_age_ns must be a positive integer"
-        ));
-    }
-
-    Ok(Some(LossGovernorPolicy {
+) -> Result<LossGovernorPolicy> {
+    Ok(LossGovernorPolicy {
         max_snapshot_age_ns: block.max_snapshot_age_ns,
-        max_per_trade_loss: loss_governor_required_decimal(
+        max_per_trade_loss: loss_governor_validated_decimal(
             "risk.loss_governor.max_per_trade_loss",
             block.max_per_trade_loss.as_deref(),
         )?,
-        max_daily_loss: loss_governor_required_decimal(
+        max_daily_loss: loss_governor_validated_decimal(
             "risk.loss_governor.max_daily_loss",
             block.max_daily_loss.as_deref(),
         )?,
-        max_rolling_loss: loss_governor_required_decimal(
+        max_rolling_loss: loss_governor_validated_decimal(
             "risk.loss_governor.max_rolling_loss",
             block.max_rolling_loss.as_deref(),
         )?,
-        max_drawdown: loss_governor_required_decimal(
+        max_drawdown: loss_governor_validated_decimal(
             "risk.loss_governor.max_drawdown",
             block.max_drawdown.as_deref(),
         )?,
-    }))
+    })
 }
 
-fn loss_governor_required_decimal(label: &str, value: Option<&str>) -> Result<Decimal> {
-    let raw = value.ok_or_else(|| anyhow!("{label} must be configured when enabled"))?;
-    let value = crate::bolt_v3_validate::parse_decimal_string(raw)
-        .map_err(|reason| anyhow!("{label} is not a valid decimal string ({reason}): `{raw}`"))?;
-    if value <= Decimal::ZERO {
-        return Err(anyhow!(
-            "{label} must be a positive decimal string: `{raw}`"
-        ));
-    }
+fn loss_governor_validated_decimal(label: &str, value: Option<&str>) -> Result<Decimal> {
+    let raw = value.ok_or_else(|| anyhow!("{label} missing after root config validation"))?;
+    let value = crate::bolt_v3_validate::parse_decimal_string(raw).map_err(|reason| {
+        anyhow!("{label} failed to parse after root config validation ({reason}): `{raw}`")
+    })?;
     Ok(value)
 }
 
@@ -1636,18 +1635,18 @@ fn wire_bolt_v3_loss_governor_runtime(
     runtime: &BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> BoltV3LossGovernorRuntimeGuards {
-    let Some(block) = loaded.root.risk.loss_governor.as_ref() else {
+    let Some(block) = loaded
+        .root
+        .risk
+        .loss_governor
+        .as_ref()
+        .filter(|block| block.enabled)
+    else {
         return BoltV3LossGovernorRuntimeGuards {
             position_events: None,
             portfolio_snapshots: None,
         };
     };
-    if !block.enabled {
-        return BoltV3LossGovernorRuntimeGuards {
-            position_events: None,
-            portfolio_snapshots: None,
-        };
-    }
 
     let feed = Arc::new(Mutex::new(BoltV3LossGovernorRuntimeFeed::new(
         block.account_id,
@@ -2492,6 +2491,27 @@ mod tests {
                 .to_string()
                 .contains("risk.loss_governor.max_daily_loss must be a positive decimal string"),
             "unexpected loss-governor config error: {zero_daily_error}"
+        );
+    }
+
+    #[test]
+    fn enabled_loss_governor_policy_conversion_rejects_invalid_rolling_window() {
+        let mut zero_window = fixture_loaded_config();
+        zero_window
+            .root
+            .risk
+            .loss_governor
+            .as_mut()
+            .expect("fixture should configure loss governor")
+            .rolling_window_ns = 0;
+
+        let zero_window_error = configured_loss_governor_policy(&zero_window)
+            .expect_err("enabled loss governor must reject zero rolling window");
+        assert!(
+            zero_window_error
+                .to_string()
+                .contains("risk.loss_governor.rolling_window_ns must be a positive integer"),
+            "unexpected loss-governor config error: {zero_window_error}"
         );
     }
 

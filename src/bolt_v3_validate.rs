@@ -271,30 +271,6 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                 "risk.loss_governor.rolling_window_ns must be a positive integer".to_string(),
             );
         }
-        if loss_governor.enabled {
-            for (label, threshold) in [
-                (
-                    "risk.loss_governor.max_per_trade_loss",
-                    loss_governor.max_per_trade_loss.as_deref(),
-                ),
-                (
-                    "risk.loss_governor.max_daily_loss",
-                    loss_governor.max_daily_loss.as_deref(),
-                ),
-                (
-                    "risk.loss_governor.max_rolling_loss",
-                    loss_governor.max_rolling_loss.as_deref(),
-                ),
-                (
-                    "risk.loss_governor.max_drawdown",
-                    loss_governor.max_drawdown.as_deref(),
-                ),
-            ] {
-                if threshold.is_none() {
-                    errors.push(format!("{label} must be configured when enabled"));
-                }
-            }
-        }
         for (label, threshold) in [
             (
                 "risk.loss_governor.max_per_trade_loss",
@@ -314,6 +290,9 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
             ),
         ] {
             let Some(value) = threshold else {
+                if loss_governor.enabled {
+                    errors.push(format!("{label} must be configured when enabled"));
+                }
                 continue;
             };
             match parse_decimal_string(value) {

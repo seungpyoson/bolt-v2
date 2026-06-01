@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 pub mod binary_oracle_edge_taker;
+pub mod maker_governor;
 pub mod maker_inventory;
 pub mod maker_model;
 pub mod maker_quote;

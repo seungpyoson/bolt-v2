@@ -425,6 +425,7 @@ struct BoltV3LossGovernorRuntimeFeed {
     latest_current_equity: Option<TimedLossFact>,
     peak_equity: Option<Decimal>,
     rolling_samples: VecDeque<(u64, Decimal)>,
+    rolling_baseline_initialized: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -444,6 +445,7 @@ impl BoltV3LossGovernorRuntimeFeed {
             latest_current_equity: None,
             peak_equity: None,
             rolling_samples: VecDeque::new(),
+            rolling_baseline_initialized: false,
         }
     }
 
@@ -479,14 +481,6 @@ impl BoltV3LossGovernorRuntimeFeed {
                             value,
                         },
                     );
-                } else if let Some(value) = value {
-                    self.position_pnls.insert(
-                        position_id,
-                        TimedLossFact {
-                            observed_at_ns,
-                            value,
-                        },
-                    );
                 }
             }
             PositionLossFact::Closed { position_id } => {
@@ -501,16 +495,20 @@ impl BoltV3LossGovernorRuntimeFeed {
             return None;
         }
         let observed_at_ns = snapshot.ts_event.as_u64();
-        let Some(realized_pnl) = money_sum(&snapshot.realized_pnls) else {
+        let Some(current_equity) = money_sum(&snapshot.total_equity) else {
             return Some(self.invalidate_portfolio_loss_facts(observed_at_ns));
         };
-        let Some(unrealized_pnl) = money_sum(&snapshot.unrealized_pnls) else {
+        let Some(realized_pnl) =
+            money_sum_or_zero(&snapshot.realized_pnls, current_equity.currency)
+        else {
+            return Some(self.invalidate_portfolio_loss_facts(observed_at_ns));
+        };
+        let Some(unrealized_pnl) =
+            money_sum_or_zero(&snapshot.unrealized_pnls, current_equity.currency)
+        else {
             return Some(self.invalidate_portfolio_loss_facts(observed_at_ns));
         };
         let Some(account_pnl) = combine_money_sums(realized_pnl, unrealized_pnl) else {
-            return Some(self.invalidate_portfolio_loss_facts(observed_at_ns));
-        };
-        let Some(current_equity) = money_sum(&snapshot.total_equity) else {
             return Some(self.invalidate_portfolio_loss_facts(observed_at_ns));
         };
         let Some(snapshot_currency) =
@@ -539,6 +537,7 @@ impl BoltV3LossGovernorRuntimeFeed {
         );
         self.rolling_samples
             .push_back((observed_at_ns, account_pnl));
+        let seed_startup_rolling_baseline = !self.rolling_baseline_initialized;
         let cutoff_ns = observed_at_ns.saturating_sub(self.rolling_window_ns);
         while self
             .rolling_samples
@@ -557,16 +556,22 @@ impl BoltV3LossGovernorRuntimeFeed {
                     value: account_pnl - *baseline_pnl,
                 })
             }
+            (Some(_), Some(_)) if seed_startup_rolling_baseline => Some(TimedLossFact {
+                observed_at_ns,
+                value: Decimal::ZERO,
+            }),
             _ => None,
         };
+        self.rolling_baseline_initialized = true;
         self.snapshot()
     }
 
     fn latest_per_trade_pnl(&self) -> Option<TimedLossFact> {
-        self.position_pnls
-            .values()
-            .copied()
-            .min_by(|left, right| left.value.cmp(&right.value))
+        self.position_pnls.values().copied().min_by(|left, right| {
+            left.value
+                .cmp(&right.value)
+                .then_with(|| left.observed_at_ns.cmp(&right.observed_at_ns))
+        })
     }
 
     fn invalidate_portfolio_loss_facts(&mut self, observed_at_ns: u64) -> LossSnapshot {
@@ -582,7 +587,7 @@ impl BoltV3LossGovernorRuntimeFeed {
         LossSnapshot {
             source: BOLT_V3_LOSS_GOVERNOR_NT_SOURCE.to_string(),
             observed_at_ns,
-            per_trade_pnl: per_trade_pnl.map(|fact| fact.value),
+            per_trade_pnl: Some(per_trade_pnl.map_or(Decimal::ZERO, |fact| fact.value)),
             daily_pnl: None,
             rolling_pnl: None,
             current_equity: None,
@@ -611,7 +616,7 @@ impl BoltV3LossGovernorRuntimeFeed {
         Some(LossSnapshot {
             source: BOLT_V3_LOSS_GOVERNOR_NT_SOURCE.to_string(),
             observed_at_ns,
-            per_trade_pnl: per_trade_pnl.map(|fact| fact.value),
+            per_trade_pnl: Some(per_trade_pnl.map_or(Decimal::ZERO, |fact| fact.value)),
             daily_pnl: self.latest_daily_pnl.map(|fact| fact.value),
             rolling_pnl: self.latest_rolling_pnl.map(|fact| fact.value),
             current_equity: self.latest_current_equity.map(|fact| fact.value),
@@ -681,6 +686,17 @@ fn money_sum(values: &[Money]) -> Option<LossMoneySum> {
         currency,
         value: total,
     })
+}
+
+fn money_sum_or_zero(values: &[Money], currency: Option<Currency>) -> Option<LossMoneySum> {
+    if values.is_empty() {
+        Some(LossMoneySum {
+            currency,
+            value: Decimal::ZERO,
+        })
+    } else {
+        money_sum(values)
+    }
 }
 
 fn combine_money_sums(left: LossMoneySum, right: LossMoneySum) -> Option<LossMoneySum> {
@@ -2119,9 +2135,9 @@ mod tests {
             ))
             .expect("first matching portfolio snapshot should produce loss snapshot");
         assert_eq!(first.observed_at_ns, 100);
-        assert_eq!(first.per_trade_pnl, None);
+        assert_eq!(first.per_trade_pnl, Some(Decimal::ZERO));
         assert_eq!(first.daily_pnl, Some(Decimal::new(-3, 0)));
-        assert_eq!(first.rolling_pnl, None);
+        assert_eq!(first.rolling_pnl, Some(Decimal::ZERO));
         assert_eq!(first.current_equity, Some(Decimal::new(100, 0)));
         assert_eq!(first.peak_equity, Some(Decimal::new(100, 0)));
 
@@ -2136,7 +2152,7 @@ mod tests {
         assert_eq!(with_position.observed_at_ns, 100);
         assert_eq!(with_position.per_trade_pnl, Some(Decimal::new(-6, 0)));
         assert_eq!(with_position.daily_pnl, Some(Decimal::new(-3, 0)));
-        assert_eq!(with_position.rolling_pnl, None);
+        assert_eq!(with_position.rolling_pnl, Some(Decimal::ZERO));
 
         let second = feed
             .record_portfolio_snapshot(&portfolio_snapshot(
@@ -2153,6 +2169,29 @@ mod tests {
         assert_eq!(second.rolling_pnl, Some(Decimal::new(-8, 0)));
         assert_eq!(second.current_equity, Some(Decimal::new(90, 0)));
         assert_eq!(second.peak_equity, Some(Decimal::new(100, 0)));
+    }
+
+    #[test]
+    fn loss_governor_feed_treats_empty_pnl_vectors_as_zero_when_equity_exists() {
+        let account_id = AccountId::from("POLYMARKET-001");
+        let mut feed = BoltV3LossGovernorRuntimeFeed::new(account_id, 1_000);
+
+        let snapshot = feed
+            .record_portfolio_snapshot(&portfolio_snapshot_with_money(
+                account_id,
+                100,
+                Vec::new(),
+                Vec::new(),
+                vec![Money::from_decimal(Decimal::new(100, 0), Currency::USD()).unwrap()],
+                Some(Currency::USD()),
+            ))
+            .expect("empty PnL vectors with equity should produce a zero-PnL snapshot");
+
+        assert_eq!(snapshot.per_trade_pnl, Some(Decimal::ZERO));
+        assert_eq!(snapshot.daily_pnl, Some(Decimal::ZERO));
+        assert_eq!(snapshot.rolling_pnl, Some(Decimal::ZERO));
+        assert_eq!(snapshot.current_equity, Some(Decimal::new(100, 0)));
+        assert_eq!(snapshot.peak_equity, Some(Decimal::new(100, 0)));
     }
 
     #[test]
@@ -2295,7 +2334,7 @@ mod tests {
             ))
             .expect("position close should publish current loss snapshot");
 
-        assert_eq!(after_close.per_trade_pnl, None);
+        assert_eq!(after_close.per_trade_pnl, Some(Decimal::ZERO));
 
         let refreshed = feed
             .record_portfolio_snapshot(&portfolio_snapshot(
@@ -2308,7 +2347,7 @@ mod tests {
             .expect("portfolio snapshot after position close should remain current");
 
         assert_eq!(refreshed.observed_at_ns, 200);
-        assert_eq!(refreshed.per_trade_pnl, None);
+        assert_eq!(refreshed.per_trade_pnl, Some(Decimal::ZERO));
     }
 
     #[test]
@@ -2345,6 +2384,70 @@ mod tests {
             .expect("second position event should update loss snapshot");
 
         assert_eq!(second_position.per_trade_pnl, Some(Decimal::new(-20, 0)));
+    }
+
+    #[test]
+    fn loss_governor_feed_ignores_untracked_position_adjustment_delta() {
+        let account_id = AccountId::from("POLYMARKET-001");
+        let position_id = PositionId::from("P-001");
+        let mut feed = BoltV3LossGovernorRuntimeFeed::new(account_id, 1_000);
+
+        feed.record_portfolio_snapshot(&portfolio_snapshot(
+            account_id,
+            100,
+            Decimal::ZERO,
+            Decimal::ZERO,
+            Decimal::new(100, 0),
+        ))
+        .expect("initial portfolio snapshot should produce loss snapshot");
+
+        let adjusted = feed
+            .record_position_event(&position_adjusted_event_for_position(
+                account_id,
+                position_id,
+                150,
+                Decimal::new(-1, 0),
+            ))
+            .expect("unknown adjustment should keep portfolio snapshot current");
+
+        assert_eq!(adjusted.per_trade_pnl, Some(Decimal::ZERO));
+    }
+
+    #[test]
+    fn loss_governor_feed_uses_oldest_timestamp_for_equal_worst_position_pnl() {
+        let account_id = AccountId::from("POLYMARKET-001");
+        let mut feed = BoltV3LossGovernorRuntimeFeed::new(account_id, 1_000);
+
+        feed.record_portfolio_snapshot(&portfolio_snapshot(
+            account_id,
+            300,
+            Decimal::ZERO,
+            Decimal::ZERO,
+            Decimal::new(100, 0),
+        ))
+        .expect("initial portfolio snapshot should produce loss snapshot");
+
+        feed.record_position_event(&position_changed_event_for_position(
+            account_id,
+            PositionId::from("P-001"),
+            150,
+            Decimal::ZERO,
+            Decimal::new(-5, 0),
+        ))
+        .expect("first position should seed worst PnL");
+
+        let snapshot = feed
+            .record_position_event(&position_changed_event_for_position(
+                account_id,
+                PositionId::from("P-002"),
+                250,
+                Decimal::ZERO,
+                Decimal::new(-5, 0),
+            ))
+            .expect("second equal-worst position should update snapshot");
+
+        assert_eq!(snapshot.observed_at_ns, 150);
+        assert_eq!(snapshot.per_trade_pnl, Some(Decimal::new(-5, 0)));
     }
 
     #[test]

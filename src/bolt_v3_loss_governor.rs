@@ -72,7 +72,9 @@ pub fn evaluate_loss_admission(
     ) else {
         return rejected(LossHaltReason::StaleLossSnapshot);
     };
-    let per_trade_pnl = snapshot.per_trade_pnl.unwrap_or(Decimal::ZERO);
+    let Some(per_trade_pnl) = snapshot.per_trade_pnl else {
+        return rejected(LossHaltReason::StaleLossSnapshot);
+    };
 
     if loss_breaches(per_trade_pnl, policy.max_per_trade_loss) {
         halt_reasons.push(LossHaltReason::PerTradeLossLimit);
@@ -111,6 +113,7 @@ fn snapshot_is_stale(policy: &LossGovernorPolicy, snapshot: &LossSnapshot, now_n
     }
 
     snapshot.daily_pnl.is_none()
+        || snapshot.per_trade_pnl.is_none()
         || snapshot.rolling_pnl.is_none()
         || snapshot.current_equity.is_none()
         || snapshot.peak_equity.is_none()
@@ -217,15 +220,18 @@ mod tests {
     }
 
     #[test]
-    fn missing_per_trade_pnl_defaults_to_zero_without_stale_deadlock() {
+    fn missing_per_trade_pnl_fails_closed() {
         let mut snapshot = snapshot();
         snapshot.per_trade_pnl = None;
         snapshot.daily_pnl = Some(Decimal::ZERO);
 
         let decision = evaluate_loss_admission(&policy(), Some(&snapshot), 10_100);
 
-        assert!(decision.accepted);
-        assert!(decision.halt_reasons.is_empty());
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.halt_reasons,
+            vec![LossHaltReason::StaleLossSnapshot]
+        );
     }
 
     #[test]

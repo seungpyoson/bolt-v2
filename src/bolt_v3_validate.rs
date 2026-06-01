@@ -329,6 +329,9 @@ pub(crate) fn validate_loss_governor_block(loss_governor: &LossGovernorBlock) ->
     if loss_governor.enabled && loss_governor.rolling_window_ns == 0 {
         errors.push("risk.loss_governor.rolling_window_ns must be a positive integer".to_string());
     }
+    if !loss_governor.enabled {
+        return errors;
+    }
     for (label, threshold) in [
         (
             "risk.loss_governor.max_per_trade_loss",

@@ -27,7 +27,7 @@ Fields:
 
 - `source`: non-empty attribution to the NT source or capture path.
 - `observed_at_ns`: oldest timestamp among the currently combined NT-derived loss/equity facts.
-- `per_trade_pnl`: optional PnL for the current open-position trade context.
+- `per_trade_pnl`: optional PnL for the current open-position trade context; the live feed publishes `0` when no position PnL facts are tracked, and `None` represents an incomplete/unsafe snapshot.
 - `daily_pnl`: optional day/session PnL from NT realized plus unrealized PnL facts.
 - `rolling_pnl`: optional rolling-window PnL from the configured live feed window.
 - `current_equity`: optional current equity.
@@ -36,7 +36,7 @@ Fields:
 Validation:
 
 - Missing or empty source fails closed.
-- Missing required field for a configured policy dimension fails closed.
+- Missing required field for a configured policy dimension fails closed; `per_trade_pnl = 0` is the explicit flat/no-tracked-position value.
 - Snapshot older than policy freshness fails closed.
 - Mixed NT event facts remain conservative: a fresh position event cannot refresh older portfolio PnL/equity facts, and a fresh portfolio snapshot cannot refresh older per-trade facts.
 
@@ -53,9 +53,10 @@ Rules:
 
 - Ignore events for other accounts.
 - Use configured `rolling_window_ns`; no hardcoded window.
-- Publish `rolling_pnl` only when a baseline sample exists inside the configured rolling window; otherwise leave it missing so admission fails closed.
+- Publish `rolling_pnl = 0` on the first valid startup sample, then publish rolling PnL only when a prior baseline sample exists inside the configured rolling window; otherwise leave it missing so admission fails closed.
 - Track peak equity from observed NT total-equity snapshots.
 - Preserve the prior peak equity across invalid portfolio snapshots, while publishing missing portfolio fields for that invalid snapshot.
+- Ignore position adjustment deltas for positions without an absolute PnL baseline.
 - Publish a `LossSnapshot` to submit admission whenever enough NT-derived facts exist.
 
 ## LossAdmissionDecision

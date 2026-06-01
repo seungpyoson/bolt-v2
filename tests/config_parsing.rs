@@ -3785,6 +3785,41 @@ fn rejects_invalid_loss_governor_runtime_values() {
 }
 
 #[test]
+fn disabled_loss_governor_allows_placeholder_thresholds() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root("enabled = true", "enabled = false")
+        .replace(
+            "max_snapshot_age_ns = 5000000000",
+            "max_snapshot_age_ns = 0",
+        )
+        .replace("rolling_window_ns = 300000000000", "rolling_window_ns = 0")
+        .replace(
+            "max_per_trade_loss = \"2.50\"",
+            "max_per_trade_loss = \"placeholder\"",
+        )
+        .replace(
+            "max_daily_loss = \"7.50\"",
+            "max_daily_loss = \"placeholder\"",
+        )
+        .replace(
+            "max_rolling_loss = \"10.00\"",
+            "max_rolling_loss = \"placeholder\"",
+        )
+        .replace("max_drawdown = \"15.00\"", "max_drawdown = \"placeholder\"");
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("disabled loss-governor fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("risk.loss_governor")),
+        "disabled loss governor should not validate placeholder runtime values: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_enabled_loss_governor_missing_any_required_threshold() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

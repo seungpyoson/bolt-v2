@@ -18,13 +18,15 @@ This plan is not approved for implementation yet.
 - This revision addresses Gemini's blockers by adding explicit subscriptions, moving reservation-snapshot ownership into submit admission, seeding runtime feed state from cache, removing unimplementable residual-liability work from this slice, and requiring configured YES/NO metadata before live wiring.
 - Claude custom-review job `59712ded-3ad2-4c32-b7a3-c1f43476e400` returned `REQUEST_CHANGES`.
 - This revision also addresses Claude's blockers: the old direct state API must be removed or routed through composition, NT symbols and field mappings are pinned, unsupported open orders get a concrete fail-closed rebuild input, cache/live event ordering is set-based, subscription drop behavior is tested, and empty-ledger timestamp semantics are explicit.
+- Claude custom-review job `a66f16b7-84f2-46a9-bcd1-46b58ea9df22` returned `REQUEST_CHANGES`.
+- This revision addresses that review by preserving `client_order_id` in startup/reconnect rebuilt reservations, labeling NT free-balance-as-allowance as a remaining production gap, and pinning the remaining test/API/timestamp details before implementation.
 - Implementation must wait for Claude plan approval or explicit user waiver.
 
 ## Current Verified State
 
 - Branch: `codex/nt-position-sizer-production-slice`.
 - PR: #507, draft.
-- Latest pushed code-review-fix head before this plan revision: `267638429305392ee632eef1e169a3f92509f4b7`.
+- Latest pushed code-review-fix head before this plan revision: `de9355c913f177659dd0697ab7287e9b40faefcd`.
 - Committing this plan revision will create a newer PR head; do not request external implementation review until CI is green on that newer head.
 - `PositionSizerRuntimeFeed` currently subscribes only to `OrderEventAny` and releases committed reservations for terminal order events.
 - `BoltV3SubmitAdmissionState` owns `PositionSizingAdmissionGate`, `client_order_reservations`, and current `NtDerivedSizingState`.
@@ -50,6 +52,7 @@ These remain production gaps after this slice:
 - Residual liability revalue from partial fills. It needs either cached order details from NT or submit-time liability metadata; this plan does not fake it from fill deltas.
 - Dynamic market rotation metadata. This slice requires configured binary product metadata in TOML; later work can replace that with NT market-selection state.
 - Conditional-token allowance truth. Until NT or the adapter exposes allowance evidence, sells must remain fail-closed when allowance cannot be proven.
+- PUSD allowance/spendability truth. This slice may use NT-reported `AccountState` free collateral as the best available buy-side collateral evidence, but it does not prove separate on-chain allowance or venue spendability. Final production readiness still needs adapter/venue allowance evidence or a fail-closed zero allowance until proven.
 - Maker quote-set simultaneous adverse-fill reservations.
 - Safe `ReplaceSubmit`.
 - Cancel/flatten halt actions.
@@ -143,6 +146,8 @@ collateral_coupled_group_id = "condition-fixture"
 
 Add a test for `position_sizer_runtime_feed_config_from_loaded(...)` asserting it carries venue id, account id, collateral currency, and a `ProductSizingSnapshot::PredictionMarketBinary` whose YES/NO ids come from TOML.
 
+The test must pass an explicit `config_loaded_at_ns` or `startup_observed_at_ns`; the product snapshot timestamp must come from that value, not from `0`.
+
 Run:
 
 ```bash
@@ -161,10 +166,17 @@ pub struct PositionSizerRuntimeFeedConfig {
     pub account_id: AccountId,
     pub collateral_currency: String,
     pub product_state: ProductSizingSnapshot,
+    pub startup_observed_at_ns: u64,
 }
 ```
 
-Build `product_state` from TOML with `yes_position = 0`, `no_position = 0`, `pusd_allowance = 0`, and `conditional_token_allowance = 0`. Later NT account/position events raise only the fields they prove.
+Build `product_state` from TOML with `source = "bolt_configured_binary_product"`, `observed_at_ns = startup_observed_at_ns`, `yes_position = 0`, `no_position = 0`, `pusd_allowance = 0`, and `conditional_token_allowance = 0`. Later NT account/position events raise only the fields they prove.
+
+Update every construction site in the same slice:
+- `position_sizer_runtime_feed_config_from_loaded(...)` in `src/bolt_v3_live_node.rs`;
+- constructors and direct config builders in `tests/bolt_v3_position_sizer_runtime_feed.rs`;
+- config parsing fixtures in `tests/fixtures/bolt_v3/root.toml` and `config/root.example.toml`;
+- any direct `PositionSizerRuntimeFeedConfig { ... }` builders found by `rg -n "PositionSizerRuntimeFeedConfig \\{"`.
 
 ## Task 2: Submit Admission Owns Final State Composition
 
@@ -184,7 +196,7 @@ fn direct_state_update_discards_hostile_reservation_evidence() {
     let admission = Arc::new(position_sized_admission());
     let mut hostile_state = fresh_sizing_state(1_000);
     hostile_state.reservation_snapshot.source = "hostile_feed".to_string();
-    hostile_state.reservation_snapshot.observed_at_ns = 1_000;
+    hostile_state.reservation_snapshot.observed_at_ns = 9_999;
     hostile_state.reservation_snapshot.all_live_reservations_attributed = true;
 
     admission.update_position_sizing_state(hostile_state);
@@ -254,7 +266,17 @@ pub fn position_sizer_state_observed_at_ns(&self) -> Option<u64>;
 
 Rewrite `update_position_sizing_state(NtDerivedSizingState)` as a compatibility wrapper that converts the incoming value into `BoltV3SubmitPositionSizingNtComponents` and discards the incoming `reservation_snapshot`. Do not copy `state.reservation_snapshot` anywhere. New runtime code must call `update_position_sizing_nt_components(...)`; keep the old method only until existing tests are migrated, and it must be safe if any caller still reaches it.
 
-Submit admission must compose `NtDerivedSizingState` internally and set:
+Submit admission must keep the existing low-churn internal representation `state: Option<NtDerivedSizingState>`, add `latest_reservation_mutation_observed_at_ns: Option<u64>`, and route every write through one private helper, for example:
+
+```rust
+fn compose_position_sizing_state_from_components(
+    components: BoltV3SubmitPositionSizingNtComponents,
+    gate_reconciled: bool,
+    latest_reservation_mutation_observed_at_ns: Option<u64>,
+) -> NtDerivedSizingState;
+```
+
+Do not mutate `position_sizer.state` directly outside this helper except to clear it. Submit admission must compose `NtDerivedSizingState` internally and set:
 - reservation source: `bolt_reservation_ledger`;
 - reservation timestamp:
   - if a ledger mutation exists: `max(components.observed_at_ns, latest_reservation_mutation_observed_at_ns)`;
@@ -447,6 +469,8 @@ struct PositionSizerRuntimeComponentBuilder {
 }
 ```
 
+The builder constructor must take `startup_observed_at_ns` from `PositionSizerRuntimeFeedConfig` and seed `order_lifecycle.observed_at_ns = startup_observed_at_ns`; empty lifecycle evidence must not use timestamp `0`.
+
 Map NT account and portfolio events exactly:
 
 - accept `AccountState` only when `account_state.account_id == config.account_id`;
@@ -461,7 +485,7 @@ Map NT account and portfolio events exactly:
 - set component `observed_at_ns = max(account_state.ts_event.as_u64(), portfolio_snapshot.ts_event.as_u64(), order_lifecycle.observed_at_ns, product_state.observed_at_ns)`;
 - if account id, collateral balance, portfolio account id, or total equity currency is missing or mismatched, do not publish a component state; admission remains closed or stale.
 
-When both matching account and portfolio evidence are present, call `update_position_sizing_nt_components(...)`. Set `pusd_allowance = matching_account_balance.free.as_decimal()` because NT Polymarket currently emits the fetched collateral balance as `AccountState`; conditional token allowance remains zero unless later proven by NT.
+When both matching account and portfolio evidence are present, call `update_position_sizing_nt_components(...)`. Set `pusd_allowance = matching_account_balance.free.as_decimal()` only as this slice's explicit approximation from NT-reported free collateral. This is not proof of separate on-chain allowance or venue spendability; final production readiness still needs adapter/venue allowance evidence or a fail-closed zero allowance until proven. Conditional token allowance remains zero unless later proven by NT.
 
 - [ ] **Step 7: RED account currency mismatch remains closed**
 
@@ -488,13 +512,17 @@ Expected before implementation: FAIL because the feed has no account/currency ma
 - Modify: `src/bolt_v3_position_sizer_runtime_feed.rs`
 - Test: `tests/bolt_v3_submit_admission.rs`
 
-- [ ] **Step 1: RED cache rebuild stays closed without component state**
+Task boundary:
+- direct submit-admission rebuild semantics are tested in `tests/bolt_v3_submit_admission.rs`;
+- the live-node NT cache reader is added only after the direct snapshot API is pinned, then tested through the live-node entrypoint.
 
-Add `position_sizer_rebuild_from_nt_cache_keeps_gate_closed_without_components`.
+- [ ] **Step 1: RED direct rebuild stays closed without component state**
+
+Add `position_sizer_direct_rebuild_keeps_gate_closed_without_components`.
 
 Behavior:
-- Build runtime/admission with submit sizing enabled.
-- Call the new startup/reconnect rebuild entrypoint before account/portfolio/product components are published.
+- Build submit admission with submit sizing enabled.
+- Call `rebuild_position_sizing_open_order_reservations(Vec::new(), now)` before account/portfolio/product components are published.
 - Assert rebuild rejected with `MissingEvidence`.
 - Assert `position_sizer_reconciled() == Some(false)`.
 
@@ -506,7 +534,7 @@ Add:
 pub fn rebuild_position_sizer_from_nt_cache(&self, now_ns: u64) -> BoltV3SubmitPositionSizingRebuildDecision;
 ```
 
-The method reads NT cache only through `self.node.kernel().cache()` and calls `rebuild_position_sizing_open_order_reservations(...)`. It must not open admission if component state is absent.
+The method reads NT cache only through `self.node.kernel().cache()` and calls `rebuild_position_sizing_open_order_snapshot(...)` after the direct API is added below. It must not open admission if component state is absent.
 
 - [ ] **Step 3: RED unattributed cache open order fails closed**
 
@@ -528,16 +556,27 @@ cargo test --locked --test bolt_v3_submit_admission unattributed_cache_open_orde
 
 Expected before implementation: FAIL because the current rebuild API only accepts attributed reservation requests and has no explicit unsupported-open-order marker.
 
+Add `rebuild_snapshot_preserves_client_order_id_for_terminal_release`.
+
+Behavior:
+- Seed matching component state.
+- Call `rebuild_position_sizing_open_order_snapshot(...)` with one attributed `BoltV3SubmitPositionSizingOpenOrderReservation` whose `client_order_id == "client-1"` and `submit_reservation_id == "reservation-1"`.
+- Assert rebuild accepted and `position_sizer_live_reserved_liability()` is non-zero.
+- Apply a terminal lifecycle/order event for `client_order_id == "client-1"`.
+- Assert `position_sizer_live_reserved_liability() == Some(Decimal::ZERO)`.
+
+Expected before implementation: FAIL because the snapshot API does not exist yet; it must prove rebuild preserves the client-order index used by terminal release.
+
 - [ ] **Step 4: GREEN add explicit open-order snapshot API**
 
-Add these submit-admission input types:
+Add this submit-admission input type. Use the existing `BoltV3SubmitPositionSizingOpenOrderReservation` type inside the snapshot so rebuilt reservations preserve `client_order_id` and `submit_reservation_id`.
 
 ```rust
 pub struct BoltV3SubmitPositionSizingOpenOrderSnapshot {
     pub observed_at_ns: u64,
     pub evidence_label: String,
     pub all_open_orders_attributed: bool,
-    pub reservations: Vec<ReservationRequest>,
+    pub reservations: Vec<BoltV3SubmitPositionSizingOpenOrderReservation>,
 }
 ```
 
@@ -554,8 +593,8 @@ pub fn rebuild_position_sizing_open_order_snapshot(
 Rules:
 - if `snapshot.all_open_orders_attributed == false`, set the gate unreconciled, clear `client_order_reservations`, refresh stored state with `reservation_snapshot.source = snapshot.evidence_label`, `reservation_snapshot.observed_at_ns = snapshot.observed_at_ns`, `reservation_snapshot.all_live_reservations_attributed = false`, and return rejected with `ReservationRejectionReason::MissingEvidence`;
 - if component state is absent, also return rejected with `MissingEvidence`;
-- otherwise rebuild from `snapshot.reservations`;
-- keep existing `rebuild_position_sizing_open_order_reservations(Vec<ReservationRequest>, now_ns)` as a delegating helper with `all_open_orders_attributed = true` and `evidence_label = "bolt_recovered_open_order_reservations"`.
+- otherwise rebuild from `snapshot.reservations`, converting each item into the internal reservation request while preserving `client_order_id` in `client_order_reservations`;
+- keep existing `rebuild_position_sizing_open_order_reservations(Vec<BoltV3SubmitPositionSizingOpenOrderReservation>, now_ns)` as a delegating helper with `all_open_orders_attributed = true` and `evidence_label = "bolt_recovered_open_order_reservations"`.
 
 - [ ] **Step 5: RED cache seed populates open-order lifecycle before rebuild**
 
@@ -705,6 +744,7 @@ Even if every task passes, the system is not production-grade until these are im
 - safe replace/amend reservation transitions;
 - maker quote-set reservation of simultaneous adverse fills;
 - conditional-token allowance evidence;
+- PUSD allowance/spendability evidence separate from NT account free balance;
 - dynamic market metadata from NT/market-selection state;
 - cancel/flatten/halt operations tied to loss governor and sizer failures;
 - calculators for leveraged spot, futures/perps, and options;

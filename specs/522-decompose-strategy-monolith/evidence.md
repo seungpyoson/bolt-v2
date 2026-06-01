@@ -20,8 +20,8 @@ the plan's Rebase Matrix). A2 is foundational (A4/A6/A9 consume the side type it
 | Item | Scope | Target | RED/GREEN | Diff = pure move | CI | Review | State |
 |---|---|---|---|---|---|---|---|
 | A1 | OutcomeSide-free math + numeric primitives | `bolt_v3_taker_signal.rs` + `bolt_v3_numeric.rs` | — | — | — | — | in progress (plan codex-reviewed) |
-| A2 | consolidate `OutcomeSide` → market-family (resolves #13) + side-using math | `bolt_v3_market_families/` + `bolt_v3_taker_signal.rs` | — | — | — | — | planned |
-| A3 | market selection (pure) | `…/selection.rs` | — | — | — | — | planned |
+| A2 | consolidate `OutcomeSide` → market-family (partially resolves #13: OutcomeSide) + side-using math | `bolt_v3_market_families/` + `bolt_v3_taker_signal.rs` | — | — | — | — | planned |
+| A3 | market selection (pure; completes #13: CandidateMarket wrapper) | `…/selection.rs` | — | — | — | — | planned |
 | A4 | book state + VWAP/slippage sizing | `bolt_v3_book_sizing.rs` | — | — | — | — | planned |
 | A5 | pricing state | `bolt_v3_taker_pricing.rs` | — | — | — | — | planned (#520/#508 rebase onto it) |
 | A6 | exposure/recovery state machine | `…/exposure.rs` | — | — | — | — | planned (#507 rebases) |

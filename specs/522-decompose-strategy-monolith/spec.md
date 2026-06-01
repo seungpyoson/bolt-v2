@@ -42,9 +42,15 @@ move slice) and verified.
   a test that pins the current behavior of the moved unit, shown failing against a
   deliberately-wrong control and passing after the move (or, for a pure relocation,
   the relocated tests run green at both the pre-move and post-move HEAD).
-- **FR-003** Extracted units keep existing call sites and test files green via
-  **re-export** (`pub use`) from the original module — the proven #520 pattern. No
-  caller or test file outside the slice's declared scope changes.
+- **FR-003** Extraction MUST keep every existing call site and test file green, with
+  the mechanism chosen by caller scope:
+  - Units with callers **outside** the origin module (e.g. `operator_artifacts`'s public
+    API consumed by `tests/bolt_v3_operator_artifacts.rs`): preserve the path via
+    **re-export** (`pub use`) from the origin — the proven #520 pattern.
+  - Units **private** to the origin module (no external callers, e.g. A1's signal math):
+    relocate and update the origin's in-file `use` imports; do **NOT** add a `pub use`
+    (a needless crate-visible surface is itself a dual surface).
+  No caller or test file outside the slice's declared scope changes.
 - **FR-004** **No dual paths**: a decomposition slice MUST NOT introduce a second way
   to do a thing. Extraction consolidates; it never forks. Any test-only duplicate of
   production logic (e.g. the duplicate admission builder at `binary_oracle_edge_taker.rs:7546`)

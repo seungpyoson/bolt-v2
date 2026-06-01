@@ -58,8 +58,8 @@ current-main anchors, re-verified per-slice before movement.
 | Slice | Scope | Source anchor | Class | Rebases onto it |
 |---|---|---|---|---|
 | **A1** | **OutcomeSide-free** pure math → new `bolt_v3_taker_signal.rs`; generic numeric primitives → existing `bolt_v3_numeric.rs` | consts 6817–6819; fns 6875–6929, 7017–7053, 7119–7147; structs 7009, 7034, 7110 | pure-logic | — (first slice; no overlap) |
-| **A2** | Consolidate `OutcomeSide` into the market-family layer (merge with `UpdownOutcomeSide`; **resolves findings-doc #13**); move the side-using math (`compute_worst_case_ev_bps`+`WorstCaseEvInputs`, `choose_entry_side`+`SideSelectionInputs`, `outcome_side_evidence_label`) into `bolt_v3_taker_signal` depending on that owner | 6883–6894, 7026–7032, 7056–7108; 93 refs repointed | cross-cutting type move | — |
-| **A3** | Market selection + candidate snapshot construction (pure) → `selection.rs` | 407–482, 6419–6601 | pure-logic | — |
+| **A2** | Consolidate `OutcomeSide` into the market-family layer (merge with `UpdownOutcomeSide`; **partially resolves findings-doc #13 — OutcomeSide sub-item**); move the side-using math (`compute_worst_case_ev_bps`+`WorstCaseEvInputs`, `choose_entry_side`+`SideSelectionInputs`, `outcome_side_evidence_label`) into `bolt_v3_taker_signal` depending on that owner | 6883–6894, 7026–7032, 7056–7108; 93 refs repointed | cross-cutting type move | — |
+| **A3** | Market selection + candidate snapshot construction (pure) → `selection.rs` (**completes findings-doc #13 — the strategy-local `CandidateMarket` wrapper over market-family output**) | 407–482, 6419–6601 | pure-logic | — |
 | **A4** | Order-book state + VWAP/slippage sizing → `bolt_v3_book_sizing.rs` (rule #9) | 493–777 | state-struct + pure | — |
 | **A5** | Pricing state (reference/RV/lead-venue) → `bolt_v3_taker_pricing.rs` | 956–1666 | NT-actor-coupled state | #520 (SignedTradeFlow 835–955), #508 (864–974) |
 | **A6** | Exposure/recovery state machine → `exposure.rs` | 977–1258, 2415–2655 | state-struct | #507 (sizer evidence on position state) |

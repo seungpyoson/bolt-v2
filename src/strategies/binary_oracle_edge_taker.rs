@@ -15533,6 +15533,111 @@ mod tests {
     }
 
     #[test]
+    fn refresh_selection_from_cache_filters_foreign_venue_in_production_path() {
+        // P5-5 / Codex P5 — PRODUCTION-PATH regression lock. The sibling test
+        // `strategy_refuses_foreign_venue_market_even_when_slug_matches_the_target` proves the
+        // selection HELPERS refuse a foreign-venue market, but it REPLICATES the venue filter
+        // inside the test, so deleting the production filter would not fail it. This test drives
+        // the real `refresh_selection_from_cache` against a shared NT cache holding BOTH a
+        // foreign-venue (HYPERLIQUID) and the execution-venue (POLYMARKET) updown market that
+        // share the configured target slug, and proves the production path selects ONLY the
+        // execution-venue market. Removing the venue-scoped cache filter (the
+        // `instrument.id().venue == execution_venue` read) or the
+        // `selected_market_on_execution_venue` guard makes this fail. A real order can only ever
+        // route to the execution client's venue.
+        let mut strategy = test_strategy();
+        assert_eq!(
+            strategy.context.execution_venue(),
+            fixture_execution_venue(),
+            "harness precondition: production execution venue must be the POLYMARKET fixture",
+        );
+        let cache = register_test_strategy(&mut strategy);
+
+        let current_start = 1_746_000_000_i64;
+        let now_ms = current_start as u64 * MILLIS_PER_SECOND_U64 + 1;
+        let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+            &strategy.config.underlying_asset,
+            &strategy.config.cadence_slug_token,
+            current_start,
+        );
+        let start_ms = current_start as u64 * MILLIS_PER_SECOND_U64;
+        let end_ms = start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
+
+        // Same slug + market id on a NON-execution venue (HYPERLIQUID) AND the execution venue
+        // (POLYMARKET). The matcher is venue-agnostic, so without the production venue filter the
+        // foreign instruments would be selectable.
+        let mixed = [
+            updown_binary_option(
+                "token-up.HYPERLIQUID",
+                &market_slug,
+                "market-1",
+                "Up",
+                start_ms,
+                end_ms,
+            ),
+            updown_binary_option(
+                "token-down.HYPERLIQUID",
+                &market_slug,
+                "market-1",
+                "Down",
+                start_ms,
+                end_ms,
+            ),
+            updown_binary_option(
+                "token-up.POLYMARKET",
+                &market_slug,
+                "market-1",
+                "Up",
+                start_ms,
+                end_ms,
+            ),
+            updown_binary_option(
+                "token-down.POLYMARKET",
+                &market_slug,
+                "market-1",
+                "Down",
+                start_ms,
+                end_ms,
+            ),
+        ];
+        {
+            let mut cache_mut = cache.borrow_mut();
+            for instrument in &mixed {
+                cache_mut
+                    .add_instrument(instrument.clone())
+                    .expect("test cache should accept the seeded instrument");
+            }
+        }
+
+        strategy.refresh_selection_from_cache(now_ms);
+
+        // The production venue-scoped read + guard select ONLY the execution-venue market, even
+        // though the foreign-venue market carrying the identical slug is present in the cache.
+        assert_eq!(
+            strategy
+                .active
+                .books
+                .up
+                .instrument_id
+                .map(|id| id.to_string())
+                .as_deref(),
+            Some("token-up.POLYMARKET"),
+            "production refresh must select the execution-venue Up outcome from a mixed-venue cache",
+        );
+        assert_eq!(
+            strategy
+                .active
+                .books
+                .down
+                .instrument_id
+                .map(|id| id.to_string())
+                .as_deref(),
+            Some("token-down.POLYMARKET"),
+            "production refresh must select the execution-venue Down outcome from a mixed-venue cache",
+        );
+    }
+
+    #[test]
     fn strategy_selects_next_updown_target_outcome_from_nt_binary_option_metadata() {
         let strategy = test_strategy();
         let current_start = 1_746_000_000_i64;

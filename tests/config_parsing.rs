@@ -3600,6 +3600,75 @@ fn rejects_gate_provider_fields_under_strategy_runtime() {
 }
 
 #[test]
+fn bolt_v3_archetype_rejects_all_six_gate_coupled_runtime_fields() {
+    // Class regression lock (Codex/internal-review forbidden_fields gap). All SIX provider-coupled
+    // fields are DECLARED in the RuntimeParametersBlock `Wire` struct, so `deny_unknown_fields`
+    // does NOT reject them — each is rejected only by a dedicated `is_some()` guard in the custom
+    // Deserialize impl (src/bolt_v3_archetypes/binary_oracle_edge_taker.rs:165-194). Before this
+    // test only three of the six guards had injection coverage; the other three
+    // (price_to_beat_report_schema_version, price_to_beat_report_decimal_scale,
+    // forced_flat_stale_chainlink_ms) could be deleted while the field stayed a Wire field —
+    // silently accepting-and-dropping it with `cargo test` green. Inject EACH field under
+    // [parameters.runtime] and assert the deserializer fails closed naming the field path, so
+    // deleting any one guard now fails this test. Values are arbitrary: the guard fires on
+    // presence (`is_some()`), independent of value type.
+    let base = std::fs::read_to_string(support::repo_path(
+        "tests/fixtures/bolt_v3/strategies/binary_oracle.toml",
+    ))
+    .expect("strategy fixture should be readable");
+
+    let forbidden_fields: [(&str, &str); 6] = [
+        (
+            "price_to_beat_source",
+            "\"chainlink_data_streams.report_at_boundary\"",
+        ),
+        (
+            "price_to_beat_feed_id",
+            "\"0x0000000000000000000000000000000000000000000000000000000000000000\"",
+        ),
+        ("price_to_beat_report_schema_version", "3"),
+        ("price_to_beat_report_decimal_scale", "8"),
+        ("forced_flat_stale_chainlink_ms", "1500"),
+        (
+            "chainlink_data_streams_feed_id",
+            "\"0x0000000000000000000000000000000000000000000000000000000000000000\"",
+        ),
+    ];
+
+    for (field, value) in forbidden_fields {
+        let strategy_toml = base.replace(
+            "[parameters.runtime]\n",
+            &format!("[parameters.runtime]\n{field} = {value}\n"),
+        );
+        assert!(
+            strategy_toml.contains(&format!("{field} = {value}")),
+            "fixture must expose a [parameters.runtime] table to inject {field} into",
+        );
+
+        let strategy: bolt_v2::bolt_v3_config::BoltV3StrategyConfig =
+            toml::from_str(&strategy_toml)
+                .expect("strategy envelope parse should keep parameters archetype-neutral");
+        // A SUCCESSFUL deserialize here is the regression this test guards against (a deleted or
+        // weakened `is_some()` guard), so the Ok branch fails loudly; the Err branch is the
+        // fail-closed behavior and must name the offending `parameters.runtime.<field>` path.
+        let error = match strategy
+            .parameters
+            .try_into::<bolt_v2::bolt_v3_archetypes::binary_oracle_edge_taker::ParametersBlock>(
+        ) {
+            Ok(_) => panic!(
+                "provider-coupled runtime field {field} was ACCEPTED at deserialize \
+                 (is_some() guard missing or deleted) — fail-closed rejection lost"
+            ),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains(&format!("parameters.runtime.{field}")),
+            "rejection for {field} must name the field path parameters.runtime.{field}, got: {error}"
+        );
+    }
+}
+
+#[test]
 fn rejects_gate_provider_fields_under_wrong_provider_subtable() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

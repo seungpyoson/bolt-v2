@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 pub mod binary_oracle_edge_taker;
+pub mod maker_reservation;
 pub mod registry;
 
 use crate::bolt_v3_canary_proof_policy::{CanaryProofCandidate, CanaryProofSourcePacket};

@@ -604,7 +604,15 @@ impl std::error::Error for BoltV3LiveCanaryGateError {
 }
 
 /// Validate the loaded config's `[live_canary]` section and referenced
-/// no-submit readiness report before NT's runner loop is entered.
+/// no-submit readiness report.
+///
+/// This is the **post-consumption** variant (`ApprovalConsumptionExpectation::MustExistAndBeValid`):
+/// it requires the approval-consumption proof to already exist and accepts a validly-*spent*
+/// approval nonce. It is therefore an audit / verification entry point used by tests and post-run
+/// checks — **it must never gate a live submit**. The production live-runner arming path uses
+/// [`check_bolt_v3_live_canary_pre_consumption_gate`] (`DeferredUntilLiveRunnerEntry`), which keeps
+/// the strict un-spent-nonce hash check and rejects an already-existing consumption proof, so a
+/// spent nonce cannot re-arm a run.
 ///
 /// The gate is read-only: it does not connect, subscribe, submit,
 /// cancel, or mutate NT state. Relative readiness report paths resolve
@@ -947,7 +955,8 @@ async fn validate_operator_evidence(
         });
     }
 
-    validate_operator_evidence_file_hashes(root_path, evidence).await?;
+    validate_operator_evidence_file_hashes(root_path, evidence, approval_consumption_expectation)
+        .await?;
     // Parse and validate the operator-approval envelope before the
     // gate-session and canary proof order-intent bindings so those
     // validators can re-check the live file content against the hashes the
@@ -1566,6 +1575,7 @@ pub struct Phase8OperatorApprovalEnvelopeFile {
 async fn validate_operator_evidence_file_hashes(
     root_path: &Path,
     evidence: &LiveCanaryOperatorEvidenceBlock,
+    approval_consumption_expectation: ApprovalConsumptionExpectation,
 ) -> Result<(), BoltV3LiveCanaryGateError> {
     for binding in operator_evidence_file_hash_bindings(evidence) {
         let path = resolve_configured_path(root_path, binding.path_field, binding.path)?;
@@ -1576,6 +1586,26 @@ async fn validate_operator_evidence_file_hashes(
         )
         .await?;
         if actual != binding.expected_sha256 {
+            // The approval nonce is a one-shot CONSUMABLE token, not an immutable artifact: the
+            // live runner SPENDS it on consume by overwriting the file with a spent-nonce record
+            // (A1/A2 durable one-time). In `DeferredUntilLiveRunnerEntry` (pre-consumption) the
+            // nonce MUST still hash to the approved value — a spent nonce there correctly rejects a
+            // re-armed run, which is the durable one-time guard. In `MustExistAndBeValid`
+            // (post-consumption) the nonce is EXPECTED to be spent, so a hash mismatch is acceptable
+            // iff the file is a valid spent-nonce record bound to the approved nonce sha. The
+            // consumption marker (validated separately) independently records the approved nonce sha.
+            if binding.is_consumable_nonce
+                && approval_consumption_expectation
+                    == ApprovalConsumptionExpectation::MustExistAndBeValid
+                && approval_nonce_is_validly_spent(
+                    &path,
+                    binding.expected_sha256,
+                    evidence.max_operator_evidence_file_bytes,
+                )
+                .await?
+            {
+                continue;
+            }
             return Err(BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch {
                 field: binding.hash_field,
                 path,
@@ -1583,6 +1613,50 @@ async fn validate_operator_evidence_file_hashes(
         }
     }
     Ok(())
+}
+
+/// True iff the on-disk approval-nonce file is a valid *spent-nonce* record whose
+/// `consumed_approval_nonce_sha256` binds to the operator-approved `approved_nonce_sha256`.
+///
+/// The live runner spends the one-shot nonce on consume by overwriting it with this record
+/// (`spend_phase8_approval_nonce`), so in post-consumption validation a hash mismatch against the
+/// original nonce is the *expected* state. This confirms the mismatch is a legitimate spend bound
+/// to this approval — not a deleted, truncated, or substituted nonce — and is fail-closed: any read
+/// error, parse error, or missing/incorrect binding returns `false`, which keeps the strict
+/// hash-mismatch rejection. Production one-time enforcement does not rely on this branch: it lives
+/// in the pre-consumption gate, which keeps the strict un-spent hash check.
+async fn approval_nonce_is_validly_spent(
+    path: &Path,
+    approved_nonce_sha256: &str,
+    max_bytes: u64,
+) -> Result<bool, BoltV3LiveCanaryGateError> {
+    let Ok(bytes) = read_regular_file_bounded(path, max_bytes).await else {
+        return Ok(false);
+    };
+    Ok(spent_nonce_bytes_bind_to(&bytes, approved_nonce_sha256))
+}
+
+/// True iff `bytes` is an exact spent-nonce record bound to `approved_nonce_sha256`.
+///
+/// Strict parse (serde-generated field names, not runtime literals) mirroring the exact
+/// `Phase8ApprovalNonceSpentEvidence` record the runner writes when it spends the nonce.
+/// `deny_unknown_fields` plus the two required typed fields reject an un-spent, partially-forged,
+/// padded, or extra-field nonce file: only an exact spent record with a positive spend timestamp
+/// AND `consumed_approval_nonce_sha256` equal to the approved sha is accepted. Pure + sync so the
+/// acceptance rule is unit-tested directly.
+fn spent_nonce_bytes_bind_to(bytes: &[u8], approved_nonce_sha256: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct SpentNonceRecord {
+        spent_unix_secs: i64,
+        consumed_approval_nonce_sha256: String,
+    }
+
+    let Ok(record) = serde_json::from_slice::<SpentNonceRecord>(bytes) else {
+        return false;
+    };
+    record.spent_unix_secs.is_positive()
+        && record.consumed_approval_nonce_sha256 == approved_nonce_sha256
 }
 
 async fn validate_operator_approval_envelope(
@@ -2249,6 +2323,10 @@ struct OperatorEvidenceFileHashBinding<'a> {
     path: &'a str,
     hash_field: &'static str,
     expected_sha256: &'a str,
+    /// The approval nonce is a one-shot CONSUMABLE token (spent on consume), unlike the six
+    /// immutable operator artifacts. Post-consumption validation accepts its validly-spent form
+    /// instead of the original hash; the other bindings are always strict-hash.
+    is_consumable_nonce: bool,
 }
 
 fn operator_evidence_file_hash_bindings(
@@ -2260,42 +2338,49 @@ fn operator_evidence_file_hash_bindings(
             path: &evidence.approval_envelope_path,
             hash_field: "approval_envelope_sha256",
             expected_sha256: &evidence.approval_envelope_sha256,
+            is_consumable_nonce: false,
         },
         OperatorEvidenceFileHashBinding {
             path_field: "ssm_manifest_path",
             path: &evidence.ssm_manifest_path,
             hash_field: "ssm_manifest_sha256",
             expected_sha256: &evidence.ssm_manifest_sha256,
+            is_consumable_nonce: false,
         },
         OperatorEvidenceFileHashBinding {
             path_field: "strategy_input_evidence_path",
             path: &evidence.strategy_input_evidence_path,
             hash_field: "strategy_input_evidence_sha256",
             expected_sha256: &evidence.strategy_input_evidence_sha256,
+            is_consumable_nonce: false,
         },
         OperatorEvidenceFileHashBinding {
             path_field: "financial_envelope_path",
             path: &evidence.financial_envelope_path,
             hash_field: "financial_envelope_sha256",
             expected_sha256: &evidence.financial_envelope_sha256,
+            is_consumable_nonce: false,
         },
         OperatorEvidenceFileHashBinding {
             path_field: "pre_run_state_path",
             path: &evidence.pre_run_state_path,
             hash_field: "pre_run_state_sha256",
             expected_sha256: &evidence.pre_run_state_sha256,
+            is_consumable_nonce: false,
         },
         OperatorEvidenceFileHashBinding {
             path_field: "abort_plan_path",
             path: &evidence.abort_plan_path,
             hash_field: "abort_plan_sha256",
             expected_sha256: &evidence.abort_plan_sha256,
+            is_consumable_nonce: false,
         },
         OperatorEvidenceFileHashBinding {
             path_field: "approval_nonce_path",
             path: &evidence.approval_nonce_path,
             hash_field: "approval_nonce_sha256",
             expected_sha256: &evidence.approval_nonce_sha256,
+            is_consumable_nonce: true,
         },
     ]
 }
@@ -2558,9 +2643,53 @@ mod tests {
             REPORT_WRITE_STAGE, SCHEMA_VERSION_KEY, SECRET_RESOLUTION_STAGE, STAGE_KEY, STAGES_KEY,
             STATUS_KEY, STATUS_SATISFIED, check_bolt_v3_live_canary_gate_with_clock,
             current_build_head_sha, executable_identity, read_to_vec_with_cap, resolve_report_path,
-            sha256_hex, validate_operator_approval_consumption,
+            sha256_hex, spent_nonce_bytes_bind_to, validate_operator_approval_consumption,
         },
     };
+
+    #[test]
+    fn spent_nonce_bytes_bind_to_accepts_only_exact_records_bound_to_the_approved_sha() {
+        let approved = "a".repeat(64);
+        let other = "b".repeat(64);
+        // Valid spent record bound to the approved sha -> accepted.
+        assert!(spent_nonce_bytes_bind_to(
+            format!(r#"{{"spent_unix_secs":1,"consumed_approval_nonce_sha256":"{approved}"}}"#)
+                .as_bytes(),
+            &approved,
+        ));
+        // Spent record bound to a DIFFERENT approval -> rejected.
+        assert!(!spent_nonce_bytes_bind_to(
+            format!(r#"{{"spent_unix_secs":1,"consumed_approval_nonce_sha256":"{other}"}}"#)
+                .as_bytes(),
+            &approved,
+        ));
+        // Un-spent (original) nonce shape -> rejected (missing required fields + unknown fields).
+        assert!(!spent_nonce_bytes_bind_to(
+            br#"{"record_kind":"x","nonce_hash":"deadbeef"}"#,
+            &approved,
+        ));
+        // Missing spent_unix_secs -> rejected.
+        assert!(!spent_nonce_bytes_bind_to(
+            format!(r#"{{"consumed_approval_nonce_sha256":"{approved}"}}"#).as_bytes(),
+            &approved,
+        ));
+        // Non-positive spend timestamp -> rejected.
+        assert!(!spent_nonce_bytes_bind_to(
+            format!(r#"{{"spent_unix_secs":0,"consumed_approval_nonce_sha256":"{approved}"}}"#)
+                .as_bytes(),
+            &approved,
+        ));
+        // Extra unknown field -> rejected (deny_unknown_fields).
+        assert!(!spent_nonce_bytes_bind_to(
+            format!(
+                r#"{{"spent_unix_secs":1,"consumed_approval_nonce_sha256":"{approved}","extra":1}}"#
+            )
+            .as_bytes(),
+            &approved,
+        ));
+        // Malformed JSON -> rejected.
+        assert!(!spent_nonce_bytes_bind_to(b"not json", &approved));
+    }
 
     #[test]
     fn relative_report_path_without_root_parent_matches_config_loader_fallback() {

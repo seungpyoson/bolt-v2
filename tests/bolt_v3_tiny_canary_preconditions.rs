@@ -2516,6 +2516,17 @@ fn operator_approval_envelope_verifies_strategy_input_evidence_hash() {
     );
 }
 
+/// Write a fresh un-spent Phase-8 operator-approval nonce to `path`. Consuming an approval SPENDS
+/// the one-shot nonce (A1/A2 durable one-time) by overwriting the file, so a test that consumes the
+/// same approval more than once must restore a fresh nonce before each successful consume.
+fn write_fresh_phase8_approval_nonce(path: &std::path::Path) {
+    std::fs::write(
+        path,
+        r#"{"record_kind":"phase8_operator_approval_nonce","nonce_hash":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}"#,
+    )
+    .expect("approval nonce should write");
+}
+
 #[test]
 fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config() {
     let temp = tempfile::tempdir().expect("tempdir should create");
@@ -3344,6 +3355,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         &mut uppercase_oms_loaded,
         &uppercase_oms_consumption_path,
     );
+    write_fresh_phase8_approval_nonce(&approval_nonce_path);
     uppercase_oms_envelope
         .validate_and_consume_against(
             "expected-head",
@@ -3456,6 +3468,7 @@ fn operator_approval_envelope_verifies_financial_envelope_hash_and_loaded_config
         &mut uppercase_order_enums_loaded,
         &uppercase_order_enums_consumption_path,
     );
+    write_fresh_phase8_approval_nonce(&approval_nonce_path);
     uppercase_order_enums_envelope
         .validate_and_consume_against(
             "expected-head",

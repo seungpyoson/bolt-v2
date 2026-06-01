@@ -1184,6 +1184,12 @@ impl ExposureState {
         }
     }
 
+    fn held_instrument_id(&self) -> Option<InstrumentId> {
+        self.observed_position()
+            .map(|position| position.instrument_id)
+            .or_else(|| self.pending_entry().map(|pending| pending.instrument_id))
+    }
+
     fn observed_position_mut(&mut self) -> Option<&mut OpenPositionState> {
         match self {
             Self::Managed(position) => Some(&mut position.position),
@@ -2346,29 +2352,47 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
-    fn clear_managed_pending_entry_for_client_order(&mut self, client_order_id: ClientOrderId) {
-        if let Some(managed) = self.exposure.managed_position_mut()
-            && managed
-                .pending_entry
-                .as_ref()
-                .is_some_and(|pending| pending.client_order_id == client_order_id)
-        {
+    fn clear_managed_pending_entry_for_client_order(
+        &mut self,
+        client_order_id: ClientOrderId,
+        event_instrument_id: InstrumentId,
+    ) {
+        let matches_pending_entry = self
+            .exposure
+            .managed_position()
+            .and_then(|managed| managed.pending_entry.as_ref())
+            .is_some_and(|pending| pending.client_order_id == client_order_id);
+        if !matches_pending_entry {
+            return;
+        }
+        if !self.event_instrument_matches_held_exposure(event_instrument_id) {
+            return;
+        }
+        if let Some(managed) = self.exposure.managed_position_mut() {
             managed.pending_entry = None;
             self.prune_market_lifecycle_at_current_time();
         }
     }
 
-    fn clear_pending_entry_for_client_order(&mut self, client_order_id: ClientOrderId) {
-        if matches!(
+    fn clear_pending_entry_for_client_order(
+        &mut self,
+        client_order_id: ClientOrderId,
+        event_instrument_id: InstrumentId,
+    ) {
+        let matches_pending_entry = matches!(
             &self.exposure,
             ExposureState::PendingEntry(pending) if pending.client_order_id == client_order_id
-        ) {
+        );
+        if matches_pending_entry {
+            if !self.event_instrument_matches_held_exposure(event_instrument_id) {
+                return;
+            }
             self.exposure = ExposureState::Flat;
             self.prune_market_lifecycle_at_current_time();
             return;
         }
 
-        self.clear_managed_pending_entry_for_client_order(client_order_id);
+        self.clear_managed_pending_entry_for_client_order(client_order_id, event_instrument_id);
     }
 
     fn prune_market_lifecycle_at_current_time(&mut self) {
@@ -3366,6 +3390,28 @@ impl BinaryOracleEdgeTaker {
         true
     }
 
+    fn event_instrument_matches_held_exposure(
+        &mut self,
+        event_instrument_id: InstrumentId,
+    ) -> bool {
+        let Some(held_instrument_id) = self.exposure.held_instrument_id() else {
+            return true;
+        };
+        if event_instrument_id == held_instrument_id {
+            return true;
+        }
+        if self.quarantine_foreign_venue_event(event_instrument_id) {
+            return false;
+        }
+        log::warn!(
+            "binary_oracle_edge_taker ignored exposure terminal event for mismatched instrument: strategy_id={} event_instrument_id={} held_instrument_id={}",
+            self.config.strategy_id,
+            event_instrument_id,
+            held_instrument_id,
+        );
+        false
+    }
+
     fn materialize_position_from_event(
         &mut self,
         instrument_id: InstrumentId,
@@ -3516,11 +3562,18 @@ impl BinaryOracleEdgeTaker {
         self.refresh_book_subscriptions_for_current_state();
     }
 
-    fn mark_exit_order_terminal(&mut self, client_order_id: ClientOrderId) {
+    fn mark_exit_order_terminal(
+        &mut self,
+        client_order_id: ClientOrderId,
+        event_instrument_id: InstrumentId,
+    ) {
         let Some(mut exit_pending) = self.exposure.exit_pending().cloned() else {
             return;
         };
         if exit_pending.pending_exit.client_order_id != client_order_id {
+            return;
+        }
+        if !self.event_instrument_matches_held_exposure(event_instrument_id) {
             return;
         }
         exit_pending.pending_exit.terminal_received = true;
@@ -5281,13 +5334,19 @@ impl DataActor for BinaryOracleEdgeTaker {
                     )
                 });
             if managed_entry_fill {
+                if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+                    return Ok(());
+                }
                 if let Some(exit_pending) = self.exposure.exit_pending_mut() {
                     exit_pending
                         .pending_exit
                         .residual_position_observed_after_fill = true;
                 }
                 if !keep_pending_entry {
-                    self.clear_managed_pending_entry_for_client_order(event.client_order_id);
+                    self.clear_managed_pending_entry_for_client_order(
+                        event.client_order_id,
+                        event.instrument_id,
+                    );
                 }
             } else if let (Some(position_id), Some(position_side)) =
                 (event.position_id, position_side)
@@ -5349,6 +5408,9 @@ impl DataActor for BinaryOracleEdgeTaker {
                 self.record_market_fill(&market_id, now_ms);
             }
         } else if exit_fill {
+            if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+                return Ok(());
+            }
             if let Some(market_id) = self
                 .exposure
                 .exit_pending()
@@ -5372,8 +5434,8 @@ impl DataActor for BinaryOracleEdgeTaker {
         &mut self,
         event: &nautilus_model::events::OrderCanceled,
     ) -> anyhow::Result<()> {
-        self.clear_pending_entry_for_client_order(event.client_order_id);
-        self.mark_exit_order_terminal(event.client_order_id);
+        self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
+        self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
         Ok(())
     }
@@ -5381,14 +5443,14 @@ impl DataActor for BinaryOracleEdgeTaker {
 
 nautilus_strategy!(BinaryOracleEdgeTaker, {
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
-        self.clear_pending_entry_for_client_order(event.client_order_id);
-        self.mark_exit_order_terminal(event.client_order_id);
+        self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
+        self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
     }
 
     fn on_order_expired(&mut self, event: nautilus_model::events::OrderExpired) {
-        self.clear_pending_entry_for_client_order(event.client_order_id);
-        self.mark_exit_order_terminal(event.client_order_id);
+        self.clear_pending_entry_for_client_order(event.client_order_id, event.instrument_id);
+        self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
     }
 
@@ -5415,10 +5477,19 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
     }
 
     fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
-        if let ExposureState::Managed(position) = &self.exposure
-            && position.position.position_id == event.position_id
-        {
-            if let Some(pending_entry) = position.pending_entry.clone() {
+        let managed_position_close = match &self.exposure {
+            ExposureState::Managed(position)
+                if position.position.position_id == event.position_id =>
+            {
+                Some(position.pending_entry.clone())
+            }
+            _ => None,
+        };
+        if let Some(pending_entry) = managed_position_close {
+            if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+                return;
+            }
+            if let Some(pending_entry) = pending_entry {
                 let client_order_id = pending_entry.client_order_id;
                 self.exposure = ExposureState::PendingEntry(pending_entry);
                 let client_id = ClientId::from(self.config.client_id.as_str());
@@ -5437,29 +5508,45 @@ nautilus_strategy!(BinaryOracleEdgeTaker, {
             return;
         }
 
-        match &mut self.exposure {
-            ExposureState::ExitPending(exit_pending)
-                if exit_pending.pending_exit.position_id == Some(event.position_id) =>
-            {
+        let exit_pending_close = self.exposure.exit_pending().is_some_and(|exit_pending| {
+            exit_pending.pending_exit.position_id == Some(event.position_id)
+        });
+        if exit_pending_close {
+            if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+                return;
+            }
+            if let ExposureState::ExitPending(exit_pending) = &mut self.exposure {
                 exit_pending.pending_exit.close_received = true;
                 exit_pending.position = None;
                 if exit_pending.is_terminal() {
                     self.exposure = ExposureState::Flat;
                 }
             }
+        } else if matches!(
+            &self.exposure,
             ExposureState::UnsupportedObserved(observed)
-                if observed.observed.position_id == event.position_id =>
-            {
+                if observed.observed.position_id == event.position_id
+        ) {
+            if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+                return;
+            }
+            if matches!(
+                &self.exposure,
+                ExposureState::UnsupportedObserved(observed)
+                    if observed.observed.position_id == event.position_id
+            ) {
                 self.exposure = ExposureState::Flat;
             }
+        } else {
             // Entry reconciliation may not have a position id yet; the instrument is the
             // strongest available key for a close that races ahead of position materialization.
-            ExposureState::EntryReconcilePending { pending, .. }
-                if pending.instrument_id == event.instrument_id =>
-            {
+            if matches!(
+                &self.exposure,
+                ExposureState::EntryReconcilePending { pending, .. }
+                    if pending.instrument_id == event.instrument_id
+            ) {
                 self.exposure = ExposureState::Flat;
             }
-            _ => {}
         }
         self.refresh_book_subscriptions_for_current_state();
         self.prune_market_lifecycle(event.ts_event.as_u64() / NANOS_PER_MILLI_U64);
@@ -10011,6 +10098,20 @@ mod tests {
             .expect("fixture should expose a second configured outcome instrument")
     }
 
+    fn foreign_venue_instrument_id(
+        strategy: &BinaryOracleEdgeTaker,
+        instrument_id: InstrumentId,
+    ) -> InstrumentId {
+        let foreign_instrument_id =
+            InstrumentId::new(instrument_id.symbol, Venue::from("HYPERLIQUID"));
+        assert_ne!(
+            foreign_instrument_id.venue,
+            strategy.context.execution_venue(),
+            "foreign fixture instrument must not be on the execution venue",
+        );
+        foreign_instrument_id
+    }
+
     fn materialize_configured_position(
         strategy: &mut BinaryOracleEdgeTaker,
         instrument_id: InstrumentId,
@@ -10063,6 +10164,19 @@ mod tests {
             position,
             origin,
             pending_entry: None,
+        });
+    }
+
+    fn set_managed_position_with_pending_entry(
+        strategy: &mut BinaryOracleEdgeTaker,
+        position: OpenPositionState,
+        origin: ManagedPositionOrigin,
+        pending_entry: PendingEntryState,
+    ) {
+        strategy.exposure = ExposureState::Managed(ManagedPositionState {
+            position,
+            origin,
+            pending_entry: Some(pending_entry),
         });
     }
 
@@ -10152,6 +10266,19 @@ mod tests {
             .exposure
             .exit_pending()
             .map(|exit_pending| &exit_pending.pending_exit)
+    }
+
+    fn assert_foreign_venue_blind_recovery(strategy: &BinaryOracleEdgeTaker) {
+        assert!(
+            matches!(
+                strategy.exposure,
+                ExposureState::BlindRecovery(BlindRecoveryState {
+                    reason: BlindRecoveryReason::ForeignVenuePosition { .. }
+                })
+            ),
+            "foreign-venue terminal event must be quarantined to blind recovery, got {:?}",
+            strategy.exposure,
+        );
     }
 
     fn active_snapshot(market_id: &str) -> RuntimeSelectionSnapshot {
@@ -11949,6 +12076,161 @@ mod tests {
             managed_position_ref(&strategy).map(|position| position.quantity),
             Some(Quantity::new(6.0, 2))
         );
+    }
+
+    #[test]
+    fn exit_fill_quarantines_foreign_venue_client_order_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("P-FOREIGN-EXIT-FILL");
+        let exit_client_order_id = ClientOrderId::from("EXIT-FOREIGN-FILL");
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            exit_client_order_id,
+            false,
+            true,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy
+            .on_order_filled(&order_filled_event(
+                exit_client_order_id,
+                foreign_instrument_id,
+                position_id,
+            ))
+            .expect("foreign-venue exit fill should fail closed");
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
+    fn managed_entry_fill_quarantines_foreign_venue_client_order_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        strategy.config.entry_order.time_in_force = TimeInForce::Ioc;
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("P-FOREIGN-MANAGED-ENTRY-FILL");
+        let entry_client_order_id = ClientOrderId::from("ENTRY-FOREIGN-MANAGED-FILL");
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        let mut pending_entry = pending_entry_state(&mut strategy, entry_client_order_id);
+        pending_entry.instrument_id = instrument_id;
+        set_managed_position_with_pending_entry(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+            pending_entry,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy
+            .on_order_filled(&order_filled_event_with_details(
+                entry_client_order_id,
+                foreign_instrument_id,
+                Some(PositionId::from("P-FOREIGN-MANAGED-ENTRY-FILL")),
+                OrderSide::Buy,
+            ))
+            .expect("foreign-venue managed entry fill should fail closed");
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
+    fn pending_entry_terminal_quarantines_foreign_venue_client_order_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let entry_client_order_id = ClientOrderId::from("ENTRY-FOREIGN-CANCEL");
+        let pending_entry = pending_entry_state(&mut strategy, entry_client_order_id);
+        let instrument_id = pending_entry.instrument_id;
+        set_pending_entry(&mut strategy, pending_entry);
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy
+            .on_order_canceled(&order_canceled_event(
+                entry_client_order_id,
+                foreign_instrument_id,
+            ))
+            .expect("foreign-venue entry cancel should fail closed");
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
+    fn managed_pending_entry_terminal_quarantines_foreign_venue_client_order_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("P-FOREIGN-MANAGED-ENTRY-CANCEL");
+        let entry_client_order_id = ClientOrderId::from("ENTRY-FOREIGN-MANAGED-CANCEL");
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        let mut pending_entry = pending_entry_state(&mut strategy, entry_client_order_id);
+        pending_entry.instrument_id = instrument_id;
+        set_managed_position_with_pending_entry(
+            &mut strategy,
+            open_position,
+            ManagedPositionOrigin::StrategyEntry,
+            pending_entry,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy
+            .on_order_canceled(&order_canceled_event(
+                entry_client_order_id,
+                foreign_instrument_id,
+            ))
+            .expect("foreign-venue managed entry cancel should fail closed");
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
+    fn exit_terminal_quarantines_foreign_venue_client_order_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("P-FOREIGN-EXIT-CANCEL");
+        let exit_client_order_id = ClientOrderId::from("EXIT-FOREIGN-CANCEL");
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            exit_client_order_id,
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy
+            .on_order_canceled(&order_canceled_event(
+                exit_client_order_id,
+                foreign_instrument_id,
+            ))
+            .expect("foreign-venue exit cancel should fail closed");
+
+        assert_foreign_venue_blind_recovery(&strategy);
     }
 
     #[test]
@@ -14439,6 +14721,85 @@ mod tests {
             ExposureState::EntryReconcilePending { .. }
         ));
         assert!(strategy.pending_entry().is_some());
+    }
+
+    #[test]
+    fn position_closed_quarantines_foreign_venue_managed_position_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("P-FOREIGN-CLOSE-MANAGED");
+        materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy.on_position_closed(position_closed_event(foreign_instrument_id, position_id));
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
+    fn position_closed_quarantines_foreign_venue_exit_pending_position_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = selected_entry_instrument(&strategy);
+        let position_id = PositionId::from("P-FOREIGN-CLOSE-EXIT");
+        let open_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            position_id,
+            Quantity::new(10.0, 2),
+            0.450,
+        );
+        set_exit_pending(
+            &mut strategy,
+            open_position,
+            ClientOrderId::from("EXIT-FOREIGN-CLOSE"),
+            false,
+            false,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy.on_position_closed(position_closed_event(foreign_instrument_id, position_id));
+
+        assert_foreign_venue_blind_recovery(&strategy);
+    }
+
+    #[test]
+    fn position_closed_quarantines_foreign_venue_unsupported_position_id_collision() {
+        let mut strategy = ready_to_trade_strategy();
+        let instrument_id = strategy.active.books.up.instrument_id.unwrap();
+        let position_id = PositionId::from("P-FOREIGN-CLOSE-UNSUPPORTED");
+        let book = strategy.active.books.up.clone();
+        set_unsupported_observed(
+            &mut strategy,
+            OpenPositionState {
+                market_id: Some("MKT-1".to_string()),
+                instrument_id,
+                position_id,
+                outcome_side: None,
+                outcome_fees: OutcomeFeeState::empty(),
+                historical_entry_fee_bps: None,
+                entry_order_side: OrderSide::Sell,
+                side: PositionSide::Short,
+                quantity: Quantity::new(5.0, 2),
+                avg_px_open: 0.480,
+                interval_open: None,
+                selection_published_at_ms: None,
+                seconds_to_expiry_at_selection: None,
+                book,
+            },
+            UnsupportedObservedReason::BootstrappedUnsupportedContract,
+        );
+        let foreign_instrument_id = foreign_venue_instrument_id(&strategy, instrument_id);
+
+        strategy.on_position_closed(position_closed_event(foreign_instrument_id, position_id));
+
+        assert_foreign_venue_blind_recovery(&strategy);
     }
 
     #[test]

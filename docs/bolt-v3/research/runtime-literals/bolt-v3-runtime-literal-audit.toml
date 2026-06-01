@@ -15216,25 +15216,33 @@ reason = '''TOML validation guard requiring a positive retry timeout before acce
 path = '''src/bolt_v3_submit_admission.rs'''
 kind = '''number'''
 literal = '''0'''
-context = '''admitted_kill_switch_forced_reduction_order_count: 0,'''
+context = '''live_kill_switch_forced_reduction_order_count: 0,'''
 classification = '''kill_switch_forced_reduction_counter_identity'''
-reason = '''Initial identity value for the in-memory forced-reduction admission counter; the runtime order-count limit remains TOML-owned.'''
+reason = '''Initial identity value for the in-memory forced-reduction live-order counter; the runtime order-count limit remains TOML-owned.'''
 
 [[allowed]]
 path = '''src/bolt_v3_submit_admission.rs'''
 kind = '''number'''
 literal = '''0'''
-context = '''inner.admitted_kill_switch_forced_reduction_order_count = 0;'''
+context = '''inner.live_kill_switch_forced_reduction_order_count = 0;'''
 classification = '''kill_switch_forced_reduction_counter_identity'''
-reason = '''Reset identity value for the in-memory forced-reduction admission counter when submit admission is armed; the runtime order-count limit remains TOML-owned.'''
+reason = '''Reset identity value for the in-memory forced-reduction live-order counter when submit admission is armed; the runtime order-count limit remains TOML-owned.'''
 
 [[allowed]]
 path = '''src/bolt_v3_submit_admission.rs'''
 kind = '''number'''
 literal = '''1'''
-context = '''inner.admitted_kill_switch_forced_reduction_order_count += 1;'''
+context = '''inner.live_kill_switch_forced_reduction_order_count += 1;'''
 classification = '''kill_switch_forced_reduction_counter_increment'''
-reason = '''Unit increment after a forced-reduction admission decision is durably recorded; the maximum admitted count remains TOML-owned.'''
+reason = '''Unit increment after a forced-reduction admission decision is durably recorded; the maximum live order count remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''.saturating_sub(1);'''
+classification = '''kill_switch_forced_reduction_counter_decrement'''
+reason = '''Unit decrement when NT lifecycle integration reports a forced-reduction order terminal; the maximum live order count remains TOML-owned.'''
 
 [[allowed]]
 path = '''src/bolt_v3_submit_admission.rs'''

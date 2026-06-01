@@ -33,7 +33,7 @@ struct BoltV3SubmitAdmissionInner {
     admitted_entry_order_count: u32,
     admitted_risk_reducing_exit_order_count: u32,
     admitted_replace_submit_order_count: u32,
-    admitted_kill_switch_forced_reduction_order_count: u32,
+    live_kill_switch_forced_reduction_order_count: u32,
 }
 
 impl BoltV3SubmitAdmissionState {
@@ -47,7 +47,7 @@ impl BoltV3SubmitAdmissionState {
                 admitted_entry_order_count: 0,
                 admitted_risk_reducing_exit_order_count: 0,
                 admitted_replace_submit_order_count: 0,
-                admitted_kill_switch_forced_reduction_order_count: 0,
+                live_kill_switch_forced_reduction_order_count: 0,
             }),
             decision_evidence,
         }
@@ -69,8 +69,18 @@ impl BoltV3SubmitAdmissionState {
         inner.admitted_entry_order_count = 0;
         inner.admitted_risk_reducing_exit_order_count = 0;
         inner.admitted_replace_submit_order_count = 0;
-        inner.admitted_kill_switch_forced_reduction_order_count = 0;
+        inner.live_kill_switch_forced_reduction_order_count = 0;
         Ok(())
+    }
+
+    pub fn record_kill_switch_forced_reduction_terminal(&self) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        inner.live_kill_switch_forced_reduction_order_count = inner
+            .live_kill_switch_forced_reduction_order_count
+            .saturating_sub(1);
     }
 
     pub fn replace_kill_switch_state(&self, state: KillSwitchState) {
@@ -128,7 +138,7 @@ impl BoltV3SubmitAdmissionState {
                         inner.admitted_replace_submit_order_count += 1;
                     }
                     BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
-                        inner.admitted_kill_switch_forced_reduction_order_count += 1;
+                        inner.live_kill_switch_forced_reduction_order_count += 1;
                     }
                 }
                 Ok(BoltV3SubmitAdmissionPermit(()))
@@ -260,8 +270,7 @@ impl BoltV3SubmitAdmissionState {
         if request.notional > policy.max_notional_per_order() {
             return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded;
         }
-        if inner.admitted_kill_switch_forced_reduction_order_count >= policy.max_live_order_count()
-        {
+        if inner.live_kill_switch_forced_reduction_order_count >= policy.max_live_order_count() {
             return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded;
         }
         BoltV3AdmissionOutcome::Admitted
@@ -326,15 +335,15 @@ impl BoltV3KillSwitchForcedReductionPolicy {
         })
     }
 
-    fn policy_sha256(&self) -> &str {
+    pub fn policy_sha256(&self) -> &str {
         &self.policy_sha256
     }
 
-    fn max_live_order_count(&self) -> u32 {
+    pub fn max_live_order_count(&self) -> u32 {
         self.max_live_order_count
     }
 
-    fn max_notional_per_order(&self) -> Decimal {
+    pub fn max_notional_per_order(&self) -> Decimal {
         self.max_notional_per_order
     }
 }
@@ -372,11 +381,15 @@ impl BoltV3KillSwitchForcedReductionClaim {
         })
     }
 
-    fn halt_id(&self) -> &str {
+    pub fn halt_id(&self) -> &str {
         &self.halt_id
     }
 
-    fn policy_sha256(&self) -> &str {
+    pub fn action_id(&self) -> &str {
+        &self.action_id
+    }
+
+    pub fn policy_sha256(&self) -> &str {
         &self.policy_sha256
     }
 }

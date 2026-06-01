@@ -838,6 +838,25 @@ fn forced_reduction_request(
     }
 }
 
+#[test]
+fn forced_reduction_policy_and_claim_expose_proof_metadata() {
+    let policy = forced_reduction_policy();
+    assert_eq!(
+        policy.policy_sha256(),
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(policy.max_live_order_count(), 1);
+    assert_eq!(policy.max_notional_per_order(), Decimal::new(10, 0));
+
+    let claim = forced_reduction_claim("halt-1");
+    assert_eq!(claim.halt_id(), "halt-1");
+    assert_eq!(claim.action_id(), "flatten-action-1");
+    assert_eq!(
+        claim.policy_sha256(),
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+}
+
 #[derive(Debug)]
 struct FailingDecisionEvidenceWriter;
 
@@ -1573,6 +1592,40 @@ fn valid_forced_reduction_while_latched_bypasses_normal_count_and_notional_caps(
         Some(BoltV3AdmissionOutcome::Admitted)
     );
     assert_eq!(admission.admitted_order_count(), 2);
+}
+
+#[test]
+fn forced_reduction_live_count_releases_terminal_order_before_next_admission() {
+    let admission = armed_admission(1, Decimal::new(1, 0));
+    admission.replace_kill_switch_state(halted_kill_switch_state());
+    admission.configure_kill_switch_forced_reduction_policy(forced_reduction_policy());
+
+    admission
+        .admit(&forced_reduction_request(
+            Decimal::new(10, 0),
+            forced_reduction_claim("halt-1"),
+        ))
+        .expect("first live forced reduction should be admitted");
+
+    let capped = admission
+        .admit(&forced_reduction_request(
+            Decimal::new(10, 0),
+            forced_reduction_claim("halt-1"),
+        ))
+        .expect_err("second live forced reduction should hit live cap");
+    assert!(matches!(
+        capped,
+        BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded
+    ));
+
+    admission.record_kill_switch_forced_reduction_terminal();
+
+    admission
+        .admit(&forced_reduction_request(
+            Decimal::new(10, 0),
+            forced_reduction_claim("halt-1"),
+        ))
+        .expect("terminal forced reduction should release the live cap");
 }
 
 #[test]

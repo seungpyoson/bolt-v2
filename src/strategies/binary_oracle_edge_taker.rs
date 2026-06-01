@@ -1374,14 +1374,19 @@ impl PricingState {
             return;
         }
 
-        // Reject out-of-order reference quotes. A quote at or before the latest
-        // accepted reference time would overwrite `fast_spot` with a stale price,
-        // saturate the timing jitter to zero, and let a subsequent quote measure
-        // its spike against the stale baseline. Mirrors the monotonicity guard the
-        // cadence tracker and the signed-trade-flow buffer already apply.
+        // Reject out-of-order reference quotes — a quote STRICTLY OLDER than the
+        // latest accepted reference time would overwrite `fast_spot` with a stale
+        // price, saturate the timing jitter to zero, and let a later quote measure
+        // its spike against that stale baseline. Equal-millisecond quotes are NOT
+        // out of order: `observed_ts_ms` floors `ts_event` to ms, so two distinct
+        // ticks inside one millisecond share it; treating the second as a duplicate
+        // would suppress a legitimate fast_spot / vol / spike update in a bursty
+        // feed. Use `<` (drop strictly-earlier), not `<=`. (The signed-trade-flow
+        // buffer instead retains same-ms trades as distinct samples and so orders
+        // on full ns; here only the latest fast_spot matters, so same-ms is kept.)
         if self
             .last_reference_observed_ts_ms
-            .is_some_and(|last_ts_ms| quote.observed_ts_ms <= last_ts_ms)
+            .is_some_and(|last_ts_ms| quote.observed_ts_ms < last_ts_ms)
         {
             return;
         }
@@ -14663,6 +14668,46 @@ mod tests {
         assert_eq!(
             strategy.pricing.spike_until_ms, None,
             "an out-of-order reference quote must not arm the spike cooldown"
+        );
+    }
+
+    #[test]
+    fn observe_reference_quote_accepts_same_millisecond_update() {
+        // observed_ts_ms floors ts_event to ms, so two distinct ticks inside one
+        // millisecond share it. The second is a legitimate update, NOT an
+        // out-of-order duplicate, and must refresh fast_spot rather than be dropped
+        // (a `<=` watermark would suppress it and stall pricing in a bursty feed).
+        let mut strategy = ready_to_trade_strategy();
+        strategy.pricing.fast_spot = None;
+        strategy.pricing.spike_until_ms = None;
+        let min_corr = strategy.config.lead_agreement_min_corr;
+        let max_jitter = strategy.config.lead_jitter_max_ms;
+        let threshold = strategy.config.spike_guard_return_threshold;
+        let cooldown = strategy.config.spike_guard_cooldown_secs;
+
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 100.0, 2_000),
+            min_corr,
+            max_jitter,
+            threshold,
+            cooldown,
+        );
+        // Second distinct quote in the SAME millisecond (sub-threshold move).
+        strategy.pricing.observe_reference_quote(
+            &fast_spot("bybit", 101.0, 2_000),
+            min_corr,
+            max_jitter,
+            threshold,
+            cooldown,
+        );
+        assert_eq!(
+            strategy
+                .pricing
+                .fast_spot
+                .as_ref()
+                .map(|q| (q.price, q.observed_ts_ms)),
+            Some((101.0, 2_000)),
+            "a same-millisecond reference quote must update fast_spot, not be dropped"
         );
     }
 

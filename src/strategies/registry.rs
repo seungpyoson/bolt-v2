@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use futures_util::future::BoxFuture;
 use nautilus_common::{actor::DataActor, component::Component};
 use nautilus_model::{
-    identifiers::{InstrumentId, StrategyId},
+    identifiers::{InstrumentId, StrategyId, Venue},
     instruments::{Instrument, InstrumentAny},
 };
 use nautilus_system::trader::Trader;
@@ -59,20 +59,29 @@ pub struct StrategyBuildContext {
     fee_provider: Arc<dyn FeeProvider>,
     decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    execution_venue: Venue,
     readiness_evidence: Option<BoltV3ReadinessGateEvidenceSnapshot>,
     runtime_readiness_seed: Option<BoltV3RuntimeReadinessSeed>,
 }
 
 impl StrategyBuildContext {
+    /// `execution_venue` is the venue of the strategy's configured execution client
+    /// (`root.clients[execution_client_id].venue`). It is a REQUIRED constructor argument — not an
+    /// optional builder field — so a production build can never forget to scope market selection to
+    /// the venue that orders actually route to. The strategy uses it to fail closed unless the
+    /// selected market's venue equals this one (a wrong-venue selection from the shared NT cache
+    /// would otherwise be possible once a second venue's instruments coexist in the cache).
     pub fn new(
         fee_provider: Arc<dyn FeeProvider>,
         decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
+        execution_venue: Venue,
     ) -> Self {
         Self {
             fee_provider,
             decision_evidence,
             submit_admission,
+            execution_venue,
             readiness_evidence: None,
             runtime_readiness_seed: None,
         }
@@ -112,6 +121,12 @@ impl StrategyBuildContext {
 
     pub fn submit_admission_arc(&self) -> Arc<BoltV3SubmitAdmissionState> {
         self.submit_admission.clone()
+    }
+
+    /// Venue of the configured execution client. Market selection must be scoped to this venue so a
+    /// real order can only ever fire against an instrument on the venue it routes to.
+    pub fn execution_venue(&self) -> Venue {
+        self.execution_venue
     }
 
     pub fn readiness_evidence(&self) -> Option<&BoltV3ReadinessGateEvidenceSnapshot> {
@@ -391,6 +406,10 @@ mod tests {
             Arc::new(BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
                 NoopDecisionEvidenceWriter,
             ))),
+            // Fixture venue for registry tests. These exercise strategy registration, not
+            // venue-scoped market selection, so the value is inert here; production resolves the
+            // execution venue from `root.clients[execution_client_id].venue` (venue-agnostic).
+            Venue::from("POLYMARKET"),
         )
     }
 

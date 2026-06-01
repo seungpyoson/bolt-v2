@@ -92,6 +92,23 @@ Re-verified vs HEAD (verification workflow + personal reads of the live-fire gat
   re-approval requires a fresh nonce. (A durable-path guard for the marker was considered
   and dropped: it is redundant — the nonce-spend already defeats the temp-dir auto-cleanup
   vector — and it conflicted with the temp-dir test harness.)
+- **A1/A2 — regression repair (landed `8e49d0e7`):** the nonce-spend above made the
+  *post-consumption* gate variant (`check_bolt_v3_live_canary_gate`,
+  `ApprovalConsumptionExpectation::MustExistAndBeValid`) CI-red, because its
+  `validate_operator_evidence_file_hashes` loop re-hashed the now-spent nonce file and failed
+  the binding (two tiny-canary positive-path tests). Root-cause fix (not a patch):
+  `OperatorEvidenceFileHashBinding` gains `is_consumable_nonce` (false for the 6 immutable
+  artifacts, true only for the approval-nonce binding); under `MustExistAndBeValid`, a hash
+  mismatch on the consumable nonce is accepted **iff** the file is a validly-spent record bound
+  to the approved nonce sha (`approval_nonce_is_validly_spent` → `spent_nonce_bytes_bind_to`,
+  pure + `serde(deny_unknown_fields)`, requires positive `spent_unix_secs` + exact
+  `consumed_approval_nonce_sha256`). The strict **pre-consumption** gate
+  (`DeferredUntilLiveRunnerEntry`, used by `run_bolt_v3_live_node`) is UNCHANGED and still
+  rejects any spent/mismatched nonce — **fail-closed preserved/tightened**, never loosened.
+  Inline unit test covers valid / wrong-approval / unspent-shape / missing-field / non-positive
+  / extra-field / malformed (7 cases); doc comment clarifies the post-consumption variant is
+  audit/test-only and must never gate a live submit. **6/6 external reviewers (Gemini, Kimi,
+  Grok, DeepSeek, GLM, Codex) APPROVE.**
 - **A3 — DEFERRED (recorded plan; operator decision 2026-06-01):** the gate hash-binds the
   order-intent file to the sealed envelope and checks the order's instrument is in
   `gate_session.selected_market`, but never re-derives the selection from
@@ -106,6 +123,45 @@ Re-verified vs HEAD (verification workflow + personal reads of the live-fire gat
 
 **Remaining open:** A3 (deferred with the plan above). A1/A2, A-EDGE, and the 8 `dfb4a44e`
 items are addressed; P4 is review-ready once A3's deferral is accepted by the re-review.
+
+## Confirmation re-review (2026-06-01, fixes diff `1f6ee056` → `8e49d0e7`)
+
+Six models re-reviewed the committed fixes diff (all source sent via the `/relay` plugin + Codex).
+Outcome: Grok / DeepSeek / GLM / Kimi = **APPROVE** (P4 CLOSE-CONFIRMED). Two findings raised
+required resolution before P4 closes:
+
+- **Gemini (BLOCKING) — admission sizing regression in `admission_base_notional_from_order` — DISPROVEN.**
+  Claim: the A6 change replaced a conditional `calculate_base_quantity` with an unconditional call,
+  so a base-quantity order is mis-valued (`base/price` → notional collapses to `order.quantity()`).
+  Disproof by an EXISTING passing reproduction test: `admission_base_notional_from_order`
+  (`src/bolt_v3_submit_admission.rs:322`) returns early at the guard
+  `if !order.is_quote_quantity() { return Some(base_quantity_admission_notional(...)) }` (line ~330) —
+  base-quantity orders are valued `order_price * order_quantity` and never reach the
+  `calculate_base_quantity` line (~358), which runs ONLY for quote-quantity orders (where
+  `order.quantity()` IS a quote quantity, exactly what NT expects). The test
+  `base_quantity_buy_limit_sizes_by_price_times_quantity_unchanged`
+  (`src/bolt_v3_canary_proof_executor.rs:807`) exercises Gemini's exact scenario (a base-quantity BUY
+  Limit) and asserts the notional `== limit_price * quantity == 12.50` — if Gemini were right it would
+  compute `25.0` and fail. It passes on CI-green HEAD `8e49d0e7`. Gemini misread the early-return guard
+  as unconditional.
+
+- **Codex (BLOCKING) — nonce spend not crash-atomic — FIXED (`8e49d0e7`+follow-up).** VALID at HEAD:
+  `consume_approval_after_live_runner_entry_validation` wrote the consumption marker durably FIRST,
+  then spent the nonce as a separate non-atomic `fs::write`. A crash after the marker was durable but
+  before the nonce rewrite left the original (un-spent) nonce on disk; a later marker deletion could
+  then re-arm the one-time approval. Root-cause fix: (1) **reorder** — spend the nonce FIRST so it is
+  the first durable one-way transition; the marker is written only once the nonce is already durably
+  single-use (marker-present ⟹ nonce-spent). (2) **durable atomic spend** — `spend_phase8_approval_nonce`
+  now writes a sibling temp file, fsyncs it, atomically renames it over the nonce, and fsyncs the
+  parent directory; any crash after it returns leaves the spent nonce on stable storage. The strict
+  pre-consumption gate is unchanged — **fail-closed tightened**. Recovery test
+  `operator_approval_consumption_spends_nonce_before_marker_so_deletion_cannot_rearm`
+  (`tests/bolt_v3_tiny_canary_preconditions.rs`): after consume, deleting the marker still leaves the
+  nonce un-restorable to the approved sha (re-arm impossible).
+
+**P4 status:** all actionable findings FIXED (A1/A2 + Codex crash-atomicity) or DISPROVEN (Gemini
+sizing, Grok #2); A3 deferral re-affirmed and tracked (#503). Pending a confirmation re-review of the
+crash-atomicity fix.
 
 ## Coverage cross-check (2026-06-01) — findings in the raw 6-model outputs not captured above
 

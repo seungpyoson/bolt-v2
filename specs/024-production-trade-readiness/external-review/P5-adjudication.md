@@ -101,3 +101,40 @@ Re-verified vs HEAD (verification workflow + personal):
   deferral is correctly recorded (loud comment + operator sign-off + `up_venue == down_venue` self-consistency
   guard) and is unreachable under the single-venue config. Flagged here only so the deferral is not mistaken
   for a landed fix; venue-scoping stays with the multi-venue workstream.
+
+  > **SUPERSEDED 2026-06-01 — P5-5 is now FIXED, not deferred (see confirmation re-review below).**
+
+## Confirmation re-review (2026-06-01, fixes diff `1f6ee056` → `8e49d0e7`)
+
+Six models re-reviewed the committed fixes diff. Grok / DeepSeek / GLM / Kimi = **APPROVE** (P5
+CLOSE-CONFIRMED, P5-5 deferral judged acceptable). Codex raised P5-5 as a **No-ship blocker** and
+*falsified the deferral's premise*:
+
+- **Codex (BLOCKING) — market selection venue-unscoped despite a multi-venue cache — FIXED (`8e49d0e7`).**
+  The P5-5 deferral rested on "unreachable single-venue Polymarket-only cache." Verified at HEAD that the
+  premise is FALSE: `config/root.toml` sets `load_state = true` (line 12) and registers eight non-Polymarket
+  venues (BINANCE×3, BITMEX, BYBIT, COINBASE, DERIBIT, KRAKEN×2, OKX) alongside POLYMARKET, so the shared NT
+  cache genuinely holds foreign-venue instruments. Selection remained unenforced — `refresh_selection_from_cache`
+  read `cache.instrument_ids(None)` (the whole cache) and the matcher is venue-agnostic (matches slug + outcome),
+  so the live-money path relied on "only Polymarket emits BinaryOption" without enforcing it. Because the
+  finding cannot be DISPROVEN without a guard (absent one, a colliding foreign-venue BinaryOption *would* be
+  selectable), the terminal resolution per FIXED-or-DISPROVEN is to FIX it. Operator (2026-06-01) approved
+  reversing the deferral and adding the guard before the canary.
+
+  **Fix (venue-agnostic, config-driven — supports HIP-4 / any execution venue with no code change):**
+  1. The execution venue is resolved once at the production build site from config —
+     `root.clients[execution_client_id].venue` (`src/bolt_v3_archetypes/binary_oracle_edge_taker.rs:~378`) — and
+     threaded into `StrategyBuildContext` as a REQUIRED constructor arg (compile-enforced; a build can never
+     forget it).
+  2. `refresh_selection_from_cache` (`src/strategies/binary_oracle_edge_taker.rs`) scopes the cache read to that
+     venue (`instrument.id().venue == execution_venue`), so a foreign-venue instrument is structurally
+     unselectable, AND applies an explicit fail-closed guard `selected_market_on_execution_venue` (a malformed or
+     non-execution-venue selection is refused → blocked snapshot, no order).
+  3. Regression test `strategy_refuses_foreign_venue_market_even_when_slug_matches_the_target`: a HIP-4 /
+     Hyperliquid binary option carrying the SAME updown slug as the target is selectable in isolation (proving
+     the collision is real) but is REFUSED under the Polymarket execution venue, while the execution-venue market
+     is selected. Production carries no venue literal — only the unit-test fixtures pin POLYMARKET (centralized in
+     `fixture_execution_venue()`), matching their `...POLYMARKET` instruments.
+
+**P5 status:** all actionable findings FIXED (P5-1..P5-10) or DISPROVEN; **P5-5 is now FIXED** (venue guard
+landed), superseding the prior deferral. Pending a confirmation re-review of the venue-guard fix.

@@ -625,6 +625,7 @@ fn strategy_build_context_carries_shared_submit_admission_handle() {
         Arc::new(NoopFeeProvider),
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         admission.clone(),
+        support::fixture_execution_venue(),
     );
 
     assert!(Arc::ptr_eq(&admission, &context.submit_admission_arc()));

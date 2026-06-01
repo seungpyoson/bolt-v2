@@ -14887,3 +14887,11 @@ literal = '''"bolt-v3 submit admission refuses a market-style order without a st
 context = '''"bolt-v3 submit admission refuses a market-style order without a structural price ceiling for client_order_id={}",'''
 classification = '''diagnostic_template'''
 reason = '''Fail-closed diagnostic for a market-style order (entry or risk-reducing exit) lacking a structural price ceiling; the interpolated client_order_id is computed from the typed order, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_tiny_canary_evidence.rs'''
+kind = '''string'''
+literal = '''".spending"'''
+context = '''const PHASE8_NONCE_SPEND_TEMP_SUFFIX: &str = ".spending";'''
+classification = '''phase8_nonce_spend_temp_suffix'''
+reason = '''Internal filesystem suffix for the sibling temp file used to atomically and durably overwrite the operator approval nonce on consume (write temp + fsync + atomic rename over the nonce + parent-directory fsync, so the spend is the first durable one-way transition). Not an operator runtime value; it is appended to the configured nonce path to form a same-directory staging file name.'''

@@ -1622,12 +1622,26 @@ struct Phase8ApprovalNonceSpentEvidence<'a> {
     consumed_approval_nonce_sha256: &'a str,
 }
 
+/// Filesystem suffix for the sibling temp file used to atomically overwrite the nonce. This is an
+/// internal staging detail, not a runtime config value: the spent record is written to this temp
+/// file, fsynced, then renamed over the nonce so the spend is crash-atomic and durable.
+const PHASE8_NONCE_SPEND_TEMP_SUFFIX: &str = ".spending";
+
 /// Spend the one-shot operator-approval nonce by overwriting the nonce evidence file once
 /// the approval is consumed (A1/A2). After this, `validate_approval_nonce` fails for that
 /// approval because the on-disk nonce no longer hashes to the approved
 /// `approval_nonce_sha256`, so even a deliberately-deleted consumption marker cannot re-arm
 /// the one-time approval. Re-approval requires the operator to mint a fresh nonce. This is
 /// the one point where bolt-v3 WRITES operator evidence — by design, a nonce is single-use.
+///
+/// The overwrite is DURABLE and ATOMIC: the spent record is staged in a sibling temp file and
+/// fsynced, then atomically renamed over the nonce, and the parent directory is fsynced. Once
+/// this returns `Ok` the spent record is on stable storage, so a crash immediately afterwards
+/// (in particular, after this but before the consumption marker is written) still leaves the
+/// pre-consumption gate failing closed on the spent nonce. A plain in-place rewrite is not
+/// crash-safe — a power loss could lose the rewrite (reverting the nonce to the approved value)
+/// or leave a torn file — which is why the spend must complete durably before the caller proceeds
+/// to write the consumption marker.
 fn spend_phase8_approval_nonce(
     nonce_path: &str,
     approved_nonce_sha256: &str,
@@ -1639,9 +1653,60 @@ fn spend_phase8_approval_nonce(
     };
     let bytes = serde_json::to_vec_pretty(&spent)
         .map_err(|source| anyhow!("failed to serialize phase8 spent-nonce record: {source}"))?;
-    fs::write(nonce_path, &bytes).map_err(|source| {
-        anyhow!("failed to spend phase8 operator approval nonce `{nonce_path}`: {source}")
-    })?;
+    let nonce_file = Path::new(nonce_path);
+    let mut temp_os = nonce_file.as_os_str().to_owned();
+    temp_os.push(PHASE8_NONCE_SPEND_TEMP_SUFFIX);
+    let temp_path = PathBuf::from(temp_os);
+    {
+        let mut temp_file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&temp_path)
+            .map_err(|source| {
+                anyhow!(
+                    "failed to open phase8 spent-nonce temp `{}`: {source}",
+                    temp_path.display()
+                )
+            })?;
+        if let Err(source) = temp_file.write_all(&bytes) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(anyhow!(
+                "failed to write phase8 spent-nonce temp `{}`: {source}",
+                temp_path.display()
+            ));
+        }
+        if let Err(source) = temp_file.sync_all() {
+            let _ = fs::remove_file(&temp_path);
+            return Err(anyhow!(
+                "failed to sync phase8 spent-nonce temp `{}`: {source}",
+                temp_path.display()
+            ));
+        }
+    }
+    if let Err(source) = fs::rename(&temp_path, nonce_file) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(anyhow!(
+            "failed to spend phase8 operator approval nonce `{nonce_path}`: {source}"
+        ));
+    }
+    if let Some(parent) = nonce_file
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        let dir = fs::File::open(parent).map_err(|source| {
+            anyhow!(
+                "failed to open phase8 nonce directory `{}` for durability sync: {source}",
+                parent.display()
+            )
+        })?;
+        dir.sync_all().map_err(|source| {
+            anyhow!(
+                "failed to sync phase8 nonce directory `{}`: {source}",
+                parent.display()
+            )
+        })?;
+    }
     Ok(())
 }
 
@@ -1825,21 +1890,26 @@ impl Phase8OperatorApprovalEnvelope {
         self.validate_approval_nonce()?;
         let canary_evidence_path = self.canary_evidence_path_against(loaded)?;
         let strategy_cancel_path = self.validate_strategy_cancel_path_against(loaded)?;
+        // Spend the one-shot nonce FIRST — before the consumption marker — so the spend is the
+        // FIRST durable one-way state transition on consume. `spend_phase8_approval_nonce` returns
+        // only after the spent record is durable (fsync + atomic rename + parent-dir fsync), so any
+        // crash after this point leaves the pre-consumption gate failing closed on the spent nonce
+        // (`validate_approval_nonce` no longer matches the approved `approval_nonce_sha256`),
+        // regardless of the marker. Writing the marker first (the previous order) left a crash
+        // window where the marker was durable but the nonce was still un-spent: a later deletion of
+        // that marker — by an operator inside the window or by host tmp cleanup — could re-arm the
+        // approval. Spending first closes that window: the marker is written only once the nonce is
+        // already, durably, single-use, so the marker's existence implies the nonce is spent (A1/A2).
+        spend_phase8_approval_nonce(
+            &self.approval_nonce_path,
+            &self.approval_nonce_sha256,
+            current_unix_secs,
+        )?;
         self.write_approval_consumption_evidence(
             current_unix_secs,
             canary_evidence_path,
             strategy_cancel_path,
             &approval_consumption_path,
-        )?;
-        // Spend the one-shot nonce AFTER the durable consumption marker is written, so a
-        // DELIBERATE removal of the marker inside the operator window cannot re-arm the
-        // approval: `validate_approval_nonce` then fails because the on-disk nonce no longer
-        // hashes to the approved `approval_nonce_sha256` (A1/A2). The durable marker already
-        // blocks the automatic re-arm; spending the nonce closes the deliberate-`rm` path.
-        spend_phase8_approval_nonce(
-            &self.approval_nonce_path,
-            &self.approval_nonce_sha256,
-            current_unix_secs,
         )
     }
 

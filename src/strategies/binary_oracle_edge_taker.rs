@@ -20,7 +20,7 @@ use nautilus_model::{
         BookAction, OmsType as NtOmsType, OrderSide, OrderType, TimeInForce, TrailingOffsetType,
         TriggerType,
     },
-    identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId},
+    identifiers::{ClientId, ClientOrderId, InstrumentId, PositionId, StrategyId, TraderId, Venue},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
     types::{Price, Quantity},
@@ -2136,15 +2136,42 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn refresh_selection_from_cache(&mut self, now_ms: u64) {
+        // Scope market selection to the configured execution venue. The shared NT cache can hold
+        // instruments from EVERY registered data client (the shipped config registers several
+        // non-Polymarket reference venues, and `load_state` can repopulate the cache across runs),
+        // so an unscoped read could feed a foreign-venue instrument into selection. A real order can
+        // only ever route to the execution client's venue, so any market on another venue must be
+        // unselectable here. Filtering the cache read by the execution venue makes a wrong-venue
+        // selection structurally impossible and fails closed (P5-5 / Codex P5).
+        let execution_venue = self.context.execution_venue();
         let instruments = {
             let cache = self.cache();
             cache
                 .instrument_ids(None)
                 .into_iter()
                 .filter_map(|instrument_id| cache.instrument(instrument_id).cloned())
+                .filter(|instrument| instrument.id().venue == execution_venue)
                 .collect::<Vec<_>>()
         };
         let snapshot = selection_snapshot_from_instruments(&self.config, &instruments, now_ms);
+        // Defense in depth: the venue-scoped read above cannot yield a foreign-venue market, but
+        // assert it explicitly so any future widening of the read still fails closed here — a real
+        // order must never fire against a market whose outcome instruments are on a venue other than
+        // the execution venue.
+        let snapshot = if selected_market_on_execution_venue(&snapshot, execution_venue) {
+            snapshot
+        } else {
+            log::error!(
+                "binary_oracle_edge_taker refusing a selected market whose outcome venue is not the execution venue: strategy_id={} execution_venue={}",
+                self.config.strategy_id,
+                execution_venue,
+            );
+            idle_selection_snapshot(
+                &self.config,
+                now_ms,
+                SELECTION_BLOCK_REASON_TARGET_SELECTION_BLOCKED,
+            )
+        };
         if matches!(snapshot.decision.state, SelectionState::Idle { .. }) {
             if self.selection_missing_since_ms.is_none() {
                 self.selection_missing_since_ms = Some(now_ms);
@@ -5801,8 +5828,29 @@ pub fn record_entry_decision_evidence_from_source(
     );
     let price_to_beat =
         entry_decision_price_to_beat_from_readiness_session(&source.readiness_session)?;
-    let context = StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission)
-        .with_readiness_evidence(readiness_evidence);
+    // Execution venue for this replay is the venue of the stored selection's outcome instruments
+    // (the strategy only ever trades the venue its selected market is on). This offline evidence
+    // path validates against that stored selection and never reads the live cache, so the venue is
+    // used only for context completeness; it is still derived from the source rather than assumed.
+    let execution_venue = source
+        .readiness_session
+        .selected_market
+        .instrument_ids
+        .iter()
+        .find_map(|instrument_id| InstrumentId::from_str(instrument_id.as_str()).ok())
+        .map(|instrument_id| instrument_id.venue)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "entry decision evidence source selected market is missing a parseable instrument required for execution-venue resolution"
+            )
+        })?;
+    let context = StrategyBuildContext::new(
+        fee_provider,
+        decision_evidence,
+        submit_admission,
+        execution_venue,
+    )
+    .with_readiness_evidence(readiness_evidence);
     let mut strategy = BinaryOracleEdgeTaker::new(
         BinaryOracleEdgeTakerBuilder::parse_config(raw_config)?,
         context,
@@ -6079,6 +6127,30 @@ fn selection_book_subscriptions(snapshot: &RuntimeSelectionSnapshot) -> OutcomeB
         SelectionState::Freeze { market, .. } => OutcomeBookSubscriptions::from_market(market),
         SelectionState::Idle { .. } => OutcomeBookSubscriptions::empty(),
     }
+}
+
+/// True unless `snapshot` selects an Active (or, in tests, Freeze) market whose up or down outcome
+/// instrument is on a venue other than `execution_venue`. An Idle snapshot has no selected market to
+/// route a real order to and trivially matches. An outcome instrument id that cannot be parsed fails
+/// closed (treated as NOT on the execution venue), so a malformed selection can never pass the gate.
+fn selected_market_on_execution_venue(
+    snapshot: &RuntimeSelectionSnapshot,
+    execution_venue: Venue,
+) -> bool {
+    let market = match &snapshot.decision.state {
+        SelectionState::Active { market } => market,
+        #[cfg(test)]
+        SelectionState::Freeze { market, .. } => market,
+        SelectionState::Idle { .. } => return true,
+    };
+    outcome_on_execution_venue(&market.up, execution_venue)
+        && outcome_on_execution_venue(&market.down, execution_venue)
+}
+
+fn outcome_on_execution_venue(outcome: &CandidateOutcome, execution_venue: Venue) -> bool {
+    InstrumentId::from_str(&outcome.instrument_id)
+        .map(|instrument_id| instrument_id.venue == execution_venue)
+        .unwrap_or(false)
 }
 
 fn selection_snapshot_from_instruments(
@@ -7603,6 +7675,17 @@ mod tests {
         }
     }
 
+    /// Execution venue of the binary-option market fixtures these tests trade against (their
+    /// outcome instruments are `...POLYMARKET`). Production resolves the execution venue from
+    /// config — `root.clients[execution_client_id].venue` — and is venue-agnostic (a HIP-4 or any
+    /// other execution client works with no code change); these unit tests build the
+    /// `StrategyBuildContext` directly without a root TOML, so they pin the venue to their fixtures
+    /// in ONE place here rather than scattering the literal. A different-venue test would supply
+    /// that venue plus matching instrument fixtures.
+    fn fixture_execution_venue() -> Venue {
+        Venue::from("POLYMARKET")
+    }
+
     fn test_readiness_gate_evidence()
     -> crate::bolt_v3_decision_evidence::BoltV3ReadinessGateEvidenceSnapshot {
         crate::bolt_v3_decision_evidence::BoltV3ReadinessGateEvidenceSnapshot {
@@ -7832,8 +7915,13 @@ mod tests {
                 lead_agreement_min_corr: 0.8,
                 lead_jitter_max_ms: 250,
             },
-            StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission)
-                .with_readiness_evidence(test_readiness_gate_evidence()),
+            StrategyBuildContext::new(
+                fee_provider,
+                decision_evidence,
+                submit_admission,
+                fixture_execution_venue(),
+            )
+            .with_readiness_evidence(test_readiness_gate_evidence()),
         )
     }
 
@@ -7890,6 +7978,7 @@ mod tests {
                     RecordingDecisionEvidenceWriter,
                 )),
             ),
+            fixture_execution_venue(),
         )
         .with_readiness_evidence(test_readiness_gate_evidence());
 
@@ -7927,6 +8016,7 @@ mod tests {
                         Arc::new(RecordingDecisionEvidenceWriter),
                     ),
                 ),
+                fixture_execution_venue(),
             )
             .with_readiness_evidence(test_readiness_gate_evidence()),
         );
@@ -9554,9 +9644,13 @@ mod tests {
     ) -> BinaryOracleEdgeTaker {
         let (mut strategy, fee_provider) =
             ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
-        strategy.context =
-            StrategyBuildContext::new(fee_provider, decision_evidence, submit_admission)
-                .with_readiness_evidence(test_readiness_gate_evidence());
+        strategy.context = StrategyBuildContext::new(
+            fee_provider,
+            decision_evidence,
+            submit_admission,
+            fixture_execution_venue(),
+        )
+        .with_readiness_evidence(test_readiness_gate_evidence());
         strategy.config.edge_threshold_basis_points = 1;
         strategy.active.price_to_beat = Some(3_100.0);
         strategy
@@ -12386,6 +12480,7 @@ mod tests {
                     RecordingDecisionEvidenceWriter,
                 )),
             ),
+            fixture_execution_venue(),
         )
         .with_readiness_evidence(test_readiness_gate_evidence());
         let mut strategy = BinaryOracleEdgeTaker::new(config, context);
@@ -12433,6 +12528,7 @@ mod tests {
                     RecordingDecisionEvidenceWriter,
                 )),
             ),
+            fixture_execution_venue(),
         )
         .with_readiness_evidence(test_readiness_gate_evidence());
         let mut strategy = BinaryOracleEdgeTaker::new(config, context);
@@ -13670,6 +13766,7 @@ mod tests {
                 fee_provider,
                 Arc::new(RecordingDecisionEvidenceWriter),
                 submit_admission,
+                fixture_execution_venue(),
             )
             .with_readiness_evidence(test_readiness_gate_evidence());
             strategy.config.entry_order.time_in_force = TimeInForce::Gtc;
@@ -14658,6 +14755,7 @@ mod tests {
                     RecordingDecisionEvidenceWriter,
                 )),
             ),
+            fixture_execution_venue(),
         )
         .with_readiness_evidence(test_readiness_gate_evidence());
         strategy.active.outcome_fees.up_ready = false;
@@ -14888,6 +14986,108 @@ mod tests {
             panic!("configured target should select active market: {snapshot:?}");
         };
         assert_eq!(market.market_id, "market-1");
+        assert_eq!(market.up.instrument_id, "token-up.POLYMARKET");
+        assert_eq!(market.down.instrument_id, "token-down.POLYMARKET");
+    }
+
+    #[test]
+    fn strategy_refuses_foreign_venue_market_even_when_slug_matches_the_target() {
+        // P5-5 / Codex P5: the shared NT cache can hold instruments from venues OTHER than the
+        // execution venue. A foreign-venue binary option that happens to carry the SAME updown slug
+        // as the configured target must never be tradeable — a real order only ever routes to the
+        // execution client's venue. The market matcher is venue-agnostic (it matches on slug +
+        // outcome), so without venue scoping a colliding foreign instrument WOULD be selectable;
+        // the execution-venue read filter excludes it and the explicit guard fails closed.
+        let strategy = test_strategy();
+        let current_start = 1_746_000_000_i64;
+        let now_ms = current_start as u64 * MILLIS_PER_SECOND_U64 + 1;
+        let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+            &strategy.config.underlying_asset,
+            &strategy.config.cadence_slug_token,
+            current_start,
+        );
+        let start_ms = current_start as u64 * MILLIS_PER_SECOND_U64;
+        let end_ms = start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
+        let execution_venue = fixture_execution_venue();
+
+        // The SAME slug + market id exists on a NON-execution venue (a HIP-4 / Hyperliquid market
+        // here) as well as on the Polymarket execution venue.
+        let foreign = vec![
+            updown_binary_option(
+                "token-up.HYPERLIQUID",
+                &market_slug,
+                "market-1",
+                "Up",
+                start_ms,
+                end_ms,
+            ),
+            updown_binary_option(
+                "token-down.HYPERLIQUID",
+                &market_slug,
+                "market-1",
+                "Down",
+                start_ms,
+                end_ms,
+            ),
+        ];
+        let polymarket = vec![
+            updown_binary_option(
+                "token-up.POLYMARKET",
+                &market_slug,
+                "market-1",
+                "Up",
+                start_ms,
+                end_ms,
+            ),
+            updown_binary_option(
+                "token-down.POLYMARKET",
+                &market_slug,
+                "market-1",
+                "Down",
+                start_ms,
+                end_ms,
+            ),
+        ];
+
+        // The slug genuinely matches on the foreign venue too: in isolation the matcher selects it,
+        // which is exactly the latent hazard.
+        let foreign_snapshot =
+            selection_snapshot_from_instruments(&strategy.config, &foreign, now_ms);
+        let SelectionState::Active { market } = &foreign_snapshot.decision.state else {
+            panic!(
+                "foreign-venue instruments share the target slug and must select in isolation: {foreign_snapshot:?}"
+            );
+        };
+        assert_eq!(market.up.instrument_id, "token-up.HYPERLIQUID");
+        // ...but the execution-venue guard refuses that foreign selection (fail closed).
+        assert!(
+            !selected_market_on_execution_venue(&foreign_snapshot, execution_venue),
+            "a selected market whose outcomes are on a non-execution venue must be refused",
+        );
+
+        // The execution-venue market selects and is accepted by the guard.
+        let polymarket_snapshot =
+            selection_snapshot_from_instruments(&strategy.config, &polymarket, now_ms);
+        assert!(
+            selected_market_on_execution_venue(&polymarket_snapshot, execution_venue),
+            "the execution-venue market must pass the guard",
+        );
+
+        // The production cache read scopes by the execution venue, so from a MIXED cache only the
+        // execution-venue market is ever considered for selection.
+        let mixed = [foreign.clone(), polymarket].concat();
+        let scoped = mixed
+            .iter()
+            .filter(|instrument| instrument.id().venue == execution_venue)
+            .cloned()
+            .collect::<Vec<_>>();
+        let scoped_snapshot =
+            selection_snapshot_from_instruments(&strategy.config, &scoped, now_ms);
+        let SelectionState::Active { market } = scoped_snapshot.decision.state else {
+            panic!(
+                "execution-venue-scoped selection should still find the market: {scoped_snapshot:?}"
+            );
+        };
         assert_eq!(market.up.instrument_id, "token-up.POLYMARKET");
         assert_eq!(market.down.instrument_id, "token-down.POLYMARKET");
     }

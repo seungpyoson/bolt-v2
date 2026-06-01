@@ -369,10 +369,26 @@ pub fn register_runtime_strategy(
         context.resolved,
     )
     .map_err(|error| binding_message(&context, error.to_string()))?;
+    let execution_client_id = context.strategy.config.execution_client_id.as_str();
+    let execution_venue = context
+        .loaded
+        .root
+        .clients
+        .get(execution_client_id)
+        .map(|client| client.venue)
+        .ok_or_else(|| {
+            binding_message(
+                &context,
+                format!(
+                    "execution_client_id `{execution_client_id}` is not present in loaded clients for execution-venue resolution"
+                ),
+            )
+        })?;
     let mut build_context = StrategyBuildContext::new(
         fee_provider,
         context.decision_evidence.clone(),
         context.submit_admission.clone(),
+        execution_venue,
     );
     if let Some(readiness_evidence) = context.readiness_evidence.clone() {
         build_context = build_context.with_readiness_evidence(readiness_evidence);

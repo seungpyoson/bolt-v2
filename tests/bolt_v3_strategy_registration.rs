@@ -661,6 +661,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_market_entry_order_round_trip() 
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
         .expect("StopMarket runtime table should parse into the strategy config");
@@ -728,6 +729,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_entry_order_round_t
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
         .expect("MarketIfTouched runtime table should parse into the strategy config");
@@ -807,6 +809,7 @@ fn binary_oracle_runtime_mapping_preserves_market_if_touched_exit_order_round_tr
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
         .expect("MarketIfTouched exit runtime table should parse into the strategy config");
@@ -897,6 +900,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_entry_order_roun
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
         .expect("TrailingStopMarket entry runtime table should parse into the strategy config");
@@ -986,6 +990,7 @@ fn binary_oracle_runtime_mapping_preserves_trailing_stop_market_exit_order_round
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
         .expect("TrailingStopMarket exit runtime table should parse into the strategy config");
@@ -1057,6 +1062,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_entry_order_round_trip() {
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
         .expect("StopLimit runtime table should parse into the strategy config");
@@ -1128,6 +1134,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_entry_order_round_tr
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
         .expect("LimitIfTouched runtime table should parse into the strategy config");
@@ -1258,6 +1265,7 @@ fn binary_oracle_runtime_mapping_preserves_stop_limit_exit_order_round_trip() {
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
         .expect("StopLimit exit runtime table should parse into the strategy config");
@@ -1329,6 +1337,7 @@ fn binary_oracle_runtime_mapping_preserves_limit_if_touched_exit_order_round_tri
         Arc::new(NoopFeeProvider),
         writer.clone(),
         Arc::new(BoltV3SubmitAdmissionState::new_unarmed(writer)),
+        support::fixture_execution_venue(),
     );
     BinaryOracleEdgeTakerBuilder::build(&raw, &context)
         .expect("LimitIfTouched exit runtime table should parse into the strategy config");

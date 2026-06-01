@@ -177,6 +177,16 @@ pub fn repo_path(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
+/// Execution venue of the binary-option fixtures these integration tests build a
+/// `StrategyBuildContext` against (`tests/fixtures/bolt_v3/root.toml` routes `polymarket_main` to
+/// POLYMARKET). Production resolves the execution venue from config —
+/// `root.clients[execution_client_id].venue` — and is venue-agnostic; these tests do not exercise
+/// venue-scoped market selection, so the value is inert here. Centralized so the fixture venue
+/// lives in ONE place rather than scattered literals across the integration-test files.
+pub fn fixture_execution_venue() -> nautilus_model::identifiers::Venue {
+    nautilus_model::identifiers::Venue::from("POLYMARKET")
+}
+
 pub fn repo_text(relative: &str) -> String {
     fs::read_to_string(repo_path(relative))
         .unwrap_or_else(|error| panic!("repo text `{relative}` should read: {error}"))

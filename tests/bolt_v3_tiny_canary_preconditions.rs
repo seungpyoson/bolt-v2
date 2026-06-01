@@ -2299,6 +2299,99 @@ async fn operator_approval_consumption_writer_output_is_accepted_by_live_gate() 
 }
 
 #[test]
+fn operator_approval_consumption_spends_nonce_before_marker_so_deletion_cannot_rearm() {
+    // A1/A2 crash-atomicity (Codex P4): consume spends the one-shot nonce FIRST and durably, then
+    // writes the consumption marker. So once the marker exists the nonce is already spent, and
+    // deleting the marker — the operator-window removal / host tmp-cleanup re-arm vector — cannot
+    // restore the approved nonce. The pre-consumption nonce check (which compares the on-disk nonce
+    // hash against the approved `approval_nonce_sha256`) therefore stays failed closed.
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let report_path = temp.path().join("no-submit-readiness.json");
+    let approval_consumption_path = temp.path().join("phase8-approval-consumed.json");
+    write_satisfied_no_submit_readiness_report(&report_path);
+
+    let mut loaded = loaded_with_live_canary(&report_path.to_string_lossy());
+    let root_toml_sha256 = Phase8OperatorApprovalEnvelope::sha256_file(&loaded.root_path)
+        .expect("root TOML hash should compute");
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("operator evidence should exist");
+    operator_evidence.approval_consumption_path =
+        approval_consumption_path.to_string_lossy().to_string();
+
+    let envelope = Phase8OperatorApprovalEnvelope {
+        head_sha: operator_evidence.head_sha.clone(),
+        root_toml_path: loaded.root_path.to_string_lossy().to_string(),
+        root_toml_sha256,
+        approval_envelope_sha256: operator_evidence.approval_envelope_sha256.clone(),
+        ssm_manifest_path: operator_evidence.ssm_manifest_path.clone(),
+        ssm_manifest_sha256: operator_evidence.ssm_manifest_sha256.clone(),
+        strategy_input_evidence_path: operator_evidence.strategy_input_evidence_path.clone(),
+        strategy_input_evidence_sha256: operator_evidence.strategy_input_evidence_sha256.clone(),
+        financial_envelope_path: operator_evidence.financial_envelope_path.clone(),
+        financial_envelope_sha256: operator_evidence.financial_envelope_sha256.clone(),
+        pre_run_state_path: operator_evidence.pre_run_state_path.clone(),
+        pre_run_state_sha256: operator_evidence.pre_run_state_sha256.clone(),
+        abort_plan_path: operator_evidence.abort_plan_path.clone(),
+        abort_plan_sha256: operator_evidence.abort_plan_sha256.clone(),
+        operator_approval_id: "operator-approved-canary-001".to_string(),
+        approval_not_before_unix_secs: operator_evidence.approval_not_before_unix_seconds,
+        approval_not_after_unix_secs: operator_evidence.approval_not_after_unix_seconds,
+        approval_nonce_path: operator_evidence.approval_nonce_path.clone(),
+        approval_nonce_sha256: operator_evidence.approval_nonce_sha256.clone(),
+        approval_consumption_path: operator_evidence.approval_consumption_path.clone(),
+        canary_evidence_path: operator_evidence.canary_evidence_path.clone(),
+        strategy_cancel_path: operator_evidence.strategy_cancel_path.clone(),
+    };
+
+    let approved_nonce_sha256 = envelope.approval_nonce_sha256.clone();
+    let nonce_path = std::path::PathBuf::from(&envelope.approval_nonce_path);
+    assert_eq!(
+        Phase8OperatorApprovalEnvelope::sha256_file(&nonce_path)
+            .expect("nonce hash before consume"),
+        approved_nonce_sha256,
+        "fixture nonce must hash to the approved sha before consume",
+    );
+
+    envelope
+        .consume_approval_after_live_runner_entry_validation(
+            &loaded,
+            current_unix_seconds_for_test() as i64,
+        )
+        .expect("consume should persist the spent nonce and the consumption marker");
+
+    // Post-consume end state: marker present AND nonce already spent (spend ran first, durably).
+    assert!(
+        approval_consumption_path.exists(),
+        "consume must write the consumption marker",
+    );
+    assert_ne!(
+        Phase8OperatorApprovalEnvelope::sha256_file(&nonce_path).expect("nonce hash after consume"),
+        approved_nonce_sha256,
+        "consume must spend the nonce so it no longer hashes to the approved sha",
+    );
+
+    // Re-arm attempt: delete the consumption marker.
+    std::fs::remove_file(&approval_consumption_path).expect("remove consumption marker");
+    assert!(
+        !approval_consumption_path.exists(),
+        "marker should be deleted for the re-arm attempt",
+    );
+
+    // The nonce stays spent after marker deletion: the pre-consumption nonce check cannot match the
+    // approved sha, so the one-time approval can never re-arm.
+    assert_ne!(
+        Phase8OperatorApprovalEnvelope::sha256_file(&nonce_path)
+            .expect("nonce hash after marker deletion"),
+        approved_nonce_sha256,
+        "deleting the marker must not restore the approved nonce — re-arm must be impossible",
+    );
+}
+
+#[test]
 fn operator_approval_consumption_rejects_strategy_cancel_path_drift_before_spend() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let report_path = temp.path().join("no-submit-readiness.json");

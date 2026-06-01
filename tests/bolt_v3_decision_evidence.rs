@@ -490,6 +490,7 @@ fn strategy_build_context_requires_decision_evidence_value() {
                 NoopDecisionEvidenceWriter,
             )),
         ),
+        support::fixture_execution_venue(),
     );
 
     assert!(

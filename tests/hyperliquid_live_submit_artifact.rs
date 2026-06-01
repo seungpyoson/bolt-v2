@@ -192,8 +192,8 @@ fn provider_consumes_standard_perps_live_submit_approval_once() {
         NOW,
     )
     .expect("matching unused approval should consume once");
-    assert_eq!(consumed.approval_id, "hl-standard-perps-approval-001");
-    assert_eq!(consumed.used_at, NOW);
+    assert_eq!(consumed.approval_id(), "hl-standard-perps-approval-001");
+    assert_eq!(consumed.used_at(), NOW);
     assert_eq!(approval.used_at, Some(NOW));
 
     let error = consume_hyperliquid_live_submit_approval_artifact(

@@ -3,11 +3,21 @@ mod support;
 use std::{collections::BTreeMap, sync::Arc};
 
 use bolt_v2::{
-    bolt_v3_adapters::{BoltV3AdapterMappingError, map_bolt_v3_adapters},
+    bolt_v3_adapters::{
+        BoltV3AdapterMappingError, map_bolt_v3_adapters,
+        map_bolt_v3_adapters_with_runtime_approvals,
+    },
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
+    bolt_v3_operator_artifacts::{
+        HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalInput,
+        HyperliquidLiveSubmitOrderLimits, build_hyperliquid_live_submit_approval_artifact,
+    },
     bolt_v3_providers::{
+        HyperliquidLiveSubmitApprovalConsumption, ProviderRuntimeApprovals,
         binance::ResolvedBoltV3BinanceSecrets,
+        consume_hyperliquid_live_submit_approval_artifact,
+        hyperliquid::{HyperliquidProductSurface, ResolvedBoltV3HyperliquidSecrets},
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     },
     bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
@@ -17,12 +27,17 @@ use nautilus_binance::common::enums::{
 };
 use nautilus_binance::config::BinanceDataClientConfig;
 use nautilus_binance::spot::sbe::SBE_SCHEMA_VERSION as NT_BINANCE_SPOT_SBE_SCHEMA_VERSION;
+use nautilus_hyperliquid::{
+    common::enums::HyperliquidEnvironment as NtHyperliquidEnvironment,
+    factories::HyperliquidExecFactoryConfig,
+};
 use nautilus_network::transport::sockudo::SockudoTransport;
 use nautilus_network::websocket::TransportBackend;
 use nautilus_polymarket::{
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
 };
+use zeroize::Zeroizing;
 
 fn fixture_polymarket_secrets() -> ResolvedBoltV3PolymarketSecrets {
     ResolvedBoltV3PolymarketSecrets {
@@ -37,6 +52,16 @@ fn fixture_binance_secrets() -> ResolvedBoltV3BinanceSecrets {
     ResolvedBoltV3BinanceSecrets {
         api_key: zeroize::Zeroizing::new("regression-binance-api-key".to_string()),
         api_secret: zeroize::Zeroizing::new("regression-binance-api-secret".to_string()),
+    }
+}
+
+fn fixture_hyperliquid_secrets() -> ResolvedBoltV3HyperliquidSecrets {
+    ResolvedBoltV3HyperliquidSecrets {
+        private_key: Zeroizing::new(
+            "0x4242424242424242424242424242424242424242424242424242424242424242".to_string(),
+        ),
+        account_address: Zeroizing::new("0x1111111111111111111111111111111111111111".to_string()),
+        vault_address: None,
     }
 }
 
@@ -64,6 +89,85 @@ fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
         .expect("binance provider fixture client should parse"),
     );
     loaded
+}
+
+fn hyperliquid_standard_perps_client() -> bolt_v2::bolt_v3_config::ClientBlock {
+    toml::from_str(
+        r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit_approval_id = "hl-standard-perps-approval-001"
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+    )
+    .expect("hyperliquid standard-perps client should parse")
+}
+
+fn fixture_loaded_config_with_hyperliquid_standard_perps() -> LoadedBoltV3Config {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.clear();
+    loaded.strategies.clear();
+    loaded.root.clients.insert(
+        "hyperliquid_perps".to_string(),
+        hyperliquid_standard_perps_client(),
+    );
+    loaded
+}
+
+fn consumed_hyperliquid_approval() -> HyperliquidLiveSubmitApprovalConsumption {
+    let order_limits = HyperliquidLiveSubmitOrderLimits {
+        max_order_count: 1,
+        max_order_notional: "10.00".to_string(),
+    };
+    let binding = HyperliquidLiveSubmitApprovalBinding {
+        base_sha: "a".repeat(40),
+        provider_id: "hyperliquid_perps".to_string(),
+        product_surface: HyperliquidProductSurface::StandardPerps,
+        toml_checksum: "b".repeat(64),
+        signer_fingerprint: "c".repeat(64),
+        order_limits: order_limits.clone(),
+    };
+    let mut approval =
+        build_hyperliquid_live_submit_approval_artifact(HyperliquidLiveSubmitApprovalInput {
+            approval_id: "hl-standard-perps-approval-001".to_string(),
+            base_sha: binding.base_sha.clone(),
+            provider_id: binding.provider_id.clone(),
+            product_surface: binding.product_surface,
+            toml_checksum: binding.toml_checksum.clone(),
+            signer_fingerprint: binding.signer_fingerprint.clone(),
+            order_limits,
+            expires_at: 1_800_000_300,
+            used_at: None,
+        })
+        .expect("test Hyperliquid approval artifact should build");
+    consume_hyperliquid_live_submit_approval_artifact(
+        &mut approval,
+        &binding,
+        "hl-standard-perps-approval-001",
+        1_800_000_000,
+    )
+    .expect("test Hyperliquid approval should consume once")
 }
 
 #[test]
@@ -177,6 +281,107 @@ fn polymarket_client_config_plus_resolved_secrets_maps_to_nt_native_fields() {
     assert_eq!(exec.retry_delay_max_ms, 2000);
     assert_eq!(exec.ack_timeout_secs, 5);
     assert_eq!(exec.transport_backend, TransportBackend::Sockudo);
+}
+
+#[test]
+fn hyperliquid_standard_perps_execution_requires_consumed_live_submit_approval() {
+    let loaded = fixture_loaded_config_with_hyperliquid_standard_perps();
+    let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
+    clients.insert(
+        "hyperliquid_perps".to_string(),
+        Arc::new(fixture_hyperliquid_secrets()),
+    );
+    let resolved = ResolvedBoltV3Secrets { clients };
+
+    let error = map_bolt_v3_adapters(&loaded, &resolved)
+        .expect_err("Hyperliquid live submit must fail without consumed approval");
+
+    match error {
+        BoltV3AdapterMappingError::ValidationInvariant {
+            client_key,
+            field,
+            message,
+        } => {
+            assert_eq!(client_key, "hyperliquid_perps");
+            assert_eq!(field, "execution.live_submit_approval_id");
+            assert!(message.contains("consumed live-submit approval"));
+        }
+        other => panic!("expected Hyperliquid live-submit approval invariant, got {other}"),
+    }
+}
+
+#[test]
+fn hyperliquid_standard_perps_execution_maps_to_nt_after_consumed_approval() {
+    let loaded = fixture_loaded_config_with_hyperliquid_standard_perps();
+    let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
+    clients.insert(
+        "hyperliquid_perps".to_string(),
+        Arc::new(fixture_hyperliquid_secrets()),
+    );
+    let resolved = ResolvedBoltV3Secrets { clients };
+    let consumed = consumed_hyperliquid_approval();
+
+    let configs = map_bolt_v3_adapters_with_runtime_approvals(
+        &loaded,
+        &resolved,
+        ProviderRuntimeApprovals {
+            hyperliquid_live_submit: Some(&consumed),
+        },
+    )
+    .expect("consumed approval should open the standard-perps NT adapter path");
+
+    let hyperliquid = configs
+        .clients
+        .get("hyperliquid_perps")
+        .expect("Hyperliquid client must be present in mapper output");
+    assert!(hyperliquid.data.is_none());
+    let execution = hyperliquid
+        .execution
+        .as_ref()
+        .expect("Hyperliquid [execution] block must produce an NT exec config");
+    assert_eq!(execution.factory.name(), "HYPERLIQUID");
+    assert_eq!(
+        execution.factory.config_type(),
+        "HyperliquidExecFactoryConfig"
+    );
+
+    let config = execution
+        .config_as::<HyperliquidExecFactoryConfig>()
+        .expect("Hyperliquid execution should downcast to NT HyperliquidExecFactoryConfig");
+    let expected_secrets = fixture_hyperliquid_secrets();
+    assert_eq!(config.trader_id.to_string(), "BOLT-001");
+    assert_eq!(config.account_id.to_string(), "HYPERLIQUID-001");
+    assert_eq!(
+        config.config.private_key.as_deref(),
+        Some(expected_secrets.private_key.as_str())
+    );
+    assert_eq!(
+        config.config.account_address.as_deref(),
+        Some(expected_secrets.account_address.as_str())
+    );
+    assert_eq!(config.config.vault_address, None);
+    assert_eq!(
+        config.config.base_url_ws.as_deref(),
+        Some("wss://api.hyperliquid-testnet.xyz/ws")
+    );
+    assert_eq!(
+        config.config.base_url_http.as_deref(),
+        Some("https://api.hyperliquid-testnet.xyz/info")
+    );
+    assert_eq!(
+        config.config.base_url_exchange.as_deref(),
+        Some("https://api.hyperliquid-testnet.xyz/exchange")
+    );
+    assert_eq!(config.config.environment, NtHyperliquidEnvironment::Testnet);
+    assert_eq!(config.config.http_timeout_secs, 60);
+    assert_eq!(config.config.max_retries, 3);
+    assert_eq!(config.config.retry_delay_initial_ms, 250);
+    assert_eq!(config.config.retry_delay_max_ms, 2000);
+    assert!(config.config.normalize_prices);
+    assert_eq!(config.config.market_order_slippage_bps, 50);
+    assert_eq!(config.config.transport_backend, TransportBackend::Sockudo);
+    assert_eq!(config.config.ws_post_timeout_secs, 10);
+    assert_eq!(config.config.outcome_settlement_poll_secs, 0);
 }
 
 #[test]

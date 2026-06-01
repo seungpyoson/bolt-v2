@@ -1,19 +1,28 @@
 //! Fail-closed provider binding for `HYPERLIQUID`.
 //!
-//! This module registers the provider key and NT crate boundary without opening
-//! data, secrets, or execution mapping. Later vertical slices add SSM-backed
-//! config and product-specific proof before any adapter path is enabled.
+//! This module registers the provider key and NT crate boundary. Execution
+//! mapping stays gated behind SSM-resolved credentials, explicit TOML runtime
+//! fields, and a consumed live-submit approval for the standard-perps surface.
 
 use std::{any::Any, sync::Arc};
 
 use nautilus_core::string::secret::REDACTED;
+use nautilus_hyperliquid::{
+    common::enums::HyperliquidEnvironment as NtHyperliquidEnvironment,
+    config::HyperliquidExecClientConfig,
+    factories::{HyperliquidExecFactoryConfig, HyperliquidExecutionClientFactory},
+};
+use nautilus_model::identifiers::AccountId;
+use nautilus_network::websocket::TransportBackend;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::bolt_v3_providers::{ProviderExclusiveSignerOwner, ProviderResolvedSecrets};
 use crate::{
-    bolt_v3_adapters::{BoltV3AdapterMappingError, BoltV3ClientAdapterConfig},
+    bolt_v3_adapters::{
+        BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3ExecutionClientAdapterConfig,
+    },
     bolt_v3_config::ClientBlock,
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderSecretRequirement,
@@ -44,6 +53,14 @@ pub const FORBIDDEN_ENV_VARS: &[&str] = &[
     "HYPERLIQUID_ACCOUNT_ADDRESS",
 ];
 
+fn deserialize_account_id<'de, D>(deserializer: D) -> Result<AccountId, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value: String = String::deserialize(deserializer)?;
+    AccountId::new_checked(value.as_str()).map_err(serde::de::Error::custom)
+}
+
 #[allow(dead_code)]
 fn _credential_log_module_path_exists(
     _private_key: &nautilus_hyperliquid::common::credential::EvmPrivateKey,
@@ -53,9 +70,25 @@ fn _credential_log_module_path_exists(
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HyperliquidExecutionConfig {
+    #[serde(deserialize_with = "deserialize_account_id")]
+    pub account_id: AccountId,
     pub environment: HyperliquidEnvironment,
     pub execution_mode: HyperliquidExecutionMode,
     pub product_surfaces: Vec<HyperliquidProductSurface>,
+    pub live_submit_approval_id: Option<String>,
+    pub base_url_ws: String,
+    pub base_url_http: String,
+    pub base_url_exchange: String,
+    pub proxy_url: Option<String>,
+    pub http_timeout_secs: u64,
+    pub max_retries: u64,
+    pub retry_delay_initial_ms: u64,
+    pub retry_delay_max_ms: u64,
+    pub normalize_prices: bool,
+    pub market_order_slippage_bps: u32,
+    pub transport_backend: TransportBackend,
+    pub ws_post_timeout_secs: u64,
+    pub outcome_settlement_poll_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -367,6 +400,33 @@ fn validate_execution_config(key: &str, execution: &HyperliquidExecutionConfig) 
             "clients.{key}.execution.product_surfaces must select at least one Hyperliquid product surface"
         ));
     }
+    if let Some(approval_id) = &execution.live_submit_approval_id
+        && approval_id.trim().is_empty()
+    {
+        errors.push(format!(
+            "clients.{key}.execution.live_submit_approval_id must be non-empty when configured"
+        ));
+    }
+    let positive_fields: &[(&str, u64)] = &[
+        ("http_timeout_secs", execution.http_timeout_secs),
+        ("max_retries", execution.max_retries),
+        ("retry_delay_initial_ms", execution.retry_delay_initial_ms),
+        ("retry_delay_max_ms", execution.retry_delay_max_ms),
+        ("ws_post_timeout_secs", execution.ws_post_timeout_secs),
+    ];
+    for (field, value) in positive_fields {
+        if *value == 0 {
+            errors.push(format!(
+                "clients.{key}.execution.{field} must be a positive integer"
+            ));
+        }
+    }
+    if execution.retry_delay_initial_ms > execution.retry_delay_max_ms {
+        errors.push(format!(
+            "clients.{key}.execution.retry_delay_initial_ms ({}) must be <= retry_delay_max_ms ({})",
+            execution.retry_delay_initial_ms, execution.retry_delay_max_ms
+        ));
+    }
     errors
 }
 
@@ -504,19 +564,145 @@ fn parse_secrets_config(
 pub fn map_adapters(
     context: ProviderAdapterMapContext<'_>,
 ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
-    if context.client.data.is_some() || context.client.execution.is_some() {
+    if context.client.data.is_some() {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             client_key: context.client_key.to_string(),
-            field: "venue",
-            message: format!(
-                "provider {KEY} is registered but adapter mapping is not enabled in this slice"
-            ),
+            field: "data",
+            message: format!("provider {KEY} data mapping is not enabled in this slice"),
         });
     }
+    let execution = match &context.client.execution {
+        Some(value) => {
+            let secrets = secrets_for(context.client_key, context.resolved)?;
+            Some(BoltV3ExecutionClientAdapterConfig {
+                factory: Box::new(HyperliquidExecutionClientFactory),
+                config: Box::new(map_execution(&context, value, secrets)?),
+            })
+        }
+        None => None,
+    };
     Ok(BoltV3ClientAdapterConfig {
         data: None,
-        execution: None,
+        execution,
     })
+}
+
+fn map_execution(
+    context: &ProviderAdapterMapContext<'_>,
+    value: &toml::Value,
+    secrets: &ResolvedBoltV3HyperliquidSecrets,
+) -> Result<HyperliquidExecFactoryConfig, BoltV3AdapterMappingError> {
+    let cfg: HyperliquidExecutionConfig =
+        value.clone().try_into().map_err(|error: toml::de::Error| {
+            BoltV3AdapterMappingError::SchemaParse {
+                client_key: context.client_key.to_string(),
+                block: "execution",
+                message: error.to_string(),
+            }
+        })?;
+    validate_standard_perps_live_submit_approval(context.client_key, &cfg, context)?;
+    let max_retries =
+        u32::try_from(cfg.max_retries).map_err(|_| BoltV3AdapterMappingError::NumericRange {
+            client_key: context.client_key.to_string(),
+            field: "execution.max_retries",
+            message: format!(
+                "value {} does not fit in u32 expected by NT",
+                cfg.max_retries
+            ),
+        })?;
+    Ok(HyperliquidExecFactoryConfig {
+        trader_id: context.root.trader_id,
+        account_id: cfg.account_id,
+        config: HyperliquidExecClientConfig {
+            private_key: Some(secrets.private_key.as_str().to_owned()),
+            vault_address: secrets
+                .vault_address
+                .as_ref()
+                .map(|vault_address| vault_address.as_str().to_owned()),
+            account_address: Some(secrets.account_address.as_str().to_owned()),
+            base_url_ws: Some(cfg.base_url_ws),
+            base_url_http: Some(cfg.base_url_http),
+            base_url_exchange: Some(cfg.base_url_exchange),
+            proxy_url: cfg.proxy_url,
+            environment: nt_environment(cfg.environment),
+            http_timeout_secs: cfg.http_timeout_secs,
+            max_retries,
+            retry_delay_initial_ms: cfg.retry_delay_initial_ms,
+            retry_delay_max_ms: cfg.retry_delay_max_ms,
+            normalize_prices: cfg.normalize_prices,
+            market_order_slippage_bps: cfg.market_order_slippage_bps,
+            transport_backend: cfg.transport_backend,
+            ws_post_timeout_secs: cfg.ws_post_timeout_secs,
+            outcome_settlement_poll_secs: cfg.outcome_settlement_poll_secs,
+        },
+    })
+}
+
+fn validate_standard_perps_live_submit_approval(
+    client_key: &str,
+    cfg: &HyperliquidExecutionConfig,
+    context: &ProviderAdapterMapContext<'_>,
+) -> Result<(), BoltV3AdapterMappingError> {
+    if cfg.product_surfaces.as_slice() != [HyperliquidProductSurface::StandardPerps] {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "execution.product_surfaces",
+            message:
+                "standard-perps is the only Hyperliquid live-submit surface enabled in this slice"
+                    .to_string(),
+        });
+    }
+    let Some(expected_approval_id) = cfg.live_submit_approval_id.as_deref() else {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "execution.live_submit_approval_id",
+            message:
+                "standard-perps live submit requires a configured consumed live-submit approval id"
+                    .to_string(),
+        });
+    };
+    let Some(consumed) = context.runtime_approvals.hyperliquid_live_submit else {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "execution.live_submit_approval_id",
+            message: "standard-perps live submit requires a consumed live-submit approval"
+                .to_string(),
+        });
+    };
+    if consumed.approval_id() != expected_approval_id {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "execution.live_submit_approval_id",
+            message: "consumed live-submit approval id does not match configured approval id"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn secrets_for<'a>(
+    client_key: &str,
+    resolved: &'a crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
+) -> Result<&'a ResolvedBoltV3HyperliquidSecrets, BoltV3AdapterMappingError> {
+    match resolved.clients.get(client_key) {
+        Some(inner) => inner.as_any().downcast_ref().ok_or_else(|| {
+            BoltV3AdapterMappingError::SecretProviderMismatch {
+                client_key: client_key.to_string(),
+                expected_provider_key: KEY,
+            }
+        }),
+        None => Err(BoltV3AdapterMappingError::MissingResolvedSecrets {
+            client_key: client_key.to_string(),
+            expected_provider_key: KEY,
+        }),
+    }
+}
+
+fn nt_environment(value: HyperliquidEnvironment) -> NtHyperliquidEnvironment {
+    match value {
+        HyperliquidEnvironment::Mainnet => NtHyperliquidEnvironment::Mainnet,
+        HyperliquidEnvironment::Testnet => NtHyperliquidEnvironment::Testnet,
+    }
 }
 
 fn validate_private_key_shape(

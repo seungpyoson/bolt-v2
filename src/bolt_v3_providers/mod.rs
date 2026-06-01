@@ -152,12 +152,28 @@ pub struct ProviderAdapterMapContext<'a> {
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub plan: &'a MarketIdentityPlan,
     pub clock: BoltV3MarketClockFn,
+    pub runtime_approvals: ProviderRuntimeApprovals<'a>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProviderRuntimeApprovals<'a> {
+    pub hyperliquid_live_submit: Option<&'a HyperliquidLiveSubmitApprovalConsumption>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HyperliquidLiveSubmitApprovalConsumption {
-    pub approval_id: String,
-    pub used_at: u64,
+    approval_id: String,
+    used_at: u64,
+}
+
+impl HyperliquidLiveSubmitApprovalConsumption {
+    pub fn approval_id(&self) -> &str {
+        self.approval_id.as_str()
+    }
+
+    pub fn used_at(&self) -> u64 {
+        self.used_at
+    }
 }
 
 pub fn consume_hyperliquid_live_submit_approval_artifact(

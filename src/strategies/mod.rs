@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 pub mod binary_oracle_edge_taker;
+pub mod binary_oracle_maker;
 pub mod maker_config;
 pub mod maker_event_fence;
 pub mod maker_governor;
@@ -30,5 +31,6 @@ pub trait CanaryProofCandidateProvider {
 pub fn production_strategy_registry() -> Result<StrategyRegistry> {
     let mut registry = StrategyRegistry::new();
     registry.register::<binary_oracle_edge_taker::BinaryOracleEdgeTakerBuilder>()?;
+    registry.register::<binary_oracle_maker::BinaryOracleMakerBuilder>()?;
     Ok(registry)
 }

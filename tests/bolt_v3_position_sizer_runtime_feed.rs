@@ -23,10 +23,11 @@ use bolt_v2::bolt_v3_submit_admission::{
 use nautilus_common::msgbus::{publish_order_event, switchboard};
 use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
-    events::{OrderCanceled, OrderEventAny},
+    events::{OrderCanceled, OrderDenied, OrderEventAny, OrderExpired, OrderRejected},
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId, TraderId, VenueOrderId},
 };
 use rust_decimal::Decimal;
+use ustr::Ustr;
 
 #[test]
 fn terminal_nt_order_event_releases_committed_submit_reservation() {
@@ -102,6 +103,119 @@ fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
             .latest_terminal_observed_at_ns(),
         Some(1_100)
     );
+}
+
+#[test]
+fn denied_nt_order_event_without_account_releases_matching_committed_submit_reservation() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+
+    let mut feed = PositionSizerRuntimeFeed::new(
+        PositionSizerRuntimeFeedConfig {
+            account_id: AccountId::from("POLYMARKET-001"),
+        },
+        admission.clone(),
+    );
+    let decision = feed
+        .on_order_event(&OrderEventAny::Denied(order_denied_event(
+            "client-order-1",
+            1_100,
+        )))
+        .expect("account-less denied event should be matched by committed reservation id");
+
+    assert!(decision.accepted);
+    assert!(!decision.unknown_reservation);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    assert_eq!(feed.latest_terminal_observed_at_ns(), Some(1_100));
+}
+
+#[test]
+fn rejected_and_expired_nt_order_events_release_matching_committed_submit_reservations() {
+    assert_terminal_event_releases(
+        "client-order-rejected",
+        OrderEventAny::Rejected(order_rejected_event(
+            "client-order-rejected",
+            1_100,
+            AccountId::from("POLYMARKET-001"),
+        )),
+    );
+    assert_terminal_event_releases(
+        "client-order-expired",
+        OrderEventAny::Expired(order_expired_event(
+            "client-order-expired",
+            1_200,
+            Some(AccountId::from("POLYMARKET-001")),
+        )),
+    );
+}
+
+#[test]
+fn account_bound_terminal_nt_order_event_for_other_account_is_ignored() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+
+    let mut feed = PositionSizerRuntimeFeed::new(
+        PositionSizerRuntimeFeedConfig {
+            account_id: AccountId::from("POLYMARKET-001"),
+        },
+        admission.clone(),
+    );
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Rejected(order_rejected_event(
+            "client-order-1",
+            1_100,
+            AccountId::from("OTHER-ACCOUNT"),
+        )))
+        .is_none()
+    );
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    assert_eq!(feed.latest_terminal_observed_at_ns(), None);
+}
+
+fn assert_terminal_event_releases(client_order_id: &str, event: OrderEventAny) {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    admission.update_position_sizing_state(fresh_sizing_state(900));
+    admission
+        .admit_at(&sized_submit_request(client_order_id), 1_000)
+        .expect("fresh sizing state should admit")
+        .commit_submitted();
+
+    let observed_at_ns = event.ts_event().as_u64();
+    let mut feed = PositionSizerRuntimeFeed::new(
+        PositionSizerRuntimeFeedConfig {
+            account_id: AccountId::from("POLYMARKET-001"),
+        },
+        admission.clone(),
+    );
+    let decision = feed
+        .on_order_event(&event)
+        .expect("terminal event should release matching committed reservation");
+
+    assert!(decision.accepted);
+    assert!(!decision.unknown_reservation);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    assert_eq!(feed.latest_terminal_observed_at_ns(), Some(observed_at_ns));
 }
 
 fn position_sized_admission() -> BoltV3SubmitAdmissionState {
@@ -217,5 +331,57 @@ fn order_canceled_event(client_order_id: &str, ts_event: u64) -> OrderCanceled {
         false,
         Some(VenueOrderId::from("venue-order-1")),
         Some(AccountId::from("POLYMARKET-001")),
+    )
+}
+
+fn order_denied_event(client_order_id: &str, ts_event: u64) -> OrderDenied {
+    OrderDenied::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("condition-yes.POLYMARKET"),
+        ClientOrderId::from(client_order_id),
+        Ustr::from("test-denied"),
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+    )
+}
+
+fn order_rejected_event(
+    client_order_id: &str,
+    ts_event: u64,
+    account_id: AccountId,
+) -> OrderRejected {
+    OrderRejected::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("condition-yes.POLYMARKET"),
+        ClientOrderId::from(client_order_id),
+        account_id,
+        Ustr::from("test-rejected"),
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+        false,
+        false,
+    )
+}
+
+fn order_expired_event(
+    client_order_id: &str,
+    ts_event: u64,
+    account_id: Option<AccountId>,
+) -> OrderExpired {
+    OrderExpired::new(
+        TraderId::from("TRADER-001"),
+        StrategyId::from("strategy-a"),
+        InstrumentId::from("condition-yes.POLYMARKET"),
+        ClientOrderId::from(client_order_id),
+        UUID4::default(),
+        UnixNanos::from(ts_event),
+        UnixNanos::from(ts_event),
+        false,
+        Some(VenueOrderId::from("venue-order-1")),
+        account_id,
     )
 }

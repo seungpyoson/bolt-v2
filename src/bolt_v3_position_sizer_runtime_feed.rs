@@ -77,7 +77,12 @@ impl PositionSizerRuntimeFeed {
         &mut self,
         event: &OrderEventAny,
     ) -> Option<BoltV3SubmitPositionSizingLifecycleDecision> {
-        if event.account_id()? != self.config.account_id || !is_terminal_order_event(event) {
+        if !is_terminal_order_event(event) {
+            return None;
+        }
+        if let Some(account_id) = event.account_id()
+            && account_id != self.config.account_id
+        {
             return None;
         }
 
@@ -89,6 +94,9 @@ impl PositionSizerRuntimeFeed {
                 observed_at_ns,
                 POSITION_SIZER_ORDER_TERMINAL_SOURCE.to_string(),
             );
+        if decision.unknown_reservation {
+            return None;
+        }
         self.latest_terminal_observed_at_ns = Some(observed_at_ns);
         Some(decision)
     }

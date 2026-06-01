@@ -540,23 +540,8 @@ impl Drop for BoltV3SubmitAdmissionPermit {
         let Some(rollback) = self.rollback.as_ref() else {
             return;
         };
-        match self.inner.try_lock() {
-            Ok(mut inner) => {
-                rollback_position_sizer_reservation(&mut inner, rollback);
-            }
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                let mut inner = poisoned.into_inner();
-                rollback_position_sizer_reservation(&mut inner, rollback);
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                log::warn!(
-                    "bolt-v3 submit admission could not roll back uncommitted position-sizer reservation because admission lock is held: client_order_id={} submit_reservation_id={} pool_id={}",
-                    rollback.client_order_id,
-                    rollback.submit_reservation_id,
-                    rollback.pool_id
-                );
-            }
-        }
+        let mut inner = lock_inner(&self.inner);
+        rollback_position_sizer_reservation(&mut inner, rollback);
     }
 }
 
@@ -1397,3 +1382,191 @@ fn current_unix_ns() -> Result<u64, BoltV3SubmitAdmissionError> {
 }
 
 impl std::error::Error for BoltV3SubmitAdmissionError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bolt_v3_decision_evidence::{
+        BoltV3OrderIntentEvidence, BoltV3StrategyInputEvidenceSnapshot,
+    };
+    use crate::bolt_v3_position_sizer::{
+        FeeSlippagePolicy, PredictionMarketSizingSnapshot, SizingMode,
+    };
+    use crate::bolt_v3_sizing_state::{
+        OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot, ReservationLedgerSnapshot,
+    };
+    use anyhow::Result;
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn uncommitted_position_sizer_permit_waits_for_lock_and_rolls_back() {
+        let admission = position_sized_admission();
+        admission
+            .arm(BoltV3LiveCanaryGateReport::for_test(
+                10,
+                Decimal::new(10, 0),
+            ))
+            .expect("valid gate report should arm admission");
+        admission.update_position_sizing_state(fresh_sizing_state(900));
+
+        let permit = admission
+            .admit_at(&sized_submit_request("client-order-1"), 1_000)
+            .expect("fresh sizing state should admit");
+        assert_eq!(
+            admission.position_sizer_live_reserved_liability(),
+            Some(Decimal::new(43, 1))
+        );
+
+        let guard = admission
+            .inner
+            .lock()
+            .expect("test should hold the admission lock");
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let started_at = Instant::now();
+        let drop_thread = std::thread::spawn(move || {
+            drop(permit);
+            finished_tx
+                .send(())
+                .expect("drop completion should be observable");
+        });
+
+        assert!(
+            finished_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "permit drop should wait for the admission lock instead of skipping rollback"
+        );
+        drop(guard);
+        finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("permit drop should finish after the admission lock is released");
+        drop_thread
+            .join()
+            .expect("permit drop thread should not panic");
+
+        assert!(
+            started_at.elapsed() >= Duration::from_millis(50),
+            "test should prove the rollback path waited on lock contention"
+        );
+        assert_eq!(
+            admission.position_sizer_live_reserved_liability(),
+            Some(Decimal::ZERO)
+        );
+    }
+
+    #[derive(Debug, Default)]
+    struct NoopDecisionEvidenceWriter;
+
+    impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
+        fn record_strategy_input_snapshot(
+            &self,
+            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> Result<()> {
+            Ok(())
+        }
+
+        fn record_admission_decision(
+            &self,
+            _decision: &BoltV3AdmissionDecisionEvidence,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn position_sized_admission() -> BoltV3SubmitAdmissionState {
+        BoltV3SubmitAdmissionState::new_unarmed_with_position_sizer(
+            Arc::new(NoopDecisionEvidenceWriter),
+            BoltV3SubmitPositionSizerConfig {
+                venue_id: "VENUE-A".to_string(),
+                account_id: "ACCOUNT-A".to_string(),
+                product_kind: ProductKind::PredictionMarketBinary,
+                collateral_currency: "PUSD".to_string(),
+                capital_pool: CapitalPoolSnapshot {
+                    source: "bolt_submit_sizer_bootstrap".to_string(),
+                    observed_at_ns: 900,
+                    pool_id: "pool-1".to_string(),
+                    max_pool_liability: Decimal::new(10, 0),
+                    committed_liability: Decimal::ZERO,
+                    max_snapshot_age_ns: 500,
+                },
+                policy: SizingPolicy {
+                    mode: SizingMode::RejectOnly,
+                    max_order_liability: Some(Decimal::new(10, 0)),
+                    min_remaining_pool_balance: None,
+                    fee_slippage_policy: Some(FeeSlippagePolicy {
+                        max_fee_liability: Decimal::new(10, 2),
+                        max_slippage_liability: Decimal::new(20, 2),
+                    }),
+                },
+            },
+        )
+    }
+
+    fn sized_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
+        BoltV3SubmitAdmissionRequest {
+            strategy_id: "strategy-a".to_string(),
+            client_order_id: client_order_id.to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            notional: Decimal::new(4, 0),
+            intent_kind: BoltV3SubmitIntentKind::Entry,
+            lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            position_sizing: Some(BoltV3CompiledOrderSizingEvidence {
+                venue_id: "VENUE-A".to_string(),
+                product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
+                side: BoltV3CompiledOrderSide::Buy,
+                quantity: Decimal::new(10, 0),
+                effective_price: Decimal::new(40, 2),
+                order_kind: BoltV3CompiledOrderKind::Limit,
+                liquidity: BoltV3CompiledOrderLiquidity::Taker,
+                quote_set_id: None,
+                prediction_market_outcome: Some(PredictionMarketOutcomeSide::Yes),
+            }),
+        }
+    }
+
+    fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
+        NtDerivedSizingState {
+            source: "nt_sizing_state".to_string(),
+            observed_at_ns,
+            portfolio: PortfolioSizingSnapshot {
+                source: "nt_portfolio_snapshot".to_string(),
+                observed_at_ns,
+                venue_id: "VENUE-A".to_string(),
+                account_id: "ACCOUNT-A".to_string(),
+                collateral_currency: "PUSD".to_string(),
+                free_collateral: Decimal::new(100, 0),
+                total_equity: Decimal::new(100, 0),
+            },
+            order_lifecycle: OrderLifecycleSizingSnapshot {
+                source: "nt_open_order_cache".to_string(),
+                observed_at_ns,
+                open_order_count: 0,
+                all_open_orders_attributed: true,
+            },
+            product_state: ProductSizingSnapshot::PredictionMarketBinary(
+                PredictionMarketSizingSnapshot {
+                    source: "nt_prediction_market_snapshot".to_string(),
+                    observed_at_ns,
+                    yes_instrument_id: "instrument-yes.VENUE-A".to_string(),
+                    no_instrument_id: "instrument-no.VENUE-A".to_string(),
+                    yes_position: Decimal::new(10, 0),
+                    no_position: Decimal::ZERO,
+                    pusd_allowance: Decimal::new(100, 0),
+                    conditional_token_allowance: Decimal::new(10, 0),
+                    collateral_coupled_group_id: "group-1".to_string(),
+                },
+            ),
+            reservation_snapshot: ReservationLedgerSnapshot {
+                source: "bolt_reservation_ledger".to_string(),
+                observed_at_ns,
+                all_live_reservations_attributed: true,
+            },
+            loss_snapshot: None,
+        }
+    }
+}

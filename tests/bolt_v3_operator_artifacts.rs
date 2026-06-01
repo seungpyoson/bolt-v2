@@ -4516,8 +4516,8 @@ fn mark_exit_order_terminal(
         return;
     }
     if !self.event_instrument_matches_held_exposure(event_instrument_id) {
-        return;
-    }
+            return;
+        }
     exit_pending.pending_exit.terminal_received = true;
     self.exposure = exit_pending.into_state_after_exit_update();
 }
@@ -4671,8 +4671,8 @@ fn on_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) -> an
     if managed_entry_fill {
     } else if exit_fill {
         if !self.event_instrument_matches_held_exposure(event.instrument_id) {
-            return Ok(());
-        }
+                return Ok(());
+            }
         if let Some(exit_pending) = self.exposure.exit_pending_mut() {
             exit_pending.pending_exit.fill_received = true;
             if exit_pending.pending_exit.close_received {
@@ -4737,8 +4737,17 @@ fn on_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) -> an
         .exposure
         .exit_pending()
         .is_some_and(|exit| exit.pending_exit.client_order_id == event.client_order_id);
-    if exit_fill {
-        self.exposure = ExposureState::Flat;
+    if managed_entry_fill {
+    } else if exit_fill {
+        if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+                return Ok(());
+            }
+        if let Some(exit_pending) = self.exposure.exit_pending_mut() {
+            if exit_pending.pending_exit.close_received {
+                self.exposure = ExposureState::Flat;
+            }
+            exit_pending.pending_exit.fill_received = true;
+        }
     }
     Ok(())
 }

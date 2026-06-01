@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 pub mod binary_oracle_edge_taker;
+pub mod maker_event_fence;
 pub mod quote_lifecycle;
 pub mod registry;
 pub mod requote_budget;

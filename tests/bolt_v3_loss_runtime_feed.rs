@@ -236,6 +236,7 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         notional,
         intent_kind: BoltV3SubmitIntentKind::Entry,
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+        canary_proof_claim: None,
         position_sizing: None,
     }
 }

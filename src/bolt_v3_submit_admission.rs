@@ -2421,6 +2421,7 @@ mod tests {
             notional: Decimal::new(4, 0),
             intent_kind: BoltV3SubmitIntentKind::Entry,
             lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
+            canary_proof_claim: None,
             position_sizing: Some(BoltV3CompiledOrderSizingEvidence {
                 venue_id: "VENUE-A".to_string(),
                 product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,

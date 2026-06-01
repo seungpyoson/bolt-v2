@@ -3565,6 +3565,7 @@ mod tests {
             notional: "0.50".to_string(),
             intent_kind: BoltV3SubmitIntentKind::Entry,
             outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+            loss_halt_reasons: Vec::new(),
         };
         let lines = [
             serde_json::json!({

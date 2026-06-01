@@ -1644,27 +1644,32 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
     }
 }
 
+struct BoltV3LiveNodeRuntimeFeeds {
+    loss_runtime_feed: Option<Arc<Mutex<LossGovernorRuntimeFeed>>>,
+    loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
+    position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
+    position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
+    submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
+}
+
 impl BoltV3LiveNodeRuntime {
     fn new(
         node: LiveNode,
         registration_summary: BoltV3RegistrationSummary,
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
-        loss_runtime_feed: Option<Arc<Mutex<LossGovernorRuntimeFeed>>>,
-        loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
-        position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
-        position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
-        submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
+        feeds: BoltV3LiveNodeRuntimeFeeds,
         redaction_values: Vec<Zeroizing<String>>,
     ) -> Self {
         Self {
             node,
             registration_summary,
             submit_admission,
-            loss_runtime_feed,
-            loss_runtime_feed_subscription,
-            position_sizer_runtime_feed,
-            position_sizer_runtime_feed_subscription,
-            submit_reservation_recovery,
+            loss_runtime_feed: feeds.loss_runtime_feed,
+            loss_runtime_feed_subscription: feeds.loss_runtime_feed_subscription,
+            position_sizer_runtime_feed: feeds.position_sizer_runtime_feed,
+            position_sizer_runtime_feed_subscription: feeds
+                .position_sizer_runtime_feed_subscription,
+            submit_reservation_recovery: feeds.submit_reservation_recovery,
             redaction_values,
         }
     }
@@ -3626,11 +3631,13 @@ fn build_live_node_with_clients(
             node,
             summary.clone(),
             submit_admission,
-            loss_runtime_feed,
-            loss_runtime_feed_subscription,
-            position_sizer_runtime_feed,
-            position_sizer_runtime_feed_subscription,
-            submit_reservation_recovery,
+            BoltV3LiveNodeRuntimeFeeds {
+                loss_runtime_feed,
+                loss_runtime_feed_subscription,
+                position_sizer_runtime_feed,
+                position_sizer_runtime_feed_subscription,
+                submit_reservation_recovery,
+            },
             resolved.redaction_values(),
         ),
         summary,

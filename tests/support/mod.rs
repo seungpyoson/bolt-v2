@@ -18,6 +18,7 @@ use std::{
 
 use async_trait::async_trait;
 use bolt_v2::bolt_v3_config::LiveCanaryOperatorEvidenceBlock;
+use bolt_v2::bolt_v3_decision_evidence::BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION;
 use bolt_v2::bolt_v3_no_submit_readiness_schema::{
     APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
 };
@@ -40,6 +41,7 @@ use nautilus_model::{
 use sha2::{Digest, Sha256};
 
 const TEST_DELAY_POST_STOP_SECS: u64 = 0;
+const TEST_LIVE_CANARY_READINESS_REPORT_MAX_AGE_SECONDS: u64 = 3_600;
 const TEST_TRADER_ID: &str = "TESTER-001";
 
 #[track_caller]
@@ -680,10 +682,11 @@ fn write_valid_decision_evidence_chain(path: &Path, now_ms: u64, notional: &str)
         notional: notional.to_string(),
         intent_kind: BoltV3SubmitIntentKind::Entry,
         outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+        loss_halt_reasons: Vec::new(),
     };
     let lines = [
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -691,7 +694,7 @@ fn write_valid_decision_evidence_chain(path: &Path, now_ms: u64, notional: &str)
             "snapshot": snapshot,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -699,7 +702,7 @@ fn write_valid_decision_evidence_chain(path: &Path, now_ms: u64, notional: &str)
             "intent": intent,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",
@@ -806,7 +809,7 @@ pub fn loaded_bolt_v3_live_canary_with_satisfied_report(
     loaded.root.risk.default_max_notional_per_order = max_notional_per_order.to_string();
     let report_path = temp_path.join("no-submit-readiness.json");
     write_satisfied_no_submit_readiness_report(&report_path, &loaded.config_bundle_checksum);
-    let readiness_report_max_age_seconds = 60;
+    let readiness_report_max_age_seconds = TEST_LIVE_CANARY_READINESS_REPORT_MAX_AGE_SECONDS;
     // Seal the genuine readiness-report hash into the operator evidence + envelope:
     // the report binding is mandatory on the production (proof-disabled) path too.
     let mut operator_evidence = valid_live_canary_operator_evidence();

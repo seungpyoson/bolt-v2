@@ -3331,6 +3331,41 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    /// Venue-adoption guard shared by every live event path that materializes a
+    /// `Managed` position from an external event's `instrument_id` (position
+    /// events via `materialize_position_from_event`, entry fills via
+    /// `on_order_filled`). A live event must be on the configured execution
+    /// venue; NT routes events per strategy/execution-client so a foreign-venue
+    /// event should never arrive, but these paths adopt the event `instrument_id`
+    /// into `Managed` with no further venue gate and the exit path then submits
+    /// against it. Rather than rely only on inherited NT routing, quarantine a
+    /// foreign-venue event to blind recovery and signal the caller to stop
+    /// before any `Managed`/`ExitPending` transition. Returns `true` when the
+    /// event was quarantined (the caller must return early), `false` when the
+    /// event is on the execution venue. Mirrors the recovery-path guard in
+    /// `bootstrapped_exposure_for` (single `ForeignVenuePosition` classification).
+    fn quarantine_foreign_venue_event(&mut self, instrument_id: InstrumentId) -> bool {
+        let execution_venue = self.context.execution_venue();
+        if instrument_id.venue == execution_venue {
+            return false;
+        }
+        log::error!(
+            "binary_oracle_edge_taker live event quarantined foreign-venue instrument: strategy_id={} instrument_id={} instrument_venue={} execution_venue={}",
+            self.config.strategy_id,
+            instrument_id,
+            instrument_id.venue,
+            execution_venue,
+        );
+        self.exposure = ExposureState::BlindRecovery(BlindRecoveryState {
+            reason: BlindRecoveryReason::ForeignVenuePosition {
+                instrument_venue: instrument_id.venue,
+                execution_venue,
+            },
+        });
+        self.refresh_book_subscriptions_for_current_state();
+        true
+    }
+
     fn materialize_position_from_event(
         &mut self,
         instrument_id: InstrumentId,
@@ -3340,6 +3375,13 @@ impl BinaryOracleEdgeTaker {
         quantity: Quantity,
         avg_px_open: f64,
     ) {
+        // Venue invariant (defense in depth): a live position event must be on the
+        // execution venue, or it would be adopted into Managed and the exit path
+        // would submit against a foreign instrument_id. Quarantine before any
+        // Managed/ExitPending transition via the shared venue-adoption guard.
+        if self.quarantine_foreign_venue_event(instrument_id) {
+            return;
+        }
         let preserved = self
             .managed_position()
             .filter(|managed| {
@@ -5250,6 +5292,12 @@ impl DataActor for BinaryOracleEdgeTaker {
             } else if let (Some(position_id), Some(position_side)) =
                 (event.position_id, position_side)
             {
+                // Venue invariant (shared guard): never adopt a foreign-venue fill
+                // into Managed — the exit path would submit against it. Same
+                // venue-adoption class as the position-event path above.
+                if self.quarantine_foreign_venue_event(event.instrument_id) {
+                    return Ok(());
+                }
                 self.exposure = ExposureState::Managed(ManagedPositionState {
                     position: self.build_open_position_state(
                         None,
@@ -14520,6 +14568,111 @@ mod tests {
         assert_eq!(quarantined.observed.entry_order_side, OrderSide::Sell);
         assert_eq!(quarantined.observed.side, PositionSide::Short);
         assert!(strategy.pending_entry().is_none());
+    }
+
+    #[test]
+    fn live_position_event_quarantines_foreign_venue_position() {
+        // P5-5 / Codex P5 — LIVE-PATH regression lock (mirror of
+        // `recovery_bootstrap_quarantines_foreign_venue_position`). The recovery path already
+        // quarantines a foreign-venue cached position before its contract check; the LIVE
+        // position-event path (`materialize_position_from_event`, driven by `on_position_opened`)
+        // must do the same. This event carries a SUPPORTED side/contract shape (Buy / Long, the
+        // exact shape the same-venue baseline `position_events_update_live_position_state` adopts
+        // into Managed), so the ONLY thing making it foreign is the venue. Under the pre-guard
+        // code this foreign event would pass the side + contract checks and become Managed (the
+        // exit path then submits a real order against that foreign instrument_id); the new venue
+        // guard is what diverts it to blind recovery instead.
+        let mut strategy = ready_to_trade_strategy();
+        let execution_venue = strategy.context.execution_venue();
+        let execution_instrument = configured_outcome_instruments(&strategy)
+            .into_iter()
+            .next()
+            .expect("ready-to-trade fixture should expose a configured instrument");
+        assert_eq!(
+            execution_instrument.venue, execution_venue,
+            "fixture instrument must be on the execution venue so only the venue is changed",
+        );
+        // Same symbol, foreign venue: the venue is the ONLY difference from a managed position.
+        let foreign_instrument =
+            InstrumentId::new(execution_instrument.symbol, Venue::from("HYPERLIQUID"));
+        assert_ne!(
+            foreign_instrument.venue, execution_venue,
+            "foreign instrument must be on a non-execution venue",
+        );
+
+        strategy.on_position_opened(position_opened_event_with_details(
+            foreign_instrument,
+            PositionId::from("P-FOREIGN-LIVE"),
+            Quantity::new(10.0, 2),
+            0.450,
+            OrderSide::Buy,
+            PositionSide::Long,
+        ));
+
+        // Observable exposure: quarantined to blind recovery, never adopted into Managed.
+        assert!(
+            matches!(
+                strategy.exposure,
+                ExposureState::BlindRecovery(BlindRecoveryState {
+                    reason: BlindRecoveryReason::ForeignVenuePosition { .. }
+                })
+            ),
+            "foreign-venue live position event must be quarantined to blind recovery, got {:?}",
+            strategy.exposure,
+        );
+        assert!(strategy.managed_position().is_none());
+    }
+
+    #[test]
+    fn order_fill_entry_quarantines_foreign_venue_position() {
+        // P5-5 / Codex P5 — LIVE ORDER-FILL regression lock (sibling of
+        // `live_position_event_quarantines_foreign_venue_position`). The entry-fill branch of
+        // `on_order_filled` matches a fill to our pending entry by client_order_id ALONE, then
+        // adopts the fill's instrument_id into Managed (origin StrategyEntry). A foreign-venue fill
+        // that happens to carry our pending entry's client_order_id must NOT be adopted — the exit
+        // path would otherwise submit a real order against the foreign instrument_id. The shared
+        // venue-adoption guard must divert it to blind recovery, exactly as the position-event path
+        // does. Pre-guard this fill (Some position_id + supported Buy/Long side) would become Managed.
+        let mut strategy = ready_to_trade_strategy();
+        let execution_venue = strategy.context.execution_venue();
+        let entry_client_order_id = ClientOrderId::from("ENTRY-FOREIGN-FILL");
+        let pending = pending_entry_state(&mut strategy, entry_client_order_id);
+        let execution_instrument_id = pending.instrument_id;
+        assert_eq!(
+            execution_instrument_id.venue, execution_venue,
+            "pending entry must be on the execution venue so only the fill venue differs",
+        );
+        set_pending_entry(&mut strategy, pending);
+
+        // Same symbol, foreign venue: the venue is the ONLY difference from our pending entry.
+        let foreign_instrument_id =
+            InstrumentId::new(execution_instrument_id.symbol, Venue::from("HYPERLIQUID"));
+        assert_ne!(
+            foreign_instrument_id.venue, execution_venue,
+            "foreign fill must be on a non-execution venue",
+        );
+
+        strategy
+            .on_order_filled(&order_filled_event_with_details(
+                entry_client_order_id,
+                foreign_instrument_id,
+                Some(PositionId::from("P-FOREIGN-FILL")),
+                OrderSide::Buy,
+            ))
+            .expect("foreign-venue entry fill must not wedge the strategy");
+
+        // Observable exposure: quarantined to blind recovery, never adopted into Managed.
+        assert!(
+            matches!(
+                strategy.exposure,
+                ExposureState::BlindRecovery(BlindRecoveryState {
+                    reason: BlindRecoveryReason::ForeignVenuePosition { .. }
+                })
+            ),
+            "foreign-venue entry fill must be quarantined to blind recovery, got {:?}",
+            strategy.exposure,
+        );
+        assert!(strategy.managed_position().is_none());
     }
 
     #[test]

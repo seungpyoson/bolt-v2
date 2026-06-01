@@ -62,7 +62,7 @@ use crate::{
         ClobV2FeeBehaviorSourceMaterializationRequest, EntryDecisionSourceProviderContext,
         GateProviderEvidenceBinding, ProviderCredentialedBlock, ProviderSecretResolveContext,
         VenueAccountStateSourceMaterializationRequest, binding_for_provider_key,
-        confirm_external_snapshot_before_hard_stop, gate_provider_evidence_binding,
+        confirm_external_snapshot_before_hard_stop, gate_provider_evidence_binding, hyperliquid,
         materialize_clob_v2_adapter_signing_source_from_nt_signing_source,
         materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance,
         materialize_clob_v2_collateral_accounting_source_from_configured_balance_allowance_once,
@@ -127,6 +127,8 @@ const DATA_CLIENT_POLICY_BEHAVIOR_SOURCE_STATUS_MISSING_MARKERS: &str =
 const DATA_CLIENT_PRODUCTION_READINESS_MATRIX_SCHEMA_VERSION: u32 = 1;
 const DATA_CLIENT_PRODUCTION_READINESS_MATRIX_RECORD_KIND: &str =
     "bolt_v3.data_client_production_readiness_matrix.v1";
+const HYPERLIQUID_PRODUCT_MATRIX_SCHEMA_VERSION: u32 = 1;
+const HYPERLIQUID_PRODUCT_MATRIX_RECORD_KIND: &str = "bolt_v3.hyperliquid_product_matrix.v1";
 const DATA_CLIENT_MISSING_BEHAVIOR_PROOFS: &[&str] = &[
     "metadata_behavior",
     "quote_or_book_behavior",
@@ -3123,6 +3125,30 @@ pub fn write_data_client_production_readiness_matrix_artifact_from_source_files(
         request.max_source_bytes,
     )?;
     write_json_artifact_create_new(request.output_path, &artifact)
+}
+
+#[derive(Debug, Serialize)]
+pub struct HyperliquidProductMatrixArtifact {
+    pub schema_version: u32,
+    pub record_kind: &'static str,
+    pub provider_key: &'static str,
+    pub surfaces: &'static [hyperliquid::HyperliquidProductMatrixEntry],
+}
+
+pub fn build_hyperliquid_product_matrix_artifact() -> HyperliquidProductMatrixArtifact {
+    HyperliquidProductMatrixArtifact {
+        schema_version: HYPERLIQUID_PRODUCT_MATRIX_SCHEMA_VERSION,
+        record_kind: HYPERLIQUID_PRODUCT_MATRIX_RECORD_KIND,
+        provider_key: hyperliquid::KEY,
+        surfaces: hyperliquid::hyperliquid_product_matrix(),
+    }
+}
+
+pub fn write_hyperliquid_product_matrix_artifact(
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let artifact = build_hyperliquid_product_matrix_artifact();
+    write_json_artifact_create_new(output_path, &artifact)
 }
 
 pub fn write_data_client_behavior_observation_source_from_probe_events(

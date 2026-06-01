@@ -7,7 +7,7 @@
 use std::{any::Any, sync::Arc};
 
 use nautilus_core::string::secret::REDACTED;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -74,13 +74,116 @@ pub enum HyperliquidExecutionMode {
     SubaccountApiWallet,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum HyperliquidProductSurface {
     StandardPerps,
     Spot,
     Hip3BuilderPerps,
     Hip4Outcomes,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HyperliquidDiscoveryStatus {
+    Supported,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HyperliquidSubmitStatus {
+    FailClosed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct HyperliquidProductMatrixEntry {
+    pub provider_key: &'static str,
+    pub product_surface: HyperliquidProductSurface,
+    pub discovery_status: HyperliquidDiscoveryStatus,
+    pub discovery_sources: &'static [&'static str],
+    pub official_documentation_sources: &'static [&'static str],
+    pub live_submit_status: HyperliquidSubmitStatus,
+    pub missing_submit_proof: &'static [&'static str],
+}
+
+const STANDARD_PERPS_DISCOVERY_SOURCES: &[&str] = &[
+    "nautilus_hyperliquid::http::query::InfoRequest::meta",
+    "nautilus_hyperliquid::http::models::PerpMeta",
+    "nautilus_hyperliquid::http::parse::parse_perp_instruments",
+];
+const STANDARD_PERPS_OFFICIAL_DOCUMENTATION_SOURCES: &[&str] =
+    &["Hyperliquid Info endpoint perpetuals metadata `meta`"];
+const STANDARD_PERPS_MISSING_SUBMIT_PROOF: &[&str] = &[
+    "standard perps no-submit readiness artifact",
+    "standard perps live-submit approval artifact",
+];
+const SPOT_DISCOVERY_SOURCES: &[&str] = &[
+    "nautilus_hyperliquid::http::query::InfoRequest::spot_meta",
+    "nautilus_hyperliquid::http::models::SpotMeta",
+    "nautilus_hyperliquid::http::parse::parse_spot_instruments",
+];
+const SPOT_OFFICIAL_DOCUMENTATION_SOURCES: &[&str] =
+    &["Hyperliquid Info endpoint spot metadata `spotMeta`"];
+const SPOT_MISSING_SUBMIT_PROOF: &[&str] = &["spot order/fill/rounding/fee proof"];
+const HIP3_DISCOVERY_SOURCES: &[&str] = &[
+    "nautilus_hyperliquid::http::query::InfoRequest::all_perp_metas",
+    "nautilus_hyperliquid::http::models::PerpMeta",
+    "nautilus_hyperliquid::http::parse::parse_perp_instruments",
+];
+const HIP3_OFFICIAL_DOCUMENTATION_SOURCES: &[&str] =
+    &["Hyperliquid Info endpoint all perp dex metadata `allPerpMetas`"];
+const HIP3_MISSING_SUBMIT_PROOF: &[&str] = &["HIP-3 asset-id/order/fill/rounding/fee proof"];
+const HIP4_DISCOVERY_SOURCES: &[&str] = &[
+    "nautilus_hyperliquid::http::query::InfoRequest::outcome_meta",
+    "nautilus_hyperliquid::http::models::OutcomeMeta",
+    "nautilus_hyperliquid::http::parse::parse_outcome_instruments",
+];
+const HIP4_OFFICIAL_DOCUMENTATION_SOURCES: &[&str] =
+    &["Hyperliquid Info endpoint outcome metadata `outcomeMeta`"];
+const HIP4_MISSING_SUBMIT_PROOF: &[&str] =
+    &["HIP-4 outcome order/fill/rounding/fee/settlement/userOutcome proof"];
+
+const HYPERLIQUID_PRODUCT_MATRIX: &[HyperliquidProductMatrixEntry] = &[
+    HyperliquidProductMatrixEntry {
+        provider_key: KEY,
+        product_surface: HyperliquidProductSurface::StandardPerps,
+        discovery_status: HyperliquidDiscoveryStatus::Supported,
+        discovery_sources: STANDARD_PERPS_DISCOVERY_SOURCES,
+        official_documentation_sources: STANDARD_PERPS_OFFICIAL_DOCUMENTATION_SOURCES,
+        live_submit_status: HyperliquidSubmitStatus::FailClosed,
+        missing_submit_proof: STANDARD_PERPS_MISSING_SUBMIT_PROOF,
+    },
+    HyperliquidProductMatrixEntry {
+        provider_key: KEY,
+        product_surface: HyperliquidProductSurface::Spot,
+        discovery_status: HyperliquidDiscoveryStatus::Supported,
+        discovery_sources: SPOT_DISCOVERY_SOURCES,
+        official_documentation_sources: SPOT_OFFICIAL_DOCUMENTATION_SOURCES,
+        live_submit_status: HyperliquidSubmitStatus::FailClosed,
+        missing_submit_proof: SPOT_MISSING_SUBMIT_PROOF,
+    },
+    HyperliquidProductMatrixEntry {
+        provider_key: KEY,
+        product_surface: HyperliquidProductSurface::Hip3BuilderPerps,
+        discovery_status: HyperliquidDiscoveryStatus::Supported,
+        discovery_sources: HIP3_DISCOVERY_SOURCES,
+        official_documentation_sources: HIP3_OFFICIAL_DOCUMENTATION_SOURCES,
+        live_submit_status: HyperliquidSubmitStatus::FailClosed,
+        missing_submit_proof: HIP3_MISSING_SUBMIT_PROOF,
+    },
+    HyperliquidProductMatrixEntry {
+        provider_key: KEY,
+        product_surface: HyperliquidProductSurface::Hip4Outcomes,
+        discovery_status: HyperliquidDiscoveryStatus::Supported,
+        discovery_sources: HIP4_DISCOVERY_SOURCES,
+        official_documentation_sources: HIP4_OFFICIAL_DOCUMENTATION_SOURCES,
+        live_submit_status: HyperliquidSubmitStatus::FailClosed,
+        missing_submit_proof: HIP4_MISSING_SUBMIT_PROOF,
+    },
+];
+
+pub fn hyperliquid_product_matrix() -> &'static [HyperliquidProductMatrixEntry] {
+    HYPERLIQUID_PRODUCT_MATRIX
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

@@ -133,6 +133,9 @@ const HYPERLIQUID_PRODUCT_MATRIX_RECORD_KIND: &str = "bolt_v3.hyperliquid_produc
 const HYPERLIQUID_NO_SUBMIT_READINESS_SCHEMA_VERSION: u32 = 1;
 const HYPERLIQUID_NO_SUBMIT_READINESS_RECORD_KIND: &str =
     "bolt_v3.hyperliquid_no_submit_readiness.v1";
+const HYPERLIQUID_LIVE_SUBMIT_APPROVAL_SCHEMA_VERSION: u32 = 1;
+const HYPERLIQUID_LIVE_SUBMIT_APPROVAL_RECORD_KIND: &str =
+    "bolt_v3.hyperliquid_live_submit_approval.v1";
 const DATA_CLIENT_MISSING_BEHAVIOR_PROOFS: &[&str] = &[
     "metadata_behavior",
     "quote_or_book_behavior",
@@ -1246,6 +1249,9 @@ pub enum BoltV3OperatorArtifactError {
     HyperliquidNoSubmitReadinessInvalid {
         field: &'static str,
     },
+    HyperliquidLiveSubmitApprovalInvalid {
+        field: &'static str,
+    },
     SecretInventory(BoltV3SecretError),
     FinancialEnvelope(anyhow::Error),
     MarketSelection(anyhow::Error),
@@ -1630,6 +1636,10 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::HyperliquidNoSubmitReadinessInvalid { field } => write!(
                 f,
                 "Hyperliquid no-submit readiness field `{field}` is invalid or unproven"
+            ),
+            Self::HyperliquidLiveSubmitApprovalInvalid { field } => write!(
+                f,
+                "Hyperliquid live-submit approval field `{field}` is invalid or unproven"
             ),
             Self::SecretInventory(error) => write!(f, "{error}"),
             Self::FinancialEnvelope(error) => write!(f, "{error}"),
@@ -3292,6 +3302,308 @@ fn validate_lowercase_hex_field(
         return Ok(());
     }
     Err(BoltV3OperatorArtifactError::HyperliquidNoSubmitReadinessInvalid { field })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HyperliquidLiveSubmitOrderLimits {
+    pub max_order_count: u32,
+    pub max_order_notional: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidLiveSubmitApprovalBinding {
+    pub base_sha: String,
+    pub provider_id: String,
+    pub product_surface: hyperliquid::HyperliquidProductSurface,
+    pub toml_checksum: String,
+    pub signer_fingerprint: String,
+    pub order_limits: HyperliquidLiveSubmitOrderLimits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidLiveSubmitApprovalInput {
+    pub approval_id: String,
+    pub base_sha: String,
+    pub provider_id: String,
+    pub product_surface: hyperliquid::HyperliquidProductSurface,
+    pub toml_checksum: String,
+    pub signer_fingerprint: String,
+    pub order_limits: HyperliquidLiveSubmitOrderLimits,
+    pub expires_at: u64,
+    pub used_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HyperliquidLiveSubmitApprovalArtifact {
+    pub schema_version: u32,
+    pub record_kind: &'static str,
+    pub provider_key: &'static str,
+    pub approval_id: String,
+    pub base_sha: String,
+    pub provider_id: String,
+    pub product_surface: hyperliquid::HyperliquidProductSurface,
+    pub toml_checksum: String,
+    pub signer_fingerprint: String,
+    pub order_limits: HyperliquidLiveSubmitOrderLimits,
+    pub expires_at: u64,
+    pub used_at: Option<u64>,
+}
+
+pub fn build_hyperliquid_live_submit_approval_artifact(
+    input: HyperliquidLiveSubmitApprovalInput,
+) -> Result<HyperliquidLiveSubmitApprovalArtifact, BoltV3OperatorArtifactError> {
+    validate_hyperliquid_live_submit_approval_input(&input)?;
+    Ok(HyperliquidLiveSubmitApprovalArtifact {
+        schema_version: HYPERLIQUID_LIVE_SUBMIT_APPROVAL_SCHEMA_VERSION,
+        record_kind: HYPERLIQUID_LIVE_SUBMIT_APPROVAL_RECORD_KIND,
+        provider_key: hyperliquid::KEY,
+        approval_id: input.approval_id,
+        base_sha: input.base_sha,
+        provider_id: input.provider_id,
+        product_surface: input.product_surface,
+        toml_checksum: input.toml_checksum,
+        signer_fingerprint: input.signer_fingerprint,
+        order_limits: input.order_limits,
+        expires_at: input.expires_at,
+        used_at: input.used_at,
+    })
+}
+
+pub fn write_hyperliquid_live_submit_approval_artifact(
+    input: HyperliquidLiveSubmitApprovalInput,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let artifact = build_hyperliquid_live_submit_approval_artifact(input)?;
+    write_json_artifact_create_new(output_path, &artifact)
+}
+
+pub fn validate_hyperliquid_live_submit_approval_artifact(
+    artifact: Option<&HyperliquidLiveSubmitApprovalArtifact>,
+    binding: &HyperliquidLiveSubmitApprovalBinding,
+    now_unix_seconds: u64,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let artifact = artifact.ok_or(
+        BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+            field: "approval_artifact",
+        },
+    )?;
+    if artifact.schema_version != HYPERLIQUID_LIVE_SUBMIT_APPROVAL_SCHEMA_VERSION {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "schema_version",
+            },
+        );
+    }
+    if artifact.record_kind != HYPERLIQUID_LIVE_SUBMIT_APPROVAL_RECORD_KIND {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "record_kind",
+            },
+        );
+    }
+    if artifact.provider_key != hyperliquid::KEY {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "provider_key",
+            },
+        );
+    }
+    validate_hyperliquid_live_submit_approval_artifact_fields(artifact)?;
+    validate_hyperliquid_live_submit_binding(binding)?;
+    if artifact.used_at.is_some() {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid { field: "used_at" },
+        );
+    }
+    if artifact.expires_at <= now_unix_seconds {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "expires_at",
+            },
+        );
+    }
+    validate_hyperliquid_live_submit_approval_binding_match(artifact, binding)
+}
+
+fn validate_hyperliquid_live_submit_approval_input(
+    input: &HyperliquidLiveSubmitApprovalInput,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    validate_hyperliquid_live_submit_non_empty_field("approval_id", &input.approval_id)?;
+    validate_hyperliquid_live_submit_base_sha(&input.base_sha)?;
+    validate_hyperliquid_live_submit_non_empty_field("provider_id", &input.provider_id)?;
+    validate_hyperliquid_live_submit_product_surface(input.product_surface)?;
+    validate_hyperliquid_live_submit_sha256_field("toml_checksum", &input.toml_checksum)?;
+    validate_hyperliquid_live_submit_sha256_field("signer_fingerprint", &input.signer_fingerprint)?;
+    validate_hyperliquid_live_submit_order_limits(&input.order_limits)?;
+    if input.expires_at == 0 {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "expires_at",
+            },
+        );
+    }
+    if input.used_at.is_some() {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid { field: "used_at" },
+        );
+    }
+    Ok(())
+}
+
+fn validate_hyperliquid_live_submit_approval_artifact_fields(
+    artifact: &HyperliquidLiveSubmitApprovalArtifact,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    validate_hyperliquid_live_submit_non_empty_field("approval_id", &artifact.approval_id)?;
+    validate_hyperliquid_live_submit_base_sha(&artifact.base_sha)?;
+    validate_hyperliquid_live_submit_non_empty_field("provider_id", &artifact.provider_id)?;
+    validate_hyperliquid_live_submit_product_surface(artifact.product_surface)?;
+    validate_hyperliquid_live_submit_sha256_field("toml_checksum", &artifact.toml_checksum)?;
+    validate_hyperliquid_live_submit_sha256_field(
+        "signer_fingerprint",
+        &artifact.signer_fingerprint,
+    )?;
+    validate_hyperliquid_live_submit_order_limits(&artifact.order_limits)?;
+    if artifact.expires_at == 0 {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "expires_at",
+            },
+        );
+    }
+    Ok(())
+}
+
+fn validate_hyperliquid_live_submit_binding(
+    binding: &HyperliquidLiveSubmitApprovalBinding,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    validate_hyperliquid_live_submit_base_sha(&binding.base_sha)?;
+    validate_hyperliquid_live_submit_non_empty_field("provider_id", &binding.provider_id)?;
+    validate_hyperliquid_live_submit_product_surface(binding.product_surface)?;
+    validate_hyperliquid_live_submit_sha256_field("toml_checksum", &binding.toml_checksum)?;
+    validate_hyperliquid_live_submit_sha256_field(
+        "signer_fingerprint",
+        &binding.signer_fingerprint,
+    )?;
+    validate_hyperliquid_live_submit_order_limits(&binding.order_limits)
+}
+
+fn validate_hyperliquid_live_submit_approval_binding_match(
+    artifact: &HyperliquidLiveSubmitApprovalArtifact,
+    binding: &HyperliquidLiveSubmitApprovalBinding,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if artifact.base_sha != binding.base_sha {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid { field: "base_sha" },
+        );
+    }
+    if artifact.provider_id != binding.provider_id {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "provider_id",
+            },
+        );
+    }
+    if artifact.product_surface != binding.product_surface {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "product_surface",
+            },
+        );
+    }
+    if artifact.toml_checksum != binding.toml_checksum {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "toml_checksum",
+            },
+        );
+    }
+    if artifact.signer_fingerprint != binding.signer_fingerprint {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "signer_fingerprint",
+            },
+        );
+    }
+    if artifact.order_limits != binding.order_limits {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "order_limits",
+            },
+        );
+    }
+    Ok(())
+}
+
+fn validate_hyperliquid_live_submit_non_empty_field(
+    field: &'static str,
+    value: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if value.trim().is_empty() {
+        return Err(BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid { field });
+    }
+    Ok(())
+}
+
+fn validate_hyperliquid_live_submit_base_sha(
+    value: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if value.len() == 40
+        && value
+            .chars()
+            .all(|character| matches!(character, '0'..='9' | 'a'..='f'))
+    {
+        return Ok(());
+    }
+    Err(BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid { field: "base_sha" })
+}
+
+fn validate_hyperliquid_live_submit_sha256_field(
+    field: &'static str,
+    value: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if is_lowercase_sha256(value) {
+        return Ok(());
+    }
+    Err(BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid { field })
+}
+
+fn validate_hyperliquid_live_submit_product_surface(
+    product_surface: hyperliquid::HyperliquidProductSurface,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if product_surface == hyperliquid::HyperliquidProductSurface::StandardPerps {
+        return Ok(());
+    }
+    Err(
+        BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+            field: "product_surface",
+        },
+    )
+}
+
+fn validate_hyperliquid_live_submit_order_limits(
+    order_limits: &HyperliquidLiveSubmitOrderLimits,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if order_limits.max_order_count == 0 {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "order_limits.max_order_count",
+            },
+        );
+    }
+    let max_order_notional =
+        Decimal::from_str(order_limits.max_order_notional.trim()).map_err(|_| {
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "order_limits.max_order_notional",
+            }
+        })?;
+    if max_order_notional <= Decimal::ZERO {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "order_limits.max_order_notional",
+            },
+        );
+    }
+    Ok(())
 }
 
 pub fn write_data_client_behavior_observation_source_from_probe_events(

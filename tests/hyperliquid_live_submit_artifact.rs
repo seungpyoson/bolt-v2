@@ -1,0 +1,107 @@
+//! Hyperliquid live-submit approval artifact tests.
+
+use bolt_v2::{
+    bolt_v3_operator_artifacts::{
+        HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalInput,
+        HyperliquidLiveSubmitOrderLimits, build_hyperliquid_live_submit_approval_artifact,
+        validate_hyperliquid_live_submit_approval_artifact,
+        write_hyperliquid_live_submit_approval_artifact,
+    },
+    bolt_v3_providers::hyperliquid::HyperliquidProductSurface,
+};
+
+const NOW: u64 = 1_000_000;
+
+fn hash(seed: char) -> String {
+    std::iter::repeat_n(seed, 64).collect()
+}
+
+fn git_sha(seed: char) -> String {
+    std::iter::repeat_n(seed, 40).collect()
+}
+
+fn order_limits() -> HyperliquidLiveSubmitOrderLimits {
+    HyperliquidLiveSubmitOrderLimits {
+        max_order_count: 1,
+        max_order_notional: "10.00".to_string(),
+    }
+}
+
+fn binding() -> HyperliquidLiveSubmitApprovalBinding {
+    HyperliquidLiveSubmitApprovalBinding {
+        base_sha: git_sha('a'),
+        provider_id: "hyperliquid-standard-perps-test".to_string(),
+        product_surface: HyperliquidProductSurface::StandardPerps,
+        toml_checksum: hash('b'),
+        signer_fingerprint: hash('c'),
+        order_limits: order_limits(),
+    }
+}
+
+fn approval_input() -> HyperliquidLiveSubmitApprovalInput {
+    let current = binding();
+    HyperliquidLiveSubmitApprovalInput {
+        approval_id: "hl-standard-perps-approval-001".to_string(),
+        base_sha: current.base_sha,
+        provider_id: current.provider_id,
+        product_surface: current.product_surface,
+        toml_checksum: current.toml_checksum,
+        signer_fingerprint: current.signer_fingerprint,
+        order_limits: current.order_limits,
+        expires_at: NOW + 60,
+        used_at: None,
+    }
+}
+
+#[test]
+fn missing_standard_perps_live_submit_approval_fails_closed() {
+    let error = validate_hyperliquid_live_submit_approval_artifact(None, &binding(), NOW)
+        .expect_err("standard perps live submit must reject a missing approval artifact");
+
+    assert!(
+        error.to_string().contains("approval_artifact"),
+        "missing approval error must name the gate: {error}"
+    );
+}
+
+#[test]
+fn standard_perps_live_submit_approval_artifact_binds_runtime_fields() {
+    let approval = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+
+    validate_hyperliquid_live_submit_approval_artifact(Some(&approval), &binding(), NOW)
+        .expect("matching unexpired unused approval artifact should validate");
+    assert_eq!(
+        approval.record_kind,
+        "bolt_v3.hyperliquid_live_submit_approval.v1"
+    );
+    assert_eq!(approval.provider_key, "HYPERLIQUID");
+    assert_eq!(
+        approval.product_surface,
+        HyperliquidProductSurface::StandardPerps
+    );
+    assert_eq!(approval.used_at, None);
+}
+
+#[test]
+fn standard_perps_live_submit_approval_artifact_writes_operator_json() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let output_path = temp.path().join("hyperliquid-live-submit-approval.json");
+
+    let written = write_hyperliquid_live_submit_approval_artifact(approval_input(), &output_path)
+        .expect("bounded approval artifact should write");
+    let rendered = std::fs::read_to_string(&written.path).expect("artifact should read");
+    let artifact: serde_json::Value =
+        serde_json::from_str(&rendered).expect("artifact should parse");
+
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.hyperliquid_live_submit_approval.v1"
+    );
+    assert_eq!(artifact["provider_key"], "HYPERLIQUID");
+    assert_eq!(artifact["product_surface"], "standard_perps");
+    assert_eq!(artifact["approval_id"], "hl-standard-perps-approval-001");
+    assert_eq!(artifact["order_limits"]["max_order_count"], 1);
+    assert_eq!(artifact["order_limits"]["max_order_notional"], "10.00");
+    assert!(artifact["used_at"].is_null());
+}

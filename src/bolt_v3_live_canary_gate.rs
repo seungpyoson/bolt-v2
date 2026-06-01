@@ -740,6 +740,7 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
         initial_unix_seconds,
         initial_unix_seconds,
         approval_consumption_expectation,
+        false,
     )
     .await?;
 
@@ -802,6 +803,7 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
         late_unix_seconds,
         initial_unix_seconds,
         approval_consumption_expectation,
+        true,
     )
     .await?;
 
@@ -886,6 +888,13 @@ fn parse_positive_decimal(
     Ok(decimal)
 }
 
+// Eight distinct, individually-required inputs (config, live-canary block,
+// approval id, notional cap, the round's approval-window clock, the
+// consumption-freshness clock, the consumption expectation, and the
+// post-content report-binding flag) that do not form a meaningful group; the
+// 7-arg threshold is a heuristic, so it is allowed here rather than bundled
+// into a synthetic struct that would not improve clarity.
+#[allow(clippy::too_many_arguments)]
 async fn validate_operator_evidence(
     loaded: &LoadedBoltV3Config,
     block: &LiveCanaryBlock,
@@ -894,6 +903,12 @@ async fn validate_operator_evidence(
     approval_window_unix_seconds: u64,
     approval_consumption_freshness_unix_seconds: u64,
     approval_consumption_expectation: ApprovalConsumptionExpectation,
+    // The no-submit readiness report-to-operator-envelope binding reads and
+    // hashes the report file, so it must run AFTER the gate's dedicated report
+    // read + content/size validation (true only on the post-content
+    // re-validation round) -- otherwise it masks the precise ReadinessReport*
+    // read/size errors and the approval-consumption error.
+    run_report_binding: bool,
 ) -> Result<(), BoltV3LiveCanaryGateError> {
     let root_path = &loaded.root_path;
     let evidence = block
@@ -980,14 +995,6 @@ async fn validate_operator_evidence(
             block.reference_quote_max_age_seconds,
             approval_window_unix_seconds,
         )?;
-        validate_operator_no_submit_readiness_report_binding(
-            root_path,
-            block,
-            evidence,
-            &approval_envelope,
-            proof_policy_enabled,
-        )
-        .await?;
         validate_operator_canary_proof_order_intent(
             root_path,
             block,
@@ -1021,6 +1028,23 @@ async fn validate_operator_evidence(
         approval_consumption_expectation,
     )
     .await?;
+    // Anti-forgery seal check, mandatory on EVERY live-node arming path (the
+    // readiness report is read and consumed to arm submit_admission whether or
+    // not the proof policy is enabled). Run it only on the post-content
+    // re-validation round so the dedicated report read + content/size checks
+    // and the approval-consumption check surface their precise errors first;
+    // here it binds the live report file to the operator-sealed envelope hash so
+    // a forged all-satisfied report cannot arm real orders on the production
+    // (proof-disabled) path.
+    if run_report_binding {
+        validate_operator_no_submit_readiness_report_binding(
+            root_path,
+            block,
+            evidence,
+            &approval_envelope,
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -1257,7 +1281,6 @@ async fn validate_operator_no_submit_readiness_report_binding(
     block: &LiveCanaryBlock,
     evidence: &LiveCanaryOperatorEvidenceBlock,
     approval_envelope: &Phase8OperatorApprovalEnvelopeFile,
-    proof_policy_enabled: bool,
 ) -> Result<(), BoltV3LiveCanaryGateError> {
     let expected_no_submit_readiness_report_sha256 = required_optional_operator_evidence_field(
         "no_submit_readiness_report_sha256",
@@ -1275,15 +1298,18 @@ async fn validate_operator_no_submit_readiness_report_binding(
     // via the approval-consumption record; checking the live report content
     // against it rejects a hand-written all-satisfied report placed at the
     // configured path even when the self-declared TOML hash above is updated to
-    // match the forged file. On the proof-policy path (the path that fires the
-    // live canary order) the envelope binding MUST be present, so the gate
-    // fails closed on absence.
+    // match the forged file. The report is consumed to arm submit_admission on
+    // EVERY arming path — both the proof-policy canary order and the
+    // proof-disabled production strategy run that fires real orders — so the
+    // envelope binding is ALWAYS mandatory and the gate fails closed on a
+    // missing envelope hash on both the proof canary and the production run
+    // (passing `true` regardless of proof_policy state).
     let envelope_no_submit_readiness_report_sha256 = approval_envelope_bound_sha256(
         approval_envelope
             .no_submit_readiness_report_sha256
             .as_deref(),
         "no_submit_readiness_report_sha256",
-        proof_policy_enabled,
+        true,
     )?;
 
     let path = resolve_report_path(root_path, block)?;

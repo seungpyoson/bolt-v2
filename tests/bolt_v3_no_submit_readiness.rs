@@ -35,7 +35,7 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
-    let loaded = loaded_with_live_canary(
+    let mut loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
             approval_id: "operator-approved-canary-001".to_string(),
@@ -71,6 +71,18 @@ async fn no_submit_readiness_schema_matches_live_canary_gate_contract() {
     report
         .write_redacted_json_with_max_bytes(&report_path, 4096)
         .expect("report should be written");
+    // Seal the genuine readiness-report hash into the operator evidence +
+    // envelope now that the report file exists: the report binding is mandatory
+    // on the production (proof-disabled) path too.
+    support::seal_no_submit_readiness_report_into_operator_evidence(
+        loaded
+            .root
+            .live_canary
+            .as_mut()
+            .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+            .expect("live canary fixture should carry operator evidence"),
+        &report_path,
+    );
 
     check_bolt_v3_live_canary_gate(&loaded)
         .await
@@ -303,7 +315,7 @@ fn no_submit_readiness_redaction_marker_survives_secret_values_inside_marker() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn no_submit_readiness_failed_connect_preserves_redacted_stage_details_and_rejects_gate() {
-    let (_tempdir, loaded, metadata) = loaded_with_temp_live_canary().await;
+    let (_tempdir, mut loaded, metadata) = loaded_with_temp_live_canary().await;
     let secret = "stage-secret-4242";
     let report = run_bolt_v3_no_submit_readiness_from_stage_results(
         metadata,
@@ -342,6 +354,13 @@ async fn no_submit_readiness_failed_connect_preserves_redacted_stage_details_and
     report
         .write_configured_redacted_json(&loaded)
         .expect("failed report should still be written as redacted evidence");
+    // Seal the genuine (failed-connect) report hash into the envelope so the
+    // mandatory report binding passes and the gate proceeds to the intended
+    // stage-content rejection. The report binding is mandatory on the production
+    // (proof-disabled) path too; without sealing the gate would short-circuit on
+    // MissingOperatorEvidenceField instead of the unsatisfied-stage rejection
+    // this test asserts.
+    seal_configured_no_submit_readiness_report(&mut loaded);
     let error = check_bolt_v3_live_canary_gate(&loaded)
         .await
         .expect_err("failed connect and skipped reference readiness must reject the gate");
@@ -407,7 +426,7 @@ fn no_submit_readiness_fails_when_required_reference_instrument_missing_from_cac
 
 #[tokio::test(flavor = "current_thread")]
 async fn no_submit_readiness_cache_only_reference_evidence_cannot_pass_live_canary_gate() {
-    let (_tempdir, loaded, metadata) = loaded_with_temp_live_canary_and_reference_data().await;
+    let (_tempdir, mut loaded, metadata) = loaded_with_temp_live_canary_and_reference_data().await;
     let cached_instrument_ids = loaded
         .strategies
         .iter()
@@ -443,6 +462,10 @@ async fn no_submit_readiness_cache_only_reference_evidence_cannot_pass_live_cana
     report
         .write_configured_redacted_json(&loaded)
         .expect("fail-closed cache-only report should still be written");
+    // Seal the genuine (cache-only) report hash into the envelope so the
+    // mandatory report binding passes and the gate proceeds to the intended
+    // reference-readiness rejection rather than short-circuiting on the binding.
+    seal_configured_no_submit_readiness_report(&mut loaded);
     let error = check_bolt_v3_live_canary_gate(&loaded)
         .await
         .expect_err("cache-only reference evidence must reject the gate");
@@ -1342,4 +1365,30 @@ fn loaded_with_live_canary(
     let mut root = loaded.root;
     root.live_canary = Some(live_canary);
     LoadedBoltV3Config { root, ..loaded }
+}
+
+/// Seals the genuine no-submit readiness-report file (at the path configured in
+/// `loaded.root.live_canary`) into the operator evidence + approval envelope.
+///
+/// The no-submit report binding is mandatory on the production (proof-disabled)
+/// path. Callers write the report to the configured path first, then call this
+/// so the mandatory envelope binding passes (and any rejection comes from the
+/// scenario under test, not a short-circuit on the binding).
+fn seal_configured_no_submit_readiness_report(loaded: &mut LoadedBoltV3Config) {
+    let report_path = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .map(|live_canary| std::path::PathBuf::from(&live_canary.no_submit_readiness_report_path))
+        .expect("live canary fixture should configure a readiness-report path");
+    let operator_evidence = loaded
+        .root
+        .live_canary
+        .as_mut()
+        .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+        .expect("live canary fixture should carry operator evidence");
+    support::seal_no_submit_readiness_report_into_operator_evidence(
+        operator_evidence,
+        &report_path,
+    );
 }

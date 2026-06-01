@@ -703,8 +703,9 @@ async fn live_canary_gate_accepts_non_circular_approval_envelope_schema() {
     let report_path = tempdir.path().join("no-submit-readiness.json");
     write_no_submit_report(&report_path, &[]);
     let mut operator_evidence = valid_operator_evidence();
-    let envelope = valid_approval_envelope_value(&operator_evidence);
-    bind_approval_envelope_value(&mut operator_evidence, envelope);
+    // Seal the genuine readiness-report hash into the envelope: the report
+    // binding is mandatory on the production (proof-disabled) path too.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -742,6 +743,11 @@ async fn live_canary_gate_accepts_envelope_bound_gate_session() {
     let report_path = tempdir.path().join("no-submit-readiness.json");
     write_no_submit_report(&report_path, &[]);
     let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine readiness-report hash into the evidence first: the report
+    // binding is mandatory on the production (proof-disabled) path too, so the
+    // self-declared TOML hash must be present before the envelope is sealed.
+    let report_bytes = std::fs::read(&report_path).expect("readiness report should read");
+    operator_evidence.no_submit_readiness_report_sha256 = Some(sha256_hex(&report_bytes));
     // Seal the gate-session hash into the envelope (production behavior) and
     // confirm the gate accepts a gate-session file whose content matches the
     // sealed envelope value.
@@ -948,6 +954,26 @@ fn configure_proof_policy_evidence(
 
     // Rebuild the envelope so it seals both the refreshed gate-session hash and
     // the order-intent hash, then rebind the envelope file + consumption proof.
+    let envelope = valid_approval_envelope_value(operator_evidence);
+    bind_approval_envelope_value(operator_evidence, envelope);
+}
+
+/// Seals the genuine no-submit readiness-report file hash into the operator
+/// evidence for a NON-proof (production strategy run) fixture: sets the
+/// self-declared TOML hash and rebuilds the approval envelope so it carries the
+/// same hash, then rebinds the envelope file + consumption proof.
+///
+/// The no-submit report binding is mandatory on EVERY arming path — the
+/// proof-disabled production run reads the report and arms `submit_admission`
+/// just like the proof canary — so a legitimate production-path fixture must
+/// seal the report hash into the envelope exactly as the production producer
+/// does. The caller writes the report file before invoking this helper.
+fn seal_no_submit_readiness_report_into_production_evidence(
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    report_path: &std::path::Path,
+) {
+    let report_bytes = std::fs::read(report_path).expect("readiness report should read");
+    operator_evidence.no_submit_readiness_report_sha256 = Some(sha256_hex(&report_bytes));
     let envelope = valid_approval_envelope_value(operator_evidence);
     bind_approval_envelope_value(operator_evidence, envelope);
 }
@@ -1296,6 +1322,195 @@ async fn live_canary_gate_rejects_missing_envelope_no_submit_readiness_report_bi
             panic!("expected missing envelope readiness-report binding rejection, got {other:?}")
         }
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_no_submit_readiness_report_swap_after_toml_self_hash_update_on_production_path()
+ {
+    // P4 forge attack on the PRODUCTION (proof-disabled) path: the no-submit
+    // readiness report is read and consumed to arm submit_admission on the
+    // proof-disabled production strategy run too, so its envelope binding is
+    // mandatory there. An adversary who replaces the report at the configured
+    // path with a hand-written all-satisfied report and updates ONLY the
+    // self-declared TOML hash must still be rejected by the operator-sealed
+    // envelope. Pre-fix this swap armed real orders; post-fix it fails closed.
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the ORIGINAL readiness-report hash into the envelope (and TOML),
+    // mirroring an operator approval of the probe-produced report, with proof
+    // policy DISABLED.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
+    let original_report_sha256 = operator_evidence
+        .no_submit_readiness_report_sha256
+        .clone()
+        .expect("production evidence should bind readiness report");
+
+    // Forge a still-fresh, still-all-satisfied report with a different
+    // generated_at so its content (hence sha256) differs from the approved one.
+    write_no_submit_report_at(
+        &report_path,
+        &[],
+        current_unix_seconds_for_test().saturating_sub(1),
+    );
+    let forged_report_bytes = std::fs::read(&report_path).expect("forged report should read");
+    let forged_report_sha256 = sha256_hex(&forged_report_bytes);
+    assert_ne!(
+        forged_report_sha256, original_report_sha256,
+        "forged readiness report must change the file hash"
+    );
+    // Update only the TOML self-hash so the self-declared check passes; the
+    // envelope hash is intentionally left bound to the original report.
+    operator_evidence.no_submit_readiness_report_sha256 = Some(forged_report_sha256);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("post-approval readiness-report swap must fail closed on the production path");
+
+    match error {
+        BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch { field, .. } => {
+            assert_eq!(
+                field, "no_submit_readiness_report_sha256",
+                "production-path readiness-report swap must be rejected by the envelope binding, got {field}"
+            );
+        }
+        other => {
+            panic!(
+                "expected production-path approval-envelope readiness-report binding rejection, got {other:?}"
+            )
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_missing_envelope_no_submit_readiness_report_binding_on_production_path()
+ {
+    // On the production (proof-disabled) path the report binding is mandatory
+    // too, so an envelope that OMITS no_submit_readiness_report_sha256 (a
+    // legacy/forged envelope) must fail closed even though the self-declared
+    // TOML hash is present.
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine report hash into the TOML evidence, then build an envelope
+    // that omits the report binding while keeping the self-declared TOML hash.
+    let report_bytes = std::fs::read(&report_path).expect("readiness report should read");
+    operator_evidence.no_submit_readiness_report_sha256 = Some(sha256_hex(&report_bytes));
+    let mut envelope = valid_approval_envelope_value(&operator_evidence);
+    envelope
+        .as_object_mut()
+        .expect("approval envelope should be an object")
+        .remove("no_submit_readiness_report_sha256");
+    bind_approval_envelope_value(&mut operator_evidence, envelope);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded).await.expect_err(
+        "missing envelope readiness-report binding must fail closed on the production path",
+    );
+
+    match error {
+        BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field } => {
+            assert_eq!(
+                field, "no_submit_readiness_report_sha256",
+                "missing envelope readiness-report binding must fail closed on production, got {field}"
+            );
+        }
+        other => {
+            panic!(
+                "expected missing envelope readiness-report binding rejection on production, got {other:?}"
+            )
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_accepts_envelope_bound_no_submit_readiness_report_on_production_path() {
+    // A legitimate production (proof-disabled) run with the genuine report hash
+    // sealed into both the self-declared TOML evidence and the operator-approval
+    // envelope must still pass the gate.
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine readiness-report file hash into the envelope (and the
+    // self-declared TOML hash) — production producer behavior, proof DISABLED.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let report = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("envelope-bound no-submit readiness report should pass on the production path");
+
+    assert_eq!(report.approval_id(), "operator-approved-canary-001");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2449,6 +2664,10 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
     write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine readiness-report hash into the envelope: the report
+    // binding is mandatory on the production (proof-disabled) path too.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
 
     let loaded = loaded_with_live_canary(
         loaded,
@@ -2468,7 +2687,7 @@ async fn live_canary_gate_accepts_satisfied_no_submit_report_with_trimmed_capped
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
             proof_policy: None,
-            operator_evidence: Some(valid_operator_evidence()),
+            operator_evidence: Some(operator_evidence),
         },
     );
 
@@ -2497,6 +2716,10 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let report_path = tempdir.path().join("no-submit-readiness.json");
     write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine readiness-report hash into the envelope: the report
+    // binding is mandatory on the production (proof-disabled) path too.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
 
     let loaded = loaded_with_live_canary(
         loaded,
@@ -2516,7 +2739,7 @@ async fn live_canary_gate_accepts_notional_equal_to_root_risk_cap() {
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
             proof_policy: None,
-            operator_evidence: Some(valid_operator_evidence()),
+            operator_evidence: Some(operator_evidence),
         },
     );
 
@@ -3442,6 +3665,12 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
     let report_len = std::fs::metadata(&report_path)
         .expect("report metadata should be readable")
         .len();
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine readiness-report hash into the envelope: the report
+    // binding is mandatory on the production (proof-disabled) path too. Sealing
+    // rewrites only the envelope + consumption proof, not the report file, so
+    // the captured report_len byte cap still matches the on-disk report exactly.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -3460,7 +3689,7 @@ async fn live_canary_gate_accepts_report_exactly_at_configured_byte_cap() {
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
             proof_policy: None,
-            operator_evidence: Some(valid_operator_evidence()),
+            operator_evidence: Some(operator_evidence),
         },
     );
 
@@ -3677,6 +3906,10 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
         STAGE_KEY,
         &[(CONTROLLED_CONNECT_STAGE, "SATISFIED")],
     );
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the genuine readiness-report hash into the envelope: the report
+    // binding is mandatory on the production (proof-disabled) path too.
+    seal_no_submit_readiness_report_into_production_evidence(&mut operator_evidence, &report_path);
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -3695,7 +3928,7 @@ async fn live_canary_gate_accepts_case_insensitive_satisfied_status() {
             egress_identity_observed_max_bytes: None,
             approved_egress_identity_sha256: None,
             proof_policy: None,
-            operator_evidence: Some(valid_operator_evidence()),
+            operator_evidence: Some(operator_evidence),
         },
     );
 

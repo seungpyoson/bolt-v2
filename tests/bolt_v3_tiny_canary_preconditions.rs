@@ -2260,6 +2260,13 @@ async fn operator_approval_consumption_writer_output_is_accepted_by_live_gate() 
         .expect("operator evidence should exist");
     operator_evidence.approval_consumption_path =
         approval_consumption_path.to_string_lossy().to_string();
+    // Seal the genuine readiness-report hash into the operator evidence +
+    // envelope before the producer reads `approval_envelope_sha256`: the report
+    // binding is mandatory on the production (proof-disabled) path too.
+    support::seal_no_submit_readiness_report_into_operator_evidence(
+        operator_evidence,
+        &report_path,
+    );
 
     let envelope = Phase8OperatorApprovalEnvelope {
         head_sha: operator_evidence.head_sha.clone(),

@@ -428,6 +428,63 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
     }
 }
 
+/// Seals the genuine no-submit readiness-report file hash into a NON-proof
+/// (proof-disabled production strategy run) operator-evidence fixture.
+///
+/// The no-submit readiness report is read and consumed to arm `submit_admission`
+/// on EVERY live-node path — both the proof-policy canary and the proof-disabled
+/// production run — so the gate now binds the report to the operator-sealed
+/// approval envelope unconditionally. A legitimate production-path fixture must
+/// therefore seal the report hash into the self-declared TOML evidence AND the
+/// approval envelope exactly as the production producer does. This helper:
+///   1. sets the self-declared TOML `no_submit_readiness_report_sha256`,
+///   2. inserts the same hash into the on-disk approval-envelope JSON and
+///      recomputes `approval_envelope_sha256`,
+///   3. rewrites the approval-consumption proof so its bound
+///      `approval_envelope_sha256` matches the rewritten envelope.
+/// The caller must write the report file before invoking this helper.
+pub fn seal_no_submit_readiness_report_into_operator_evidence(
+    evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    report_path: &Path,
+) {
+    let report_bytes = fs::read(report_path).expect("readiness report should read");
+    let report_sha256 = sha256_hex(&report_bytes);
+    evidence.no_submit_readiness_report_sha256 = Some(report_sha256.clone());
+
+    let envelope_path = Path::new(&evidence.approval_envelope_path);
+    let mut envelope: serde_json::Value =
+        serde_json::from_slice(&fs::read(envelope_path).expect("approval envelope should read"))
+            .expect("approval envelope should parse");
+    envelope
+        .as_object_mut()
+        .expect("approval envelope should be an object")
+        .insert(
+            "no_submit_readiness_report_sha256".to_string(),
+            serde_json::json!(report_sha256),
+        );
+    let envelope_bytes = serde_json::to_vec(&envelope).expect("approval envelope should re-encode");
+    fs::write(envelope_path, &envelope_bytes).expect("approval envelope should rewrite");
+    evidence.approval_envelope_sha256 = sha256_hex(&envelope_bytes);
+
+    let consumption_path = Path::new(&evidence.approval_consumption_path);
+    let mut consumption: serde_json::Value = serde_json::from_slice(
+        &fs::read(consumption_path).expect("approval consumption proof should read"),
+    )
+    .expect("approval consumption proof should parse");
+    consumption
+        .as_object_mut()
+        .expect("approval consumption proof should be an object")
+        .insert(
+            "approval_envelope_sha256".to_string(),
+            serde_json::json!(evidence.approval_envelope_sha256),
+        );
+    fs::write(
+        consumption_path,
+        serde_json::to_vec(&consumption).expect("approval consumption proof should re-encode"),
+    )
+    .expect("approval consumption proof should rewrite");
+}
+
 fn write_valid_decision_evidence_chain(path: &Path, now_ms: u64, notional: &str) {
     use bolt_v2::bolt_v3_decision_evidence::{
         BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3GateEvidenceIdentity,
@@ -664,6 +721,10 @@ pub fn loaded_bolt_v3_live_canary_with_satisfied_report(
     let report_path = temp_path.join("no-submit-readiness.json");
     write_satisfied_no_submit_readiness_report(&report_path, &loaded.config_bundle_checksum);
     let readiness_report_max_age_seconds = 60;
+    // Seal the genuine readiness-report hash into the operator evidence + envelope:
+    // the report binding is mandatory on the production (proof-disabled) path too.
+    let mut operator_evidence = valid_live_canary_operator_evidence();
+    seal_no_submit_readiness_report_into_operator_evidence(&mut operator_evidence, &report_path);
     loaded.root.live_canary = Some(bolt_v2::bolt_v3_config::LiveCanaryBlock {
         approval_id: "operator-approved-canary-001".to_string(),
         no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
@@ -680,7 +741,7 @@ pub fn loaded_bolt_v3_live_canary_with_satisfied_report(
         egress_identity_observed_max_bytes: None,
         approved_egress_identity_sha256: None,
         proof_policy: None,
-        operator_evidence: Some(valid_live_canary_operator_evidence()),
+        operator_evidence: Some(operator_evidence),
     });
     loaded
 }

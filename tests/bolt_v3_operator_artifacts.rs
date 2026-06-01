@@ -4468,7 +4468,9 @@ fn on_order_expired(&mut self, event: OrderExpired) {
     .expect_err("unguarded terminal instrument should not prove abort lifecycle");
 
     assert!(
-        error.to_string().contains("terminal_event_instrument_guard"),
+        error
+            .to_string()
+            .contains("terminal_event_instrument_guard"),
         "terminal guard error should identify source proof field: {error}"
     );
 }

@@ -189,13 +189,24 @@ impl MakerFamily for BinaryFamily {
         if !is_positive_finite(yes_price) || !is_positive_finite(no_price) {
             return None;
         }
-        // The two bids must leave positive edge: a YES bid plus a NO bid summing
-        // to ≥ 1 is a guaranteed loss, since exactly one token resolves to 1. The
-        // floor on the half-spread normally guarantees this; this is the final
-        // fail-closed net. Together with the per-leg sanitize_probability above,
-        // this is the binary analogue of the perp post-skew bracket guard — it
-        // re-asserts a valid layout AFTER the inventory skew, not just before.
+        // Positive-edge net: a YES bid + NO bid summing to ≥ 1 is a guaranteed
+        // loss (exactly one token resolves to 1). NOTE the skew cancels in this
+        // sum — yes + no = 1 − (resolved_ask − resolved_bid) — so this guard only
+        // proves the band still has positive width; it is NOT a post-skew bracket
+        // check and gives no protection against the skew sliding the pair off fair.
         if yes_price + no_price >= UNIT_F64 {
+            return None;
+        }
+        // Post-skew bracket guard (the binary analogue of the perp guard): the
+        // implied YES market is [yes_price, UNIT_F64 − no_price]. Inventory skew
+        // may lean the pair but must not slide its whole market to one side of the
+        // fair p_up — a |skew| larger than the half-spread otherwise rests a quote
+        // entirely above or below fair (e.g. p_up 0.50, band [0.40, 0.60], skew
+        // 0.20 → YES market [0.20, 0.40], wholly below fair), which the sum guard
+        // above cannot catch. Reducing inventory past this point is the job of the
+        // graduated reduce-only / hard-flat states, not the two-sided skew term.
+        let yes_ask = UNIT_F64 - no_price;
+        if !(yes_price <= p_up && p_up <= yes_ask) {
             return None;
         }
         Some(QuoteTargets {
@@ -239,8 +250,9 @@ impl MakerFamily for LinearPerpFamily {
         // guards alone would admit a |skew| > half_spread that drifts the whole
         // quote off fair (e.g. a large negative skew puts both quotes above fair)
         // — the perp analogue of the crossed band the shared resolver rejects
-        // pre-skew. (The binary impl gets this for free from its
-        // sanitize_probability + yes+no<1 guards below.)
+        // pre-skew. (BinaryFamily enforces the same invariant with its own
+        // explicit post-skew bracket guard; the yes+no<1 sum guard does NOT
+        // cover it because the skew cancels in that sum.)
         if !(bid <= inputs.fair && inputs.fair <= ask) {
             return None;
         }
@@ -301,14 +313,34 @@ mod tests {
     #[test]
     fn binary_inventory_skew_leans_yes_below_no_adjustment() {
         let flat = BinaryFamily
-            .quote_targets(symmetric_inputs(0.50, 0.02, 0.0))
+            .quote_targets(symmetric_inputs(0.50, 0.04, 0.0))
             .unwrap();
         let long_yes = BinaryFamily
-            .quote_targets(symmetric_inputs(0.50, 0.02, 0.05))
+            .quote_targets(symmetric_inputs(0.50, 0.04, 0.02))
             .unwrap();
-        // A positive skew (long YES) lowers the YES bid and raises the NO bid.
+        // A positive skew (long YES) within the half-spread lowers the YES bid
+        // and raises the NO bid while the implied market still brackets fair.
         assert!(long_yes.leg_a.price < flat.leg_a.price);
         assert!(long_yes.leg_b.price > flat.leg_b.price);
+    }
+
+    #[test]
+    fn binary_rejects_skew_that_flips_quotes_off_fair() {
+        // A skew larger than the half-spread slides the whole implied YES market
+        // to one side of fair while each leg stays a valid probability and the
+        // sum stays < 1 (the skew cancels in that sum) — the binary analogue of
+        // the perp crossed band. It must fail closed post-skew.
+        assert!(
+            BinaryFamily
+                .quote_targets(symmetric_inputs(0.50, 0.02, 0.20))
+                .is_none()
+        );
+        // A lean within the half-spread still quotes and keeps fair bracketed.
+        let leaned = BinaryFamily
+            .quote_targets(symmetric_inputs(0.50, 0.04, 0.02))
+            .expect("a skew within the half-spread still brackets fair");
+        // Implied YES market [yes_bid, 1 − no_bid] must bracket fair 0.50.
+        assert!(leaned.leg_a.price <= 0.50 && 0.50 <= UNIT_F64 - leaned.leg_b.price);
     }
 
     #[test]

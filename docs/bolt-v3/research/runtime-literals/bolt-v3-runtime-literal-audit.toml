@@ -15240,6 +15240,14 @@ reason = "This initializes the submit-sizer capital-pool bootstrap snapshot time
 [[allowed]]
 path = "src/bolt_v3_live_node.rs"
 kind = "string"
+literal = '''"position_sizer_runtime_feed"'''
+context = '''"position_sizer_runtime_feed",'''
+classification = "live_node_debug_field_label"
+reason = "This is a Debug field label reporting whether the position-sizer runtime feed is installed; it does not configure trading behavior."
+
+[[allowed]]
+path = "src/bolt_v3_live_node.rs"
+kind = "string"
 literal = '''"explicit_clip_to_available"'''
 context = '''"explicit_clip_to_available" => SizingMode::ExplicitClipToAvailable,'''
 classification = "capital_pool_config_enum_value"

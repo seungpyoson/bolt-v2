@@ -19,6 +19,7 @@ pub mod bolt_v3_operator_artifacts;
 pub mod bolt_v3_order_intent;
 pub mod bolt_v3_position_contract;
 pub mod bolt_v3_position_sizer;
+pub mod bolt_v3_position_sizer_runtime_feed;
 pub mod bolt_v3_providers;
 pub mod bolt_v3_readiness;
 pub mod bolt_v3_secrets;

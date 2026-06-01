@@ -850,6 +850,10 @@ fn live_node_build_carries_single_enabled_position_sizer_into_submit_admission()
         runtime.position_sizer_configured(),
         "live build must carry enabled capital-pool submit enforcement into shared submit admission"
     );
+    assert!(
+        runtime.position_sizer_runtime_feed_configured(),
+        "live build must subscribe enabled submit enforcement to NT order lifecycle events"
+    );
 }
 
 #[test]
@@ -913,6 +917,103 @@ fn configured_submit_sizer_reserves_entry_from_compiled_order_values() {
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
+}
+
+#[test]
+fn configured_submit_sizer_refreshes_bootstrap_pool_snapshot_from_nt_state() {
+    let admission = position_sized_admission_with_pool_observed_at(0);
+    arm_default(&admission);
+    admission.update_position_sizing_state(fresh_sizing_state(900));
+
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh NT state should refresh bootstrap pool evidence before reserve");
+}
+
+#[test]
+fn configured_submit_sizer_reserves_no_outcome_buy_when_instrument_matches_nt_state() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_state(fresh_sizing_state(900));
+
+    let mut request = sized_submit_request("client-order-1");
+    request.instrument_id = "condition-no.POLYMARKET".to_string();
+    request
+        .position_sizing
+        .as_mut()
+        .expect("sized request should carry evidence")
+        .prediction_market_outcome = Some(PredictionMarketOutcomeSide::No);
+
+    let permit = admission
+        .admit_at(&request, 1_000)
+        .expect("NO outcome buy should reserve when instrument matches NT state");
+
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    drop(permit);
+}
+
+#[test]
+fn configured_submit_sizer_uses_no_inventory_for_no_outcome_sell() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    let mut state = fresh_sizing_state(900);
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut state.product_state;
+    product.yes_position = Decimal::ZERO;
+    product.no_position = Decimal::new(10, 0);
+    admission.update_position_sizing_state(state);
+
+    let mut request = sized_submit_request("client-order-1");
+    request.instrument_id = "condition-no.POLYMARKET".to_string();
+    let evidence = request
+        .position_sizing
+        .as_mut()
+        .expect("sized request should carry evidence");
+    evidence.prediction_market_outcome = Some(PredictionMarketOutcomeSide::No);
+    evidence.side = BoltV3CompiledOrderSide::Sell;
+
+    let permit = admission
+        .admit_at(&request, 1_000)
+        .expect("NO outcome sell should use NO inventory");
+
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(63, 1))
+    );
+    drop(permit);
+}
+
+#[test]
+fn configured_submit_sizer_allows_no_outcome_risk_reducing_exit_without_reservation() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    let mut state = fresh_sizing_state(900);
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut state.product_state;
+    product.yes_position = Decimal::ZERO;
+    product.no_position = Decimal::new(10, 0);
+    admission.update_position_sizing_state(state);
+
+    let mut request = sized_submit_request("client-order-1");
+    request.intent_kind = BoltV3SubmitIntentKind::RiskReducingExit;
+    request.instrument_id = "condition-no.POLYMARKET".to_string();
+    let evidence = request
+        .position_sizing
+        .as_mut()
+        .expect("sized request should carry evidence");
+    evidence.prediction_market_outcome = Some(PredictionMarketOutcomeSide::No);
+    evidence.side = BoltV3CompiledOrderSide::Sell;
+
+    let permit = admission
+        .admit_at(&request, 1_000)
+        .expect("NO risk-reducing exit should admit against NO inventory");
+
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    drop(permit);
 }
 
 #[test]
@@ -999,26 +1100,10 @@ fn configured_submit_sizer_unknown_lifecycle_client_order_id_returns_noop_outcom
 }
 
 #[test]
-fn configured_submit_sizer_rejects_no_outcome_and_instrument_mismatch() {
+fn configured_submit_sizer_rejects_outcome_instrument_mismatch() {
     let admission = position_sized_admission();
     arm_default(&admission);
     admission.update_position_sizing_state(fresh_sizing_state(900));
-
-    let mut no_outcome = sized_submit_request("client-order-1");
-    no_outcome
-        .position_sizing
-        .as_mut()
-        .expect("sized request should carry evidence")
-        .prediction_market_outcome = Some(PredictionMarketOutcomeSide::No);
-    let error = admission
-        .admit_at(&no_outcome, 1_000)
-        .expect_err("NO outcome is unsupported in this slice");
-    assert!(matches!(
-        error,
-        BoltV3SubmitAdmissionError::PositionSizingRejected {
-            reason: BoltV3PositionSizerRejectReason::NoOutcomeUnsupported
-        }
-    ));
 
     let mut mismatch = sized_submit_request("client-order-2");
     mismatch.instrument_id = "other.POLYMARKET".to_string();
@@ -1049,6 +1134,26 @@ fn configured_submit_sizer_rejects_collateral_mismatch_from_nt_state() {
         error,
         BoltV3SubmitAdmissionError::PositionSizingRejected {
             reason: BoltV3PositionSizerRejectReason::CollateralCurrencyMismatch
+        }
+    ));
+}
+
+#[test]
+fn configured_submit_sizer_rejects_account_mismatch_from_nt_state() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    let mut state = fresh_sizing_state(900);
+    state.portfolio.account_id = "POLYMARKET-002".to_string();
+    admission.update_position_sizing_state(state);
+
+    let error = admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect_err("account mismatch between configured pool and NT state must reject");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::PositionSizingRejected {
+            reason: BoltV3PositionSizerRejectReason::AccountMismatch
         }
     ));
 }
@@ -1192,15 +1297,22 @@ fn valid_risk_reducing_exit_proof() -> BoltV3RiskReducingExitProof {
 }
 
 fn position_sized_admission() -> BoltV3SubmitAdmissionState {
+    position_sized_admission_with_pool_observed_at(900)
+}
+
+fn position_sized_admission_with_pool_observed_at(
+    pool_observed_at_ns: u64,
+) -> BoltV3SubmitAdmissionState {
     BoltV3SubmitAdmissionState::new_unarmed_with_position_sizer(
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         BoltV3SubmitPositionSizerConfig {
             venue_id: "POLYMARKET".to_string(),
+            account_id: "POLYMARKET-001".to_string(),
             product_kind: ProductKind::PredictionMarketBinary,
             collateral_currency: "PUSD".to_string(),
             capital_pool: CapitalPoolSnapshot {
                 source: "bolt_submit_sizer_bootstrap".to_string(),
-                observed_at_ns: 900,
+                observed_at_ns: pool_observed_at_ns,
                 pool_id: "pool-1".to_string(),
                 max_pool_liability: Decimal::new(10, 0),
                 committed_liability: Decimal::ZERO,

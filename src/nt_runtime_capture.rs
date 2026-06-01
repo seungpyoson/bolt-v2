@@ -345,7 +345,7 @@ fn instrument_statuses_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern(INSTRUMENT_STATUSES_PATTERN)
 }
 
-fn order_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
+pub(crate) fn order_events_pattern() -> MStr<nautilus_common::msgbus::Pattern> {
     MStr::pattern(ORDER_EVENTS_PATTERN)
 }
 

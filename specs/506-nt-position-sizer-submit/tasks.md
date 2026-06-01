@@ -8,16 +8,20 @@
 - [x] Keep committed reservations live until terminal lifecycle evidence releases them.
 - [x] Reject duplicate `client_order_id` reservations.
 - [x] Carry explicit venue, product kind, collateral currency, order kind, and prediction-market outcome evidence into submit admission.
+- [x] Enforce configured account id against NT-derived portfolio state.
+- [x] Refresh bootstrap capital-pool evidence from the NT/Bolt reservation snapshot when sizing state updates.
+- [x] Support both YES and NO binary outcome instruments for submit admission and outcome-specific sell inventory checks.
+- [x] Subscribe the live runtime to NT terminal order events and release committed submit reservations by client order id.
 - [x] Validate that only one pool can enable submit-admission enforcement.
 - [x] Reject submit-admission enforcement with `explicit_clip_to_available`.
 
 ## Remaining For Production Grade
 
 - [ ] Build the live NT-derived sizing-state feed from account, portfolio, position, and open-order state.
-- [ ] Wire NT order lifecycle events into reservation revalue/release updates.
+- [ ] Wire non-terminal NT order lifecycle and fill events into reservation revalue/residual-liability updates.
 - [ ] Add startup/reconnect reservation rebuild before admission can arm.
 - [ ] Add configured halt actions for threshold breach: stop entries, cancel orders, and optional flatten.
 - [ ] Replace strategy-local prediction-market outcome derivation with configured YES/NO market metadata.
+- [ ] Add maker/post-only quote-set reservation metadata before enabling maker submit enforcement.
 - [ ] Add non-binary product calculators before enabling spot leverage, futures/perps, or options.
 - [ ] Run external review after the exact PR head is pushed and CI is green.
-

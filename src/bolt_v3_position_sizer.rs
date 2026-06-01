@@ -754,7 +754,14 @@ impl PredictionMarketBinaryLiabilityCalculator {
                 if snapshot.conditional_token_allowance < request.quantity {
                     return Err(LiabilityError::InsufficientAllowance);
                 }
-                if snapshot.yes_position < request.quantity {
+                let outcome_position = if request.instrument_id == snapshot.yes_instrument_id {
+                    snapshot.yes_position
+                } else if request.instrument_id == snapshot.no_instrument_id {
+                    snapshot.no_position
+                } else {
+                    return Err(LiabilityError::InsufficientInventory);
+                };
+                if outcome_position < request.quantity {
                     return Err(LiabilityError::InsufficientInventory);
                 }
             }

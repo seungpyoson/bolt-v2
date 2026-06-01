@@ -101,6 +101,10 @@ use crate::{
         LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
     },
     bolt_v3_position_sizer::{FeeSlippagePolicy, ProductKind, SizingMode, SizingPolicy},
+    bolt_v3_position_sizer_runtime_feed::{
+        PositionSizerRuntimeFeed, PositionSizerRuntimeFeedConfig,
+        PositionSizerRuntimeFeedSubscription, subscribe_position_sizer_runtime_feed,
+    },
     bolt_v3_providers,
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
@@ -130,6 +134,8 @@ pub struct BoltV3LiveNodeRuntime {
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     loss_runtime_feed: Option<Arc<Mutex<LossGovernorRuntimeFeed>>>,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
+    position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
+    position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -1609,6 +1615,8 @@ impl BoltV3LiveNodeRuntime {
         submit_admission: Arc<BoltV3SubmitAdmissionState>,
         loss_runtime_feed: Option<Arc<Mutex<LossGovernorRuntimeFeed>>>,
         loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
+        position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
+        position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
         redaction_values: Vec<Zeroizing<String>>,
     ) -> Self {
         Self {
@@ -1617,6 +1625,8 @@ impl BoltV3LiveNodeRuntime {
             submit_admission,
             loss_runtime_feed,
             loss_runtime_feed_subscription,
+            position_sizer_runtime_feed,
+            position_sizer_runtime_feed_subscription,
             redaction_values,
         }
     }
@@ -1685,6 +1695,11 @@ impl BoltV3LiveNodeRuntime {
     pub fn position_sizer_configured(&self) -> bool {
         self.submit_admission.position_sizer_configured()
     }
+
+    pub fn position_sizer_runtime_feed_configured(&self) -> bool {
+        self.position_sizer_runtime_feed.is_some()
+            && self.position_sizer_runtime_feed_subscription.is_some()
+    }
 }
 
 impl std::fmt::Debug for BoltV3LiveNodeRuntime {
@@ -1693,6 +1708,10 @@ impl std::fmt::Debug for BoltV3LiveNodeRuntime {
             .field("node", &"[redacted]")
             .field("submit_admission", &self.submit_admission)
             .field("loss_runtime_feed", &self.loss_runtime_feed.is_some())
+            .field(
+                "position_sizer_runtime_feed",
+                &self.position_sizer_runtime_feed.is_some(),
+            )
             .field("redaction_values", &"[redacted]")
             .finish()
     }
@@ -3281,6 +3300,7 @@ fn build_live_node_with_clients(
         };
     let loss_policy = loss_governor_policy_from_loaded(loaded)?;
     let position_sizer = position_sizer_config_from_loaded(loaded)?;
+    let position_sizer_runtime_feed_config = position_sizer_runtime_feed_config_from_loaded(loaded);
     let submit_admission = Arc::new(match (loss_policy, position_sizer) {
         (Some(policy), Some(position_sizer)) => {
             BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor_and_position_sizer(
@@ -3309,6 +3329,18 @@ fn build_live_node_with_clients(
                     submit_admission.clone(),
                 )));
                 let subscription = subscribe_loss_governor_runtime_feed(feed.clone());
+                (Some(feed), Some(subscription))
+            }
+            None => (None, None),
+        };
+    let (position_sizer_runtime_feed, position_sizer_runtime_feed_subscription) =
+        match position_sizer_runtime_feed_config {
+            Some(config) => {
+                let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+                    config,
+                    submit_admission.clone(),
+                )));
+                let subscription = subscribe_position_sizer_runtime_feed(feed.clone());
                 (Some(feed), Some(subscription))
             }
             None => (None, None),
@@ -3362,6 +3394,8 @@ fn build_live_node_with_clients(
             submit_admission,
             loss_runtime_feed,
             loss_runtime_feed_subscription,
+            position_sizer_runtime_feed,
+            position_sizer_runtime_feed_subscription,
             resolved.redaction_values(),
         ),
         summary,
@@ -3378,6 +3412,16 @@ fn loss_governor_runtime_feed_config_from_loaded(
     })
 }
 
+fn position_sizer_runtime_feed_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Option<PositionSizerRuntimeFeedConfig> {
+    let pools = loaded.root.risk.capital_pools.as_ref()?;
+    let pool = pools.iter().find(|pool| pool.enforce_submit_admission)?;
+    Some(PositionSizerRuntimeFeedConfig {
+        account_id: pool.account_id,
+    })
+}
+
 fn position_sizer_config_from_loaded(
     loaded: &LoadedBoltV3Config,
 ) -> Result<Option<BoltV3SubmitPositionSizerConfig>, BoltV3LiveNodeError> {
@@ -3389,6 +3433,7 @@ fn position_sizer_config_from_loaded(
     };
     Ok(Some(BoltV3SubmitPositionSizerConfig {
         venue_id: pool.venue_id.clone(),
+        account_id: pool.account_id.to_string(),
         product_kind: ProductKind::PredictionMarketBinary,
         collateral_currency: pool.collateral_currency.clone(),
         capital_pool: CapitalPoolSnapshot {

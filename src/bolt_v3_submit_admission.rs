@@ -52,6 +52,7 @@ struct BoltV3SubmitAdmissionInner {
 #[derive(Debug)]
 struct BoltV3SubmitPositionSizerState {
     venue_id: String,
+    account_id: String,
     product_kind: ProductKind,
     collateral_currency: String,
     capital_pool: CapitalPoolSnapshot,
@@ -59,12 +60,19 @@ struct BoltV3SubmitPositionSizerState {
     state: Option<NtDerivedSizingState>,
     gate: PositionSizingAdmissionGate,
     next_sequence: u64,
-    client_order_reservations: BTreeMap<String, String>,
+    client_order_reservations: BTreeMap<String, BoltV3SubmitReservationIndex>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BoltV3SubmitReservationIndex {
+    submit_reservation_id: String,
+    collateral_group_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3SubmitPositionSizerConfig {
     pub venue_id: String,
+    pub account_id: String,
     pub product_kind: ProductKind,
     pub collateral_currency: String,
     pub capital_pool: CapitalPoolSnapshot,
@@ -125,6 +133,7 @@ impl BoltV3SubmitAdmissionState {
                 loss_snapshot: None,
                 position_sizer: position_sizer.map(|config| BoltV3SubmitPositionSizerState {
                     venue_id: config.venue_id,
+                    account_id: config.account_id,
                     product_kind: config.product_kind,
                     collateral_currency: config.collateral_currency,
                     capital_pool: config.capital_pool,
@@ -161,6 +170,8 @@ impl BoltV3SubmitAdmissionState {
 
     pub fn update_position_sizing_state(&self, state: NtDerivedSizingState) {
         if let Some(position_sizer) = lock_inner(&self.inner).position_sizer.as_mut() {
+            position_sizer.capital_pool.source = state.reservation_snapshot.source.clone();
+            position_sizer.capital_pool.observed_at_ns = state.reservation_snapshot.observed_at_ns;
             position_sizer.state = Some(state);
         }
     }
@@ -188,7 +199,7 @@ impl BoltV3SubmitAdmissionState {
         let Some(position_sizer) = inner.position_sizer.as_mut() else {
             return BoltV3SubmitPositionSizingLifecycleDecision::unknown();
         };
-        let Some(submit_reservation_id) = position_sizer
+        let Some(index) = position_sizer
             .client_order_reservations
             .get(&update.client_order_id)
             .cloned()
@@ -200,7 +211,7 @@ impl BoltV3SubmitAdmissionState {
             return BoltV3SubmitPositionSizingLifecycleDecision::unknown();
         };
         let lifecycle_update = PositionSizingLifecycleUpdate {
-            intent_id: submit_reservation_id.clone(),
+            intent_id: index.submit_reservation_id.clone(),
             pool_id: position_sizer.capital_pool.pool_id.clone(),
             collateral_group_id: update.collateral_group_id,
             remaining_liability: update.remaining_liability,
@@ -219,11 +230,65 @@ impl BoltV3SubmitAdmissionState {
             && position_sizer
                 .client_order_reservations
                 .get(&update.client_order_id)
-                == Some(&submit_reservation_id)
+                .map(|current| current.submit_reservation_id.as_str())
+                == Some(index.submit_reservation_id.as_str())
         {
             position_sizer
                 .client_order_reservations
                 .remove(&update.client_order_id);
+        }
+        BoltV3SubmitPositionSizingLifecycleDecision {
+            accepted: decision.accepted,
+            unknown_reservation: false,
+        }
+    }
+
+    pub fn apply_position_sizing_terminal_order_event(
+        &self,
+        client_order_id: String,
+        observed_at_ns: u64,
+        evidence_label: String,
+    ) -> BoltV3SubmitPositionSizingLifecycleDecision {
+        let mut inner = lock_inner(&self.inner);
+        let Some(position_sizer) = inner.position_sizer.as_mut() else {
+            return BoltV3SubmitPositionSizingLifecycleDecision::unknown();
+        };
+        let Some(index) = position_sizer
+            .client_order_reservations
+            .get(&client_order_id)
+            .cloned()
+        else {
+            log::warn!(
+                "bolt-v3 submit admission received position-sizer terminal order event for unknown client_order_id={}",
+                client_order_id
+            );
+            return BoltV3SubmitPositionSizingLifecycleDecision::unknown();
+        };
+        let lifecycle_update = PositionSizingLifecycleUpdate {
+            intent_id: index.submit_reservation_id.clone(),
+            pool_id: position_sizer.capital_pool.pool_id.clone(),
+            collateral_group_id: index.collateral_group_id,
+            remaining_liability: Decimal::ZERO,
+            observed_at_ns,
+            evidence_label,
+            kind: PositionSizingLifecycleKind::Terminal,
+        };
+        let decision = position_sizer.gate.apply_lifecycle_update(
+            &position_sizer.capital_pool,
+            &lifecycle_update,
+            observed_at_ns,
+            position_sizer.policy.min_remaining_pool_balance,
+        );
+        if decision.accepted
+            && position_sizer
+                .client_order_reservations
+                .get(&client_order_id)
+                .map(|current| current.submit_reservation_id.as_str())
+                == Some(index.submit_reservation_id.as_str())
+        {
+            position_sizer
+                .client_order_reservations
+                .remove(&client_order_id);
         }
         BoltV3SubmitPositionSizingLifecycleDecision {
             accepted: decision.accepted,
@@ -718,11 +783,11 @@ pub enum BoltV3PositionSizerRejectReason {
     Rejected,
     MissingSizingEvidence,
     VenueMismatch,
+    AccountMismatch,
     ProductKindMismatch,
     CollateralCurrencyMismatch,
     UnsupportedProductKind,
     MissingPredictionMarketOutcome,
-    NoOutcomeUnsupported,
     OutcomeInstrumentMismatch,
     ReplaceSubmitUnsupported,
     DuplicateClientOrderId,
@@ -1141,6 +1206,9 @@ fn evaluate_position_sizer_submit(
     if state.portfolio.venue_id != position_sizer.venue_id {
         return rejected_position_sizer(BoltV3PositionSizerRejectReason::VenueMismatch);
     }
+    if state.portfolio.account_id != position_sizer.account_id {
+        return rejected_position_sizer(BoltV3PositionSizerRejectReason::AccountMismatch);
+    }
     if state.portfolio.collateral_currency != position_sizer.collateral_currency {
         return rejected_position_sizer(
             BoltV3PositionSizerRejectReason::CollateralCurrencyMismatch,
@@ -1152,23 +1220,27 @@ fn evaluate_position_sizer_submit(
             BoltV3PositionSizerRejectReason::MissingPredictionMarketOutcome,
         );
     };
-    match outcome {
+    let outcome_position = match outcome {
         PredictionMarketOutcomeSide::Yes => {
             if request.instrument_id != product.yes_instrument_id {
                 return rejected_position_sizer(
                     BoltV3PositionSizerRejectReason::OutcomeInstrumentMismatch,
                 );
             }
+            product.yes_position
         }
         PredictionMarketOutcomeSide::No => {
-            return rejected_position_sizer(BoltV3PositionSizerRejectReason::NoOutcomeUnsupported);
+            if request.instrument_id != product.no_instrument_id {
+                return rejected_position_sizer(
+                    BoltV3PositionSizerRejectReason::OutcomeInstrumentMismatch,
+                );
+            }
+            product.no_position
         }
-    }
+    };
 
     if request.intent_kind == BoltV3SubmitIntentKind::RiskReducingExit {
-        if evidence.side == BoltV3CompiledOrderSide::Sell
-            && evidence.quantity <= product.yes_position
-        {
+        if evidence.side == BoltV3CompiledOrderSide::Sell && evidence.quantity <= outcome_position {
             return accepted_without_reservation();
         }
         return rejected_position_sizer(BoltV3PositionSizerRejectReason::SizingRejected);
@@ -1214,7 +1286,10 @@ fn evaluate_position_sizer_submit(
     }
     position_sizer.client_order_reservations.insert(
         request.client_order_id.clone(),
-        submit_reservation_id.clone(),
+        BoltV3SubmitReservationIndex {
+            submit_reservation_id: submit_reservation_id.clone(),
+            collateral_group_id: product.collateral_coupled_group_id.clone(),
+        },
     );
     BoltV3PositionSizerSubmitDecision {
         accepted: true,
@@ -1258,7 +1333,8 @@ fn rollback_position_sizer_reservation(
     if position_sizer
         .client_order_reservations
         .get(&rollback.client_order_id)
-        == Some(&rollback.submit_reservation_id)
+        .map(|current| current.submit_reservation_id.as_str())
+        == Some(rollback.submit_reservation_id.as_str())
     {
         position_sizer
             .client_order_reservations

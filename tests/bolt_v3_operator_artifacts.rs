@@ -4442,6 +4442,9 @@ fn mark_exit_order_terminal(
     if exit_pending.pending_exit.client_order_id != client_order_id {
         return;
     }
+    if !self.event_instrument_matches_held_exposure(event_instrument_id) {
+        log::warn!("foreign instrument observed");
+    }
     exit_pending.pending_exit.terminal_received = true;
     self.exposure = exit_pending.into_state_after_exit_update();
 }
@@ -4476,6 +4479,80 @@ fn on_order_expired(&mut self, event: OrderExpired) {
 }
 
 #[test]
+fn abort_plan_nt_accepted_venue_pending_source_proof_requires_scoped_terminal_handlers() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
+    let client_order_id = self.core.order_factory().generate_client_order_id();
+    let managed_position = self.managed_position().cloned().unwrap();
+    self.exposure = ExposureState::ExitPending(ExitPendingState {
+        position: Some(managed_position.clone()),
+        pending_exit: PendingExitState {
+            client_order_id,
+            fill_received: false,
+            close_received: false,
+            terminal_received: false,
+        },
+    });
+    if let Err(error) = self.submit_order_with_decision_evidence(intent, order, context) {
+        self.exposure = ExposureState::Managed(managed_position);
+        return Err(error);
+    }
+    Ok(Some(client_order_id))
+}
+
+fn mark_exit_order_terminal(
+    &mut self,
+    client_order_id: ClientOrderId,
+    event_instrument_id: InstrumentId,
+) {
+    let Some(mut exit_pending) = self.exposure.exit_pending().cloned() else {
+        return;
+    };
+    if exit_pending.pending_exit.client_order_id != client_order_id {
+        return;
+    }
+    if !self.event_instrument_matches_held_exposure(event_instrument_id) {
+        return;
+    }
+    exit_pending.pending_exit.terminal_received = true;
+    self.exposure = exit_pending.into_state_after_exit_update();
+}
+
+fn on_order_canceled(&mut self, event: &OrderCanceled) {
+    self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
+}
+
+fn on_order_rejected(&mut self, event: OrderRejected) {
+}
+
+fn on_order_expired(&mut self, event: OrderExpired) {
+}
+
+fn noisy_terminal_call_source(&mut self, event: OrderExpired) {
+    self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
+    self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
+        &strategy_source_path,
+        10_000,
+    )
+    .expect_err("terminal proof must prove each terminal handler scope");
+
+    assert!(
+        error.to_string().contains("terminal_rejected_handler"),
+        "scoped terminal handler error should identify missing handler proof: {error}"
+    );
+}
+
+#[test]
 fn abort_plan_partial_fill_source_proof_derives_from_exit_fill_lifecycle() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
@@ -4500,6 +4577,144 @@ fn abort_plan_partial_fill_source_proof_derives_from_exit_fill_lifecycle() {
     assert!(
         !abort_plan_path.exists(),
         "collector must not write final abort-plan artifact"
+    );
+}
+
+#[test]
+fn abort_plan_partial_fill_source_proof_rejects_unguarded_exit_fill_instrument() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn into_state_after_exit_update(self) -> ExposureState {
+    if self.pending_exit.fill_received && self.pending_exit.close_received {
+        return ExposureState::Flat;
+    }
+    ExposureState::ExitPending(self)
+}
+
+fn on_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) -> anyhow::Result<()> {
+    let exit_fill = self
+        .exposure
+        .exit_pending()
+        .is_some_and(|exit| exit.pending_exit.client_order_id == event.client_order_id);
+    if managed_entry_fill {
+    } else if exit_fill {
+        if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+            log::warn!("foreign instrument observed");
+        }
+        if let Some(exit_pending) = self.exposure.exit_pending_mut() {
+            exit_pending.pending_exit.fill_received = true;
+            if exit_pending.pending_exit.close_received {
+                self.exposure = ExposureState::Flat;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
+    let exit_pending_close = self.exposure.exit_pending().is_some_and(|exit_pending| {
+        exit_pending.pending_exit.position_id == Some(event.position_id)
+    });
+    if exit_pending_close {
+        if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+            return;
+        }
+        if let ExposureState::ExitPending(exit_pending) = &mut self.exposure {
+            exit_pending.pending_exit.close_received = true;
+            exit_pending.position = None;
+            if exit_pending.is_terminal() {
+                self.exposure = ExposureState::Flat;
+            }
+        }
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
+        &strategy_source_path,
+        10_000,
+    )
+    .expect_err("exit fill must guard the event instrument before recording fill");
+
+    assert!(
+        error
+            .to_string()
+            .contains("partial_fill_exit_fill_instrument_guard"),
+        "exit-fill guard error should identify partial-fill guard proof: {error}"
+    );
+}
+
+#[test]
+fn abort_plan_partial_fill_source_proof_rejects_unguarded_position_close_instrument() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let strategy_source_path = temp.path().join("strategy.rs");
+    std::fs::write(
+        &strategy_source_path,
+        r#"
+fn into_state_after_exit_update(self) -> ExposureState {
+    if self.pending_exit.fill_received && self.pending_exit.close_received {
+        return ExposureState::Flat;
+    }
+    ExposureState::ExitPending(self)
+}
+
+fn on_order_filled(&mut self, event: &nautilus_model::events::OrderFilled) -> anyhow::Result<()> {
+    let exit_fill = self
+        .exposure
+        .exit_pending()
+        .is_some_and(|exit| exit.pending_exit.client_order_id == event.client_order_id);
+    if managed_entry_fill {
+    } else if exit_fill {
+        if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+            return Ok(());
+        }
+        if let Some(exit_pending) = self.exposure.exit_pending_mut() {
+            exit_pending.pending_exit.fill_received = true;
+            if exit_pending.pending_exit.close_received {
+                self.exposure = ExposureState::Flat;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
+    let exit_pending_close = self.exposure.exit_pending().is_some_and(|exit_pending| {
+        exit_pending.pending_exit.position_id == Some(event.position_id)
+    });
+    if exit_pending_close {
+        if !self.event_instrument_matches_held_exposure(event.instrument_id) {
+            log::warn!("foreign instrument observed");
+        }
+        if let ExposureState::ExitPending(exit_pending) = &mut self.exposure {
+            exit_pending.pending_exit.close_received = true;
+            exit_pending.position = None;
+            if exit_pending.is_terminal() {
+                self.exposure = ExposureState::Flat;
+            }
+        }
+    }
+}
+"#,
+    )
+    .expect("test source should write");
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
+        &strategy_source_path,
+        10_000,
+    )
+    .expect_err("position close must guard the event instrument before recording close");
+
+    assert!(
+        error
+            .to_string()
+            .contains("partial_fill_position_close_instrument_guard"),
+        "position-close guard error should identify partial-fill guard proof: {error}"
     );
 }
 

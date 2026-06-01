@@ -6099,8 +6099,8 @@ reason = "This marker verifies client-order correlation before terminal handling
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"self.event_instrument_matches_held_exposure(event_instrument_id)"'''
-context = '''"self.event_instrument_matches_held_exposure(event_instrument_id)";'''
+literal = '''"if !self.event_instrument_matches_held_exposure(event_instrument_id) {\n            return;\n        }"'''
+context = '''"if !self.event_instrument_matches_held_exposure(event_instrument_id) {\n            return;\n        }";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies terminal events are guarded by the held exposure instrument before state mutation; it is source evidence, not an operator runtime value."
 
@@ -6127,6 +6127,30 @@ literal = '''"self.mark_exit_order_terminal(event.client_order_id, event.instrum
 context = '''"self.mark_exit_order_terminal(event.client_order_id, event.instrument_id);";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies terminal event handlers call the terminal transition helper; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"on_order_canceled"'''
+context = '''const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_CANCELED_HANDLER_NAME: &str = "on_order_canceled";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker pins the NT-accepted venue-pending terminal proof to the production cancel handler; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"on_order_rejected"'''
+context = '''const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_REJECTED_HANDLER_NAME: &str = "on_order_rejected";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker pins the NT-accepted venue-pending terminal proof to the production reject handler; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"on_order_expired"'''
+context = '''const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_EXPIRED_HANDLER_NAME: &str = "on_order_expired";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker pins the NT-accepted venue-pending terminal proof to the production expire handler; it is source evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -6203,6 +6227,22 @@ reason = "This marker verifies order-fill correlation to the pending exit order 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
+literal = '''"} else if exit_fill {"'''
+context = '''const ABORT_PLAN_PARTIAL_FILL_EXIT_FILL_BRANCH_MARKER: &str = "} else if exit_fill {";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker identifies the exit-fill branch so the partial-fill proof can require the instrument guard inside that branch; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return Ok(());\n            }"'''
+context = '''"if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return Ok(());\n            }";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies exit-fill events return from the held exposure instrument guard before recording fill receipt; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
 literal = '''"exit_pending.pending_exit.fill_received = true"'''
 context = '''"exit_pending.pending_exit.fill_received = true";'''
 classification = "operator_source_proof_static_marker"
@@ -6223,6 +6263,22 @@ literal = '''"exit_pending.pending_exit.position_id == Some(event.position_id)"'
 context = '''"exit_pending.pending_exit.position_id == Some(event.position_id)";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies position-close correlation to the pending exit position; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"if exit_pending_close {"'''
+context = '''const ABORT_PLAN_PARTIAL_FILL_POSITION_CLOSE_BRANCH_MARKER: &str = "if exit_pending_close {";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker identifies the exit-pending close branch so the partial-fill proof can require the instrument guard inside that branch; it is source evidence, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return;\n            }"'''
+context = '''"if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return;\n            }";'''
+classification = "operator_source_proof_static_marker"
+reason = "This marker verifies position-close events return from the held exposure instrument guard before recording close receipt; it is source evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -6506,11 +6562,27 @@ reason = "This field names the missing terminal state update marker in NT-accept
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
-kind = "number"
-literal = '''3'''
-context = '''if terminal_handlers.len() < 3 {'''
-classification = "operator_source_proof_required_handler_count"
-reason = "This is the required count of cancel/reject/expire terminal-handler source markers for the abort proof, not an operator runtime value."
+kind = "string"
+literal = '''"terminal_canceled_handler"'''
+context = '''"terminal_canceled_handler",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing scoped cancel terminal-handler marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"terminal_rejected_handler"'''
+context = '''"terminal_rejected_handler",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing scoped reject terminal-handler marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"terminal_expired_handler"'''
+context = '''"terminal_expired_handler",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing scoped expire terminal-handler marker in NT-accepted venue-pending diagnostics; it is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -6527,6 +6599,14 @@ literal = '''"partial_fill_waits_for_position_close"'''
 context = '''"partial_fill_waits_for_position_close",'''
 classification = "operator_source_proof_diagnostic_field"
 reason = "This field names the missing wait-for-close source proof in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_exit_fill_instrument_guard"'''
+context = '''"partial_fill_exit_fill_instrument_guard",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing exit-fill instrument guard marker in partial-fill diagnostics; it is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -6567,6 +6647,14 @@ literal = '''"partial_fill_terminal_check"'''
 context = '''"partial_fill_terminal_check",'''
 classification = "operator_source_proof_diagnostic_field"
 reason = "This field names the missing terminal-check marker in partial-fill diagnostics; it is not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"partial_fill_position_close_instrument_guard"'''
+context = '''"partial_fill_position_close_instrument_guard",'''
+classification = "operator_source_proof_diagnostic_field"
+reason = "This field names the missing position-close instrument guard marker in partial-fill diagnostics; it is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

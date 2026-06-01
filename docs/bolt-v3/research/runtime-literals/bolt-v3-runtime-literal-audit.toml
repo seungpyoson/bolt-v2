@@ -6063,3 +6063,11 @@ literal = '''2.0'''
 context = '''const SIGMA_SQUARED_HALF_DIVISOR: f64 = 2.0;'''
 classification = "pricing_formula_constant"
 reason = "This is the named sigma-squared-over-two divisor in the updown family's fair-probability formula, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/requote_budget.rs"
+kind = "number"
+literal = '''0'''
+context = '''window_cost: 0,'''
+classification = "structural_zero_initializer"
+reason = "This initializes the requote-budget u64 spend accumulator to its additive identity (an empty window); the budget ceiling itself is the config-bound max_cost_per_window, so this is a structural zero, not an operator runtime value."

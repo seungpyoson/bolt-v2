@@ -1,13 +1,15 @@
 # CI Optimization Findings — 2026-06-01
 
 Investigation into whether the bolt-v2 CI pipeline can be further shortened or
-made cheaper. Four adversarially-verified passes were run: (A) per-run speed,
+made cheaper. Five adversarially-verified passes were run: (A) per-run speed,
 (B) how often the heavy release build runs, (C) Tier-2 paid infrastructure
-(faster runners / warm caches), and (D) "over-deliver" — what becomes possible
-if we are willing to *evolve* a current restriction, verified to never weaken
-deploy-trust, hermeticity, the full-suite gate, or release integrity. Every
-load-bearing claim below was re-read at HEAD against the cited file/line,
-commit, or GitHub Actions run. Tracking: #518.
+(faster runners / warm caches), (D) "over-deliver" — what becomes possible if we
+are willing to *evolve* a current restriction, verified to never weaken
+deploy-trust, hermeticity, the full-suite gate, or release integrity, and (E)
+"fully unconstrained" — whether the no-step-change conclusion survives dropping
+*all* limits (safety, cost, architecture). Every load-bearing claim below was
+re-read at HEAD against the cited file/line, commit, or GitHub Actions run.
+Tracking: #518.
 
 ## TL;DR
 
@@ -27,6 +29,13 @@ plus the external-review gate. Beyond it sit several **$0 safety/observability
 hardening** options that do not touch wall-clock. Still **0 free-and-proven big
 wins**: every speed lever needs measurement to confirm, or is hardening, not
 speed.
+
+A final fully-unconstrained pass (E) confirms the no-step-change finding is **not
+an artifact of the safety constraints**: dropping *all* limits (safety, cost,
+architecture) still yields only ~40% (~9m20s → ~5.3 min) and only by stacking
+three levers — because the floor (~170–220s) is the dependency-graph compile +
+relink + booting NautilusTrader's runtime in the heaviest test, i.e. work that
+must happen, not a rule we imposed. No magic-bullet exists.
 
 **Recommendation: leave CI as-is.** If speed ever justifies a small recurring
 bill once the repo is private, the only endorsed lever is larger GitHub-hosted
@@ -245,6 +254,55 @@ for speed) or not worth it for this repo's shape (single crate, single toolchain
 low PR volume, money-handling). This does not change the headline recommendation
 **unless** the measured multi-minute upside is judged worth a spec-evolution PR
 plus a measurement run.
+
+## Part E — is the floor fundamental? (fully unconstrained)
+
+To test whether the "0 step-changes" conclusion is an artifact of the four
+safety guarantees, a fifth pass dropped **all** constraints — safety, cost, and
+the current architecture — across six relaxed-constraint lenses (eliminate dep
+compilation; infinite bare-metal hardware; relax the full-suite gate; shrink/fork
+the dependency graph; attack the test-runtime floor; Bazel/Buck2 remote
+execution). Each proposed step-change was then adversarially floor-checked
+against the dependency-DAG critical path, link time, the heaviest-test-binary
+wall-time, and cache-restore overhead.
+
+**Result: no step-change, even unconstrained.** Of six proposals, four were
+**ILLUSORY** (the speedup assumed a free cache restore; restoring a multi-GB
+cache is 50–90s of real network I/O) and two were **INCREMENTAL**. The best
+realistic unconstrained critical path is **~560s → ~320s (~40%, not a halving)**,
+and only by *stacking* three levers — warm dependency cache **+** removing the
+`live-node` test serialization **+** a much larger runner — none of which is a
+step-change alone, all of which bottleneck on each other.
+
+- **Not a new mechanism, just the old levers unshackled.** "Eliminate dep
+  compile" = the Part D warm-cache lever with a worse trust model; "infinite
+  hardware" / "remove `max-threads=1`" = the bigger-runner/raw-cores lever;
+  "fork NautilusTrader" = dependency-elimination + deleting tests. The single
+  genuinely-new technique (Bazel/Buck2 content-addressed remote caching) was
+  judged INCREMENTAL: it optimizes *compilation* while the binding wall is *test
+  execution* (wrong target), costs ~$20–50k/mo, and sacrifices hermeticity. So
+  the constraints were making the obvious solution **expensive and unsafe**, not
+  hiding a magic one.
+- **The deepest irreducible floor ≈ 80–100s** — the wall-time of the single
+  heaviest integration test binary booting NautilusTrader's multi-threaded
+  runtime. Because each test runs in its own process and the slowest shard cannot
+  finish before its heaviest binary does, no amount of money, cores, or cache
+  crosses it. Add the unavoidable relink of the single workspace crate against
+  ~700 deps on any source change (~60–90s) + cache/setup (~20–30s) and the true
+  floor is **~170–220s** — reachable *only* by rewriting the tests to mock the NT
+  runtime away, which sacrifices the production deploy-trust guarantee.
+- **No magic-bullet.** bolt-v2 is one workspace crate on ~700 deps; every test
+  binary links the full graph, so "skip compilation" is impossible and a
+  universal prebuilt artifact (Docker layer / remote cache) only *relocates* the
+  cost to a network restore, never erases it.
+
+**Conclusion: the "0 step-changes" finding is NOT an artifact of the safety
+constraints.** The bottleneck is work that must happen — compiling a large
+dependency graph and booting a real trading runtime in the tests — not a rule we
+chose to impose. (Floor figures are quantified projections from the dependency
+graph + measured shard data, not a live unconstrained run; the ~40% / ~320s and
+~170–220s-floor numbers are estimates, directionally robust across all six
+lenses.)
 
 ## Recommendation
 **Leave CI as-is.** It is well-tuned; the remaining wall-clock levers are blocked

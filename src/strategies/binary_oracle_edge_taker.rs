@@ -4405,6 +4405,7 @@ impl BinaryOracleEdgeTaker {
             lifecycle_policy: self.submit_lifecycle_policy(),
             canary_proof_claim: None,
             risk_reducing_exit_proof,
+            kill_switch_forced_reduction: None,
         })
     }
 
@@ -7559,6 +7560,7 @@ fn submit_admission_request_from_order(
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         canary_proof_claim: None,
         risk_reducing_exit_proof: None,
+        kill_switch_forced_reduction: None,
     })
 }
 
@@ -9729,6 +9731,7 @@ mod tests {
                         crate::bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy::new(true),
                     canary_proof_claim: None,
                     risk_reducing_exit_proof: None,
+                    kill_switch_forced_reduction: None,
                 },
             )
             .expect("first admission should consume the only slot");

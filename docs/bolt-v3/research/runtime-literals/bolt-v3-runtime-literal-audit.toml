@@ -15211,3 +15211,51 @@ literal = '''0'''
 context = '''&& block.action_retry_timeout_ms > 0'''
 classification = '''kill_switch_config_positive_duration_guard'''
 reason = '''TOML validation guard requiring a positive retry timeout before accepting enabled kill-switch config; the value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''admitted_kill_switch_forced_reduction_order_count: 0,'''
+classification = '''kill_switch_forced_reduction_counter_identity'''
+reason = '''Initial identity value for the in-memory forced-reduction admission counter; the runtime order-count limit remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''inner.admitted_kill_switch_forced_reduction_order_count = 0;'''
+classification = '''kill_switch_forced_reduction_counter_identity'''
+reason = '''Reset identity value for the in-memory forced-reduction admission counter when submit admission is armed; the runtime order-count limit remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''inner.admitted_kill_switch_forced_reduction_order_count += 1;'''
+classification = '''kill_switch_forced_reduction_counter_increment'''
+reason = '''Unit increment after a forced-reduction admission decision is durably recorded; the maximum admitted count remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''64'''
+context = '''if policy_sha256.len() != 64 || !policy_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())'''
+classification = '''sha256_hex_digest_length_guard'''
+reason = '''Fixed SHA-256 hex digest length used to validate forced-reduction policy proof hashes; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''string'''
+literal = '''"bolt-v3 submit admission is blocked by kill-switch state {state:?}"'''
+context = '''"bolt-v3 submit admission is blocked by kill-switch state {state:?}"'''
+classification = '''diagnostic_template'''
+reason = '''Error-display template for the kill-switch-latched admission rejection; it carries no operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''number'''
+literal = '''64'''
+context = '''if block.forced_reduction_policy_sha256.len() != 64'''
+classification = '''sha256_hex_digest_length_guard'''
+reason = '''Fixed SHA-256 hex digest length used to validate the TOML-owned forced-reduction policy hash; not an operator runtime value.'''

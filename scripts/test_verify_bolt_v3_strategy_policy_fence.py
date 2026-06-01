@@ -41,6 +41,11 @@ class StrategyPolicyFenceTests(unittest.TestCase):
                 OutcomeSide::Up => self.active.books.up.best_ask,
                 OutcomeSide::Down => self.active.books.down.best_ask,
             }
+            let _ = KillSwitchState::Armed;
+            self.kill_switch = true;
+            self.forced_reduction_submit(order);
+            self.cancel_all_orders();
+            self.flatten_all_positions();
             """
         )
 
@@ -49,6 +54,8 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         self.assertIn("fixed long-only position contract tuple", labels)
         self.assertIn("buy-only entry VWAP helper", labels)
         self.assertIn("buy-biased entry price block", labels)
+        self.assertIn("strategy-local kill switch policy", labels)
+        self.assertIn("direct kill-switch action bypass", labels)
 
     def test_identifier_rules_do_not_match_substrings(self) -> None:
         labels = self.labels_for(
@@ -58,6 +65,8 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             platform.runtime.selection_mode();
             actor.try_get_actor_unchecked_extra();
             book.not_max_buy_execution_within_vwap_slippage_bps(50);
+            let not_a_kill_switch_suffix = true;
+            self.cancel_allocation();
             """
         )
 

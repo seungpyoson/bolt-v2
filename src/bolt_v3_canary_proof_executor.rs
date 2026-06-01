@@ -234,6 +234,7 @@ impl CanaryProofExecutor {
                 lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
                 canary_proof_claim: Some(CANARY_PROOF_CLAIM.to_string()),
                 risk_reducing_exit_proof: None,
+                kill_switch_forced_reduction: None,
             })?;
         self.submit_order(
             order,

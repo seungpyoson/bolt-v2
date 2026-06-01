@@ -273,6 +273,7 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         canary_proof_claim: None,
         risk_reducing_exit_proof: None,
+        kill_switch_forced_reduction: None,
     }
 }
 

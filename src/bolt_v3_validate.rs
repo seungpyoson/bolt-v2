@@ -1013,6 +1013,33 @@ fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
         errors
             .push("risk.kill_switch.manual_reset_evidence_max_age_ms must be positive".to_string());
     }
+    if block.forced_reduction_policy_sha256.len() != 64
+        || !block
+            .forced_reduction_policy_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        errors.push(
+            "risk.kill_switch.forced_reduction_policy_sha256 must be a 64-character SHA-256 hex digest"
+                .to_string(),
+        );
+    }
+    if block.forced_reduction_max_live_order_count == 0 {
+        errors.push(
+            "risk.kill_switch.forced_reduction_max_live_order_count must be positive".to_string(),
+        );
+    }
+    match parse_decimal_string(&block.forced_reduction_max_notional_per_order) {
+        Ok(notional) if notional > Decimal::ZERO => {}
+        Ok(_) => errors.push(
+            "risk.kill_switch.forced_reduction_max_notional_per_order must be positive"
+                .to_string(),
+        ),
+        Err(reason) => errors.push(format!(
+            "risk.kill_switch.forced_reduction_max_notional_per_order is not a valid decimal string ({reason}): `{}`",
+            block.forced_reduction_max_notional_per_order
+        )),
+    }
     if block.authorized_operator_ids.is_empty() {
         errors.push(
             "risk.kill_switch.authorized_operator_ids must not be empty when enabled".to_string(),

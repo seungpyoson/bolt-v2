@@ -152,6 +152,7 @@ pub enum BoltV3SubmitIntentKind {
     Entry,
     RiskReducingExit,
     ReplaceSubmit,
+    KillSwitchForcedReduction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,12 +305,15 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
 pub enum BoltV3AdmissionOutcome {
     Admitted,
     RejectedNotArmed,
+    RejectedKillSwitchLatched,
     RejectedSubmitLifecycleDisallowed,
     RejectedNonPositiveNotional,
     RejectedNotionalCapExceeded,
     RejectedInvalidCanaryProofClaim,
     RejectedInvalidRiskReducingExitProof,
     RejectedCountCapExhausted,
+    RejectedKillSwitchForcedReductionProofInvalid,
+    RejectedKillSwitchForcedReductionCapExceeded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

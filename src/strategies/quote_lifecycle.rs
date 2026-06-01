@@ -61,6 +61,14 @@ pub enum LegEvent {
     Modified,
     /// The venue rejected the in-flight in-place modify.
     ModifyRejected,
+    /// The resting (or in-flight) order **fully** filled and left the book.
+    ///
+    /// A *partial* fill — a remainder still rests — is deliberately NOT a
+    /// lifecycle event: it does not change whether an order is live, so it is
+    /// booked into the maker's inventory/position accounting separately (this
+    /// machine owns order *liveness*, not size). The NT handler raises `Filled`
+    /// only when a fill leaves zero quantity working.
+    Filled,
 }
 
 /// The order intent the strategy layer must execute against NautilusTrader.
@@ -193,6 +201,27 @@ impl QuoteLeg {
             // was rejected — nothing was ever created at the venue, so there is
             // nothing to cancel and the leg is done.
             (LegState::CancelPending, LegEvent::Rejected) => {
+                self.state = LegState::Idle;
+                None
+            }
+            // Fill: a full fill removes the order from the book entirely, from
+            // any state that holds or is working an order, so the leg returns to
+            // Idle — there is no resting quote left to cancel or modify. This is
+            // the class fix for the ghost-order hazard: without it a filled
+            // resting quote would stay Resting and the next requote would cancel
+            // an order that already filled and is gone. An in-flight cancel or
+            // modify chasing this order is answered by the venue with a
+            // reject/cancel that is a harmless no-op once the leg is Idle. There
+            // is no automatic resubmit — the governor decides whether to requote.
+            // (Idle + Filled is a stale/duplicate fill and falls through below.)
+            (
+                LegState::SubmitPending
+                | LegState::Resting
+                | LegState::RequotePending
+                | LegState::ModifyPending
+                | LegState::CancelPending,
+                LegEvent::Filled,
+            ) => {
                 self.state = LegState::Idle;
                 None
             }
@@ -670,5 +699,93 @@ mod tests {
         assert_eq!(market.leg_state(Leg::No), LegState::CancelPending);
         assert_eq!(market.leg_state(Leg::Yes), LegState::Resting);
         assert_eq!(market.market_state(), MarketState::Quoting);
+    }
+
+    // --- W2/W3 hardening: full-fill handling (a maker's primary event) ---
+
+    #[test]
+    fn resting_full_fill_returns_to_idle() {
+        let mut leg = resting_leg(false);
+        assert_eq!(leg.on_event(LegEvent::Filled), None);
+        assert_eq!(leg.state(), LegState::Idle);
+    }
+
+    #[test]
+    fn submit_pending_full_fill_returns_to_idle() {
+        // A submitted quote that fills before (or with) the accept is gone.
+        let mut leg = QuoteLeg::new(false);
+        leg.on_event(LegEvent::QuoteTrigger {
+            requote_needed: false,
+        });
+        assert_eq!(leg.state(), LegState::SubmitPending);
+        assert_eq!(leg.on_event(LegEvent::Filled), None);
+        assert_eq!(leg.state(), LegState::Idle);
+    }
+
+    #[test]
+    fn requote_pending_full_fill_returns_to_idle() {
+        // The resting order fills before the requote cancel lands: the order is
+        // gone, so do NOT auto-resubmit — return to Idle and let the governor
+        // decide. The chasing cancel becomes a venue-side no-op.
+        let mut leg = resting_leg(false);
+        leg.on_event(LegEvent::QuoteTrigger {
+            requote_needed: true,
+        });
+        assert_eq!(leg.state(), LegState::RequotePending);
+        assert_eq!(leg.on_event(LegEvent::Filled), None);
+        assert_eq!(leg.state(), LegState::Idle);
+    }
+
+    #[test]
+    fn modify_pending_full_fill_returns_to_idle() {
+        let mut leg = resting_leg(true);
+        leg.on_event(LegEvent::QuoteTrigger {
+            requote_needed: true,
+        });
+        assert_eq!(leg.state(), LegState::ModifyPending);
+        assert_eq!(leg.on_event(LegEvent::Filled), None);
+        assert_eq!(leg.state(), LegState::Idle);
+    }
+
+    #[test]
+    fn cancel_pending_full_fill_returns_to_idle() {
+        // A wind-down cancel is outstanding when the order fills: it is gone, the
+        // leg is Idle, and the chasing cancel is a no-op at the venue.
+        let mut leg = resting_leg(false);
+        leg.request_cancel();
+        assert_eq!(leg.state(), LegState::CancelPending);
+        assert_eq!(leg.on_event(LegEvent::Filled), None);
+        assert_eq!(leg.state(), LegState::Idle);
+    }
+
+    #[test]
+    fn idle_fill_is_a_noop() {
+        // A stale/duplicate fill after the leg already went Idle changes nothing.
+        let mut leg = QuoteLeg::new(false);
+        assert_eq!(leg.on_event(LegEvent::Filled), None);
+        assert_eq!(leg.state(), LegState::Idle);
+    }
+
+    #[test]
+    fn filled_leg_requotes_clean_with_no_ghost_cancel() {
+        // The hazard the fill event closes: after a full fill the next pricing
+        // trigger SUBMITS a fresh quote (the Idle path) instead of CANCELLING an
+        // order that already filled and is gone.
+        let mut leg = resting_leg(false);
+        leg.on_event(LegEvent::Filled);
+        let action = leg.on_event(LegEvent::QuoteTrigger {
+            requote_needed: true,
+        });
+        assert_eq!(action, Some(LifecycleAction::Submit));
+        assert_eq!(leg.state(), LegState::SubmitPending);
+    }
+
+    #[test]
+    fn market_full_fill_idles_one_leg_and_isolates_the_other() {
+        let mut market = resting_market(false);
+        assert_eq!(market.on_leg_event(Leg::Yes, LegEvent::Filled), None);
+        assert_eq!(market.leg_state(Leg::Yes), LegState::Idle);
+        // The NO leg is untouched — still resting (leg isolation holds for fills).
+        assert_eq!(market.leg_state(Leg::No), LegState::Resting);
     }
 }

@@ -334,8 +334,7 @@ const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_FUNCTION_NAME: &str =
     "mark_exit_order_terminal";
 const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_CLIENT_MATCH_MARKER: &str =
     "exit_pending.pending_exit.client_order_id != client_order_id";
-const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_INSTRUMENT_GUARD_MARKER: &str =
-    "if !self.event_instrument_matches_held_exposure(event_instrument_id) {\n            return;\n        }";
+const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_INSTRUMENT_GUARD_MARKER: &str = "if !self.event_instrument_matches_held_exposure(event_instrument_id) {\n            return;\n        }";
 const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_RECEIVED_MARKER: &str =
     "exit_pending.pending_exit.terminal_received = true";
 const ABORT_PLAN_NT_ACCEPTED_VENUE_PENDING_TERMINAL_STATE_UPDATE_MARKER: &str =
@@ -405,8 +404,7 @@ const ABORT_PLAN_PARTIAL_FILL_TERMINAL_FUNCTION_NAME: &str = "into_state_after_e
 const ABORT_PLAN_PARTIAL_FILL_EXIT_FILL_MARKER: &str =
     "exit.pending_exit.client_order_id == event.client_order_id";
 const ABORT_PLAN_PARTIAL_FILL_EXIT_FILL_BRANCH_MARKER: &str = "} else if exit_fill {";
-const ABORT_PLAN_PARTIAL_FILL_EXIT_FILL_INSTRUMENT_GUARD_MARKER: &str =
-    "if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return Ok(());\n            }";
+const ABORT_PLAN_PARTIAL_FILL_EXIT_FILL_INSTRUMENT_GUARD_MARKER: &str = "if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return Ok(());\n            }";
 const ABORT_PLAN_PARTIAL_FILL_FILL_RECEIVED_MARKER: &str =
     "exit_pending.pending_exit.fill_received = true";
 const ABORT_PLAN_PARTIAL_FILL_CLOSE_RECEIVED_CHECK_MARKER: &str =
@@ -414,8 +412,7 @@ const ABORT_PLAN_PARTIAL_FILL_CLOSE_RECEIVED_CHECK_MARKER: &str =
 const ABORT_PLAN_PARTIAL_FILL_POSITION_MATCH_MARKER: &str =
     "exit_pending.pending_exit.position_id == Some(event.position_id)";
 const ABORT_PLAN_PARTIAL_FILL_POSITION_CLOSE_BRANCH_MARKER: &str = "if exit_pending_close {";
-const ABORT_PLAN_PARTIAL_FILL_POSITION_CLOSE_INSTRUMENT_GUARD_MARKER: &str =
-    "if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return;\n            }";
+const ABORT_PLAN_PARTIAL_FILL_POSITION_CLOSE_INSTRUMENT_GUARD_MARKER: &str = "if !self.event_instrument_matches_held_exposure(event.instrument_id) {\n                return;\n            }";
 const ABORT_PLAN_PARTIAL_FILL_CLOSE_RECEIVED_MARKER: &str =
     "exit_pending.pending_exit.close_received = true";
 const ABORT_PLAN_PARTIAL_FILL_POSITION_CLEAR_MARKER: &str = "exit_pending.position = None";
@@ -12345,11 +12342,8 @@ fn require_abort_plan_partial_fill_position_close_completes_exit(
         "partial_fill_terminal_check",
     )?;
 
-    if !abort_plan_source_marker_between(
-        &instrument_guards,
-        position_close_branch,
-        close_received,
-    ) {
+    if !abort_plan_source_marker_between(&instrument_guards, position_close_branch, close_received)
+    {
         return Err(
             BoltV3OperatorArtifactError::AbortPlanPartialFillSourceInvalid {
                 field: "partial_fill_position_close_instrument_guard",

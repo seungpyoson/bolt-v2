@@ -130,7 +130,7 @@ pub enum KillSwitchManualResetEvidenceError {
     InvalidEvidenceSha256,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KillSwitchTransitionContext {
     pub state_write_succeeded: bool,
     pub durable_halt_evidence_recorded: bool,

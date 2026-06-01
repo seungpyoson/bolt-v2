@@ -15147,3 +15147,67 @@ literal = '''2'''
 context = '''max_live_order_count.saturating_mul(2)'''
 classification = '''phase8_entry_exit_order_pair_multiplier'''
 reason = '''Structural Phase 8 proof multiplier for one admitted entry and one admitted exit per configured live order cap; max_live_order_count remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''hasher.update([0]);'''
+classification = '''kill_switch_halt_id_hash_absent_sequence_sentinel'''
+reason = '''Stable hash-format sentinel for an absent source sequence when deriving a halt id; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch.rs'''
+kind = '''number'''
+literal = '''64'''
+context = '''if evidence_sha256.len() != 64'''
+classification = '''sha256_hex_digest_length_guard'''
+reason = '''Fixed SHA-256 hex digest length used to validate operator reset evidence hashes; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch.rs'''
+kind = '''string'''
+literal = '''b"bolt_v3.kill_switch.halt_id.v1"'''
+context = '''const HALT_ID_DOMAIN: &[u8] = b"bolt_v3.kill_switch.halt_id.v1";'''
+classification = '''kill_switch_halt_id_domain_separator'''
+reason = '''Stable domain separator for the kill-switch halt-id hash format; not a venue, size, timeout, or operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch.rs'''
+kind = '''string'''
+literal = '''b"loss_governor_breach"'''
+context = '''KillSwitchHaltTriggerKind::LossGovernorBreach => b"loss_governor_breach".as_slice(),'''
+classification = '''kill_switch_trigger_kind_hash_label'''
+reason = '''Stable trigger-kind label included in halt-id derivation for loss-governor breaches; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch_store.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''pub const KILL_SWITCH_STORE_SCHEMA_VERSION: u32 = 1;'''
+classification = '''kill_switch_store_schema_version'''
+reason = '''Durable state-file schema version for forward-compatible recovery; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch_store.rs'''
+kind = '''string'''
+literal = '''"tmp"'''
+context = '''temp_path.set_extension("tmp");'''
+classification = '''kill_switch_store_atomic_write_temp_extension'''
+reason = '''Internal same-directory temporary file extension used before atomic rename; the durable state path itself is TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch_store.rs'''
+kind = '''string'''
+literal = '''b"\n"'''
+context = '''.and_then(|()| file.write_all(b"\n"))'''
+classification = '''kill_switch_store_json_trailing_newline'''
+reason = '''Deterministic JSON formatting newline for the durable state file; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''&& block.action_retry_timeout_ms > 0'''
+classification = '''kill_switch_config_positive_duration_guard'''
+reason = '''TOML validation guard requiring a positive retry timeout before accepting enabled kill-switch config; the value remains TOML-owned.'''

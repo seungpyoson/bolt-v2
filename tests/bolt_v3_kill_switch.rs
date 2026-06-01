@@ -14,6 +14,19 @@ fn valid_manual_reset_evidence() -> KillSwitchManualResetEvidence {
     .expect("manual reset evidence should be valid")
 }
 
+fn blocked_context() -> KillSwitchTransitionContext {
+    KillSwitchTransitionContext {
+        state_write_succeeded: false,
+        durable_halt_evidence_recorded: false,
+        operator_authorized: false,
+        manual_reset_evidence_valid: false,
+        mandatory_proof_streams_fresh: false,
+        no_outstanding_order_risk: false,
+        no_open_positions: false,
+        no_pending_entry_risk: false,
+    }
+}
+
 #[test]
 fn loss_governor_trigger_moves_armed_to_halting_and_requires_durable_halt_evidence() {
     let trigger = KillSwitchHaltTrigger::loss_governor_breach(
@@ -25,7 +38,7 @@ fn loss_governor_trigger_moves_armed_to_halting_and_requires_durable_halt_eviden
     let halting = transition_kill_switch_state(
         KillSwitchState::Armed,
         KillSwitchEvent::HaltTriggered(trigger),
-        KillSwitchTransitionContext::default(),
+        blocked_context(),
     )
     .expect("loss-governor breach should latch halt");
 
@@ -37,7 +50,7 @@ fn loss_governor_trigger_moves_armed_to_halting_and_requires_durable_halt_eviden
         KillSwitchTransitionContext {
             state_write_succeeded: false,
             durable_halt_evidence_recorded: false,
-            ..KillSwitchTransitionContext::default()
+            ..blocked_context()
         },
     );
 
@@ -63,7 +76,7 @@ fn durable_halt_evidence_write_failure_enters_failed_manual_intervention() {
         KillSwitchEvent::DurableHaltEvidenceWriteFailed {
             reason: "fsync failed".to_string(),
         },
-        KillSwitchTransitionContext::default(),
+        blocked_context(),
     )
     .expect("durable halt write failure should fail closed into manual intervention");
 
@@ -97,7 +110,7 @@ fn manual_reset_requires_authorization_evidence_and_fresh_clean_proof() {
                 no_outstanding_order_risk: true,
                 no_open_positions: true,
                 no_pending_entry_risk: true,
-                ..KillSwitchTransitionContext::default()
+                ..blocked_context()
             },
         );
 
@@ -129,7 +142,7 @@ fn halted_state_cannot_rearm_without_first_becoming_flat() {
             no_outstanding_order_risk: true,
             no_open_positions: true,
             no_pending_entry_risk: true,
-            ..KillSwitchTransitionContext::default()
+            ..blocked_context()
         },
     );
 
@@ -154,7 +167,7 @@ fn authorized_manual_reset_still_requires_valid_evidence_and_clean_proof() {
         no_outstanding_order_risk: true,
         no_open_positions: true,
         no_pending_entry_risk: true,
-        ..KillSwitchTransitionContext::default()
+        ..blocked_context()
     };
 
     for (context, expected) in [
@@ -230,7 +243,7 @@ fn failed_manual_intervention_can_rearm_with_authorized_evidence_and_clean_proof
             no_outstanding_order_risk: true,
             no_open_positions: true,
             no_pending_entry_risk: true,
-            ..KillSwitchTransitionContext::default()
+            ..blocked_context()
         },
     )
     .expect("failed manual intervention should be resettable with full proof");
@@ -291,7 +304,7 @@ fn reconciliation_requires_fresh_proof_and_no_remaining_risk_before_flat() {
         no_outstanding_order_risk: true,
         no_open_positions: true,
         no_pending_entry_risk: true,
-        ..KillSwitchTransitionContext::default()
+        ..blocked_context()
     };
 
     for (context, expected) in [

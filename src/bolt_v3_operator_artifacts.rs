@@ -70,6 +70,7 @@ use crate::{
         materialize_venue_account_state_source_from_configured_account_queries,
     },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
+    bolt_v3_submit_admission::{BoltV3ExchangeMutationCounts, validate_no_exchange_mutations},
     bolt_v3_tiny_canary_evidence::{
         Phase8AbortPlanEvidenceFile, Phase8AbortPlanSourceProofs, Phase8CanaryEvidence,
         Phase8CanaryEvidenceInput, Phase8EvidenceRef, Phase8FinancialEnvelopeEvidenceFile,
@@ -129,6 +130,9 @@ const DATA_CLIENT_PRODUCTION_READINESS_MATRIX_RECORD_KIND: &str =
     "bolt_v3.data_client_production_readiness_matrix.v1";
 const HYPERLIQUID_PRODUCT_MATRIX_SCHEMA_VERSION: u32 = 1;
 const HYPERLIQUID_PRODUCT_MATRIX_RECORD_KIND: &str = "bolt_v3.hyperliquid_product_matrix.v1";
+const HYPERLIQUID_NO_SUBMIT_READINESS_SCHEMA_VERSION: u32 = 1;
+const HYPERLIQUID_NO_SUBMIT_READINESS_RECORD_KIND: &str =
+    "bolt_v3.hyperliquid_no_submit_readiness.v1";
 const DATA_CLIENT_MISSING_BEHAVIOR_PROOFS: &[&str] = &[
     "metadata_behavior",
     "quote_or_book_behavior",
@@ -1239,6 +1243,9 @@ pub enum BoltV3OperatorArtifactError {
     DataClientProductionReadinessMatrixSourceInvalid {
         field: &'static str,
     },
+    HyperliquidNoSubmitReadinessInvalid {
+        field: &'static str,
+    },
     SecretInventory(BoltV3SecretError),
     FinancialEnvelope(anyhow::Error),
     MarketSelection(anyhow::Error),
@@ -1619,6 +1626,10 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::DataClientProductionReadinessMatrixSourceInvalid { field } => write!(
                 f,
                 "data-client production-readiness matrix source field `{field}` is invalid or unproven"
+            ),
+            Self::HyperliquidNoSubmitReadinessInvalid { field } => write!(
+                f,
+                "Hyperliquid no-submit readiness field `{field}` is invalid or unproven"
             ),
             Self::SecretInventory(error) => write!(f, "{error}"),
             Self::FinancialEnvelope(error) => write!(f, "{error}"),
@@ -3149,6 +3160,138 @@ pub fn write_hyperliquid_product_matrix_artifact(
 ) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
     let artifact = build_hyperliquid_product_matrix_artifact();
     write_json_artifact_create_new(output_path, &artifact)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidNoSubmitReadinessInput {
+    pub base_sha: String,
+    pub provider_id: String,
+    pub toml_checksum: String,
+    pub signer_fingerprint: String,
+    pub product_surface: hyperliquid::HyperliquidProductSurface,
+    pub metadata_evidence: HyperliquidNoSubmitEvidenceRef,
+    pub fee_evidence: HyperliquidNoSubmitEvidenceRef,
+    pub admission_evidence: HyperliquidNoSubmitEvidenceRef,
+    pub exchange_mutations: BoltV3ExchangeMutationCounts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HyperliquidNoSubmitEvidenceRef {
+    pub source_kind: String,
+    pub artifact_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HyperliquidNoSubmitReadinessArtifact {
+    pub schema_version: u32,
+    pub record_kind: &'static str,
+    pub provider_key: &'static str,
+    pub base_sha: String,
+    pub provider_id: String,
+    pub toml_checksum: String,
+    pub signer_fingerprint: String,
+    pub product_surface: hyperliquid::HyperliquidProductSurface,
+    pub metadata_evidence: HyperliquidNoSubmitEvidenceRef,
+    pub fee_evidence: HyperliquidNoSubmitEvidenceRef,
+    pub admission_evidence: HyperliquidNoSubmitEvidenceRef,
+    pub exchange_mutation_count: u64,
+}
+
+pub fn build_hyperliquid_no_submit_readiness_artifact(
+    input: HyperliquidNoSubmitReadinessInput,
+) -> Result<HyperliquidNoSubmitReadinessArtifact, BoltV3OperatorArtifactError> {
+    validate_hyperliquid_no_submit_readiness_input(&input)?;
+    let exchange_mutation_count = validate_no_exchange_mutations(input.exchange_mutations)
+        .map_err(
+            |_| BoltV3OperatorArtifactError::HyperliquidNoSubmitReadinessInvalid {
+                field: "exchange_mutation_count",
+            },
+        )?;
+    Ok(HyperliquidNoSubmitReadinessArtifact {
+        schema_version: HYPERLIQUID_NO_SUBMIT_READINESS_SCHEMA_VERSION,
+        record_kind: HYPERLIQUID_NO_SUBMIT_READINESS_RECORD_KIND,
+        provider_key: hyperliquid::KEY,
+        base_sha: input.base_sha,
+        provider_id: input.provider_id,
+        toml_checksum: input.toml_checksum,
+        signer_fingerprint: input.signer_fingerprint,
+        product_surface: input.product_surface,
+        metadata_evidence: input.metadata_evidence,
+        fee_evidence: input.fee_evidence,
+        admission_evidence: input.admission_evidence,
+        exchange_mutation_count,
+    })
+}
+
+pub fn write_hyperliquid_no_submit_readiness_artifact(
+    input: HyperliquidNoSubmitReadinessInput,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let artifact = build_hyperliquid_no_submit_readiness_artifact(input)?;
+    write_json_artifact_create_new(output_path, &artifact)
+}
+
+fn validate_hyperliquid_no_submit_readiness_input(
+    input: &HyperliquidNoSubmitReadinessInput,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    validate_lowercase_hex_field("base_sha", &input.base_sha, 40)?;
+    validate_non_empty_field("provider_id", &input.provider_id)?;
+    validate_sha256_field("toml_checksum", &input.toml_checksum)?;
+    validate_sha256_field("signer_fingerprint", &input.signer_fingerprint)?;
+    if input.product_surface != hyperliquid::HyperliquidProductSurface::StandardPerps {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidNoSubmitReadinessInvalid {
+                field: "product_surface",
+            },
+        );
+    }
+    validate_hyperliquid_no_submit_evidence_ref("metadata_evidence", &input.metadata_evidence)?;
+    validate_hyperliquid_no_submit_evidence_ref("fee_evidence", &input.fee_evidence)?;
+    validate_hyperliquid_no_submit_evidence_ref("admission_evidence", &input.admission_evidence)?;
+    Ok(())
+}
+
+fn validate_hyperliquid_no_submit_evidence_ref(
+    field: &'static str,
+    evidence: &HyperliquidNoSubmitEvidenceRef,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    validate_non_empty_field(field, &evidence.source_kind)?;
+    validate_sha256_field(field, &evidence.artifact_sha256)
+}
+
+fn validate_non_empty_field(
+    field: &'static str,
+    value: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if value.trim().is_empty() {
+        return Err(BoltV3OperatorArtifactError::HyperliquidNoSubmitReadinessInvalid { field });
+    }
+    Ok(())
+}
+
+fn validate_sha256_field(
+    field: &'static str,
+    value: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if is_lowercase_sha256(value) {
+        return Ok(());
+    }
+    Err(BoltV3OperatorArtifactError::HyperliquidNoSubmitReadinessInvalid { field })
+}
+
+fn validate_lowercase_hex_field(
+    field: &'static str,
+    value: &str,
+    expected_len: usize,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if value.len() == expected_len
+        && value
+            .chars()
+            .all(|character| matches!(character, '0'..='9' | 'a'..='f'))
+    {
+        return Ok(());
+    }
+    Err(BoltV3OperatorArtifactError::HyperliquidNoSubmitReadinessInvalid { field })
 }
 
 pub fn write_data_client_behavior_observation_source_from_probe_events(

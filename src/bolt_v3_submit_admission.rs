@@ -17,6 +17,36 @@ pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
 
 const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
 
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
+pub struct BoltV3ExchangeMutationCounts {
+    pub submit: u64,
+    pub cancel: u64,
+    pub modify: u64,
+    pub transfer: u64,
+    pub account: u64,
+}
+
+impl BoltV3ExchangeMutationCounts {
+    pub fn total(self) -> Result<u64, BoltV3SubmitAdmissionError> {
+        self.submit
+            .checked_add(self.cancel)
+            .and_then(|total| total.checked_add(self.modify))
+            .and_then(|total| total.checked_add(self.transfer))
+            .and_then(|total| total.checked_add(self.account))
+            .ok_or(BoltV3SubmitAdmissionError::ExchangeMutationCountOverflow)
+    }
+}
+
+pub fn validate_no_exchange_mutations(
+    counts: BoltV3ExchangeMutationCounts,
+) -> Result<u64, BoltV3SubmitAdmissionError> {
+    let mutation_count = counts.total()?;
+    if mutation_count == 0 {
+        return Ok(mutation_count);
+    }
+    Err(BoltV3SubmitAdmissionError::ExchangeMutationsObserved { mutation_count })
+}
+
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionState {
     inner: Mutex<BoltV3SubmitAdmissionInner>,
@@ -485,6 +515,10 @@ pub enum BoltV3SubmitAdmissionError {
         rounded_base_notional: Decimal,
         intended_notional: Decimal,
     },
+    ExchangeMutationCountOverflow,
+    ExchangeMutationsObserved {
+        mutation_count: u64,
+    },
     InvalidCanaryProofClaim,
     EvidenceWriteFailed {
         reason: String,
@@ -519,6 +553,13 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             } => write!(
                 f,
                 "bolt-v3 submit admission rejected: rounded order notional {rounded_base_notional} exceeded operator-intended notional {intended_notional}"
+            ),
+            Self::ExchangeMutationCountOverflow => {
+                write!(f, "bolt-v3 no-submit exchange mutation counter overflowed")
+            }
+            Self::ExchangeMutationsObserved { mutation_count } => write!(
+                f,
+                "bolt-v3 no-submit exchange mutation guard observed {mutation_count} mutating request(s)"
             ),
             Self::InvalidCanaryProofClaim => write!(
                 f,

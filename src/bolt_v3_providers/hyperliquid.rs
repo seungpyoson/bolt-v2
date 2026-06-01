@@ -186,6 +186,55 @@ pub fn hyperliquid_product_matrix() -> &'static [HyperliquidProductMatrixEntry] 
     HYPERLIQUID_PRODUCT_MATRIX
 }
 
+pub const USER_FEES_OFFICIAL_INFO_REQUEST_WEIGHT: u32 = 20;
+pub const USER_FEES_OFFICIAL_RATE_LIMIT_SOURCE: &str =
+    "Hyperliquid Docs: Rate limits and user limits - all other documented info requests weight 20";
+pub const USER_FEES_NT_CALLERS: &[&str] = &[
+    "nautilus_hyperliquid::http::query::InfoRequest::user_fees",
+    "nautilus_hyperliquid::http::client::InnerHyperliquidHttpClient::info_user_fees",
+    "nautilus_hyperliquid::http::client::HyperliquidHttpClient::info_user_fees",
+    "nautilus_hyperliquid::python::http::HyperliquidHttpClient::py_info_user_fees",
+];
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HyperliquidUserFeesRequestWeightStatus {
+    OfficialWeightAccounted,
+    FailClosedPinnedNtWeightMismatch,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct HyperliquidUserFeesRequestWeightPolicy {
+    pub request_type: &'static str,
+    pub official_info_request_weight: u32,
+    pub pinned_nt_info_base_weight: u32,
+    pub status: HyperliquidUserFeesRequestWeightStatus,
+    pub official_documentation_source: &'static str,
+    pub nt_callers: &'static [&'static str],
+}
+
+pub fn hyperliquid_user_fees_request_weight_policy() -> HyperliquidUserFeesRequestWeightPolicy {
+    let request = nautilus_hyperliquid::http::query::InfoRequest {
+        request_type: nautilus_hyperliquid::common::enums::HyperliquidInfoRequestType::UserFees,
+        params: nautilus_hyperliquid::http::query::InfoRequestParams::None,
+    };
+    let pinned_nt_info_base_weight =
+        nautilus_hyperliquid::http::rate_limits::info_base_weight(&request);
+    let status = if pinned_nt_info_base_weight == USER_FEES_OFFICIAL_INFO_REQUEST_WEIGHT {
+        HyperliquidUserFeesRequestWeightStatus::OfficialWeightAccounted
+    } else {
+        HyperliquidUserFeesRequestWeightStatus::FailClosedPinnedNtWeightMismatch
+    };
+    HyperliquidUserFeesRequestWeightPolicy {
+        request_type: "userFees",
+        official_info_request_weight: USER_FEES_OFFICIAL_INFO_REQUEST_WEIGHT,
+        pinned_nt_info_base_weight,
+        status,
+        official_documentation_source: USER_FEES_OFFICIAL_RATE_LIMIT_SOURCE,
+        nt_callers: USER_FEES_NT_CALLERS,
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct HyperliquidSecretsConfig {

@@ -172,9 +172,13 @@ impl BoltV3SubmitAdmissionState {
                 BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
             );
         }
-        if request.intent_kind != BoltV3SubmitIntentKind::RiskReducingExit
-            && let Some(policy) = inner.loss_governor_policy.as_ref()
-        {
+        let loss_governor_policy =
+            if request.intent_kind == BoltV3SubmitIntentKind::RiskReducingExit {
+                None
+            } else {
+                inner.loss_governor_policy.as_ref()
+            };
+        if let Some(policy) = loss_governor_policy {
             let decision = evaluate_loss_admission(policy, inner.loss_snapshot.as_ref(), now_ns);
             if !decision.accepted {
                 return BoltV3AdmissionEvaluation {

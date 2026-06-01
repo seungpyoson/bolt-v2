@@ -68,8 +68,8 @@ use nautilus_model::{
     data::QuoteTick,
     enums::BarIntervalType,
     events::{PortfolioSnapshot, PositionEvent},
-    identifiers::{AccountId, ActorId, ClientId, InstrumentId, StrategyId},
-    types::Money,
+    identifiers::{AccountId, ActorId, ClientId, InstrumentId, PositionId, StrategyId},
+    types::{Currency, Money},
 };
 use rust_decimal::Decimal;
 use ustr::Ustr;
@@ -419,7 +419,7 @@ impl Drop for BoltV3LossGovernorRuntimeGuards {
 struct BoltV3LossGovernorRuntimeFeed {
     account_id: AccountId,
     rolling_window_ns: u64,
-    latest_per_trade_pnl: Option<TimedLossFact>,
+    position_pnls: HashMap<PositionId, TimedLossFact>,
     latest_daily_pnl: Option<TimedLossFact>,
     latest_rolling_pnl: Option<TimedLossFact>,
     latest_current_equity: Option<TimedLossFact>,
@@ -438,7 +438,7 @@ impl BoltV3LossGovernorRuntimeFeed {
         Self {
             account_id,
             rolling_window_ns,
-            latest_per_trade_pnl: None,
+            position_pnls: HashMap::new(),
             latest_daily_pnl: None,
             latest_rolling_pnl: None,
             latest_current_equity: None,
@@ -451,11 +451,16 @@ impl BoltV3LossGovernorRuntimeFeed {
         if event.account_id() != self.account_id {
             return None;
         }
-        let (observed_at_ns, per_trade_pnl) = position_event_loss_fact(event);
-        self.latest_per_trade_pnl = per_trade_pnl.map(|value| TimedLossFact {
-            observed_at_ns,
-            value,
-        });
+        let (position_id, observed_at_ns, per_trade_pnl) = position_event_loss_fact(event);
+        if let Some(value) = per_trade_pnl {
+            self.position_pnls.insert(
+                position_id,
+                TimedLossFact {
+                    observed_at_ns,
+                    value,
+                },
+            );
+        }
         self.snapshot()
     }
 
@@ -464,8 +469,30 @@ impl BoltV3LossGovernorRuntimeFeed {
             return None;
         }
         let observed_at_ns = snapshot.ts_event.as_u64();
-        let account_pnl = money_sum(&snapshot.realized_pnls) + money_sum(&snapshot.unrealized_pnls);
-        let current_equity = money_sum(&snapshot.total_equity);
+        let Some(realized_pnl) = money_sum(&snapshot.realized_pnls) else {
+            return Some(self.invalidate_portfolio_loss_facts(observed_at_ns));
+        };
+        let Some(unrealized_pnl) = money_sum(&snapshot.unrealized_pnls) else {
+            return Some(self.invalidate_portfolio_loss_facts(observed_at_ns));
+        };
+        let Some(account_pnl) = combine_money_sums(realized_pnl, unrealized_pnl) else {
+            return Some(self.invalidate_portfolio_loss_facts(observed_at_ns));
+        };
+        let Some(current_equity) = money_sum(&snapshot.total_equity) else {
+            return Some(self.invalidate_portfolio_loss_facts(observed_at_ns));
+        };
+        let Some(snapshot_currency) =
+            combine_money_currencies(account_pnl.currency, current_equity.currency)
+        else {
+            return Some(self.invalidate_portfolio_loss_facts(observed_at_ns));
+        };
+        if snapshot.base_currency.is_some_and(|base_currency| {
+            snapshot_currency.is_some_and(|currency| currency != base_currency)
+        }) {
+            return Some(self.invalidate_portfolio_loss_facts(observed_at_ns));
+        }
+        let account_pnl = account_pnl.value;
+        let current_equity = current_equity.value;
         self.latest_daily_pnl = Some(TimedLossFact {
             observed_at_ns,
             value: account_pnl,
@@ -480,8 +507,14 @@ impl BoltV3LossGovernorRuntimeFeed {
         );
         self.rolling_samples
             .push_back((observed_at_ns, account_pnl));
-        while let Some((sample_ns, _)) = self.rolling_samples.front() {
-            if observed_at_ns.saturating_sub(*sample_ns) <= self.rolling_window_ns {
+        let cutoff_ns = observed_at_ns.saturating_sub(self.rolling_window_ns);
+        loop {
+            let mut samples = self.rolling_samples.iter();
+            samples.next();
+            let Some((next_sample_ns, _)) = samples.next() else {
+                break;
+            };
+            if *next_sample_ns > cutoff_ns {
                 break;
             }
             self.rolling_samples.pop_front();
@@ -496,6 +529,35 @@ impl BoltV3LossGovernorRuntimeFeed {
         self.snapshot()
     }
 
+    fn latest_per_trade_pnl(&self) -> Option<TimedLossFact> {
+        self.position_pnls
+            .values()
+            .copied()
+            .min_by(|left, right| left.value.cmp(&right.value))
+    }
+
+    fn invalidate_portfolio_loss_facts(&mut self, observed_at_ns: u64) -> LossSnapshot {
+        self.latest_daily_pnl = None;
+        self.latest_rolling_pnl = None;
+        self.latest_current_equity = None;
+        self.peak_equity = None;
+        self.rolling_samples.clear();
+        self.incomplete_portfolio_loss_snapshot(observed_at_ns)
+    }
+
+    fn incomplete_portfolio_loss_snapshot(&self, observed_at_ns: u64) -> LossSnapshot {
+        let per_trade_pnl = self.latest_per_trade_pnl();
+        LossSnapshot {
+            source: BOLT_V3_LOSS_GOVERNOR_NT_SOURCE.to_string(),
+            observed_at_ns,
+            per_trade_pnl: per_trade_pnl.map(|fact| fact.value),
+            daily_pnl: None,
+            rolling_pnl: None,
+            current_equity: None,
+            peak_equity: None,
+        }
+    }
+
     fn snapshot(&self) -> Option<LossSnapshot> {
         if self.latest_daily_pnl.is_none()
             && self.latest_rolling_pnl.is_none()
@@ -503,8 +565,9 @@ impl BoltV3LossGovernorRuntimeFeed {
         {
             return None;
         }
+        let per_trade_pnl = self.latest_per_trade_pnl();
         let observed_at_ns = [
-            self.latest_per_trade_pnl,
+            per_trade_pnl,
             self.latest_daily_pnl,
             self.latest_rolling_pnl,
             self.latest_current_equity,
@@ -516,7 +579,7 @@ impl BoltV3LossGovernorRuntimeFeed {
         Some(LossSnapshot {
             source: BOLT_V3_LOSS_GOVERNOR_NT_SOURCE.to_string(),
             observed_at_ns,
-            per_trade_pnl: self.latest_per_trade_pnl.map(|fact| fact.value),
+            per_trade_pnl: per_trade_pnl.map(|fact| fact.value),
             daily_pnl: self.latest_daily_pnl.map(|fact| fact.value),
             rolling_pnl: self.latest_rolling_pnl.map(|fact| fact.value),
             current_equity: self.latest_current_equity.map(|fact| fact.value),
@@ -525,10 +588,15 @@ impl BoltV3LossGovernorRuntimeFeed {
     }
 }
 
-fn position_event_loss_fact(event: &PositionEvent) -> (u64, Option<Decimal>) {
+fn position_event_loss_fact(event: &PositionEvent) -> (PositionId, u64, Option<Decimal>) {
     match event {
-        PositionEvent::PositionOpened(opened) => (opened.ts_event.as_u64(), Some(Decimal::ZERO)),
+        PositionEvent::PositionOpened(opened) => (
+            opened.position_id,
+            opened.ts_event.as_u64(),
+            Some(Decimal::ZERO),
+        ),
         PositionEvent::PositionChanged(changed) => (
+            changed.position_id,
             changed.ts_event.as_u64(),
             Some(
                 changed
@@ -538,6 +606,7 @@ fn position_event_loss_fact(event: &PositionEvent) -> (u64, Option<Decimal>) {
             ),
         ),
         PositionEvent::PositionClosed(closed) => (
+            closed.position_id,
             closed.ts_event.as_u64(),
             Some(
                 closed
@@ -547,17 +616,51 @@ fn position_event_loss_fact(event: &PositionEvent) -> (u64, Option<Decimal>) {
             ),
         ),
         PositionEvent::PositionAdjusted(adjusted) => (
+            adjusted.position_id,
             adjusted.ts_event.as_u64(),
             adjusted.pnl_change.map(|pnl| pnl.as_decimal()),
         ),
     }
 }
 
-fn money_sum(values: &[Money]) -> Decimal {
-    values
-        .iter()
-        .map(Money::as_decimal)
-        .fold(Decimal::ZERO, |acc, value| acc + value)
+#[derive(Debug, Clone, Copy)]
+struct LossMoneySum {
+    currency: Option<Currency>,
+    value: Decimal,
+}
+
+fn money_sum(values: &[Money]) -> Option<LossMoneySum> {
+    let mut currency = None;
+    let mut total = Decimal::ZERO;
+    for value in values {
+        let next_currency = combine_money_currencies(currency, Some(value.currency))?;
+        currency = next_currency;
+        total += value.as_decimal();
+    }
+    Some(LossMoneySum {
+        currency,
+        value: total,
+    })
+}
+
+fn combine_money_sums(left: LossMoneySum, right: LossMoneySum) -> Option<LossMoneySum> {
+    Some(LossMoneySum {
+        currency: combine_money_currencies(left.currency, right.currency)?,
+        value: left.value + right.value,
+    })
+}
+
+fn combine_money_currencies(
+    left: Option<Currency>,
+    right: Option<Currency>,
+) -> Option<Option<Currency>> {
+    match (left, right) {
+        (Some(left), Some(right)) if left != right => None,
+        (Some(currency), None) | (None, Some(currency)) | (Some(currency), Some(_)) => {
+            Some(Some(currency))
+        }
+        (None, None) => Some(None),
+    }
 }
 
 impl std::fmt::Debug for BoltV3LiveNodeRuntime {
@@ -2013,6 +2116,94 @@ mod tests {
     }
 
     #[test]
+    fn loss_governor_feed_preserves_rolling_window_baseline() {
+        let account_id = AccountId::from("POLYMARKET-001");
+        let mut feed = BoltV3LossGovernorRuntimeFeed::new(account_id, 1_000);
+
+        feed.record_portfolio_snapshot(&portfolio_snapshot(
+            account_id,
+            100,
+            Decimal::ZERO,
+            Decimal::ZERO,
+            Decimal::new(100, 0),
+        ))
+        .expect("initial portfolio snapshot should seed rolling baseline");
+
+        let second = feed
+            .record_portfolio_snapshot(&portfolio_snapshot(
+                account_id,
+                1_200,
+                Decimal::new(-10, 0),
+                Decimal::ZERO,
+                Decimal::new(90, 0),
+            ))
+            .expect("second portfolio snapshot should produce rolling fact");
+
+        assert_eq!(second.rolling_pnl, Some(Decimal::new(-10, 0)));
+    }
+
+    #[test]
+    fn loss_governor_feed_keeps_worst_position_pnl_across_positions() {
+        let account_id = AccountId::from("POLYMARKET-001");
+        let mut feed = BoltV3LossGovernorRuntimeFeed::new(account_id, 1_000);
+
+        feed.record_portfolio_snapshot(&portfolio_snapshot(
+            account_id,
+            100,
+            Decimal::ZERO,
+            Decimal::ZERO,
+            Decimal::new(100, 0),
+        ))
+        .expect("initial portfolio snapshot should produce loss snapshot");
+
+        feed.record_position_event(&position_changed_event_for_position(
+            account_id,
+            PositionId::from("P-001"),
+            150,
+            Decimal::ZERO,
+            Decimal::new(-20, 0),
+        ))
+        .expect("first position event should update loss snapshot");
+
+        let second_position = feed
+            .record_position_event(&position_changed_event_for_position(
+                account_id,
+                PositionId::from("P-002"),
+                160,
+                Decimal::ZERO,
+                Decimal::new(-1, 0),
+            ))
+            .expect("second position event should update loss snapshot");
+
+        assert_eq!(second_position.per_trade_pnl, Some(Decimal::new(-20, 0)));
+    }
+
+    #[test]
+    fn loss_governor_feed_fails_closed_on_mixed_currency_portfolio_facts() {
+        let account_id = AccountId::from("POLYMARKET-001");
+        let mut feed = BoltV3LossGovernorRuntimeFeed::new(account_id, 1_000);
+
+        let snapshot = feed
+            .record_portfolio_snapshot(&portfolio_snapshot_with_currencies(
+                account_id,
+                100,
+                (
+                    Decimal::new(-1, 0),
+                    Currency::USD(),
+                    Decimal::new(-2, 0),
+                    Currency::BTC(),
+                ),
+                (Decimal::new(100, 0), Currency::USD()),
+            ))
+            .expect("matching mixed-currency portfolio snapshot should produce fail-closed loss snapshot");
+
+        assert_eq!(snapshot.daily_pnl, None);
+        assert_eq!(snapshot.rolling_pnl, None);
+        assert_eq!(snapshot.current_equity, None);
+        assert_eq!(snapshot.peak_equity, None);
+    }
+
+    #[test]
     fn enabled_loss_governor_policy_conversion_requires_thresholds() {
         let mut loaded = fixture_loaded_config();
         let governor = loaded
@@ -2080,15 +2271,36 @@ mod tests {
         unrealized_pnl: Decimal,
         total_equity: Decimal,
     ) -> PortfolioSnapshot {
+        portfolio_snapshot_with_currencies(
+            account_id,
+            ts_event,
+            (
+                realized_pnl,
+                Currency::USD(),
+                unrealized_pnl,
+                Currency::USD(),
+            ),
+            (total_equity, Currency::USD()),
+        )
+    }
+
+    fn portfolio_snapshot_with_currencies(
+        account_id: AccountId,
+        ts_event: u64,
+        pnl: (Decimal, Currency, Decimal, Currency),
+        total_equity: (Decimal, Currency),
+    ) -> PortfolioSnapshot {
+        let (realized_pnl, realized_currency, unrealized_pnl, unrealized_currency) = pnl;
+        let (total_equity, total_equity_currency) = total_equity;
         PortfolioSnapshot::new(
             account_id,
             AccountType::Betting,
-            Some(Currency::USD()),
+            Some(total_equity_currency),
             vec![],
             vec![],
-            vec![Money::from_decimal(unrealized_pnl, Currency::USD()).unwrap()],
-            vec![Money::from_decimal(realized_pnl, Currency::USD()).unwrap()],
-            vec![Money::from_decimal(total_equity, Currency::USD()).unwrap()],
+            vec![Money::from_decimal(unrealized_pnl, unrealized_currency).unwrap()],
+            vec![Money::from_decimal(realized_pnl, realized_currency).unwrap()],
+            vec![Money::from_decimal(total_equity, total_equity_currency).unwrap()],
             UUID4::default(),
             ts_event.into(),
             ts_event.into(),
@@ -2101,11 +2313,27 @@ mod tests {
         realized_pnl: Decimal,
         unrealized_pnl: Decimal,
     ) -> PositionEvent {
+        position_changed_event_for_position(
+            account_id,
+            PositionId::from("P-001"),
+            ts_event,
+            realized_pnl,
+            unrealized_pnl,
+        )
+    }
+
+    fn position_changed_event_for_position(
+        account_id: AccountId,
+        position_id: PositionId,
+        ts_event: u64,
+        realized_pnl: Decimal,
+        unrealized_pnl: Decimal,
+    ) -> PositionEvent {
         PositionEvent::PositionChanged(PositionChanged {
             trader_id: TraderId::from("TESTER-001"),
             strategy_id: StrategyId::from("binary_oracle_edge_taker-001"),
             instrument_id: InstrumentId::from("BTCUSDT.BINANCE"),
-            position_id: PositionId::from("P-001"),
+            position_id,
             account_id,
             opening_order_id: ClientOrderId::from("O-001"),
             entry: OrderSide::Buy,

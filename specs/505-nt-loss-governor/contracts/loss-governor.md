@@ -55,6 +55,8 @@ When a published `LossSnapshot` combines facts observed at different NT event ti
 
 Per-trade PnL is current open-position context. Position adjustments update the stored position PnL only when the feed already has an absolute baseline for that position; position closes remove that position from per-trade tracking. Closed losses remain represented by NT portfolio PnL facts.
 
+Position-event PnL facts are usable only when their NT `Money` currencies are internally consistent and match the latest valid portfolio/equity currency. Mixed or mismatched position-event currencies make `per_trade_pnl` missing so admission fails closed.
+
 Rolling PnL is published as zero on the first valid startup sample. After that, rolling PnL is published only when the feed has a prior baseline sample inside the configured rolling window. If no in-window baseline exists, the rolling field is missing and admission fails closed for enabled rolling-loss policy.
 
 ## Non-Goals

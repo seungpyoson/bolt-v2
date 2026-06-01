@@ -351,9 +351,7 @@ pub(crate) fn validate_loss_governor_block(loss_governor: &LossGovernorBlock) ->
         ),
     ] {
         let Some(value) = threshold else {
-            if loss_governor.enabled {
-                errors.push(format!("{label} must be configured when enabled"));
-            }
+            errors.push(format!("{label} must be configured when enabled"));
             continue;
         };
         match parse_decimal_string(value) {

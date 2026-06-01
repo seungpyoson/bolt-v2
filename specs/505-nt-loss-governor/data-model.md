@@ -57,6 +57,7 @@ Rules:
 - Track peak equity from observed NT total-equity snapshots.
 - Preserve the prior peak equity across invalid portfolio snapshots, while publishing missing portfolio fields for that invalid snapshot.
 - Ignore position adjustment deltas for positions without an absolute PnL baseline.
+- Treat mixed or portfolio-mismatched position-event PnL currencies as incomplete per-trade facts; publish `per_trade_pnl = None` until a matching absolute position fact or close event restores that position context.
 - Publish a `LossSnapshot` to submit admission whenever enough NT-derived facts exist.
 
 ## LossAdmissionDecision

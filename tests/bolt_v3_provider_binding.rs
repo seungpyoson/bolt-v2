@@ -44,9 +44,12 @@ use bolt_v2::{
     bolt_v3_market_families::{MarketIdentityPlan, updown::plan_market_identity},
     bolt_v3_providers::{
         binance::ResolvedBoltV3BinanceSecrets, binding_for_provider_key,
-        polymarket::ResolvedBoltV3PolymarketSecrets,
+        polymarket::ResolvedBoltV3PolymarketSecrets, validate_client_block,
     },
-    bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
+    bolt_v3_secrets::{
+        ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets,
+        check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets_with,
+    },
 };
 use nautilus_model::identifiers::Venue;
 use nautilus_polymarket::config::PolymarketDataClientConfig;
@@ -105,6 +108,31 @@ fn fixed_clock(now_unix_secs: i64) -> BoltV3MarketClockFn {
 
 fn data_only_client_from_toml(value: &str) -> ClientBlock {
     toml::from_str(value).expect("test data-only client block should parse")
+}
+
+fn hyperliquid_execution_client(private_key_path: &str, account_address_path: &str) -> ClientBlock {
+    hyperliquid_execution_client_with_secret_fields(&format!(
+        r#"
+private_key_ssm_path = "{private_key_path}"
+account_address_ssm_path = "{account_address_path}"
+"#
+    ))
+}
+
+fn hyperliquid_execution_client_with_secret_fields(secret_fields: &str) -> ClientBlock {
+    data_only_client_from_toml(&format!(
+        r#"
+venue = "HYPERLIQUID"
+
+[execution]
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+
+[secrets]
+{secret_fields}
+"#
+    ))
 }
 
 fn add_requested_market_data_clients(loaded: &mut bolt_v2::bolt_v3_config::LoadedBoltV3Config) {
@@ -259,6 +287,7 @@ fn nt_source_supported_rust_data_client_provider_bindings_are_registered() {
         "BYBIT",
         "COINBASE",
         "DERIBIT",
+        "HYPERLIQUID",
         "KRAKEN",
         "OKX",
         "POLYMARKET",
@@ -274,7 +303,6 @@ fn nt_source_supported_rust_data_client_provider_bindings_are_registered() {
         "BLOCKCHAIN",
         "DATABENTO",
         "DYDX",
-        "HYPERLIQUID",
         "IB",
         "SANDBOX",
         "TARDIS",
@@ -284,6 +312,151 @@ fn nt_source_supported_rust_data_client_provider_bindings_are_registered() {
             "{provider_key} is outside today's requested active data-client binding scope"
         );
     }
+}
+
+#[test]
+fn provider_binding_accepts_hyperliquid_execution_config_with_ssm_paths() {
+    let client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+
+    assert_eq!(
+        validate_client_block("hyperliquid_perps", &client),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn provider_binding_resolves_hyperliquid_execution_secrets_from_ssm_paths() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.clear();
+    loaded.root.clients.insert(
+        "hyperliquid_perps".to_string(),
+        hyperliquid_execution_client(
+            "/bolt/hyperliquid/master_api_wallet/private_key",
+            "/bolt/hyperliquid/master_api_wallet/account_address",
+        ),
+    );
+    let mut requested_paths = Vec::new();
+
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| {
+        requested_paths.push(path.to_string());
+        match path {
+            "/bolt/hyperliquid/master_api_wallet/private_key" => Ok(
+                "0x4242424242424242424242424242424242424242424242424242424242424242".to_string(),
+            ),
+            "/bolt/hyperliquid/master_api_wallet/account_address" => {
+                Ok("0x1111111111111111111111111111111111111111".to_string())
+            }
+            _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+        }
+    })
+    .expect("Hyperliquid secrets should resolve from configured SSM paths");
+
+    assert!(resolved.clients.contains_key("hyperliquid_perps"));
+    assert_eq!(
+        requested_paths,
+        vec![
+            "/bolt/hyperliquid/master_api_wallet/private_key",
+            "/bolt/hyperliquid/master_api_wallet/account_address",
+        ]
+    );
+}
+
+#[test]
+fn provider_binding_rejects_hyperliquid_raw_secret_material_in_toml() {
+    let raw_private_key = "0x4444444444444444444444444444444444444444444444444444444444444444";
+    let client = hyperliquid_execution_client_with_secret_fields(&format!(
+        r#"
+private_key = "{raw_private_key}"
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#
+    ));
+
+    let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
+
+    assert!(rendered.contains("raw secret material"));
+    assert!(rendered.contains("private_key"));
+    assert!(!rendered.contains(raw_private_key));
+}
+
+#[test]
+fn provider_binding_rejects_hyperliquid_env_fallback_vars() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.clear();
+    loaded.root.clients.insert(
+        "hyperliquid_perps".to_string(),
+        hyperliquid_execution_client(
+            "/bolt/hyperliquid/master_api_wallet/private_key",
+            "/bolt/hyperliquid/master_api_wallet/account_address",
+        ),
+    );
+
+    let error = check_no_forbidden_credential_env_vars_with(&loaded.root, |var| {
+        matches!(
+            var,
+            "HYPERLIQUID_TESTNET_PK" | "HYPERLIQUID_ACCOUNT_ADDRESS"
+        )
+    })
+    .expect_err("Hyperliquid env fallback variables must fail startup validation");
+
+    assert_eq!(error.findings.len(), 2);
+    assert!(error.findings.iter().all(|finding| {
+        finding.client_key == "hyperliquid_perps" && finding.provider_key == "HYPERLIQUID"
+    }));
+}
+
+#[test]
+fn provider_binding_rejects_duplicate_hyperliquid_signer_owner() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.clear();
+    for (client_key, wallet_key, account_address_path) in [
+        (
+            "hyperliquid_perps_a",
+            "api_wallet_a",
+            "/bolt/hyperliquid/api_wallet_a/account_address",
+        ),
+        (
+            "hyperliquid_perps_b",
+            "api_wallet_b",
+            "/bolt/hyperliquid/api_wallet_b/account_address",
+        ),
+    ] {
+        loaded.root.clients.insert(
+            client_key.to_string(),
+            hyperliquid_execution_client(
+                &format!("/bolt/hyperliquid/{wallet_key}/private_key"),
+                account_address_path,
+            ),
+        );
+    }
+
+    let duplicate_private_key =
+        "0x4343434343434343434343434343434343434343434343434343434343434343";
+    let error = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/hyperliquid/api_wallet_a/private_key"
+        | "/bolt/hyperliquid/api_wallet_b/private_key" => Ok(duplicate_private_key.to_string()),
+        "/bolt/hyperliquid/api_wallet_a/account_address" => {
+            Ok("0x1111111111111111111111111111111111111111".to_string())
+        }
+        "/bolt/hyperliquid/api_wallet_b/account_address" => {
+            Ok("0x2222222222222222222222222222222222222222".to_string())
+        }
+        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+    })
+    .expect_err("duplicate Hyperliquid signer/API-wallet owner must fail closed");
+    let rendered = error.to_string();
+
+    assert!(rendered.contains("signer/API-wallet owner"));
+    assert!(rendered.contains("hyperliquid_perps_a"));
+    assert!(!rendered.contains(duplicate_private_key));
+    assert!(!rendered.contains("0x1111111111111111111111111111111111111111"));
+    assert!(!rendered.contains("0x2222222222222222222222222222222222222222"));
 }
 
 #[test]

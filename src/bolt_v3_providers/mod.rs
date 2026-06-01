@@ -16,6 +16,7 @@
 //! stay in core and are called from the per-provider modules.
 
 pub mod binance;
+pub mod hyperliquid;
 pub mod market_data;
 pub mod polymarket;
 
@@ -45,9 +46,19 @@ pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
     /// missing override a COMPILE error, so a new provider can't silently contribute
     /// zero redaction values (F10).
     fn redaction_values(&self) -> Vec<&str>;
+
+    fn exclusive_signer_owner(&self) -> Option<ProviderExclusiveSignerOwner> {
+        None
+    }
 }
 
 pub type ResolvedClientSecrets = Arc<dyn ProviderResolvedSecrets>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderExclusiveSignerOwner {
+    pub provider_key: &'static str,
+    pub fingerprint: String,
+}
 
 pub trait SsmSecretResolver {
     fn resolve_secret(&mut self, region: &str, ssm_path: &str) -> Result<String, String>;
@@ -475,6 +486,21 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: binance::resolve_secrets,
         configured_secret_paths: binance::configured_secret_paths,
         map_adapters: binance::map_adapters,
+        build_fee_provider: None,
+        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
+    },
+    ProviderBinding {
+        key: hyperliquid::KEY,
+        validate_client: hyperliquid::validate_client,
+        supported_market_families: hyperliquid::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: hyperliquid::REQUIRED_SECRET_BLOCKS,
+        secret_field_names: hyperliquid::SECRET_FIELD_NAMES,
+        credential_log_modules: hyperliquid::CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: hyperliquid::FORBIDDEN_ENV_VARS,
+        resolve_secrets: hyperliquid::resolve_secrets,
+        configured_secret_paths: hyperliquid::configured_secret_paths,
+        map_adapters: hyperliquid::map_adapters,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,

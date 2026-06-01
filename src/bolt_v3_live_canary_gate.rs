@@ -980,6 +980,14 @@ async fn validate_operator_evidence(
             block.reference_quote_max_age_seconds,
             approval_window_unix_seconds,
         )?;
+        validate_operator_no_submit_readiness_report_binding(
+            root_path,
+            block,
+            evidence,
+            &approval_envelope,
+            proof_policy_enabled,
+        )
+        .await?;
         validate_operator_canary_proof_order_intent(
             root_path,
             block,
@@ -1242,6 +1250,69 @@ async fn validate_operator_gate_session_binding(
         }
     })?;
     Ok(session)
+}
+
+async fn validate_operator_no_submit_readiness_report_binding(
+    root_path: &Path,
+    block: &LiveCanaryBlock,
+    evidence: &LiveCanaryOperatorEvidenceBlock,
+    approval_envelope: &Phase8OperatorApprovalEnvelopeFile,
+    proof_policy_enabled: bool,
+) -> Result<(), BoltV3LiveCanaryGateError> {
+    let expected_no_submit_readiness_report_sha256 = required_optional_operator_evidence_field(
+        "no_submit_readiness_report_sha256",
+        evidence.no_submit_readiness_report_sha256.as_deref(),
+    )?;
+    if !is_sha256_hex(expected_no_submit_readiness_report_sha256) {
+        return Err(
+            BoltV3LiveCanaryGateError::InvalidOperatorEvidenceHashShape {
+                field: "no_submit_readiness_report_sha256",
+            },
+        );
+    }
+    // Bind the no-submit readiness-report file to the operator-approval
+    // envelope. The envelope hash is sealed at approval time and re-validated
+    // via the approval-consumption record; checking the live report content
+    // against it rejects a hand-written all-satisfied report placed at the
+    // configured path even when the self-declared TOML hash above is updated to
+    // match the forged file. On the proof-policy path (the path that fires the
+    // live canary order) the envelope binding MUST be present, so the gate
+    // fails closed on absence.
+    let envelope_no_submit_readiness_report_sha256 = approval_envelope_bound_sha256(
+        approval_envelope
+            .no_submit_readiness_report_sha256
+            .as_deref(),
+        "no_submit_readiness_report_sha256",
+        proof_policy_enabled,
+    )?;
+
+    let path = resolve_report_path(root_path, block)?;
+    let bytes = read_regular_file_bounded(&path, block.max_no_submit_readiness_report_bytes)
+        .await
+        .map_err(|source| BoltV3LiveCanaryGateError::OperatorEvidenceRead {
+            field: "no_submit_readiness_report_sha256",
+            path: path.clone(),
+            source,
+        })?;
+    let actual_no_submit_readiness_report_sha256 = sha256_hex(&bytes);
+    if actual_no_submit_readiness_report_sha256 != expected_no_submit_readiness_report_sha256 {
+        return Err(BoltV3LiveCanaryGateError::OperatorEvidenceHashMismatch {
+            field: "no_submit_readiness_report_sha256",
+            path,
+        });
+    }
+    if let Some(envelope_no_submit_readiness_report_sha256) =
+        envelope_no_submit_readiness_report_sha256
+        && actual_no_submit_readiness_report_sha256 != envelope_no_submit_readiness_report_sha256
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch {
+                path,
+                field: "no_submit_readiness_report_sha256",
+            },
+        );
+    }
+    Ok(())
 }
 
 fn validate_operator_gate_session_freshness(
@@ -1569,6 +1640,16 @@ pub struct Phase8OperatorApprovalEnvelopeFile {
     /// Mandatory on the proof-policy path; the gate fails closed on absence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub canary_proof_order_intent_sha256: Option<String>,
+    /// SHA-256 of the no-submit readiness-report file content that the operator
+    /// approved. This binds the probe-produced readiness report to the approval:
+    /// a hand-written all-satisfied report placed at the configured path is
+    /// rejected because this sealed hash no longer matches the live file, even
+    /// when the report's self-declared linkage fields (approval-id hash,
+    /// executable identity, config-bundle checksum, freshness, satisfied stages)
+    /// are all forged to pass the content check. Mandatory on the proof-policy
+    /// path; the gate fails closed on absence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_submit_readiness_report_sha256: Option<String>,
     pub strategy_cancel_path_hash: Option<String>,
 }
 
@@ -2827,6 +2908,7 @@ mod tests {
             canary_proof_candidate_source_sha256: None,
             canary_proof_order_intent_path: None,
             canary_proof_order_intent_sha256: None,
+            no_submit_readiness_report_sha256: None,
             canary_evidence_path,
             approval_not_before_unix_seconds: 900,
             approval_not_after_unix_seconds: 1_300,
@@ -3056,6 +3138,7 @@ mod tests {
             canary_proof_candidate_source_sha256: None,
             canary_proof_order_intent_path: None,
             canary_proof_order_intent_sha256: None,
+            no_submit_readiness_report_sha256: None,
             canary_evidence_path: canary_evidence_path.clone(),
             approval_not_before_unix_seconds,
             approval_not_after_unix_seconds,

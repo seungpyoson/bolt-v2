@@ -13571,6 +13571,17 @@ pub fn write_operator_evidence_json_from_artifact_paths(
             inputs.canary_proof_order_intent_path,
             max_bytes,
         )?,
+        // Seal the no-submit readiness-report file hash so the live gate can
+        // re-check the report content against the operator-approved value. The
+        // report path and its size bound live in `[live_canary]`, not in the
+        // operator-evidence block, so they are sourced from `live_canary`.
+        no_submit_readiness_report_sha256: Some(
+            operator_evidence_no_submit_readiness_report_sha256(
+                loaded,
+                &live_canary.no_submit_readiness_report_path,
+                live_canary.max_no_submit_readiness_report_bytes,
+            )?,
+        ),
         canary_evidence_path: operator_evidence_path_string(inputs.canary_evidence_path),
         approval_not_before_unix_seconds: inputs.approval_not_before_unix_seconds,
         approval_not_after_unix_seconds: inputs.approval_not_after_unix_seconds,
@@ -13640,6 +13651,28 @@ fn optional_operator_evidence_file_sha256(
         }
     })?;
     Ok(Some(hex::encode(Sha256::digest(&bytes))))
+}
+
+/// SHA-256 of the no-submit readiness-report file the gate seals into the
+/// operator-approval envelope. The report path and its size bound live in
+/// `[live_canary]` (not the operator-evidence block), so this helper resolves
+/// the configured path against the loaded config root exactly as the gate does
+/// and hashes the file bounded by `max_no_submit_readiness_report_bytes`.
+fn operator_evidence_no_submit_readiness_report_sha256(
+    loaded: &LoadedBoltV3Config,
+    configured_path: &str,
+    max_bytes: u64,
+) -> Result<String, BoltV3OperatorArtifactError> {
+    validate_operator_evidence_toml_path("no_submit_readiness_report_path", configured_path)?;
+    let resolved_path = resolve_loaded_config_path(loaded, configured_path);
+    let bytes = read_file_bounded(&resolved_path, max_bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::FinalEvidenceRead {
+            field: "no_submit_readiness_report_path",
+            path: resolved_path,
+            source,
+        }
+    })?;
+    Ok(hex::encode(Sha256::digest(&bytes)))
 }
 
 fn operator_evidence_path_string(path: &Path) -> String {
@@ -15270,6 +15303,11 @@ fn validate_approval_envelope_fields(
             field: "canary_proof_order_intent_sha256",
         });
     }
+    if envelope.no_submit_readiness_report_sha256 != evidence.no_submit_readiness_report_sha256 {
+        return Err(BoltV3OperatorArtifactError::ApprovalEnvelopeMismatch {
+            field: "no_submit_readiness_report_sha256",
+        });
+    }
     Ok(())
 }
 
@@ -15856,6 +15894,15 @@ fn approval_envelope_from_operator_evidence(
         // self-declared TOML hash.
         expected_gate_session_sha256: evidence.expected_gate_session_sha256.clone(),
         canary_proof_order_intent_sha256: evidence.canary_proof_order_intent_sha256.clone(),
+        // Seal the no-submit readiness-report file hash. At materialization time
+        // this `evidence` field is the genuine report file hash (the materializer
+        // computes it directly from the file via
+        // `operator_evidence_no_submit_readiness_report_sha256`), so this copy
+        // binds the exact probe-produced report the operator authorized. The gate
+        // re-checks the live report content against this sealed value, rejecting a
+        // hand-written all-satisfied report that updates only the self-declared
+        // TOML hash.
+        no_submit_readiness_report_sha256: evidence.no_submit_readiness_report_sha256.clone(),
         strategy_cancel_path_hash: evidence.strategy_cancel_path.as_deref().map(sha256_text),
     }
 }

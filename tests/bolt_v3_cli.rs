@@ -312,6 +312,29 @@ fn bolt_v3_cli_generates_operator_evidence_json_without_printing_values() {
         .expect("fixture root should have parent")
         .join("operator-evidence");
     fs::create_dir_all(&evidence_dir).expect("operator evidence dir should create");
+    // The materializer seals the no-submit readiness-report file hash into the
+    // approval envelope, so the report referenced by [live_canary] must exist
+    // under the config root before the command runs. The fixture TOML sets
+    // `no_submit_readiness_report_path = "reports/no-submit-readiness.json"`,
+    // resolved relative to the config root's parent.
+    let config_root_parent = config_path
+        .parent()
+        .expect("fixture root should have parent");
+    let readiness_report_path = config_root_parent
+        .join("reports")
+        .join("no-submit-readiness.json");
+    fs::create_dir_all(
+        readiness_report_path
+            .parent()
+            .expect("readiness report path should have parent"),
+    )
+    .expect("readiness report dir should create");
+    fs::write(
+        &readiness_report_path,
+        serde_json::to_vec_pretty(&serde_json::json!({"record_kind": "test_no_submit_readiness"}))
+            .expect("readiness report fixture should encode"),
+    )
+    .expect("readiness report fixture should write");
     let output_path = evidence_dir.join("operator-evidence.json");
     let approval_envelope_path = evidence_dir.join("approval-envelope.json");
     let ssm_manifest_path = write_cli_json_artifact(
@@ -552,6 +575,13 @@ fn bolt_v3_cli_generates_operator_evidence_json_without_printing_values() {
             .canary_proof_order_intent_sha256
             .as_deref(),
         Some(sha256_file_for_cli_test(&canary_proof_order_intent_path).as_str())
+    );
+    assert_eq!(
+        operator_evidence
+            .no_submit_readiness_report_sha256
+            .as_deref(),
+        Some(sha256_file_for_cli_test(&readiness_report_path).as_str()),
+        "materializer must seal the no-submit readiness-report file hash"
     );
     assert_eq!(
         operator_evidence.approval_nonce_sha256,
@@ -3857,6 +3887,14 @@ fn live_canary_with_operator_evidence_toml(evidence: &LiveCanaryOperatorEvidence
             ),
             None => String::new(),
         };
+    let no_submit_readiness_report_sha256_line =
+        match evidence.no_submit_readiness_report_sha256.as_deref() {
+            Some(value) => format!(
+                "no_submit_readiness_report_sha256 = \"{}\"\n",
+                toml_string(value)
+            ),
+            None => String::new(),
+        };
     format!(
         r#"
 [live_canary]
@@ -3888,7 +3926,7 @@ pre_run_state_path = "{pre_run_state_path}"
 pre_run_state_sha256 = "{pre_run_state_sha256}"
 abort_plan_path = "{abort_plan_path}"
 abort_plan_sha256 = "{abort_plan_sha256}"
-{canary_proof_order_intent_sha256_line}canary_evidence_path = "{canary_evidence_path}"
+{canary_proof_order_intent_sha256_line}{no_submit_readiness_report_sha256_line}canary_evidence_path = "{canary_evidence_path}"
 approval_not_before_unix_seconds = {approval_not_before_unix_seconds}
 approval_not_after_unix_seconds = {approval_not_after_unix_seconds}
 approval_nonce_path = "{approval_nonce_path}"

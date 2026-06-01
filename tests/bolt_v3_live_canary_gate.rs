@@ -891,7 +891,17 @@ fn proof_policy_for_support_gate_session() -> LiveCanaryProofPolicyBlock {
 /// canary proof order-intent that binds the gate session, sets the TOML
 /// self-declared hashes, and rebuilds the approval envelope sealing both the
 /// gate-session and order-intent file hashes (production producer behavior).
-fn configure_proof_policy_evidence(operator_evidence: &mut LiveCanaryOperatorEvidenceBlock) {
+fn configure_proof_policy_evidence(
+    operator_evidence: &mut LiveCanaryOperatorEvidenceBlock,
+    report_path: &std::path::Path,
+) {
+    // Seal the no-submit readiness-report file hash. The report binding is
+    // MANDATORY on the proof-policy path, so the self-declared TOML hash and the
+    // envelope must both carry the genuine report-file hash. The caller writes
+    // the report before invoking this helper.
+    let report_bytes = std::fs::read(report_path).expect("readiness report should read");
+    operator_evidence.no_submit_readiness_report_sha256 = Some(sha256_hex(&report_bytes));
+
     // Refresh the gate-session file so its freshness check passes on the proof
     // path, then re-bind the self-declared TOML hash to the refreshed file.
     let gate_session_path = std::path::PathBuf::from(
@@ -950,7 +960,7 @@ async fn live_canary_gate_accepts_envelope_bound_canary_proof_order_intent() {
     let report_path = tempdir.path().join("no-submit-readiness.json");
     write_no_submit_report(&report_path, &[]);
     let mut operator_evidence = valid_operator_evidence();
-    configure_proof_policy_evidence(&mut operator_evidence);
+    configure_proof_policy_evidence(&mut operator_evidence, &report_path);
     let loaded = loaded_with_live_canary(
         loaded,
         LiveCanaryBlock {
@@ -988,7 +998,7 @@ async fn live_canary_gate_rejects_canary_proof_order_intent_swap_after_toml_self
     let report_path = tempdir.path().join("no-submit-readiness.json");
     write_no_submit_report(&report_path, &[]);
     let mut operator_evidence = valid_operator_evidence();
-    configure_proof_policy_evidence(&mut operator_evidence);
+    configure_proof_policy_evidence(&mut operator_evidence, &report_path);
 
     // Adversary swaps the canary proof order-intent file after approval and
     // updates ONLY the self-declared TOML hash. The envelope still seals the
@@ -1064,7 +1074,7 @@ async fn live_canary_gate_rejects_missing_envelope_order_intent_binding_on_proof
     let report_path = tempdir.path().join("no-submit-readiness.json");
     write_no_submit_report(&report_path, &[]);
     let mut operator_evidence = valid_operator_evidence();
-    configure_proof_policy_evidence(&mut operator_evidence);
+    configure_proof_policy_evidence(&mut operator_evidence, &report_path);
 
     // Strip the order-intent binding from the envelope (a legacy/forged
     // envelope) while keeping the self-declared TOML hash. The proof path must
@@ -1109,6 +1119,182 @@ async fn live_canary_gate_rejects_missing_envelope_order_intent_binding_on_proof
             );
         }
         other => panic!("expected missing envelope order-intent binding rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_accepts_envelope_bound_no_submit_readiness_report() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seals the genuine readiness-report file hash into the envelope (and the
+    // self-declared TOML hash) alongside the gate-session and order-intent
+    // bindings — production producer behavior.
+    configure_proof_policy_evidence(&mut operator_evidence, &report_path);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(proof_policy_for_support_gate_session()),
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let report = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect("envelope-bound no-submit readiness report should pass on the proof path");
+
+    assert_eq!(report.approval_id(), "operator-approved-canary-001");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_no_submit_readiness_report_swap_after_toml_self_hash_update() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    // Seal the ORIGINAL readiness-report hash into the envelope, mirroring an
+    // operator approval of the probe-produced report.
+    configure_proof_policy_evidence(&mut operator_evidence, &report_path);
+
+    // Adversary replaces the readiness report at the configured path with a
+    // hand-written, still-all-satisfied report whose linkage fields are forged
+    // to pass the content check, then updates ONLY the self-declared TOML hash
+    // to match the forged file. The envelope still seals the original report
+    // hash, so the swap must be rejected.
+    let original_report_sha256 = operator_evidence
+        .no_submit_readiness_report_sha256
+        .clone()
+        .expect("proof policy evidence should bind readiness report");
+    // Forge a still-fresh, still-all-satisfied report with a different
+    // generated_at so its content (hence sha256) differs from the approved one.
+    write_no_submit_report_at(
+        &report_path,
+        &[],
+        current_unix_seconds_for_test().saturating_sub(1),
+    );
+    let forged_report_bytes = std::fs::read(&report_path).expect("forged report should read");
+    let forged_report_sha256 = sha256_hex(&forged_report_bytes);
+    assert_ne!(
+        forged_report_sha256, original_report_sha256,
+        "forged readiness report must change the file hash"
+    );
+    // Update only the TOML self-hash so the self-declared check passes; the
+    // envelope hash is intentionally left bound to the original report.
+    operator_evidence.no_submit_readiness_report_sha256 = Some(forged_report_sha256);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(proof_policy_for_support_gate_session()),
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("post-approval readiness-report swap must fail closed on envelope binding");
+
+    match error {
+        BoltV3LiveCanaryGateError::OperatorApprovalEnvelopeMismatch { field, .. } => {
+            assert_eq!(
+                field, "no_submit_readiness_report_sha256",
+                "readiness-report swap must be rejected by the envelope binding, got {field}"
+            );
+        }
+        other => {
+            panic!("expected approval-envelope readiness-report binding rejection, got {other:?}")
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_canary_gate_rejects_missing_envelope_no_submit_readiness_report_binding_on_proof_path()
+ {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let report_path = tempdir.path().join("no-submit-readiness.json");
+    write_no_submit_report(&report_path, &[]);
+    let mut operator_evidence = valid_operator_evidence();
+    configure_proof_policy_evidence(&mut operator_evidence, &report_path);
+
+    // Strip the readiness-report binding from the envelope (a legacy/forged
+    // envelope) while keeping the self-declared TOML hash. The proof path must
+    // fail closed because the envelope binding is mandatory there.
+    let mut envelope = valid_approval_envelope_value(&operator_evidence);
+    envelope
+        .as_object_mut()
+        .expect("approval envelope should be an object")
+        .remove("no_submit_readiness_report_sha256");
+    bind_approval_envelope_value(&mut operator_evidence, envelope);
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: report_path.to_string_lossy().to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 10,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(proof_policy_for_support_gate_session()),
+            operator_evidence: Some(operator_evidence),
+        },
+    );
+
+    let error = check_bolt_v3_live_canary_gate(&loaded)
+        .await
+        .expect_err("missing envelope readiness-report binding must fail closed on the proof path");
+
+    match error {
+        BoltV3LiveCanaryGateError::MissingOperatorEvidenceField { field } => {
+            assert_eq!(
+                field, "no_submit_readiness_report_sha256",
+                "missing envelope readiness-report binding must fail closed, got {field}"
+            );
+        }
+        other => {
+            panic!("expected missing envelope readiness-report binding rejection, got {other:?}")
+        }
     }
 }
 
@@ -3796,6 +3982,12 @@ fn valid_approval_envelope_value(evidence: &LiveCanaryOperatorEvidenceBlock) -> 
         envelope_object.insert(
             "canary_proof_order_intent_sha256".to_string(),
             serde_json::json!(canary_proof_order_intent_sha256),
+        );
+    }
+    if let Some(no_submit_readiness_report_sha256) = &evidence.no_submit_readiness_report_sha256 {
+        envelope_object.insert(
+            "no_submit_readiness_report_sha256".to_string(),
+            serde_json::json!(no_submit_readiness_report_sha256),
         );
     }
     if let Some(strategy_cancel_path) = &evidence.strategy_cancel_path {

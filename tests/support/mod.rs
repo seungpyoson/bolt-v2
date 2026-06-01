@@ -400,6 +400,7 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         canary_proof_candidate_source_sha256: None,
         canary_proof_order_intent_path: None,
         canary_proof_order_intent_sha256: None,
+        no_submit_readiness_report_sha256: None,
         canary_evidence_path,
         approval_not_before_unix_seconds,
         approval_not_after_unix_seconds,

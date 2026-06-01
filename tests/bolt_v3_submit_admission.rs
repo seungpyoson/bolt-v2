@@ -10,8 +10,8 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderSide,
     BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
     BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-    conservative_quote_quantity_admission_notional, market_style_admission_ceiling_notional,
-    rounded_order_admission_notional,
+    conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
+    market_style_admission_ceiling_notional, rounded_order_admission_notional,
 };
 use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
@@ -286,6 +286,43 @@ fn fee_inclusive_notional_admits_same_base_when_fee_is_zero() {
         .admit(&submit_request(admission_notional))
         .expect("within-cap zero-fee admission notional must be admitted");
     assert_eq!(admission.admitted_order_count(), 1);
+}
+
+#[test]
+fn fee_inclusive_notional_cannot_exceed_operator_cap() {
+    // F1 invariant: the fee-inclusive admission notional — the cash debit the
+    // venue actually incurs — is hard-bounded by the operator-approved per-order
+    // cap. Arm the gate with a report whose `max_notional_per_order()` IS the
+    // cap, then build an admission request whose notional is exactly the
+    // fee-inclusive notional of an order priced AT the cap with a positive fee.
+    // Because any positive fee scales the notional strictly above the cap, the
+    // strict-`>` cap check in `evaluate`/`admit` must reject it; admission can
+    // never let a fee push the cash debit past the operator cap.
+    let cap = Decimal::new(5, 0);
+    let positive_fee_bps = Decimal::new(700, 0);
+    let fee_inclusive_notional = fee_inclusive_admission_notional(cap, positive_fee_bps);
+    assert!(
+        fee_inclusive_notional > cap,
+        "a positive fee must push the fee-inclusive notional strictly above the cap"
+    );
+
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+        support::RecordingDecisionEvidenceWriter::default(),
+    ));
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(1, cap))
+        .expect("valid gate report should arm admission");
+
+    let result = admission.admit(&submit_request(fee_inclusive_notional));
+    let nt_submit_called = result.is_ok();
+    let error = result.expect_err("fee-inclusive notional above the operator cap must reject");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::NotionalCapExceeded
+    ));
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert!(!nt_submit_called, "NT submit must not be reached");
 }
 
 #[test]

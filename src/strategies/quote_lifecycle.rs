@@ -175,6 +175,27 @@ impl QuoteLeg {
                 self.state = LegState::Idle;
                 None
             }
+            // T8-orphan-guard: a wind-down cancel is outstanding, but the venue
+            // confirms it actually CREATED or still holds an order — a late
+            // `Accepted` (the cancel raced ahead of the accept and no-op'd, so
+            // the submit then rested), a `Modified` (the order rests at the new
+            // price), or a `ModifyRejected` (the original order is still
+            // resting). The first cancel hit nothing, so re-emit a Cancel
+            // against the now-existing order and stay in CancelPending until it
+            // confirms gone. Without this arm the order is orphaned live while
+            // the leg sits in CancelPending forever (no exit event), the exact
+            // stuck-state / ghost-order hazard.
+            (
+                LegState::CancelPending,
+                LegEvent::Accepted | LegEvent::Modified | LegEvent::ModifyRejected,
+            ) => Some(LifecycleAction::Cancel),
+            // T8-reject: the in-flight submit that the wind-down cancel chased
+            // was rejected — nothing was ever created at the venue, so there is
+            // nothing to cancel and the leg is done.
+            (LegState::CancelPending, LegEvent::Rejected) => {
+                self.state = LegState::Idle;
+                None
+            }
             // Everything else is a no-op: a no-move trigger while Resting, any
             // trigger while a command is in flight, or an event that does not
             // match the current state.
@@ -479,6 +500,77 @@ mod tests {
             );
             assert_eq!(leg.state(), LegState::Resting);
         }
+    }
+
+    #[test]
+    fn cancel_pending_late_accept_recancels_the_orphan() {
+        // A wind-down cancel is requested while the submit is still in flight;
+        // the cancel races ahead and no-ops, then the venue accepts the submit.
+        let mut leg = QuoteLeg::new(false);
+        leg.on_event(LegEvent::QuoteTrigger {
+            requote_needed: false,
+        });
+        assert_eq!(leg.request_cancel(), Some(LifecycleAction::Cancel));
+        assert_eq!(leg.state(), LegState::CancelPending);
+        // The late Accept means an order now rests: re-emit Cancel against it,
+        // staying in CancelPending — NOT a silent no-op that orphans the order.
+        assert_eq!(
+            leg.on_event(LegEvent::Accepted),
+            Some(LifecycleAction::Cancel)
+        );
+        assert_eq!(leg.state(), LegState::CancelPending);
+        // The re-issued cancel confirms: the leg is finally clean.
+        assert_eq!(leg.on_event(LegEvent::Canceled), None);
+        assert_eq!(leg.state(), LegState::Idle);
+    }
+
+    #[test]
+    fn cancel_pending_late_modify_confirm_recancels_the_orphan() {
+        // Wind-down cancel requested mid-modify; the modify confirms first, so
+        // the order rests at the new price and must still be cancelled.
+        let mut leg = resting_leg(true);
+        leg.on_event(LegEvent::QuoteTrigger {
+            requote_needed: true,
+        });
+        assert_eq!(leg.state(), LegState::ModifyPending);
+        assert_eq!(leg.request_cancel(), Some(LifecycleAction::Cancel));
+        assert_eq!(leg.state(), LegState::CancelPending);
+        assert_eq!(
+            leg.on_event(LegEvent::Modified),
+            Some(LifecycleAction::Cancel)
+        );
+        assert_eq!(leg.state(), LegState::CancelPending);
+    }
+
+    #[test]
+    fn cancel_pending_modify_reject_recancels_the_still_resting_order() {
+        // Wind-down cancel requested mid-modify; the modify is rejected, so the
+        // ORIGINAL order is still resting and must be cancelled.
+        let mut leg = resting_leg(true);
+        leg.on_event(LegEvent::QuoteTrigger {
+            requote_needed: true,
+        });
+        leg.request_cancel();
+        assert_eq!(leg.state(), LegState::CancelPending);
+        assert_eq!(
+            leg.on_event(LegEvent::ModifyRejected),
+            Some(LifecycleAction::Cancel)
+        );
+        assert_eq!(leg.state(), LegState::CancelPending);
+    }
+
+    #[test]
+    fn cancel_pending_rejected_submit_returns_to_idle() {
+        // Wind-down cancel requested while submitting; the submit is rejected,
+        // so nothing was ever created at the venue — nothing to cancel, done.
+        let mut leg = QuoteLeg::new(false);
+        leg.on_event(LegEvent::QuoteTrigger {
+            requote_needed: false,
+        });
+        leg.request_cancel();
+        assert_eq!(leg.state(), LegState::CancelPending);
+        assert_eq!(leg.on_event(LegEvent::Rejected), None);
+        assert_eq!(leg.state(), LegState::Idle);
     }
 
     // --- W2 slice 3: two-leg market controller + cancel scope ---

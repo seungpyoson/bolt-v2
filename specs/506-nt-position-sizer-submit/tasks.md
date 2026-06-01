@@ -27,18 +27,19 @@
 - [x] Seed open-order lifecycle count and configured YES/NO inventory from NT cache.
 - [x] Use set semantics for cache and live order events so concurrent/stale snapshots do not double count or resurrect terminal orders.
 - [x] Track account-bound submitted/accepted order ids and remove them on terminal events.
-- [x] Keep partial fills non-mutating until residual-liability metadata is available.
+- [x] Track submit-time reservation metadata for orders admitted after process start.
+- [x] Revalue residual liability from authoritative NT partial-fill events when submit-time metadata exists.
+- [x] Release reservations and open-order count from authoritative NT full-fill events when submit-time metadata exists.
 
 ## Remaining For Production Grade
 
-- [ ] Revalue residual liability from partial fills using authoritative NT order/fill state or submit-time liability metadata.
-- [ ] Release or revalue fully filled orders from authoritative NT fill/order-state evidence.
+- [ ] Attribute residual liability for rebuilt pre-existing orders to known Bolt reservation metadata.
 - [ ] Rebuild non-empty pre-existing NT/exchange committed liability into the capital pool when cache orders can be attributed to known Bolt reservations.
 - [ ] Emit durable rebuild audit evidence with recovered reservation count, liability, source, and observation time.
 - [ ] Add configured halt actions for threshold breach: stop entries, cancel orders, and optional flatten.
 - [ ] Document and implement a safe replace-submit model before enabling `ReplaceSubmit`.
 - [ ] Replace static configured prediction-market metadata with dynamic market-selection metadata when rotating markets.
-- [ ] Add adapter/venue evidence for PUSD spendability and conditional-token allowance.
+- [ ] Add adapter/venue evidence for collateral spendability and venue/instrument allowance.
 - [ ] Add maker/post-only quote-set reservation metadata before enabling maker submit enforcement.
 - [ ] Add non-binary product calculators before enabling spot leverage, futures/perps, or options.
 - [ ] Add reconnect/runtime tests against the actual NT path beyond unit-level cache entrypoint coverage.

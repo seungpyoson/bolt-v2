@@ -29,8 +29,10 @@ When enabled, submit admission must:
 - track account-bound submitted/accepted order ids with set semantics so cache snapshots and live events cannot double count;
 - keep stale cache snapshots from resurrecting a client order id after terminal evidence;
 - release committed reservations on terminal order events so cancel/reject/expire/deny releases committed reservations by client order id;
-- release matching account-less NT `OrderDenied` events by client order id, because NT does not attach an account id to that event type.
-- leave partial fills non-mutating until authoritative residual-liability metadata exists.
+- release matching account-less NT `OrderDenied` events by client order id, because NT does not attach an account id to that event type;
+- track submit-time reservation metadata for orders admitted after process start;
+- revalue residual liability from authoritative NT partial-fill events when submit-time metadata exists;
+- release reservations and open-order count from authoritative NT full-fill events when submit-time metadata exists.
 
 Only `prediction_market_binary` is implemented in this slice. The compiled order kind is explicit, but only `Limit` exists in the current sizing interface.
 
@@ -38,9 +40,9 @@ Only `prediction_market_binary` is implemented in this slice. The compiled order
 
 This slice is not production-grade by itself. It adds the live NT component feed and startup/reconnect cache rebuild boundary, but `enforce_submit_admission = true` is not safe for full production deployment until the remaining liability and operations gaps are closed:
 
-- residual liability from partial fills is revalued from authoritative NT order/fill state or submit-time liability metadata;
+- residual liability for rebuilt pre-existing orders is attributable to known Bolt reservation metadata;
 - non-empty pre-existing NT/exchange open orders can be rebuilt only when their liability is attributable to known Bolt reservations;
-- PUSD spendability and conditional-token allowance are proven by adapter/venue evidence instead of approximated from NT account free balance;
+- collateral spendability and venue/instrument allowance are proven by adapter/venue evidence instead of approximated from NT account free balance;
 - safe replace/amend transitions are implemented before `ReplaceSubmit` is enabled;
 - maker quote sets reserve simultaneous adverse fills;
 - halt actions cancel or flatten when configured loss/capital thresholds are breached.

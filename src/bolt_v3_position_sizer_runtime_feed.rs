@@ -9,7 +9,8 @@ use nautilus_common::msgbus::{
     unsubscribe_portfolio_snapshot, unsubscribe_position_events,
 };
 use nautilus_model::{
-    events::{AccountState, OrderEventAny, PortfolioSnapshot, PositionEvent},
+    enums::OrderSide,
+    events::{AccountState, OrderEventAny, OrderFilled, PortfolioSnapshot, PositionEvent},
     identifiers::AccountId,
 };
 use rust_decimal::Decimal;
@@ -18,8 +19,8 @@ use crate::{
     bolt_v3_position_sizer::ProductSizingSnapshot,
     bolt_v3_sizing_state::{OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot},
     bolt_v3_submit_admission::{
-        BoltV3SubmitAdmissionState, BoltV3SubmitPositionSizingLifecycleDecision,
-        BoltV3SubmitPositionSizingNtComponents,
+        BoltV3CompiledOrderSide, BoltV3SubmitAdmissionState, BoltV3SubmitPositionSizingFillUpdate,
+        BoltV3SubmitPositionSizingLifecycleDecision, BoltV3SubmitPositionSizingNtComponents,
     },
     nt_runtime_capture::{
         account_states_pattern, order_events_pattern, portfolio_snapshots_pattern,
@@ -249,10 +250,8 @@ impl PositionSizerRuntimeFeed {
         &mut self,
         event: &OrderEventAny,
     ) -> Option<BoltV3SubmitPositionSizingLifecycleDecision> {
-        if matches!(event, OrderEventAny::Filled(_)) {
-            // Residual liability revalue needs cached order details or submit-time
-            // liability metadata; this slice intentionally leaves fills non-mutating.
-            return None;
+        if let OrderEventAny::Filled(fill) = event {
+            return self.on_fill_event(fill);
         }
         if is_live_order_event(event) {
             let account_id = event.account_id()?;
@@ -293,6 +292,49 @@ impl PositionSizerRuntimeFeed {
             return None;
         }
         self.latest_terminal_observed_at_ns = Some(observed_at_ns);
+        Some(decision)
+    }
+
+    fn on_fill_event(
+        &mut self,
+        fill: &OrderFilled,
+    ) -> Option<BoltV3SubmitPositionSizingLifecycleDecision> {
+        if fill.account_id != self.config.account_id {
+            return None;
+        }
+        let instrument_id = fill.instrument_id.to_string();
+        let (yes_instrument_id, no_instrument_id) = self.configured_binary_instrument_ids()?;
+        if instrument_id != yes_instrument_id && instrument_id != no_instrument_id {
+            return None;
+        }
+        let side = match fill.order_side {
+            OrderSide::Buy => BoltV3CompiledOrderSide::Buy,
+            OrderSide::Sell => BoltV3CompiledOrderSide::Sell,
+            _ => return None,
+        };
+        let observed_at_ns = fill.ts_event.as_u64();
+        let decision = self.submit_admission.apply_position_sizing_fill_update(
+            BoltV3SubmitPositionSizingFillUpdate {
+                client_order_id: fill.client_order_id.to_string(),
+                trade_id: fill.trade_id.to_string(),
+                instrument_id,
+                side,
+                fill_quantity: fill.last_qty.as_decimal(),
+                observed_at_ns,
+                evidence_label: "nt_order_fill".to_string(),
+            },
+            observed_at_ns,
+        );
+        if decision.unknown_reservation {
+            return None;
+        }
+        if decision.action == crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Released
+        {
+            self.component_builder
+                .record_terminal_order_event(fill.client_order_id.to_string(), observed_at_ns);
+            self.publish_components_if_ready();
+            self.latest_terminal_observed_at_ns = Some(observed_at_ns);
+        }
         Some(decision)
     }
 

@@ -8,11 +8,11 @@ use bolt_v2::bolt_v3_decision_evidence::{
 };
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, LossSnapshot};
-use bolt_v2::bolt_v3_position_sizer::PositionSizingLifecycleKind;
 use bolt_v2::bolt_v3_position_sizer::{
     FeeSlippagePolicy, PredictionMarketSizingSnapshot, ProductKind, ProductSizingSnapshot,
     SizingMode, SizingPolicy,
 };
+use bolt_v2::bolt_v3_position_sizer::{PositionSizingLifecycleAction, PositionSizingLifecycleKind};
 use bolt_v2::bolt_v3_sizing_state::{
     NtDerivedSizingState, OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot,
     ReservationLedgerSnapshot,
@@ -24,11 +24,12 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
     BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
     BoltV3SubmitLifecyclePolicy, BoltV3SubmitPositionSizerConfig,
-    BoltV3SubmitPositionSizingLifecycleUpdate, BoltV3SubmitPositionSizingNtComponents,
-    BoltV3SubmitPositionSizingOpenOrderReservation, BoltV3SubmitPositionSizingOpenOrderSnapshot,
-    BoltV3SubmitPositionSizingRebuildDecision, PredictionMarketOutcomeSide,
-    conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
-    market_style_admission_ceiling_notional, rounded_order_admission_notional,
+    BoltV3SubmitPositionSizingFillUpdate, BoltV3SubmitPositionSizingLifecycleUpdate,
+    BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderReservation,
+    BoltV3SubmitPositionSizingOpenOrderSnapshot, BoltV3SubmitPositionSizingRebuildDecision,
+    PredictionMarketOutcomeSide, conservative_quote_quantity_admission_notional,
+    fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
+    rounded_order_admission_notional,
 };
 use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
@@ -1268,7 +1269,7 @@ fn configured_submit_sizer_reserves_no_outcome_buy_when_instrument_matches_nt_st
     rebuild_empty_position_sizer(&admission);
 
     let mut request = sized_submit_request("client-order-1");
-    request.instrument_id = "condition-no.POLYMARKET".to_string();
+    request.instrument_id = "instrument-no.VENUE-A".to_string();
     request
         .position_sizing
         .as_mut()
@@ -1298,7 +1299,7 @@ fn configured_submit_sizer_uses_no_inventory_for_no_outcome_sell() {
     rebuild_empty_position_sizer(&admission);
 
     let mut request = sized_submit_request("client-order-1");
-    request.instrument_id = "condition-no.POLYMARKET".to_string();
+    request.instrument_id = "instrument-no.VENUE-A".to_string();
     let evidence = request
         .position_sizing
         .as_mut()
@@ -1330,7 +1331,7 @@ fn configured_submit_sizer_allows_no_outcome_risk_reducing_exit_without_reservat
 
     let mut request = sized_submit_request("client-order-1");
     request.intent_kind = BoltV3SubmitIntentKind::RiskReducingExit;
-    request.instrument_id = "condition-no.POLYMARKET".to_string();
+    request.instrument_id = "instrument-no.VENUE-A".to_string();
     let evidence = request
         .position_sizing
         .as_mut()
@@ -1379,6 +1380,379 @@ fn configured_submit_sizer_keeps_committed_reservation_until_terminal_lifecycle_
 
     assert!(decision.accepted);
     assert!(!decision.unknown_reservation);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+}
+
+#[test]
+fn configured_submit_sizer_revalues_residual_liability_from_fill_metadata() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+
+    let decision = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            fill_quantity: Decimal::new(4, 0),
+            observed_at_ns: 1_100,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_100,
+    );
+
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Revalued);
+    assert!(!decision.unknown_reservation);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(27, 1))
+    );
+}
+
+#[test]
+fn configured_submit_sizer_keeps_per_order_additive_liability_after_partial_fill() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+
+    let decision = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            fill_quantity: Decimal::new(9, 0),
+            observed_at_ns: 1_100,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_100,
+    );
+
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Revalued);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(7, 1))
+    );
+}
+
+#[test]
+fn configured_submit_sizer_applies_same_timestamp_fills_in_order() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+
+    let first = BoltV3SubmitPositionSizingFillUpdate {
+        client_order_id: "client-order-1".to_string(),
+        trade_id: "trade-1".to_string(),
+        instrument_id: "instrument-yes.VENUE-A".to_string(),
+        side: BoltV3CompiledOrderSide::Buy,
+        fill_quantity: Decimal::new(4, 0),
+        observed_at_ns: 1_100,
+        evidence_label: "nt_order_fill".to_string(),
+    };
+    let second = BoltV3SubmitPositionSizingFillUpdate {
+        trade_id: "trade-2".to_string(),
+        fill_quantity: Decimal::new(3, 0),
+        ..first.clone()
+    };
+
+    let first_decision = admission.apply_position_sizing_fill_update(first, 1_100);
+    let second_decision = admission.apply_position_sizing_fill_update(second, 1_100);
+
+    assert!(first_decision.accepted);
+    assert_eq!(
+        first_decision.action,
+        PositionSizingLifecycleAction::Revalued
+    );
+    assert!(second_decision.accepted);
+    assert_eq!(
+        second_decision.action,
+        PositionSizingLifecycleAction::Revalued
+    );
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(15, 1))
+    );
+}
+
+#[test]
+fn configured_submit_sizer_ignores_duplicate_fill_trade_id() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+
+    let fill = BoltV3SubmitPositionSizingFillUpdate {
+        client_order_id: "client-order-1".to_string(),
+        trade_id: "trade-1".to_string(),
+        instrument_id: "instrument-yes.VENUE-A".to_string(),
+        side: BoltV3CompiledOrderSide::Buy,
+        fill_quantity: Decimal::new(4, 0),
+        observed_at_ns: 1_100,
+        evidence_label: "nt_order_fill".to_string(),
+    };
+
+    let first = admission.apply_position_sizing_fill_update(fill.clone(), 1_100);
+    let duplicate = admission.apply_position_sizing_fill_update(fill, 1_200);
+
+    assert!(first.accepted);
+    assert_eq!(first.action, PositionSizingLifecycleAction::Revalued);
+    assert!(duplicate.accepted);
+    assert_eq!(duplicate.action, PositionSizingLifecycleAction::None);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(27, 1))
+    );
+}
+
+#[test]
+fn configured_submit_sizer_full_fill_releases_reservation() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+
+    let decision = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            fill_quantity: Decimal::new(10, 0),
+            observed_at_ns: 1_100,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_100,
+    );
+
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
+    assert!(!decision.unknown_reservation);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+
+    let terminal = admission.apply_position_sizing_terminal_order_event(
+        "client-order-1".to_string(),
+        1_200,
+        "nt_order_terminal".to_string(),
+    );
+    assert!(terminal.unknown_reservation);
+    assert_eq!(terminal.action, PositionSizingLifecycleAction::None);
+}
+
+#[test]
+fn configured_submit_sizer_rejects_mismatched_fill_without_mutation() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+
+    let decision = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-1".to_string(),
+            instrument_id: "instrument-no.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            fill_quantity: Decimal::new(4, 0),
+            observed_at_ns: 1_100,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_100,
+    );
+
+    assert!(decision.unknown_reservation);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::None);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+}
+
+#[test]
+fn configured_submit_sizer_rejects_duplicate_trade_id_with_mismatched_content() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+
+    let valid = BoltV3SubmitPositionSizingFillUpdate {
+        client_order_id: "client-order-1".to_string(),
+        trade_id: "trade-1".to_string(),
+        instrument_id: "instrument-yes.VENUE-A".to_string(),
+        side: BoltV3CompiledOrderSide::Buy,
+        fill_quantity: Decimal::new(4, 0),
+        observed_at_ns: 1_100,
+        evidence_label: "nt_order_fill".to_string(),
+    };
+    let mismatched = BoltV3SubmitPositionSizingFillUpdate {
+        instrument_id: "instrument-no.VENUE-A".to_string(),
+        observed_at_ns: 1_200,
+        ..valid.clone()
+    };
+
+    assert!(
+        admission
+            .apply_position_sizing_fill_update(valid, 1_100)
+            .accepted
+    );
+    let decision = admission.apply_position_sizing_fill_update(mismatched, 1_200);
+
+    assert!(decision.unknown_reservation);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::None);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(27, 1))
+    );
+}
+
+#[test]
+fn configured_submit_sizer_revalues_sell_residual_liability_from_fill_metadata() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    let mut request = sized_submit_request("client-order-1");
+    request
+        .position_sizing
+        .as_mut()
+        .expect("sized request should carry evidence")
+        .side = BoltV3CompiledOrderSide::Sell;
+    admission
+        .admit_at(&request, 1_000)
+        .expect("fresh sell sizing state and capacity should admit")
+        .commit_submitted();
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(63, 1))
+    );
+
+    let decision = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Sell,
+            fill_quantity: Decimal::new(4, 0),
+            observed_at_ns: 1_100,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_100,
+    );
+
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Revalued);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(39, 1))
+    );
+}
+
+#[test]
+fn configured_submit_sizer_rejects_fill_for_rebuilt_reservation_without_metadata() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+        vec![open_order_reservation(
+            "client-order-1",
+            "submit-reservation-1",
+            Decimal::new(43, 1),
+        )],
+        1_000,
+    );
+    assert!(rebuild.accepted);
+
+    let decision = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            fill_quantity: Decimal::new(4, 0),
+            observed_at_ns: 1_100,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_100,
+    );
+
+    assert!(decision.unknown_reservation);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::None);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+}
+
+#[test]
+fn configured_submit_sizer_clamps_overfill_to_full_release() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+
+    let decision = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            fill_quantity: Decimal::new(12, 0),
+            observed_at_ns: 1_100,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_100,
+    );
+
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::ZERO)
@@ -1442,7 +1816,7 @@ fn configured_submit_sizer_rejects_outcome_instrument_mismatch() {
     rebuild_empty_position_sizer(&admission);
 
     let mut mismatch = sized_submit_request("client-order-2");
-    mismatch.instrument_id = "other.POLYMARKET".to_string();
+    mismatch.instrument_id = "other.VENUE-A".to_string();
     let error = admission
         .admit_at(&mismatch, 1_000)
         .expect_err("instrument mismatch must reject");
@@ -1479,7 +1853,7 @@ fn configured_submit_sizer_rejects_account_mismatch_from_nt_state() {
     let admission = position_sized_admission();
     arm_default(&admission);
     let mut state = fresh_sizing_state(900);
-    state.portfolio.account_id = "POLYMARKET-002".to_string();
+    state.portfolio.account_id = "ACCOUNT-002".to_string();
     admission.update_position_sizing_nt_components(components_from_state(state));
 
     let error = admission
@@ -1642,10 +2016,10 @@ fn position_sized_admission_with_pool_observed_at(
     BoltV3SubmitAdmissionState::new_unarmed_with_position_sizer(
         Arc::new(support::RecordingDecisionEvidenceWriter::default()),
         BoltV3SubmitPositionSizerConfig {
-            venue_id: "POLYMARKET".to_string(),
-            account_id: "POLYMARKET-001".to_string(),
+            venue_id: "VENUE-A".to_string(),
+            account_id: "ACCOUNT-001".to_string(),
             product_kind: ProductKind::PredictionMarketBinary,
-            collateral_currency: "PUSD".to_string(),
+            collateral_currency: "USD".to_string(),
             capital_pool: CapitalPoolSnapshot {
                 source: "bolt_submit_sizer_bootstrap".to_string(),
                 observed_at_ns: pool_observed_at_ns,
@@ -1710,7 +2084,7 @@ fn sized_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
         strategy_id: "strategy-a".to_string(),
         client_order_id: client_order_id.to_string(),
-        instrument_id: "condition-yes.POLYMARKET".to_string(),
+        instrument_id: "instrument-yes.VENUE-A".to_string(),
         notional: Decimal::new(4, 0),
         order_side: OrderSide::Buy,
         order_quantity: Decimal::new(10, 0),
@@ -1719,7 +2093,7 @@ fn sized_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
         canary_proof_claim: None,
         risk_reducing_exit_proof: None,
         position_sizing: Some(BoltV3CompiledOrderSizingEvidence {
-            venue_id: "POLYMARKET".to_string(),
+            venue_id: "VENUE-A".to_string(),
             product_kind: BoltV3CompiledProductKind::PredictionMarketBinary,
             side: BoltV3CompiledOrderSide::Buy,
             quantity: Decimal::new(10, 0),
@@ -1739,9 +2113,9 @@ fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
         portfolio: PortfolioSizingSnapshot {
             source: "nt_portfolio_snapshot".to_string(),
             observed_at_ns,
-            venue_id: "POLYMARKET".to_string(),
-            account_id: "POLYMARKET-001".to_string(),
-            collateral_currency: "PUSD".to_string(),
+            venue_id: "VENUE-A".to_string(),
+            account_id: "ACCOUNT-001".to_string(),
+            collateral_currency: "USD".to_string(),
             free_collateral: Decimal::new(100, 0),
             total_equity: Decimal::new(100, 0),
         },
@@ -1755,8 +2129,8 @@ fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
             PredictionMarketSizingSnapshot {
                 source: "nt_prediction_market_snapshot".to_string(),
                 observed_at_ns,
-                yes_instrument_id: "condition-yes.POLYMARKET".to_string(),
-                no_instrument_id: "condition-no.POLYMARKET".to_string(),
+                yes_instrument_id: "instrument-yes.VENUE-A".to_string(),
+                no_instrument_id: "instrument-no.VENUE-A".to_string(),
                 yes_position: Decimal::new(10, 0),
                 no_position: Decimal::ZERO,
                 pusd_allowance: Decimal::new(100, 0),

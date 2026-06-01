@@ -15375,6 +15375,30 @@ reason = "Each accepted submit reservation advances the in-memory sequence by on
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''let Some(next_observed_at_ns) = metadata.last_lifecycle_observed_at_ns.checked_add(1)'''
+classification = "position_sizer_fill_lifecycle_sequence_increment"
+reason = "This advances same-timestamp fill lifecycle observations by one nanosecond internally so duplicate or concurrent fill events are applied deterministically."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "string"
+literal = '''"nt_order_fill_clamped"'''
+context = '''"nt_order_fill_clamped".to_string()'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels authoritative NT fill evidence that overfilled the original reservation quantity and was clamped to a full reservation release."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
+literal = '''"nt_order_fill"'''
+context = '''evidence_label: "nt_order_fill".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels authoritative NT fill events before submit admission revalues or releases the matching Bolt-owned reservation."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
 literal = '''"bolt_recovered_open_order_reservations"'''
 context = '''evidence_label: "bolt_recovered_open_order_reservations".to_string(),'''

@@ -2,11 +2,13 @@
 
 use bolt_v2::{
     bolt_v3_operator_artifacts::{
-        HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalInput,
-        HyperliquidLiveSubmitOrderLimits, build_hyperliquid_live_submit_approval_artifact,
+        HyperliquidLiveSubmitApprovalArtifact, HyperliquidLiveSubmitApprovalBinding,
+        HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
+        build_hyperliquid_live_submit_approval_artifact,
         validate_hyperliquid_live_submit_approval_artifact,
         write_hyperliquid_live_submit_approval_artifact,
     },
+    bolt_v3_providers::consume_hyperliquid_live_submit_approval_artifact,
     bolt_v3_providers::hyperliquid::HyperliquidProductSurface,
 };
 
@@ -104,4 +106,106 @@ fn standard_perps_live_submit_approval_artifact_writes_operator_json() {
     assert_eq!(artifact["order_limits"]["max_order_count"], 1);
     assert_eq!(artifact["order_limits"]["max_order_notional"], "10.00");
     assert!(artifact["used_at"].is_null());
+}
+
+#[test]
+fn standard_perps_live_submit_approval_rejects_stale_mismatched_expired_reused_and_overbroad() {
+    let current = binding();
+    let broader_order_count = current.order_limits.max_order_count + 1;
+
+    for (field, mutate) in [
+        (
+            "base_sha",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.base_sha = git_sha('d');
+            }) as Box<dyn Fn(&mut HyperliquidLiveSubmitApprovalArtifact)>,
+        ),
+        (
+            "provider_id",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.provider_id = "other-hyperliquid-provider".to_string();
+            }),
+        ),
+        (
+            "product_surface",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.product_surface = HyperliquidProductSurface::Spot;
+            }),
+        ),
+        (
+            "toml_checksum",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.toml_checksum = hash('e');
+            }),
+        ),
+        (
+            "signer_fingerprint",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.signer_fingerprint = hash('f');
+            }),
+        ),
+        (
+            "expires_at",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.expires_at = NOW;
+            }),
+        ),
+        (
+            "used_at",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.used_at = Some(NOW - 1);
+            }),
+        ),
+        (
+            "order_limits",
+            Box::new(
+                move |artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                    artifact.order_limits.max_order_count = broader_order_count;
+                },
+            ),
+        ),
+    ] {
+        let mut approval = build_hyperliquid_live_submit_approval_artifact(approval_input())
+            .expect("valid approval artifact should build before mutation");
+        mutate(&mut approval);
+        let error =
+            validate_hyperliquid_live_submit_approval_artifact(Some(&approval), &current, NOW)
+                .expect_err("invalid approval must fail closed")
+                .to_string();
+        assert!(
+            error.contains(field),
+            "error for {field} must name failed binding: {error}"
+        );
+    }
+}
+
+#[test]
+fn provider_consumes_standard_perps_live_submit_approval_once() {
+    let current = binding();
+    let mut approval = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+
+    let consumed = consume_hyperliquid_live_submit_approval_artifact(
+        &mut approval,
+        &current,
+        "hl-standard-perps-approval-001",
+        NOW,
+    )
+    .expect("matching unused approval should consume once");
+    assert_eq!(consumed.approval_id, "hl-standard-perps-approval-001");
+    assert_eq!(consumed.used_at, NOW);
+    assert_eq!(approval.used_at, Some(NOW));
+
+    let error = consume_hyperliquid_live_submit_approval_artifact(
+        &mut approval,
+        &current,
+        "hl-standard-perps-approval-001",
+        NOW + 1,
+    )
+    .expect_err("reused approval must fail closed")
+    .to_string();
+    assert!(
+        error.contains("used_at"),
+        "reused approval error must name used_at: {error}"
+    );
 }

@@ -32,7 +32,8 @@ use crate::{
     bolt_v3_operator_artifacts::{
         BoltV3OperatorArtifactError, CanaryProofArtifactsCollectionRequest,
         CanaryProofArtifactsWritten, EntryDecisionSourceCollectionRequest,
-        EntryDecisionSourceInputsWritten,
+        EntryDecisionSourceInputsWritten, HyperliquidLiveSubmitApprovalArtifact,
+        HyperliquidLiveSubmitApprovalBinding, validate_hyperliquid_live_submit_approval_artifact,
     },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     strategies::registry::FeeProvider,
@@ -151,6 +152,33 @@ pub struct ProviderAdapterMapContext<'a> {
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub plan: &'a MarketIdentityPlan,
     pub clock: BoltV3MarketClockFn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidLiveSubmitApprovalConsumption {
+    pub approval_id: String,
+    pub used_at: u64,
+}
+
+pub fn consume_hyperliquid_live_submit_approval_artifact(
+    artifact: &mut HyperliquidLiveSubmitApprovalArtifact,
+    binding: &HyperliquidLiveSubmitApprovalBinding,
+    expected_approval_id: &str,
+    now_unix_seconds: u64,
+) -> Result<HyperliquidLiveSubmitApprovalConsumption, BoltV3OperatorArtifactError> {
+    validate_hyperliquid_live_submit_approval_artifact(Some(artifact), binding, now_unix_seconds)?;
+    if artifact.approval_id != expected_approval_id {
+        return Err(
+            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
+                field: "approval_id",
+            },
+        );
+    }
+    artifact.used_at = Some(now_unix_seconds);
+    Ok(HyperliquidLiveSubmitApprovalConsumption {
+        approval_id: expected_approval_id.to_string(),
+        used_at: now_unix_seconds,
+    })
 }
 
 type FeeProviderBuilder = fn(

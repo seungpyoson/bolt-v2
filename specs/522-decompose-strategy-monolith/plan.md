@@ -109,12 +109,16 @@ that slice instead rebases onto the PR — but the default, per operator directi
    "pure" claims; enumerate inbound callers and the tests that cover it.
 2. **RED**: add/relocate a characterization test pinning current behavior; show it
    discriminates (fails against a wrong control) — recorded in the ledger.
-3. **Move**: relocate the unit + its tests to the target module; `pub use` re-export
-   from the origin so no external call site changes. No signature/logic change.
+3. **Move**: relocate the unit + its tests to the target module. Re-export by caller
+   scope (FR-003): for units with callers **outside** the origin, add a `pub use`
+   re-export from the origin so external call sites/tests are unchanged; for units
+   **private** to the origin (e.g. A1), add only in-file `use` imports and add **no**
+   `pub use`. No signature/logic change.
 4. **GREEN**: `cargo fmt`/`clippy`/targeted tests local; push; CI runs full suite.
 5. **Verify**: line count of the source monolith strictly decreases; the diff is a pure
-   move + re-export (`git diff` shows no logic delta); ledger item marked resolved with
-   anchors.
+   relocation — move + imports, with a `pub use` only where an external caller requires
+   it (`git diff` shows no logic delta); for private-internal slices confirm **no origin
+   `pub use` was added**; ledger item marked resolved with anchors.
 
 ## Risks
 

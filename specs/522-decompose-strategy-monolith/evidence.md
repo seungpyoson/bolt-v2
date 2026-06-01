@@ -2,8 +2,10 @@
 
 Base: `origin/main` `2938bc6f`. One row per slice. A slice is **Resolved** only when:
 move PR landed behind the gate · monolith line count strictly decreased · diff is a
-pure move+re-export (no logic delta) · RED/GREEN recorded · exact-head CI green ·
-unanimous 6-model review (or recorded waiver) · operator merge permission.
+pure relocation — move + imports, with a `pub use` re-export only where an external
+caller requires it and **none** for private-internal slices like A1 (no logic delta) ·
+RED/GREEN recorded · exact-head CI green · unanimous 6-model review (or recorded
+waiver) · operator merge permission.
 
 ## Baselines (current-main, to be re-confirmed at each slice HEAD)
 

@@ -3512,7 +3512,7 @@ fn position_sizer_runtime_feed_config_from_loaded(
                 no_instrument_id: product.no_instrument_id.to_string(),
                 yes_position: Decimal::ZERO,
                 no_position: Decimal::ZERO,
-                pusd_allowance: Decimal::ZERO,
+                collateral_allowance: Decimal::ZERO,
                 conditional_token_allowance: Decimal::ZERO,
                 collateral_coupled_group_id: product.collateral_coupled_group_id.clone(),
             },
@@ -4936,7 +4936,7 @@ mod tests {
                 assert_eq!(snapshot.no_instrument_id, "condition-fixture-no.POLYMARKET");
                 assert_eq!(snapshot.yes_position, Decimal::ZERO);
                 assert_eq!(snapshot.no_position, Decimal::ZERO);
-                assert_eq!(snapshot.pusd_allowance, Decimal::ZERO);
+                assert_eq!(snapshot.collateral_allowance, Decimal::ZERO);
                 assert_eq!(snapshot.conditional_token_allowance, Decimal::ZERO);
                 assert_eq!(snapshot.collateral_coupled_group_id, "condition-fixture");
             }

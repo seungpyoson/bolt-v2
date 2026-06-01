@@ -434,7 +434,7 @@ impl PositionSizerRuntimeComponentBuilder {
         let mut product_state = self.product_state.clone();
         let product_observed_at_ns = match &mut product_state {
             ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
-                snapshot.pusd_allowance = free_collateral;
+                snapshot.collateral_allowance = free_collateral;
                 snapshot.observed_at_ns
             }
         };

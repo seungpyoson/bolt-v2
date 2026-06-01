@@ -82,7 +82,7 @@ pub struct PredictionMarketSizingSnapshot {
     pub no_instrument_id: String,
     pub yes_position: Decimal,
     pub no_position: Decimal,
-    pub pusd_allowance: Decimal,
+    pub collateral_allowance: Decimal,
     pub conditional_token_allowance: Decimal,
     pub collateral_coupled_group_id: String,
 }
@@ -759,7 +759,7 @@ impl PredictionMarketBinaryLiabilityCalculator {
 
         match request.side {
             IntentSide::Buy => {
-                if snapshot.pusd_allowance < liability {
+                if snapshot.collateral_allowance < liability {
                     return Err(LiabilityError::InsufficientAllowance);
                 }
             }
@@ -879,7 +879,7 @@ mod tests {
             no_instrument_id: "instrument-1-no".to_string(),
             yes_position: Decimal::new(10, 0),
             no_position: Decimal::ZERO,
-            pusd_allowance: Decimal::new(100, 0),
+            collateral_allowance: Decimal::new(100, 0),
             conditional_token_allowance: Decimal::new(10, 0),
             collateral_coupled_group_id: "group-1".to_string(),
         })
@@ -892,9 +892,9 @@ mod tests {
             portfolio: PortfolioSizingSnapshot {
                 source: "nt_portfolio_snapshot".to_string(),
                 observed_at_ns: 1_000,
-                venue_id: "polymarket-clob".to_string(),
+                venue_id: "venue-a".to_string(),
                 account_id: "account-1".to_string(),
-                collateral_currency: "PUSD".to_string(),
+                collateral_currency: "USD".to_string(),
                 free_collateral: Decimal::new(100, 0),
                 total_equity: Decimal::new(100, 0),
             },

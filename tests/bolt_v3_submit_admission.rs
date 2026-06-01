@@ -1609,6 +1609,54 @@ fn configured_submit_sizer_rejects_mismatched_fill_without_mutation() {
 }
 
 #[test]
+fn configured_submit_sizer_rejects_invalid_fill_fields_without_mutation() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+
+    let valid = BoltV3SubmitPositionSizingFillUpdate {
+        client_order_id: "client-order-1".to_string(),
+        trade_id: "trade-1".to_string(),
+        instrument_id: "instrument-yes.VENUE-A".to_string(),
+        side: BoltV3CompiledOrderSide::Buy,
+        fill_quantity: Decimal::new(4, 0),
+        observed_at_ns: 1_100,
+        evidence_label: "nt_order_fill".to_string(),
+    };
+    for invalid in [
+        BoltV3SubmitPositionSizingFillUpdate {
+            trade_id: " ".to_string(),
+            ..valid.clone()
+        },
+        BoltV3SubmitPositionSizingFillUpdate {
+            fill_quantity: Decimal::ZERO,
+            ..valid.clone()
+        },
+        BoltV3SubmitPositionSizingFillUpdate {
+            fill_quantity: Decimal::new(-1, 0),
+            ..valid.clone()
+        },
+        BoltV3SubmitPositionSizingFillUpdate {
+            side: BoltV3CompiledOrderSide::Sell,
+            ..valid.clone()
+        },
+    ] {
+        let decision = admission.apply_position_sizing_fill_update(invalid, 1_100);
+        assert!(decision.unknown_reservation);
+        assert_eq!(decision.action, PositionSizingLifecycleAction::None);
+        assert_eq!(
+            admission.position_sizer_live_reserved_liability(),
+            Some(Decimal::new(43, 1))
+        );
+    }
+}
+
+#[test]
 fn configured_submit_sizer_rejects_duplicate_trade_id_with_mismatched_content() {
     let admission = position_sized_admission();
     arm_default(&admission);
@@ -2133,7 +2181,7 @@ fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
                 no_instrument_id: "instrument-no.VENUE-A".to_string(),
                 yes_position: Decimal::new(10, 0),
                 no_position: Decimal::ZERO,
-                pusd_allowance: Decimal::new(100, 0),
+                collateral_allowance: Decimal::new(100, 0),
                 conditional_token_allowance: Decimal::new(10, 0),
                 collateral_coupled_group_id: "group-1".to_string(),
             },

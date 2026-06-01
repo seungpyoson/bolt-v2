@@ -2040,7 +2040,7 @@ mod tests {
                     no_instrument_id: "instrument-no.VENUE-A".to_string(),
                     yes_position: Decimal::new(10, 0),
                     no_position: Decimal::ZERO,
-                    pusd_allowance: Decimal::new(100, 0),
+                    collateral_allowance: Decimal::new(100, 0),
                     conditional_token_allowance: Decimal::new(10, 0),
                     collateral_coupled_group_id: "group-1".to_string(),
                 },

@@ -19,7 +19,7 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind, BoltV3SubmitAdmissionRequest,
     BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
     BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingNtComponents,
-    PredictionMarketOutcomeSide,
+    BoltV3SubmitPositionSizingOpenOrderReservation, PredictionMarketOutcomeSide,
 };
 use nautilus_common::msgbus::{
     TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
@@ -104,7 +104,7 @@ fn subscribed_account_and_portfolio_events_publish_sizing_components() {
     assert_eq!(state.portfolio.free_collateral, Decimal::new(45, 0));
     assert_eq!(state.portfolio.total_equity, Decimal::new(50, 0));
     let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.pusd_allowance, Decimal::new(45, 0));
+    assert_eq!(product.collateral_allowance, Decimal::new(45, 0));
 }
 
 #[test]
@@ -537,6 +537,7 @@ fn full_fill_event_releases_reservation_and_closes_live_order_count() {
         .position_sizer_state_snapshot()
         .expect("full fill should publish lifecycle");
     assert_eq!(state.order_lifecycle.open_order_count, 0);
+    assert_eq!(feed.latest_terminal_observed_at_ns(), Some(1_100));
 }
 
 #[test]
@@ -570,6 +571,58 @@ fn fill_event_account_or_instrument_mismatch_is_non_mutating() {
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
+}
+
+#[test]
+fn fill_event_for_rebuilt_reservation_without_submit_metadata_is_non_mutating() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+        vec![open_order_reservation(
+            "client-order-1",
+            "client-order-1#rebuilt",
+            Decimal::new(43, 1),
+        )],
+        1_000,
+    );
+    assert!(rebuild.accepted);
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "client-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Buy,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none()
+    );
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+    assert_eq!(feed.latest_terminal_observed_at_ns(), None);
 }
 
 #[test]
@@ -857,7 +910,7 @@ fn runtime_feed_config() -> PositionSizerRuntimeFeedConfig {
                 no_instrument_id: "instrument-no.VENUE-A".to_string(),
                 yes_position: Decimal::ZERO,
                 no_position: Decimal::ZERO,
-                pusd_allowance: Decimal::ZERO,
+                collateral_allowance: Decimal::ZERO,
                 conditional_token_allowance: Decimal::ZERO,
                 collateral_coupled_group_id: "group-1".to_string(),
             },
@@ -983,6 +1036,21 @@ fn rebuild_empty_position_sizer(admission: &BoltV3SubmitAdmissionState) {
     assert_eq!(admission.position_sizer_reconciled(), Some(true));
 }
 
+fn open_order_reservation(
+    client_order_id: &str,
+    submit_reservation_id: &str,
+    liability: Decimal,
+) -> BoltV3SubmitPositionSizingOpenOrderReservation {
+    BoltV3SubmitPositionSizingOpenOrderReservation {
+        client_order_id: client_order_id.to_string(),
+        submit_reservation_id: submit_reservation_id.to_string(),
+        collateral_group_id: "group-1".to_string(),
+        liability,
+        observed_at_ns: 1_000,
+        evidence_label: "nt_open_order_cache".to_string(),
+    }
+}
+
 fn committed_submit_runtime_feed() -> (Arc<BoltV3SubmitAdmissionState>, PositionSizerRuntimeFeed) {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);
@@ -1066,7 +1134,7 @@ fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
                 no_instrument_id: "instrument-no.VENUE-A".to_string(),
                 yes_position: Decimal::new(10, 0),
                 no_position: Decimal::ZERO,
-                pusd_allowance: Decimal::new(100, 0),
+                collateral_allowance: Decimal::new(100, 0),
                 conditional_token_allowance: Decimal::new(10, 0),
                 collateral_coupled_group_id: "group-1".to_string(),
             },

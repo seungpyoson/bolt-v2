@@ -188,7 +188,7 @@ pub struct PredictionMarketSizingSnapshot {
     pub observed_at_ns: u64,
     pub yes_position: Decimal,
     pub no_position: Decimal,
-    pub pusd_allowance: Decimal,
+    pub collateral_allowance: Decimal,
     pub conditional_token_allowance: Decimal,
     pub collateral_coupled_group_id: String,
 }

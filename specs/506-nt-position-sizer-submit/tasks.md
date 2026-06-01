@@ -33,7 +33,8 @@
 
 ## Remaining For Production Grade
 
-- [ ] Attribute residual liability for rebuilt pre-existing orders to known Bolt reservation metadata.
+- [ ] Revalue residual liability for rebuilt pre-existing orders when known Bolt reservation metadata exists.
+- [ ] Release or revalue fully filled rebuilt pre-existing orders when known Bolt reservation metadata exists.
 - [ ] Rebuild non-empty pre-existing NT/exchange committed liability into the capital pool when cache orders can be attributed to known Bolt reservations.
 - [ ] Emit durable rebuild audit evidence with recovered reservation count, liability, source, and observation time.
 - [ ] Add configured halt actions for threshold breach: stop entries, cancel orders, and optional flatten.

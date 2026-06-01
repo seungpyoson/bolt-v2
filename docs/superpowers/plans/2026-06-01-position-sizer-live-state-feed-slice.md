@@ -53,7 +53,7 @@ These remain production gaps after this slice:
 - Residual liability revalue from partial fills. It needs either cached order details from NT or submit-time liability metadata; this plan does not fake it from fill deltas.
 - Dynamic market rotation metadata. This slice requires configured binary product metadata in TOML; later work can replace that with NT market-selection state.
 - Conditional-token allowance truth. Until NT or the adapter exposes allowance evidence, sells must remain fail-closed when allowance cannot be proven.
-- PUSD allowance/spendability truth. This slice may use NT-reported `AccountState` free collateral as the best available buy-side collateral evidence, but it does not prove separate on-chain allowance or venue spendability. Final production readiness still needs adapter/venue allowance evidence or a fail-closed zero allowance until proven.
+- Collateral allowance/spendability truth. This slice may use NT-reported `AccountState` free collateral as the best available buy-side collateral evidence, but it does not prove separate on-chain allowance or venue spendability. Final production readiness still needs adapter/venue allowance evidence or a fail-closed zero allowance until proven.
 - Maker quote-set simultaneous adverse-fill reservations.
 - Safe `ReplaceSubmit`.
 - Cancel/flatten halt actions.
@@ -171,7 +171,7 @@ pub struct PositionSizerRuntimeFeedConfig {
 }
 ```
 
-Build `product_state` from TOML with `source = "bolt_configured_binary_product"`, `observed_at_ns = startup_observed_at_ns`, `yes_position = 0`, `no_position = 0`, `pusd_allowance = 0`, and `conditional_token_allowance = 0`. Later NT account/position events raise only the fields they prove.
+Build `product_state` from TOML with `source = "bolt_configured_binary_product"`, `observed_at_ns = startup_observed_at_ns`, `yes_position = 0`, `no_position = 0`, `collateral_allowance = 0`, and `conditional_token_allowance = 0`. Later NT account/position events raise only the fields they prove.
 
 Update every construction site in the same slice:
 - `position_sizer_runtime_feed_config_from_loaded(...)` in `src/bolt_v3_live_node.rs`;
@@ -486,7 +486,7 @@ Map NT account and portfolio events exactly:
 - set component `observed_at_ns = max(account_state.ts_event.as_u64(), portfolio_snapshot.ts_event.as_u64(), order_lifecycle.observed_at_ns, product_state.observed_at_ns)`;
 - if account id, collateral balance, portfolio account id, or total equity currency is missing or mismatched, do not publish a component state; admission remains closed or stale.
 
-When both matching account and portfolio evidence are present, call `update_position_sizing_nt_components(...)`. Set `pusd_allowance = matching_account_balance.free.as_decimal()` only as this slice's explicit approximation from NT-reported free collateral. This is not proof of separate on-chain allowance or venue spendability; final production readiness still needs adapter/venue allowance evidence or a fail-closed zero allowance until proven. Conditional token allowance remains zero unless later proven by NT.
+When both matching account and portfolio evidence are present, call `update_position_sizing_nt_components(...)`. Set `collateral_allowance = matching_account_balance.free.as_decimal()` only as this slice's explicit approximation from NT-reported free collateral. This is not proof of separate on-chain allowance or venue spendability; final production readiness still needs adapter/venue allowance evidence or a fail-closed zero allowance until proven. Conditional token allowance remains zero unless later proven by NT.
 
 - [x] **Step 7: RED account currency mismatch remains closed**
 
@@ -747,7 +747,7 @@ Even if every task passes, the system is not production-grade until these are im
 - safe replace/amend reservation transitions;
 - maker quote-set reservation of simultaneous adverse fills;
 - conditional-token allowance evidence;
-- PUSD allowance/spendability evidence separate from NT account free balance;
+- collateral allowance/spendability evidence separate from NT account free balance;
 - dynamic market metadata from NT/market-selection state;
 - cancel/flatten/halt operations tied to loss governor and sizer failures;
 - calculators for leveraged spot, futures/perps, and options;

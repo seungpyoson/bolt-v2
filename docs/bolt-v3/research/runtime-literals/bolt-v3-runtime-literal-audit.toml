@@ -6603,14 +6603,6 @@ reason = "This field names the missing wait-for-close source proof in partial-fi
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"partial_fill_exit_fill_instrument_guard"'''
-context = '''"partial_fill_exit_fill_instrument_guard",'''
-classification = "operator_source_proof_diagnostic_field"
-reason = "This field names the missing exit-fill instrument guard marker in partial-fill diagnostics; it is not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
-kind = "string"
 literal = '''"partial_fill_position_closed_scope"'''
 context = '''"partial_fill_position_closed_scope",'''
 classification = "operator_source_proof_diagnostic_field"
@@ -6651,10 +6643,10 @@ reason = "This field names the missing terminal-check marker in partial-fill dia
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"partial_fill_position_close_instrument_guard"'''
-context = '''"partial_fill_position_close_instrument_guard",'''
+literal = '''"position_close_completes_exit"'''
+context = '''"position_close_completes_exit",'''
 classification = "operator_source_proof_diagnostic_field"
-reason = "This field names the missing position-close instrument guard marker in partial-fill diagnostics; it is not an operator runtime value."
+reason = "This field names the missing position-close completion proof in partial-fill diagnostics; it is not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

@@ -2369,6 +2369,10 @@ pub async fn run_bolt_v3_live_node(
 ) -> Result<(), BoltV3LiveNodeError> {
     let gate_report = build_bolt_v3_live_submit_admission_report_from_config(loaded)
         .map_err(BoltV3LiveNodeError::LiveCanaryGate)?;
+    let startup_rebuild_observed_at_ns =
+        current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
+    let _startup_rebuild =
+        runtime.rebuild_position_sizer_from_nt_cache(startup_rebuild_observed_at_ns);
     runtime
         .submit_admission
         .arm(gate_report)

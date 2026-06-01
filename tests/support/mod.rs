@@ -440,8 +440,8 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
 ///   1. sets the self-declared TOML `no_submit_readiness_report_sha256`,
 ///   2. inserts the same hash into the on-disk approval-envelope JSON and
 ///      recomputes `approval_envelope_sha256`,
-///   3. rewrites the approval-consumption proof so its bound
-///      `approval_envelope_sha256` matches the rewritten envelope.
+///   3. rewrites the approval-consumption proof, if it already exists, so its
+///      bound `approval_envelope_sha256` matches the rewritten envelope.
 /// The caller must write the report file before invoking this helper.
 pub fn seal_no_submit_readiness_report_into_operator_evidence(
     evidence: &mut LiveCanaryOperatorEvidenceBlock,
@@ -467,6 +467,9 @@ pub fn seal_no_submit_readiness_report_into_operator_evidence(
     evidence.approval_envelope_sha256 = sha256_hex(&envelope_bytes);
 
     let consumption_path = Path::new(&evidence.approval_consumption_path);
+    if !consumption_path.exists() {
+        return;
+    }
     let mut consumption: serde_json::Value = serde_json::from_slice(
         &fs::read(consumption_path).expect("approval consumption proof should read"),
     )

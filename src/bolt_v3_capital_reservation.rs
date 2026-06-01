@@ -107,6 +107,10 @@ impl ReservationLedger {
         }
     }
 
+    pub fn is_reconciled(&self) -> bool {
+        self.reconciliation_complete
+    }
+
     pub fn reserve(
         &mut self,
         pool: &CapitalPoolSnapshot,

@@ -13,6 +13,8 @@ Submit admission may enable exactly one capital pool with `enforce_submit_admiss
 When enabled, submit admission must:
 
 - reject before NT submit if no fresh NT-derived sizing state exists;
+- start with its reservation ledger unreconciled and reject entry reservations until startup/open-order reconciliation succeeds;
+- accept an explicit open-order reservation rebuild as the only way to open a clean submit sizer;
 - reject duplicate `client_order_id` reservations;
 - reject compiled-order evidence that does not match configured venue, account, product kind, or collateral currency;
 - reject prediction-market orders whose YES/NO outcome does not match the instrument state;
@@ -31,7 +33,7 @@ This slice is not production-grade by itself. `enforce_submit_admission = true` 
 - NT account/portfolio state feed updates `NtDerivedSizingState`;
 - NT open-order, non-terminal fill, and full-fill lifecycle events revalue or release live reservations;
 - pre-existing NT/exchange committed liability is rebuilt into the capital pool before admission opens;
-- startup and reconnect rebuild reservations from authoritative NT/open-order state before opening admission;
+- the live runtime calls the explicit startup and reconnect rebuild API from authoritative NT/open-order state before opening admission;
 - halt actions cancel or flatten when configured loss/capital thresholds are breached.
 
 Until those feeds exist, this code is a submit-admission integration slice, not a complete live positional sizer.

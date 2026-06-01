@@ -191,6 +191,10 @@ impl PositionSizingAdmissionGate {
         }
     }
 
+    pub fn is_reconciled(&self) -> bool {
+        self.reservation_ledger.is_reconciled()
+    }
+
     pub fn rebuild_open_order_reservations(
         &mut self,
         pool: &CapitalPoolSnapshot,

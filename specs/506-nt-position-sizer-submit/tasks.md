@@ -16,6 +16,8 @@
 - [x] Block uncommitted permit rollback on admission-lock contention instead of skipping the rollback.
 - [x] Validate that only one pool can enable submit-admission enforcement.
 - [x] Reject submit-admission enforcement with `explicit_clip_to_available`.
+- [x] Start configured submit sizing unreconciled and reject entry reservations until explicit open-order rebuild succeeds.
+- [x] Add a submit-level open-order reservation rebuild API that atomically rebuilds the reservation ledger and client-order release index.
 
 ## Remaining For Production Grade
 
@@ -23,7 +25,8 @@
 - [ ] Wire non-terminal NT order lifecycle and partial-fill events into reservation revalue/residual-liability updates.
 - [ ] Release or revalue fully filled orders from authoritative NT fill/order-state evidence.
 - [ ] Rebuild pre-existing NT/exchange committed liability into the capital pool before admission can open.
-- [ ] Add startup/reconnect reservation rebuild before admission can arm.
+- [ ] Wire live startup/reconnect to call the explicit reservation rebuild API from authoritative NT open-order cache state.
+- [ ] Emit durable rebuild audit evidence with recovered reservation count, liability, source, and observation time.
 - [ ] Add configured halt actions for threshold breach: stop entries, cancel orders, and optional flatten.
 - [ ] Document and implement a safe replace-submit model before enabling `ReplaceSubmit`.
 - [ ] Replace strategy-local prediction-market outcome derivation with configured YES/NO market metadata.

@@ -1,4 +1,6 @@
-use crate::bolt_v3_capital_reservation::CapitalPoolSnapshot;
+use crate::bolt_v3_capital_reservation::{
+    CapitalPoolSnapshot, ReservationRejectionReason, ReservationRequest,
+};
 use crate::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
 };
@@ -79,6 +81,25 @@ pub struct BoltV3SubmitPositionSizerConfig {
     pub policy: SizingPolicy,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3SubmitPositionSizingOpenOrderReservation {
+    pub client_order_id: String,
+    pub submit_reservation_id: String,
+    pub collateral_group_id: String,
+    pub liability: Decimal,
+    pub observed_at_ns: u64,
+    pub evidence_label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3SubmitPositionSizingRebuildDecision {
+    pub accepted: bool,
+    pub reason: Option<ReservationRejectionReason>,
+    pub attempted_reservation_count: usize,
+    pub rebuilt_reservation_count: usize,
+    pub live_reserved_liability: Decimal,
+}
+
 impl BoltV3SubmitAdmissionState {
     pub fn new_unarmed(decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>) -> Self {
         Self::new_unarmed_with_optional_loss_governor(decision_evidence, None)
@@ -139,7 +160,7 @@ impl BoltV3SubmitAdmissionState {
                     capital_pool: config.capital_pool,
                     policy: config.policy,
                     state: None,
-                    gate: PositionSizingAdmissionGate::reconciled(),
+                    gate: PositionSizingAdmissionGate::unreconciled(),
                     next_sequence: 0,
                     client_order_reservations: BTreeMap::new(),
                 }),
@@ -188,6 +209,99 @@ impl BoltV3SubmitAdmissionState {
                 .gate
                 .live_reserved_liability(&position_sizer.capital_pool.pool_id),
         )
+    }
+
+    pub fn position_sizer_reconciled(&self) -> Option<bool> {
+        let inner = lock_inner(&self.inner);
+        let position_sizer = inner.position_sizer.as_ref()?;
+        Some(position_sizer.gate.is_reconciled())
+    }
+
+    pub fn rebuild_position_sizing_open_order_reservations(
+        &self,
+        open_order_reservations: Vec<BoltV3SubmitPositionSizingOpenOrderReservation>,
+        now_ns: u64,
+    ) -> BoltV3SubmitPositionSizingRebuildDecision {
+        let mut inner = lock_inner(&self.inner);
+        let Some(position_sizer) = inner.position_sizer.as_mut() else {
+            return BoltV3SubmitPositionSizingRebuildDecision {
+                accepted: true,
+                reason: None,
+                attempted_reservation_count: 0,
+                rebuilt_reservation_count: 0,
+                live_reserved_liability: Decimal::ZERO,
+            };
+        };
+        let Some(state) = position_sizer.state.as_ref() else {
+            position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
+            position_sizer.client_order_reservations.clear();
+            return BoltV3SubmitPositionSizingRebuildDecision {
+                accepted: false,
+                reason: Some(ReservationRejectionReason::MissingEvidence),
+                attempted_reservation_count: 0,
+                rebuilt_reservation_count: 0,
+                live_reserved_liability: position_sizer
+                    .gate
+                    .live_reserved_liability(&position_sizer.capital_pool.pool_id),
+            };
+        };
+        position_sizer.capital_pool.source = state.reservation_snapshot.source.clone();
+        position_sizer.capital_pool.observed_at_ns = state.reservation_snapshot.observed_at_ns;
+
+        let mut rebuilt_index = BTreeMap::new();
+        let mut reservation_requests = Vec::with_capacity(open_order_reservations.len());
+        for (index, reservation) in open_order_reservations.into_iter().enumerate() {
+            if rebuilt_index.contains_key(&reservation.client_order_id) {
+                position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
+                position_sizer.client_order_reservations.clear();
+                return BoltV3SubmitPositionSizingRebuildDecision {
+                    accepted: false,
+                    reason: Some(ReservationRejectionReason::DuplicateReservation),
+                    attempted_reservation_count: index + 1,
+                    rebuilt_reservation_count: 0,
+                    live_reserved_liability: position_sizer
+                        .gate
+                        .live_reserved_liability(&position_sizer.capital_pool.pool_id),
+                };
+            }
+
+            let submit_reservation_id = reservation.submit_reservation_id;
+            let collateral_group_id = reservation.collateral_group_id;
+            rebuilt_index.insert(
+                reservation.client_order_id,
+                BoltV3SubmitReservationIndex {
+                    submit_reservation_id: submit_reservation_id.clone(),
+                    collateral_group_id: collateral_group_id.clone(),
+                },
+            );
+            reservation_requests.push(ReservationRequest {
+                request_id: submit_reservation_id,
+                pool_id: position_sizer.capital_pool.pool_id.clone(),
+                collateral_group_id,
+                liability: reservation.liability,
+                observed_at_ns: reservation.observed_at_ns,
+                evidence_label: reservation.evidence_label,
+            });
+        }
+
+        position_sizer.client_order_reservations.clear();
+        let decision = position_sizer.gate.rebuild_open_order_reservations(
+            &position_sizer.capital_pool,
+            &reservation_requests,
+            now_ns,
+            position_sizer.policy.min_remaining_pool_balance,
+        );
+        if decision.accepted {
+            position_sizer.client_order_reservations = rebuilt_index;
+        }
+
+        BoltV3SubmitPositionSizingRebuildDecision {
+            accepted: decision.accepted,
+            reason: decision.reason,
+            attempted_reservation_count: decision.attempted_reservation_count,
+            rebuilt_reservation_count: decision.rebuilt_reservation_count,
+            live_reserved_liability: decision.live_reserved_liability,
+        }
     }
 
     pub fn apply_position_sizing_lifecycle_update(
@@ -781,6 +895,7 @@ pub enum BoltV3PositionSizerRejectReason {
     MissingNtState,
     StaleNtState,
     UnattributedNtState,
+    ReconciliationRequired,
     OverBudget,
     SizingRejected,
     SizedQuantityMismatch,
@@ -1360,6 +1475,16 @@ fn map_sized_rejection(
         matches!(
             reason,
             crate::bolt_v3_position_sizer::SizedAdmissionReason::Reservation(
+                crate::bolt_v3_capital_reservation::ReservationRejectionReason::ReconciliationRequired,
+            )
+        )
+    }) {
+        return BoltV3PositionSizerRejectReason::ReconciliationRequired;
+    }
+    if reasons.iter().any(|reason| {
+        matches!(
+            reason,
+            crate::bolt_v3_position_sizer::SizedAdmissionReason::Reservation(
                 crate::bolt_v3_capital_reservation::ReservationRejectionReason::OverBudget,
             ) | crate::bolt_v3_position_sizer::SizedAdmissionReason::OverMaxOrderLiability
         )
@@ -1413,6 +1538,8 @@ mod tests {
             ))
             .expect("valid gate report should arm admission");
         admission.update_position_sizing_state(fresh_sizing_state(900));
+        let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+        assert!(rebuild.accepted);
 
         let permit = admission
             .admit_at(&sized_submit_request("client-order-1"), 1_000)

@@ -9,6 +9,7 @@ pub mod maker_model;
 pub mod maker_offsets;
 pub mod maker_quote;
 pub mod maker_resync;
+pub mod maker_settlement;
 pub mod quote_lifecycle;
 pub mod registry;
 pub mod requote_budget;

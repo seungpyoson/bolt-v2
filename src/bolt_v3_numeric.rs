@@ -16,9 +16,20 @@ pub const SECONDS_PER_YEAR_F64: f64 =
     DAYS_PER_YEAR_F64 * HOURS_PER_DAY_F64 * MINUTES_PER_HOUR_F64 * SECONDS_PER_MINUTE_F64;
 pub const MILLIS_PER_SECOND_U64: u64 = 1_000;
 pub const MILLIS_PER_SECOND_F64: f64 = MILLIS_PER_SECOND_U64 as f64;
+pub const BPS_DENOMINATOR: f64 = 10_000.0;
+pub const MIDPOINT_DIVISOR_F64: f64 = 2.0;
+pub const QUADRATIC_RISK_DIVISOR: f64 = 2.0;
 
 pub fn is_positive_finite(value: f64) -> bool {
     value.is_finite() && value > ZERO_F64
+}
+
+pub fn is_non_negative_finite(value: f64) -> bool {
+    value.is_finite() && value >= ZERO_F64
+}
+
+pub fn clamp_probability(value: f64) -> f64 {
+    value.clamp(ZERO_F64, UNIT_F64)
 }
 
 pub fn sanitize_probability(value: f64) -> Option<f64> {
@@ -26,6 +37,14 @@ pub fn sanitize_probability(value: f64) -> Option<f64> {
         Some(value)
     } else {
         None
+    }
+}
+
+pub fn sanitize_non_negative(value: f64) -> f64 {
+    if value.is_finite() {
+        value.max(ZERO_F64)
+    } else {
+        ZERO_F64
     }
 }
 
@@ -61,5 +80,40 @@ mod tests {
         assert_eq!(sanitize_probability(1.000_001), None);
         assert_eq!(sanitize_probability(f64::NAN), None);
         assert_eq!(sanitize_probability(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn is_non_negative_finite_accepts_zero_and_positive_finite() {
+        assert!(is_non_negative_finite(ZERO_F64));
+        assert!(is_non_negative_finite(1.0));
+        assert!(is_non_negative_finite(f64::MIN_POSITIVE));
+    }
+
+    #[test]
+    fn is_non_negative_finite_rejects_negative_and_non_finite() {
+        assert!(!is_non_negative_finite(-0.000_001));
+        assert!(!is_non_negative_finite(-1.0));
+        assert!(!is_non_negative_finite(f64::NAN));
+        assert!(!is_non_negative_finite(f64::INFINITY));
+        assert!(!is_non_negative_finite(f64::NEG_INFINITY));
+    }
+
+    #[test]
+    fn clamp_probability_bounds_to_unit_interval() {
+        assert_eq!(clamp_probability(-0.5), ZERO_F64);
+        assert_eq!(clamp_probability(0.5), 0.5);
+        assert_eq!(clamp_probability(1.5), UNIT_F64);
+        assert_eq!(clamp_probability(ZERO_F64), ZERO_F64);
+        assert_eq!(clamp_probability(UNIT_F64), UNIT_F64);
+    }
+
+    #[test]
+    fn sanitize_non_negative_floors_at_zero_and_zeroes_non_finite() {
+        assert_eq!(sanitize_non_negative(2.5), 2.5);
+        assert_eq!(sanitize_non_negative(ZERO_F64), ZERO_F64);
+        assert_eq!(sanitize_non_negative(-3.0), ZERO_F64);
+        assert_eq!(sanitize_non_negative(f64::NAN), ZERO_F64);
+        assert_eq!(sanitize_non_negative(f64::INFINITY), ZERO_F64);
+        assert_eq!(sanitize_non_negative(f64::NEG_INFINITY), ZERO_F64);
     }
 }

@@ -52,8 +52,8 @@ use crate::{
         SelectedMarketSourceIdentity,
     },
     bolt_v3_numeric::{
-        MILLIS_PER_SECOND_U64, POWER_OF_TWO, UNIT_F64, ZERO_F64, is_positive_finite,
-        sanitize_probability,
+        BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64,
+        clamp_probability, is_non_negative_finite, is_positive_finite, sanitize_probability,
     },
     bolt_v3_operator_artifacts::{EntryReadinessGateSession, GateSatisfaction},
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
@@ -65,6 +65,11 @@ use crate::{
         BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
         admission_base_notional_from_order, base_quantity_admission_notional,
         fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
+    },
+    bolt_v3_taker_signal::{
+        RobustSizingInputs, ThetaScalerInputs, UncertaintyBandInputs, choose_robust_size,
+        compute_theta_scaler, price_agreement_corr, price_gap_probability,
+        uncertainty_band_probability,
     },
     bolt_v3_volatility::{RealizedVolConfig, RealizedVolEstimator},
     strategies::registry::{
@@ -6814,9 +6819,6 @@ const INITIAL_COUNTER_USIZE: usize = 0;
 const INITIAL_COUNTER_U64: u64 = 0;
 const COUNTER_INCREMENT: usize = 1;
 const COUNTER_INCREMENT_U64: u64 = 1;
-const BPS_DENOMINATOR: f64 = 10_000.0;
-const MIDPOINT_DIVISOR_F64: f64 = 2.0;
-const QUADRATIC_RISK_DIVISOR: f64 = 2.0;
 const NANOS_PER_MILLI_U64: u64 = 1_000_000;
 const NANOS_PER_SECOND_U64: u64 = 1_000_000_000;
 const CONFIG_FIELD_OMS_TYPE: &str = "oms_type";
@@ -6872,14 +6874,6 @@ const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quan
 const EXIT_BLOCK_REASON_EXIT_PRICE_MISSING: &str = "exit_price_missing";
 const EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE: &str = "exit_quantity_not_positive";
 
-fn is_non_negative_finite(value: f64) -> bool {
-    value.is_finite() && value >= ZERO_F64
-}
-
-fn clamp_probability(value: f64) -> f64 {
-    value.clamp(ZERO_F64, UNIT_F64)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutcomeSide {
     Up,
@@ -6908,24 +6902,6 @@ struct LeadVenueSignal {
     agreement_corr: f64,
     effective_weight: f64,
     lead_gap_probability: f64,
-}
-
-fn price_agreement_corr(observed_price: f64, anchor_price: f64) -> Option<f64> {
-    if !is_positive_finite(observed_price) || !is_positive_finite(anchor_price) {
-        return None;
-    }
-    Some(clamp_probability(
-        UNIT_F64 - ((observed_price - anchor_price).abs() / anchor_price),
-    ))
-}
-
-fn price_gap_probability(observed_price: f64, reference_price: f64) -> Option<f64> {
-    if !is_positive_finite(observed_price) || !is_positive_finite(reference_price) {
-        return None;
-    }
-    Some(clamp_probability(
-        (observed_price - reference_price).abs() / reference_price,
-    ))
 }
 
 #[cfg(test)]
@@ -7007,50 +6983,11 @@ fn best_healthy_oracle_price(snapshot: &ReferenceSnapshot) -> Option<f64> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct UncertaintyBandInputs {
-    lead_gap_probability: f64,
-    jitter_penalty_probability: f64,
-    time_uncertainty_probability: f64,
-    fee_uncertainty_probability: f64,
-}
-
-fn uncertainty_band_probability(inputs: &UncertaintyBandInputs) -> Option<f64> {
-    sanitize_probability(
-        sanitize_probability(inputs.lead_gap_probability)?
-            + sanitize_probability(inputs.jitter_penalty_probability)?
-            + sanitize_probability(inputs.time_uncertainty_probability)?
-            + sanitize_probability(inputs.fee_uncertainty_probability)?,
-    )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
 struct WorstCaseEvInputs {
     fair_probability: Option<f64>,
     uncertainty_band_probability: f64,
     executable_entry_cost: f64,
     fee_bps: Option<f64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ThetaScalerInputs {
-    seconds_to_expiry: u64,
-    cadence_seconds: u64,
-    theta_decay_factor: f64,
-}
-
-fn compute_theta_scaler(inputs: &ThetaScalerInputs) -> Option<f64> {
-    if !is_non_negative_finite(inputs.theta_decay_factor) {
-        return None;
-    }
-    if inputs.theta_decay_factor == ZERO_F64 {
-        return Some(UNIT_F64);
-    }
-    if inputs.cadence_seconds == 0 {
-        return None;
-    }
-
-    let ratio = clamp_probability(inputs.seconds_to_expiry as f64 / inputs.cadence_seconds as f64);
-    Some(UNIT_F64 + inputs.theta_decay_factor * (UNIT_F64 - ratio).powi(POWER_OF_TWO))
 }
 
 fn compute_worst_case_ev_bps(side: OutcomeSide, inputs: &WorstCaseEvInputs) -> Option<f64> {
@@ -7104,45 +7041,6 @@ fn choose_entry_side(inputs: &SideSelectionInputs) -> Option<OutcomeSide> {
         (true, true) if up_worst_ev_bps > down_worst_ev_bps => Some(OutcomeSide::Up),
         (true, true) if down_worst_ev_bps > up_worst_ev_bps => Some(OutcomeSide::Down),
         (true, true) | (false, false) => None,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct RobustSizingInputs {
-    expected_ev_per_notional: f64,
-    risk_lambda: f64,
-    order_notional_target: f64,
-    maximum_position_notional: f64,
-    impact_cap_notional: f64,
-}
-
-fn choose_robust_size(inputs: &RobustSizingInputs) -> f64 {
-    if !is_positive_finite(inputs.expected_ev_per_notional) {
-        return ZERO_F64;
-    }
-
-    let cap = sanitize_non_negative(inputs.order_notional_target)
-        .min(sanitize_non_negative(inputs.maximum_position_notional))
-        .min(sanitize_non_negative(inputs.impact_cap_notional));
-    if cap <= ZERO_F64 {
-        return ZERO_F64;
-    }
-
-    if !is_non_negative_finite(inputs.risk_lambda) {
-        return ZERO_F64;
-    }
-    if inputs.risk_lambda == ZERO_F64 {
-        return cap;
-    }
-
-    (inputs.expected_ev_per_notional / (QUADRATIC_RISK_DIVISOR * inputs.risk_lambda)).min(cap)
-}
-
-fn sanitize_non_negative(value: f64) -> f64 {
-    if value.is_finite() {
-        value.max(ZERO_F64)
-    } else {
-        ZERO_F64
     }
 }
 
@@ -11453,41 +11351,6 @@ mod tests {
         assert_eq!(fields.realized_vol, Some(2.5));
         assert_eq!(fields.realized_vol_source_venue.as_deref(), Some("bybit"));
         assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
-    }
-
-    #[test]
-    fn theta_scaler_helper_increases_near_expiry_and_can_be_disabled() {
-        let start = compute_theta_scaler(&ThetaScalerInputs {
-            seconds_to_expiry: 300,
-            cadence_seconds: 300,
-            theta_decay_factor: 1.5,
-        })
-        .expect("valid theta inputs should compute");
-        let near_expiry = compute_theta_scaler(&ThetaScalerInputs {
-            seconds_to_expiry: 30,
-            cadence_seconds: 300,
-            theta_decay_factor: 1.5,
-        })
-        .expect("valid theta inputs should compute");
-
-        assert!((start - 1.0).abs() < 1e-9);
-        assert!(near_expiry > start);
-        assert_eq!(
-            compute_theta_scaler(&ThetaScalerInputs {
-                seconds_to_expiry: 30,
-                cadence_seconds: 300,
-                theta_decay_factor: 0.0,
-            }),
-            Some(1.0)
-        );
-        assert!(
-            compute_theta_scaler(&ThetaScalerInputs {
-                seconds_to_expiry: 30,
-                cadence_seconds: 0,
-                theta_decay_factor: 1.5,
-            })
-            .is_none()
-        );
     }
 
     #[test]
@@ -16477,85 +16340,6 @@ mod tests {
     }
 
     #[test]
-    fn task4_uncertainty_band_grows_with_jitter_and_time_to_resolution() {
-        let narrow = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.002,
-            time_uncertainty_probability: 0.003,
-            fee_uncertainty_probability: 0.0,
-        })
-        .expect("valid uncertainty inputs should produce a band");
-        let wider_from_jitter = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.004,
-            time_uncertainty_probability: 0.003,
-            fee_uncertainty_probability: 0.0,
-        })
-        .expect("valid uncertainty inputs should produce a band");
-        let wider_from_time = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.002,
-            time_uncertainty_probability: 0.005,
-            fee_uncertainty_probability: 0.0,
-        })
-        .expect("valid uncertainty inputs should produce a band");
-
-        assert!(wider_from_jitter > narrow);
-        assert!(wider_from_time > narrow);
-    }
-
-    #[test]
-    fn task4_uncertainty_band_grows_with_fee_uncertainty() {
-        let narrow = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.002,
-            time_uncertainty_probability: 0.003,
-            fee_uncertainty_probability: 0.0,
-        })
-        .expect("valid uncertainty inputs should produce a band");
-        let wide = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.002,
-            time_uncertainty_probability: 0.003,
-            fee_uncertainty_probability: 0.02,
-        })
-        .expect("valid uncertainty inputs should produce a band");
-
-        assert!(wide > narrow);
-    }
-
-    #[test]
-    fn task4_uncertainty_band_fails_closed_on_invalid_component() {
-        assert_eq!(
-            uncertainty_band_probability(&UncertaintyBandInputs {
-                lead_gap_probability: f64::NAN,
-                jitter_penalty_probability: 0.002,
-                time_uncertainty_probability: 0.003,
-                fee_uncertainty_probability: 0.0,
-            }),
-            None
-        );
-        assert_eq!(
-            uncertainty_band_probability(&UncertaintyBandInputs {
-                lead_gap_probability: 1.2,
-                jitter_penalty_probability: 0.002,
-                time_uncertainty_probability: 0.003,
-                fee_uncertainty_probability: 0.0,
-            }),
-            None
-        );
-        assert_eq!(
-            uncertainty_band_probability(&UncertaintyBandInputs {
-                lead_gap_probability: 0.40,
-                jitter_penalty_probability: 0.30,
-                time_uncertainty_probability: 0.20,
-                fee_uncertainty_probability: 0.20,
-            }),
-            None
-        );
-    }
-
-    #[test]
     fn task4_worst_case_ev_uses_side_specific_bounds_and_fees_fail_closed() {
         let up_zero_fee = compute_worst_case_ev_bps(
             OutcomeSide::Up,
@@ -16679,64 +16463,6 @@ mod tests {
         });
 
         assert_eq!(side, None);
-    }
-
-    #[test]
-    fn task4_robust_sizing_shrinks_with_risk_and_respects_caps() {
-        let low_risk = choose_robust_size(&RobustSizingInputs {
-            expected_ev_per_notional: 2.0,
-            risk_lambda: 0.1,
-            order_notional_target: 100.0,
-            maximum_position_notional: 100.0,
-            impact_cap_notional: 100.0,
-        });
-        let high_risk = choose_robust_size(&RobustSizingInputs {
-            expected_ev_per_notional: 2.0,
-            risk_lambda: 2.0,
-            order_notional_target: 100.0,
-            maximum_position_notional: 100.0,
-            impact_cap_notional: 100.0,
-        });
-        let capped = choose_robust_size(&RobustSizingInputs {
-            expected_ev_per_notional: 2.0,
-            risk_lambda: 0.1,
-            order_notional_target: 100.0,
-            maximum_position_notional: 12.0,
-            impact_cap_notional: 7.5,
-        });
-
-        assert!(high_risk < low_risk);
-        assert_eq!(capped, 7.5);
-        assert_eq!(
-            choose_robust_size(&RobustSizingInputs {
-                expected_ev_per_notional: 0.0,
-                risk_lambda: 0.1,
-                order_notional_target: 100.0,
-                maximum_position_notional: 100.0,
-                impact_cap_notional: 100.0,
-            }),
-            0.0
-        );
-        assert_eq!(
-            choose_robust_size(&RobustSizingInputs {
-                expected_ev_per_notional: 2.0,
-                risk_lambda: 0.0,
-                order_notional_target: 100.0,
-                maximum_position_notional: 100.0,
-                impact_cap_notional: 100.0,
-            }),
-            100.0
-        );
-        assert_eq!(
-            choose_robust_size(&RobustSizingInputs {
-                expected_ev_per_notional: 2.0,
-                risk_lambda: -0.1,
-                order_notional_target: 100.0,
-                maximum_position_notional: 100.0,
-                impact_cap_notional: 100.0,
-            }),
-            0.0
-        );
     }
 
     #[test]

@@ -2213,7 +2213,11 @@ pub async fn run_bolt_v3_live_node(
 
     let run_classification =
         classify_live_node_run_and_capture_shutdown(run_result, shutdown_result);
-    if run_classification.is_ok() && runtime.admitted_order_count() == 0 {
+    if run_blocked_before_submit(
+        run_classification.is_ok(),
+        canary_proof_executor_enabled(loaded),
+        runtime.admitted_order_count(),
+    ) {
         let canary_evidence_path =
             write_bolt_v3_blocked_before_submit_canary_evidence(loaded, &runtime.instance_id())
                 .map_err(BoltV3LiveNodeError::CanaryEvidenceWrite)?;
@@ -2222,6 +2226,19 @@ pub async fn run_bolt_v3_live_node(
         });
     }
     run_classification
+}
+
+/// A canary/proof run MUST fire exactly one proof order, so a clean run that admitted ZERO orders is
+/// a blocked-before-submit failure. A production strategy run (proof policy disabled) that finds no
+/// edge and admits zero orders is a LEGITIMATE outcome and must not be reported as a failure
+/// (F3 / Kimi P4). Scoping the zero-order failure to canary/proof runs keeps the canary's
+/// must-fire-one-order semantics without breaking a no-edge production run.
+fn run_blocked_before_submit(
+    run_classification_ok: bool,
+    canary_proof_executor_enabled: bool,
+    admitted_order_count: u32,
+) -> bool {
+    run_classification_ok && canary_proof_executor_enabled && admitted_order_count == 0
 }
 
 pub fn consume_bolt_v3_live_runner_approval(
@@ -3648,6 +3665,33 @@ mod tests {
             chunk_universe(&universe, 3),
             vec![vec![0, 1, 2], vec![3, 4, 5], vec![6, 7, 8], vec![9]],
             "chunks must be consecutive, in order, and at most chunk_size"
+        );
+    }
+
+    #[test]
+    fn run_blocked_before_submit_only_for_canary_proof_runs() {
+        // F3: a canary/proof run MUST fire exactly one proof order, so a clean run with zero admitted
+        // orders is a blocked-before-submit failure. A production run (proof policy disabled) that
+        // finds no edge and admits zero orders is legitimate and must NOT be reported as blocked.
+        assert!(
+            run_blocked_before_submit(true, true, 0),
+            "canary/proof run with zero admitted orders is blocked-before-submit",
+        );
+        assert!(
+            !run_blocked_before_submit(true, false, 0),
+            "production run (proof disabled) with zero admitted orders is a legitimate no-edge run",
+        );
+        assert!(
+            !run_blocked_before_submit(true, true, 1),
+            "a canary run that admitted an order is never blocked-before-submit",
+        );
+        assert!(
+            !run_blocked_before_submit(true, false, 1),
+            "a production run that admitted an order is never blocked-before-submit",
+        );
+        assert!(
+            !run_blocked_before_submit(false, true, 0),
+            "a failed run is classified by its own error, not blocked-before-submit",
         );
     }
 

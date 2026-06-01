@@ -21,7 +21,7 @@ the plan's Rebase Matrix). A2 is foundational (A4/A6/A9 consume the side type it
 
 | Item | Scope | Target | RED/GREEN | Diff = pure move | CI | Review | State |
 |---|---|---|---|---|---|---|---|
-| A1 | OutcomeSide-free math + numeric primitives | `bolt_v3_taker_signal.rs` + `bolt_v3_numeric.rs` | — | — | — | — | in progress (plan codex-reviewed) |
+| A1 | OutcomeSide-free math + numeric primitives | `bolt_v3_taker_signal.rs` + `bolt_v3_numeric.rs` | ✓ 5 pure-unit tests relocated & pass in new home (theta_scaler, 3× uncertainty_band, robust_sizing); `bolt_v3_numeric` +4 characterization tests; no net test loss | ✓ pure move — strategy diff is only 2 added `use` blocks + deletions; moved bodies verbatim + `pub` (+ `seconds_to_market_end` rename); codex code-review confirmed no behavior change | ✓ green, code head `1d1c0523` (PR #524, all lanes; 1 disk-pressure rerun) | codex: plan SHIP + code-review clean (no behavior blocker); relays grok/glm/deepseek/kimi/gemini pending | code-resolved (strategy 18,205→17,931, −274); awaiting 6-model unanimous + operator merge permission |
 | A2 | consolidate `OutcomeSide` → market-family (partially resolves #13: OutcomeSide) + side-using math | `bolt_v3_market_families/` + `bolt_v3_taker_signal.rs` | — | — | — | — | planned |
 | A3 | market selection (pure; completes #13: CandidateMarket wrapper) | `…/selection.rs` | — | — | — | — | planned |
 | A4 | book state + VWAP/slippage sizing | `bolt_v3_book_sizing.rs` | — | — | — | — | planned |

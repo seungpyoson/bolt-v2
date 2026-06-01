@@ -190,7 +190,6 @@ jobs:
       - uses: ./.github/actions/setup-environment
         with:
           just-version: ${{ env.JUST_VERSION }}
-          include-managed-target-dir: "true"
       - uses: Swatinem/rust-cache@example
         with:
           cache-on-failure: true
@@ -198,12 +197,6 @@ jobs:
           cache-targets: false
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
-      - uses: actions/cache@example
-        with:
-          path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
-          restore-keys: |
-            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-
       - run: just source-fence
 
   test-archive:
@@ -3625,11 +3618,17 @@ def main() -> int:
         ),
     )
     assert_error(
-        "source-fence managed target cache must declare restore-keys prefix managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-",
+        "source-fence must not restore managed target cache",
         replace_once(
             BASE_WORKFLOW,
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n          restore-keys: |\n            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n      - run: just source-fence",
-            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n      - run: just source-fence",
+            "      - run: just source-fence",
+            "      - uses: actions/cache@example\n"
+            "        with:\n"
+            "          path: ${{ steps.setup.outputs.managed_target_dir }}\n"
+            "          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}\n"
+            "          restore-keys: |\n"
+            "            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-\n"
+            "      - run: just source-fence",
         ),
     )
     assert_error(

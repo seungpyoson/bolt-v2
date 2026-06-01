@@ -18,10 +18,10 @@ use bolt_v2::{
         RESOLUTION_GATE_ROLE, ReferenceDataBlock, load_bolt_v3_config,
     },
     bolt_v3_decision_evidence::{
-        BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3GateEvidenceIdentity,
-        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields,
-        BoltV3StrategyInputEvidenceSnapshot, BoltV3SubmitIntentKind, decision_evidence_path,
-        read_latest_entry_decision_evidence_chain,
+        BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION, BoltV3AdmissionDecisionEvidence,
+        BoltV3AdmissionOutcome, BoltV3GateEvidenceIdentity, BoltV3OrderIntentEvidence,
+        BoltV3OrderIntentKind, BoltV3OrderIntentOrderFields, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitIntentKind, decision_evidence_path, read_latest_entry_decision_evidence_chain,
     },
     bolt_v3_live_node::{
         BoltV3NoSubmitBookDeltas, BoltV3NoSubmitBookDeltasEvidence,
@@ -12161,7 +12161,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
     let mut decision_evidence = String::new();
     for line in [
         serde_json::json!({
-            "schema_version": 6,
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -12169,7 +12169,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "snapshot": snapshot.clone(),
         }),
         serde_json::json!({
-            "schema_version": 6,
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -12177,7 +12177,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "intent": intent.clone(),
         }),
         serde_json::json!({
-            "schema_version": 6,
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",
@@ -12241,7 +12241,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
     let mut wrong_decision_evidence = String::new();
     for line in [
         serde_json::json!({
-            "schema_version": 6,
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -12249,7 +12249,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "snapshot": wrong_snapshot,
         }),
         serde_json::json!({
-            "schema_version": 6,
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -12257,7 +12257,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "intent": wrong_intent,
         }),
         serde_json::json!({
-            "schema_version": 6,
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",
@@ -14618,7 +14618,7 @@ fn write_entry_decision_evidence_chain_at(
     let mut decision_evidence = String::new();
     for line in [
         serde_json::json!({
-            "schema_version": 6,
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -14626,7 +14626,7 @@ fn write_entry_decision_evidence_chain_at(
             "snapshot": snapshot,
         }),
         serde_json::json!({
-            "schema_version": 6,
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -14634,7 +14634,7 @@ fn write_entry_decision_evidence_chain_at(
             "intent": intent,
         }),
         serde_json::json!({
-            "schema_version": 6,
+            "schema_version": BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",

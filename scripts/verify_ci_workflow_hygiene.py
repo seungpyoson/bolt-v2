@@ -90,7 +90,7 @@ TAG_SKIP_REQUIRED_JOBS = (
     "test-shards",
     "test",
 )
-TARGET_DIR_JOBS = ("clippy", "check-aarch64", "source-fence", "test-shards", "build")
+TARGET_DIR_JOBS = ("clippy", "check-aarch64", "test-shards", "build")
 CACHE_KEY_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-archive", "build")
 JOB_REQUIRED_JUST_RECIPE = {
     "fmt-check": "fmt-check",
@@ -288,7 +288,6 @@ REGISTRY_CACHE_JOBS = ("deny", "clippy", "check-aarch64", "source-fence", "test-
 MANAGED_TARGET_CACHE_KEYS = {
     "clippy": "clippy-host",
     "check-aarch64": "check-aarch64-dev",
-    "source-fence": "source-fence-test",
     "build": "build-aarch64-release",
 }
 JUST_LANE_RE = re.compile(
@@ -5521,6 +5520,8 @@ def verify_workflow(workflow_text: str) -> list[str]:
     if "source-fence" in jobs and "detector" not in extract_needs(jobs["source-fence"]):
         # FR-005: #342 owns the early-fail source-fence lane, so it remains detector-gated.
         errors.append("source-fence needs detector")
+    if "source-fence" in jobs and job_uses_managed_target_dir(jobs["source-fence"]):
+        errors.append("source-fence must not restore managed target cache")
 
     for job_name, recipe in JOB_REQUIRED_JUST_RECIPE.items():
         if job_name in jobs and not job_runs_command(jobs[job_name], f"just {recipe}"):

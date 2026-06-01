@@ -247,7 +247,6 @@ jobs:
         uses: ./.github/actions/setup-environment
         with:
           just-version: ${{ env.JUST_VERSION }}
-          include-managed-target-dir: "true"
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -263,13 +262,6 @@ jobs:
           cache-targets: false
           shared-key: cargo-registry-git-v1
           save-if: ${{ github.job == 'test-archive' }}
-
-      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ steps.setup.outputs.managed_target_dir }}
-          key: managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml', 'ci/rust-verification.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', 'justfile', '.github/workflows/ci.yml', '.github/actions/setup-environment/action.yml', '.no-mistakes.yaml') }}
-          restore-keys: |
-            managed-target-v1-${{ runner.os }}-${{ runner.arch }}-source-fence-test-
 
       - name: source-fence
         env:

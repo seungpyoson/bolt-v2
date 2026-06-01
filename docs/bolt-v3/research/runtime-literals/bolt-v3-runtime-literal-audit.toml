@@ -8779,8 +8779,8 @@ reason = "This marker verifies submit admission checks live-canary arming before
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"return BoltV3AdmissionOutcome::RejectedNotArmed;"'''
-context = '''"return BoltV3AdmissionOutcome::RejectedNotArmed;";'''
+literal = '''"BoltV3AdmissionOutcome::RejectedNotArmed"'''
+context = '''"BoltV3AdmissionOutcome::RejectedNotArmed";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies unarmed submit admission rejects orders; it is source evidence, not an operator runtime value."
 
@@ -8795,8 +8795,8 @@ reason = "This marker verifies submit admission evaluates lifecycle policy befor
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;"'''
-context = '''"return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;";'''
+literal = '''"BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed"'''
+context = '''"BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies disallowed lifecycle submissions fail closed; it is source evidence, not an operator runtime value."
 

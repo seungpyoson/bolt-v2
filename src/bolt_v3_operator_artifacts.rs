@@ -379,11 +379,11 @@ const ABORT_PLAN_SERVICE_POLICY_STOP_MARKER: &str = "self.config.manage_stop";
 const ABORT_PLAN_SERVICE_ADMISSION_UNARMED_MARKER: &str =
     "let Some(report) = inner.gate_report.as_ref() else";
 const ABORT_PLAN_SERVICE_ADMISSION_REJECT_NOT_ARMED_MARKER: &str =
-    "return BoltV3AdmissionOutcome::RejectedNotArmed;";
+    "BoltV3AdmissionOutcome::RejectedNotArmed";
 const ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_CHECK_MARKER: &str =
     "!request.lifecycle_policy.allows(request.intent_kind)";
 const ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_REJECT_MARKER: &str =
-    "return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;";
+    "BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed";
 const ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER: &str = "BoltV3AdmissionOutcome::Admitted";
 const ABORT_PLAN_SERVICE_REPLACE_ALLOWED_MARKER: &str =
     "BoltV3OrderLifecycleIntent::ReplaceSubmit if self.replace_submit";

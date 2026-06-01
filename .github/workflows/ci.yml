@@ -140,7 +140,7 @@ jobs:
           save-if: ${{ github.job == 'test-archive' }}
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@d9be7d8cda89035c9c843f78bd44d4f72d8403d4 # v2.79.7
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
         with:
           tool: cargo-deny@${{ steps.setup.outputs.deny_version }}
           fallback: none
@@ -319,7 +319,7 @@ jobs:
 
       - name: Install cargo-nextest
         if: steps.nextest-archive-cache.outputs.cache-hit != 'true'
-        uses: taiki-e/install-action@d9be7d8cda89035c9c843f78bd44d4f72d8403d4 # v2.79.7
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
@@ -382,7 +382,7 @@ jobs:
           echo "archive_extract_root=$archive_extract_root" >> "$GITHUB_OUTPUT"
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@d9be7d8cda89035c9c843f78bd44d4f72d8403d4 # v2.79.7
+        uses: taiki-e/install-action@e49978b799e49ff429d162b7a30601a569ab6538 # v2.81.1
         with:
           tool: cargo-nextest@${{ steps.setup.outputs.nextest_version }}
           fallback: none
@@ -658,7 +658,7 @@ jobs:
           sha256sum -c bolt-v2.sha256
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        uses: aws-actions/configure-aws-credentials@99214aa6889fcddfa57764031d71add364327e59 # v6.1.3
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: eu-west-1

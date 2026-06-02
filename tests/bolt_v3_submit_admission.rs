@@ -932,6 +932,7 @@ fn live_node_position_sizer_cache_rebuild_stays_closed_without_components() {
             attempted_reservation_count: 0,
             rebuilt_reservation_count: 0,
             live_reserved_liability: Decimal::ZERO,
+            missing_nt_account_cache_balance: None,
         }
     );
     assert_eq!(runtime.position_sizer_reconciled(), Some(false));
@@ -1102,6 +1103,7 @@ fn position_sizer_direct_rebuild_keeps_gate_closed_without_components() {
             attempted_reservation_count: 0,
             rebuilt_reservation_count: 0,
             live_reserved_liability: Decimal::ZERO,
+            missing_nt_account_cache_balance: None,
         }
     );
     assert_eq!(admission.position_sizer_reconciled(), Some(false));
@@ -1123,6 +1125,7 @@ fn configured_submit_sizer_empty_startup_rebuild_opens_admission() {
             attempted_reservation_count: 0,
             rebuilt_reservation_count: 0,
             live_reserved_liability: Decimal::ZERO,
+            missing_nt_account_cache_balance: None,
         }
     );
     assert_eq!(admission.position_sizer_reconciled(), Some(true));
@@ -1295,6 +1298,7 @@ fn rebuild_snapshot_fails_closed_when_position_sizer_audit_write_fails() {
             attempted_reservation_count: 1,
             rebuilt_reservation_count: 0,
             live_reserved_liability: Decimal::ZERO,
+            missing_nt_account_cache_balance: None,
         }
     );
     assert_eq!(admission.position_sizer_reconciled(), Some(false));
@@ -1327,6 +1331,7 @@ fn configured_submit_sizer_rebuilds_open_order_reservation_for_terminal_release(
             attempted_reservation_count: 1,
             rebuilt_reservation_count: 1,
             live_reserved_liability: Decimal::new(43, 1),
+            missing_nt_account_cache_balance: None,
         }
     );
     assert_eq!(admission.position_sizer_reconciled(), Some(true));
@@ -1684,6 +1689,7 @@ fn configured_submit_sizer_rejects_rebuilt_reservation_liability_mismatch() {
             attempted_reservation_count: 1,
             rebuilt_reservation_count: 0,
             live_reserved_liability: Decimal::ZERO,
+            missing_nt_account_cache_balance: None,
         }
     );
     assert_eq!(admission.position_sizer_reconciled(), Some(false));
@@ -1728,6 +1734,7 @@ fn configured_submit_sizer_failed_rebuild_clears_stale_client_order_index_and_cl
             attempted_reservation_count: 2,
             rebuilt_reservation_count: 0,
             live_reserved_liability: Decimal::ZERO,
+            missing_nt_account_cache_balance: None,
         }
     );
     assert_eq!(admission.position_sizer_reconciled(), Some(false));
@@ -2872,6 +2879,7 @@ fn rebuild_empty_position_sizer(admission: &BoltV3SubmitAdmissionState) {
             attempted_reservation_count: 0,
             rebuilt_reservation_count: 0,
             live_reserved_liability: Decimal::ZERO,
+            missing_nt_account_cache_balance: None,
         }
     );
     assert_eq!(admission.position_sizer_reconciled(), Some(true));

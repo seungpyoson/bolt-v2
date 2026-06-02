@@ -152,12 +152,35 @@ pub struct BoltV3SubmitPositionSizingOpenOrderEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3SubmitPositionSizingMissingNtAccountCacheBalance {
+    pub account_id: String,
+    pub collateral_currency: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3SubmitPositionSizingRebuildDecision {
     pub accepted: bool,
     pub reason: Option<ReservationRejectionReason>,
     pub attempted_reservation_count: usize,
     pub rebuilt_reservation_count: usize,
     pub live_reserved_liability: Decimal,
+    pub missing_nt_account_cache_balance:
+        Option<BoltV3SubmitPositionSizingMissingNtAccountCacheBalance>,
+}
+
+impl BoltV3SubmitPositionSizingRebuildDecision {
+    pub fn with_missing_nt_account_cache_balance(
+        mut self,
+        account_id: String,
+        collateral_currency: String,
+    ) -> Self {
+        self.missing_nt_account_cache_balance =
+            Some(BoltV3SubmitPositionSizingMissingNtAccountCacheBalance {
+                account_id,
+                collateral_currency,
+            });
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -512,6 +535,7 @@ impl BoltV3SubmitAdmissionState {
                 attempted_reservation_count: 0,
                 rebuilt_reservation_count: 0,
                 live_reserved_liability: Decimal::ZERO,
+                missing_nt_account_cache_balance: None,
             };
         };
         if !snapshot.all_open_orders_attributed {
@@ -537,6 +561,7 @@ impl BoltV3SubmitAdmissionState {
                 live_reserved_liability: position_sizer
                     .gate
                     .live_reserved_liability(&position_sizer.capital_pool.pool_id),
+                missing_nt_account_cache_balance: None,
             };
             return self.finish_position_sizer_rebuild(&mut inner, &audit_context, decision);
         }
@@ -551,6 +576,7 @@ impl BoltV3SubmitAdmissionState {
                 live_reserved_liability: position_sizer
                     .gate
                     .live_reserved_liability(&position_sizer.capital_pool.pool_id),
+                missing_nt_account_cache_balance: None,
             };
             return self.finish_position_sizer_rebuild(&mut inner, &audit_context, decision);
         };
@@ -571,6 +597,7 @@ impl BoltV3SubmitAdmissionState {
                     live_reserved_liability: position_sizer
                         .gate
                         .live_reserved_liability(&position_sizer.capital_pool.pool_id),
+                    missing_nt_account_cache_balance: None,
                 };
                 return self.finish_position_sizer_rebuild(&mut inner, &audit_context, decision);
             }
@@ -585,6 +612,7 @@ impl BoltV3SubmitAdmissionState {
                     live_reserved_liability: position_sizer
                         .gate
                         .live_reserved_liability(&position_sizer.capital_pool.pool_id),
+                    missing_nt_account_cache_balance: None,
                 };
                 return self.finish_position_sizer_rebuild(&mut inner, &audit_context, decision);
             }
@@ -654,6 +682,7 @@ impl BoltV3SubmitAdmissionState {
             attempted_reservation_count: decision.attempted_reservation_count,
             rebuilt_reservation_count: decision.rebuilt_reservation_count,
             live_reserved_liability: decision.live_reserved_liability,
+            missing_nt_account_cache_balance: None,
         };
         self.finish_position_sizer_rebuild(&mut inner, &audit_context, decision)
     }
@@ -707,6 +736,7 @@ impl BoltV3SubmitAdmissionState {
                         .live_reserved_liability(&position_sizer.capital_pool.pool_id)
                 })
                 .unwrap_or(Decimal::ZERO),
+            missing_nt_account_cache_balance: None,
         }
     }
 

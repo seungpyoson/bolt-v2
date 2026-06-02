@@ -123,8 +123,9 @@ use crate::{
     },
     bolt_v3_submit_admission::{
         BoltV3CompiledOrderSide, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState,
-        BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingOpenOrderEvidence,
-        BoltV3SubmitPositionSizingOpenOrderSnapshot, BoltV3SubmitPositionSizingRebuildDecision,
+        BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingMissingNtAccountCacheBalance,
+        BoltV3SubmitPositionSizingOpenOrderEvidence, BoltV3SubmitPositionSizingOpenOrderSnapshot,
+        BoltV3SubmitPositionSizingRebuildDecision,
     },
     bolt_v3_tiny_canary_evidence::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
@@ -1794,6 +1795,24 @@ impl BoltV3LiveNodeRuntime {
             }
             _ => None,
         };
+        let missing_nt_account_cache_balance = match (
+            account_id.as_ref(),
+            collateral_currency.as_deref(),
+        ) {
+            (Some(account_id), Some(collateral_currency)) if cached_account_balances.is_none() => {
+                let missing = BoltV3SubmitPositionSizingMissingNtAccountCacheBalance {
+                    account_id: account_id.to_string(),
+                    collateral_currency: collateral_currency.to_string(),
+                };
+                log::warn!(
+                    "bolt-v3 position sizer startup rebuild could not seed account portfolio snapshot because NT cache is missing account_id={} collateral_currency={}",
+                    missing.account_id,
+                    missing.collateral_currency
+                );
+                Some(missing)
+            }
+            _ => None,
+        };
         let (yes_position, no_position) =
             match (account_id.as_ref(), binary_instrument_ids.as_ref()) {
                 (Some(account_id), Some((yes_instrument_id, no_instrument_id))) => {
@@ -1877,7 +1896,8 @@ impl BoltV3LiveNodeRuntime {
             reservations.clear();
         }
 
-        self.submit_admission
+        let mut rebuild = self
+            .submit_admission
             .rebuild_position_sizing_open_order_snapshot(
                 BoltV3SubmitPositionSizingOpenOrderSnapshot {
                     observed_at_ns: now_ns,
@@ -1887,7 +1907,14 @@ impl BoltV3LiveNodeRuntime {
                     reservations,
                 },
                 now_ns,
-            )
+            );
+        if let Some(missing) = missing_nt_account_cache_balance {
+            rebuild = rebuild.with_missing_nt_account_cache_balance(
+                missing.account_id,
+                missing.collateral_currency,
+            );
+        }
+        rebuild
     }
 }
 
@@ -4878,6 +4905,7 @@ mod tests {
                 attempted_reservation_count: 1,
                 rebuilt_reservation_count: 1,
                 live_reserved_liability: Decimal::new(27, 1),
+                missing_nt_account_cache_balance: None,
             }
         );
         assert_eq!(runtime.position_sizer_reconciled(), Some(true));
@@ -4924,6 +4952,7 @@ mod tests {
                 attempted_reservation_count: 1,
                 rebuilt_reservation_count: 0,
                 live_reserved_liability: Decimal::ZERO,
+                missing_nt_account_cache_balance: None,
             }
         );
         assert_eq!(runtime.position_sizer_reconciled(), Some(false));
@@ -4932,6 +4961,25 @@ mod tests {
                 .submit_admission
                 .position_sizer_has_live_reservation("startup-unknown-client-order")
         );
+    }
+
+    #[test]
+    fn startup_rebuild_reports_missing_nt_account_cache_balance() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(
+            rebuild.missing_nt_account_cache_balance,
+            Some(BoltV3SubmitPositionSizingMissingNtAccountCacheBalance {
+                account_id: "POLYMARKET-001".to_string(),
+                collateral_currency: "PUSD".to_string(),
+            })
+        );
+        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
     }
 
     #[test]
@@ -4974,6 +5022,7 @@ mod tests {
                 attempted_reservation_count: 1,
                 rebuilt_reservation_count: 0,
                 live_reserved_liability: Decimal::ZERO,
+                missing_nt_account_cache_balance: None,
             }
         );
         assert_eq!(runtime.position_sizer_reconciled(), Some(false));

@@ -13,13 +13,13 @@ One test per piece of code:
 | **Strategy** | *what* to trade — signals, intent, entry/exit decisions | `strategies/…` |
 | **Shared execution/admission** | *whether & how* to execute — admission, sizing, rounding, fee-adjustment, submit-gating | `bolt_v3_*` modules |
 | **Market-family** | family-specific mechanics — identity, target validation, family pricing | `bolt_v3_market_families/…` |
-| **Core glue** | shared types, the error enum, constants, JSON I/O | each file's `mod.rs` (**stays put**) |
+| **Core glue** | shared types, the error enum, constants, JSON I/O | each module's `mod.rs` (**stays put**) |
 
 Concrete targets:
 
 - **Track A** → `taker_signal`, `numeric`, `selection`, `book_sizing`, `taker_pricing`,
   `exposure`, `source_proof`, `config`, `submit_admission`.
-- **Track B** → `operator_artifacts/` concern-modules (gate-evidence,
+- **Track B** → `bolt_v3_operator_artifacts/` concern-modules (gate-evidence,
   data-client-readiness, ssm-manifest, financial-envelope, pre-run/abort proofs,
   evidence-packet, provenance).
 
@@ -39,7 +39,7 @@ Concrete targets:
   `scripts/verify_bolt_v3_provider_leaks.py`. Example already hit: the side type is
   `OutcomeSide`, not `UpdownOutcomeSide`.)*
 - **Family words are allowed in exactly one place** — the family module
-  (`market_families/updown.rs`, which is fence-exempt).
+  (`bolt_v3_market_families/updown.rs`, which is fence-exempt).
 - **Evidence/field names use `market_*`, never `polymarket_*`** — existing `polymarket_*`
   fields in shared evidence are debt to rename (tracked W2-2 / findings-doc #12).
 - **Don't collide with NautilusTrader-owned names** — source of truth

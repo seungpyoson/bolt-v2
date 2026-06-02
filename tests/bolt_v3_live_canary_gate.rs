@@ -11,7 +11,6 @@ use bolt_v2::{
         check_bolt_v3_live_canary_gate, check_bolt_v3_live_canary_pre_consumption_gate,
         pre_consumption_operator_evidence_bounded_read_paths,
     },
-    bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
@@ -22,38 +21,32 @@ use bolt_v2::{
     },
 };
 use sha2::{Digest, Sha256};
-use tokio::task::LocalSet;
 
 const TEST_READINESS_REPORT_MAX_AGE_SECONDS: u64 = 60;
 
 #[test]
-fn run_bolt_v3_live_node_rejects_missing_live_canary_before_nt_run() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let temp = support::TempCaseDir::new("bolt-v3-live-canary-build");
-    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
-    let loaded = loaded_without_live_canary(loaded);
-    let mut node = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
-        .expect("fixture v3 LiveNode should build");
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime should build");
-    let local = LocalSet::new();
-
-    let error = runtime.block_on(local.run_until(async {
-        run_bolt_v3_live_node(&mut node, &loaded)
-            .await
-            .expect_err("missing live_canary block must fail before NT run")
-    }));
+fn run_bolt_v3_live_node_does_not_require_live_canary_before_nt_run() {
+    let source = support::repo_text("src/bolt_v3_live_node.rs");
+    let start = source
+        .find("pub async fn run_bolt_v3_live_node")
+        .expect("live runner entrypoint should exist");
+    let end = source[start..]
+        .find("fn run_blocked_before_submit")
+        .map(|offset| start + offset)
+        .expect("next helper should bound live runner source");
+    let runner = &source[start..end];
 
     assert!(
-        matches!(
-            error,
-            BoltV3LiveNodeError::LiveCanaryGate(BoltV3LiveCanaryGateError::MissingConfig)
-        ),
-        "expected missing live canary gate error, got {error:?}"
+        runner.contains("let run_future = node.run();"),
+        "live runner should enter NT through the wrapper"
+    );
+    assert!(
+        !runner.contains("loaded.root.live_canary.is_none()")
+            && !runner.contains("BoltV3LiveNodeError::LiveCanaryGate")
+            && !runner.contains("check_bolt_v3_live_canary_gate")
+            && !runner.contains("build_bolt_v3_live_submit_admission_report_from_config")
+            && !runner.contains(".arm("),
+        "production live run must not require the live-canary/no-submit submit-admission gate"
     );
 }
 
@@ -4052,12 +4045,6 @@ fn loaded_with_live_canary(
 ) -> LoadedBoltV3Config {
     let mut root = loaded.root;
     root.live_canary = Some(live_canary);
-    LoadedBoltV3Config { root, ..loaded }
-}
-
-fn loaded_without_live_canary(loaded: LoadedBoltV3Config) -> LoadedBoltV3Config {
-    let mut root = loaded.root;
-    root.live_canary = None;
     LoadedBoltV3Config { root, ..loaded }
 }
 

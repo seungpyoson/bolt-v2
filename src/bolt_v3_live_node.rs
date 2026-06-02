@@ -29,11 +29,10 @@
 //! The caller owns the `LiveNode`; the build path never opens an
 //! external network connection. Opt-in controlled-connect/no-submit
 //! readiness boundaries may open adapter sockets. The production
-//! trading runner entrypoint is [`run_bolt_v3_live_node`], which first
-//! applies the bolt-v3 live canary gate. The no-submit readiness path
-//! builds a strategy-free node before using NT's supported runner loop
-//! with handle-driven stop; its dedicated quote probes call only NT
-//! quote subscribe/unsubscribe APIs for configured strategy
+//! trading runner entrypoint is [`run_bolt_v3_live_node`]. The no-submit
+//! readiness path builds a strategy-free node before using NT's supported
+//! runner loop with handle-driven stop; its dedicated quote probes call
+//! only NT quote subscribe/unsubscribe APIs for configured strategy
 //! `[reference_data]` or client-owned readiness-probe instruments. This
 //! module still never constructs an order or enables any submit path
 //! from its own boundary code.
@@ -93,10 +92,7 @@ use crate::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
     },
-    bolt_v3_live_canary_gate::{
-        BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_pre_consumption_gate,
-        current_build_head_sha,
-    },
+    bolt_v3_live_canary_gate::current_build_head_sha,
     bolt_v3_providers::{
         self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderRuntimeApprovals,
@@ -110,9 +106,7 @@ use crate::{
         BoltV3StrategyRegistrationError, BoltV3StrategyRegistrationSummary,
         register_bolt_v3_strategies_on_node_with_bindings,
     },
-    bolt_v3_submit_admission::{
-        BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState,
-    },
+    bolt_v3_submit_admission::{BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState},
     bolt_v3_tiny_canary_evidence::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
         Phase8EvidenceRef, Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef,
@@ -1723,13 +1717,10 @@ pub enum BoltV3LiveNodeError {
     ClientRegistration(BoltV3ClientRegistrationError),
     StrategyRegistration(BoltV3StrategyRegistrationError),
     Build(anyhow::Error),
-    /// The live canary gate rejected entry to NT's runner loop before
-    /// `LiveNode::run` was invoked. This variant wraps the specific
-    /// fail-closed reason from [`BoltV3LiveCanaryGateError`].
-    LiveCanaryGate(BoltV3LiveCanaryGateError),
-    /// The live runner entrypoint passed the pre-consumption gate but
-    /// could not atomically create the operator-approval consumption
-    /// proof before arming submit admission.
+    /// Provider-specific live-submit approval loading or consumption failed
+    /// while building the adapter bundle. This is intentionally outside the
+    /// live runner wrapper; production `run_bolt_v3_live_node` still enters NT
+    /// without reintroducing the removed live-canary start gate.
     OperatorApprovalConsumption(anyhow::Error),
     /// The loaded root TOML configured clients beyond the selected
     /// strategy-owned transport path, but the strategy-owned
@@ -1738,11 +1729,7 @@ pub enum BoltV3LiveNodeError {
     LiveTransportScope {
         reason: String,
     },
-    /// The validated live canary gate report could not arm the shared
-    /// submit-admission state before `LiveNode::run` was invoked.
-    SubmitAdmission(BoltV3SubmitAdmissionError),
-    /// NT returned an error from `LiveNode::run` after the live canary
-    /// gate accepted the loaded config and readiness report.
+    /// NT returned an error from `LiveNode::run`.
     Run(anyhow::Error),
     /// NT runtime capture could not be wired from the validated
     /// bolt-v3 `[persistence]` config before the runner loop started.
@@ -1861,28 +1848,16 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 write!(f, "bolt-v3 strategy registration failed: {error}")
             }
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
-            BoltV3LiveNodeError::LiveCanaryGate(error) => {
-                write!(
-                    f,
-                    "bolt-v3 live canary gate rejected runtime start: {error}"
-                )
-            }
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => {
                 write!(
                     f,
-                    "bolt-v3 live canary approval consumption failed before runtime start: {error}"
+                    "bolt-v3 provider live-submit approval consumption failed: {error}"
                 )
             }
             BoltV3LiveNodeError::LiveTransportScope { reason } => write!(
                 f,
                 "bolt-v3 live transport scope could not be derived from strategy-owned client bindings: {reason}"
             ),
-            BoltV3LiveNodeError::SubmitAdmission(error) => {
-                write!(
-                    f,
-                    "bolt-v3 submit admission rejected runtime start: {error}"
-                )
-            }
             BoltV3LiveNodeError::Run(error) => write!(f, "LiveNode run failed: {error}"),
             BoltV3LiveNodeError::RuntimeCaptureWire(error) => {
                 write!(f, "NT runtime capture wiring failed: {error}")
@@ -1993,9 +1968,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
             BoltV3LiveNodeError::StrategyRegistration(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
-            BoltV3LiveNodeError::LiveCanaryGate(error) => Some(error),
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => Some(error.as_ref()),
-            BoltV3LiveNodeError::SubmitAdmission(error) => Some(error),
             BoltV3LiveNodeError::Run(error) => error.source(),
             BoltV3LiveNodeError::RuntimeCaptureWire(error)
             | BoltV3LiveNodeError::RuntimeCaptureShutdown(error) => error.source(),
@@ -2320,24 +2293,14 @@ fn no_submit_transport_loaded_config(loaded: &LoadedBoltV3Config) -> LoadedBoltV
 
 /// Single bolt-v3 entrypoint for entering NT's runner loop.
 ///
-/// The caller builds the `LiveNode` separately, then this function checks
-/// the loaded config's `[live_canary]` section and referenced no-submit
-/// readiness report before entering the NT runner loop. Production callers
-/// must use this wrapper rather than invoking the NT runner method directly.
-/// If the gate rejects, NT's runner loop is never entered.
+/// The caller builds the `LiveNode` separately, then this function enters the
+/// NT runner loop through the bolt-v3 wrapper that owns runtime capture and
+/// shutdown classification. Production callers must use this wrapper rather
+/// than invoking the NT runner method directly.
 pub async fn run_bolt_v3_live_node(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let gate_report = check_bolt_v3_live_canary_pre_consumption_gate(loaded)
-        .await
-        .map_err(BoltV3LiveNodeError::LiveCanaryGate)?;
-    consume_bolt_v3_live_runner_approval(loaded)
-        .map_err(BoltV3LiveNodeError::OperatorApprovalConsumption)?;
-    runtime
-        .submit_admission
-        .arm(gate_report)
-        .map_err(BoltV3LiveNodeError::SubmitAdmission)?;
     let node = &mut runtime.node;
     let node_handle = node.handle();
     let mut capture_guards = wire_bolt_v3_runtime_capture(node, node_handle, loaded)

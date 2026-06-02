@@ -78,39 +78,41 @@ fn live_node_runtime_does_not_expose_manual_admission_or_raw_run_bypass() {
 }
 
 #[test]
-fn live_node_runner_consumes_operator_approval_before_arming_submit_admission() {
+fn live_node_runner_does_not_require_live_canary_submit_admission_before_nt_run() {
     let source = support::repo_text("src/bolt_v3_live_node.rs");
     let start = source
         .find("pub async fn run_bolt_v3_live_node")
         .expect("live runner entrypoint should exist");
     let end = source[start..]
-        .find("pub async fn controlled_no_submit_readiness")
+        .find("fn run_blocked_before_submit")
         .map(|offset| start + offset)
-        .expect("next public function should bound live runner source");
+        .expect("next helper should bound live runner source");
     let runner = &source[start..end];
 
-    let preflight_index = runner
-        .find("check_bolt_v3_live_canary_pre_consumption_gate")
-        .expect("live runner must use the pre-consumption gate before approval consumption");
-    let consume_index = runner
-        .find("consume_bolt_v3_live_runner_approval")
-        .expect("live runner must atomically consume approval before arming submit admission");
-    let arm_index = runner
-        .find(".arm(")
-        .expect("live runner should arm submit admission");
+    let run_index = runner
+        .find("let run_future = node.run();")
+        .expect("live runner should enter NT run through the wrapper");
+    let capture_index = runner
+        .find("wire_bolt_v3_runtime_capture(node, node_handle, loaded)")
+        .expect("live runner should wire runtime capture before NT run");
 
     assert!(
-        preflight_index < consume_index && consume_index < arm_index,
-        "live runner must preflight, atomically consume approval, then arm submit admission"
+        capture_index < run_index,
+        "live runner must wire runtime capture before entering NT run"
     );
     assert!(
-        !runner.contains("check_bolt_v3_live_canary_gate(loaded)"),
-        "live runner must not accept replayable pre-existing approval consumption proof"
+        !runner.contains("build_bolt_v3_live_submit_admission_report_from_config")
+            && !runner.contains(".arm("),
+        "live runner must not require the no-submit/live-canary submit-admission gate"
+    );
+    assert!(
+        !runner.contains("consume_bolt_v3_live_runner_approval"),
+        "live runner must not block startup on operator approval consumption"
     );
 }
 
 #[test]
-fn unarmed_submit_admission_rejects_before_nt_submit() {
+fn ungated_submit_admission_allows_production_submit() {
     let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
     ));
@@ -118,10 +120,10 @@ fn unarmed_submit_admission_rejects_before_nt_submit() {
 
     let result = admission.admit(&request);
     let nt_submit_called = result.is_ok();
-    let error = result.expect_err("unarmed admission must reject");
 
-    assert!(matches!(error, BoltV3SubmitAdmissionError::NotArmed));
-    assert!(!nt_submit_called, "NT submit must not be reached");
+    result.expect("ungated production admission should allow a valid submit");
+    assert!(nt_submit_called, "NT submit may be reached after admission");
+    assert_eq!(admission.admitted_order_count(), 1);
 }
 
 #[test]
@@ -719,11 +721,11 @@ fn strategy_build_context_carries_shared_submit_admission_handle() {
     );
 
     assert!(Arc::ptr_eq(&admission, &context.submit_admission_arc()));
-    let error = context
+    context
         .submit_admission()
         .admit(&submit_request(Decimal::new(1, 0)))
-        .expect_err("shared context admission should still be unarmed");
-    assert!(matches!(error, BoltV3SubmitAdmissionError::NotArmed));
+        .expect("shared context admission should allow ungated production submits");
+    assert_eq!(admission.admitted_order_count(), 1);
 }
 
 #[derive(Debug)]
@@ -1390,7 +1392,7 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
 
     admission
         .admit(&submit_request(Decimal::new(1, 0)))
-        .expect_err("unarmed admission must reject");
+        .expect("ungated production admission should admit before the optional gate is armed");
     admission
         .arm(support::validated_bolt_v3_live_canary_gate_report(
             1,
@@ -1418,7 +1420,7 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
     assert_eq!(
         outcomes,
         vec![
-            BoltV3AdmissionOutcome::RejectedNotArmed,
+            BoltV3AdmissionOutcome::Admitted,
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
             BoltV3AdmissionOutcome::Admitted,

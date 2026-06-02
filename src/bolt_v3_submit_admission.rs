@@ -195,9 +195,6 @@ impl BoltV3SubmitAdmissionState {
         inner: &BoltV3SubmitAdmissionInner,
         request: &BoltV3SubmitAdmissionRequest,
     ) -> BoltV3AdmissionOutcome {
-        let Some(report) = inner.gate_report.as_ref() else {
-            return BoltV3AdmissionOutcome::RejectedNotArmed;
-        };
         if !request.lifecycle_policy.allows(request.intent_kind) {
             return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;
         }
@@ -221,6 +218,13 @@ impl BoltV3SubmitAdmissionState {
                 return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
             }
         }
+        let Some(report) = inner.gate_report.as_ref() else {
+            if request.canary_proof_claim.is_some() {
+                return BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim;
+            }
+            return BoltV3AdmissionOutcome::Admitted;
+        };
+
         if matches!(
             request.intent_kind,
             BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
@@ -274,12 +278,10 @@ impl BoltV3SubmitAdmissionState {
 
     /// Gate-approved maximum reference-quote age (seconds) carried by the armed
     /// gate report, or `None` when the state is not yet armed. This is the single
-    /// authoritative freshness bound for the armed live path (A5): the submit /
-    /// forced-flat stale check plumbs this value in so the gate-validated
+    /// authoritative freshness bound when the optional gate is armed (A5): the
+    /// submit / forced-flat stale check plumbs this value in so the gate-validated
     /// freshness policy — not an independent strategy-config value — governs
-    /// whether a reference quote is fresh enough to keep trading. `None` (unarmed)
-    /// is irrelevant to live money because admission rejects every order until the
-    /// state is armed.
+    /// whether a reference quote is fresh enough to keep trading.
     pub fn reference_quote_max_age_seconds(&self) -> Option<u64> {
         self.inner
             .lock()

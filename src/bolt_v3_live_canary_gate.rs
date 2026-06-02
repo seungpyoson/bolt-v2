@@ -6,9 +6,9 @@
 //! cancel, or mutate NT state.
 //!
 //! The gate validates the configured live-canary bounds before the NT
-//! runner starts. Submit-time admission remains the boundary that must
-//! independently consume validated bounds from this gate before live
-//! order submission is enabled.
+//! runner starts. Submit-time admission can optionally consume validated
+//! bounds from this gate for canary-bounded runs; ordinary production
+//! submission is not blocked on this report.
 
 use std::{
     path::{Component, Path, PathBuf},
@@ -53,8 +53,8 @@ const MILLIS_PER_SECOND_U64: u64 = 1_000;
 /// The report carries the validated operator approval id, resolved
 /// no-submit readiness report path, approved canary order-count bound,
 /// approved per-order notional bound, and root risk notional bound.
-/// Submit-time admission must consume these validated bounds before
-/// any live canary order is allowed.
+/// Submit-time admission can consume these validated bounds when an
+/// operator chooses to run with canary-bounded admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3LiveCanaryGateReport {
     approval_id: String,
@@ -656,6 +656,12 @@ pub async fn check_bolt_v3_live_canary_pre_consumption_gate(
     .await
 }
 
+pub fn build_bolt_v3_live_submit_admission_report_from_config(
+    loaded: &LoadedBoltV3Config,
+) -> Result<BoltV3LiveCanaryGateReport, BoltV3LiveCanaryGateError> {
+    validate_live_canary_admission_config(loaded).map(LiveCanaryAdmissionConfig::into_report)
+}
+
 async fn check_bolt_v3_live_canary_gate_with_clock(
     loaded: &LoadedBoltV3Config,
     mut unix_seconds: impl FnMut() -> Result<u64, BoltV3LiveCanaryGateError>,
@@ -679,79 +685,11 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
     mut unix_seconds: impl FnMut() -> Result<u64, BoltV3LiveCanaryGateError>,
     approval_consumption_expectation: ApprovalConsumptionExpectation,
 ) -> Result<BoltV3LiveCanaryGateReport, BoltV3LiveCanaryGateError> {
-    let block = loaded
-        .root
-        .live_canary
-        .as_ref()
-        .ok_or(BoltV3LiveCanaryGateError::MissingConfig)?;
-    let approval_id = block.approval_id.trim();
-    if approval_id.is_empty() {
-        return Err(BoltV3LiveCanaryGateError::MissingApprovalId);
-    }
-    if block.no_submit_readiness_report_path.trim().is_empty() {
-        return Err(BoltV3LiveCanaryGateError::MissingReadinessReportPath);
-    }
-    if block.max_live_order_count == 0 {
-        return Err(BoltV3LiveCanaryGateError::InvalidMaxLiveOrderCount {
-            value: block.max_live_order_count,
-        });
-    }
-    if block.max_no_submit_readiness_report_bytes == 0 {
-        return Err(BoltV3LiveCanaryGateError::InvalidReadinessReportSizeLimit {
-            value: block.max_no_submit_readiness_report_bytes,
-        });
-    }
-    if block.readiness_report_max_age_seconds == 0 {
-        return Err(BoltV3LiveCanaryGateError::InvalidReadinessReportMaxAge {
-            value: block.readiness_report_max_age_seconds,
-        });
-    }
-    if block.reference_quote_max_age_seconds == 0 {
-        return Err(BoltV3LiveCanaryGateError::InvalidReferenceQuoteMaxAge {
-            value: block.reference_quote_max_age_seconds,
-        });
-    }
-    if block.reference_quote_wait_timeout_seconds == 0 {
-        return Err(
-            BoltV3LiveCanaryGateError::InvalidReferenceQuoteWaitTimeout {
-                value: block.reference_quote_wait_timeout_seconds,
-            },
-        );
-    }
-    let reference_quote_probe_actor_id = block.reference_quote_probe_actor_id.as_str();
-    if reference_quote_probe_actor_id.trim().is_empty()
-        || reference_quote_probe_actor_id.trim() != reference_quote_probe_actor_id
-    {
-        return Err(
-            BoltV3LiveCanaryGateError::InvalidReferenceQuoteProbeActorId {
-                value: block.reference_quote_probe_actor_id.clone(),
-                reason: "must be non-empty without surrounding whitespace".to_string(),
-            },
-        );
-    }
-    ActorId::new_checked(reference_quote_probe_actor_id).map_err(|error| {
-        BoltV3LiveCanaryGateError::InvalidReferenceQuoteProbeActorId {
-            value: block.reference_quote_probe_actor_id.clone(),
-            reason: error.to_string(),
-        }
-    })?;
-
-    let max_notional_per_order = parse_positive_decimal(
-        "max_notional_per_order",
-        block.max_notional_per_order.as_str(),
-    )?;
-    // Keep the run boundary fail-closed even if a caller constructs
-    // LoadedBoltV3Config outside the normal validation path.
-    let root_max_notional_per_order = parse_positive_decimal(
-        "risk.default_max_notional_per_order",
-        loaded.root.risk.default_max_notional_per_order.as_str(),
-    )?;
-    if max_notional_per_order > root_max_notional_per_order {
-        return Err(BoltV3LiveCanaryGateError::MaxNotionalExceedsRootRisk {
-            max_notional_per_order,
-            root_max_notional_per_order,
-        });
-    }
+    let admission = validate_live_canary_admission_config(loaded)?;
+    let block = admission.block;
+    let approval_id = admission.approval_id;
+    let max_notional_per_order = admission.max_notional_per_order;
+    let report_path = validate_no_submit_readiness_gate_config(&loaded.root_path, block)?;
 
     let initial_unix_seconds = unix_seconds()?;
     validate_operator_evidence(
@@ -766,7 +704,6 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
     )
     .await?;
 
-    let report_path = resolve_report_path(&loaded.root_path, block)?;
     let report_bytes =
         read_report_bytes_with_limit(&report_path, block.max_no_submit_readiness_report_bytes)
             .await?;
@@ -830,16 +767,126 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
     )
     .await?;
 
-    Ok(BoltV3LiveCanaryGateReport {
-        approval_id: approval_id.to_string(),
-        no_submit_readiness_report_path: report_path,
-        max_no_submit_readiness_report_bytes: block.max_no_submit_readiness_report_bytes,
-        readiness_report_max_age_seconds: block.readiness_report_max_age_seconds,
-        reference_quote_max_age_seconds: block.reference_quote_max_age_seconds,
-        max_live_order_count: block.max_live_order_count,
+    Ok(admission.into_report())
+}
+
+struct LiveCanaryAdmissionConfig<'a> {
+    block: &'a LiveCanaryBlock,
+    approval_id: &'a str,
+    no_submit_readiness_report_path: PathBuf,
+    max_notional_per_order: Decimal,
+    root_max_notional_per_order: Decimal,
+}
+
+impl LiveCanaryAdmissionConfig<'_> {
+    fn into_report(self) -> BoltV3LiveCanaryGateReport {
+        BoltV3LiveCanaryGateReport {
+            approval_id: self.approval_id.to_string(),
+            no_submit_readiness_report_path: self.no_submit_readiness_report_path,
+            max_no_submit_readiness_report_bytes: self.block.max_no_submit_readiness_report_bytes,
+            readiness_report_max_age_seconds: self.block.readiness_report_max_age_seconds,
+            reference_quote_max_age_seconds: self.block.reference_quote_max_age_seconds,
+            max_live_order_count: self.block.max_live_order_count,
+            max_notional_per_order: self.max_notional_per_order,
+            root_max_notional_per_order: self.root_max_notional_per_order,
+        }
+    }
+}
+
+fn validate_live_canary_admission_config(
+    loaded: &LoadedBoltV3Config,
+) -> Result<LiveCanaryAdmissionConfig<'_>, BoltV3LiveCanaryGateError> {
+    let block = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .ok_or(BoltV3LiveCanaryGateError::MissingConfig)?;
+    let approval_id = block.approval_id.trim();
+    if approval_id.is_empty() {
+        return Err(BoltV3LiveCanaryGateError::MissingApprovalId);
+    }
+    if block.max_live_order_count == 0 {
+        return Err(BoltV3LiveCanaryGateError::InvalidMaxLiveOrderCount {
+            value: block.max_live_order_count,
+        });
+    }
+    if block.reference_quote_max_age_seconds == 0 {
+        return Err(BoltV3LiveCanaryGateError::InvalidReferenceQuoteMaxAge {
+            value: block.reference_quote_max_age_seconds,
+        });
+    }
+
+    let max_notional_per_order = parse_positive_decimal(
+        "max_notional_per_order",
+        block.max_notional_per_order.as_str(),
+    )?;
+    // Keep the run boundary fail-closed even if a caller constructs
+    // LoadedBoltV3Config outside the normal validation path.
+    let root_max_notional_per_order = parse_positive_decimal(
+        "risk.default_max_notional_per_order",
+        loaded.root.risk.default_max_notional_per_order.as_str(),
+    )?;
+    if max_notional_per_order > root_max_notional_per_order {
+        return Err(BoltV3LiveCanaryGateError::MaxNotionalExceedsRootRisk {
+            max_notional_per_order,
+            root_max_notional_per_order,
+        });
+    }
+
+    Ok(LiveCanaryAdmissionConfig {
+        block,
+        approval_id,
+        no_submit_readiness_report_path: PathBuf::from(
+            block.no_submit_readiness_report_path.as_str(),
+        ),
         max_notional_per_order,
         root_max_notional_per_order,
     })
+}
+
+fn validate_no_submit_readiness_gate_config(
+    root_path: &Path,
+    block: &LiveCanaryBlock,
+) -> Result<PathBuf, BoltV3LiveCanaryGateError> {
+    if block.no_submit_readiness_report_path.trim().is_empty() {
+        return Err(BoltV3LiveCanaryGateError::MissingReadinessReportPath);
+    }
+    if block.max_no_submit_readiness_report_bytes == 0 {
+        return Err(BoltV3LiveCanaryGateError::InvalidReadinessReportSizeLimit {
+            value: block.max_no_submit_readiness_report_bytes,
+        });
+    }
+    if block.readiness_report_max_age_seconds == 0 {
+        return Err(BoltV3LiveCanaryGateError::InvalidReadinessReportMaxAge {
+            value: block.readiness_report_max_age_seconds,
+        });
+    }
+    if block.reference_quote_wait_timeout_seconds == 0 {
+        return Err(
+            BoltV3LiveCanaryGateError::InvalidReferenceQuoteWaitTimeout {
+                value: block.reference_quote_wait_timeout_seconds,
+            },
+        );
+    }
+    let reference_quote_probe_actor_id = block.reference_quote_probe_actor_id.as_str();
+    if reference_quote_probe_actor_id.trim().is_empty()
+        || reference_quote_probe_actor_id.trim() != reference_quote_probe_actor_id
+    {
+        return Err(
+            BoltV3LiveCanaryGateError::InvalidReferenceQuoteProbeActorId {
+                value: block.reference_quote_probe_actor_id.clone(),
+                reason: "must be non-empty without surrounding whitespace".to_string(),
+            },
+        );
+    }
+    ActorId::new_checked(reference_quote_probe_actor_id).map_err(|error| {
+        BoltV3LiveCanaryGateError::InvalidReferenceQuoteProbeActorId {
+            value: block.reference_quote_probe_actor_id.clone(),
+            reason: error.to_string(),
+        }
+    })?;
+
+    resolve_report_path(root_path, block)
 }
 
 async fn read_report_bytes_with_limit(

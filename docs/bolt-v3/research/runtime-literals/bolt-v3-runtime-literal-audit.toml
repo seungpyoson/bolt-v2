@@ -2083,7 +2083,7 @@ reason = "This is a canonical selected-market metadata-provenance field name pop
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = "\"Down\""
-context = "\"Down\" => UpdownOutcomeSide::Down,"
+context = "\"Down\" => OutcomeSide::Down,"
 classification = "nt_binary_option_outcome_value"
 reason = "The updown market-family module owns the NautilusTrader BinaryOption outcome label for the down instrument; strategy code consumes typed selected-market facts."
 
@@ -2091,7 +2091,7 @@ reason = "The updown market-family module owns the NautilusTrader BinaryOption o
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = "\"Up\""
-context = "\"Up\" => UpdownOutcomeSide::Up,"
+context = "\"Up\" => OutcomeSide::Up,"
 classification = "nt_binary_option_outcome_value"
 reason = "The updown market-family module owns the NautilusTrader BinaryOption outcome label for the up instrument; strategy code consumes typed selected-market facts."
 
@@ -4331,7 +4331,7 @@ reason = "This is a named counter increment invariant for the realized-volatilit
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''0.0'''
-context = '''pub const ZERO_F64: f64 = 0.0;'''
+context = '''pub(crate) const ZERO_F64: f64 = 0.0;'''
 classification = "shared_numeric_math_invariant"
 reason = "This is the named zero invariant shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4339,7 +4339,7 @@ reason = "This is the named zero invariant shared by the updown family pricing a
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''1.0'''
-context = '''pub const UNIT_F64: f64 = 1.0;'''
+context = '''pub(crate) const UNIT_F64: f64 = 1.0;'''
 classification = "shared_numeric_math_invariant"
 reason = "This is the named unit invariant shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4347,7 +4347,7 @@ reason = "This is the named unit invariant shared by the updown family pricing a
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''2'''
-context = '''pub const POWER_OF_TWO: i32 = 2;'''
+context = '''pub(crate) const POWER_OF_TWO: i32 = 2;'''
 classification = "shared_numeric_math_invariant"
 reason = "This is the named squaring exponent shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4355,7 +4355,7 @@ reason = "This is the named squaring exponent shared by the updown family pricin
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''365.25'''
-context = '''pub const DAYS_PER_YEAR_F64: f64 = 365.25;'''
+context = '''pub(crate) const DAYS_PER_YEAR_F64: f64 = 365.25;'''
 classification = "annualization_constant"
 reason = "This is a named annualization conversion constant shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4363,7 +4363,7 @@ reason = "This is a named annualization conversion constant shared by the updown
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''24.0'''
-context = '''pub const HOURS_PER_DAY_F64: f64 = 24.0;'''
+context = '''pub(crate) const HOURS_PER_DAY_F64: f64 = 24.0;'''
 classification = "annualization_constant"
 reason = "This is a named calendar conversion constant shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4371,7 +4371,7 @@ reason = "This is a named calendar conversion constant shared by the updown fami
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''60.0'''
-context = '''pub const MINUTES_PER_HOUR_F64: f64 = 60.0;'''
+context = '''pub(crate) const MINUTES_PER_HOUR_F64: f64 = 60.0;'''
 classification = "annualization_constant"
 reason = "This is a named time conversion constant shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4379,7 +4379,7 @@ reason = "This is a named time conversion constant shared by the updown family p
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''60.0'''
-context = '''pub const SECONDS_PER_MINUTE_F64: f64 = 60.0;'''
+context = '''pub(crate) const SECONDS_PER_MINUTE_F64: f64 = 60.0;'''
 classification = "annualization_constant"
 reason = "This is a named time conversion constant shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4448,18 +4448,18 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''10_000.0'''
-context = '''const BPS_DENOMINATOR: f64 = 10_000.0;'''
+context = '''pub(crate) const BPS_DENOMINATOR: f64 = 10_000.0;'''
 classification = "financial_unit_conversion"
-reason = "This is the basis-points denominator for financial unit conversion, not an operator runtime value."
+reason = "This is the basis-points denominator for financial unit conversion, not an operator runtime value. Consolidated into the shared numeric module in #522 A1."
 
 [[allowed]]
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''1_000'''
-context = '''pub const MILLIS_PER_SECOND_U64: u64 = 1_000;'''
+context = '''pub(crate) const MILLIS_PER_SECOND_U64: u64 = 1_000;'''
 classification = "time_unit_conversion"
 reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
 
@@ -4480,12 +4480,12 @@ classification = "time_unit_conversion"
 reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''2.0'''
-context = '''const MIDPOINT_DIVISOR_F64: f64 = 2.0;'''
+context = '''pub(crate) const MIDPOINT_DIVISOR_F64: f64 = 2.0;'''
 classification = "strategy_math_invariant"
-reason = "This is the named divisor for midpoint calculation, not an operator runtime value."
+reason = "This is the named divisor for midpoint calculation, not an operator runtime value. Consolidated into the shared numeric module in #522 A1."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -4496,12 +4496,12 @@ classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the normal-CDF approximation, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''2.0'''
-context = '''const QUADRATIC_RISK_DIVISOR: f64 = 2.0;'''
+context = '''pub(crate) const QUADRATIC_RISK_DIVISOR: f64 = 2.0;'''
 classification = "pricing_formula_constant"
-reason = "This is a named coefficient in the strategy sizing formula, not an operator runtime value."
+reason = "This is a named coefficient in the strategy sizing formula, not an operator runtime value. Consolidated into the shared numeric module in #522 A1."
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -4528,20 +4528,20 @@ classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code describing computed uncertainty-band provenance, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_taker_signal.rs"
 kind = "string"
 literal = '''"down"'''
 context = '''OutcomeSide::Down => "down",'''
 classification = "strategy_evidence_outcome_side_label"
-reason = "This is a stable evidence label for the binary outcome side already selected by strategy logic; it records provenance and does not configure trading behavior."
+reason = "This is a stable evidence label for the binary outcome side, emitted by the shared taker-signal decision math (bolt_v3_taker_signal::outcome_side_evidence_label); it records provenance and does not configure trading behavior."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_taker_signal.rs"
 kind = "string"
 literal = '''"up"'''
 context = '''OutcomeSide::Up => "up",'''
 classification = "strategy_evidence_outcome_side_label"
-reason = "This is a stable evidence label for the binary outcome side already selected by strategy logic; it records provenance and does not configure trading behavior."
+reason = "This is a stable evidence label for the binary outcome side, emitted by the shared taker-signal decision math (bolt_v3_taker_signal::outcome_side_evidence_label); it records provenance and does not configure trading behavior."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
@@ -8581,15 +8581,15 @@ kind = "string"
 literal = '''"let Some(report) = inner.gate_report.as_ref() else"'''
 context = '''"let Some(report) = inner.gate_report.as_ref() else";'''
 classification = "operator_source_proof_static_marker"
-reason = "This marker verifies submit admission checks live-canary arming before admitting orders; it is source evidence, not an operator runtime value."
+reason = "This marker verifies submit admission handles the optional unarmed gate branch after lifecycle checks; it is source evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"return BoltV3AdmissionOutcome::RejectedNotArmed;"'''
-context = '''"return BoltV3AdmissionOutcome::RejectedNotArmed;";'''
+literal = '''"return BoltV3AdmissionOutcome::Admitted;"'''
+context = '''"return BoltV3AdmissionOutcome::Admitted;";'''
 classification = "operator_source_proof_static_marker"
-reason = "This marker verifies unarmed submit admission rejects orders; it is source evidence, not an operator runtime value."
+reason = "This marker verifies unarmed submit admission reaches the explicit allow branch only after lifecycle checks; it is source evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -8606,14 +8606,6 @@ literal = '''"return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;"
 context = '''"return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies disallowed lifecycle submissions fail closed; it is source evidence, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
-kind = "string"
-literal = '''"BoltV3AdmissionOutcome::Admitted"'''
-context = '''const ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER: &str = "BoltV3AdmissionOutcome::Admitted";'''
-classification = "operator_source_proof_static_marker"
-reason = "This marker verifies service-policy rejections occur before the admitted outcome; it is source evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -8722,10 +8714,10 @@ reason = "This field names the submit-admission evaluator function-scope diagnos
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"submit_admission_rejects_unarmed_and_disallowed_lifecycle"'''
-context = '''"submit_admission_rejects_unarmed_and_disallowed_lifecycle",'''
+literal = '''"submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle"'''
+context = '''"submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle",'''
 classification = "operator_source_proof_diagnostic_field"
-reason = "This field names the submit-admission unarmed and lifecycle rejection proof diagnostic, not an operator runtime value."
+reason = "This field names the submit-admission unarmed-allow and lifecycle rejection proof diagnostic, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

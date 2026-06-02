@@ -48,12 +48,12 @@ use crate::{
         validate_readiness_gate_evidence_snapshot,
     },
     bolt_v3_market_families::{
-        self, FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget,
+        self, FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget, OutcomeSide,
         SelectedMarketSourceIdentity,
     },
     bolt_v3_numeric::{
-        MILLIS_PER_SECOND_U64, POWER_OF_TWO, UNIT_F64, ZERO_F64, is_positive_finite,
-        sanitize_probability,
+        BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64,
+        clamp_probability, is_non_negative_finite, is_positive_finite, sanitize_probability,
     },
     bolt_v3_operator_artifacts::{EntryReadinessGateSession, GateSatisfaction},
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
@@ -67,6 +67,12 @@ use crate::{
         BoltV3SubmitLifecyclePolicy, admission_base_notional_from_order,
         base_quantity_admission_notional, fee_inclusive_admission_notional,
         market_style_admission_ceiling_notional,
+    },
+    bolt_v3_taker_signal::{
+        RobustSizingInputs, SideSelectionInputs, ThetaScalerInputs, UncertaintyBandInputs,
+        WorstCaseEvInputs, choose_entry_side, choose_robust_size, compute_theta_scaler,
+        compute_worst_case_ev_bps, outcome_side_evidence_label, price_agreement_corr,
+        price_gap_probability, uncertainty_band_probability,
     },
     bolt_v3_volatility::{RealizedVolConfig, RealizedVolEstimator},
     strategies::registry::{
@@ -2843,7 +2849,7 @@ impl BinaryOracleEdgeTaker {
 
         let theta_scaled_min_edge_bps = seconds_to_expiry.and_then(|seconds_to_expiry| {
             compute_theta_scaler(&ThetaScalerInputs {
-                seconds_to_expiry,
+                seconds_to_market_end: seconds_to_expiry,
                 cadence_seconds: self.config.cadence_seconds,
                 theta_decay_factor: self.config.theta_decay_factor,
             })
@@ -2896,7 +2902,7 @@ impl BinaryOracleEdgeTaker {
 
     fn current_scaled_min_edge_bps_at(&self, now_ms: u64) -> Option<f64> {
         compute_theta_scaler(&ThetaScalerInputs {
-            seconds_to_expiry: self.current_seconds_to_expiry_at(now_ms)?,
+            seconds_to_market_end: self.current_seconds_to_expiry_at(now_ms)?,
             cadence_seconds: self.config.cadence_seconds,
             theta_decay_factor: self.config.theta_decay_factor,
         })
@@ -6235,11 +6241,8 @@ pub fn record_entry_decision_evidence_from_source(
     apply_entry_decision_source_books(&mut strategy, &source.books)?;
 
     match strategy.try_submit_entry_order(source.decision_timestamp_ms) {
-        Err(error) if error.to_string().contains("submit admission is not armed") => Ok(()),
         Err(error) => Err(error),
-        Ok(Some(client_order_id)) => anyhow::bail!(
-            "entry decision evidence source unexpectedly admitted order {client_order_id}; submit admission must stay unarmed"
-        ),
+        Ok(Some(_client_order_id)) => Ok(()),
         Ok(None) => {
             let decision = strategy.entry_submission_decision_at(source.decision_timestamp_ms);
             anyhow::bail!(
@@ -6880,9 +6883,6 @@ const INITIAL_COUNTER_USIZE: usize = 0;
 const INITIAL_COUNTER_U64: u64 = 0;
 const COUNTER_INCREMENT: usize = 1;
 const COUNTER_INCREMENT_U64: u64 = 1;
-const BPS_DENOMINATOR: f64 = 10_000.0;
-const MIDPOINT_DIVISOR_F64: f64 = 2.0;
-const QUADRATIC_RISK_DIVISOR: f64 = 2.0;
 const NANOS_PER_MILLI_U64: u64 = 1_000_000;
 const NANOS_PER_SECOND_U64: u64 = 1_000_000_000;
 const CONFIG_FIELD_OMS_TYPE: &str = "oms_type";
@@ -6938,27 +6938,6 @@ const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quan
 const EXIT_BLOCK_REASON_EXIT_PRICE_MISSING: &str = "exit_price_missing";
 const EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE: &str = "exit_quantity_not_positive";
 
-fn is_non_negative_finite(value: f64) -> bool {
-    value.is_finite() && value >= ZERO_F64
-}
-
-fn clamp_probability(value: f64) -> f64 {
-    value.clamp(ZERO_F64, UNIT_F64)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OutcomeSide {
-    Up,
-    Down,
-}
-
-fn outcome_side_evidence_label(side: OutcomeSide) -> &'static str {
-    match side {
-        OutcomeSide::Up => "up",
-        OutcomeSide::Down => "down",
-    }
-}
-
 fn evidence_number(value: f64) -> String {
     value.to_string()
 }
@@ -6974,24 +6953,6 @@ struct LeadVenueSignal {
     agreement_corr: f64,
     effective_weight: f64,
     lead_gap_probability: f64,
-}
-
-fn price_agreement_corr(observed_price: f64, anchor_price: f64) -> Option<f64> {
-    if !is_positive_finite(observed_price) || !is_positive_finite(anchor_price) {
-        return None;
-    }
-    Some(clamp_probability(
-        UNIT_F64 - ((observed_price - anchor_price).abs() / anchor_price),
-    ))
-}
-
-fn price_gap_probability(observed_price: f64, reference_price: f64) -> Option<f64> {
-    if !is_positive_finite(observed_price) || !is_positive_finite(reference_price) {
-        return None;
-    }
-    Some(clamp_probability(
-        (observed_price - reference_price).abs() / reference_price,
-    ))
 }
 
 #[cfg(test)]
@@ -7070,146 +7031,6 @@ fn best_healthy_oracle_price(snapshot: &ReferenceSnapshot) -> Option<f64> {
                 .then_with(|| lhs.venue_name.cmp(&rhs.venue_name))
         })
         .and_then(|venue| venue.observed_price)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct UncertaintyBandInputs {
-    lead_gap_probability: f64,
-    jitter_penalty_probability: f64,
-    time_uncertainty_probability: f64,
-    fee_uncertainty_probability: f64,
-}
-
-fn uncertainty_band_probability(inputs: &UncertaintyBandInputs) -> Option<f64> {
-    sanitize_probability(
-        sanitize_probability(inputs.lead_gap_probability)?
-            + sanitize_probability(inputs.jitter_penalty_probability)?
-            + sanitize_probability(inputs.time_uncertainty_probability)?
-            + sanitize_probability(inputs.fee_uncertainty_probability)?,
-    )
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct WorstCaseEvInputs {
-    fair_probability: Option<f64>,
-    uncertainty_band_probability: f64,
-    executable_entry_cost: f64,
-    fee_bps: Option<f64>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct ThetaScalerInputs {
-    seconds_to_expiry: u64,
-    cadence_seconds: u64,
-    theta_decay_factor: f64,
-}
-
-fn compute_theta_scaler(inputs: &ThetaScalerInputs) -> Option<f64> {
-    if !is_non_negative_finite(inputs.theta_decay_factor) {
-        return None;
-    }
-    if inputs.theta_decay_factor == ZERO_F64 {
-        return Some(UNIT_F64);
-    }
-    if inputs.cadence_seconds == 0 {
-        return None;
-    }
-
-    let ratio = clamp_probability(inputs.seconds_to_expiry as f64 / inputs.cadence_seconds as f64);
-    Some(UNIT_F64 + inputs.theta_decay_factor * (UNIT_F64 - ratio).powi(POWER_OF_TWO))
-}
-
-fn compute_worst_case_ev_bps(side: OutcomeSide, inputs: &WorstCaseEvInputs) -> Option<f64> {
-    let fair_probability = sanitize_probability(inputs.fair_probability?)?;
-    let uncertainty_band_probability = sanitize_probability(inputs.uncertainty_band_probability)?;
-    let executable_entry_cost = inputs.executable_entry_cost;
-    let fee_bps = inputs.fee_bps?;
-
-    if !is_positive_finite(executable_entry_cost) {
-        return None;
-    }
-    if !is_non_negative_finite(fee_bps) {
-        return None;
-    }
-
-    let p_lo = clamp_probability(fair_probability - uncertainty_band_probability);
-    let p_hi = clamp_probability(fair_probability + uncertainty_band_probability);
-    let worst_case_success_probability = match side {
-        OutcomeSide::Up => p_lo,
-        OutcomeSide::Down => UNIT_F64 - p_hi,
-    };
-    let total_entry_cost = executable_entry_cost * (UNIT_F64 + fee_bps / BPS_DENOMINATOR);
-
-    if total_entry_cost <= ZERO_F64 {
-        return None;
-    }
-
-    Some(((worst_case_success_probability - total_entry_cost) / total_entry_cost) * BPS_DENOMINATOR)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct SideSelectionInputs {
-    up_worst_ev_bps: Option<f64>,
-    down_worst_ev_bps: Option<f64>,
-    min_worst_case_ev_bps: f64,
-}
-
-fn choose_entry_side(inputs: &SideSelectionInputs) -> Option<OutcomeSide> {
-    if !inputs.min_worst_case_ev_bps.is_finite() {
-        return None;
-    }
-
-    let up_worst_ev_bps = inputs.up_worst_ev_bps.filter(|value| value.is_finite())?;
-    let down_worst_ev_bps = inputs.down_worst_ev_bps.filter(|value| value.is_finite())?;
-    let up_clears = up_worst_ev_bps > inputs.min_worst_case_ev_bps;
-    let down_clears = down_worst_ev_bps > inputs.min_worst_case_ev_bps;
-
-    match (up_clears, down_clears) {
-        (true, false) => Some(OutcomeSide::Up),
-        (false, true) => Some(OutcomeSide::Down),
-        (true, true) if up_worst_ev_bps > down_worst_ev_bps => Some(OutcomeSide::Up),
-        (true, true) if down_worst_ev_bps > up_worst_ev_bps => Some(OutcomeSide::Down),
-        (true, true) | (false, false) => None,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct RobustSizingInputs {
-    expected_ev_per_notional: f64,
-    risk_lambda: f64,
-    order_notional_target: f64,
-    maximum_position_notional: f64,
-    impact_cap_notional: f64,
-}
-
-fn choose_robust_size(inputs: &RobustSizingInputs) -> f64 {
-    if !is_positive_finite(inputs.expected_ev_per_notional) {
-        return ZERO_F64;
-    }
-
-    let cap = sanitize_non_negative(inputs.order_notional_target)
-        .min(sanitize_non_negative(inputs.maximum_position_notional))
-        .min(sanitize_non_negative(inputs.impact_cap_notional));
-    if cap <= ZERO_F64 {
-        return ZERO_F64;
-    }
-
-    if !is_non_negative_finite(inputs.risk_lambda) {
-        return ZERO_F64;
-    }
-    if inputs.risk_lambda == ZERO_F64 {
-        return cap;
-    }
-
-    (inputs.expected_ev_per_notional / (QUADRATIC_RISK_DIVISOR * inputs.risk_lambda)).min(cap)
-}
-
-fn sanitize_non_negative(value: f64) -> f64 {
-    if value.is_finite() {
-        value.max(ZERO_F64)
-    } else {
-        ZERO_F64
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8518,6 +8339,21 @@ mod tests {
         )
     }
 
+    fn submit_admission_armed_with_cap(
+        max_notional_per_order: Decimal,
+        decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    ) -> Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState> {
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
+                decision_evidence,
+            ),
+        );
+        submit_admission
+            .arm(live_canary_gate_report(1, max_notional_per_order))
+            .expect("valid gate report should arm submit admission");
+        submit_admission
+    }
+
     #[test]
     fn decision_evidence_failure_rejects_before_nt_submit() {
         let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
@@ -8584,15 +8420,15 @@ mod tests {
     }
 
     #[test]
-    fn unarmed_submit_admission_rejects_after_evidence_before_nt_submit() {
+    fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
         let submit_admission = Arc::new(
             crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         );
         let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-        // Zero fee leaves the notional unchanged; the unarmed rejection from the
-        // admission gate is what this test exercises.
+        // Zero fee leaves the notional unchanged; with no optional gate armed,
+        // production admission now allows the submit to reach NT.
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
             RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(RecordingDecisionEvidenceWriter),
@@ -8639,19 +8475,19 @@ mod tests {
                 &order,
             );
 
-        let error = strategy
-            .submit_order_with_decision_evidence(
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            strategy.submit_order_with_decision_evidence(
                 intent,
                 order,
                 SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
             )
-            .expect_err("unarmed submit admission must reject before NT submit");
+        }));
 
         assert!(
-            error.to_string().contains("submit admission is not armed"),
-            "{error:#}"
+            result.is_err(),
+            "test strategy is intentionally not registered with NT; ungated admission should reach NT submit"
         );
-        assert_eq!(submit_admission.admitted_order_count(), 0);
+        assert_eq!(submit_admission.admitted_order_count(), 1);
     }
 
     #[test]
@@ -11528,41 +11364,6 @@ mod tests {
         assert_eq!(fields.realized_vol, Some(2.5));
         assert_eq!(fields.realized_vol_source_venue.as_deref(), Some("bybit"));
         assert_eq!(fields.realized_vol_source_ts_ms, Some(1_200));
-    }
-
-    #[test]
-    fn theta_scaler_helper_increases_near_expiry_and_can_be_disabled() {
-        let start = compute_theta_scaler(&ThetaScalerInputs {
-            seconds_to_expiry: 300,
-            cadence_seconds: 300,
-            theta_decay_factor: 1.5,
-        })
-        .expect("valid theta inputs should compute");
-        let near_expiry = compute_theta_scaler(&ThetaScalerInputs {
-            seconds_to_expiry: 30,
-            cadence_seconds: 300,
-            theta_decay_factor: 1.5,
-        })
-        .expect("valid theta inputs should compute");
-
-        assert!((start - 1.0).abs() < 1e-9);
-        assert!(near_expiry > start);
-        assert_eq!(
-            compute_theta_scaler(&ThetaScalerInputs {
-                seconds_to_expiry: 30,
-                cadence_seconds: 300,
-                theta_decay_factor: 0.0,
-            }),
-            Some(1.0)
-        );
-        assert!(
-            compute_theta_scaler(&ThetaScalerInputs {
-                seconds_to_expiry: 30,
-                cadence_seconds: 0,
-                theta_decay_factor: 1.5,
-            })
-            .is_none()
-        );
     }
 
     #[test]
@@ -14615,19 +14416,33 @@ mod tests {
 
     #[test]
     fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
-        let mut direct = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let rejecting_submit_admission = submit_admission_armed_with_cap(
+            Decimal::new(1, 2),
+            Arc::new(RecordingDecisionEvidenceWriter),
+        );
+        let mut direct = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            Arc::new(RecordingDecisionEvidenceWriter),
+            rejecting_submit_admission.clone(),
+        );
         register_test_strategy_with_active_instruments(&mut direct);
         let direct_error = direct
             .try_submit_entry_order(1_200)
-            .expect_err("test setup must reach unarmed submit admission");
+            .expect_err("test setup must reach submit-admission cap rejection");
         assert!(
             direct_error
                 .to_string()
-                .contains("submit admission is not armed"),
+                .contains("notional cap is exceeded"),
             "test setup must prove submit-admission failure path: {direct_error:#}"
         );
 
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let rejecting_submit_admission = submit_admission_armed_with_cap(
+            Decimal::new(1, 2),
+            Arc::new(RecordingDecisionEvidenceWriter),
+        );
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            Arc::new(RecordingDecisionEvidenceWriter),
+            rejecting_submit_admission,
+        );
         register_test_strategy_with_active_instruments(&mut strategy);
         let instrument_id = selected_entry_instrument(&strategy);
         let decision = strategy.entry_submission_decision_at(1_200);
@@ -14654,7 +14469,14 @@ mod tests {
 
     #[test]
     fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let rejecting_submit_admission = submit_admission_armed_with_cap(
+            Decimal::new(1, 2),
+            Arc::new(RecordingDecisionEvidenceWriter),
+        );
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            Arc::new(RecordingDecisionEvidenceWriter),
+            rejecting_submit_admission.clone(),
+        );
         strategy.active.phase = SelectionPhase::Freeze;
         let instrument_id = selected_entry_instrument(&strategy);
         let position = materialize_configured_position(
@@ -14679,6 +14501,43 @@ mod tests {
                 && decision.blocked_reason.is_none(),
             "test setup must reach exit submit admission path; got {decision:#?}"
         );
+        let managed_position = strategy
+            .managed_position()
+            .expect("managed position should remain available for exit admission setup");
+        let exit_order_side = decision
+            .order_side
+            .expect("exit decision should include order side");
+        let exit_quantity = Decimal::from_f64(
+            decision
+                .quantity
+                .expect("exit decision should include quantity")
+                .as_f64(),
+        )
+        .expect("exit quantity should convert to decimal");
+        let position_quantity = Decimal::from_f64(managed_position.position.quantity.as_f64())
+            .expect("position quantity should convert to decimal");
+        rejecting_submit_admission
+            .admit(&BoltV3SubmitAdmissionRequest {
+                strategy_id: strategy.config.strategy_id.clone(),
+                execution_client_id: strategy.config.client_id.clone(),
+                client_order_id: "EXIT-SLOT-ALREADY-USED".to_string(),
+                instrument_id: managed_position.position.instrument_id.to_string(),
+                notional: Decimal::new(1, 0),
+                order_side: exit_order_side,
+                order_quantity: exit_quantity,
+                intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
+                lifecycle_policy: strategy.submit_lifecycle_policy(),
+                canary_proof_claim: None,
+                risk_reducing_exit_proof: Some(BoltV3RiskReducingExitProof {
+                    position_id: managed_position.position.position_id.to_string(),
+                    instrument_id: managed_position.position.instrument_id.to_string(),
+                    position_side: managed_position.position.side,
+                    exit_order_side,
+                    position_quantity,
+                    exit_quantity,
+                }),
+            })
+            .expect("test setup should consume the only risk-reducing exit slot");
 
         let result = strategy.on_book_deltas(&book_deltas(
             instrument_id,
@@ -16598,269 +16457,6 @@ mod tests {
     }
 
     #[test]
-    fn task4_uncertainty_band_grows_with_jitter_and_time_to_resolution() {
-        let narrow = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.002,
-            time_uncertainty_probability: 0.003,
-            fee_uncertainty_probability: 0.0,
-        })
-        .expect("valid uncertainty inputs should produce a band");
-        let wider_from_jitter = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.004,
-            time_uncertainty_probability: 0.003,
-            fee_uncertainty_probability: 0.0,
-        })
-        .expect("valid uncertainty inputs should produce a band");
-        let wider_from_time = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.002,
-            time_uncertainty_probability: 0.005,
-            fee_uncertainty_probability: 0.0,
-        })
-        .expect("valid uncertainty inputs should produce a band");
-
-        assert!(wider_from_jitter > narrow);
-        assert!(wider_from_time > narrow);
-    }
-
-    #[test]
-    fn task4_uncertainty_band_grows_with_fee_uncertainty() {
-        let narrow = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.002,
-            time_uncertainty_probability: 0.003,
-            fee_uncertainty_probability: 0.0,
-        })
-        .expect("valid uncertainty inputs should produce a band");
-        let wide = uncertainty_band_probability(&UncertaintyBandInputs {
-            lead_gap_probability: 0.01,
-            jitter_penalty_probability: 0.002,
-            time_uncertainty_probability: 0.003,
-            fee_uncertainty_probability: 0.02,
-        })
-        .expect("valid uncertainty inputs should produce a band");
-
-        assert!(wide > narrow);
-    }
-
-    #[test]
-    fn task4_uncertainty_band_fails_closed_on_invalid_component() {
-        assert_eq!(
-            uncertainty_band_probability(&UncertaintyBandInputs {
-                lead_gap_probability: f64::NAN,
-                jitter_penalty_probability: 0.002,
-                time_uncertainty_probability: 0.003,
-                fee_uncertainty_probability: 0.0,
-            }),
-            None
-        );
-        assert_eq!(
-            uncertainty_band_probability(&UncertaintyBandInputs {
-                lead_gap_probability: 1.2,
-                jitter_penalty_probability: 0.002,
-                time_uncertainty_probability: 0.003,
-                fee_uncertainty_probability: 0.0,
-            }),
-            None
-        );
-        assert_eq!(
-            uncertainty_band_probability(&UncertaintyBandInputs {
-                lead_gap_probability: 0.40,
-                jitter_penalty_probability: 0.30,
-                time_uncertainty_probability: 0.20,
-                fee_uncertainty_probability: 0.20,
-            }),
-            None
-        );
-    }
-
-    #[test]
-    fn task4_worst_case_ev_uses_side_specific_bounds_and_fees_fail_closed() {
-        let up_zero_fee = compute_worst_case_ev_bps(
-            OutcomeSide::Up,
-            &WorstCaseEvInputs {
-                fair_probability: Some(0.60),
-                uncertainty_band_probability: 0.05,
-                executable_entry_cost: 0.50,
-                fee_bps: Some(0.0),
-            },
-        )
-        .expect("up zero-fee EV should be computable");
-        let up_paid_fee = compute_worst_case_ev_bps(
-            OutcomeSide::Up,
-            &WorstCaseEvInputs {
-                fair_probability: Some(0.60),
-                uncertainty_band_probability: 0.05,
-                executable_entry_cost: 0.50,
-                fee_bps: Some(200.0),
-            },
-        )
-        .expect("up paid-fee EV should be computable");
-        let down_zero_fee = compute_worst_case_ev_bps(
-            OutcomeSide::Down,
-            &WorstCaseEvInputs {
-                fair_probability: Some(0.60),
-                uncertainty_band_probability: 0.05,
-                executable_entry_cost: 0.50,
-                fee_bps: Some(0.0),
-            },
-        )
-        .expect("down zero-fee EV should be computable");
-
-        assert!(up_paid_fee < up_zero_fee);
-        assert!(up_zero_fee > down_zero_fee);
-        assert_eq!(
-            compute_worst_case_ev_bps(
-                OutcomeSide::Up,
-                &WorstCaseEvInputs {
-                    fair_probability: Some(0.60),
-                    uncertainty_band_probability: 0.05,
-                    executable_entry_cost: 0.50,
-                    fee_bps: None,
-                },
-            ),
-            None
-        );
-        assert_eq!(
-            compute_worst_case_ev_bps(
-                OutcomeSide::Up,
-                &WorstCaseEvInputs {
-                    fair_probability: Some(1.2),
-                    uncertainty_band_probability: 0.05,
-                    executable_entry_cost: 0.50,
-                    fee_bps: Some(0.0),
-                },
-            ),
-            None
-        );
-        assert_eq!(
-            compute_worst_case_ev_bps(
-                OutcomeSide::Up,
-                &WorstCaseEvInputs {
-                    fair_probability: Some(0.60),
-                    uncertainty_band_probability: 1.5,
-                    executable_entry_cost: 0.50,
-                    fee_bps: Some(0.0),
-                },
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn task4_side_selection_picks_higher_worst_case_ev_when_both_clear_threshold() {
-        let side = choose_entry_side(&SideSelectionInputs {
-            up_worst_ev_bps: Some(9.0),
-            down_worst_ev_bps: Some(11.0),
-            min_worst_case_ev_bps: 8.0,
-        });
-
-        assert_eq!(side, Some(OutcomeSide::Down));
-    }
-
-    #[test]
-    fn task4_side_selection_requires_strictly_greater_than_threshold() {
-        let side = choose_entry_side(&SideSelectionInputs {
-            up_worst_ev_bps: Some(8.0),
-            down_worst_ev_bps: Some(7.0),
-            min_worst_case_ev_bps: 8.0,
-        });
-
-        assert_eq!(side, None);
-    }
-
-    #[test]
-    fn task4_side_selection_fails_closed_on_missing_or_invalid_side_ev() {
-        assert_eq!(
-            choose_entry_side(&SideSelectionInputs {
-                up_worst_ev_bps: Some(9.0),
-                down_worst_ev_bps: None,
-                min_worst_case_ev_bps: 8.0,
-            }),
-            None
-        );
-        assert_eq!(
-            choose_entry_side(&SideSelectionInputs {
-                up_worst_ev_bps: Some(f64::NAN),
-                down_worst_ev_bps: Some(9.0),
-                min_worst_case_ev_bps: 8.0,
-            }),
-            None
-        );
-    }
-
-    #[test]
-    fn task4_side_selection_fails_closed_on_equal_positive_evs() {
-        let side = choose_entry_side(&SideSelectionInputs {
-            up_worst_ev_bps: Some(9.0),
-            down_worst_ev_bps: Some(9.0),
-            min_worst_case_ev_bps: 8.0,
-        });
-
-        assert_eq!(side, None);
-    }
-
-    #[test]
-    fn task4_robust_sizing_shrinks_with_risk_and_respects_caps() {
-        let low_risk = choose_robust_size(&RobustSizingInputs {
-            expected_ev_per_notional: 2.0,
-            risk_lambda: 0.1,
-            order_notional_target: 100.0,
-            maximum_position_notional: 100.0,
-            impact_cap_notional: 100.0,
-        });
-        let high_risk = choose_robust_size(&RobustSizingInputs {
-            expected_ev_per_notional: 2.0,
-            risk_lambda: 2.0,
-            order_notional_target: 100.0,
-            maximum_position_notional: 100.0,
-            impact_cap_notional: 100.0,
-        });
-        let capped = choose_robust_size(&RobustSizingInputs {
-            expected_ev_per_notional: 2.0,
-            risk_lambda: 0.1,
-            order_notional_target: 100.0,
-            maximum_position_notional: 12.0,
-            impact_cap_notional: 7.5,
-        });
-
-        assert!(high_risk < low_risk);
-        assert_eq!(capped, 7.5);
-        assert_eq!(
-            choose_robust_size(&RobustSizingInputs {
-                expected_ev_per_notional: 0.0,
-                risk_lambda: 0.1,
-                order_notional_target: 100.0,
-                maximum_position_notional: 100.0,
-                impact_cap_notional: 100.0,
-            }),
-            0.0
-        );
-        assert_eq!(
-            choose_robust_size(&RobustSizingInputs {
-                expected_ev_per_notional: 2.0,
-                risk_lambda: 0.0,
-                order_notional_target: 100.0,
-                maximum_position_notional: 100.0,
-                impact_cap_notional: 100.0,
-            }),
-            100.0
-        );
-        assert_eq!(
-            choose_robust_size(&RobustSizingInputs {
-                expected_ev_per_notional: 2.0,
-                risk_lambda: -0.1,
-                order_notional_target: 100.0,
-                maximum_position_notional: 100.0,
-                impact_cap_notional: 100.0,
-            }),
-            0.0
-        );
-    }
-
-    #[test]
     fn task5_entry_gate_reports_all_frozen_block_reasons_explicitly() {
         let mut strategy = test_strategy();
         strategy.apply_selection_snapshot(freeze_snapshot_with_start("MKT-1", 1_000));
@@ -17670,11 +17266,8 @@ mod tests {
     #[test]
     fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_intent() {
         let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-        let submit_admission = Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
-                evidence.clone(),
-            ),
-        );
+        let submit_admission =
+            submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
         let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
             evidence.clone(),
             submit_admission,
@@ -17683,9 +17276,9 @@ mod tests {
 
         let error = strategy
             .try_submit_entry_order(1_200)
-            .expect_err("unarmed submit admission should reject after evidence capture");
+            .expect_err("submit admission should reject after evidence capture");
         assert!(
-            error.to_string().contains("submit admission is not armed"),
+            error.to_string().contains("notional cap is exceeded"),
             "{error:#}"
         );
 
@@ -17742,16 +17335,17 @@ mod tests {
         assert_eq!(snapshot.submission_quantity, intent.quantity);
         assert_eq!(snapshot.client_order_id, intent.client_order_id);
         assert_eq!(admission.client_order_id, intent.client_order_id);
+        assert_eq!(
+            admission.outcome,
+            crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::RejectedNotionalCapExceeded
+        );
     }
 
     #[test]
     fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_seconds() {
         let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-        let submit_admission = Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
-                evidence.clone(),
-            ),
-        );
+        let submit_admission =
+            submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
         let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
             evidence.clone(),
             submit_admission,
@@ -17761,7 +17355,7 @@ mod tests {
 
         strategy
             .try_submit_entry_order(2_000)
-            .expect_err("unarmed submit admission should reject after evidence capture");
+            .expect_err("submit admission should reject after evidence capture");
 
         let events = evidence.events();
         let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
@@ -17781,11 +17375,8 @@ mod tests {
     #[test]
     fn strategy_input_evidence_records_next_market_selection_outcome() {
         let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-        let submit_admission = Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
-                evidence.clone(),
-            ),
-        );
+        let submit_admission =
+            submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
         let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
             evidence.clone(),
             submit_admission,
@@ -17795,7 +17386,7 @@ mod tests {
 
         strategy
             .try_submit_entry_order(2_000)
-            .expect_err("unarmed submit admission should reject after evidence capture");
+            .expect_err("submit admission should reject after evidence capture");
 
         let events = evidence.events();
         let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {

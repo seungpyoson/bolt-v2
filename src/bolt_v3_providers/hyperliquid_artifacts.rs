@@ -273,17 +273,19 @@ pub fn persist_consumed_hyperliquid_live_submit_approval_artifact(
     drop(file);
 
     let temp_path = hyperliquid_live_submit_approval_spend_temp_path(path);
+    let mut temp_created = false;
     let result = (|| -> std::io::Result<()> {
         {
             let mut temp_file = fs::OpenOptions::new()
                 .write(true)
-                .create(true)
-                .truncate(true)
+                .create_new(true)
                 .open(&temp_path)?;
+            temp_created = true;
             temp_file.write_all(&bytes)?;
             temp_file.sync_all()?;
         }
         fs::rename(&temp_path, path)?;
+        temp_created = false;
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -292,7 +294,7 @@ pub fn persist_consumed_hyperliquid_live_submit_approval_artifact(
         }
         Ok(())
     })();
-    if result.is_err() {
+    if result.is_err() && temp_created {
         let _ = fs::remove_file(&temp_path);
     }
     result.map_err(|source| BoltV3OperatorArtifactError::Write {

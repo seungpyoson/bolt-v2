@@ -43,6 +43,8 @@ use std::{
 use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
 use serde::{Deserialize, Serialize};
 
+use super::OutcomeSide;
+
 use crate::{
     bolt_v3_config::{
         GATE_PROVIDER_CAPABILITIES, GATE_PROVIDER_KINDS, GATE_ROLES, GATE_VALUE_KINDS,
@@ -471,15 +473,9 @@ pub struct SelectedUpdownMarket {
     pub source_identity: SelectedMarketSourceIdentity,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UpdownOutcomeSide {
-    Up,
-    Down,
-}
-
 #[derive(Debug, Clone)]
 struct UpdownOutcomeInstrument {
-    side: UpdownOutcomeSide,
+    side: OutcomeSide,
     market_id: String,
     condition_id: String,
     market_slug: String,
@@ -1178,8 +1174,8 @@ fn candidate_market_for_slug(
             continue;
         };
         match outcome.side {
-            UpdownOutcomeSide::Up if pair.up.is_none() => pair.up = Some(outcome),
-            UpdownOutcomeSide::Down if pair.down.is_none() => pair.down = Some(outcome),
+            OutcomeSide::Up if pair.up.is_none() => pair.up = Some(outcome),
+            OutcomeSide::Down if pair.down.is_none() => pair.down = Some(outcome),
             _ => return None,
         }
     }
@@ -1238,8 +1234,8 @@ fn updown_outcome_instrument(
         return None;
     }
     let side = match binary.outcome.as_ref()?.as_str() {
-        "Up" => UpdownOutcomeSide::Up,
-        "Down" => UpdownOutcomeSide::Down,
+        "Up" => OutcomeSide::Up,
+        "Down" => OutcomeSide::Down,
         _ => return None,
     };
     Some(UpdownOutcomeInstrument {

@@ -2060,7 +2060,7 @@ reason = "This is a canonical selected-market metadata-provenance field name pop
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = "\"Down\""
-context = "\"Down\" => UpdownOutcomeSide::Down,"
+context = "\"Down\" => OutcomeSide::Down,"
 classification = "nt_binary_option_outcome_value"
 reason = "The updown market-family module owns the NautilusTrader BinaryOption outcome label for the down instrument; strategy code consumes typed selected-market facts."
 
@@ -2068,7 +2068,7 @@ reason = "The updown market-family module owns the NautilusTrader BinaryOption o
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = "\"Up\""
-context = "\"Up\" => UpdownOutcomeSide::Up,"
+context = "\"Up\" => OutcomeSide::Up,"
 classification = "nt_binary_option_outcome_value"
 reason = "The updown market-family module owns the NautilusTrader BinaryOption outcome label for the up instrument; strategy code consumes typed selected-market facts."
 
@@ -4425,20 +4425,20 @@ classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code describing computed uncertainty-band provenance, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_taker_signal.rs"
 kind = "string"
 literal = '''"down"'''
 context = '''OutcomeSide::Down => "down",'''
 classification = "strategy_evidence_outcome_side_label"
-reason = "This is a stable evidence label for the binary outcome side already selected by strategy logic; it records provenance and does not configure trading behavior."
+reason = "This is a stable evidence label for the binary outcome side, emitted by the shared taker-signal decision math (bolt_v3_taker_signal::outcome_side_evidence_label); it records provenance and does not configure trading behavior."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_taker_signal.rs"
 kind = "string"
 literal = '''"up"'''
 context = '''OutcomeSide::Up => "up",'''
 classification = "strategy_evidence_outcome_side_label"
-reason = "This is a stable evidence label for the binary outcome side already selected by strategy logic; it records provenance and does not configure trading behavior."
+reason = "This is a stable evidence label for the binary outcome side, emitted by the shared taker-signal decision math (bolt_v3_taker_signal::outcome_side_evidence_label); it records provenance and does not configure trading behavior."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"

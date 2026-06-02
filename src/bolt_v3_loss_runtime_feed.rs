@@ -58,6 +58,12 @@ struct TimedDecimal {
     observed_at_ns: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeakEquityAction {
+    Preserve,
+    RebaselineToCurrent,
+}
+
 impl TimedDecimal {
     const fn new(value: Decimal, observed_at_ns: u64) -> Self {
         Self {
@@ -142,7 +148,7 @@ impl LossGovernorRuntimeFeed {
         let observed_at_ns = snapshot.ts_event.as_u64();
         let daily_pnl = daily_pnl(snapshot, currency)?;
         let current_equity = total_equity(snapshot, currency)?;
-        self.state.update_rolling_pnl(
+        let peak_equity_action = self.state.update_rolling_pnl(
             daily_pnl,
             current_equity,
             observed_at_ns,
@@ -154,9 +160,12 @@ impl LossGovernorRuntimeFeed {
             .get_or_insert(TimedDecimal::new(Decimal::ZERO, observed_at_ns));
 
         self.state.current_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
-        match self.state.peak_equity {
-            Some(peak) if peak.value > current_equity => {}
-            _ => {
+        match (peak_equity_action, self.state.peak_equity) {
+            (PeakEquityAction::RebaselineToCurrent, _) => {
+                self.state.peak_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
+            }
+            (PeakEquityAction::Preserve, Some(peak)) if peak.value > current_equity => {}
+            (PeakEquityAction::Preserve, _) => {
                 self.state.peak_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
             }
         }
@@ -246,15 +255,22 @@ impl LossGovernorRuntimeFeedState {
         current_equity: Decimal,
         observed_at_ns: u64,
         rolling_window_ns: u64,
-    ) {
+    ) -> PeakEquityAction {
+        let mut peak_equity_action = PeakEquityAction::Preserve;
         if let Some(previous_daily_pnl) = self.previous_daily_pnl {
             let cumulative_delta = daily_pnl - previous_daily_pnl.value;
             let rolling_delta = match self.previous_total_equity {
-                Some(previous_total_equity)
-                    if cumulative_delta != daily_pnl
-                        && current_equity - previous_total_equity.value == daily_pnl =>
-                {
-                    daily_pnl
+                Some(previous_total_equity) => {
+                    let equity_delta = current_equity - previous_total_equity.value;
+                    if cumulative_delta != daily_pnl && equity_delta == daily_pnl {
+                        peak_equity_action = PeakEquityAction::RebaselineToCurrent;
+                        daily_pnl
+                    } else {
+                        if cumulative_delta.is_zero() && !equity_delta.is_zero() {
+                            peak_equity_action = PeakEquityAction::RebaselineToCurrent;
+                        }
+                        cumulative_delta
+                    }
                 }
                 _ => cumulative_delta,
             };
@@ -275,6 +291,7 @@ impl LossGovernorRuntimeFeedState {
 
         let rolling_pnl = self.rolling_samples.iter().map(|sample| sample.value).sum();
         self.rolling_pnl = Some(TimedDecimal::new(rolling_pnl, observed_at_ns));
+        peak_equity_action
     }
 }
 

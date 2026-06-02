@@ -272,7 +272,92 @@ fn withdrawal_like_equity_move_does_not_trigger_session_reset_detection() {
 
     assert_eq!(unchanged_pnl.daily_pnl, Some(Decimal::new(10, 0)));
     assert_eq!(unchanged_pnl.rolling_pnl, Some(Decimal::ZERO));
-    assert_eq!(unchanged_pnl.peak_equity, Some(Decimal::new(1010, 0)));
+    assert_eq!(unchanged_pnl.peak_equity, Some(Decimal::new(1000, 0)));
+}
+
+#[test]
+fn nt_external_withdrawal_rebaselines_peak_and_avoids_false_drawdown_halt() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+        writer,
+        LossGovernorPolicy {
+            max_snapshot_age_ns: 1_000,
+            max_per_trade_loss: Some(Decimal::new(10, 0)),
+            max_daily_loss: Some(Decimal::new(250, 0)),
+            max_rolling_loss: Some(Decimal::new(250, 0)),
+            max_drawdown: Some(Decimal::new(100, 0)),
+        },
+    ));
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(5, 0),
+        ))
+        .expect("valid canary report should arm admission");
+
+    let account_id = AccountId::from("SIM-LOSS-011");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission.clone(),
+    );
+
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, 0.0, 0.0, 1_000.0))
+        .expect("initial peak should publish");
+    let withdrawn = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_100, 0.0, 0.0, 850.0))
+        .expect("external NT equity move should publish");
+
+    assert_eq!(withdrawn.rolling_pnl, Some(Decimal::ZERO));
+    assert_eq!(withdrawn.peak_equity, Some(Decimal::new(850, 0)));
+    admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 1_150)
+        .expect("withdrawal rebaseline must not look like trading drawdown");
+}
+
+#[test]
+fn trading_loss_preserves_peak_and_still_triggers_drawdown_halt() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+        writer,
+        LossGovernorPolicy {
+            max_snapshot_age_ns: 1_000,
+            max_per_trade_loss: Some(Decimal::new(250, 0)),
+            max_daily_loss: Some(Decimal::new(250, 0)),
+            max_rolling_loss: Some(Decimal::new(250, 0)),
+            max_drawdown: Some(Decimal::new(100, 0)),
+        },
+    ));
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(5, 0),
+        ))
+        .expect("valid canary report should arm admission");
+
+    let account_id = AccountId::from("SIM-LOSS-012");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission.clone(),
+    );
+
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, 0.0, 0.0, 1_000.0))
+        .expect("initial peak should publish");
+    let loss = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_100, -150.0, 0.0, 850.0))
+        .expect("trading loss should publish");
+
+    assert_eq!(loss.rolling_pnl, Some(Decimal::new(-150, 0)));
+    assert_eq!(loss.peak_equity, Some(Decimal::new(1_000, 0)));
+    let rejected = admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 1_150)
+        .expect_err("real trading drawdown should still halt admission");
+    assert!(rejected.to_string().contains("max_drawdown_limit"));
 }
 
 #[test]

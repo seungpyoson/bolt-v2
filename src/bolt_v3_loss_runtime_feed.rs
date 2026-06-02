@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, fmt, sync::Arc};
+use std::{cell::RefCell, collections::VecDeque, fmt, rc::Rc, sync::Arc};
 
 use nautilus_common::msgbus::{
     TypedHandler, subscribe_portfolio_snapshot, subscribe_position_events,
@@ -76,23 +76,17 @@ impl TimedDecimal {
 
 #[must_use]
 pub fn subscribe_loss_governor_runtime_feed(
-    feed: Arc<std::sync::Mutex<LossGovernorRuntimeFeed>>,
+    feed: Rc<RefCell<LossGovernorRuntimeFeed>>,
 ) -> LossGovernorRuntimeFeedSubscription {
-    let position_feed = Arc::clone(&feed);
+    let position_feed = Rc::clone(&feed);
     let position_events = TypedHandler::from(move |event: &PositionEvent| {
-        position_feed
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .on_position_event(event);
+        position_feed.borrow_mut().on_position_event(event);
     });
     subscribe_position_events(position_events_pattern(), position_events.clone(), None);
 
-    let portfolio_feed = Arc::clone(&feed);
+    let portfolio_feed = Rc::clone(&feed);
     let portfolio_snapshots = TypedHandler::from(move |snapshot: &PortfolioSnapshot| {
-        portfolio_feed
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .on_portfolio_snapshot(snapshot);
+        portfolio_feed.borrow_mut().on_portfolio_snapshot(snapshot);
     });
     subscribe_portfolio_snapshot(
         portfolio_snapshots_pattern(),

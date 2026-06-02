@@ -140,7 +140,7 @@ pub struct BoltV3LiveNodeRuntime {
     node: LiveNode,
     registration_summary: BoltV3RegistrationSummary,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
-    loss_runtime_feed: Option<Arc<Mutex<LossGovernorRuntimeFeed>>>,
+    loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
     position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
@@ -1645,7 +1645,7 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
 }
 
 struct BoltV3LiveNodeRuntimeFeeds {
-    loss_runtime_feed: Option<Arc<Mutex<LossGovernorRuntimeFeed>>>,
+    loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
     position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
     position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
@@ -3599,7 +3599,7 @@ fn build_live_node_with_clients(
                     Some(handler) => feed.with_halt_action_handler(handler.clone()),
                     None => feed,
                 };
-                let feed = Arc::new(Mutex::new(feed));
+                let feed = Rc::new(RefCell::new(feed));
                 let subscription = subscribe_loss_governor_runtime_feed(feed.clone());
                 (Some(feed), Some(subscription))
             }

@@ -17,11 +17,7 @@ use nautilus_model::identifiers::{
 };
 use nautilus_model::types::{Currency, Money, Price, Quantity};
 use rust_decimal::Decimal;
-use std::{
-    cell::RefCell,
-    rc::Rc,
-    sync::{Arc, Mutex},
-};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 #[test]
 fn nt_runtime_feed_publishes_fresh_portfolio_loss_snapshot_to_submit_admission() {
@@ -110,7 +106,7 @@ fn subscribed_nt_events_update_submit_admission_loss_snapshot() {
         .expect("valid canary report should arm admission");
 
     let account_id = AccountId::from("SIM-LOSS-002");
-    let feed = Arc::new(Mutex::new(LossGovernorRuntimeFeed::new(
+    let feed = Rc::new(RefCell::new(LossGovernorRuntimeFeed::new(
         LossGovernorRuntimeFeedConfig {
             account_id,
             rolling_window_ns: 500,
@@ -126,8 +122,7 @@ fn subscribed_nt_events_update_submit_admission_loss_snapshot() {
     subscription.unsubscribe_all();
 
     let snapshot = feed
-        .lock()
-        .expect("feed mutex should not be poisoned")
+        .borrow()
         .latest_snapshot()
         .cloned()
         .expect("subscribed NT events should publish a loss snapshot");

@@ -821,10 +821,11 @@ pub fn market_style_admission_ceiling_notional(
 
 fn forced_reduction_admissible_halt_id(state: &KillSwitchState) -> Option<&str> {
     match state {
-        KillSwitchState::Halting { halt_id, .. } | KillSwitchState::Halted { halt_id, .. } => {
-            Some(halt_id)
-        }
+        KillSwitchState::Halting { halt_id, .. }
+        | KillSwitchState::Halted { halt_id, .. }
+        | KillSwitchState::Flattening { halt_id } => Some(halt_id),
         KillSwitchState::Armed
+        | KillSwitchState::Cancelling { .. }
         | KillSwitchState::Flat { .. }
         | KillSwitchState::FailedManualIntervention { .. } => None,
     }

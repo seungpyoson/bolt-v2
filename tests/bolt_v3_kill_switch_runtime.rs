@@ -60,32 +60,62 @@ fn enabled_kill_switch_missing_durable_state_fails_closed_before_live_node_build
 }
 
 #[test]
-fn recovered_halted_kill_switch_state_seeds_submit_admission_latch_before_strategy_registration() {
-    let (loaded, _temp) = loaded_with_enabled_kill_switch("state/kill-switch.json");
-    let kill_switch = loaded
-        .root
-        .risk
-        .kill_switch
-        .as_ref()
-        .expect("test enables kill-switch config");
-    let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
-    store
-        .write_state(&KillSwitchState::Halted {
-            halt_id: "halt-runtime-1".to_string(),
-            trigger: KillSwitchHaltTrigger::loss_governor_breach(
-                "loss-governor",
-                1_000,
-                "daily loss cap breached",
-            ),
-        })
-        .expect("halted state should persist");
+fn recovered_kill_switch_state_seeds_submit_admission_latch_before_strategy_registration() {
+    for (state, expected_kind) in recovered_runtime_latch_states() {
+        let (loaded, _temp) = loaded_with_enabled_kill_switch("state/kill-switch.json");
+        let kill_switch = loaded
+            .root
+            .risk
+            .kill_switch
+            .as_ref()
+            .expect("test enables kill-switch config");
+        let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
+        store
+            .write_state(&state)
+            .expect("recovered state should persist");
 
-    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
-        .expect("recovered halted state should still allow runtime build for future kill actions");
+        let runtime =
+            build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+                .expect("recovered state should still allow runtime build for future kill actions");
 
-    assert_eq!(
-        runtime.kill_switch_state_kind(),
-        KillSwitchStateKind::Halted,
-        "runtime admission latch should carry recovered halted state before strategy registration"
-    );
+        assert_eq!(
+            runtime.kill_switch_state_kind(),
+            expected_kind,
+            "runtime admission latch should carry recovered state before strategy registration"
+        );
+    }
+}
+
+fn recovered_runtime_latch_states() -> Vec<(KillSwitchState, KillSwitchStateKind)> {
+    vec![
+        (
+            KillSwitchState::Halted {
+                halt_id: "halt-runtime-1".to_string(),
+                trigger: KillSwitchHaltTrigger::loss_governor_breach(
+                    "loss-governor",
+                    1_000,
+                    "daily loss cap breached",
+                ),
+            },
+            KillSwitchStateKind::Halted,
+        ),
+        (
+            KillSwitchState::Cancelling {
+                halt_id: "halt-runtime-1".to_string(),
+            },
+            KillSwitchStateKind::Cancelling,
+        ),
+        (
+            KillSwitchState::Flattening {
+                halt_id: "halt-runtime-1".to_string(),
+            },
+            KillSwitchStateKind::Flattening,
+        ),
+        (
+            KillSwitchState::Flat {
+                halt_id: "halt-runtime-1".to_string(),
+            },
+            KillSwitchStateKind::Flat,
+        ),
+    ]
 }

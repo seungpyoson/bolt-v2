@@ -79,11 +79,11 @@ As the operator, the maker must never commit more capital than reserved for wors
 
 **Why this priority**: Removing the taker's one-position invariant without a replacement reservation model risks over-quoting and exchange rejects. The single-market reservation cannot wait for the multi-market capital layer.
 
-**Independent Test**: With multiple resting quotes + in-flight cancel/resubmit + open inventory, assert the worst-case simultaneous-fill liability never exceeds reserved collateral; submission fails closed otherwise.
+**Independent Test**: With multiple resting quotes + in-flight cancel/resubmit (the open forward buy commitments), assert the worst-case simultaneous-fill collateral liability never exceeds reserved collateral; submission fails closed otherwise. Already-filled inventory is excluded from this collateral reservation by design (sunk cash / future-credit tokens — see FR-040).
 
 **Acceptance Scenarios**:
 
-1. **Given** resting YES/NO quotes, in-flight cancel/resubmit orders, and existing inventory, **When** a new quote is submitted, **Then** a per-market reserved-collateral gate verifies worst-case liability and fails closed if exceeded.
+1. **Given** resting YES/NO quotes and in-flight cancel/resubmit orders (the open forward buy commitments; already-filled inventory is excluded as sunk collateral — see FR-040), **When** a new quote is submitted, **Then** a per-market reserved-collateral gate verifies the worst-case simultaneous-fill liability and fails closed if exceeded.
 2. **Given** multiple markets, **When** the maker allocates capital, **Then** a portfolio layer splits bankroll, selects markets, and isolates per-market state/health/kill.
 
 ### User Story 6 - Observable and operable while live (Priority: P2)
@@ -142,7 +142,7 @@ As the maintainer, the maker must price from one fair-value path so there is no 
 - **FR-022 (W3)**: Quotes MUST always land in (ε, 1−ε); the YES/NO pair MUST stay jointly consistent and non-self-crossing; offset composition (spread, skew, time-widening, reward-shaping) MUST have a defined precedence + clamp/prune rule.
 - **FR-023 (W3)**: Inventory→skew MUST be a defined functional form; kill predicates (σ-floor, basis-cap, τ-floor, plus the existing stale/thin/incoherent) MUST be TOML thresholds that fail closed. The governor MUST express graduated states (cancel-only / reduce-only / hard-flat / reward-preserving soft-hold), not a single boolean.
 - **FR-030 (W4)**: On resolution (`InstrumentStatus::Close`), the system MUST book the terminal 0/1 payout, close the position, and feed settlement P&L; the platform does not auto-settle.
-- **FR-040 (W5)**: A per-market reserved-collateral gate MUST verify worst-case simultaneous-fill liability across resting quotes + in-flight cancel/resubmit + inventory and fail closed; this MUST NOT wait for the multi-market layer.
+- **FR-040 (W5)**: A per-market reserved-collateral gate MUST verify worst-case simultaneous-fill liability across the open *forward* buy commitments (resting quotes + in-flight cancel/resubmit + the candidate) and fail closed; this MUST NOT wait for the multi-market layer. Already-filled **inventory is excluded** from this collateral reservation: its cash already left the wallet at fill time and held outcome tokens redeem as future *credits*, not future outflows, so reserving against it would double-count the commitment.
 - **FR-041 (W5)**: A portfolio layer MUST split capital, select markets, and isolate per-market state/health/kill.
 - **FR-050 (W6)**: The system MUST provide heartbeat, stale-quote alarm, real-time equity/PnL, a maintenance-window pull schedule, and a venue geo/compliance precondition.
 - **FR-060 (W7)**: Reward capture MUST be additive and gated on a core-edge PASS; a reward-eligibility-aware pull policy MUST reconcile reward continuity with the safety kill (safety wins).

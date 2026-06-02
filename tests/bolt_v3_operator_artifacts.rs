@@ -8598,6 +8598,36 @@ fn final_packet_verifier_rejects_missing_live_canary_evidence_file() {
 }
 
 #[test]
+fn final_packet_verifier_rejects_entry_only_live_canary_admission_count() {
+    let fixture = assembled_final_packet_fixture();
+    let evidence = fixture.operator_evidence();
+    let canary_evidence_path = std::path::PathBuf::from(&evidence.canary_evidence_path);
+    let mut canary = read_json_value(&canary_evidence_path);
+    let live_canary = fixture
+        .loaded
+        .root
+        .live_canary
+        .as_ref()
+        .expect("fixture should include live canary config");
+    canary["submit_admission_ref"]["admitted_order_count"] =
+        serde_json::json!(live_canary.max_live_order_count);
+    write_json_value_and_hash(&canary_evidence_path, &canary);
+
+    let error = bolt_v2::bolt_v3_operator_artifacts::verify_final_operator_packet(
+        &fixture.loaded,
+        &fixture.operator_packet_path,
+    )
+    .expect_err("entry-only canary admission count must fail final packet verification");
+
+    assert!(
+        error
+            .to_string()
+            .contains("canary_evidence_path.submit_admission_ref.admitted_order_count"),
+        "entry-only canary admission count error should name the count field: {error}"
+    );
+}
+
+#[test]
 fn final_packet_verifier_rejects_canary_static_evidence_ref_drift() {
     let fixture = assembled_final_packet_fixture();
     let evidence = fixture.operator_evidence();
@@ -15047,7 +15077,7 @@ fn write_final_live_evidence_artifacts_for_test(
         ),
         "submit_admission_ref": {
             "status": "accepted",
-            "admitted_order_count": live_canary.max_live_order_count,
+            "admitted_order_count": live_canary.max_live_order_count.saturating_mul(2),
             "reason": "nt_adapter_submit_proven"
         },
         "live_order_ref": {

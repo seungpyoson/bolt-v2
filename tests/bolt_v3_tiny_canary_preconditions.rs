@@ -1537,12 +1537,12 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
                     .to_string(),
             },
         },
-        1,
+        2,
     )
-    .expect("one admitted order should produce live canary proof");
+    .expect("entry plus verified exit should produce live canary proof");
 
     assert_eq!(evidence.outcome, Phase8CanaryOutcome::LiveCanaryProof);
-    assert_eq!(evidence.submit_admission_ref.admitted_order_count, 1);
+    assert_eq!(evidence.submit_admission_ref.admitted_order_count, 2);
     assert!(evidence.block_reasons.is_empty());
     assert!(evidence.live_order_ref.is_some());
     assert!(evidence.nt_submit_event_ref.is_some());
@@ -1559,6 +1559,38 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
 }
 
 #[test]
+fn live_canary_evidence_rejects_entry_only_submit_admission_count() {
+    let error = Phase8CanaryEvidence::live_canary_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+        valid_live_order_ref(),
+        valid_live_canary_result_refs(),
+        1,
+    )
+    .expect_err("entry-only admitted count must not satisfy round-trip live proof");
+
+    assert!(
+        error.to_string().contains("admitted_order_count"),
+        "error should mention admitted order count: {error}"
+    );
+}
+
+#[test]
+fn live_canary_evidence_accepts_entry_plus_verified_exit_admission_count() {
+    let evidence = Phase8CanaryEvidence::live_canary_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+        valid_live_order_ref(),
+        valid_live_canary_result_refs(),
+        2,
+    )
+    .expect("entry plus verified exit should satisfy the bounded round-trip admission count");
+
+    assert_eq!(evidence.outcome, Phase8CanaryOutcome::LiveCanaryProof);
+    assert_eq!(evidence.submit_admission_ref.admitted_order_count, 2);
+}
+
+#[test]
 fn live_canary_evidence_writer_rejects_block_reasons() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("phase8-canary-evidence.json");
@@ -1567,7 +1599,7 @@ fn live_canary_evidence_writer_rejects_block_reasons() {
         valid_evidence_ref("cccc", "dddd"),
         valid_live_order_ref(),
         valid_live_canary_result_refs(),
-        1,
+        2,
     )
     .expect("valid live canary evidence should construct");
     evidence
@@ -1597,7 +1629,7 @@ fn live_canary_evidence_writer_rejects_mutated_strategy_hash() {
         valid_evidence_ref("cccc", "dddd"),
         valid_live_order_ref(),
         valid_live_canary_result_refs(),
-        1,
+        2,
     )
     .expect("valid live canary evidence should construct");
     evidence
@@ -1692,7 +1724,7 @@ fn live_canary_evidence_rejects_malformed_result_refs() {
         },
         valid_live_order_ref(),
         valid_live_canary_result_refs(),
-        1,
+        2,
     )
     .expect_err("malformed decision evidence ref must not produce live canary proof");
 
@@ -1714,7 +1746,7 @@ fn live_canary_evidence_rejects_malformed_result_refs() {
                 .to_string(),
         },
         valid_live_canary_result_refs(),
-        1,
+        2,
     )
     .expect_err("missing live order client hash must not produce live canary proof");
 
@@ -1737,7 +1769,7 @@ fn live_canary_evidence_rejects_order_from_unapproved_strategy() {
         valid_evidence_ref("cccc", "dddd"),
         live_order_ref,
         valid_live_canary_result_refs(),
-        1,
+        2,
     )
     .expect_err("live order from an unapproved strategy must not produce canary proof");
 
@@ -1756,7 +1788,7 @@ fn live_canary_evidence_rejects_malformed_identity_hashes() {
         valid_evidence_ref("cccc", "dddd"),
         valid_live_order_ref(),
         valid_live_canary_result_refs(),
-        1,
+        2,
     )
     .expect_err("malformed root config hash must not produce live canary proof");
 
@@ -1772,7 +1804,7 @@ fn live_canary_evidence_rejects_malformed_identity_hashes() {
         valid_evidence_ref("cccc", "dddd"),
         valid_live_order_ref(),
         valid_live_canary_result_refs(),
-        1,
+        2,
     )
     .expect_err("missing runtime capture spool hash must not produce live canary proof");
 
@@ -1793,7 +1825,7 @@ fn live_canary_evidence_rejects_invalid_cap_values() {
         valid_evidence_ref("cccc", "dddd"),
         valid_live_order_ref(),
         valid_live_canary_result_refs(),
-        1,
+        2,
     )
     .expect_err("non-one live order cap must not produce live canary proof");
 
@@ -1809,7 +1841,7 @@ fn live_canary_evidence_rejects_invalid_cap_values() {
         valid_evidence_ref("cccc", "dddd"),
         valid_live_order_ref(),
         valid_live_canary_result_refs(),
-        1,
+        2,
     )
     .expect_err("non-positive notional cap must not produce live canary proof");
 

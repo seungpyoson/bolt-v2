@@ -308,6 +308,7 @@ pub enum BoltV3AdmissionOutcome {
     RejectedNonPositiveNotional,
     RejectedNotionalCapExceeded,
     RejectedInvalidCanaryProofClaim,
+    RejectedInvalidRiskReducingExitProof,
     RejectedCountCapExhausted,
 }
 
@@ -1216,6 +1217,8 @@ mod tests {
             BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed,
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
+            BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim,
+            BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
         ] {
             let decision = BoltV3AdmissionDecisionEvidence {
@@ -1266,6 +1269,9 @@ mod tests {
                 }
                 BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim => {
                     "rejected_invalid_canary_proof_claim"
+                }
+                BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof => {
+                    "rejected_invalid_risk_reducing_exit_proof"
                 }
                 BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",
             };

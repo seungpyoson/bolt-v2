@@ -584,40 +584,37 @@ fn live_node_module_only_runs_nt_after_live_canary_gate() {
     let live_run_body = source
         .split("pub async fn run_bolt_v3_live_node")
         .nth(1)
-        .and_then(|tail| {
-            tail.split("pub async fn controlled_no_submit_readiness")
-                .next()
-        })
+        .and_then(|tail| tail.split("fn run_blocked_before_submit").next())
         .expect("run wrapper body must be present");
-    let gate_index = source
-        .find("check_bolt_v3_live_canary_pre_consumption_gate(loaded)")
-        .expect("run wrapper must call the pre-consumption live canary gate");
-    let consume_index = source
-        .find("consume_bolt_v3_live_runner_approval(loaded)")
-        .expect("run wrapper must atomically consume approval after the live canary gate");
-    let submit_admission_index = source
+    let report_index = live_run_body
+        .find("build_bolt_v3_live_submit_admission_report_from_config(loaded)")
+        .expect("run wrapper must derive submit-admission bounds from config");
+    let submit_admission_index = live_run_body
         .find(".arm(gate_report)")
-        .expect("run wrapper must arm submit admission from the live canary gate report");
+        .expect("run wrapper must arm submit admission from the config-derived report");
     assert!(
         live_run_body.contains("let run_future = node.run();"),
         "run wrapper must own the production NT runner call"
     );
-    let live_run_index = source
+    let live_run_index = live_run_body
         .find("let run_future = node.run();")
         .expect("production run wrapper must contain the first NT runner call");
-    let capture_index = source
+    let capture_index = live_run_body
         .find("wire_bolt_v3_runtime_capture(node, node_handle, loaded)")
         .expect("run wrapper must wire NT runtime capture from bolt-v3 persistence config");
     assert!(
-        gate_index < live_run_index,
-        "live canary gate must execute before NT LiveNode::run"
+        report_index < live_run_index,
+        "submit-admission config report must be built before NT LiveNode::run"
     );
     assert!(
-        gate_index < consume_index
-            && consume_index < submit_admission_index
+        report_index < submit_admission_index
             && submit_admission_index < capture_index
             && capture_index < live_run_index,
-        "approval must be consumed after the live canary gate and before submit admission, NT runtime capture, and LiveNode::run"
+        "submit admission must be armed before NT runtime capture and LiveNode::run"
+    );
+    assert!(
+        !live_run_body.contains("consume_bolt_v3_live_runner_approval"),
+        "run wrapper must not block startup on operator approval consumption"
     );
     assert_eq!(
         source.matches("let run_future = node.run();").count(),

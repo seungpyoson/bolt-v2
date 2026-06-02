@@ -1496,7 +1496,7 @@ fn latched_kill_switch_blocks_replace_submit_even_when_lifecycle_policy_allows_r
 }
 
 #[test]
-fn ordinary_risk_reducing_exit_while_latched_still_obeys_normal_count_cap() {
+fn ordinary_risk_reducing_exit_while_latched_uses_exit_count_cap_without_forced_reduction_bypass() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
     admission
@@ -1513,12 +1513,21 @@ fn ordinary_risk_reducing_exit_while_latched_still_obeys_normal_count_cap() {
         .expect("entry submit should consume the only normal count slot");
     admission.replace_kill_switch_state(halted_kill_switch_state());
 
-    let exit = admission
-        .admit(&submit_request_with_kind(
+    admission
+        .admit(&submit_request_with_kind_and_exit_proof(
             Decimal::new(1, 1),
             BoltV3SubmitIntentKind::RiskReducingExit,
+            Some(valid_risk_reducing_exit_proof()),
         ))
-        .expect_err("ordinary exit must not bypass normal count cap");
+        .expect("first ordinary exit should use its normal exit slot while latched");
+
+    let exit = admission
+        .admit(&submit_request_with_kind_and_exit_proof(
+            Decimal::new(1, 1),
+            BoltV3SubmitIntentKind::RiskReducingExit,
+            Some(valid_risk_reducing_exit_proof()),
+        ))
+        .expect_err("second ordinary exit must not bypass normal exit count cap");
 
     assert!(matches!(
         exit,
@@ -1533,10 +1542,11 @@ fn ordinary_risk_reducing_exit_while_latched_still_obeys_normal_count_cap() {
         outcomes,
         vec![
             BoltV3AdmissionOutcome::Admitted,
+            BoltV3AdmissionOutcome::Admitted,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
         ]
     );
-    assert_eq!(admission.admitted_order_count(), 1);
+    assert_eq!(admission.admitted_order_count(), 2);
 }
 
 #[test]

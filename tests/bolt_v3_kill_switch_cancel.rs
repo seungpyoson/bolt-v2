@@ -73,15 +73,54 @@ fn cancel_candidate_stores_trimmed_scope_and_identity_fields() {
     assert_eq!(candidate.client_order_id(), "client-order-1");
 }
 
+#[test]
+fn cancel_snapshot_deduplicates_scoped_order_identity_without_losing_surface_proof() {
+    let candidates = vec![
+        cancel_candidate(
+            BoltV3KillSwitchOutstandingOrderRiskSurface::Open,
+            "client-order-1",
+        ),
+        cancel_candidate(
+            BoltV3KillSwitchOutstandingOrderRiskSurface::PendingCancel,
+            "client-order-1",
+        ),
+        cancel_candidate_for_strategy(
+            BoltV3KillSwitchOutstandingOrderRiskSurface::Open,
+            "client-order-1",
+            "binary-oracle-edge-taker-002",
+        ),
+    ];
+
+    let snapshot = BoltV3KillSwitchCancelSnapshot::new(candidates)
+        .expect("duplicate cancel snapshot should be valid");
+
+    assert_eq!(snapshot.candidates().len(), 2);
+    assert_eq!(
+        snapshot.missing_mandatory_surfaces(&[
+            BoltV3KillSwitchOutstandingOrderRiskSurface::Open,
+            BoltV3KillSwitchOutstandingOrderRiskSurface::PendingCancel,
+        ]),
+        Vec::<BoltV3KillSwitchOutstandingOrderRiskSurface>::new()
+    );
+}
+
 fn cancel_candidate(
     surface: BoltV3KillSwitchOutstandingOrderRiskSurface,
     client_order_id: &str,
+) -> BoltV3KillSwitchCancelCandidate {
+    cancel_candidate_for_strategy(surface, client_order_id, "binary-oracle-edge-taker-001")
+}
+
+fn cancel_candidate_for_strategy(
+    surface: BoltV3KillSwitchOutstandingOrderRiskSurface,
+    client_order_id: &str,
+    strategy_id: &str,
 ) -> BoltV3KillSwitchCancelCandidate {
     BoltV3KillSwitchCancelCandidate::new(
         surface,
         "POLYMARKET-001",
         "BTC-2026-06-02-UP",
-        "binary-oracle-edge-taker-001",
+        strategy_id,
         client_order_id,
         1_717_200_000_000_000_000,
     )

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BoltV3KillSwitchOutstandingOrderRiskSurface {
@@ -105,6 +105,7 @@ impl BoltV3KillSwitchCancelCandidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3KillSwitchCancelSnapshot {
     candidates: Vec<BoltV3KillSwitchCancelCandidate>,
+    observed_surfaces: BTreeSet<BoltV3KillSwitchOutstandingOrderRiskSurface>,
 }
 
 impl BoltV3KillSwitchCancelSnapshot {
@@ -114,7 +115,26 @@ impl BoltV3KillSwitchCancelSnapshot {
         if candidates.is_empty() {
             return Err(BoltV3KillSwitchCancelError::MissingCandidates);
         }
-        Ok(Self { candidates })
+
+        let mut scoped_candidates = BTreeMap::new();
+        let mut observed_surfaces = BTreeSet::new();
+        for candidate in candidates {
+            observed_surfaces.insert(candidate.surface());
+            let scoped_order_identity = (
+                candidate.account_id.clone(),
+                candidate.instrument_id.clone(),
+                candidate.strategy_id.clone(),
+                candidate.client_order_id.clone(),
+            );
+            scoped_candidates
+                .entry(scoped_order_identity)
+                .or_insert(candidate);
+        }
+
+        Ok(Self {
+            candidates: scoped_candidates.into_values().collect(),
+            observed_surfaces,
+        })
     }
 
     pub fn candidates(&self) -> &[BoltV3KillSwitchCancelCandidate] {
@@ -129,16 +149,10 @@ impl BoltV3KillSwitchCancelSnapshot {
         &self,
         mandatory_surfaces: &[BoltV3KillSwitchOutstandingOrderRiskSurface],
     ) -> Vec<BoltV3KillSwitchOutstandingOrderRiskSurface> {
-        let observed = self
-            .candidates
-            .iter()
-            .map(BoltV3KillSwitchCancelCandidate::surface)
-            .collect::<BTreeSet<_>>();
-
         mandatory_surfaces
             .iter()
             .copied()
-            .filter(|surface| !observed.contains(surface))
+            .filter(|surface| !self.observed_surfaces.contains(surface))
             .collect()
     }
 }

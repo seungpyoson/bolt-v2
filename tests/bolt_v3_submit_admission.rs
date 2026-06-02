@@ -1948,8 +1948,16 @@ fn configured_submit_sizer_allows_no_outcome_risk_reducing_exit_without_reservat
 
     let mut request = sized_submit_request("client-order-1");
     request.intent_kind = BoltV3SubmitIntentKind::RiskReducingExit;
-    request.risk_reducing_exit_proof = Some(valid_risk_reducing_exit_proof());
     request.instrument_id = "instrument-no.VENUE-A".to_string();
+    request.order_side = OrderSide::Sell;
+    request.risk_reducing_exit_proof = Some(BoltV3RiskReducingExitProof {
+        position_id: "position-no".to_string(),
+        instrument_id: request.instrument_id.clone(),
+        position_side: PositionSide::Long,
+        exit_order_side: request.order_side,
+        position_quantity: Decimal::new(10, 0),
+        exit_quantity: request.order_quantity,
+    });
     let evidence = request
         .position_sizing
         .as_mut()

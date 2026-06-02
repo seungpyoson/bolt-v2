@@ -228,9 +228,12 @@ impl CanaryProofExecutor {
                 client_order_id: order.client_order_id().to_string(),
                 instrument_id: order.instrument_id().to_string(),
                 notional: admission_notional,
+                order_side: order.order_side(),
+                order_quantity: rounded_quantity_decimal,
                 intent_kind: BoltV3SubmitIntentKind::Entry,
                 lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
                 canary_proof_claim: Some(CANARY_PROOF_CLAIM.to_string()),
+                risk_reducing_exit_proof: None,
             })?;
         self.submit_order(
             order,

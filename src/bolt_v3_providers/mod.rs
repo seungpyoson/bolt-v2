@@ -21,6 +21,9 @@ pub mod polymarket;
 
 use std::{any::Any, fmt, future::Future, pin::Pin, sync::Arc};
 
+use nautilus_model::identifiers::Venue;
+use rust_decimal::Decimal;
+
 const EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES: u64 = 0;
 const EXTERNAL_SNAPSHOT_RETRY_DECREMENT: u64 = 1;
 
@@ -608,6 +611,19 @@ pub fn venue_egress_model(venue: &str) -> Option<VenueEgressModel> {
     }
 }
 
+pub fn normalize_base_order_quantity_for_execution_venue(
+    execution_venue: Venue,
+    quantity: Decimal,
+) -> Option<Decimal> {
+    if quantity <= Decimal::ZERO {
+        return None;
+    }
+    if execution_venue.as_str() == polymarket::KEY {
+        return polymarket::normalize_base_order_quantity(quantity);
+    }
+    Some(quantity)
+}
+
 pub fn materialize_clob_v2_adapter_signing_source_from_nt_signing_source(
     request: ClobV2AdapterSigningSourceMaterializationRequest<'_>,
 ) -> Result<ClobV2AdapterSigningSourceMaterialization, BoltV3OperatorArtifactError> {
@@ -831,6 +847,42 @@ mod tests {
         client_from_toml(include_str!(
             "../../tests/fixtures/bolt_v3/binance_reference_client.toml"
         ))
+    }
+
+    fn decimal(value: &str) -> Decimal {
+        Decimal::from_str_exact(value).expect("test decimal should parse")
+    }
+
+    #[test]
+    fn polymarket_base_quantity_normalizer_truncates_to_provider_direct_amount_scale() {
+        let normalized = normalize_base_order_quantity_for_execution_venue(
+            Venue::from(polymarket::KEY),
+            decimal("2.641"),
+        )
+        .expect("positive Polymarket quantity should normalize");
+
+        assert_eq!(normalized, decimal("2.64"));
+    }
+
+    #[test]
+    fn polymarket_base_quantity_normalizer_fails_closed_on_zero_underflow() {
+        assert_eq!(
+            normalize_base_order_quantity_for_execution_venue(
+                Venue::from(polymarket::KEY),
+                decimal("0.001"),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn non_polymarket_base_quantity_normalizer_preserves_quantity() {
+        let quantity = decimal("2.641");
+
+        assert_eq!(
+            normalize_base_order_quantity_for_execution_venue(Venue::from("OKX"), quantity),
+            Some(quantity)
+        );
     }
 
     fn fake_secret_value(path: &str) -> String {

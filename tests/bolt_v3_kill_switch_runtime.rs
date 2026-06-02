@@ -6,6 +6,7 @@ use bolt_v2::{
     bolt_v3_kill_switch_store::KillSwitchStore,
     bolt_v3_live_node::build_bolt_v3_live_node_with,
 };
+use nautilus_model::enums::TradingState;
 
 fn enabled_kill_switch_config(state_path: &str) -> KillSwitchConfigBlock {
     KillSwitchConfigBlock {
@@ -86,6 +87,38 @@ fn recovered_kill_switch_state_seeds_submit_admission_latch_before_strategy_regi
     }
 }
 
+#[test]
+fn recovered_kill_switch_state_syncs_nt_trading_state_without_reactivating() {
+    for (state, expected_trading_state) in recovered_runtime_nt_trading_states() {
+        let (loaded, _temp) = loaded_with_enabled_kill_switch("state/kill-switch.json");
+        let kill_switch = loaded
+            .root
+            .risk
+            .kill_switch
+            .as_ref()
+            .expect("test enables kill-switch config");
+        let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
+        store
+            .write_state(&state)
+            .expect("recovered state should persist");
+
+        let runtime =
+            build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+                .expect("recovered state should still allow runtime build for future kill actions");
+
+        assert_eq!(
+            runtime.nt_trading_state(),
+            expected_trading_state,
+            "runtime should sync recovered kill-switch state into NT RiskEngine trading state"
+        );
+        assert_ne!(
+            runtime.nt_trading_state(),
+            TradingState::Active,
+            "Phase 3 must not restore NT trading state to Active for recovered halt states"
+        );
+    }
+}
+
 fn recovered_runtime_latch_states() -> Vec<(KillSwitchState, KillSwitchStateKind)> {
     vec![
         (
@@ -118,4 +151,39 @@ fn recovered_runtime_latch_states() -> Vec<(KillSwitchState, KillSwitchStateKind
             KillSwitchStateKind::Flat,
         ),
     ]
+}
+
+fn recovered_runtime_nt_trading_states() -> Vec<(KillSwitchState, TradingState)> {
+    vec![
+        (halted_runtime_state(), TradingState::Reducing),
+        (
+            KillSwitchState::Cancelling {
+                halt_id: "halt-runtime-1".to_string(),
+            },
+            TradingState::Reducing,
+        ),
+        (
+            KillSwitchState::Flattening {
+                halt_id: "halt-runtime-1".to_string(),
+            },
+            TradingState::Reducing,
+        ),
+        (
+            KillSwitchState::Flat {
+                halt_id: "halt-runtime-1".to_string(),
+            },
+            TradingState::Halted,
+        ),
+    ]
+}
+
+fn halted_runtime_state() -> KillSwitchState {
+    KillSwitchState::Halted {
+        halt_id: "halt-runtime-1".to_string(),
+        trigger: KillSwitchHaltTrigger::loss_governor_breach(
+            "loss-governor",
+            1_000,
+            "daily loss cap breached",
+        ),
+    }
 }

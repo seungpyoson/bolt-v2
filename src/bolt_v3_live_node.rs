@@ -67,7 +67,7 @@ use nautilus_live::{
 };
 use nautilus_model::{
     data::{OrderBookDeltas, QuoteTick, TradeTick},
-    enums::{BarIntervalType, BookType},
+    enums::{BarIntervalType, BookType, TradingState},
     identifiers::{ActorId, ClientId, InstrumentId, StrategyId, Venue},
     instruments::Instrument,
 };
@@ -1664,6 +1664,10 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn kill_switch_state_kind(&self) -> KillSwitchStateKind {
         self.submit_admission.kill_switch_state_kind()
+    }
+
+    pub fn nt_trading_state(&self) -> TradingState {
+        self.node.kernel().risk_engine().borrow().trading_state()
     }
 }
 
@@ -3340,14 +3344,17 @@ fn build_live_node_with_clients(
     let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(
         decision_evidence.clone(),
     ));
-    if let Some(state) = kill_switch_startup_state {
-        submit_admission.replace_kill_switch_state(state);
+    if let Some(state) = kill_switch_startup_state.as_ref() {
+        submit_admission.replace_kill_switch_state(state.clone());
     }
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
         .map_err(BoltV3LiveNodeError::ClientRegistration)?;
     let mut node = builder.build().map_err(BoltV3LiveNodeError::Build)?;
+    if let Some(state) = kill_switch_startup_state.as_ref() {
+        sync_nt_trading_state_for_kill_switch(&mut node, state);
+    }
     let strategy_summary = if proof_executor_enabled {
         BoltV3StrategyRegistrationSummary {
             registered: Vec::new(),
@@ -3394,6 +3401,29 @@ fn build_live_node_with_clients(
         ),
         summary,
     ))
+}
+
+fn sync_nt_trading_state_for_kill_switch(node: &mut LiveNode, state: &KillSwitchState) {
+    let Some(trading_state) = nt_trading_state_for_kill_switch_state(state) else {
+        return;
+    };
+    node.kernel()
+        .risk_engine()
+        .borrow_mut()
+        .set_trading_state(trading_state);
+}
+
+fn nt_trading_state_for_kill_switch_state(state: &KillSwitchState) -> Option<TradingState> {
+    match state {
+        KillSwitchState::Armed => None,
+        KillSwitchState::Halting { .. }
+        | KillSwitchState::Halted { .. }
+        | KillSwitchState::Cancelling { .. }
+        | KillSwitchState::Flattening { .. } => Some(TradingState::Reducing),
+        KillSwitchState::Flat { .. } | KillSwitchState::FailedManualIntervention { .. } => {
+            Some(TradingState::Halted)
+        }
+    }
 }
 
 /// Translates a validated bolt-v3 config into an NT-native

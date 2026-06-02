@@ -1,0 +1,366 @@
+//! Gate 6 — objective `BacktestResultContract`.
+//!
+//! The result contract is an objective evidence/lookup artifact. It records the
+//! NautilusTrader version, source-proof id/version, catalog hash, strategy
+//! config hash, run purpose, fidelity class, claim limits, warnings, mechanical
+//! blockers, the NautilusTrader result pointer, and artifact URIs.
+//!
+//! It must never encode a subjective strategy-promotion or escalation decision.
+//! That is enforced structurally (there is no recommendation field) and by
+//! [`BacktestResultContract::assert_objective`], which rejects promotion language
+//! in any free-text field.
+
+use nautilus_backtest::result::BacktestResult;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use super::{run_manifest::StrategySource, source_proof::SourceProofFidelityClass};
+
+/// Result contract schema version.
+pub const RESULT_CONTRACT_VERSION: &str = "backtest-result-contract.v1";
+
+/// Workspace manifest, embedded at compile time so the recorded NautilusTrader
+/// revision is exactly the one this binary was built against.
+const WORKSPACE_CARGO_TOML: &str = include_str!("../../Cargo.toml");
+
+/// Phrases that would make a result contract subjective. The contract is an
+/// objective artifact; promotion/escalation belongs to Research Analytics.
+const BANNED_PROMOTION_PHRASES: [&str; 8] = [
+    "promote",
+    "recommend",
+    "escalate",
+    "should use",
+    "production-ready",
+    "deploy this strategy",
+    "winning strategy",
+    "best strategy",
+];
+
+/// Resolve the NautilusTrader git revision this binary was built against, read
+/// from the embedded workspace `Cargo.toml` (single source of truth).
+#[must_use]
+pub fn resolved_nautilus_revision() -> Option<String> {
+    for line in WORKSPACE_CARGO_TOML.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("nautilus-backtest")
+            && let Some(rev) = extract_rev(line)
+        {
+            return Some(rev);
+        }
+    }
+    None
+}
+
+fn extract_rev(line: &str) -> Option<String> {
+    let marker = "rev = \"";
+    let start = line.find(marker)? + marker.len();
+    let rest = &line[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// Lowercase SHA-256 hex over the canonical strategy config (registry key plus
+/// sorted parameters).
+#[must_use]
+pub fn strategy_config_hash(strategy: &StrategySource) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(strategy.registry_key.as_bytes());
+    for (key, value) in &strategy.parameters {
+        hasher.update([0u8]);
+        hasher.update(key.as_bytes());
+        hasher.update([1u8]);
+        hasher.update(value.as_bytes());
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// Objective pointer into the NautilusTrader result. Carries only mechanical
+/// run facts, never a judgement.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NautilusResultPointer {
+    pub trader_id: String,
+    pub machine_id: String,
+    pub instance_id: String,
+    pub run_config_id: Option<String>,
+    pub backtest_start: Option<u64>,
+    pub backtest_end: Option<u64>,
+    pub elapsed_time_secs: f64,
+    pub iterations: u64,
+    pub total_events: u64,
+    pub total_orders: u64,
+    pub total_positions: u64,
+}
+
+impl NautilusResultPointer {
+    /// Build the pointer from a NautilusTrader [`BacktestResult`].
+    #[must_use]
+    pub fn from_backtest_result(result: &BacktestResult) -> Self {
+        Self {
+            trader_id: result.trader_id.clone(),
+            machine_id: result.machine_id.clone(),
+            instance_id: result.instance_id.to_string(),
+            run_config_id: result.run_config_id.clone(),
+            backtest_start: result.backtest_start.map(|ts| ts.as_u64()),
+            backtest_end: result.backtest_end.map(|ts| ts.as_u64()),
+            elapsed_time_secs: result.elapsed_time_secs,
+            iterations: result.iterations as u64,
+            total_events: result.total_events as u64,
+            total_orders: result.total_orders as u64,
+            total_positions: result.total_positions as u64,
+        }
+    }
+}
+
+/// Artifact URIs recorded by the contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResultArtifactUris {
+    pub source_proof_uri: String,
+    pub canonical_table_uri: String,
+    pub nt_catalog_uri: String,
+    pub result_contract_uri: String,
+}
+
+/// The objective backtest result contract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BacktestResultContract {
+    pub contract_version: String,
+    pub run_id: String,
+    pub nt_version: String,
+    pub source_proof_id: String,
+    pub source_proof_version: u32,
+    pub catalog_hash: String,
+    pub strategy_config_hash: String,
+    pub run_purpose: String,
+    pub market_structure_fixture: String,
+    pub fidelity_class: SourceProofFidelityClass,
+    pub claim_limits: Vec<String>,
+    pub warnings: Vec<String>,
+    pub mechanical_blockers: Vec<String>,
+    pub nt_result: NautilusResultPointer,
+    pub artifact_uris: ResultArtifactUris,
+    pub created_at: String,
+}
+
+/// Why a result contract is not objective or not complete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResultContractError {
+    MissingField(&'static str),
+    SubjectivePromotionLanguage { field: String, phrase: String },
+}
+
+impl std::fmt::Display for ResultContractError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingField(field) => write!(f, "missing required field: {field}"),
+            Self::SubjectivePromotionLanguage { field, phrase } => write!(
+                f,
+                "result contract field {field} contains subjective promotion language: {phrase:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ResultContractError {}
+
+impl BacktestResultContract {
+    /// Validate required fields and objectivity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a required field is empty or any free-text field
+    /// contains promotion/escalation language.
+    pub fn validate(&self) -> Result<(), ResultContractError> {
+        for (name, value) in [
+            ("run_id", self.run_id.as_str()),
+            ("nt_version", self.nt_version.as_str()),
+            ("source_proof_id", self.source_proof_id.as_str()),
+            ("catalog_hash", self.catalog_hash.as_str()),
+            ("strategy_config_hash", self.strategy_config_hash.as_str()),
+            ("created_at", self.created_at.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(ResultContractError::MissingField(name));
+            }
+        }
+        if self.claim_limits.is_empty() {
+            return Err(ResultContractError::MissingField("claim_limits"));
+        }
+        self.assert_objective()
+    }
+
+    /// Reject any subjective strategy-promotion/escalation language in
+    /// free-text fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first offending field/phrase.
+    pub fn assert_objective(&self) -> Result<(), ResultContractError> {
+        let mut texts: Vec<(&'static str, &str)> = Vec::new();
+        for warning in &self.warnings {
+            texts.push(("warnings", warning.as_str()));
+        }
+        for blocker in &self.mechanical_blockers {
+            texts.push(("mechanical_blockers", blocker.as_str()));
+        }
+        for limit in &self.claim_limits {
+            texts.push(("claim_limits", limit.as_str()));
+        }
+        for (field, text) in texts {
+            let lowered = text.to_ascii_lowercase();
+            for phrase in BANNED_PROMOTION_PHRASES {
+                if lowered.contains(phrase) {
+                    return Err(ResultContractError::SubjectivePromotionLanguage {
+                        field: field.to_string(),
+                        phrase: phrase.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Inputs assembled by the runner to build a [`BacktestResultContract`].
+pub struct ResultContractInputs<'a> {
+    pub run_id: &'a str,
+    pub source_proof_id: &'a str,
+    pub source_proof_version: u32,
+    pub catalog_hash: &'a str,
+    pub strategy: &'a StrategySource,
+    pub run_purpose: &'a str,
+    pub market_structure_fixture: &'a str,
+    pub fidelity_class: SourceProofFidelityClass,
+    pub claim_limits: Vec<String>,
+    pub warnings: Vec<String>,
+    pub mechanical_blockers: Vec<String>,
+    pub nt_result: &'a BacktestResult,
+    pub artifact_uris: ResultArtifactUris,
+    pub created_at: &'a str,
+}
+
+/// Build an objective result contract from runner inputs.
+///
+/// # Errors
+///
+/// Returns an error if the NautilusTrader revision cannot be resolved or the
+/// contract fails objectivity/completeness validation.
+pub fn build_result_contract(
+    inputs: ResultContractInputs<'_>,
+) -> Result<BacktestResultContract, ResultContractError> {
+    let nt_version =
+        resolved_nautilus_revision().ok_or(ResultContractError::MissingField("nt_version"))?;
+    let contract = BacktestResultContract {
+        contract_version: RESULT_CONTRACT_VERSION.to_string(),
+        run_id: inputs.run_id.to_string(),
+        nt_version,
+        source_proof_id: inputs.source_proof_id.to_string(),
+        source_proof_version: inputs.source_proof_version,
+        catalog_hash: inputs.catalog_hash.to_string(),
+        strategy_config_hash: strategy_config_hash(inputs.strategy),
+        run_purpose: inputs.run_purpose.to_string(),
+        market_structure_fixture: inputs.market_structure_fixture.to_string(),
+        fidelity_class: inputs.fidelity_class,
+        claim_limits: inputs.claim_limits,
+        warnings: inputs.warnings,
+        mechanical_blockers: inputs.mechanical_blockers,
+        nt_result: NautilusResultPointer::from_backtest_result(inputs.nt_result),
+        artifact_uris: inputs.artifact_uris,
+        created_at: inputs.created_at.to_string(),
+    };
+    contract.validate()?;
+    Ok(contract)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pointer() -> NautilusResultPointer {
+        NautilusResultPointer {
+            trader_id: "BACKTESTER-001".to_string(),
+            machine_id: "host".to_string(),
+            instance_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            run_config_id: Some("run".to_string()),
+            backtest_start: Some(1),
+            backtest_end: Some(2),
+            elapsed_time_secs: 0.1,
+            iterations: 937,
+            total_events: 937,
+            total_orders: 0,
+            total_positions: 0,
+        }
+    }
+
+    fn contract() -> BacktestResultContract {
+        BacktestResultContract {
+            contract_version: RESULT_CONTRACT_VERSION.to_string(),
+            run_id: "run".to_string(),
+            nt_version: "6e059dcbb59ac1e582132fc431a581936c216c3c".to_string(),
+            source_proof_id: "source-proof-bybit-spot-tick-trades".to_string(),
+            source_proof_version: 1,
+            catalog_hash: "abc123".to_string(),
+            strategy_config_hash: "def456".to_string(),
+            run_purpose: "normal".to_string(),
+            market_structure_fixture: "perps-spot".to_string(),
+            fidelity_class: SourceProofFidelityClass::TradeReplay,
+            claim_limits: vec![
+                "No execution-quality, queue-position, or order-book-liquidity claims.".to_string(),
+            ],
+            warnings: vec![
+                "Trade-only data: strategy received no quotes/bars, so no orders were placed."
+                    .to_string(),
+            ],
+            mechanical_blockers: vec![],
+            nt_result: pointer(),
+            artifact_uris: ResultArtifactUris {
+                source_proof_uri: "s3://.../source-proofs/p.json".to_string(),
+                canonical_table_uri: "s3://.../trades.parquet".to_string(),
+                nt_catalog_uri: "s3://.../nt-catalog/".to_string(),
+                result_contract_uri: "s3://.../backtests/run/result.json".to_string(),
+            },
+            created_at: "2026-06-02T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn resolved_revision_is_a_git_sha() {
+        let rev = resolved_nautilus_revision().expect("revision");
+        assert_eq!(rev.len(), 40);
+        assert!(rev.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn objective_contract_validates() {
+        contract().validate().expect("objective contract is valid");
+    }
+
+    #[test]
+    fn rejects_promotion_language_in_warnings() {
+        let mut c = contract();
+        c.warnings
+            .push("We recommend you promote this strategy to production.".to_string());
+        let err = c.assert_objective().unwrap_err();
+        assert!(matches!(
+            err,
+            ResultContractError::SubjectivePromotionLanguage { .. }
+        ));
+    }
+
+    #[test]
+    fn rejects_missing_claim_limits() {
+        let mut c = contract();
+        c.claim_limits.clear();
+        assert_eq!(
+            c.validate().unwrap_err(),
+            ResultContractError::MissingField("claim_limits")
+        );
+    }
+
+    #[test]
+    fn round_trips_through_json() {
+        let c = contract();
+        let json = serde_json::to_string_pretty(&c).expect("serialize");
+        let parsed: BacktestResultContract = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, c);
+    }
+}

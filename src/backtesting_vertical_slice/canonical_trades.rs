@@ -73,7 +73,7 @@ impl TradeAggressorSide {
 ///
 /// Built by the caller from accepted instrument-universe data plus the accepted
 /// dataset, so no instrument identity is hardcoded in this module.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalInstrumentIdentity {
     /// Venue-native instrument id, unique within `(venue, product_family)`.
     pub instrument_id: String,

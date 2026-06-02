@@ -15274,6 +15274,14 @@ reason = '''This label explains the provider-owned credential-consuming block co
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''string'''
+literal = '''"clients.{key}.execution.live_submit_approval_id cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit"'''
+context = '''"clients.{key}.execution.live_submit_approval_id cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit",'''
+classification = '''hyperliquid_fail_closed_rate_limit_diagnostic'''
+reason = '''This is the provider validation diagnostic emitted when a TOML live-submit approval is configured while the pinned NT Hyperliquid userFees request weight undercounts the official protocol weight; the request weights themselves are fixed evidence values, not operator-tunable runtime inputs.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
 literal = '''"account_address"'''
 context = '''const RAW_SECRET_FIELD_NAMES: &[&str] = &["private_key", "account_address", "vault_address"];'''
 classification = '''hyperliquid_secret_payload_field_name'''

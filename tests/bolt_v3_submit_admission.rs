@@ -1948,6 +1948,7 @@ fn configured_submit_sizer_allows_no_outcome_risk_reducing_exit_without_reservat
 
     let mut request = sized_submit_request("client-order-1");
     request.intent_kind = BoltV3SubmitIntentKind::RiskReducingExit;
+    request.risk_reducing_exit_proof = Some(valid_risk_reducing_exit_proof());
     request.instrument_id = "instrument-no.VENUE-A".to_string();
     let evidence = request
         .position_sizing

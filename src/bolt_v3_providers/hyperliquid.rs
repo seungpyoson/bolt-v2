@@ -6,7 +6,7 @@
 
 use std::{
     any::Any,
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     future::Future,
     path::Path,
     pin::Pin,
@@ -1313,19 +1313,22 @@ fn parse_secrets_config(
 struct HyperliquidUserFeesFeeProvider {
     http_client: HyperliquidHttpClient,
     account_address: String,
-    fees_bps: Mutex<BTreeMap<String, Decimal>>,
+    account_fee_bps: Mutex<Option<Decimal>>,
 }
 
 impl FeeProvider for HyperliquidUserFeesFeeProvider {
-    fn fee_bps(&self, instrument_id: InstrumentId) -> Option<Decimal> {
-        self.fees_bps
+    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
+        self.account_fee_bps
             .lock()
             .ok()
-            .and_then(|fees| fees.get(&instrument_id.to_string()).copied())
+            .and_then(|fee_bps| *fee_bps)
     }
 
     fn warm(&self, instrument_id: InstrumentId) -> BoxFuture<'_, anyhow::Result<()>> {
         async move {
+            if self.fee_bps(instrument_id).is_some() {
+                return Ok(());
+            }
             let response = self
                 .http_client
                 .info_user_fees(&self.account_address)
@@ -1334,10 +1337,11 @@ impl FeeProvider for HyperliquidUserFeesFeeProvider {
                     anyhow::anyhow!("Hyperliquid userFees request failed: {source}")
                 })?;
             let taker_fee_bps = hyperliquid_user_cross_fee_bps(&response)?;
-            self.fees_bps
+            *self
+                .account_fee_bps
                 .lock()
-                .map_err(|_| anyhow::anyhow!("Hyperliquid fee cache mutex poisoned"))?
-                .insert(instrument_id.to_string(), taker_fee_bps);
+                .map_err(|_| anyhow::anyhow!("Hyperliquid fee cache mutex poisoned"))? =
+                Some(taker_fee_bps);
             Ok(())
         }
         .boxed()
@@ -1426,7 +1430,7 @@ pub fn build_fee_provider(
     Ok(Arc::new(HyperliquidUserFeesFeeProvider {
         http_client,
         account_address: secrets.account_address.as_str().to_owned(),
-        fees_bps: Mutex::new(BTreeMap::new()),
+        account_fee_bps: Mutex::new(None),
     }))
 }
 

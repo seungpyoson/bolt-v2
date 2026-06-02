@@ -707,6 +707,40 @@ async fn provider_binding_warms_hyperliquid_fee_provider_from_user_fees() {
     assert_eq!(provider.fee_bps(instrument_id), Some(Decimal::new(45, 1)));
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn provider_binding_reuses_hyperliquid_user_fees_across_instruments() {
+    let (base_url_http, server) = hyperliquid_user_fees_server().await;
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    set_hyperliquid_base_url_http(&mut client, base_url_http);
+    let binding = binding_for_provider_key("HYPERLIQUID")
+        .expect("Hyperliquid provider binding should be registered");
+    let build_fee_provider = binding
+        .build_fee_provider
+        .expect("Hyperliquid execution must resolve fees through the provider boundary");
+    let provider = build_fee_provider("hyperliquid_perps", &client, &fixture_resolved_secrets())
+        .expect("Hyperliquid fee provider should construct from provider-owned config");
+    let btc = InstrumentId::from("BTC-PERP.HYPERLIQUID");
+    let eth = InstrumentId::from("ETH-PERP.HYPERLIQUID");
+
+    provider
+        .warm(btc)
+        .await
+        .expect("first Hyperliquid fee warm should query userFees");
+    server
+        .await
+        .expect("test Hyperliquid userFees server should complete");
+    provider
+        .warm(eth)
+        .await
+        .expect("second Hyperliquid fee warm should reuse account-wide userFees");
+
+    assert_eq!(provider.fee_bps(btc), Some(Decimal::new(45, 1)));
+    assert_eq!(provider.fee_bps(eth), Some(Decimal::new(45, 1)));
+}
+
 #[test]
 fn provider_binding_rejects_hip4_execution_without_settlement_poll() {
     let client = hyperliquid_hip4_execution_client_without_settlement_poll();

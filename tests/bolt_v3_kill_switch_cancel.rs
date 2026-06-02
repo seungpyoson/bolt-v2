@@ -3,7 +3,7 @@ use bolt_v2::{
     bolt_v3_kill_switch_cancel::{
         BoltV3KillSwitchCancelCandidate, BoltV3KillSwitchCancelDecisionMode,
         BoltV3KillSwitchCancelError, BoltV3KillSwitchCancelPlanRequest,
-        BoltV3KillSwitchCancelPolicy, BoltV3KillSwitchCancelSnapshot,
+        BoltV3KillSwitchCancelPolicy, BoltV3KillSwitchCancelScope, BoltV3KillSwitchCancelSnapshot,
         BoltV3KillSwitchCancelSupervisor, BoltV3KillSwitchOutstandingOrderRiskSurface,
     },
 };
@@ -12,6 +12,8 @@ const ACTION_ID: &str = "cancel-action-1";
 const POLICY_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const CONFIG_SHA256: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const REQUEST_SOURCE_TIMESTAMP_UNIX_NANOS: u64 = 1_717_200_000_000_000_001;
+const REQUEST_OBSERVED_AT_UNIX_NANOS: u64 = 1_717_200_000_000_000_002;
+const MAX_SOURCE_AGE_UNIX_NANOS: u64 = 10;
 
 #[test]
 fn cancel_snapshot_covers_all_mandatory_outstanding_order_risk_surfaces() {
@@ -197,6 +199,49 @@ fn cancel_supervisor_commands_bind_request_and_candidate_metadata() {
     );
 }
 
+#[test]
+fn cancel_supervisor_rejects_stale_source_timestamps_and_empty_scope_filters() {
+    let stale_timestamp = 1_000;
+    let stale_request = BoltV3KillSwitchCancelPlanRequest {
+        kill_switch_state: cancelling_state(),
+        action_id: ACTION_ID.to_string(),
+        config_sha256: CONFIG_SHA256.to_string(),
+        policy_sha256: POLICY_SHA256.to_string(),
+        source_timestamp_unix_nanos: stale_timestamp,
+        observed_at_unix_nanos: stale_timestamp + MAX_SOURCE_AGE_UNIX_NANOS + 1,
+        scope: valid_scope(),
+        policy: mandatory_surface_policy(),
+        snapshot: complete_cancel_snapshot_with_timestamp(stale_timestamp),
+    };
+
+    let error = BoltV3KillSwitchCancelSupervisor::plan_cancel(stale_request)
+        .expect_err("stale request or candidate source timestamps must fail closed");
+    assert_eq!(error, BoltV3KillSwitchCancelError::StaleSourceTimestamp);
+
+    for (account_ids, instrument_ids, strategy_ids) in [
+        (
+            Vec::<String>::new(),
+            vec!["BTC-2026-06-02-UP".to_string()],
+            vec!["binary-oracle-edge-taker-001".to_string()],
+        ),
+        (
+            vec!["POLYMARKET-001".to_string()],
+            Vec::<String>::new(),
+            vec!["binary-oracle-edge-taker-001".to_string()],
+        ),
+        (
+            vec!["POLYMARKET-001".to_string()],
+            vec!["BTC-2026-06-02-UP".to_string()],
+            Vec::<String>::new(),
+        ),
+    ] {
+        assert_eq!(
+            BoltV3KillSwitchCancelScope::new(account_ids, instrument_ids, strategy_ids),
+            Err(BoltV3KillSwitchCancelError::InvalidScope)
+        );
+    }
+}
+
 fn cancel_plan_request(kill_switch_state: KillSwitchState) -> BoltV3KillSwitchCancelPlanRequest {
     BoltV3KillSwitchCancelPlanRequest {
         kill_switch_state,
@@ -204,27 +249,51 @@ fn cancel_plan_request(kill_switch_state: KillSwitchState) -> BoltV3KillSwitchCa
         config_sha256: CONFIG_SHA256.to_string(),
         policy_sha256: POLICY_SHA256.to_string(),
         source_timestamp_unix_nanos: REQUEST_SOURCE_TIMESTAMP_UNIX_NANOS,
+        observed_at_unix_nanos: REQUEST_OBSERVED_AT_UNIX_NANOS,
+        scope: valid_scope(),
         policy: mandatory_surface_policy(),
         snapshot: complete_cancel_snapshot(),
     }
 }
 
 fn mandatory_surface_policy() -> BoltV3KillSwitchCancelPolicy {
-    BoltV3KillSwitchCancelPolicy::new(
+    BoltV3KillSwitchCancelPolicy::with_source_freshness(
         BoltV3KillSwitchOutstandingOrderRiskSurface::mandatory_surfaces()
             .iter()
             .copied(),
+        MAX_SOURCE_AGE_UNIX_NANOS,
     )
     .expect("mandatory surface policy should construct")
 }
 
 fn complete_cancel_snapshot() -> BoltV3KillSwitchCancelSnapshot {
+    complete_cancel_snapshot_with_timestamp(1_717_200_000_000_000_000)
+}
+
+fn complete_cancel_snapshot_with_timestamp(
+    source_timestamp_unix_nanos: u64,
+) -> BoltV3KillSwitchCancelSnapshot {
     let candidates = BoltV3KillSwitchOutstandingOrderRiskSurface::mandatory_surfaces()
         .iter()
         .enumerate()
-        .map(|(index, surface)| cancel_candidate(*surface, &format!("client-order-{index}")))
+        .map(|(index, surface)| {
+            cancel_candidate_with_timestamp(
+                *surface,
+                &format!("client-order-{index}"),
+                source_timestamp_unix_nanos,
+            )
+        })
         .collect::<Vec<_>>();
     BoltV3KillSwitchCancelSnapshot::new(candidates).expect("complete snapshot should construct")
+}
+
+fn valid_scope() -> BoltV3KillSwitchCancelScope {
+    BoltV3KillSwitchCancelScope::new(
+        vec!["POLYMARKET-001".to_string()],
+        vec!["BTC-2026-06-02-UP".to_string()],
+        vec!["binary-oracle-edge-taker-001".to_string()],
+    )
+    .expect("valid cancel scope should construct")
 }
 
 fn non_cancelling_states() -> Vec<KillSwitchState> {
@@ -277,13 +346,40 @@ fn cancel_candidate_for_strategy(
     client_order_id: &str,
     strategy_id: &str,
 ) -> BoltV3KillSwitchCancelCandidate {
+    cancel_candidate_for_strategy_with_timestamp(
+        surface,
+        client_order_id,
+        strategy_id,
+        1_717_200_000_000_000_000,
+    )
+}
+
+fn cancel_candidate_with_timestamp(
+    surface: BoltV3KillSwitchOutstandingOrderRiskSurface,
+    client_order_id: &str,
+    source_timestamp_unix_nanos: u64,
+) -> BoltV3KillSwitchCancelCandidate {
+    cancel_candidate_for_strategy_with_timestamp(
+        surface,
+        client_order_id,
+        "binary-oracle-edge-taker-001",
+        source_timestamp_unix_nanos,
+    )
+}
+
+fn cancel_candidate_for_strategy_with_timestamp(
+    surface: BoltV3KillSwitchOutstandingOrderRiskSurface,
+    client_order_id: &str,
+    strategy_id: &str,
+    source_timestamp_unix_nanos: u64,
+) -> BoltV3KillSwitchCancelCandidate {
     BoltV3KillSwitchCancelCandidate::new(
         surface,
         "POLYMARKET-001",
         "BTC-2026-06-02-UP",
         strategy_id,
         client_order_id,
-        1_717_200_000_000_000_000,
+        source_timestamp_unix_nanos,
     )
     .expect("cancel candidate should be valid")
 }

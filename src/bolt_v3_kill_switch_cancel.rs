@@ -162,6 +162,7 @@ impl BoltV3KillSwitchCancelSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3KillSwitchCancelPolicy {
     mandatory_surfaces: BTreeSet<BoltV3KillSwitchOutstandingOrderRiskSurface>,
+    max_source_age_unix_nanos: Option<u64>,
 }
 
 impl BoltV3KillSwitchCancelPolicy {
@@ -172,7 +173,22 @@ impl BoltV3KillSwitchCancelPolicy {
         if mandatory_surfaces.is_empty() {
             return Err(BoltV3KillSwitchCancelError::MissingMandatorySurfacePolicy);
         }
-        Ok(Self { mandatory_surfaces })
+        Ok(Self {
+            mandatory_surfaces,
+            max_source_age_unix_nanos: None,
+        })
+    }
+
+    pub fn with_source_freshness(
+        mandatory_surfaces: impl IntoIterator<Item = BoltV3KillSwitchOutstandingOrderRiskSurface>,
+        max_source_age_unix_nanos: u64,
+    ) -> Result<Self, BoltV3KillSwitchCancelError> {
+        if max_source_age_unix_nanos == 0 {
+            return Err(BoltV3KillSwitchCancelError::InvalidSourceFreshness);
+        }
+        let mut policy = Self::new(mandatory_surfaces)?;
+        policy.max_source_age_unix_nanos = Some(max_source_age_unix_nanos);
+        Ok(policy)
     }
 
     pub fn validate_snapshot(
@@ -203,8 +219,63 @@ pub struct BoltV3KillSwitchCancelPlanRequest {
     pub config_sha256: String,
     pub policy_sha256: String,
     pub source_timestamp_unix_nanos: u64,
+    pub observed_at_unix_nanos: u64,
+    pub scope: BoltV3KillSwitchCancelScope,
     pub policy: BoltV3KillSwitchCancelPolicy,
     pub snapshot: BoltV3KillSwitchCancelSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3KillSwitchCancelScope {
+    account_ids: Vec<String>,
+    instrument_ids: Vec<String>,
+    strategy_ids: Vec<String>,
+}
+
+impl BoltV3KillSwitchCancelScope {
+    pub fn new(
+        account_ids: Vec<String>,
+        instrument_ids: Vec<String>,
+        strategy_ids: Vec<String>,
+    ) -> Result<Self, BoltV3KillSwitchCancelError> {
+        let account_ids = trim_required_values(account_ids)?;
+        let instrument_ids = trim_required_values(instrument_ids)?;
+        let strategy_ids = trim_required_values(strategy_ids)?;
+        Ok(Self {
+            account_ids,
+            instrument_ids,
+            strategy_ids,
+        })
+    }
+
+    pub fn account_ids(&self) -> &[String] {
+        &self.account_ids
+    }
+
+    pub fn instrument_ids(&self) -> &[String] {
+        &self.instrument_ids
+    }
+
+    pub fn strategy_ids(&self) -> &[String] {
+        &self.strategy_ids
+    }
+}
+
+fn trim_required_values(values: Vec<String>) -> Result<Vec<String>, BoltV3KillSwitchCancelError> {
+    if values.is_empty() {
+        return Err(BoltV3KillSwitchCancelError::InvalidScope);
+    }
+    values
+        .into_iter()
+        .map(|value| {
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                Err(BoltV3KillSwitchCancelError::InvalidScope)
+            } else {
+                Ok(value)
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,6 +315,7 @@ impl BoltV3KillSwitchCancelSupervisor {
             _ => return Err(BoltV3KillSwitchCancelError::KillSwitchStateNotCancelling),
         };
         validate_plan_metadata(&request)?;
+        validate_source_freshness(&request)?;
         request.policy.validate_snapshot(&request.snapshot)?;
         let action_id = request.action_id.trim().to_string();
         let commands = request
@@ -287,7 +359,44 @@ fn validate_plan_metadata(
     if request.source_timestamp_unix_nanos == 0 {
         return Err(BoltV3KillSwitchCancelError::MissingSourceTimestamp);
     }
+    if request.observed_at_unix_nanos == 0 {
+        return Err(BoltV3KillSwitchCancelError::MissingObservationTimestamp);
+    }
     Ok(())
+}
+
+fn validate_source_freshness(
+    request: &BoltV3KillSwitchCancelPlanRequest,
+) -> Result<(), BoltV3KillSwitchCancelError> {
+    let Some(max_source_age_unix_nanos) = request.policy.max_source_age_unix_nanos else {
+        return Ok(());
+    };
+    if source_timestamp_is_stale(
+        request.source_timestamp_unix_nanos,
+        request.observed_at_unix_nanos,
+        max_source_age_unix_nanos,
+    ) {
+        return Err(BoltV3KillSwitchCancelError::StaleSourceTimestamp);
+    }
+    if request.snapshot.candidates().iter().any(|candidate| {
+        source_timestamp_is_stale(
+            candidate.source_timestamp_unix_nanos(),
+            request.observed_at_unix_nanos,
+            max_source_age_unix_nanos,
+        )
+    }) {
+        return Err(BoltV3KillSwitchCancelError::StaleSourceTimestamp);
+    }
+    Ok(())
+}
+
+fn source_timestamp_is_stale(
+    source_timestamp_unix_nanos: u64,
+    observed_at_unix_nanos: u64,
+    max_source_age_unix_nanos: u64,
+) -> bool {
+    source_timestamp_unix_nanos > observed_at_unix_nanos
+        || observed_at_unix_nanos - source_timestamp_unix_nanos > max_source_age_unix_nanos
 }
 
 fn is_sha256_hex_digest(value: &str) -> bool {
@@ -356,13 +465,17 @@ pub enum BoltV3KillSwitchCancelError {
     MissingActionId,
     InvalidConfigSha256,
     InvalidPolicySha256,
+    InvalidScope,
     InvalidAccountId,
     InvalidInstrumentId,
     InvalidStrategyId,
     InvalidClientOrderId,
     MissingSourceTimestamp,
+    MissingObservationTimestamp,
     MissingCandidates,
     MissingMandatorySurfacePolicy,
     MissingMandatorySurfaceProof,
+    InvalidSourceFreshness,
+    StaleSourceTimestamp,
     KillSwitchStateNotCancelling,
 }

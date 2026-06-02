@@ -18,6 +18,11 @@ from verify_bolt_v3_pure_rust_runtime import production_text
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 STRATEGY_PATH = "src/strategies/binary_oracle_edge_taker.rs"
+MAX_STRATEGY_SOURCE_BYTES = 1_048_576
+
+
+class StrategyPolicyFenceReadError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -127,11 +132,30 @@ def find_violations_in_text(path: str, text: str) -> list[Violation]:
 
 def collect_violations() -> list[Violation]:
     path = REPO_ROOT / STRATEGY_PATH
-    return find_violations_in_text(STRATEGY_PATH, production_text(path))
+    return find_violations_in_text(STRATEGY_PATH, bounded_production_text(path))
+
+
+def bounded_production_text(path: Path) -> str:
+    try:
+        size = path.stat().st_size
+    except OSError as error:
+        raise StrategyPolicyFenceReadError(
+            f"failed to stat strategy source `{path}`: {error}"
+        ) from error
+    if size > MAX_STRATEGY_SOURCE_BYTES:
+        raise StrategyPolicyFenceReadError(
+            "strategy source exceeds policy fence read limit "
+            f"({size} > {MAX_STRATEGY_SOURCE_BYTES} bytes): {path}"
+        )
+    return production_text(path)
 
 
 def main() -> int:
-    violations = collect_violations()
+    try:
+        violations = collect_violations()
+    except StrategyPolicyFenceReadError as error:
+        print(f"FAIL: Bolt-v3 strategy policy fence read failed: {error}", file=sys.stderr)
+        return 1
     if violations:
         for violation in violations:
             print(

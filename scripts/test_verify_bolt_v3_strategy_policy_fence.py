@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -99,6 +100,24 @@ class StrategyPolicyFenceTests(unittest.TestCase):
 
     def test_current_strategy_has_no_policy_hardcode_violations(self) -> None:
         self.assertEqual(VERIFIER.collect_violations(), [])
+
+    def test_collect_violations_rejects_oversized_strategy_source_before_reading(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo_root = Path(directory)
+            strategy_path = repo_root / VERIFIER.STRATEGY_PATH
+            strategy_path.parent.mkdir(parents=True)
+            strategy_path.write_text(
+                "x" * (VERIFIER.MAX_STRATEGY_SOURCE_BYTES + 1),
+                encoding="utf-8",
+            )
+
+            original_repo_root = VERIFIER.REPO_ROOT
+            try:
+                VERIFIER.REPO_ROOT = repo_root
+                with self.assertRaises(VERIFIER.StrategyPolicyFenceReadError):
+                    VERIFIER.collect_violations()
+            finally:
+                VERIFIER.REPO_ROOT = original_repo_root
 
 
 if __name__ == "__main__":

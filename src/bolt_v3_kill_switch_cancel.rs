@@ -314,6 +314,21 @@ impl BoltV3KillSwitchCancelScope {
     pub fn strategy_ids(&self) -> &[StrategyId] {
         &self.strategy_ids
     }
+
+    fn validate_snapshot(
+        &self,
+        snapshot: &BoltV3KillSwitchCancelSnapshot,
+    ) -> Result<(), BoltV3KillSwitchCancelError> {
+        if snapshot.candidates().iter().all(|candidate| {
+            self.account_ids.contains(&candidate.account_id())
+                && self.instrument_ids.contains(&candidate.instrument_id())
+                && self.strategy_ids.contains(&candidate.strategy_id())
+        }) {
+            Ok(())
+        } else {
+            Err(BoltV3KillSwitchCancelError::OutOfScopeCancelCandidate)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,6 +369,7 @@ impl BoltV3KillSwitchCancelSupervisor {
         };
         validate_plan_metadata(&request)?;
         validate_source_freshness(&request)?;
+        request.scope.validate_snapshot(&request.snapshot)?;
         request.policy.validate_snapshot(&request.snapshot)?;
         let route_kind = require_supported_route_proof(&request)?;
         let action_id = request.action_id.trim().to_string();
@@ -717,6 +733,9 @@ impl BoltV3KillSwitchCancelOutcomeAggregation {
             }
             outcomes_by_identity
                 .entry(identity)
+                .and_modify(|existing| {
+                    *existing = worse_outcome(*existing, outcome.outcome);
+                })
                 .or_insert(outcome.outcome);
         }
 
@@ -876,6 +895,20 @@ pub enum BoltV3KillSwitchCancelError {
     KillSwitchStateNotCancelling,
     InvalidOutcomeOrderStatus,
     UnknownOutcomeCandidate,
+    OutOfScopeCancelCandidate,
     InvalidRetryPolicy,
     InvalidRetryState,
+}
+
+fn worse_outcome(
+    current: BoltV3KillSwitchCancelAttemptOutcome,
+    next: BoltV3KillSwitchCancelAttemptOutcome,
+) -> BoltV3KillSwitchCancelAttemptOutcome {
+    let current_result = result_for_outcome(current);
+    let next_result = result_for_outcome(next);
+    if next_result == merge_aggregate_result(current_result, next_result) {
+        next
+    } else {
+        current
+    }
 }

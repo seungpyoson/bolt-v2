@@ -267,6 +267,35 @@ fn cancel_supervisor_rejects_stale_source_timestamps_and_empty_scope_filters() {
 }
 
 #[test]
+fn cancel_supervisor_rejects_snapshot_candidates_outside_scope_filters() {
+    for scope in [
+        BoltV3KillSwitchCancelScope::new(
+            vec![account_id_from("GENERIC-002")],
+            vec![instrument_id()],
+            vec![strategy_id("binary-oracle-edge-taker-001")],
+        ),
+        BoltV3KillSwitchCancelScope::new(
+            vec![account_id()],
+            vec![instrument_id_from("ETH-2026-06-02-UP.GENERIC")],
+            vec![strategy_id("binary-oracle-edge-taker-001")],
+        ),
+        BoltV3KillSwitchCancelScope::new(
+            vec![account_id()],
+            vec![instrument_id()],
+            vec![strategy_id("binary-oracle-edge-taker-002")],
+        ),
+    ] {
+        let mut request = cancel_plan_request(cancelling_state());
+        request.scope = scope.expect("out-of-scope filter still has valid NT identifiers");
+
+        assert_eq!(
+            BoltV3KillSwitchCancelSupervisor::plan_cancel(request),
+            Err(BoltV3KillSwitchCancelError::OutOfScopeCancelCandidate)
+        );
+    }
+}
+
+#[test]
 fn cancel_supervisor_requires_supported_route_proof_before_planned_commands() {
     let mut missing_route_request = cancel_plan_request(cancelling_state());
     missing_route_request.route_proof = None;
@@ -339,6 +368,37 @@ fn cancel_outcome_aggregation_uses_nt_order_status_evidence_without_collapsing_r
     );
     assert_eq!(
         aggregate_single_candidate(rejected).result(),
+        BoltV3KillSwitchCancelAggregateResult::FailedManualIntervention
+    );
+}
+
+#[test]
+fn cancel_outcome_aggregation_keeps_missing_or_duplicate_evidence_fail_closed() {
+    let snapshot = single_candidate_snapshot(BoltV3KillSwitchOutstandingOrderRiskSurface::Open);
+
+    assert_eq!(
+        BoltV3KillSwitchCancelOutcomeAggregation::from_snapshot_outcomes(&snapshot, Vec::new())
+            .expect("missing outcome evidence should aggregate as outstanding risk")
+            .result(),
+        BoltV3KillSwitchCancelAggregateResult::OutstandingRiskRemains
+    );
+
+    let requested = BoltV3KillSwitchCancelAttemptOutcome::cancel_requested(OrderStatus::Accepted)
+        .expect("requested outcome should construct");
+    let rejected = BoltV3KillSwitchCancelAttemptOutcome::cancel_rejected(OrderStatus::Accepted)
+        .expect("rejected outcome should construct");
+    let requested_evidence =
+        BoltV3KillSwitchCancelOutcomeEvidence::from_candidate(&snapshot.candidates()[0], requested);
+    let rejected_evidence =
+        BoltV3KillSwitchCancelOutcomeEvidence::from_candidate(&snapshot.candidates()[0], rejected);
+
+    assert_eq!(
+        BoltV3KillSwitchCancelOutcomeAggregation::from_snapshot_outcomes(
+            &snapshot,
+            vec![requested_evidence, rejected_evidence],
+        )
+        .expect("duplicate outcome evidence should preserve worst observed state")
+        .result(),
         BoltV3KillSwitchCancelAggregateResult::FailedManualIntervention
     );
 }
@@ -553,12 +613,19 @@ fn order_status_for_surface(surface: BoltV3KillSwitchOutstandingOrderRiskSurface
 }
 
 fn account_id() -> AccountId {
-    AccountId::new("POLYMARKET-001")
+    AccountId::new("GENERIC-001")
+}
+
+fn account_id_from(value: &str) -> AccountId {
+    AccountId::new(value)
 }
 
 fn instrument_id() -> InstrumentId {
-    InstrumentId::from_as_ref("BTC-2026-06-02-UP.POLYMARKET")
-        .expect("test instrument ID should parse through NT")
+    instrument_id_from("BTC-2026-06-02-UP.GENERIC")
+}
+
+fn instrument_id_from(value: &str) -> InstrumentId {
+    InstrumentId::from_as_ref(value).expect("test instrument ID should parse through NT")
 }
 
 fn strategy_id(value: &str) -> StrategyId {

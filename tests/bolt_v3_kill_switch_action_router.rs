@@ -10,6 +10,7 @@ use bolt_v2::{
 use nautilus_model::enums::TradingState;
 
 const POLICY_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const CONFIG_SHA256: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 #[test]
 fn dry_run_router_emits_cancel_and_flatten_metadata_without_order_effects() {
@@ -29,6 +30,7 @@ fn dry_run_router_emits_cancel_and_flatten_metadata_without_order_effects() {
     );
     assert_eq!(cancel_decision.halt_id(), "halt-1");
     assert_eq!(cancel_decision.action_id(), "cancel-action-1");
+    assert_eq!(cancel_decision.config_sha256(), CONFIG_SHA256);
     assert_eq!(cancel_decision.policy_sha256(), POLICY_SHA256);
     assert_eq!(
         cancel_decision.source_timestamp_unix_nanos(),
@@ -60,6 +62,7 @@ fn dry_run_router_emits_cancel_and_flatten_metadata_without_order_effects() {
     );
     assert_eq!(flatten_decision.halt_id(), "halt-1");
     assert_eq!(flatten_decision.action_id(), "flatten-action-1");
+    assert_eq!(flatten_decision.config_sha256(), CONFIG_SHA256);
     assert_eq!(flatten_decision.policy_sha256(), POLICY_SHA256);
     assert_eq!(flatten_decision.scope().account_ids(), ["POLYMARKET-001"]);
     assert_eq!(
@@ -112,6 +115,36 @@ fn reducing_trading_state_alone_cannot_authorize_flatten_output_or_bypass_proof(
     );
 }
 
+#[test]
+fn phase3_router_rejects_live_or_venue_action_outputs() {
+    for action_class in [
+        BoltV3KillSwitchActionClass::EntrySubmit,
+        BoltV3KillSwitchActionClass::ReplaceSubmit,
+        BoltV3KillSwitchActionClass::LiveSubmit,
+        BoltV3KillSwitchActionClass::LiveCancel,
+        BoltV3KillSwitchActionClass::LiveFlatten,
+        BoltV3KillSwitchActionClass::VenueSpecificCall,
+    ] {
+        let error = BoltV3KillSwitchActionRouter::dry_run_decision(BoltV3KillSwitchActionRequest {
+            action_class,
+            kill_switch_state: flattening_state(),
+            nt_trading_state: TradingState::Reducing,
+            action_id: "blocked-action-1".to_string(),
+            config_sha256: CONFIG_SHA256.to_string(),
+            policy_sha256: POLICY_SHA256.to_string(),
+            source_timestamp_unix_nanos: 1_717_200_000_000_000_000,
+            scope: scope(),
+            forced_reduction_claim: Some(forced_reduction_claim("blocked-action-1")),
+        })
+        .expect_err("Phase 3 router must reject live or venue-specific action outputs");
+
+        assert_eq!(
+            error,
+            BoltV3KillSwitchActionRouterError::Phase3ActionOutputDisallowed
+        );
+    }
+}
+
 fn cancel_request(
     action_id: &str,
     kill_switch_state: KillSwitchState,
@@ -121,6 +154,7 @@ fn cancel_request(
         kill_switch_state,
         nt_trading_state: TradingState::Reducing,
         action_id: action_id.to_string(),
+        config_sha256: CONFIG_SHA256.to_string(),
         policy_sha256: POLICY_SHA256.to_string(),
         source_timestamp_unix_nanos: 1_717_200_000_000_000_000,
         scope: scope(),
@@ -138,6 +172,7 @@ fn flatten_request(
         kill_switch_state,
         nt_trading_state: TradingState::Reducing,
         action_id: action_id.to_string(),
+        config_sha256: CONFIG_SHA256.to_string(),
         policy_sha256: POLICY_SHA256.to_string(),
         source_timestamp_unix_nanos: 1_717_200_000_000_000_000,
         scope: scope(),

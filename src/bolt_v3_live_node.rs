@@ -3836,11 +3836,14 @@ mod tests {
     use nautilus_model::identifiers::TraderId;
     use nautilus_model::types::{Price, Quantity};
     use rust_decimal::Decimal;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn live_node_adapter_mapping_consumes_hyperliquid_live_submit_approval_artifact() {
         let temp = tempfile::tempdir().expect("tempdir should create");
         let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let product_proof_path = temp.path().join("hyperliquid-product-submit-proof.json");
+        let product_proof_sha256 = write_hyperliquid_test_product_submit_proof(&product_proof_path);
         let private_key = format!("0x{}", "1".repeat(64));
         let mut loaded = fixture_loaded_config();
         loaded.config_bundle_checksum = "b".repeat(64);
@@ -3861,8 +3864,8 @@ live_submit_approval_artifact_path = "{}"
 live_submit_approval_artifact_max_bytes = 16384
 live_submit_max_order_count = 2
 live_submit_max_order_notional = "25.00"
-live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
-live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+live_submit_product_proof_artifact_path = "{}"
+live_submit_product_proof_artifact_sha256 = "{}"
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -3881,7 +3884,9 @@ outcome_settlement_poll_secs = 0
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 "#,
-                approval_path.display()
+                approval_path.display(),
+                product_proof_path.display(),
+                product_proof_sha256
             ))
             .expect("Hyperliquid client TOML should parse"),
         );
@@ -3901,8 +3906,8 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
                     max_order_notional: "25.00".to_string(),
                 },
                 product_submit_proof: HyperliquidProductSubmitProofBinding {
-                    artifact_path: "operator/hyperliquid-product-submit-proof.json".to_string(),
-                    artifact_sha256: "d".repeat(64),
+                    artifact_path: product_proof_path.display().to_string(),
+                    artifact_sha256: product_proof_sha256,
                 },
                 expires_at: now + 300,
                 used_at: None,
@@ -3964,6 +3969,12 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             error.to_string().contains("used_at"),
             "reuse failure should identify the spent approval field: {error}"
         );
+    }
+
+    fn write_hyperliquid_test_product_submit_proof(path: &std::path::Path) -> String {
+        let bytes = br#"{"provider":"HYPERLIQUID","surface":"standard_perps"}"#;
+        std::fs::write(path, bytes).expect("product proof should write");
+        hex::encode(Sha256::digest(bytes))
     }
 
     #[test]
@@ -4089,6 +4100,230 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             persisted["used_at"],
             serde_json::Value::Null,
             "surface mismatches must not spend one-time approval artifacts"
+        );
+    }
+
+    #[test]
+    fn live_node_missing_product_submit_proof_does_not_spend_hyperliquid_approval_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let missing_product_proof_path = temp.path().join("missing-product-submit-proof.json");
+        let private_key = format!("0x{}", "1".repeat(64));
+        let mut loaded = fixture_loaded_config();
+        loaded.config_bundle_checksum = "b".repeat(64);
+        loaded.root.clients.clear();
+        loaded.root.clients.insert(
+            "hyperliquid_perps".to_string(),
+            toml::from_str(&format!(
+                r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit_approval_id = "hl-standard-perps-approval-001"
+live_submit_approval_artifact_path = "{}"
+live_submit_approval_artifact_max_bytes = 16384
+live_submit_max_order_count = 2
+live_submit_max_order_notional = "25.00"
+live_submit_product_proof_artifact_path = "{}"
+live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+                approval_path.display(),
+                missing_product_proof_path.display()
+            ))
+            .expect("Hyperliquid client TOML should parse"),
+        );
+        let build_head_sha = "a".repeat(40);
+        let now = 1_800_000_000;
+        write_hyperliquid_live_submit_approval_artifact(
+            HyperliquidLiveSubmitApprovalInput {
+                approval_id: "hl-standard-perps-approval-001".to_string(),
+                base_sha: build_head_sha.clone(),
+                provider_id: "hyperliquid_perps".to_string(),
+                product_surface:
+                    crate::bolt_v3_providers::hyperliquid::HyperliquidProductSurface::StandardPerps,
+                toml_checksum: loaded.config_bundle_checksum.clone(),
+                signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(&private_key),
+                order_limits: HyperliquidLiveSubmitOrderLimits {
+                    max_order_count: 2,
+                    max_order_notional: "25.00".to_string(),
+                },
+                product_submit_proof: HyperliquidProductSubmitProofBinding {
+                    artifact_path: missing_product_proof_path.display().to_string(),
+                    artifact_sha256: "d".repeat(64),
+                },
+                expires_at: now + 300,
+                used_at: None,
+            },
+            &approval_path,
+        )
+        .expect("approval artifact should write");
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::from([(
+                "hyperliquid_perps".to_string(),
+                Arc::new(ResolvedBoltV3HyperliquidSecrets {
+                    private_key: Zeroizing::new(private_key),
+                    account_address: Zeroizing::new(format!("0x{}", "2".repeat(40))),
+                    vault_address: None,
+                }) as _,
+            )]),
+        };
+
+        let error = live_node_adapter_bundle_with_provider_approvals_at(
+            &loaded,
+            &resolved,
+            now,
+            &build_head_sha,
+        )
+        .expect_err("missing product submit proof must fail before approval consumption");
+
+        assert!(
+            error.to_string().contains("product_submit_proof"),
+            "failure should identify the missing product proof binding: {error}"
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&approval_path).expect("unconsumed approval should still read"),
+        )
+        .expect("unconsumed approval JSON should parse");
+        assert_eq!(
+            persisted["used_at"],
+            serde_json::Value::Null,
+            "missing product proof must not spend one-time approval artifacts"
+        );
+    }
+
+    #[test]
+    fn live_node_mismatched_product_submit_proof_does_not_spend_hyperliquid_approval_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let product_proof_path = temp.path().join("hyperliquid-product-submit-proof.json");
+        let _actual_product_proof_sha256 =
+            write_hyperliquid_test_product_submit_proof(&product_proof_path);
+        let mismatched_product_proof_sha256 = "d".repeat(64);
+        let private_key = format!("0x{}", "1".repeat(64));
+        let mut loaded = fixture_loaded_config();
+        loaded.config_bundle_checksum = "b".repeat(64);
+        loaded.root.clients.clear();
+        loaded.root.clients.insert(
+            "hyperliquid_perps".to_string(),
+            toml::from_str(&format!(
+                r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit_approval_id = "hl-standard-perps-approval-001"
+live_submit_approval_artifact_path = "{}"
+live_submit_approval_artifact_max_bytes = 16384
+live_submit_max_order_count = 2
+live_submit_max_order_notional = "25.00"
+live_submit_product_proof_artifact_path = "{}"
+live_submit_product_proof_artifact_sha256 = "{}"
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+                approval_path.display(),
+                product_proof_path.display(),
+                mismatched_product_proof_sha256
+            ))
+            .expect("Hyperliquid client TOML should parse"),
+        );
+        let build_head_sha = "a".repeat(40);
+        let now = 1_800_000_000;
+        write_hyperliquid_live_submit_approval_artifact(
+            HyperliquidLiveSubmitApprovalInput {
+                approval_id: "hl-standard-perps-approval-001".to_string(),
+                base_sha: build_head_sha.clone(),
+                provider_id: "hyperliquid_perps".to_string(),
+                product_surface:
+                    crate::bolt_v3_providers::hyperliquid::HyperliquidProductSurface::StandardPerps,
+                toml_checksum: loaded.config_bundle_checksum.clone(),
+                signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(&private_key),
+                order_limits: HyperliquidLiveSubmitOrderLimits {
+                    max_order_count: 2,
+                    max_order_notional: "25.00".to_string(),
+                },
+                product_submit_proof: HyperliquidProductSubmitProofBinding {
+                    artifact_path: product_proof_path.display().to_string(),
+                    artifact_sha256: mismatched_product_proof_sha256,
+                },
+                expires_at: now + 300,
+                used_at: None,
+            },
+            &approval_path,
+        )
+        .expect("approval artifact should write");
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::from([(
+                "hyperliquid_perps".to_string(),
+                Arc::new(ResolvedBoltV3HyperliquidSecrets {
+                    private_key: Zeroizing::new(private_key),
+                    account_address: Zeroizing::new(format!("0x{}", "2".repeat(40))),
+                    vault_address: None,
+                }) as _,
+            )]),
+        };
+
+        let error = live_node_adapter_bundle_with_provider_approvals_at(
+            &loaded,
+            &resolved,
+            now,
+            &build_head_sha,
+        )
+        .expect_err("mismatched product submit proof must fail before approval consumption");
+
+        assert!(
+            error
+                .to_string()
+                .contains("product_submit_proof.artifact_sha256"),
+            "failure should identify the product proof checksum: {error}"
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&approval_path).expect("unconsumed approval should still read"),
+        )
+        .expect("unconsumed approval JSON should parse");
+        assert_eq!(
+            persisted["used_at"],
+            serde_json::Value::Null,
+            "mismatched product proof must not spend one-time approval artifacts"
         );
     }
 

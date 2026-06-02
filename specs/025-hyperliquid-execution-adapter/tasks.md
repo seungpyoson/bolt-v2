@@ -216,11 +216,13 @@
 
 **Goal**: A consumed Hyperliquid live-submit approval cannot open the execution adapter unless the approval is bound to the product-submit proof evidence configured for that exact runtime.
 
-**Independent Test**: A legacy approval artifact without `product_submit_proof` fails closed; generated approval artifacts include product proof path and sha256; consumed approval carries the proof binding.
+**Independent Test**: A legacy approval artifact without `product_submit_proof` fails closed; generated approval artifacts include product proof path and sha256; consumed approval carries the proof binding; missing or mismatched product proof files fail before approval consumption.
 
 - [x] T049AI Add failing approval-artifact test for missing `product_submit_proof`.
 - [x] T049AJ Add TOML-owned product proof path/sha256 fields to Hyperliquid live-submit approval validation and materialization.
 - [x] T049AK Carry product proof binding through consumed Hyperliquid approvals.
+- [x] T049AL Add failing live-node tests proving missing and mismatched product proof files do not spend one-time approvals.
+- [x] T049AM Verify the bound product proof artifact sha256 before consuming Hyperliquid live-submit approvals.
 
 ## Phase 9 - Verification
 

@@ -7,6 +7,7 @@
 use std::{
     any::Any,
     collections::BTreeMap,
+    path::Path,
     str::FromStr,
     sync::{Arc, Mutex},
 };
@@ -41,8 +42,7 @@ use crate::{
     bolt_v3_market_families::{
         MarketIdentityPlan, hyperliquid_instrument, market_identity_plan_from_config, updown,
     },
-    bolt_v3_operator_artifacts::WrittenOperatorArtifact,
-    bolt_v3_operator_artifacts::is_lowercase_sha256,
+    bolt_v3_operator_artifacts::{WrittenOperatorArtifact, is_lowercase_sha256, read_file_bounded},
     bolt_v3_providers::hyperliquid_artifacts::{
         HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalInput,
         HyperliquidLiveSubmitOrderLimits, HyperliquidProductSubmitProofBinding,
@@ -838,6 +838,12 @@ pub fn load_live_submit_approval(
     })?;
     let resolved_path = resolve_root_relative_path(&context.loaded.root_path, approval_path);
     let binding = live_submit_approval_binding(&context, &cfg)?;
+    validate_product_submit_proof_artifact(
+        context.client_key,
+        &context.loaded.root_path,
+        &binding.product_submit_proof,
+        approval_max_bytes,
+    )?;
     let mut approval =
         read_hyperliquid_live_submit_approval_artifact(&resolved_path, approval_max_bytes)?;
     let consumed = consume_hyperliquid_live_submit_approval_artifact(
@@ -995,6 +1001,31 @@ fn live_submit_approval_binding(
             artifact_sha256: product_proof_artifact_sha256,
         },
     })
+}
+
+fn validate_product_submit_proof_artifact(
+    client_key: &str,
+    root_path: &Path,
+    product_submit_proof: &HyperliquidProductSubmitProofBinding,
+    max_bytes: u64,
+) -> Result<(), anyhow::Error> {
+    let resolved_path = resolve_root_relative_path(root_path, &product_submit_proof.artifact_path);
+    let bytes = read_file_bounded(&resolved_path, max_bytes).map_err(|source| {
+        hyperliquid_adapter_validation_error(
+            client_key,
+            "product_submit_proof.artifact_path",
+            format!("Hyperliquid product submit proof artifact could not be read: {source}"),
+        )
+    })?;
+    let actual_sha256 = hex::encode(Sha256::digest(&bytes));
+    if actual_sha256 == product_submit_proof.artifact_sha256 {
+        return Ok(());
+    }
+    Err(hyperliquid_adapter_validation_error(
+        client_key,
+        "product_submit_proof.artifact_sha256",
+        "Hyperliquid product submit proof artifact sha256 does not match configured live-submit approval binding",
+    ))
 }
 
 fn hyperliquid_adapter_validation_error(

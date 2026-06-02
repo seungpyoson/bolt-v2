@@ -15210,6 +15210,22 @@ reason = '''This labels validation for the TOML-owned Hyperliquid live-submit pr
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''string'''
+literal = '''"product_submit_proof.artifact_path"'''
+context = '''"product_submit_proof.artifact_path",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels runtime validation for the TOML/evidence-owned Hyperliquid product proof artifact path before one-time approval consumption; the path value itself remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"product_submit_proof.artifact_sha256"'''
+context = '''"product_submit_proof.artifact_sha256",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels runtime validation for the TOML/evidence-owned Hyperliquid product proof artifact checksum before one-time approval consumption; the checksum value itself remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
 literal = '''"execution.live_submit_max_order_count"'''
 context = '''"execution.live_submit_max_order_count",'''
 classification = '''hyperliquid_live_submit_approval_field_label'''

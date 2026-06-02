@@ -329,6 +329,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
     };
     let admission = BoltV3AdmissionDecisionEvidence {
         strategy_id: snapshot.strategy_id.clone(),
+        execution_client_id: "execution-client-one".to_string(),
         client_order_id: snapshot.client_order_id.clone(),
         instrument_id: snapshot.submission_instrument_id.clone(),
         notional: "0.50".to_string(),

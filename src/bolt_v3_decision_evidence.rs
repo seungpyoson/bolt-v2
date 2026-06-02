@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::bolt_v3_config::LoadedBoltV3Config;
 use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 5;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 6;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
@@ -315,6 +315,7 @@ pub enum BoltV3AdmissionOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoltV3AdmissionDecisionEvidence {
     pub strategy_id: String,
+    pub execution_client_id: String,
     pub client_order_id: String,
     pub instrument_id: String,
     pub notional: String,
@@ -1223,6 +1224,7 @@ mod tests {
         ] {
             let decision = BoltV3AdmissionDecisionEvidence {
                 strategy_id: "strategy-one".to_string(),
+                execution_client_id: "execution-client-one".to_string(),
                 client_order_id: "client-order-one".to_string(),
                 instrument_id: "instrument-one".to_string(),
                 notional: "1.0".to_string(),
@@ -1253,6 +1255,10 @@ mod tests {
             );
             let decision_field = &decoded["decision"];
             assert_eq!(decision_field["strategy_id"], "strategy-one");
+            assert_eq!(
+                decision_field["execution_client_id"],
+                "execution-client-one"
+            );
             assert_eq!(decision_field["notional"], "1.0");
             assert_eq!(decision_field["intent_kind"], "entry");
             let expected_outcome = match outcome {

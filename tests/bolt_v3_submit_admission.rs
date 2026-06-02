@@ -953,6 +953,10 @@ fn admit_records_admission_decision_evidence_on_admit_outcome() {
     );
     assert_eq!(decisions[0].outcome, BoltV3AdmissionOutcome::Admitted);
     assert_eq!(decisions[0].strategy_id, request.strategy_id);
+    assert_eq!(
+        decisions[0].execution_client_id,
+        request.execution_client_id
+    );
     assert_eq!(decisions[0].client_order_id, request.client_order_id);
     assert_eq!(decisions[0].instrument_id, request.instrument_id);
     assert_eq!(decisions[0].notional, request.notional.to_string());

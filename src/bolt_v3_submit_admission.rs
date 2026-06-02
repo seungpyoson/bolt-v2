@@ -135,6 +135,7 @@ impl BoltV3SubmitAdmissionState {
         let outcome = Self::evaluate(&inner, request);
         let evidence = BoltV3AdmissionDecisionEvidence {
             strategy_id: request.strategy_id.clone(),
+            execution_client_id: request.execution_client_id.clone(),
             client_order_id: request.client_order_id.clone(),
             instrument_id: request.instrument_id.clone(),
             notional: request.notional.to_string(),

@@ -13317,6 +13317,19 @@ mod tests {
             "a market-style TrailingStopMarket entry must be valued at qty * the instrument price ceiling (2 * 0.999)"
         );
 
+        let managed_position = materialize_configured_position(
+            &mut strategy,
+            instrument_id,
+            PositionId::from("P-STOP-EXIT"),
+            quantity,
+            0.450,
+        );
+        set_managed_position(
+            &mut strategy,
+            managed_position,
+            ManagedPositionOrigin::StrategyEntry,
+        );
+
         let exit_fallback_price = Price::new(0.45, 2);
         let exit_order = strategy
             .build_configured_exit_order(

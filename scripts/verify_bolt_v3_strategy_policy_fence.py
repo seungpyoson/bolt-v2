@@ -83,7 +83,10 @@ FORBIDDEN_RULES: tuple[Rule, ...] = (
             r"(?<![A-Za-z0-9_])forced_reduction_submit(?![A-Za-z0-9_])"
             r"|(?<![A-Za-z0-9_])submit_forced_reduction(?![A-Za-z0-9_])"
             r"|(?<![A-Za-z0-9_])force_flatten(?![A-Za-z0-9_])"
+            r"|(?<![A-Za-z0-9_])cancel_orders(?![A-Za-z0-9_])"
             r"|(?<![A-Za-z0-9_])cancel_all_orders(?![A-Za-z0-9_])"
+            r"|(?<![A-Za-z0-9_])close_position(?![A-Za-z0-9_])"
+            r"|(?<![A-Za-z0-9_])close_all_positions(?![A-Za-z0-9_])"
             r"|(?<![A-Za-z0-9_])flatten_all_positions(?![A-Za-z0-9_])"
         ),
     ),

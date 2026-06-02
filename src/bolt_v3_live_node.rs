@@ -30,10 +30,10 @@
 //! external network connection. Opt-in controlled-connect/no-submit
 //! readiness boundaries may open adapter sockets. The production
 //! trading runner entrypoint is [`run_bolt_v3_live_node`], which first
-//! applies the bolt-v3 live canary gate. The no-submit readiness path
-//! builds a strategy-free node before using NT's supported runner loop
-//! with handle-driven stop; its dedicated quote probes call only NT
-//! quote subscribe/unsubscribe APIs for configured strategy
+//! arms submit admission from the configured live bounds. The no-submit
+//! readiness path builds a strategy-free node before using NT's supported
+//! runner loop with handle-driven stop; its dedicated quote probes call
+//! only NT quote subscribe/unsubscribe APIs for configured strategy
 //! `[reference_data]` or client-owned readiness-probe instruments. This
 //! module still never constructs an order or enables any submit path
 //! from its own boundary code.
@@ -91,7 +91,7 @@ use crate::{
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
     },
     bolt_v3_live_canary_gate::{
-        BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_pre_consumption_gate,
+        BoltV3LiveCanaryGateError, build_bolt_v3_live_submit_admission_report_from_config,
         current_build_head_sha,
     },
     bolt_v3_providers,
@@ -2169,20 +2169,17 @@ fn no_submit_transport_loaded_config(loaded: &LoadedBoltV3Config) -> LoadedBoltV
 
 /// Single bolt-v3 entrypoint for entering NT's runner loop.
 ///
-/// The caller builds the `LiveNode` separately, then this function checks
-/// the loaded config's `[live_canary]` section and referenced no-submit
-/// readiness report before entering the NT runner loop. Production callers
-/// must use this wrapper rather than invoking the NT runner method directly.
-/// If the gate rejects, NT's runner loop is never entered.
+/// The caller builds the `LiveNode` separately, then this function arms
+/// submit admission from the loaded config's `[live_canary]` bounds before
+/// entering the NT runner loop. Production callers must use this wrapper
+/// rather than invoking the NT runner method directly. If admission cannot
+/// be armed, NT's runner loop is never entered.
 pub async fn run_bolt_v3_live_node(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let gate_report = check_bolt_v3_live_canary_pre_consumption_gate(loaded)
-        .await
+    let gate_report = build_bolt_v3_live_submit_admission_report_from_config(loaded)
         .map_err(BoltV3LiveNodeError::LiveCanaryGate)?;
-    consume_bolt_v3_live_runner_approval(loaded)
-        .map_err(BoltV3LiveNodeError::OperatorApprovalConsumption)?;
     runtime
         .submit_admission
         .arm(gate_report)

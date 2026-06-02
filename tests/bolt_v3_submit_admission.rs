@@ -76,34 +76,34 @@ fn live_node_runtime_does_not_expose_manual_admission_or_raw_run_bypass() {
 }
 
 #[test]
-fn live_node_runner_consumes_operator_approval_before_arming_submit_admission() {
+fn live_node_runner_arms_submit_admission_from_config_before_nt_run() {
     let source = support::repo_text("src/bolt_v3_live_node.rs");
     let start = source
         .find("pub async fn run_bolt_v3_live_node")
         .expect("live runner entrypoint should exist");
     let end = source[start..]
-        .find("pub async fn controlled_no_submit_readiness")
+        .find("fn run_blocked_before_submit")
         .map(|offset| start + offset)
-        .expect("next public function should bound live runner source");
+        .expect("next helper should bound live runner source");
     let runner = &source[start..end];
 
-    let preflight_index = runner
-        .find("check_bolt_v3_live_canary_pre_consumption_gate")
-        .expect("live runner must use the pre-consumption gate before approval consumption");
-    let consume_index = runner
-        .find("consume_bolt_v3_live_runner_approval")
-        .expect("live runner must atomically consume approval before arming submit admission");
+    let report_index = runner
+        .find("build_bolt_v3_live_submit_admission_report_from_config")
+        .expect("live runner must derive submit-admission bounds from config before arming");
     let arm_index = runner
         .find(".arm(")
         .expect("live runner should arm submit admission");
+    let run_index = runner
+        .find("let run_future = node.run();")
+        .expect("live runner should enter NT run after submit admission is armed");
 
     assert!(
-        preflight_index < consume_index && consume_index < arm_index,
-        "live runner must preflight, atomically consume approval, then arm submit admission"
+        report_index < arm_index && arm_index < run_index,
+        "live runner must derive admission bounds, arm submit admission, then enter NT run"
     );
     assert!(
-        !runner.contains("check_bolt_v3_live_canary_gate(loaded)"),
-        "live runner must not accept replayable pre-existing approval consumption proof"
+        !runner.contains("consume_bolt_v3_live_runner_approval"),
+        "live runner must not block startup on operator approval consumption"
     );
 }
 

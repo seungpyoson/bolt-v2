@@ -656,6 +656,12 @@ pub async fn check_bolt_v3_live_canary_pre_consumption_gate(
     .await
 }
 
+pub fn build_bolt_v3_live_submit_admission_report_from_config(
+    loaded: &LoadedBoltV3Config,
+) -> Result<BoltV3LiveCanaryGateReport, BoltV3LiveCanaryGateError> {
+    validated_live_canary_admission_config(loaded).map(LiveCanaryAdmissionConfig::into_report)
+}
+
 async fn check_bolt_v3_live_canary_gate_with_clock(
     loaded: &LoadedBoltV3Config,
     mut unix_seconds: impl FnMut() -> Result<u64, BoltV3LiveCanaryGateError>,
@@ -679,6 +685,117 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
     mut unix_seconds: impl FnMut() -> Result<u64, BoltV3LiveCanaryGateError>,
     approval_consumption_expectation: ApprovalConsumptionExpectation,
 ) -> Result<BoltV3LiveCanaryGateReport, BoltV3LiveCanaryGateError> {
+    let admission = validated_live_canary_admission_config(loaded)?;
+    let block = admission.block;
+    let approval_id = admission.approval_id;
+    let max_notional_per_order = admission.max_notional_per_order;
+    let report_path = admission.no_submit_readiness_report_path.clone();
+
+    let initial_unix_seconds = unix_seconds()?;
+    validate_operator_evidence(
+        loaded,
+        block,
+        approval_id,
+        max_notional_per_order,
+        initial_unix_seconds,
+        initial_unix_seconds,
+        approval_consumption_expectation,
+        None,
+    )
+    .await?;
+
+    let report_bytes =
+        read_report_bytes_with_limit(&report_path, block.max_no_submit_readiness_report_bytes)
+            .await?;
+    let report_sha256 = sha256_hex(&report_bytes);
+    let report: Value = serde_json::from_slice(&report_bytes).map_err(|source| {
+        BoltV3LiveCanaryGateError::ReadinessReportParse {
+            path: report_path.clone(),
+            source,
+        }
+    })?;
+    let Some(report_object) = report.as_object() else {
+        return Err(
+            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+                path: report_path.clone(),
+                expected: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+                actual: None,
+            },
+        );
+    };
+    let observed_schema_version = report_object
+        .get(SCHEMA_VERSION_KEY)
+        .and_then(Value::as_str);
+    if observed_schema_version != Some(NO_SUBMIT_READINESS_SCHEMA_VERSION) {
+        return Err(
+            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
+                path: report_path.clone(),
+                expected: NO_SUBMIT_READINESS_SCHEMA_VERSION,
+                actual: observed_schema_version.map(str::to_string),
+            },
+        );
+    }
+    let expected_approval_id_hash = sha256_hex(approval_id.as_bytes());
+    let expected_executable_identity = executable_identity().await?;
+    let late_unix_seconds = unix_seconds()?;
+    validate_no_submit_readiness_report(
+        report_object,
+        &expected_approval_id_hash,
+        &expected_executable_identity,
+        &loaded.config_bundle_checksum,
+        block.readiness_report_max_age_seconds,
+        late_unix_seconds,
+    )
+    .map_err(
+        |reasons| BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport {
+            path: report_path.clone(),
+            reasons,
+        },
+    )?;
+    // Re-read and re-hash operator evidence after report validation so any
+    // between-check artifact mutation fails closed. Operators must size the
+    // approval window to cover both evidence validation rounds plus report I/O.
+    validate_operator_evidence(
+        loaded,
+        block,
+        approval_id,
+        max_notional_per_order,
+        late_unix_seconds,
+        initial_unix_seconds,
+        approval_consumption_expectation,
+        Some(report_sha256.as_str()),
+    )
+    .await?;
+
+    Ok(admission.into_report())
+}
+
+struct LiveCanaryAdmissionConfig<'a> {
+    block: &'a LiveCanaryBlock,
+    approval_id: &'a str,
+    no_submit_readiness_report_path: PathBuf,
+    max_notional_per_order: Decimal,
+    root_max_notional_per_order: Decimal,
+}
+
+impl LiveCanaryAdmissionConfig<'_> {
+    fn into_report(self) -> BoltV3LiveCanaryGateReport {
+        BoltV3LiveCanaryGateReport {
+            approval_id: self.approval_id.to_string(),
+            no_submit_readiness_report_path: self.no_submit_readiness_report_path,
+            max_no_submit_readiness_report_bytes: self.block.max_no_submit_readiness_report_bytes,
+            readiness_report_max_age_seconds: self.block.readiness_report_max_age_seconds,
+            reference_quote_max_age_seconds: self.block.reference_quote_max_age_seconds,
+            max_live_order_count: self.block.max_live_order_count,
+            max_notional_per_order: self.max_notional_per_order,
+            root_max_notional_per_order: self.root_max_notional_per_order,
+        }
+    }
+}
+
+fn validated_live_canary_admission_config(
+    loaded: &LoadedBoltV3Config,
+) -> Result<LiveCanaryAdmissionConfig<'_>, BoltV3LiveCanaryGateError> {
     let block = loaded
         .root
         .live_canary
@@ -753,90 +870,11 @@ async fn check_bolt_v3_live_canary_gate_with_clock_and_approval_consumption(
         });
     }
 
-    let initial_unix_seconds = unix_seconds()?;
-    validate_operator_evidence(
-        loaded,
+    let no_submit_readiness_report_path = resolve_report_path(&loaded.root_path, block)?;
+    Ok(LiveCanaryAdmissionConfig {
         block,
         approval_id,
-        max_notional_per_order,
-        initial_unix_seconds,
-        initial_unix_seconds,
-        approval_consumption_expectation,
-        None,
-    )
-    .await?;
-
-    let report_path = resolve_report_path(&loaded.root_path, block)?;
-    let report_bytes =
-        read_report_bytes_with_limit(&report_path, block.max_no_submit_readiness_report_bytes)
-            .await?;
-    let report_sha256 = sha256_hex(&report_bytes);
-    let report: Value = serde_json::from_slice(&report_bytes).map_err(|source| {
-        BoltV3LiveCanaryGateError::ReadinessReportParse {
-            path: report_path.clone(),
-            source,
-        }
-    })?;
-    let Some(report_object) = report.as_object() else {
-        return Err(
-            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
-                path: report_path.clone(),
-                expected: NO_SUBMIT_READINESS_SCHEMA_VERSION,
-                actual: None,
-            },
-        );
-    };
-    let observed_schema_version = report_object
-        .get(SCHEMA_VERSION_KEY)
-        .and_then(Value::as_str);
-    if observed_schema_version != Some(NO_SUBMIT_READINESS_SCHEMA_VERSION) {
-        return Err(
-            BoltV3LiveCanaryGateError::ReadinessReportSchemaVersionMismatch {
-                path: report_path.clone(),
-                expected: NO_SUBMIT_READINESS_SCHEMA_VERSION,
-                actual: observed_schema_version.map(str::to_string),
-            },
-        );
-    }
-    let expected_approval_id_hash = sha256_hex(approval_id.as_bytes());
-    let expected_executable_identity = executable_identity().await?;
-    let late_unix_seconds = unix_seconds()?;
-    validate_no_submit_readiness_report(
-        report_object,
-        &expected_approval_id_hash,
-        &expected_executable_identity,
-        &loaded.config_bundle_checksum,
-        block.readiness_report_max_age_seconds,
-        late_unix_seconds,
-    )
-    .map_err(
-        |reasons| BoltV3LiveCanaryGateError::UnsatisfiedNoSubmitReadinessReport {
-            path: report_path.clone(),
-            reasons,
-        },
-    )?;
-    // Re-read and re-hash operator evidence after report validation so any
-    // between-check artifact mutation fails closed. Operators must size the
-    // approval window to cover both evidence validation rounds plus report I/O.
-    validate_operator_evidence(
-        loaded,
-        block,
-        approval_id,
-        max_notional_per_order,
-        late_unix_seconds,
-        initial_unix_seconds,
-        approval_consumption_expectation,
-        Some(report_sha256.as_str()),
-    )
-    .await?;
-
-    Ok(BoltV3LiveCanaryGateReport {
-        approval_id: approval_id.to_string(),
-        no_submit_readiness_report_path: report_path,
-        max_no_submit_readiness_report_bytes: block.max_no_submit_readiness_report_bytes,
-        readiness_report_max_age_seconds: block.readiness_report_max_age_seconds,
-        reference_quote_max_age_seconds: block.reference_quote_max_age_seconds,
-        max_live_order_count: block.max_live_order_count,
+        no_submit_readiness_report_path,
         max_notional_per_order,
         root_max_notional_per_order,
     })

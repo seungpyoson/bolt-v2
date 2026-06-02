@@ -15664,14 +15664,6 @@ reason = "This labels startup-recovered reservations attributed through Bolt-own
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "string"
-literal = '''"bolt_recovered_open_order_reservations"'''
-context = '''evidence_label: "bolt_recovered_open_order_reservations".to_string(),'''
-classification = "position_sizer_evidence_source_label"
-reason = "This labels reservations rebuilt from attributed open orders during startup/reconnect reconciliation; the actual open-order set comes from NT."
-
-[[allowed]]
-path = "src/bolt_v3_submit_admission.rs"
-kind = "string"
 literal = '''"prediction_market_binary"'''
 context = '''BoltV3CompiledProductKind::PredictionMarketBinary => "prediction_market_binary",'''
 classification = "position_sizer_product_kind_tag"
@@ -15724,6 +15716,38 @@ literal = '''"bolt_reservation_ledger"'''
 context = '''source: "bolt_reservation_ledger".to_string(),'''
 classification = "position_sizer_evidence_source_label"
 reason = "This labels the Bolt-owned reservation ledger snapshot that prevents runtime feeds from injecting ledger attribution."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''inner.admitted_order_count = inner.admitted_order_count.saturating_sub(1);'''
+classification = "position_sizer_counter_rollback_delta"
+reason = "This decrements one previously admitted aggregate count slot when an uncommitted position-sizer permit rolls back its matching one reservation."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''inner.admitted_entry_order_count = inner.admitted_entry_order_count.saturating_sub(1);'''
+classification = "position_sizer_counter_rollback_delta"
+reason = "This decrements one previously admitted entry count slot when the corresponding uncommitted position-sizer permit rolls back."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''.saturating_sub(1);'''
+classification = "position_sizer_counter_rollback_delta"
+reason = "This decrements one previously admitted risk-reducing exit count slot when the corresponding uncommitted position-sizer permit rolls back."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = '''1'''
+context = '''inner.admitted_replace_submit_order_count.saturating_sub(1);'''
+classification = "position_sizer_counter_rollback_delta"
+reason = "This decrements one previously admitted replace-submit count slot when the corresponding uncommitted position-sizer permit rolls back."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"

@@ -147,6 +147,12 @@ pub struct HyperliquidLiveSubmitOrderLimits {
     pub max_order_notional: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HyperliquidProductSubmitProofBinding {
+    pub artifact_path: String,
+    pub artifact_sha256: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HyperliquidLiveSubmitApprovalBinding {
     pub base_sha: String,
@@ -155,6 +161,7 @@ pub struct HyperliquidLiveSubmitApprovalBinding {
     pub toml_checksum: String,
     pub signer_fingerprint: String,
     pub order_limits: HyperliquidLiveSubmitOrderLimits,
+    pub product_submit_proof: HyperliquidProductSubmitProofBinding,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +173,7 @@ pub struct HyperliquidLiveSubmitApprovalInput {
     pub toml_checksum: String,
     pub signer_fingerprint: String,
     pub order_limits: HyperliquidLiveSubmitOrderLimits,
+    pub product_submit_proof: HyperliquidProductSubmitProofBinding,
     pub expires_at: u64,
     pub used_at: Option<u64>,
 }
@@ -182,6 +190,7 @@ pub struct HyperliquidLiveSubmitApprovalArtifact {
     pub toml_checksum: String,
     pub signer_fingerprint: String,
     pub order_limits: HyperliquidLiveSubmitOrderLimits,
+    pub product_submit_proof: Option<HyperliquidProductSubmitProofBinding>,
     pub expires_at: u64,
     pub used_at: Option<u64>,
 }
@@ -192,6 +201,7 @@ pub struct HyperliquidLiveSubmitApprovalConsumption {
     product_surface: HyperliquidProductSurface,
     used_at: u64,
     order_limits: HyperliquidLiveSubmitOrderLimits,
+    product_submit_proof: HyperliquidProductSubmitProofBinding,
 }
 
 impl HyperliquidLiveSubmitApprovalConsumption {
@@ -210,6 +220,10 @@ impl HyperliquidLiveSubmitApprovalConsumption {
     pub fn order_limits(&self) -> &HyperliquidLiveSubmitOrderLimits {
         &self.order_limits
     }
+
+    pub fn product_submit_proof(&self) -> &HyperliquidProductSubmitProofBinding {
+        &self.product_submit_proof
+    }
 }
 
 pub fn build_hyperliquid_live_submit_approval_artifact(
@@ -227,6 +241,7 @@ pub fn build_hyperliquid_live_submit_approval_artifact(
         toml_checksum: input.toml_checksum,
         signer_fingerprint: input.signer_fingerprint,
         order_limits: input.order_limits,
+        product_submit_proof: Some(input.product_submit_proof),
         expires_at: input.expires_at,
         used_at: input.used_at,
     })
@@ -352,6 +367,7 @@ pub fn consume_hyperliquid_live_submit_approval_artifact(
         product_surface: binding.product_surface,
         used_at: now_unix_seconds,
         order_limits: binding.order_limits.clone(),
+        product_submit_proof: binding.product_submit_proof.clone(),
     })
 }
 
@@ -365,6 +381,7 @@ fn validate_hyperliquid_live_submit_approval_input(
     validate_hyperliquid_live_submit_sha256_field("toml_checksum", &input.toml_checksum)?;
     validate_hyperliquid_live_submit_sha256_field("signer_fingerprint", &input.signer_fingerprint)?;
     validate_hyperliquid_live_submit_order_limits(&input.order_limits)?;
+    validate_hyperliquid_product_submit_proof_binding(&input.product_submit_proof)?;
     if input.expires_at == 0 {
         return Err(provider_artifact_invalid(
             LIVE_SUBMIT_APPROVAL_ARTIFACT,
@@ -393,6 +410,15 @@ fn validate_hyperliquid_live_submit_approval_artifact_fields(
         &artifact.signer_fingerprint,
     )?;
     validate_hyperliquid_live_submit_order_limits(&artifact.order_limits)?;
+    let product_submit_proof =
+        artifact
+            .product_submit_proof
+            .as_ref()
+            .ok_or(provider_artifact_invalid(
+                LIVE_SUBMIT_APPROVAL_ARTIFACT,
+                "product_submit_proof",
+            ))?;
+    validate_hyperliquid_product_submit_proof_binding(product_submit_proof)?;
     if artifact.expires_at == 0 {
         return Err(provider_artifact_invalid(
             LIVE_SUBMIT_APPROVAL_ARTIFACT,
@@ -413,7 +439,8 @@ fn validate_hyperliquid_live_submit_binding(
         "signer_fingerprint",
         &binding.signer_fingerprint,
     )?;
-    validate_hyperliquid_live_submit_order_limits(&binding.order_limits)
+    validate_hyperliquid_live_submit_order_limits(&binding.order_limits)?;
+    validate_hyperliquid_product_submit_proof_binding(&binding.product_submit_proof)
 }
 
 fn validate_hyperliquid_live_submit_approval_binding_match(
@@ -454,6 +481,12 @@ fn validate_hyperliquid_live_submit_approval_binding_match(
         return Err(provider_artifact_invalid(
             LIVE_SUBMIT_APPROVAL_ARTIFACT,
             "order_limits",
+        ));
+    }
+    if artifact.product_submit_proof.as_ref() != Some(&binding.product_submit_proof) {
+        return Err(provider_artifact_invalid(
+            LIVE_SUBMIT_APPROVAL_ARTIFACT,
+            "product_submit_proof",
         ));
     }
     Ok(())
@@ -535,6 +568,19 @@ fn validate_hyperliquid_live_submit_order_limits(
         ));
     }
     Ok(())
+}
+
+fn validate_hyperliquid_product_submit_proof_binding(
+    product_submit_proof: &HyperliquidProductSubmitProofBinding,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    validate_hyperliquid_live_submit_non_empty_field(
+        "product_submit_proof.artifact_path",
+        &product_submit_proof.artifact_path,
+    )?;
+    validate_hyperliquid_live_submit_sha256_field(
+        "product_submit_proof.artifact_sha256",
+        &product_submit_proof.artifact_sha256,
+    )
 }
 
 fn provider_artifact_invalid(

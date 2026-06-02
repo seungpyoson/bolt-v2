@@ -3829,7 +3829,7 @@ mod tests {
     };
     use crate::bolt_v3_providers::hyperliquid_artifacts::{
         HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
-        write_hyperliquid_live_submit_approval_artifact,
+        HyperliquidProductSubmitProofBinding, write_hyperliquid_live_submit_approval_artifact,
     };
     use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
     use nautilus_model::enums::{BookAction, OrderSide};
@@ -3861,6 +3861,8 @@ live_submit_approval_artifact_path = "{}"
 live_submit_approval_artifact_max_bytes = 16384
 live_submit_max_order_count = 2
 live_submit_max_order_notional = "25.00"
+live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
+live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -3897,6 +3899,10 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
                 order_limits: HyperliquidLiveSubmitOrderLimits {
                     max_order_count: 2,
                     max_order_notional: "25.00".to_string(),
+                },
+                product_submit_proof: HyperliquidProductSubmitProofBinding {
+                    artifact_path: "operator/hyperliquid-product-submit-proof.json".to_string(),
+                    artifact_sha256: "d".repeat(64),
                 },
                 expires_at: now + 300,
                 used_at: None,
@@ -4001,6 +4007,8 @@ live_submit_approval_artifact_path = "{}"
 live_submit_approval_artifact_max_bytes = 16384
 live_submit_max_order_count = 2
 live_submit_max_order_notional = "25.00"
+live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
+live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -4037,6 +4045,10 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
                 order_limits: HyperliquidLiveSubmitOrderLimits {
                     max_order_count: 2,
                     max_order_notional: "25.00".to_string(),
+                },
+                product_submit_proof: HyperliquidProductSubmitProofBinding {
+                    artifact_path: "operator/hyperliquid-product-submit-proof.json".to_string(),
+                    artifact_sha256: "d".repeat(64),
                 },
                 expires_at: now + 300,
                 used_at: None,

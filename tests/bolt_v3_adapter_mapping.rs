@@ -17,7 +17,7 @@ use bolt_v2::{
     bolt_v3_providers::hyperliquid_artifacts::{
         HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalConsumption,
         HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
-        build_hyperliquid_live_submit_approval_artifact,
+        HyperliquidProductSubmitProofBinding, build_hyperliquid_live_submit_approval_artifact,
         consume_hyperliquid_live_submit_approval_artifact,
     },
     bolt_v3_providers::{
@@ -151,6 +151,7 @@ fn hyperliquid_client_with_outcome_settlement_poll(
     live_submit_approval_id: &str,
     outcome_settlement_poll_secs: u64,
 ) -> bolt_v2::bolt_v3_config::ClientBlock {
+    let product_proof_hash = "d".repeat(64);
     toml::from_str(&format!(
         r#"
 venue = "HYPERLIQUID"
@@ -161,6 +162,8 @@ environment = "testnet"
 execution_mode = "master_account_api_wallet"
 product_surfaces = ["{product_surface}"]
 live_submit_approval_id = "{live_submit_approval_id}"
+live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
+live_submit_product_proof_artifact_sha256 = "{product_proof_hash}"
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -299,6 +302,10 @@ fn consumed_hyperliquid_approval(
         toml_checksum: "b".repeat(64),
         signer_fingerprint: "c".repeat(64),
         order_limits: order_limits.clone(),
+        product_submit_proof: HyperliquidProductSubmitProofBinding {
+            artifact_path: "operator/hyperliquid-product-submit-proof.json".to_string(),
+            artifact_sha256: "d".repeat(64),
+        },
     };
     let mut approval =
         build_hyperliquid_live_submit_approval_artifact(HyperliquidLiveSubmitApprovalInput {
@@ -309,6 +316,7 @@ fn consumed_hyperliquid_approval(
             toml_checksum: binding.toml_checksum.clone(),
             signer_fingerprint: binding.signer_fingerprint.clone(),
             order_limits,
+            product_submit_proof: binding.product_submit_proof.clone(),
             expires_at: 1_800_000_300,
             used_at: None,
         })

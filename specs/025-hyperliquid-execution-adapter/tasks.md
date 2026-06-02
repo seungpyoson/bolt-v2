@@ -212,6 +212,16 @@
 - [x] T049AG Register a Hyperliquid fee-provider builder with an empty cold cache.
 - [x] T049AH Warm the Hyperliquid fee provider from `userFees.userCrossRate` and cache the taker fee bound in basis points.
 
+## Phase 8L - Hyperliquid Product-Submit Proof Binding
+
+**Goal**: A consumed Hyperliquid live-submit approval cannot open the execution adapter unless the approval is bound to the product-submit proof evidence configured for that exact runtime.
+
+**Independent Test**: A legacy approval artifact without `product_submit_proof` fails closed; generated approval artifacts include product proof path and sha256; consumed approval carries the proof binding.
+
+- [x] T049AI Add failing approval-artifact test for missing `product_submit_proof`.
+- [x] T049AJ Add TOML-owned product proof path/sha256 fields to Hyperliquid live-submit approval validation and materialization.
+- [x] T049AK Carry product proof binding through consumed Hyperliquid approvals.
+
 ## Phase 9 - Verification
 
 - [x] T050 Run `cargo fmt --check` for `Cargo.toml` and `src/`.

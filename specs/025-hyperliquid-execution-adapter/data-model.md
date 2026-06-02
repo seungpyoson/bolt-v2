@@ -41,11 +41,14 @@ Validation:
 - `live_submit_approval_artifact_max_bytes`
 - `live_submit_max_order_count`
 - `live_submit_max_order_notional`
+- `live_submit_product_proof_artifact_path`
+- `live_submit_product_proof_artifact_sha256`
 
 Validation:
 - Execution requires SSM-backed secrets.
 - Live-submit mapping requires consumed surface-bound approval loaded through the provider binding before production live-node adapter mapping.
 - Consumed approval order limits must tighten shared submit-admission count and notional caps for the approved execution client.
+- Consumed approval must bind a product-submit proof artifact path and sha256 before adapter mapping can open live execution.
 
 ## HyperliquidSecretSet
 

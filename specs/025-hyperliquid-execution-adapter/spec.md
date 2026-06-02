@@ -72,7 +72,7 @@ As an operator, I can configure local info-node and placement profile settings w
 - **FR-013**: The adapter mapper MUST keep HIP-3 execution blocked unless a current live-submit approval artifact is consumed for `hip3_builder_perps`.
 - **FR-014**: The adapter mapper MUST keep HIP-4 execution blocked unless a current live-submit approval artifact is consumed for `hip4_outcomes` and TOML config enables positive outcome settlement polling.
 - **FR-015**: The adapter mapper MUST keep standard perps execution blocked unless a current live-submit approval artifact exists for `standard_perps`.
-- **FR-016**: The live-submit approval artifact MUST bind base SHA, provider id, product surface, TOML checksum, signer fingerprint, order limits, expiry, and one-time id.
+- **FR-016**: The live-submit approval artifact MUST bind base SHA, provider id, product surface, TOML checksum, signer fingerprint, order limits, product-submit proof artifact path and sha256, expiry, and one-time id.
 - **FR-017**: The system MUST treat Hyperliquid priority-fee grouping as out of MVP unless NT exposes and proves the required wire shape.
 - **FR-018**: The system MUST provide TOML-configured local-info-node and colocation profile fields as ops metadata only.
 - **FR-019**: The system MUST keep strategies intent-only and reject strategy-file changes that implement submit mechanics, sizing, rounding, fillability, or venue admission.

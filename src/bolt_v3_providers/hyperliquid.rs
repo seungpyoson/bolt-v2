@@ -42,9 +42,11 @@ use crate::{
         MarketIdentityPlan, hyperliquid_instrument, market_identity_plan_from_config, updown,
     },
     bolt_v3_operator_artifacts::WrittenOperatorArtifact,
+    bolt_v3_operator_artifacts::is_lowercase_sha256,
     bolt_v3_providers::hyperliquid_artifacts::{
         HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalInput,
-        HyperliquidLiveSubmitOrderLimits, consume_hyperliquid_live_submit_approval_artifact,
+        HyperliquidLiveSubmitOrderLimits, HyperliquidProductSubmitProofBinding,
+        consume_hyperliquid_live_submit_approval_artifact,
         persist_consumed_hyperliquid_live_submit_approval_artifact,
         read_hyperliquid_live_submit_approval_artifact,
         write_hyperliquid_live_submit_approval_artifact,
@@ -122,6 +124,8 @@ pub struct HyperliquidExecutionConfig {
     pub live_submit_approval_artifact_max_bytes: Option<u64>,
     pub live_submit_max_order_count: Option<u32>,
     pub live_submit_max_order_notional: Option<String>,
+    pub live_submit_product_proof_artifact_path: Option<String>,
+    pub live_submit_product_proof_artifact_sha256: Option<String>,
     pub base_url_ws: String,
     pub base_url_http: String,
     pub base_url_exchange: String,
@@ -632,6 +636,18 @@ fn validate_live_submit_approval_config(
             "clients.{key}.execution.live_submit_max_order_notional is required when live_submit_approval_id is configured"
         )),
     }
+    match execution.live_submit_product_proof_artifact_path.as_deref() {
+        Some(path) if !path.trim().is_empty() => {}
+        _ => errors.push(format!(
+            "clients.{key}.execution.live_submit_product_proof_artifact_path is required when live_submit_approval_id is configured"
+        )),
+    }
+    match execution.live_submit_product_proof_artifact_sha256.as_deref() {
+        Some(value) if is_lowercase_sha256(value) => {}
+        _ => errors.push(format!(
+            "clients.{key}.execution.live_submit_product_proof_artifact_sha256 must be lowercase sha256 when live_submit_approval_id is configured"
+        )),
+    }
     errors
 }
 
@@ -907,6 +923,7 @@ pub fn write_configured_live_submit_approval_artifact(
             toml_checksum: binding.toml_checksum,
             signer_fingerprint: binding.signer_fingerprint,
             order_limits: binding.order_limits,
+            product_submit_proof: binding.product_submit_proof,
             expires_at: expires_at_unix_seconds,
             used_at: None,
         },
@@ -941,6 +958,26 @@ fn live_submit_approval_binding(
             "Hyperliquid live submit requires configured max order notional",
         )
     })?;
+    let product_proof_artifact_path = cfg
+        .live_submit_product_proof_artifact_path
+        .clone()
+        .ok_or_else(|| {
+            hyperliquid_adapter_validation_error(
+                context.client_key,
+                "execution.live_submit_product_proof_artifact_path",
+                "Hyperliquid live submit requires configured product proof artifact path",
+            )
+        })?;
+    let product_proof_artifact_sha256 = cfg
+        .live_submit_product_proof_artifact_sha256
+        .clone()
+        .ok_or_else(|| {
+            hyperliquid_adapter_validation_error(
+                context.client_key,
+                "execution.live_submit_product_proof_artifact_sha256",
+                "Hyperliquid live submit requires configured product proof artifact sha256",
+            )
+        })?;
     Ok(HyperliquidLiveSubmitApprovalBinding {
         base_sha: context.build_head_sha.to_string(),
         provider_id: context.client_key.to_string(),
@@ -952,6 +989,10 @@ fn live_submit_approval_binding(
         order_limits: HyperliquidLiveSubmitOrderLimits {
             max_order_count,
             max_order_notional,
+        },
+        product_submit_proof: HyperliquidProductSubmitProofBinding {
+            artifact_path: product_proof_artifact_path,
+            artifact_sha256: product_proof_artifact_sha256,
         },
     })
 }

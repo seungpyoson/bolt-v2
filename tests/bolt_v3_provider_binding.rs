@@ -185,6 +185,14 @@ fn add_hyperliquid_live_submit_approval(client: &mut ClientBlock) {
         "live_submit_max_order_notional".to_string(),
         toml::Value::String("10.00".to_string()),
     );
+    execution.insert(
+        "live_submit_product_proof_artifact_path".to_string(),
+        toml::Value::String("operator/hyperliquid-product-submit-proof.json".to_string()),
+    );
+    execution.insert(
+        "live_submit_product_proof_artifact_sha256".to_string(),
+        toml::Value::String("d".repeat(64)),
+    );
 }
 
 fn set_hyperliquid_base_url_http(client: &mut ClientBlock, url: String) {
@@ -791,6 +799,22 @@ fn provider_binding_writes_hyperliquid_live_submit_approval_from_configured_runt
     assert_eq!(artifact.used_at, None);
     assert_eq!(artifact.order_limits.max_order_count, 1);
     assert_eq!(artifact.order_limits.max_order_notional, "10.00");
+    assert_eq!(
+        artifact
+            .product_submit_proof
+            .as_ref()
+            .expect("approval artifact should bind product submit proof")
+            .artifact_path,
+        "operator/hyperliquid-product-submit-proof.json"
+    );
+    assert_eq!(
+        artifact
+            .product_submit_proof
+            .as_ref()
+            .expect("approval artifact should bind product submit proof")
+            .artifact_sha256,
+        "d".repeat(64)
+    );
 
     let artifact_text = fs::read_to_string(&approval_path).expect("artifact should read");
     assert!(!artifact_text.contains(private_key));

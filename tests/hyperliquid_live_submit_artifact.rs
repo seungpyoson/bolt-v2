@@ -5,7 +5,7 @@ use bolt_v2::{
     bolt_v3_providers::hyperliquid_artifacts::{
         HyperliquidLiveSubmitApprovalArtifact, HyperliquidLiveSubmitApprovalBinding,
         HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
-        build_hyperliquid_live_submit_approval_artifact,
+        HyperliquidProductSubmitProofBinding, build_hyperliquid_live_submit_approval_artifact,
         consume_hyperliquid_live_submit_approval_artifact,
         validate_hyperliquid_live_submit_approval_artifact,
         write_hyperliquid_live_submit_approval_artifact,
@@ -29,6 +29,13 @@ fn order_limits() -> HyperliquidLiveSubmitOrderLimits {
     }
 }
 
+fn product_submit_proof() -> HyperliquidProductSubmitProofBinding {
+    HyperliquidProductSubmitProofBinding {
+        artifact_path: "operator/hyperliquid-standard-perps-product-proof.json".to_string(),
+        artifact_sha256: hash('d'),
+    }
+}
+
 fn binding() -> HyperliquidLiveSubmitApprovalBinding {
     HyperliquidLiveSubmitApprovalBinding {
         base_sha: git_sha('a'),
@@ -37,6 +44,7 @@ fn binding() -> HyperliquidLiveSubmitApprovalBinding {
         toml_checksum: hash('b'),
         signer_fingerprint: hash('c'),
         order_limits: order_limits(),
+        product_submit_proof: product_submit_proof(),
     }
 }
 
@@ -50,9 +58,31 @@ fn approval_input() -> HyperliquidLiveSubmitApprovalInput {
         toml_checksum: current.toml_checksum,
         signer_fingerprint: current.signer_fingerprint,
         order_limits: current.order_limits,
+        product_submit_proof: current.product_submit_proof,
         expires_at: NOW + 60,
         used_at: None,
     }
+}
+
+fn legacy_approval_without_product_submit_proof() -> HyperliquidLiveSubmitApprovalArtifact {
+    serde_json::from_value(serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.hyperliquid_live_submit_approval.v1",
+        "provider_key": "HYPERLIQUID",
+        "approval_id": "hl-standard-perps-approval-001",
+        "base_sha": git_sha('a'),
+        "provider_id": "hyperliquid-standard-perps-test",
+        "product_surface": "standard_perps",
+        "toml_checksum": hash('b'),
+        "signer_fingerprint": hash('c'),
+        "order_limits": {
+            "max_order_count": 1,
+            "max_order_notional": "10.00"
+        },
+        "expires_at": NOW + 60,
+        "used_at": null
+    }))
+    .expect("legacy approval JSON should parse before product-proof validation")
 }
 
 #[test]
@@ -63,6 +93,21 @@ fn missing_standard_perps_live_submit_approval_fails_closed() {
     assert!(
         error.to_string().contains("approval_artifact"),
         "missing approval error must name the gate: {error}"
+    );
+}
+
+#[test]
+fn live_submit_approval_without_product_submit_proof_fails_closed() {
+    let approval = legacy_approval_without_product_submit_proof();
+
+    let error =
+        validate_hyperliquid_live_submit_approval_artifact(Some(&approval), &binding(), NOW)
+            .expect_err("live submit approval without product submit proof must fail closed")
+            .to_string();
+
+    assert!(
+        error.contains("product_submit_proof"),
+        "missing product proof error must name product_submit_proof: {error}"
     );
 }
 
@@ -125,6 +170,14 @@ fn standard_perps_live_submit_approval_artifact_writes_operator_json() {
     assert_eq!(artifact["approval_id"], "hl-standard-perps-approval-001");
     assert_eq!(artifact["order_limits"]["max_order_count"], 1);
     assert_eq!(artifact["order_limits"]["max_order_notional"], "10.00");
+    assert_eq!(
+        artifact["product_submit_proof"]["artifact_path"],
+        "operator/hyperliquid-standard-perps-product-proof.json"
+    );
+    assert_eq!(
+        artifact["product_submit_proof"]["artifact_sha256"],
+        hash('d')
+    );
     assert!(artifact["used_at"].is_null());
 }
 
@@ -184,6 +237,16 @@ fn standard_perps_live_submit_approval_rejects_stale_mismatched_expired_reused_a
                 },
             ),
         ),
+        (
+            "product_submit_proof",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact
+                    .product_submit_proof
+                    .as_mut()
+                    .expect("valid approval should have product submit proof")
+                    .artifact_sha256 = hash('9');
+            }),
+        ),
     ] {
         let mut approval = build_hyperliquid_live_submit_approval_artifact(approval_input())
             .expect("valid approval artifact should build before mutation");
@@ -214,6 +277,7 @@ fn provider_consumes_standard_perps_live_submit_approval_once() {
     .expect("matching unused approval should consume once");
     assert_eq!(consumed.approval_id(), "hl-standard-perps-approval-001");
     assert_eq!(consumed.used_at(), NOW);
+    assert_eq!(consumed.product_submit_proof(), &product_submit_proof());
     assert_eq!(approval.used_at, Some(NOW));
 
     let error = consume_hyperliquid_live_submit_approval_artifact(

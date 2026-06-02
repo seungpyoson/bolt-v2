@@ -15194,6 +15194,22 @@ reason = '''This labels validation for the TOML-owned Hyperliquid live-submit ap
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''string'''
+literal = '''"execution.live_submit_product_proof_artifact_path"'''
+context = '''"execution.live_submit_product_proof_artifact_path",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit product proof artifact path; the path value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.live_submit_product_proof_artifact_sha256"'''
+context = '''"execution.live_submit_product_proof_artifact_sha256",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit product proof artifact checksum; the checksum value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
 literal = '''"execution.live_submit_max_order_count"'''
 context = '''"execution.live_submit_max_order_count",'''
 classification = '''hyperliquid_live_submit_approval_field_label'''
@@ -16102,6 +16118,30 @@ literal = '''"product_surface"'''
 context = '''"product_surface",'''
 classification = '''provider_artifact_validation_field'''
 reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"product_submit_proof"'''
+context = '''"product_submit_proof",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid live-submit product proof binding field; the bound proof value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"product_submit_proof.artifact_path"'''
+context = '''"product_submit_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid live-submit product proof artifact path field; the path value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"product_submit_proof.artifact_sha256"'''
+context = '''"product_submit_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid live-submit product proof artifact checksum field; the checksum value remains TOML/evidence-owned.'''
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''

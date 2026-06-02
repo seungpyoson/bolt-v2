@@ -50,6 +50,8 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             self.close_position(position_id, None, None);
             self.close_all_positions(None, None);
             self.flatten_all_positions();
+            let flatten = BoltV3KillSwitchFlattenSupervisor;
+            let plan = flatten.plan_flatten(request);
             """
         )
 
@@ -60,6 +62,7 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         self.assertIn("buy-biased entry price block", labels)
         self.assertIn("strategy-local kill switch policy", labels)
         self.assertIn("direct kill-switch action bypass", labels)
+        self.assertIn("global kill-switch flatten supervisor policy", labels)
 
     def test_identifier_rules_do_not_match_substrings(self) -> None:
         labels = self.labels_for(
@@ -97,6 +100,17 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         )
 
         self.assertIn("global kill-switch cancel supervisor policy", labels)
+
+    def test_detects_global_flatten_supervisor_imports_and_calls(self) -> None:
+        labels = self.labels_for(
+            """
+            use crate::bolt_v3_kill_switch_flatten::BoltV3KillSwitchFlattenSupervisor;
+            let flatten_supervisor = BoltV3KillSwitchFlattenSupervisor;
+            let plan = flatten_supervisor.plan_flatten(request);
+            """
+        )
+
+        self.assertIn("global kill-switch flatten supervisor policy", labels)
 
     def test_current_strategy_has_no_policy_hardcode_violations(self) -> None:
         self.assertEqual(VERIFIER.collect_violations(), [])

@@ -1,18 +1,23 @@
 use bolt_v2::{
     bolt_v3_kill_switch::KillSwitchState,
     bolt_v3_kill_switch_flatten::{
+        BoltV3KillSwitchFlattenAggregateOutcome, BoltV3KillSwitchFlattenAttemptOutcome,
         BoltV3KillSwitchFlattenCandidate, BoltV3KillSwitchFlattenDecisionMode,
-        BoltV3KillSwitchFlattenError, BoltV3KillSwitchFlattenPlanRequest,
-        BoltV3KillSwitchFlattenPolicy, BoltV3KillSwitchFlattenPositionEvidenceKind,
-        BoltV3KillSwitchFlattenPositionState, BoltV3KillSwitchFlattenRouteKind,
-        BoltV3KillSwitchFlattenRouteProof, BoltV3KillSwitchFlattenSnapshot,
-        BoltV3KillSwitchFlattenSupervisor,
+        BoltV3KillSwitchFlattenError, BoltV3KillSwitchFlattenOutcomeAggregation,
+        BoltV3KillSwitchFlattenOutcomeAggregator, BoltV3KillSwitchFlattenOutcomeEvidence,
+        BoltV3KillSwitchFlattenPlanRequest, BoltV3KillSwitchFlattenPolicy,
+        BoltV3KillSwitchFlattenPositionEvidenceKind, BoltV3KillSwitchFlattenPositionState,
+        BoltV3KillSwitchFlattenQuantitySource, BoltV3KillSwitchFlattenResult,
+        BoltV3KillSwitchFlattenRetryContext, BoltV3KillSwitchFlattenRetryDecision,
+        BoltV3KillSwitchFlattenRetryPolicy, BoltV3KillSwitchFlattenRetrySupervisor,
+        BoltV3KillSwitchFlattenRouteKind, BoltV3KillSwitchFlattenRouteProof,
+        BoltV3KillSwitchFlattenSnapshot, BoltV3KillSwitchFlattenSupervisor,
     },
     bolt_v3_order_intent::NtOrderTemplate,
     bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionClaim,
 };
 use nautilus_model::{
-    enums::{OrderSide, OrderType, PositionSide, TimeInForce, TradingState},
+    enums::{OrderSide, OrderStatus, OrderType, PositionSide, TimeInForce, TradingState},
     identifiers::{AccountId, InstrumentId, PositionId, StrategyId},
     types::Quantity,
 };
@@ -66,6 +71,30 @@ fn flatten_snapshot_distinguishes_open_flat_and_unknown_nt_position_evidence() {
     assert_eq!(
         snapshot.open_positions()[1].evidence_kind(),
         BoltV3KillSwitchFlattenPositionEvidenceKind::PositionStatusReport
+    );
+}
+
+#[test]
+fn flatten_snapshot_rejects_conflicting_cache_and_report_position_proof() {
+    let error = BoltV3KillSwitchFlattenSnapshot::new(vec![
+        flatten_candidate(
+            BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
+            "position-conflict-1",
+            PositionSide::Long,
+            Quantity::from("1.00"),
+        ),
+        flatten_candidate(
+            BoltV3KillSwitchFlattenPositionEvidenceKind::PositionStatusReport,
+            "position-conflict-1",
+            PositionSide::Short,
+            Quantity::from("1.00"),
+        ),
+    ])
+    .expect_err("conflicting NT cache/report position proof must fail closed");
+
+    assert_eq!(
+        error,
+        BoltV3KillSwitchFlattenError::ConflictingPositionProof
     );
 }
 
@@ -148,6 +177,30 @@ fn flatten_supervisor_requires_flattening_state_and_reducing_trading_state() {
 }
 
 #[test]
+fn flatten_plan_is_idempotent_and_preserves_quantity_source_provenance() {
+    let request = flatten_plan_request(
+        KillSwitchState::Flattening {
+            halt_id: HALT_ID.to_string(),
+        },
+        TradingState::Reducing,
+    );
+    let first = BoltV3KillSwitchFlattenSupervisor::plan_flatten(request.clone())
+        .expect("first flatten planning pass should succeed");
+    let second = BoltV3KillSwitchFlattenSupervisor::plan_flatten(request)
+        .expect("repeat planning with same evidence should succeed");
+
+    assert_eq!(first.commands(), second.commands());
+    assert_eq!(
+        first
+            .commands()
+            .first()
+            .expect("open position should plan one command")
+            .quantity_source(),
+        BoltV3KillSwitchFlattenQuantitySource::CachePositionQuantity
+    );
+}
+
+#[test]
 fn flatten_plan_commands_bind_metadata_and_nt_position_identity() {
     let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(flatten_plan_request(
         KillSwitchState::Flattening {
@@ -180,6 +233,10 @@ fn flatten_plan_commands_bind_metadata_and_nt_position_identity() {
     assert_eq!(command.position_side(), PositionSide::Long);
     assert_eq!(command.quantity(), Quantity::from("1.00"));
     assert_eq!(
+        command.quantity_source(),
+        BoltV3KillSwitchFlattenQuantitySource::CachePositionQuantity
+    );
+    assert_eq!(
         command.route_kind(),
         BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter
     );
@@ -188,6 +245,37 @@ fn flatten_plan_commands_bind_metadata_and_nt_position_identity() {
         command.forced_reduction_claim().policy_sha256(),
         POLICY_SHA256
     );
+}
+
+#[test]
+fn flatten_plan_route_kinds_remain_no_submit_proof_only() {
+    for route_kind in [
+        BoltV3KillSwitchFlattenRouteKind::LiveNodeCommandRouter,
+        BoltV3KillSwitchFlattenRouteKind::PerStrategyActionPort,
+    ] {
+        let mut request = flatten_plan_request(
+            KillSwitchState::Flattening {
+                halt_id: HALT_ID.to_string(),
+            },
+            TradingState::Reducing,
+        );
+        request.route_proof = BoltV3KillSwitchFlattenRouteProof::new(route_kind);
+
+        let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(request)
+            .expect("supported route kinds should produce proof-only planned commands");
+
+        assert_eq!(
+            plan.decision_mode(),
+            BoltV3KillSwitchFlattenDecisionMode::DryRunProofOnly
+        );
+        assert_eq!(
+            plan.commands()
+                .first()
+                .expect("open position should plan one command")
+                .route_kind(),
+            route_kind
+        );
+    }
 }
 
 #[test]
@@ -399,6 +487,249 @@ fn flatten_plan_maps_open_position_sides_to_forced_reduction_order_sides() {
     assert_eq!(order_sides, vec![OrderSide::Sell, OrderSide::Buy]);
 }
 
+#[test]
+fn flatten_outcome_aggregation_maps_nt_submit_and_position_evidence_to_flatten_results() {
+    assert_eq!(
+        aggregate_single_command(BoltV3KillSwitchFlattenAttemptOutcome::submit_planned()).result(),
+        BoltV3KillSwitchFlattenResult::OutstandingFlattenSubmit
+    );
+    assert_eq!(
+        aggregate_single_command(
+            BoltV3KillSwitchFlattenAttemptOutcome::submit_accepted(OrderStatus::Accepted)
+                .expect("accepted submit outcome should preserve accepted NT status"),
+        )
+        .result(),
+        BoltV3KillSwitchFlattenResult::OutstandingFlattenSubmit
+    );
+    assert_eq!(
+        aggregate_single_command(
+            BoltV3KillSwitchFlattenAttemptOutcome::submit_rejected(OrderStatus::Rejected)
+                .expect("rejected submit outcome should preserve rejected NT status"),
+        )
+        .result(),
+        BoltV3KillSwitchFlattenResult::SubmitRejectedManualIntervention
+    );
+    assert_eq!(
+        aggregate_single_command(
+            BoltV3KillSwitchFlattenAttemptOutcome::partial_fill(OrderStatus::PartiallyFilled)
+                .expect("partial-fill outcome should require NT partially-filled status"),
+        )
+        .result(),
+        BoltV3KillSwitchFlattenResult::ResidualPositionRemains
+    );
+    assert_eq!(
+        aggregate_single_command(
+            BoltV3KillSwitchFlattenAttemptOutcome::residual_position_remains(
+                PositionSide::Long,
+                SOURCE_TIMESTAMP_UNIX_NANOS,
+            )
+            .expect("open residual position proof should construct"),
+        )
+        .result(),
+        BoltV3KillSwitchFlattenResult::ResidualPositionRemains
+    );
+    assert_eq!(
+        aggregate_single_command(
+            BoltV3KillSwitchFlattenAttemptOutcome::flat_position_observed(
+                PositionSide::Flat,
+                SOURCE_TIMESTAMP_UNIX_NANOS,
+            )
+            .expect("flat position proof should construct"),
+        )
+        .result(),
+        BoltV3KillSwitchFlattenResult::AllFlat
+    );
+    assert_eq!(
+        aggregate_single_command(BoltV3KillSwitchFlattenAttemptOutcome::stale_position_proof())
+            .result(),
+        BoltV3KillSwitchFlattenResult::FailedManualIntervention
+    );
+    assert_eq!(
+        aggregate_single_command(BoltV3KillSwitchFlattenAttemptOutcome::unsupported_instrument())
+            .result(),
+        BoltV3KillSwitchFlattenResult::FailedManualIntervention
+    );
+    assert_eq!(
+        aggregate_single_command(BoltV3KillSwitchFlattenAttemptOutcome::thin_book_no_fillability())
+            .result(),
+        BoltV3KillSwitchFlattenResult::FailedManualIntervention
+    );
+}
+
+#[test]
+fn flatten_outcome_aggregation_keeps_missing_or_duplicate_evidence_fail_closed() {
+    let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(flatten_plan_request(
+        KillSwitchState::Flattening {
+            halt_id: HALT_ID.to_string(),
+        },
+        TradingState::Reducing,
+    ))
+    .expect("valid flatten request should plan commands");
+
+    assert_eq!(
+        BoltV3KillSwitchFlattenOutcomeAggregation::from_plan_outcomes(&plan, Vec::new())
+            .expect("missing outcome evidence should aggregate as outstanding submit")
+            .result(),
+        BoltV3KillSwitchFlattenResult::OutstandingFlattenSubmit
+    );
+
+    let accepted = BoltV3KillSwitchFlattenOutcomeEvidence::from_command(
+        &plan.commands()[0],
+        BoltV3KillSwitchFlattenAttemptOutcome::submit_accepted(OrderStatus::Accepted)
+            .expect("accepted submit outcome should construct"),
+    );
+    let rejected = BoltV3KillSwitchFlattenOutcomeEvidence::from_command(
+        &plan.commands()[0],
+        BoltV3KillSwitchFlattenAttemptOutcome::submit_rejected(OrderStatus::Rejected)
+            .expect("rejected submit outcome should construct"),
+    );
+
+    assert_eq!(
+        BoltV3KillSwitchFlattenOutcomeAggregation::from_plan_outcomes(
+            &plan,
+            vec![accepted, rejected],
+        )
+        .expect("duplicate outcome evidence should preserve worst observed state")
+        .result(),
+        BoltV3KillSwitchFlattenResult::SubmitRejectedManualIntervention
+    );
+}
+
+#[test]
+fn flatten_outcome_aggregation_requires_evidence_for_every_planned_command() {
+    let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(flatten_plan_request_with_snapshot(
+        KillSwitchState::Flattening {
+            halt_id: HALT_ID.to_string(),
+        },
+        TradingState::Reducing,
+        BoltV3KillSwitchFlattenSnapshot::new(vec![
+            flatten_candidate(
+                BoltV3KillSwitchFlattenPositionEvidenceKind::CachePosition,
+                "position-long-1",
+                PositionSide::Long,
+                Quantity::from("1.00"),
+            ),
+            flatten_candidate(
+                BoltV3KillSwitchFlattenPositionEvidenceKind::PositionStatusReport,
+                "position-short-1",
+                PositionSide::Short,
+                Quantity::from("0.50"),
+            ),
+        ])
+        .expect("two open positions should preserve proof"),
+    ))
+    .expect("valid flatten request should plan two commands");
+
+    let first_flat = BoltV3KillSwitchFlattenOutcomeEvidence::from_command(
+        &plan.commands()[0],
+        BoltV3KillSwitchFlattenAttemptOutcome::flat_position_observed(
+            PositionSide::Flat,
+            SOURCE_TIMESTAMP_UNIX_NANOS,
+        )
+        .expect("flat position proof should construct"),
+    );
+
+    assert_eq!(
+        BoltV3KillSwitchFlattenOutcomeAggregation::from_plan_outcomes(&plan, vec![first_flat])
+            .expect("missing outcome evidence for another command should aggregate fail-closed")
+            .result(),
+        BoltV3KillSwitchFlattenResult::OutstandingFlattenSubmit
+    );
+}
+
+#[test]
+fn flatten_outcome_summary_never_authorizes_durable_state_transition() {
+    for (outcomes, expected) in [
+        (
+            vec![BoltV3KillSwitchFlattenAttemptOutcome::FlatPositionObserved],
+            BoltV3KillSwitchFlattenAggregateOutcome::AllFlat,
+        ),
+        (
+            vec![BoltV3KillSwitchFlattenAttemptOutcome::ResidualPositionRemains],
+            BoltV3KillSwitchFlattenAggregateOutcome::ResidualPositionRemains,
+        ),
+        (
+            vec![BoltV3KillSwitchFlattenAttemptOutcome::SubmitPlanned],
+            BoltV3KillSwitchFlattenAggregateOutcome::OutstandingFlattenSubmit,
+        ),
+        (
+            vec![BoltV3KillSwitchFlattenAttemptOutcome::SubmitRejected],
+            BoltV3KillSwitchFlattenAggregateOutcome::SubmitRejectedManualIntervention,
+        ),
+        (
+            vec![BoltV3KillSwitchFlattenAttemptOutcome::StalePositionProof],
+            BoltV3KillSwitchFlattenAggregateOutcome::FailedManualIntervention,
+        ),
+    ] {
+        let summary = BoltV3KillSwitchFlattenOutcomeAggregator::summarize(&outcomes);
+
+        assert_eq!(summary.aggregate(), expected);
+        assert!(
+            !summary.authorizes_durable_state_transition(),
+            "Phase 5 outcome proof must not claim final global flat reconciliation"
+        );
+    }
+}
+
+#[test]
+fn flatten_retry_requires_reducing_context_budget_and_forced_reduction_cap() {
+    let policy = BoltV3KillSwitchFlattenRetryPolicy::new(3, 1_000, 100)
+        .expect("positive retry policy should be valid");
+
+    assert_eq!(
+        BoltV3KillSwitchFlattenRetrySupervisor::decide(
+            policy,
+            BoltV3KillSwitchFlattenRetryContext {
+                attempts: 1,
+                elapsed_ms: 250,
+                nt_trading_state: TradingState::Reducing,
+                live_forced_reduction_order_count: 0,
+                max_live_forced_reduction_order_count: 1,
+            },
+        ),
+        BoltV3KillSwitchFlattenRetryDecision::RetryAllowed { backoff_ms: 100 }
+    );
+    assert_eq!(
+        BoltV3KillSwitchFlattenRetrySupervisor::decide(
+            policy,
+            BoltV3KillSwitchFlattenRetryContext {
+                attempts: 1,
+                elapsed_ms: 250,
+                nt_trading_state: TradingState::Active,
+                live_forced_reduction_order_count: 0,
+                max_live_forced_reduction_order_count: 1,
+            },
+        ),
+        BoltV3KillSwitchFlattenRetryDecision::RouteNoLongerReducingManualIntervention
+    );
+    assert_eq!(
+        BoltV3KillSwitchFlattenRetrySupervisor::decide(
+            policy,
+            BoltV3KillSwitchFlattenRetryContext {
+                attempts: 1,
+                elapsed_ms: 250,
+                nt_trading_state: TradingState::Reducing,
+                live_forced_reduction_order_count: 1,
+                max_live_forced_reduction_order_count: 1,
+            },
+        ),
+        BoltV3KillSwitchFlattenRetryDecision::ForcedReductionCapUnavailable
+    );
+    assert_eq!(
+        BoltV3KillSwitchFlattenRetrySupervisor::decide(
+            policy,
+            BoltV3KillSwitchFlattenRetryContext {
+                attempts: 3,
+                elapsed_ms: 250,
+                nt_trading_state: TradingState::Reducing,
+                live_forced_reduction_order_count: 0,
+                max_live_forced_reduction_order_count: 1,
+            },
+        ),
+        BoltV3KillSwitchFlattenRetryDecision::ExhaustedManualIntervention
+    );
+}
+
 fn flatten_candidate(
     evidence_kind: BoltV3KillSwitchFlattenPositionEvidenceKind,
     position_id: &str,
@@ -495,6 +826,22 @@ fn flatten_order_template() -> NtOrderTemplate {
         is_reduce_only: true,
         is_quote_quantity: false,
     }
+}
+
+fn aggregate_single_command(
+    outcome: BoltV3KillSwitchFlattenAttemptOutcome,
+) -> BoltV3KillSwitchFlattenOutcomeAggregation {
+    let plan = BoltV3KillSwitchFlattenSupervisor::plan_flatten(flatten_plan_request(
+        KillSwitchState::Flattening {
+            halt_id: HALT_ID.to_string(),
+        },
+        TradingState::Reducing,
+    ))
+    .expect("valid flatten request should plan commands");
+    let evidence =
+        BoltV3KillSwitchFlattenOutcomeEvidence::from_command(&plan.commands()[0], outcome);
+    BoltV3KillSwitchFlattenOutcomeAggregation::from_plan_outcomes(&plan, vec![evidence])
+        .expect("single command outcome should aggregate")
 }
 
 fn account_id() -> AccountId {

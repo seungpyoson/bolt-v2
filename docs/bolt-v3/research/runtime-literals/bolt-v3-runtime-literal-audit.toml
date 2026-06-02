@@ -16066,14 +16066,6 @@ reason = '''This labels a provider-side Hyperliquid approval-spend mismatch vali
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
 kind = '''string'''
-literal = '''".spending"'''
-context = '''const LIVE_SUBMIT_APPROVAL_SPEND_TEMP_SUFFIX: &str = ".spending";'''
-classification = '''hyperliquid_live_submit_approval_spend_temp_suffix'''
-reason = '''Internal filesystem suffix for the sibling temp file used to atomically and durably replace a consumed Hyperliquid live-submit approval artifact (write temp + fsync + atomic rename over the approval + parent-directory fsync). Not an operator runtime value; it is appended to the configured approval path to form a same-directory staging file name.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
-kind = '''string'''
 literal = '''"approval_id"'''
 context = '''"approval_id",'''
 classification = '''provider_artifact_validation_field'''
@@ -16590,6 +16582,22 @@ literal = '''"used_at"'''
 context = '''"used_at"'''
 classification = '''provider_artifact_validation_field'''
 reason = '''This labels the fail-closed one-time approval spend state when persistence is asked to write an unconsumed artifact or the locked on-disk artifact is already consumed.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''file.seek(SeekFrom::Start(0))?;'''
+classification = '''approval_spend_in_place_file_start_offset'''
+reason = '''This rewinds the locked Hyperliquid live-submit approval artifact file descriptor to the beginning before writing the consumed artifact in place; it is a structural filesystem offset, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''file.set_len(0)?;'''
+classification = '''approval_spend_in_place_truncate_length'''
+reason = '''This truncates the locked Hyperliquid live-submit approval artifact file before writing the consumed artifact in place; crash interruption leaves the artifact invalid and fail-closed, and the value is not operator-configurable runtime behavior.'''
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''

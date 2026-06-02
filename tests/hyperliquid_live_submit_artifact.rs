@@ -330,12 +330,11 @@ fn provider_consumes_standard_perps_live_submit_approval_once() {
 }
 
 #[test]
-fn consumed_live_submit_approval_persist_replaces_file_atomically() {
+fn consumed_live_submit_approval_persist_updates_open_descriptors_in_place() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let path = temp.path().join("hyperliquid-live-submit-approval.json");
     write_hyperliquid_live_submit_approval_artifact(approval_input(), &path)
         .expect("approval artifact should write");
-    let original_bytes = std::fs::read(&path).expect("approval artifact should read");
     let mut held_original =
         std::fs::File::open(&path).expect("test should hold original approval fd");
     let mut consumed = build_hyperliquid_live_submit_approval_artifact(approval_input())
@@ -355,53 +354,39 @@ fn consumed_live_submit_approval_persist_replaces_file_atomically() {
     held_original
         .read_to_end(&mut held_bytes)
         .expect("held original approval fd should read");
+    let held_artifact: HyperliquidLiveSubmitApprovalArtifact =
+        serde_json::from_slice(&held_bytes).expect("held approval fd should parse");
     assert_eq!(
-        held_bytes, original_bytes,
-        "consumption must replace the path instead of mutating the old file in place"
+        held_artifact.used_at,
+        Some(NOW),
+        "held approval descriptors must observe the spent artifact so stale openers cannot double-spend"
     );
 }
 
 #[cfg(unix)]
 #[test]
-fn consumed_live_submit_approval_persist_rejects_symlinked_spend_temp_path() {
+fn consumed_live_submit_approval_persist_rejects_symlinked_approval_path() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let path = temp.path().join("hyperliquid-live-submit-approval.json");
-    let temp_path = temp
-        .path()
-        .join("hyperliquid-live-submit-approval.json.spending");
     let symlink_target = temp.path().join("symlink-target.json");
-    let target_bytes = b"do-not-overwrite".to_vec();
-    write_hyperliquid_live_submit_approval_artifact(approval_input(), &path)
+    write_hyperliquid_live_submit_approval_artifact(approval_input(), &symlink_target)
         .expect("approval artifact should write");
-    std::fs::write(&symlink_target, &target_bytes).expect("symlink target should write");
-    std::os::unix::fs::symlink(&symlink_target, &temp_path)
-        .expect("approval spend temp symlink should create");
+    std::os::unix::fs::symlink(&symlink_target, &path)
+        .expect("approval path symlink should create");
     let mut consumed = build_hyperliquid_live_submit_approval_artifact(approval_input())
         .expect("bounded approval artifact should build");
     consumed.used_at = Some(NOW);
 
     let error = persist_consumed_hyperliquid_live_submit_approval_artifact(&path, &consumed)
-        .expect_err("symlinked spend temp path must fail closed")
+        .expect_err("symlinked approval path must fail closed")
         .to_string();
 
     assert!(
         error.contains("write"),
-        "temp-path symlink failure should surface as write failure: {error}"
+        "approval-path symlink failure should surface as write failure: {error}"
     );
-    assert_eq!(
-        std::fs::read(&symlink_target).expect("symlink target should read"),
-        target_bytes,
-        "persistence must not follow the spend temp symlink and mutate its target"
-    );
-    assert!(
-        std::fs::symlink_metadata(&temp_path)
-            .expect("spend temp symlink metadata should read")
-            .file_type()
-            .is_symlink(),
-        "failed persistence must leave the original spend temp symlink untouched"
-    );
-    let approval = read_hyperliquid_live_submit_approval_artifact(&path, 4096)
-        .expect("unconsumed approval should still parse");
+    let approval = read_hyperliquid_live_submit_approval_artifact(&symlink_target, 4096)
+        .expect("unconsumed symlink target approval should still parse");
     assert_eq!(approval.used_at, None);
 }
 

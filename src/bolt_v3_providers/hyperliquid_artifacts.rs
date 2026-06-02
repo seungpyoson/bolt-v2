@@ -1,7 +1,7 @@
 use std::{
     fs,
-    io::{Read, Write},
-    path::{Path, PathBuf},
+    io::{Read, Seek, SeekFrom, Write},
+    path::Path,
     str::FromStr,
 };
 
@@ -30,7 +30,6 @@ const LIVE_SUBMIT_APPROVAL_RECORD_KIND: &str = "bolt_v3.hyperliquid_live_submit_
 const LATENCY_PROFILE_ARTIFACT: &str = "hyperliquid_latency_profile";
 const PRODUCT_SUBMIT_PROOF_ARTIFACT: &str = "hyperliquid_product_submit_proof";
 const LIVE_SUBMIT_APPROVAL_ARTIFACT: &str = "hyperliquid_live_submit_approval";
-const LIVE_SUBMIT_APPROVAL_SPEND_TEMP_SUFFIX: &str = ".spending";
 
 #[derive(Debug, Serialize)]
 pub struct HyperliquidProductMatrixArtifact {
@@ -308,12 +307,13 @@ pub fn persist_consumed_hyperliquid_live_submit_approval_artifact(
     }
     let bytes =
         serde_json::to_vec_pretty(artifact).map_err(BoltV3OperatorArtifactError::Serialize)?;
-    let file = open_hyperliquid_live_submit_approval_file_for_spend(path).map_err(|source| {
-        BoltV3OperatorArtifactError::Write {
-            path: path.to_path_buf(),
-            source,
-        }
-    })?;
+    let mut file =
+        open_hyperliquid_live_submit_approval_file_for_spend(path).map_err(|source| {
+            BoltV3OperatorArtifactError::Write {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
     try_lock_hyperliquid_live_submit_approval_file_for_spend(&file).map_err(|source| {
         BoltV3OperatorArtifactError::Write {
             path: path.to_path_buf(),
@@ -335,32 +335,15 @@ pub fn persist_consumed_hyperliquid_live_submit_approval_artifact(
         ));
     }
 
-    let temp_path = hyperliquid_live_submit_approval_spend_temp_path(path);
-    let mut temp_created = false;
     let result = (|| -> std::io::Result<()> {
-        {
-            let mut temp_file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp_path)?;
-            temp_created = true;
-            temp_file.write_all(&bytes)?;
-            temp_file.sync_all()?;
-        }
-        fs::rename(&temp_path, path)?;
-        temp_created = false;
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            fs::File::open(parent)?.sync_all()?;
-        }
+        file.seek(SeekFrom::Start(0))?;
+        file.set_len(0)?;
+        file.write_all(&bytes)?;
+        file.set_len(bytes.len() as u64)?;
+        file.sync_all()?;
         Ok(())
     })();
     drop(file);
-    if result.is_err() && temp_created {
-        let _ = fs::remove_file(&temp_path);
-    }
     result.map_err(|source| BoltV3OperatorArtifactError::Write {
         path: path.to_path_buf(),
         source,
@@ -394,25 +377,23 @@ fn read_open_file_bounded(mut file: &fs::File, max_bytes: u64) -> std::io::Resul
     Ok(bytes)
 }
 
-fn hyperliquid_live_submit_approval_spend_temp_path(path: &Path) -> PathBuf {
-    let mut temp_os = path.as_os_str().to_owned();
-    temp_os.push(LIVE_SUBMIT_APPROVAL_SPEND_TEMP_SUFFIX);
-    PathBuf::from(temp_os)
-}
-
 #[cfg(unix)]
 fn open_hyperliquid_live_submit_approval_file_for_spend(path: &Path) -> std::io::Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
 
     fs::OpenOptions::new()
         .read(true)
+        .write(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
 }
 
 #[cfg(not(unix))]
-fn open_hyperliquid_live_submit_approval_file_for_spend(path: &Path) -> std::io::Result<fs::File> {
-    fs::OpenOptions::new().read(true).open(path)
+fn open_hyperliquid_live_submit_approval_file_for_spend(_path: &Path) -> std::io::Result<fs::File> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "hyperliquid live-submit approval spend locking requires unix flock",
+    ))
 }
 
 #[cfg(unix)]
@@ -434,7 +415,10 @@ fn try_lock_hyperliquid_live_submit_approval_file_for_spend(
 fn try_lock_hyperliquid_live_submit_approval_file_for_spend(
     _file: &fs::File,
 ) -> std::io::Result<()> {
-    Ok(())
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "hyperliquid live-submit approval spend locking requires unix flock",
+    ))
 }
 
 pub fn write_hyperliquid_live_submit_approval_artifact(

@@ -221,8 +221,31 @@ pub struct BoltV3KillSwitchCancelPlanRequest {
     pub source_timestamp_unix_nanos: u64,
     pub observed_at_unix_nanos: u64,
     pub scope: BoltV3KillSwitchCancelScope,
+    pub route_proof: Option<BoltV3KillSwitchCancelRouteProof>,
     pub policy: BoltV3KillSwitchCancelPolicy,
     pub snapshot: BoltV3KillSwitchCancelSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3KillSwitchCancelRouteKind {
+    PerStrategyActionPort,
+    LiveNodeCommandRouter,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoltV3KillSwitchCancelRouteProof {
+    route_kind: BoltV3KillSwitchCancelRouteKind,
+}
+
+impl BoltV3KillSwitchCancelRouteProof {
+    pub fn new(route_kind: BoltV3KillSwitchCancelRouteKind) -> Self {
+        Self { route_kind }
+    }
+
+    pub fn route_kind(&self) -> BoltV3KillSwitchCancelRouteKind {
+        self.route_kind
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,6 +340,7 @@ impl BoltV3KillSwitchCancelSupervisor {
         validate_plan_metadata(&request)?;
         validate_source_freshness(&request)?;
         request.policy.validate_snapshot(&request.snapshot)?;
+        let route_kind = require_supported_route_proof(&request)?;
         let action_id = request.action_id.trim().to_string();
         let commands = request
             .snapshot
@@ -333,6 +357,7 @@ impl BoltV3KillSwitchCancelSupervisor {
                 strategy_id: candidate.strategy_id.clone(),
                 client_order_id: candidate.client_order_id.clone(),
                 surface: candidate.surface(),
+                route_kind,
             })
             .collect::<Vec<_>>();
         Ok(BoltV3KillSwitchCancelPlan {
@@ -341,6 +366,23 @@ impl BoltV3KillSwitchCancelSupervisor {
             candidates: request.snapshot.candidates().to_vec(),
             commands,
         })
+    }
+}
+
+fn require_supported_route_proof(
+    request: &BoltV3KillSwitchCancelPlanRequest,
+) -> Result<BoltV3KillSwitchCancelRouteKind, BoltV3KillSwitchCancelError> {
+    match request
+        .route_proof
+        .map(|route_proof| route_proof.route_kind())
+    {
+        Some(
+            route_kind @ (BoltV3KillSwitchCancelRouteKind::PerStrategyActionPort
+            | BoltV3KillSwitchCancelRouteKind::LiveNodeCommandRouter),
+        ) => Ok(route_kind),
+        Some(BoltV3KillSwitchCancelRouteKind::Unsupported) | None => {
+            Err(BoltV3KillSwitchCancelError::FailedManualInterventionRequired)
+        }
     }
 }
 
@@ -416,6 +458,7 @@ pub struct BoltV3KillSwitchCancelCommand {
     strategy_id: String,
     client_order_id: String,
     surface: BoltV3KillSwitchOutstandingOrderRiskSurface,
+    route_kind: BoltV3KillSwitchCancelRouteKind,
 }
 
 impl BoltV3KillSwitchCancelCommand {
@@ -458,6 +501,10 @@ impl BoltV3KillSwitchCancelCommand {
     pub fn surface(&self) -> BoltV3KillSwitchOutstandingOrderRiskSurface {
         self.surface
     }
+
+    pub fn route_kind(&self) -> BoltV3KillSwitchCancelRouteKind {
+        self.route_kind
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -477,5 +524,6 @@ pub enum BoltV3KillSwitchCancelError {
     MissingMandatorySurfaceProof,
     InvalidSourceFreshness,
     StaleSourceTimestamp,
+    FailedManualInterventionRequired,
     KillSwitchStateNotCancelling,
 }

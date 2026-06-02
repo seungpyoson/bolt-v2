@@ -3,8 +3,10 @@ use bolt_v2::{
     bolt_v3_kill_switch_cancel::{
         BoltV3KillSwitchCancelCandidate, BoltV3KillSwitchCancelDecisionMode,
         BoltV3KillSwitchCancelError, BoltV3KillSwitchCancelPlanRequest,
-        BoltV3KillSwitchCancelPolicy, BoltV3KillSwitchCancelScope, BoltV3KillSwitchCancelSnapshot,
-        BoltV3KillSwitchCancelSupervisor, BoltV3KillSwitchOutstandingOrderRiskSurface,
+        BoltV3KillSwitchCancelPolicy, BoltV3KillSwitchCancelRouteKind,
+        BoltV3KillSwitchCancelRouteProof, BoltV3KillSwitchCancelScope,
+        BoltV3KillSwitchCancelSnapshot, BoltV3KillSwitchCancelSupervisor,
+        BoltV3KillSwitchOutstandingOrderRiskSurface,
     },
 };
 
@@ -210,6 +212,9 @@ fn cancel_supervisor_rejects_stale_source_timestamps_and_empty_scope_filters() {
         source_timestamp_unix_nanos: stale_timestamp,
         observed_at_unix_nanos: stale_timestamp + MAX_SOURCE_AGE_UNIX_NANOS + 1,
         scope: valid_scope(),
+        route_proof: Some(BoltV3KillSwitchCancelRouteProof::new(
+            BoltV3KillSwitchCancelRouteKind::PerStrategyActionPort,
+        )),
         policy: mandatory_surface_policy(),
         snapshot: complete_cancel_snapshot_with_timestamp(stale_timestamp),
     };
@@ -242,6 +247,38 @@ fn cancel_supervisor_rejects_stale_source_timestamps_and_empty_scope_filters() {
     }
 }
 
+#[test]
+fn cancel_supervisor_requires_supported_route_proof_before_planned_commands() {
+    let mut missing_route_request = cancel_plan_request(cancelling_state());
+    missing_route_request.route_proof = None;
+    let missing_route_error = BoltV3KillSwitchCancelSupervisor::plan_cancel(missing_route_request)
+        .expect_err("missing route proof must fail closed");
+    assert_eq!(
+        missing_route_error,
+        BoltV3KillSwitchCancelError::FailedManualInterventionRequired
+    );
+
+    let mut unsupported_route_request = cancel_plan_request(cancelling_state());
+    unsupported_route_request.route_proof = Some(BoltV3KillSwitchCancelRouteProof::new(
+        BoltV3KillSwitchCancelRouteKind::Unsupported,
+    ));
+    let unsupported_route_error =
+        BoltV3KillSwitchCancelSupervisor::plan_cancel(unsupported_route_request)
+            .expect_err("unsupported route proof must fail closed");
+    assert_eq!(
+        unsupported_route_error,
+        BoltV3KillSwitchCancelError::FailedManualInterventionRequired
+    );
+
+    let plan =
+        BoltV3KillSwitchCancelSupervisor::plan_cancel(cancel_plan_request(cancelling_state()))
+            .expect("supported route proof should allow proof-only cancel planning");
+    assert_eq!(
+        plan.commands()[0].route_kind(),
+        BoltV3KillSwitchCancelRouteKind::PerStrategyActionPort
+    );
+}
+
 fn cancel_plan_request(kill_switch_state: KillSwitchState) -> BoltV3KillSwitchCancelPlanRequest {
     BoltV3KillSwitchCancelPlanRequest {
         kill_switch_state,
@@ -251,6 +288,9 @@ fn cancel_plan_request(kill_switch_state: KillSwitchState) -> BoltV3KillSwitchCa
         source_timestamp_unix_nanos: REQUEST_SOURCE_TIMESTAMP_UNIX_NANOS,
         observed_at_unix_nanos: REQUEST_OBSERVED_AT_UNIX_NANOS,
         scope: valid_scope(),
+        route_proof: Some(BoltV3KillSwitchCancelRouteProof::new(
+            BoltV3KillSwitchCancelRouteKind::PerStrategyActionPort,
+        )),
         policy: mandatory_surface_policy(),
         snapshot: complete_cancel_snapshot(),
     }

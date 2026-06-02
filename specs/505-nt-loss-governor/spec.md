@@ -61,6 +61,9 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - Negative PnL values are represented as losses; non-loss values must not trip loss thresholds.
 - Missing enabled policy threshold must fail config validation instead of creating a hardcoded default.
 - Fresh NT portfolio heartbeats must refresh aggregate loss/equity facts and evict expired rolling-window samples without letting historical peak equity make the snapshot stale.
+- The `daily_pnl` evidence field is NT session-cumulative realized plus unrealized PnL, not a calendar-day counter; rollover handling must be grounded in observed NT session-PnL behavior, not wall-clock day boundaries.
+- If NT session-cumulative PnL resets and total equity continuity confirms the first new-session PnL value, rolling-window samples must use the new-session value instead of the old-session cumulative delta.
+- External deposits and withdrawals must not be inferred from residual equity math for max-drawdown high-watermark rebasing. Until an explicit NT account-state or operator cash-flow attribution source exists, a conservative max-drawdown halt remains safer than masking fees, funding, or trading losses.
 - Multiple breach reasons must be reported deterministically.
 - Risk-reducing exits must not be blocked by loss halt policy; existing operator count and lifecycle caps still apply.
 
@@ -81,7 +84,7 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - **FR-011**: System MUST use TDD vertical slices before production behavior changes.
 - **FR-012**: System MUST NOT implement cancel, flatten, or bespoke venue side effects in this slice.
 - **FR-013**: System MUST require every `[risk.loss_governor]` threshold when the governor is enabled.
-- **FR-014**: System MUST evaluate loss snapshots against the latest accepted NT account event timestamp and MUST evict expired rolling-window samples on fresh portfolio heartbeats.
+- **FR-014**: System MUST evaluate loss snapshots against the latest accepted NT account event timestamp, MUST evict expired rolling-window samples on fresh portfolio heartbeats, and MUST avoid false rolling PnL deltas when NT session-cumulative PnL resets are corroborated by total-equity continuity.
 
 ### Key Entities
 

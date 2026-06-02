@@ -69,6 +69,23 @@
 - NT RiskEngine, Portfolio, cache, adapter, or execution behavior.
 - Venue-specific cancel or flatten calls.
 
+## NT Session PnL And Cash-Flow Evidence
+
+**Decision**: Bolt treats `LossSnapshot.daily_pnl` as the NT session-cumulative PnL field used by the existing policy/evidence vocabulary. Rolling-window samples may correct an observed NT session-PnL reset only when total-equity continuity confirms the first new-session PnL value. Bolt must not rebase drawdown peak equity from residual equity math; transfer-aware drawdown requires explicit NT account-state or operator cash-flow attribution in a later slice.
+
+**Evidence**:
+
+- `crates/model/src/events/portfolio/snapshot.rs:30-52`: `PortfolioSnapshot` is a continuous mark-to-market view; its `realized_pnls` are accumulated for positions opened in the current session, and `total_equity` is mark-to-market account equity.
+- `crates/portfolio/src/portfolio.rs:835-920`: NT builds `PortfolioSnapshot` from cached account balances, realized PnL, unrealized PnL, and cash-account mark values or margin-account unrealized PnL.
+- `crates/model/src/events/position/adjusted.rs:29-61`: `PositionAdjusted` can represent commission and funding adjustments with `pnl_change`, so residual equity movement is not safe proof of external cash flow.
+
+**Implications**:
+
+- The `daily_pnl` field name is compatibility vocabulary, not calendar-day semantics.
+- UTC day indexes are not an NT rollover source and must not drive loss-governor reset logic.
+- If previous session PnL is non-zero, the current NT session PnL differs from the cumulative delta, and `current_equity - previous_equity == current_session_pnl`, the rolling sample uses the current session PnL as the first new-session interval.
+- If equity movement does not corroborate the reset, the feed keeps ordinary cumulative-delta semantics; it does not infer cash flow or rebase peak equity.
+
 ## Implemented Scope
 
 **Implemented now**:

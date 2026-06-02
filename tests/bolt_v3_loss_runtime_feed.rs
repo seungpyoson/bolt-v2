@@ -145,6 +145,137 @@ fn rolling_window_advances_from_portfolio_pnl_deltas_and_evicts_on_heartbeat() {
 }
 
 #[test]
+fn session_pnl_reset_does_not_publish_false_rolling_loss() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-006");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission,
+    );
+
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, 100.0, 0.0, 1_100.0))
+        .expect("previous session gain should publish baseline");
+    let reset = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_100, 0.0, 0.0, 1_100.0))
+        .expect("new session flat snapshot should publish");
+
+    assert_eq!(reset.daily_pnl, Some(Decimal::ZERO));
+    assert_eq!(reset.rolling_pnl, Some(Decimal::ZERO));
+}
+
+#[test]
+fn session_pnl_reset_preserves_new_session_loss() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-007");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission,
+    );
+
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, 100.0, 0.0, 1_100.0))
+        .expect("previous session gain should publish baseline");
+    let reset_loss = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_100, -5.0, 0.0, 1_095.0))
+        .expect("new session loss should publish");
+
+    assert_eq!(reset_loss.daily_pnl, Some(Decimal::new(-5, 0)));
+    assert_eq!(reset_loss.rolling_pnl, Some(Decimal::new(-5, 0)));
+}
+
+#[test]
+fn session_pnl_reset_does_not_publish_false_rolling_profit() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-008");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission,
+    );
+
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, -50.0, 0.0, 950.0))
+        .expect("previous session loss should publish baseline");
+    let reset = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_100, 0.0, 0.0, 950.0))
+        .expect("new session flat snapshot should publish");
+
+    assert_eq!(reset.daily_pnl, Some(Decimal::ZERO));
+    assert_eq!(reset.rolling_pnl, Some(Decimal::ZERO));
+}
+
+#[test]
+fn same_session_loss_is_not_treated_as_session_reset() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-009");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission,
+    );
+
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, 100.0, 0.0, 1_100.0))
+        .expect("same-session gain should publish baseline");
+    let loss = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_100, 95.0, 0.0, 1_095.0))
+        .expect("same-session loss should publish");
+
+    assert_eq!(loss.daily_pnl, Some(Decimal::new(95, 0)));
+    assert_eq!(loss.rolling_pnl, Some(Decimal::new(-5, 0)));
+}
+
+#[test]
+fn withdrawal_like_equity_move_does_not_trigger_session_reset_detection() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-010");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission,
+    );
+
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, 10.0, 0.0, 1_010.0))
+        .expect("same-session gain should publish baseline");
+    let unchanged_pnl = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_100, 10.0, 0.0, 1_000.0))
+        .expect("equity move without PnL delta should publish");
+
+    assert_eq!(unchanged_pnl.daily_pnl, Some(Decimal::new(10, 0)));
+    assert_eq!(unchanged_pnl.rolling_pnl, Some(Decimal::ZERO));
+    assert_eq!(unchanged_pnl.peak_equity, Some(Decimal::new(1010, 0)));
+}
+
+#[test]
 fn position_adjustment_does_not_mask_larger_per_trade_loss() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(

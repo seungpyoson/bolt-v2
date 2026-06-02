@@ -36,6 +36,7 @@ pub struct LossSnapshot {
     pub source: String,
     pub observed_at_ns: u64,
     pub per_trade_pnl: Option<Decimal>,
+    /// NT session-cumulative PnL; retained as `daily_pnl` for policy/evidence compatibility.
     pub daily_pnl: Option<Decimal>,
     pub rolling_pnl: Option<Decimal>,
     pub current_equity: Option<Decimal>,

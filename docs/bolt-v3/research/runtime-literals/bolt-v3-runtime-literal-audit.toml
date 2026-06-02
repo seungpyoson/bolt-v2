@@ -16025,11 +16025,11 @@ reason = '''This labels a provider-side Hyperliquid operator-artifact read/parse
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
-kind = '''number'''
-literal = '''0'''
-context = '''file.set_len(0)'''
-classification = '''hyperliquid_live_submit_approval_file_truncate_offset'''
-reason = '''This is the structural truncate length used to overwrite a consumed Hyperliquid approval artifact after validation; operator limits remain artifact/TOML-owned.'''
+kind = '''string'''
+literal = '''".spending"'''
+context = '''const LIVE_SUBMIT_APPROVAL_SPEND_TEMP_SUFFIX: &str = ".spending";'''
+classification = '''hyperliquid_live_submit_approval_spend_temp_suffix'''
+reason = '''Internal filesystem suffix for the sibling temp file used to atomically and durably replace a consumed Hyperliquid live-submit approval artifact (write temp + fsync + atomic rename over the approval + parent-directory fsync). Not an operator runtime value; it is appended to the configured approval path to form a same-directory staging file name.'''
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''

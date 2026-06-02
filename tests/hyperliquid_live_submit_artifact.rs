@@ -1,5 +1,7 @@
 //! Hyperliquid live-submit approval artifact tests.
 
+use std::io::{Read, Seek};
+
 use bolt_v2::{
     bolt_v3_providers::hyperliquid::HyperliquidProductSurface,
     bolt_v3_providers::hyperliquid_artifacts::{
@@ -7,6 +9,8 @@ use bolt_v2::{
         HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
         HyperliquidProductSubmitProofBinding, build_hyperliquid_live_submit_approval_artifact,
         consume_hyperliquid_live_submit_approval_artifact,
+        persist_consumed_hyperliquid_live_submit_approval_artifact,
+        read_hyperliquid_live_submit_approval_artifact,
         validate_hyperliquid_live_submit_approval_artifact,
         write_hyperliquid_live_submit_approval_artifact,
     },
@@ -291,5 +295,37 @@ fn provider_consumes_standard_perps_live_submit_approval_once() {
     assert!(
         error.contains("used_at"),
         "reused approval error must name used_at: {error}"
+    );
+}
+
+#[test]
+fn consumed_live_submit_approval_persist_replaces_file_atomically() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("hyperliquid-live-submit-approval.json");
+    write_hyperliquid_live_submit_approval_artifact(approval_input(), &path)
+        .expect("approval artifact should write");
+    let original_bytes = std::fs::read(&path).expect("approval artifact should read");
+    let mut held_original =
+        std::fs::File::open(&path).expect("test should hold original approval fd");
+    let mut consumed = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    consumed.used_at = Some(NOW);
+
+    persist_consumed_hyperliquid_live_submit_approval_artifact(&path, &consumed)
+        .expect("consumed approval should persist");
+
+    let persisted = read_hyperliquid_live_submit_approval_artifact(&path, 4096)
+        .expect("persisted consumed approval should parse");
+    assert_eq!(persisted.used_at, Some(NOW));
+    let mut held_bytes = Vec::new();
+    held_original
+        .rewind()
+        .expect("held original approval fd should rewind");
+    held_original
+        .read_to_end(&mut held_bytes)
+        .expect("held original approval fd should read");
+    assert_eq!(
+        held_bytes, original_bytes,
+        "consumption must replace the path instead of mutating the old file in place"
     );
 }

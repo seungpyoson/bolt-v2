@@ -1,7 +1,7 @@
 use std::{
     fs,
-    io::{Seek, Write},
-    path::Path,
+    io::Write,
+    path::{Path, PathBuf},
     str::FromStr,
 };
 
@@ -27,6 +27,7 @@ const LIVE_SUBMIT_APPROVAL_RECORD_KIND: &str = "bolt_v3.hyperliquid_live_submit_
 
 const LATENCY_PROFILE_ARTIFACT: &str = "hyperliquid_latency_profile";
 const LIVE_SUBMIT_APPROVAL_ARTIFACT: &str = "hyperliquid_live_submit_approval";
+const LIVE_SUBMIT_APPROVAL_SPEND_TEMP_SUFFIX: &str = ".spending";
 
 #[derive(Debug, Serialize)]
 pub struct HyperliquidProductMatrixArtifact {
@@ -263,21 +264,47 @@ pub fn persist_consumed_hyperliquid_live_submit_approval_artifact(
 ) -> Result<(), BoltV3OperatorArtifactError> {
     let bytes =
         serde_json::to_vec_pretty(artifact).map_err(BoltV3OperatorArtifactError::Serialize)?;
-    let mut file =
-        open_hyperliquid_live_submit_approval_file_for_spend(path).map_err(|source| {
-            BoltV3OperatorArtifactError::Write {
-                path: path.to_path_buf(),
-                source,
-            }
-        })?;
-    file.set_len(0)
-        .and_then(|()| file.rewind())
-        .and_then(|()| file.write_all(&bytes))
-        .and_then(|()| file.sync_all())
-        .map_err(|source| BoltV3OperatorArtifactError::Write {
+    let file = open_hyperliquid_live_submit_approval_file_for_spend(path).map_err(|source| {
+        BoltV3OperatorArtifactError::Write {
             path: path.to_path_buf(),
             source,
-        })
+        }
+    })?;
+    drop(file);
+
+    let temp_path = hyperliquid_live_submit_approval_spend_temp_path(path);
+    let result = (|| -> std::io::Result<()> {
+        {
+            let mut temp_file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&temp_path)?;
+            temp_file.write_all(&bytes)?;
+            temp_file.sync_all()?;
+        }
+        fs::rename(&temp_path, path)?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::File::open(parent)?.sync_all()?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result.map_err(|source| BoltV3OperatorArtifactError::Write {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn hyperliquid_live_submit_approval_spend_temp_path(path: &Path) -> PathBuf {
+    let mut temp_os = path.as_os_str().to_owned();
+    temp_os.push(LIVE_SUBMIT_APPROVAL_SPEND_TEMP_SUFFIX);
+    PathBuf::from(temp_os)
 }
 
 #[cfg(unix)]
@@ -286,14 +313,13 @@ fn open_hyperliquid_live_submit_approval_file_for_spend(path: &Path) -> std::io:
 
     fs::OpenOptions::new()
         .read(true)
-        .write(true)
         .custom_flags(libc::O_NOFOLLOW)
         .open(path)
 }
 
 #[cfg(not(unix))]
 fn open_hyperliquid_live_submit_approval_file_for_spend(path: &Path) -> std::io::Result<fs::File> {
-    fs::OpenOptions::new().read(true).write(true).open(path)
+    fs::OpenOptions::new().read(true).open(path)
 }
 
 pub fn write_hyperliquid_live_submit_approval_artifact(

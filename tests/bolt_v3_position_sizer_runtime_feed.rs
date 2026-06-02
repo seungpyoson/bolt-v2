@@ -909,6 +909,76 @@ fn unreserved_risk_reducing_exit_fill_reduces_inventory_before_next_exit() {
 }
 
 #[test]
+fn overfilled_sell_fill_keeps_allowance_equal_to_remaining_inventory() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_cache_snapshot(
+            Vec::<String>::new(),
+            Decimal::new(5, 0),
+            Decimal::new(10, 0),
+            1_000,
+        )
+        .is_some()
+    );
+    rebuild_empty_position_sizer(&admission);
+
+    admission
+        .admit_at(
+            &risk_reducing_exit_submit_request("exit-order-1", Decimal::new(5, 0)),
+            1_010,
+        )
+        .expect("exit should admit against seeded YES inventory")
+        .commit_submitted();
+
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "exit-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "exit-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(10),
+            OrderSide::Sell,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("overfilled sell should still publish clamped inventory");
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("sell fill should publish updated inventory");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.yes_position, Decimal::ZERO);
+    assert_eq!(product.no_position, Decimal::new(10, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(10, 0));
+}
+
+#[test]
 fn partial_unreserved_risk_reducing_exit_fill_keeps_live_order_unattributed() {
     let admission = Arc::new(position_sized_admission());
     arm_default(&admission);

@@ -584,20 +584,15 @@ impl PositionSizerRuntimeComponentBuilder {
         match side {
             BoltV3CompiledOrderSide::Buy => {
                 *outcome_position += fill_quantity;
-                snapshot.conditional_token_allowance += fill_quantity;
             }
             BoltV3CompiledOrderSide::Sell => {
                 *outcome_position = outcome_position
                     .checked_sub(fill_quantity)
                     .filter(|position| *position > Decimal::ZERO)
                     .unwrap_or(Decimal::ZERO);
-                snapshot.conditional_token_allowance = snapshot
-                    .conditional_token_allowance
-                    .checked_sub(fill_quantity)
-                    .filter(|allowance| *allowance > Decimal::ZERO)
-                    .unwrap_or(Decimal::ZERO);
             }
         }
+        snapshot.conditional_token_allowance = snapshot.yes_position + snapshot.no_position;
         snapshot.source = "nt_order_fill".to_string();
         snapshot.observed_at_ns = observed_at_ns;
     }

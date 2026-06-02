@@ -110,6 +110,24 @@ fn data_only_client_from_toml(value: &str) -> ClientBlock {
     toml::from_str(value).expect("test data-only client block should parse")
 }
 
+fn hyperliquid_data_client(update_instruments_interval_mins: u64) -> ClientBlock {
+    data_only_client_from_toml(&format!(
+        r#"
+venue = "HYPERLIQUID"
+
+[data]
+environment = "testnet"
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+ws_timeout_secs = 30
+update_instruments_interval_mins = {update_instruments_interval_mins}
+transport_backend = "sockudo"
+"#
+    ))
+}
+
 fn hyperliquid_execution_client(private_key_path: &str, account_address_path: &str) -> ClientBlock {
     hyperliquid_execution_client_with_secret_fields(&format!(
         r#"
@@ -416,6 +434,24 @@ fn provider_binding_accepts_hyperliquid_execution_config_with_ssm_paths() {
         validate_client_block("hyperliquid_perps", &client),
         Vec::<String>::new()
     );
+}
+
+#[test]
+fn provider_binding_accepts_hyperliquid_data_config_without_secrets() {
+    let client = hyperliquid_data_client(5);
+
+    assert_eq!(
+        validate_client_block("hyperliquid_market_data", &client),
+        Vec::<String>::new()
+    );
+}
+
+#[test]
+fn provider_binding_rejects_hyperliquid_data_without_refresh_cadence() {
+    let client = hyperliquid_data_client(0);
+    let rendered = validate_client_block("hyperliquid_market_data", &client).join("\n");
+
+    assert!(rendered.contains("clients.hyperliquid_market_data.data.update_instruments_interval_mins must be a positive integer"));
 }
 
 #[test]

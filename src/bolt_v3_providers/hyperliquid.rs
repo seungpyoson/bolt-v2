@@ -9,19 +9,24 @@ use std::{any::Any, sync::Arc};
 use nautilus_core::string::secret::REDACTED;
 use nautilus_hyperliquid::{
     common::enums::HyperliquidEnvironment as NtHyperliquidEnvironment,
-    config::HyperliquidExecClientConfig,
-    factories::{HyperliquidExecFactoryConfig, HyperliquidExecutionClientFactory},
+    config::{HyperliquidDataClientConfig, HyperliquidExecClientConfig},
+    factories::{
+        HyperliquidDataClientFactory, HyperliquidExecFactoryConfig,
+        HyperliquidExecutionClientFactory,
+    },
 };
 use nautilus_model::identifiers::AccountId;
 use nautilus_network::websocket::TransportBackend;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use url::Url;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::bolt_v3_providers::{ProviderExclusiveSignerOwner, ProviderResolvedSecrets};
 use crate::{
     bolt_v3_adapters::{
-        BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3ExecutionClientAdapterConfig,
+        BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3DataClientAdapterConfig,
+        BoltV3ExecutionClientAdapterConfig,
     },
     bolt_v3_config::ClientBlock,
     bolt_v3_providers::{
@@ -67,6 +72,19 @@ where
 fn _credential_log_module_path_exists(
     _private_key: &nautilus_hyperliquid::common::credential::EvmPrivateKey,
 ) {
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HyperliquidDataConfig {
+    pub environment: HyperliquidEnvironment,
+    pub base_url_ws: String,
+    pub base_url_http: String,
+    pub proxy_url: Option<String>,
+    pub http_timeout_secs: u64,
+    pub ws_timeout_secs: u64,
+    pub update_instruments_interval_mins: u64,
+    pub transport_backend: TransportBackend,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -346,10 +364,11 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
             "clients.{key} (provider={KEY}) must declare a proven [data] or [execution] block before Hyperliquid can be used"
         ));
     }
-    if client.data.is_some() {
-        errors.push(format!(
-            "clients.{key} (provider={KEY}) data mapping is not enabled in this slice"
-        ));
+    if let Some(data) = &client.data {
+        match data.clone().try_into::<HyperliquidDataConfig>() {
+            Ok(parsed) => errors.extend(validate_data_config(key, &parsed)),
+            Err(message) => errors.push(format!("clients.{key}.data: {message}")),
+        }
     }
     if client.execution.is_some() && client.secrets.is_none() {
         errors.push(format!(
@@ -395,6 +414,70 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
         errors.extend(validate_execution_secret_compatibility(
             key, execution, secrets,
         ));
+    }
+    errors
+}
+
+fn validate_data_config(key: &str, data: &HyperliquidDataConfig) -> Vec<String> {
+    let mut errors = Vec::new();
+    errors.extend(validate_url_field(
+        key,
+        "data.base_url_ws",
+        data.base_url_ws.as_str(),
+        &["ws", "wss"],
+    ));
+    errors.extend(validate_url_field(
+        key,
+        "data.base_url_http",
+        data.base_url_http.as_str(),
+        &["http", "https"],
+    ));
+    if let Some(proxy_url) = &data.proxy_url {
+        errors.extend(validate_url_field(
+            key,
+            "data.proxy_url",
+            proxy_url.as_str(),
+            &["http", "https", "socks5", "socks5h"],
+        ));
+    }
+    let positive_fields: &[(&str, u64)] = &[
+        ("http_timeout_secs", data.http_timeout_secs),
+        ("ws_timeout_secs", data.ws_timeout_secs),
+        (
+            "update_instruments_interval_mins",
+            data.update_instruments_interval_mins,
+        ),
+    ];
+    for (field, value) in positive_fields {
+        if *value == 0 {
+            errors.push(format!(
+                "clients.{key}.data.{field} must be a positive integer"
+            ));
+        }
+    }
+    errors
+}
+
+fn validate_url_field(
+    key: &str,
+    field: &str,
+    value: &str,
+    allowed_schemes: &[&str],
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if value.trim().is_empty() {
+        errors.push(format!("clients.{key}.{field} must be a non-empty URL"));
+        return errors;
+    }
+    let Ok(parsed) = Url::parse(value) else {
+        errors.push(format!("clients.{key}.{field} must be a valid URL"));
+        return errors;
+    };
+    if !allowed_schemes.contains(&parsed.scheme())
+        || !value[parsed.scheme().len()..].starts_with("://")
+        || !parsed.has_host()
+    {
+        errors.push(format!("clients.{key}.{field} must be a valid URL"));
     }
     errors
 }
@@ -637,13 +720,13 @@ fn parse_secrets_config(
 pub fn map_adapters(
     context: ProviderAdapterMapContext<'_>,
 ) -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError> {
-    if context.client.data.is_some() {
-        return Err(BoltV3AdapterMappingError::ValidationInvariant {
-            client_key: context.client_key.to_string(),
-            field: "data",
-            message: format!("provider {KEY} data mapping is not enabled in this slice"),
-        });
-    }
+    let data = match &context.client.data {
+        Some(value) => Some(BoltV3DataClientAdapterConfig {
+            factory: Box::new(HyperliquidDataClientFactory),
+            config: Box::new(map_data(context.client_key, value)?),
+        }),
+        None => None,
+    };
     let execution = match &context.client.execution {
         Some(value) => {
             let secrets = secrets_for(context.client_key, context.resolved)?;
@@ -654,9 +737,39 @@ pub fn map_adapters(
         }
         None => None,
     };
-    Ok(BoltV3ClientAdapterConfig {
-        data: None,
-        execution,
+    Ok(BoltV3ClientAdapterConfig { data, execution })
+}
+
+fn map_data(
+    client_key: &str,
+    value: &toml::Value,
+) -> Result<HyperliquidDataClientConfig, BoltV3AdapterMappingError> {
+    let cfg: HyperliquidDataConfig =
+        value.clone().try_into().map_err(|error: toml::de::Error| {
+            BoltV3AdapterMappingError::SchemaParse {
+                client_key: client_key.to_string(),
+                block: "data",
+                message: error.to_string(),
+            }
+        })?;
+    let validation_errors = validate_data_config(client_key, &cfg);
+    if let Some(message) = validation_errors.into_iter().next() {
+        return Err(BoltV3AdapterMappingError::SchemaParse {
+            client_key: client_key.to_string(),
+            block: "data",
+            message,
+        });
+    }
+    Ok(HyperliquidDataClientConfig {
+        private_key: None,
+        base_url_ws: Some(cfg.base_url_ws),
+        base_url_http: Some(cfg.base_url_http),
+        proxy_url: cfg.proxy_url,
+        environment: nt_environment(cfg.environment),
+        http_timeout_secs: cfg.http_timeout_secs,
+        ws_timeout_secs: cfg.ws_timeout_secs,
+        update_instruments_interval_mins: cfg.update_instruments_interval_mins,
+        transport_backend: cfg.transport_backend,
     })
 }
 

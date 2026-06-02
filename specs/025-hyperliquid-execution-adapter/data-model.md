@@ -3,16 +3,43 @@
 ## HyperliquidClientBlock
 
 - `provider_id`: existing Bolt provider identifier.
-- `environment`: explicit network/profile name from TOML.
-- `execution_mode`: `HyperliquidExecutionMode`.
-- `secret_set`: `HyperliquidSecretSet`.
-- `product_surfaces`: enabled discovery surfaces.
+- `data`: optional `HyperliquidDataConfig`.
+- `execution`: optional `HyperliquidExecutionConfig`.
+- `secret_set`: `HyperliquidSecretSet` only when execution is configured.
 - `latency_profile`: optional `HyperliquidLatencyProfile`.
 
 Validation:
 - Must be declared in TOML.
 - Must not contain raw secret material.
 - Must map through `ProviderBinding`.
+
+## HyperliquidDataConfig
+
+- `environment`: explicit network/profile name from TOML.
+- `base_url_ws`
+- `base_url_http`
+- `proxy_url`
+- `http_timeout_secs`
+- `ws_timeout_secs`
+- `update_instruments_interval_mins`
+- `transport_backend`
+
+Validation:
+- Data-only config requires no SSM secret block.
+- Endpoints, timeouts, refresh cadence, environment, and transport backend are TOML-owned.
+- NT data config leaves `private_key` unset in this slice.
+
+## HyperliquidExecutionConfig
+
+- `environment`: explicit network/profile name from TOML.
+- `execution_mode`: `HyperliquidExecutionMode`.
+- `product_surfaces`: enabled discovery surfaces.
+- `account_id`
+- execution endpoints and retry policy.
+
+Validation:
+- Execution requires SSM-backed secrets.
+- Live-submit mapping requires consumed surface-bound approval.
 
 ## HyperliquidSecretSet
 

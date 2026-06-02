@@ -101,6 +101,16 @@
 - [x] T048 [US6] Add failing latency-profile no-bypass test in `tests/hyperliquid_fail_closed.rs`.
 - [x] T049 [US6] Export latency profile artifacts without changing submit gates in `src/bolt_v3_operator_artifacts.rs`.
 
+## Phase 8A - User Story 5: Register Hyperliquid Market Data
+
+**Goal**: Hyperliquid `[data]` maps to NT market-data adapter config without enabling live submit or requiring signer material.
+
+**Independent Test**: Hyperliquid data-only config validates, maps to NT `HyperliquidDataClientConfig`, and leaves `private_key` unset.
+
+- [x] T049A [US5] Add failing Hyperliquid data-only mapping test in `tests/bolt_v3_adapter_mapping.rs`.
+- [x] T049B [US5] Implement Hyperliquid data config validation and NT data adapter mapping in `src/bolt_v3_providers/hyperliquid.rs`.
+- [x] T049C [US5] Add provider-binding validation tests for Hyperliquid data config in `tests/bolt_v3_provider_binding.rs`.
+
 ## Phase 9 - Verification
 
 - [x] T050 Run `cargo fmt --check` for `Cargo.toml` and `src/`.

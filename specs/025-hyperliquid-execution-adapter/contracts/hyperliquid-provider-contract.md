@@ -31,6 +31,10 @@ The provider binding must reject:
 - Spot, HIP-3, or HIP-4 adapter mapping without product-specific proof and matching consumed approval.
 - Any live submit path while the pinned NT `userFees` weight differs from official Hyperliquid weight policy.
 
+## Market Data Adapter Contract
+
+Hyperliquid `[data]` maps through NT `HyperliquidDataClientFactory` with TOML-owned environment, HTTP and WebSocket endpoints, proxy, timeouts, instrument refresh cadence, and transport backend. The data path must not require a live-submit approval artifact and must not pass signer material unless a later authenticated-data slice defines a separate SSM-only credential contract.
+
 ## Product Surface Evidence Contract
 
 Each product surface must record:

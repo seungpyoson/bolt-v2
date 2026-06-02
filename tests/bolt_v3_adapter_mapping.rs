@@ -30,7 +30,7 @@ use nautilus_binance::config::BinanceDataClientConfig;
 use nautilus_binance::spot::sbe::SBE_SCHEMA_VERSION as NT_BINANCE_SPOT_SBE_SCHEMA_VERSION;
 use nautilus_hyperliquid::{
     common::enums::HyperliquidEnvironment as NtHyperliquidEnvironment,
-    factories::HyperliquidExecFactoryConfig,
+    config::HyperliquidDataClientConfig, factories::HyperliquidExecFactoryConfig,
 };
 use nautilus_network::transport::sockudo::SockudoTransport;
 use nautilus_network::websocket::TransportBackend;
@@ -144,6 +144,25 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
     .expect("hyperliquid standard-perps client should parse")
 }
 
+fn hyperliquid_data_client() -> bolt_v2::bolt_v3_config::ClientBlock {
+    toml::from_str(
+        r#"
+venue = "HYPERLIQUID"
+
+[data]
+environment = "testnet"
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+ws_timeout_secs = 30
+update_instruments_interval_mins = 5
+transport_backend = "sockudo"
+"#,
+    )
+    .expect("hyperliquid data client should parse")
+}
+
 fn hyperliquid_standard_perps_client() -> bolt_v2::bolt_v3_config::ClientBlock {
     hyperliquid_client("standard_perps", "hl-standard-perps-approval-001")
 }
@@ -166,6 +185,10 @@ fn hyperliquid_hip4_without_settlement_poll_client() -> bolt_v2::bolt_v3_config:
 
 fn fixture_loaded_config_with_hyperliquid_standard_perps() -> LoadedBoltV3Config {
     fixture_loaded_config_with_hyperliquid_client(hyperliquid_standard_perps_client())
+}
+
+fn fixture_loaded_config_with_hyperliquid_data() -> LoadedBoltV3Config {
+    fixture_loaded_config_with_hyperliquid_client(hyperliquid_data_client())
 }
 
 fn fixture_loaded_config_with_hyperliquid_spot() -> LoadedBoltV3Config {
@@ -399,6 +422,48 @@ fn hyperliquid_standard_perps_execution_requires_consumed_live_submit_approval()
         }
         other => panic!("expected Hyperliquid live-submit approval invariant, got {other}"),
     }
+}
+
+#[test]
+fn hyperliquid_data_maps_to_nt_market_data_adapter_without_execution_approval() {
+    let loaded = fixture_loaded_config_with_hyperliquid_data();
+    let resolved = ResolvedBoltV3Secrets {
+        clients: BTreeMap::new(),
+    };
+
+    let configs =
+        map_bolt_v3_adapters(&loaded, &resolved).expect("Hyperliquid data should map cleanly");
+
+    let hyperliquid = configs
+        .clients
+        .get("hyperliquid_perps")
+        .expect("Hyperliquid client must be present in mapper output");
+    let data = hyperliquid
+        .data
+        .as_ref()
+        .expect("Hyperliquid [data] block must produce an NT data config");
+    assert!(hyperliquid.execution.is_none());
+    assert_eq!(data.factory.name(), "HYPERLIQUID");
+    assert_eq!(data.factory.config_type(), "HyperliquidDataClientConfig");
+
+    let config = data
+        .config_as::<HyperliquidDataClientConfig>()
+        .expect("Hyperliquid data should downcast to NT HyperliquidDataClientConfig");
+    assert_eq!(config.private_key, None);
+    assert_eq!(
+        config.base_url_ws.as_deref(),
+        Some("wss://api.hyperliquid-testnet.xyz/ws")
+    );
+    assert_eq!(
+        config.base_url_http.as_deref(),
+        Some("https://api.hyperliquid-testnet.xyz/info")
+    );
+    assert_eq!(config.proxy_url.as_deref(), Some("http://127.0.0.1:8080"));
+    assert_eq!(config.environment, NtHyperliquidEnvironment::Testnet);
+    assert_eq!(config.http_timeout_secs, 60);
+    assert_eq!(config.ws_timeout_secs, 30);
+    assert_eq!(config.update_instruments_interval_mins, 5);
+    assert_eq!(config.transport_backend, TransportBackend::Sockudo);
 }
 
 #[test]

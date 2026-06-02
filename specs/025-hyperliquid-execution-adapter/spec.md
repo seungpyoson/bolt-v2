@@ -9,7 +9,7 @@
 
 - "Fastest latency" is treated as a measurable ops objective, not a guaranteed code property.
 - "Colocated" means TOML-configured infrastructure profile and local info-node support; no region, endpoint, or facility value may be hardcoded.
-- The first accepted implementation slice does not place live orders. It proves adapter registration, discovery, secrets, signer ownership, fee/rate accounting, live-submit approval gating, and fail-closed submit behavior.
+- The first accepted implementation slice does not place live orders. It proves NT market-data adapter registration, execution adapter registration, discovery, secrets, signer ownership, fee/rate accounting, live-submit approval gating, and fail-closed submit behavior.
 
 ## User Stories And Tests
 
@@ -37,13 +37,19 @@ As an operator, I can prove the standard-perps adapter mapper accepts NT executi
 
 **Independent Test**: Adapter mapping is rejected when the approval artifact is missing, stale, reused, mismatched, expired, or wider than configured order limits. Production live-node construction remains blocked until a follow-up slice wires approval consumption into the live-node entrypoint.
 
-### User Story 5 - Gate Spot, HIP-3, And HIP-4 Mapping By Surface Approval (Priority: P2)
+### User Story 5 - Register Hyperliquid Market Data (Priority: P2)
+
+As an operator, I can configure the NT Hyperliquid market-data client for live instruments, quotes, and order book data without enabling live submit or exposing signer material in the data path.
+
+**Independent Test**: A Hyperliquid `[data]` block validates and maps to NT `HyperliquidDataClientConfig` plus `HyperliquidDataClientFactory`; data-only mapping requires no live-submit approval and leaves `private_key` unset.
+
+### User Story 6 - Gate Spot, HIP-3, And HIP-4 Mapping By Surface Approval (Priority: P2)
 
 As an operator, I can prove spot, HIP-3, and HIP-4 map through the same NT Hyperliquid execution adapter only when the configured product surface has a consumed approval artifact bound to that exact surface.
 
 **Independent Test**: Attempts to map spot, HIP-3, or HIP-4 fail without a consumed surface-bound approval; a consumed approval for one surface cannot authorize a different surface.
 
-### User Story 6 - Configure Latency Ops Separately (Priority: P3)
+### User Story 7 - Configure Latency Ops Separately (Priority: P3)
 
 As an operator, I can configure local info-node and placement profile settings without changing execution semantics or adding hardcoded endpoints.
 
@@ -70,6 +76,7 @@ As an operator, I can configure local info-node and placement profile settings w
 - **FR-017**: The system MUST treat Hyperliquid priority-fee grouping as out of MVP unless NT exposes and proves the required wire shape.
 - **FR-018**: The system MUST provide TOML-configured local-info-node and colocation profile fields as ops metadata only.
 - **FR-019**: The system MUST keep strategies intent-only and reject strategy-file changes that implement submit mechanics, sizing, rounding, fillability, or venue admission.
+- **FR-020**: The system MUST map Hyperliquid `[data]` through NT `HyperliquidDataClientFactory` and explicit TOML-owned data endpoints, timeouts, refresh cadence, environment, and transport backend.
 
 ## Edge Cases
 
@@ -83,7 +90,7 @@ As an operator, I can configure local info-node and placement profile settings w
 
 ## Success Criteria
 
-- **SC-001**: Hyperliquid provider config validates through existing provider-binding tests with no raw client module.
+- **SC-001**: Hyperliquid provider config validates through existing provider-binding tests with no raw client module, including data-only market-data config.
 - **SC-002**: Secret-resolution tests prove SSM-only behavior and no environment fallback at NT handoff.
 - **SC-003**: Product matrix tests classify standard perps, spot, HIP-3, and HIP-4 with source evidence and fail-closed submit status.
 - **SC-004**: Fail-closed tests prove latency ops metadata cannot bypass live-submit approval and the shared exchange-mutation guard rejects mutating request counts.

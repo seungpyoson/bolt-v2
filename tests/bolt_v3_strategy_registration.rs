@@ -22,7 +22,7 @@ use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_live::node::LiveNode;
 use nautilus_model::{
     enums::OrderSide,
-    identifiers::{ClientId, InstrumentId, StrategyId},
+    identifiers::{ClientId, ClientOrderId, InstrumentId, StrategyId},
 };
 use rust_decimal::Decimal;
 use sha2::{Digest, Sha256};
@@ -263,9 +263,10 @@ fn bolt_v3_registration_context_includes_operator_readiness_gate_session() {
 
 fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
-        strategy_id: "strategy-a".to_string(),
-        client_order_id: "client-order-1".to_string(),
-        instrument_id: "instrument-1".to_string(),
+        strategy_id: StrategyId::new("strategy-a"),
+        client_order_id: ClientOrderId::new("client-order-1"),
+        instrument_id: InstrumentId::from_as_ref("BTC-USD.BINANCE")
+            .expect("valid NT instrument id"),
         notional,
         order_side: OrderSide::Buy,
         order_quantity: Decimal::new(1, 0),

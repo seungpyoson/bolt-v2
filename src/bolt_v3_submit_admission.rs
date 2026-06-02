@@ -5,6 +5,7 @@ use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
 use nautilus_model::{
     enums::{OrderSide, PositionSide},
+    identifiers::{ClientOrderId, InstrumentId, StrategyId},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
     types::Price,
@@ -120,9 +121,9 @@ impl BoltV3SubmitAdmissionState {
             .expect("submit admission state mutex should not be poisoned");
         let outcome = Self::evaluate(&inner, request);
         let evidence = BoltV3AdmissionDecisionEvidence {
-            strategy_id: request.strategy_id.clone(),
-            client_order_id: request.client_order_id.clone(),
-            instrument_id: request.instrument_id.clone(),
+            strategy_id: request.strategy_id.to_string(),
+            client_order_id: request.client_order_id.to_string(),
+            instrument_id: request.instrument_id.to_string(),
             notional: request.notional.to_string(),
             intent_kind: request.intent_kind,
             outcome: outcome.clone(),
@@ -431,7 +432,7 @@ pub struct BoltV3RiskReducingExitProof {
 
 impl BoltV3RiskReducingExitProof {
     fn is_valid_for(&self, request: &BoltV3SubmitAdmissionRequest) -> bool {
-        self.instrument_id == request.instrument_id
+        self.instrument_id == request.instrument_id.to_string()
             && self.exit_order_side == request.order_side
             && self.exit_quantity == request.order_quantity
             && self.position_quantity > Decimal::ZERO
@@ -482,9 +483,9 @@ impl BoltV3SubmitLifecyclePolicy {
 
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionRequest {
-    pub strategy_id: String,
-    pub client_order_id: String,
-    pub instrument_id: String,
+    pub strategy_id: StrategyId,
+    pub client_order_id: ClientOrderId,
+    pub instrument_id: InstrumentId,
     pub notional: Decimal,
     pub order_side: OrderSide,
     pub order_quantity: Decimal,

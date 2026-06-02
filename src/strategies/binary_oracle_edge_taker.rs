@@ -4395,9 +4395,11 @@ impl BinaryOracleEdgeTaker {
         };
 
         Ok(BoltV3SubmitAdmissionRequest {
-            strategy_id: intent.strategy_id.clone(),
-            client_order_id,
-            instrument_id: order.instrument_id().to_string(),
+            strategy_id: StrategyId::new_checked(&intent.strategy_id).map_err(|_| {
+                anyhow::anyhow!("bolt-v3 submit admission strategy id is not a valid NT StrategyId")
+            })?,
+            client_order_id: order.client_order_id(),
+            instrument_id: order.instrument_id(),
             notional,
             order_side: order.order_side(),
             order_quantity: quantity,
@@ -7547,9 +7549,11 @@ fn submit_admission_request_from_order(
     let notional = base_quantity_admission_notional(price, quantity);
 
     Ok(BoltV3SubmitAdmissionRequest {
-        strategy_id: intent.strategy_id.clone(),
-        client_order_id,
-        instrument_id: order.instrument_id().to_string(),
+        strategy_id: StrategyId::new_checked(&intent.strategy_id).map_err(|_| {
+            anyhow::anyhow!("bolt-v3 submit admission strategy id is not a valid NT StrategyId")
+        })?,
+        client_order_id: order.client_order_id(),
+        instrument_id: order.instrument_id(),
         notional,
         order_side: order.order_side(),
         order_quantity: quantity,
@@ -9720,9 +9724,10 @@ mod tests {
         submit_admission
             .admit(
                 &crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest {
-                    strategy_id: "strategy-a".to_string(),
-                    client_order_id: "client-order-0".to_string(),
-                    instrument_id: "instrument-0".to_string(),
+                    strategy_id: StrategyId::new("strategy-a"),
+                    client_order_id: ClientOrderId::new("client-order-0"),
+                    instrument_id: InstrumentId::from_as_ref("BTC-USD.BINANCE")
+                        .expect("valid NT instrument id"),
                     notional: Decimal::new(50, 2),
                     order_side: OrderSide::Buy,
                     order_quantity: Decimal::new(1, 0),

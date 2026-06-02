@@ -1,15 +1,20 @@
 use bolt_v2::{
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
     bolt_v3_kill_switch_cancel::{
+        BoltV3KillSwitchCancelAggregateResult, BoltV3KillSwitchCancelAttemptOutcome,
         BoltV3KillSwitchCancelCandidate, BoltV3KillSwitchCancelDecisionMode,
-        BoltV3KillSwitchCancelError, BoltV3KillSwitchCancelPlanRequest,
+        BoltV3KillSwitchCancelError, BoltV3KillSwitchCancelOutcomeAggregation,
+        BoltV3KillSwitchCancelOutcomeEvidence, BoltV3KillSwitchCancelPlanRequest,
         BoltV3KillSwitchCancelPolicy, BoltV3KillSwitchCancelRouteKind,
         BoltV3KillSwitchCancelRouteProof, BoltV3KillSwitchCancelScope,
         BoltV3KillSwitchCancelSnapshot, BoltV3KillSwitchCancelSupervisor,
         BoltV3KillSwitchOutstandingOrderRiskSurface,
     },
 };
-use nautilus_model::identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId};
+use nautilus_model::{
+    enums::OrderStatus,
+    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId},
+};
 
 const ACTION_ID: &str = "cancel-action-1";
 const POLICY_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -71,13 +76,14 @@ fn cancel_snapshot_reports_missing_mandatory_surface_proof() {
 }
 
 #[test]
-fn cancel_candidate_stores_nt_order_identity_fields() {
-    let candidate = BoltV3KillSwitchCancelCandidate::from_nt_order_identity(
+fn cancel_candidate_stores_nt_order_identity_and_status_fields() {
+    let candidate = BoltV3KillSwitchCancelCandidate::from_nt_order_state(
         BoltV3KillSwitchOutstandingOrderRiskSurface::Open,
         account_id(),
         instrument_id(),
         strategy_id("binary-oracle-edge-taker-001"),
         client_order_id("client-order-1"),
+        OrderStatus::Accepted,
         1_717_200_000_000_000_000,
     )
     .expect("NT-backed cancel candidate should be valid");
@@ -92,6 +98,7 @@ fn cancel_candidate_stores_nt_order_identity_fields() {
         candidate.client_order_id(),
         client_order_id("client-order-1")
     );
+    assert_eq!(candidate.order_status(), OrderStatus::Accepted);
 }
 
 #[test]
@@ -205,6 +212,7 @@ fn cancel_supervisor_commands_bind_request_and_candidate_metadata() {
         strategy_id("binary-oracle-edge-taker-001")
     );
     assert_eq!(command.client_order_id(), client_order_id("client-order-0"));
+    assert_eq!(command.order_status(), OrderStatus::Accepted);
     assert_eq!(
         command.surface(),
         BoltV3KillSwitchOutstandingOrderRiskSurface::Open
@@ -289,6 +297,51 @@ fn cancel_supervisor_requires_supported_route_proof_before_planned_commands() {
     );
 }
 
+#[test]
+fn cancel_outcome_aggregation_uses_nt_order_status_evidence_without_collapsing_races() {
+    let requested = BoltV3KillSwitchCancelAttemptOutcome::cancel_requested(OrderStatus::Accepted)
+        .expect("requested outcome should preserve accepted NT status");
+    let accepted = BoltV3KillSwitchCancelAttemptOutcome::cancel_accepted(OrderStatus::Accepted)
+        .expect("accepted outcome should preserve accepted NT status");
+    let rejected = BoltV3KillSwitchCancelAttemptOutcome::cancel_rejected(OrderStatus::Accepted)
+        .expect("rejected outcome should preserve accepted NT status");
+    let pending = BoltV3KillSwitchCancelAttemptOutcome::pending_cancel(OrderStatus::PendingCancel)
+        .expect("pending-cancel outcome should require NT pending-cancel status");
+    let expired = BoltV3KillSwitchCancelAttemptOutcome::expired(OrderStatus::Expired)
+        .expect("expired outcome should require NT expired status");
+    let filled = BoltV3KillSwitchCancelAttemptOutcome::filled_before_cancel(OrderStatus::Filled)
+        .expect("filled-before-cancel outcome should require NT filled status");
+    let terminal =
+        BoltV3KillSwitchCancelAttemptOutcome::terminal_before_cancel(OrderStatus::Canceled)
+            .expect("terminal-before-cancel outcome should accept closed NT status");
+
+    assert_ne!(requested.kind(), accepted.kind());
+    assert_ne!(accepted.kind(), rejected.kind());
+    assert_ne!(pending.kind(), expired.kind());
+    assert_eq!(pending.order_status(), OrderStatus::PendingCancel);
+
+    assert_eq!(
+        aggregate_single_candidate(pending).result(),
+        BoltV3KillSwitchCancelAggregateResult::OutstandingRiskRemains
+    );
+    assert_eq!(
+        aggregate_single_candidate(expired).result(),
+        BoltV3KillSwitchCancelAggregateResult::AllTerminal
+    );
+    assert_eq!(
+        aggregate_single_candidate(terminal).result(),
+        BoltV3KillSwitchCancelAggregateResult::AllTerminal
+    );
+    assert_eq!(
+        aggregate_single_candidate(filled).result(),
+        BoltV3KillSwitchCancelAggregateResult::RequiresPositionReconciliation
+    );
+    assert_eq!(
+        aggregate_single_candidate(rejected).result(),
+        BoltV3KillSwitchCancelAggregateResult::FailedManualIntervention
+    );
+}
+
 fn cancel_plan_request(kill_switch_state: KillSwitchState) -> BoltV3KillSwitchCancelPlanRequest {
     BoltV3KillSwitchCancelPlanRequest {
         kill_switch_state,
@@ -344,6 +397,23 @@ fn valid_scope() -> BoltV3KillSwitchCancelScope {
         vec![strategy_id("binary-oracle-edge-taker-001")],
     )
     .expect("valid cancel scope should construct")
+}
+
+fn aggregate_single_candidate(
+    outcome: BoltV3KillSwitchCancelAttemptOutcome,
+) -> BoltV3KillSwitchCancelOutcomeAggregation {
+    let snapshot = single_candidate_snapshot(BoltV3KillSwitchOutstandingOrderRiskSurface::Open);
+    let evidence =
+        BoltV3KillSwitchCancelOutcomeEvidence::from_candidate(&snapshot.candidates()[0], outcome);
+    BoltV3KillSwitchCancelOutcomeAggregation::from_snapshot_outcomes(&snapshot, vec![evidence])
+        .expect("single candidate outcome should aggregate")
+}
+
+fn single_candidate_snapshot(
+    surface: BoltV3KillSwitchOutstandingOrderRiskSurface,
+) -> BoltV3KillSwitchCancelSnapshot {
+    BoltV3KillSwitchCancelSnapshot::new(vec![cancel_candidate(surface, "client-order-0")])
+        .expect("single candidate snapshot should construct")
 }
 
 fn non_cancelling_states() -> Vec<KillSwitchState> {
@@ -423,15 +493,30 @@ fn cancel_candidate_for_strategy_with_timestamp(
     strategy_id_value: &str,
     source_timestamp_unix_nanos: u64,
 ) -> BoltV3KillSwitchCancelCandidate {
-    BoltV3KillSwitchCancelCandidate::from_nt_order_identity(
+    BoltV3KillSwitchCancelCandidate::from_nt_order_state(
         surface,
         account_id(),
         instrument_id(),
         strategy_id(strategy_id_value),
         client_order_id(client_order_id_value),
+        order_status_for_surface(surface),
         source_timestamp_unix_nanos,
     )
     .expect("cancel candidate should be valid")
+}
+
+fn order_status_for_surface(surface: BoltV3KillSwitchOutstandingOrderRiskSurface) -> OrderStatus {
+    match surface {
+        BoltV3KillSwitchOutstandingOrderRiskSurface::Open => OrderStatus::Accepted,
+        BoltV3KillSwitchOutstandingOrderRiskSurface::Inflight => OrderStatus::Submitted,
+        BoltV3KillSwitchOutstandingOrderRiskSurface::PendingCancel => OrderStatus::PendingCancel,
+        BoltV3KillSwitchOutstandingOrderRiskSurface::Emulated => OrderStatus::Emulated,
+        BoltV3KillSwitchOutstandingOrderRiskSurface::AlgorithmManaged
+        | BoltV3KillSwitchOutstandingOrderRiskSurface::Contingent
+        | BoltV3KillSwitchOutstandingOrderRiskSurface::AcceptedButNotTerminal => {
+            OrderStatus::Accepted
+        }
+    }
 }
 
 fn account_id() -> AccountId {

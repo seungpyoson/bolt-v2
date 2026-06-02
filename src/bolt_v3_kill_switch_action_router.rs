@@ -2,7 +2,10 @@ use crate::{
     bolt_v3_kill_switch::KillSwitchState,
     bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionClaim,
 };
-use nautilus_model::enums::TradingState;
+use nautilus_model::{
+    enums::TradingState,
+    identifiers::{AccountId, InstrumentId},
+};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,19 +27,16 @@ pub enum BoltV3KillSwitchActionDecisionMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3KillSwitchActionScope {
-    account_ids: Vec<String>,
-    instrument_ids: Vec<String>,
+    account_ids: Vec<AccountId>,
+    instrument_ids: Vec<InstrumentId>,
 }
 
 impl BoltV3KillSwitchActionScope {
     pub fn new(
-        account_ids: Vec<String>,
-        instrument_ids: Vec<String>,
+        account_ids: Vec<AccountId>,
+        instrument_ids: Vec<InstrumentId>,
     ) -> Result<Self, BoltV3KillSwitchActionRouterError> {
-        if account_ids.is_empty() || account_ids.iter().any(|value| value.trim().is_empty()) {
-            return Err(BoltV3KillSwitchActionRouterError::InvalidScope);
-        }
-        if instrument_ids.is_empty() || instrument_ids.iter().any(|value| value.trim().is_empty()) {
+        if account_ids.is_empty() || instrument_ids.is_empty() {
             return Err(BoltV3KillSwitchActionRouterError::InvalidScope);
         }
         Ok(Self {
@@ -45,11 +45,11 @@ impl BoltV3KillSwitchActionScope {
         })
     }
 
-    pub fn account_ids(&self) -> &[String] {
+    pub fn account_ids(&self) -> &[AccountId] {
         &self.account_ids
     }
 
-    pub fn instrument_ids(&self) -> &[String] {
+    pub fn instrument_ids(&self) -> &[InstrumentId] {
         &self.instrument_ids
     }
 }

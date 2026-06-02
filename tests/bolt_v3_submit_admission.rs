@@ -19,7 +19,7 @@ use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
 use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_model::enums::{OrderSide, PositionSide};
-use nautilus_model::identifiers::InstrumentId;
+use nautilus_model::identifiers::{ClientOrderId, InstrumentId, StrategyId};
 use rust_decimal::Decimal;
 use std::{
     sync::{Arc, Condvar, Mutex, mpsc},
@@ -740,9 +740,9 @@ fn submit_request_with_kind_policy_and_exit_proof(
         BoltV3SubmitIntentKind::KillSwitchForcedReduction => (OrderSide::Sell, Decimal::new(1, 0)),
     };
     BoltV3SubmitAdmissionRequest {
-        strategy_id: "strategy-a".to_string(),
-        client_order_id: "client-order-1".to_string(),
-        instrument_id: "instrument-1".to_string(),
+        strategy_id: strategy_id(),
+        client_order_id: client_order_id("client-order-1"),
+        instrument_id: instrument_id(),
         notional,
         order_side,
         order_quantity,
@@ -757,12 +757,24 @@ fn submit_request_with_kind_policy_and_exit_proof(
 fn valid_risk_reducing_exit_proof() -> BoltV3RiskReducingExitProof {
     BoltV3RiskReducingExitProof {
         position_id: "position-1".to_string(),
-        instrument_id: "instrument-1".to_string(),
+        instrument_id: instrument_id().to_string(),
         position_side: PositionSide::Long,
         exit_order_side: OrderSide::Sell,
         position_quantity: Decimal::new(264, 2),
         exit_quantity: Decimal::new(264, 2),
     }
+}
+
+fn strategy_id() -> StrategyId {
+    StrategyId::new("strategy-a")
+}
+
+fn client_order_id(value: &str) -> ClientOrderId {
+    ClientOrderId::new(value)
+}
+
+fn instrument_id() -> InstrumentId {
+    InstrumentId::from_as_ref("BTC-USD.BINANCE").expect("valid NT instrument id")
 }
 
 fn armed_admission(max_live_order_count: u32, max_notional: Decimal) -> BoltV3SubmitAdmissionState {
@@ -992,9 +1004,15 @@ fn admit_records_admission_decision_evidence_on_admit_outcome() {
         "exactly one admission decision recorded"
     );
     assert_eq!(decisions[0].outcome, BoltV3AdmissionOutcome::Admitted);
-    assert_eq!(decisions[0].strategy_id, request.strategy_id);
-    assert_eq!(decisions[0].client_order_id, request.client_order_id);
-    assert_eq!(decisions[0].instrument_id, request.instrument_id);
+    assert_eq!(decisions[0].strategy_id, request.strategy_id.to_string());
+    assert_eq!(
+        decisions[0].client_order_id,
+        request.client_order_id.to_string()
+    );
+    assert_eq!(
+        decisions[0].instrument_id,
+        request.instrument_id.to_string()
+    );
     assert_eq!(decisions[0].notional, request.notional.to_string());
     assert_eq!(decisions[0].intent_kind, request.intent_kind);
 }

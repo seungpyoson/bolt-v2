@@ -26,9 +26,10 @@ This phase intentionally separates three concerns:
 - Submit admission remains the global exposure-opening block; cancel planning does not create any submit path.
 - Outstanding order risk includes open, inflight, pending-cancel, emulated, algorithm-managed, contingent, and locally accepted-but-not-terminal order surfaces.
 - Every cancel candidate is scoped by config-owned account, instrument, and strategy filters.
+- Every cancel candidate and planned command carries NT identifiers (`AccountId`, `InstrumentId`, `StrategyId`, `ClientOrderId`) and NT `OrderStatus`. Bolt-specific surfaces are evidence classifications over NT-owned order/cache state, not a replacement lifecycle model.
 - Cancel route proof must preserve original strategy/client/order identity. One standalone kill-switch strategy cannot cancel other strategies' orders unless a source-backed route proves it can preserve that identity through NT.
-- Phase 4 emits proof and planned commands only. It must not call NT `cancel_order`, `cancel_orders`, direct execution engine methods, or venue-specific APIs.
-- `pending_cancel`, `filled_before_cancel`, and `terminal_before_cancel` are distinct outcomes. Filled-before-cancel is not success by itself; it must flow into later position reconciliation/flattening.
+- Phase 4 emits proof and planned commands only. It must not call NT `cancel_order`, `cancel_orders`, direct execution engine methods, or venue-specific APIs; later live adapters must route through NT `CancelOrder`, `CancelAllOrders`, or `BatchCancelOrders` shapes.
+- `pending_cancel`, `filled_before_cancel`, and `terminal_before_cancel` are distinct labels derived from NT `OrderStatus` / later `OrderStatusReport` evidence. Filled-before-cancel is not success by itself; it must flow into later position reconciliation/flattening.
 - Retry attempts, timeout budgets, and backoff values are TOML-owned when cancel policy is enabled.
 - Missing mandatory order-risk surfaces, stale source timestamps, unsupported route proof, or exhausted retry budget returns `FailedManualIntervention`-class evidence rather than silently claiming cancellation success.
 - Strategy files must remain unable to import or instantiate global kill-switch cancel policy or bypass global cancel routing.
@@ -114,14 +115,14 @@ Use Option A. Phase 4 should produce a reviewable no-submit cancel-loop proof mo
 4. GREEN: add `BoltV3KillSwitchCancelPolicy` with mandatory surface set and a validator that fails closed on missing mandatory surface proof.
 5. RED: test proves cancel planning only works for `KillSwitchState::Cancelling`; `Armed`, `Halting`, `Halted`, `Flattening`, `Flat`, and `FailedManualIntervention` reject before planned commands are emitted.
 6. GREEN: add `BoltV3KillSwitchCancelSupervisor::plan_cancel` with a state-kind guard and no-submit decision output.
-7. RED: test proves every planned cancel command binds halt id, action id, config hash, policy hash, source timestamp, account scope, instrument scope, strategy id, client order id, and surface.
+7. RED: test proves every planned cancel command binds halt id, action id, config hash, policy hash, source timestamp, NT account scope, NT instrument scope, NT strategy id, NT client order id, NT order status, and surface.
 8. GREEN: thread the metadata from the Phase 3 router-style request into `BoltV3KillSwitchCancelPlan` and command records.
 9. RED: test proves stale source timestamps and empty account/instrument/strategy filters reject.
 10. GREEN: add freshness and scope validation without hardcoded runtime values; tests construct runtime values explicitly.
 11. RED: test proves unsupported or missing route proof returns a fail-closed manual-intervention decision instead of planned cancellation.
 12. GREEN: add `BoltV3KillSwitchCancelRouteProof` with route kind `PerStrategyActionPort` and `LiveNodeCommandRouter`, preserving original strategy/client/order identity. Do not implement live adapter calls.
-13. RED: test proves `cancel_requested`, `cancel_accepted`, `cancel_rejected`, `pending_cancel`, `expired`, `filled_before_cancel`, and `terminal_before_cancel` outcomes are distinct and cannot be collapsed into success.
-14. GREEN: add `BoltV3KillSwitchCancelAttemptOutcome` and outcome aggregation that reports unresolved risk unless terminal/cancelled proof exists for every candidate.
+13. RED: test proves NT `OrderStatus` / later `OrderStatusReport` evidence maps `cancel_requested`, `cancel_accepted`, `cancel_rejected`, `pending_cancel`, `expired`, `filled_before_cancel`, and `terminal_before_cancel` labels distinctly and cannot collapse them into success.
+14. GREEN: add outcome aggregation over NT `OrderStatus` evidence that reports unresolved risk unless terminal/cancelled proof exists for every candidate.
 15. RED: test proves filled-before-cancel stays unresolved for cancel success and produces a `RequiresPositionReconciliation` result for later flatten/reconciliation phases.
 16. GREEN: add aggregate decision result variants for `AllTerminal`, `OutstandingRiskRemains`, `RequiresPositionReconciliation`, and `FailedManualIntervention`.
 17. RED: test proves retry attempts, timeout, and backoff are policy-owned and retry exhaustion produces `FailedManualIntervention`.
@@ -139,9 +140,9 @@ Use Option A. Phase 4 should produce a reviewable no-submit cancel-loop proof mo
 - Cancel planning is valid only for durable `Cancelling` state.
 - Outstanding-order-risk coverage includes open, inflight, pending-cancel, emulated, algorithm-managed, contingent, and accepted-but-not-terminal surfaces.
 - Missing mandatory surface proof fails closed.
-- Planned cancel commands bind halt id, action id, config hash, policy hash, source timestamp, account scope, instrument scope, strategy id, client order id, route proof, and surface.
+- Planned cancel commands bind halt id, action id, config hash, policy hash, source timestamp, NT account scope, NT instrument scope, NT strategy id, NT client order id, NT order status, route proof, and surface.
 - Route proof preserves original strategy/client/order identity and does not assume a standalone kill-switch strategy can cancel other strategies' orders.
-- Cancel outcomes distinguish requested, accepted, rejected, pending-cancel, expired, terminal-before-cancel, and filled-before-cancel.
+- Cancel outcomes distinguish requested, accepted, rejected, pending-cancel, expired, terminal-before-cancel, and filled-before-cancel using NT `OrderStatus` / `OrderStatusReport` evidence rather than bespoke venue lifecycle state.
 - Filled-before-cancel cannot be counted as cancellation success; it must require later position reconciliation.
 - Retry exhaustion or unsupported route proof returns manual-intervention evidence instead of success.
 - `[risk.kill_switch.cancel]` values are TOML-owned and validated when enabled.

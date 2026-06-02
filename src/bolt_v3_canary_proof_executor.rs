@@ -224,9 +224,15 @@ impl CanaryProofExecutor {
         self.config
             .submit_admission
             .admit(&BoltV3SubmitAdmissionRequest {
-                strategy_id: self.config.executor_strategy_id.clone(),
-                client_order_id: order.client_order_id().to_string(),
-                instrument_id: order.instrument_id().to_string(),
+                strategy_id: StrategyId::new_checked(&self.config.executor_strategy_id).map_err(
+                    |_| {
+                        anyhow::anyhow!(
+                            "canary proof executor strategy id is not a valid NT StrategyId"
+                        )
+                    },
+                )?,
+                client_order_id: order.client_order_id(),
+                instrument_id: order.instrument_id(),
                 notional: admission_notional,
                 order_side: order.order_side(),
                 order_quantity: rounded_quantity_decimal,

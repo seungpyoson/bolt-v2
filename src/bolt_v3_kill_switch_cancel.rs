@@ -1,7 +1,12 @@
 use crate::bolt_v3_kill_switch::KillSwitchState;
-use nautilus_model::identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId};
+use nautilus_model::{
+    enums::OrderStatus,
+    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId},
+};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+
+type BoltV3KillSwitchCancelOrderIdentity = (AccountId, InstrumentId, StrategyId, ClientOrderId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BoltV3KillSwitchOutstandingOrderRiskSurface {
@@ -37,6 +42,7 @@ pub struct BoltV3KillSwitchCancelCandidate {
     instrument_id: InstrumentId,
     strategy_id: StrategyId,
     client_order_id: ClientOrderId,
+    order_status: OrderStatus,
     source_timestamp_unix_nanos: u64,
 }
 
@@ -47,6 +53,7 @@ impl BoltV3KillSwitchCancelCandidate {
         instrument_id: impl Into<String>,
         strategy_id: impl Into<String>,
         client_order_id: impl Into<String>,
+        order_status: OrderStatus,
         source_timestamp_unix_nanos: u64,
     ) -> Result<Self, BoltV3KillSwitchCancelError> {
         let account_id = account_id.into().trim().to_string();
@@ -62,22 +69,24 @@ impl BoltV3KillSwitchCancelCandidate {
             .map_err(|_| BoltV3KillSwitchCancelError::InvalidStrategyId)?;
         let client_order_id = ClientOrderId::new_checked(&client_order_id)
             .map_err(|_| BoltV3KillSwitchCancelError::InvalidClientOrderId)?;
-        Self::from_nt_order_identity(
+        Self::from_nt_order_state(
             surface,
             account_id,
             instrument_id,
             strategy_id,
             client_order_id,
+            order_status,
             source_timestamp_unix_nanos,
         )
     }
 
-    pub fn from_nt_order_identity(
+    pub fn from_nt_order_state(
         surface: BoltV3KillSwitchOutstandingOrderRiskSurface,
         account_id: AccountId,
         instrument_id: InstrumentId,
         strategy_id: StrategyId,
         client_order_id: ClientOrderId,
+        order_status: OrderStatus,
         source_timestamp_unix_nanos: u64,
     ) -> Result<Self, BoltV3KillSwitchCancelError> {
         if source_timestamp_unix_nanos == 0 {
@@ -90,6 +99,7 @@ impl BoltV3KillSwitchCancelCandidate {
             instrument_id,
             strategy_id,
             client_order_id,
+            order_status,
             source_timestamp_unix_nanos,
         })
     }
@@ -112,6 +122,10 @@ impl BoltV3KillSwitchCancelCandidate {
 
     pub fn client_order_id(&self) -> ClientOrderId {
         self.client_order_id
+    }
+
+    pub fn order_status(&self) -> OrderStatus {
+        self.order_status
     }
 
     pub fn source_timestamp_unix_nanos(&self) -> u64 {
@@ -354,6 +368,7 @@ impl BoltV3KillSwitchCancelSupervisor {
                 instrument_id: candidate.instrument_id,
                 strategy_id: candidate.strategy_id,
                 client_order_id: candidate.client_order_id,
+                order_status: candidate.order_status,
                 surface: candidate.surface(),
                 route_kind,
             })
@@ -455,6 +470,7 @@ pub struct BoltV3KillSwitchCancelCommand {
     instrument_id: InstrumentId,
     strategy_id: StrategyId,
     client_order_id: ClientOrderId,
+    order_status: OrderStatus,
     surface: BoltV3KillSwitchOutstandingOrderRiskSurface,
     route_kind: BoltV3KillSwitchCancelRouteKind,
 }
@@ -496,12 +512,280 @@ impl BoltV3KillSwitchCancelCommand {
         self.client_order_id
     }
 
+    pub fn order_status(&self) -> OrderStatus {
+        self.order_status
+    }
+
     pub fn surface(&self) -> BoltV3KillSwitchOutstandingOrderRiskSurface {
         self.surface
     }
 
     pub fn route_kind(&self) -> BoltV3KillSwitchCancelRouteKind {
         self.route_kind
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3KillSwitchCancelAttemptOutcomeKind {
+    CancelRequested,
+    CancelAccepted,
+    CancelRejected,
+    PendingCancel,
+    Expired,
+    FilledBeforeCancel,
+    TerminalBeforeCancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoltV3KillSwitchCancelAttemptOutcome {
+    kind: BoltV3KillSwitchCancelAttemptOutcomeKind,
+    order_status: OrderStatus,
+}
+
+impl BoltV3KillSwitchCancelAttemptOutcome {
+    pub fn cancel_requested(
+        order_status: OrderStatus,
+    ) -> Result<Self, BoltV3KillSwitchCancelError> {
+        Self::new(
+            BoltV3KillSwitchCancelAttemptOutcomeKind::CancelRequested,
+            order_status,
+        )
+    }
+
+    pub fn cancel_accepted(order_status: OrderStatus) -> Result<Self, BoltV3KillSwitchCancelError> {
+        Self::new(
+            BoltV3KillSwitchCancelAttemptOutcomeKind::CancelAccepted,
+            order_status,
+        )
+    }
+
+    pub fn cancel_rejected(order_status: OrderStatus) -> Result<Self, BoltV3KillSwitchCancelError> {
+        Self::new(
+            BoltV3KillSwitchCancelAttemptOutcomeKind::CancelRejected,
+            order_status,
+        )
+    }
+
+    pub fn pending_cancel(order_status: OrderStatus) -> Result<Self, BoltV3KillSwitchCancelError> {
+        Self::new(
+            BoltV3KillSwitchCancelAttemptOutcomeKind::PendingCancel,
+            order_status,
+        )
+    }
+
+    pub fn expired(order_status: OrderStatus) -> Result<Self, BoltV3KillSwitchCancelError> {
+        Self::new(
+            BoltV3KillSwitchCancelAttemptOutcomeKind::Expired,
+            order_status,
+        )
+    }
+
+    pub fn filled_before_cancel(
+        order_status: OrderStatus,
+    ) -> Result<Self, BoltV3KillSwitchCancelError> {
+        Self::new(
+            BoltV3KillSwitchCancelAttemptOutcomeKind::FilledBeforeCancel,
+            order_status,
+        )
+    }
+
+    pub fn terminal_before_cancel(
+        order_status: OrderStatus,
+    ) -> Result<Self, BoltV3KillSwitchCancelError> {
+        Self::new(
+            BoltV3KillSwitchCancelAttemptOutcomeKind::TerminalBeforeCancel,
+            order_status,
+        )
+    }
+
+    fn new(
+        kind: BoltV3KillSwitchCancelAttemptOutcomeKind,
+        order_status: OrderStatus,
+    ) -> Result<Self, BoltV3KillSwitchCancelError> {
+        validate_outcome_status(kind, order_status)?;
+        Ok(Self { kind, order_status })
+    }
+
+    pub fn kind(&self) -> BoltV3KillSwitchCancelAttemptOutcomeKind {
+        self.kind
+    }
+
+    pub fn order_status(&self) -> OrderStatus {
+        self.order_status
+    }
+}
+
+fn validate_outcome_status(
+    kind: BoltV3KillSwitchCancelAttemptOutcomeKind,
+    order_status: OrderStatus,
+) -> Result<(), BoltV3KillSwitchCancelError> {
+    match kind {
+        BoltV3KillSwitchCancelAttemptOutcomeKind::PendingCancel => {
+            if order_status != OrderStatus::PendingCancel {
+                return Err(BoltV3KillSwitchCancelError::InvalidOutcomeOrderStatus);
+            }
+        }
+        BoltV3KillSwitchCancelAttemptOutcomeKind::Expired => {
+            if order_status != OrderStatus::Expired {
+                return Err(BoltV3KillSwitchCancelError::InvalidOutcomeOrderStatus);
+            }
+        }
+        BoltV3KillSwitchCancelAttemptOutcomeKind::FilledBeforeCancel => {
+            if order_status != OrderStatus::Filled {
+                return Err(BoltV3KillSwitchCancelError::InvalidOutcomeOrderStatus);
+            }
+        }
+        BoltV3KillSwitchCancelAttemptOutcomeKind::TerminalBeforeCancel => {
+            if !order_status.is_closed()
+                || matches!(order_status, OrderStatus::Expired | OrderStatus::Filled)
+            {
+                return Err(BoltV3KillSwitchCancelError::InvalidOutcomeOrderStatus);
+            }
+        }
+        BoltV3KillSwitchCancelAttemptOutcomeKind::CancelRequested
+        | BoltV3KillSwitchCancelAttemptOutcomeKind::CancelAccepted
+        | BoltV3KillSwitchCancelAttemptOutcomeKind::CancelRejected => {}
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3KillSwitchCancelOutcomeEvidence {
+    account_id: AccountId,
+    instrument_id: InstrumentId,
+    strategy_id: StrategyId,
+    client_order_id: ClientOrderId,
+    outcome: BoltV3KillSwitchCancelAttemptOutcome,
+}
+
+impl BoltV3KillSwitchCancelOutcomeEvidence {
+    pub fn from_candidate(
+        candidate: &BoltV3KillSwitchCancelCandidate,
+        outcome: BoltV3KillSwitchCancelAttemptOutcome,
+    ) -> Self {
+        Self {
+            account_id: candidate.account_id(),
+            instrument_id: candidate.instrument_id(),
+            strategy_id: candidate.strategy_id(),
+            client_order_id: candidate.client_order_id(),
+            outcome,
+        }
+    }
+
+    fn identity(&self) -> BoltV3KillSwitchCancelOrderIdentity {
+        (
+            self.account_id,
+            self.instrument_id,
+            self.strategy_id,
+            self.client_order_id,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3KillSwitchCancelAggregateResult {
+    AllTerminal,
+    OutstandingRiskRemains,
+    RequiresPositionReconciliation,
+    FailedManualIntervention,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3KillSwitchCancelOutcomeAggregation {
+    result: BoltV3KillSwitchCancelAggregateResult,
+}
+
+impl BoltV3KillSwitchCancelOutcomeAggregation {
+    pub fn from_snapshot_outcomes(
+        snapshot: &BoltV3KillSwitchCancelSnapshot,
+        outcomes: Vec<BoltV3KillSwitchCancelOutcomeEvidence>,
+    ) -> Result<Self, BoltV3KillSwitchCancelError> {
+        let expected_identities = snapshot
+            .candidates()
+            .iter()
+            .map(|candidate| (cancel_candidate_identity(candidate), ()))
+            .collect::<BTreeMap<_, _>>();
+
+        let mut outcomes_by_identity = BTreeMap::new();
+        for outcome in outcomes {
+            let identity = outcome.identity();
+            if !expected_identities.contains_key(&identity) {
+                return Err(BoltV3KillSwitchCancelError::UnknownOutcomeCandidate);
+            }
+            outcomes_by_identity
+                .entry(identity)
+                .or_insert(outcome.outcome);
+        }
+
+        let mut result = BoltV3KillSwitchCancelAggregateResult::AllTerminal;
+        for candidate in snapshot.candidates() {
+            let identity = cancel_candidate_identity(candidate);
+            let Some(outcome) = outcomes_by_identity.get(&identity) else {
+                result = merge_aggregate_result(
+                    result,
+                    BoltV3KillSwitchCancelAggregateResult::OutstandingRiskRemains,
+                );
+                continue;
+            };
+            result = merge_aggregate_result(result, result_for_outcome(*outcome));
+        }
+
+        Ok(Self { result })
+    }
+
+    pub fn result(&self) -> BoltV3KillSwitchCancelAggregateResult {
+        self.result
+    }
+}
+
+fn cancel_candidate_identity(
+    candidate: &BoltV3KillSwitchCancelCandidate,
+) -> BoltV3KillSwitchCancelOrderIdentity {
+    (
+        candidate.account_id(),
+        candidate.instrument_id(),
+        candidate.strategy_id(),
+        candidate.client_order_id(),
+    )
+}
+
+fn result_for_outcome(
+    outcome: BoltV3KillSwitchCancelAttemptOutcome,
+) -> BoltV3KillSwitchCancelAggregateResult {
+    match outcome.kind() {
+        BoltV3KillSwitchCancelAttemptOutcomeKind::CancelRejected => {
+            BoltV3KillSwitchCancelAggregateResult::FailedManualIntervention
+        }
+        BoltV3KillSwitchCancelAttemptOutcomeKind::FilledBeforeCancel => {
+            BoltV3KillSwitchCancelAggregateResult::RequiresPositionReconciliation
+        }
+        BoltV3KillSwitchCancelAttemptOutcomeKind::CancelRequested
+        | BoltV3KillSwitchCancelAttemptOutcomeKind::CancelAccepted
+        | BoltV3KillSwitchCancelAttemptOutcomeKind::PendingCancel => {
+            BoltV3KillSwitchCancelAggregateResult::OutstandingRiskRemains
+        }
+        BoltV3KillSwitchCancelAttemptOutcomeKind::Expired
+        | BoltV3KillSwitchCancelAttemptOutcomeKind::TerminalBeforeCancel => {
+            BoltV3KillSwitchCancelAggregateResult::AllTerminal
+        }
+    }
+}
+
+fn merge_aggregate_result(
+    current: BoltV3KillSwitchCancelAggregateResult,
+    next: BoltV3KillSwitchCancelAggregateResult,
+) -> BoltV3KillSwitchCancelAggregateResult {
+    use BoltV3KillSwitchCancelAggregateResult::{
+        AllTerminal, FailedManualIntervention, OutstandingRiskRemains,
+        RequiresPositionReconciliation,
+    };
+    match (current, next) {
+        (FailedManualIntervention, _) | (_, FailedManualIntervention) => FailedManualIntervention,
+        (RequiresPositionReconciliation, _) | (_, RequiresPositionReconciliation) => {
+            RequiresPositionReconciliation
+        }
+        (OutstandingRiskRemains, _) | (_, OutstandingRiskRemains) => OutstandingRiskRemains,
+        (AllTerminal, AllTerminal) => AllTerminal,
     }
 }
 
@@ -524,4 +808,6 @@ pub enum BoltV3KillSwitchCancelError {
     StaleSourceTimestamp,
     FailedManualInterventionRequired,
     KillSwitchStateNotCancelling,
+    InvalidOutcomeOrderStatus,
+    UnknownOutcomeCandidate,
 }

@@ -940,7 +940,7 @@ impl SignedTradeFlow {
         &self.samples
     }
 
-    /// Signed trades inside the retention window `(now_ms - window, now_ms]` as
+    /// Signed trades inside the retention window `[now_ms - window, now_ms]` as
     /// of `now_ms`, oldest first. Unlike [`samples`](Self::samples) this filters
     /// against the caller's clock rather than the last `observe` timestamp: a
     /// quiet market does not surface trades that have aged out of the window

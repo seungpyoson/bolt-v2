@@ -27,7 +27,7 @@ Per-target destination + layer (Track A):
 |---|---|
 | `numeric` → `bolt_v3_numeric.rs` | core/shared util |
 | `taker_signal` → `bolt_v3_taker_signal.rs` | shared decision-math (family-agnostic) |
-| `selection` → **split** — family identity/target-validation → `bolt_v3_market_families/selection.rs`; family-agnostic candidate ranking → shared `bolt_v3_selection.rs` | family **and** shared (split by family-specific vs agnostic; neither half lands in the other) |
+| `selection` → **split**: **(a)** family-shaped data — identity/target-validation **and the selected-market/candidate structs (e.g. `CandidateMarket`), outcome-pair snapshots, and binary-option adapters** → `bolt_v3_market_families/selection.rs`; **(b)** family-agnostic ranking **over opaque family-owned candidate refs/scores + strategy-neutral transition state** → shared `bolt_v3_selection.rs` | family **and** shared. **The shared half must carry NO binary/up-down shape** — if a struct names outcomes (`up`/`down`) or adapts a concrete binary-option market, it stays in the family module. (Route-by-instrument-identity is the #13 follow-up; until then the binary shape stays family-homed, **not** laundered into shared.) |
 | `book_sizing` → `bolt_v3_book_sizing.rs` | shared execution (book state, VWAP/slippage sizing, **rounding + fee-adjustment**) |
 | `taker_pricing` → `bolt_v3_taker_pricing.rs` | shared pricing-state |
 | `exposure` → `bolt_v3_exposure.rs` | shared **position/exposure accounting**. If the monolith mixes *signal-intent* exposure (a strategy concern) with *position accounting* (shared), **split them** — accounting goes shared, signal-intent stays strategy. |

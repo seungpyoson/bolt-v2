@@ -155,8 +155,9 @@ impl TempCaseDir {
             .duration_since(UNIX_EPOCH)
             .expect("time should move forward")
             .as_nanos();
+        let process_id = std::process::id();
         let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dirname = format!("bolt-v2-{label}-{timestamp_nanos}-{counter}");
+        let dirname = format!("bolt-v2-{label}-{timestamp_nanos}-{process_id}-{counter}");
         let path = std::env::temp_dir().join(dirname);
         fs::create_dir_all(&path).expect("temp case dir should be created");
         Self { path }

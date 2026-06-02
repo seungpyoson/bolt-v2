@@ -195,16 +195,32 @@ pub fn next_loss_governor_trading_state(
 }
 
 #[must_use]
+pub struct LossGovernorManualRecoveryRequest<'a> {
+    pub policy: &'a LossGovernorHaltActionPolicy,
+    pub current_state: TradingState,
+    pub decision: &'a LossAdmissionDecision,
+    pub snapshot: Option<&'a LossSnapshot>,
+    pub now_ns: u64,
+    pub max_snapshot_age_ns: u64,
+    pub evidence: Option<&'a LossGovernorManualRecoveryEvidence>,
+    pub max_evidence_path_bytes: usize,
+}
+
+#[must_use]
 pub fn next_loss_governor_manual_recovery_trading_state(
-    policy: &LossGovernorHaltActionPolicy,
-    current_state: TradingState,
-    decision: &LossAdmissionDecision,
-    snapshot: Option<&LossSnapshot>,
-    now_ns: u64,
-    max_snapshot_age_ns: u64,
-    evidence: Option<&LossGovernorManualRecoveryEvidence>,
-    max_evidence_path_bytes: usize,
+    request: LossGovernorManualRecoveryRequest<'_>,
 ) -> Option<TradingState> {
+    let LossGovernorManualRecoveryRequest {
+        policy,
+        current_state,
+        decision,
+        snapshot,
+        now_ns,
+        max_snapshot_age_ns,
+        evidence,
+        max_evidence_path_bytes,
+    } = request;
+
     match policy.recovery_mode {
         LossGovernorRecoveryMode::Manual => {}
     }
@@ -268,8 +284,8 @@ mod tests {
     use super::{
         LossGovernorHaltActionPolicy, LossGovernorManualRecoveryEvidence,
         LossGovernorManualRecoveryEvidenceError, LossGovernorRecoveryMode,
-        LossGovernorTradingStateAction, next_loss_governor_manual_recovery_trading_state,
-        next_loss_governor_trading_state,
+        LossGovernorManualRecoveryRequest, LossGovernorTradingStateAction,
+        next_loss_governor_manual_recovery_trading_state, next_loss_governor_trading_state,
     };
     use crate::bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshot};
     use nautilus_model::enums::TradingState;
@@ -329,19 +345,19 @@ mod tests {
         snapshot: Option<&LossSnapshot>,
         evidence: Option<&LossGovernorManualRecoveryEvidence>,
     ) -> Option<TradingState> {
-        next_loss_governor_manual_recovery_trading_state(
-            &policy(
+        next_loss_governor_manual_recovery_trading_state(LossGovernorManualRecoveryRequest {
+            policy: &policy(
                 LossGovernorTradingStateAction::Halted,
                 LossGovernorTradingStateAction::Reducing,
             ),
             current_state,
             decision,
             snapshot,
-            1_100,
-            1_000,
+            now_ns: 1_100,
+            max_snapshot_age_ns: 1_000,
             evidence,
-            128,
-        )
+            max_evidence_path_bytes: 128,
+        })
     }
 
     #[test]
@@ -564,19 +580,19 @@ mod tests {
     fn manual_recovery_zero_caps_fail_closed() {
         let evidence = valid_recovery_evidence();
         assert_eq!(
-            next_loss_governor_manual_recovery_trading_state(
-                &policy(
+            next_loss_governor_manual_recovery_trading_state(LossGovernorManualRecoveryRequest {
+                policy: &policy(
                     LossGovernorTradingStateAction::Halted,
                     LossGovernorTradingStateAction::Reducing,
                 ),
-                TradingState::Halted,
-                &accepted(),
-                Some(&fresh_snapshot()),
-                1_100,
-                0,
-                Some(&evidence),
-                128,
-            ),
+                current_state: TradingState::Halted,
+                decision: &accepted(),
+                snapshot: Some(&fresh_snapshot()),
+                now_ns: 1_100,
+                max_snapshot_age_ns: 0,
+                evidence: Some(&evidence),
+                max_evidence_path_bytes: 128,
+            }),
             None
         );
         assert_eq!(

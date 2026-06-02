@@ -215,22 +215,32 @@ fn validate_submit_admission_spendability_operator_evidence(
         .as_ref()
         .and_then(|live_canary| live_canary.operator_evidence.as_ref());
     let mut errors = Vec::new();
-    match operator_evidence.and_then(|evidence| evidence.venue_spendability_source_path.as_ref()) {
-        Some(path) if !path.trim().is_empty() => {}
-        _ => errors.push(
-            "risk.capital_pools enforce_submit_admission requires live_canary.operator_evidence.venue_spendability_source_path"
+    let source_path =
+        operator_evidence.and_then(|evidence| evidence.venue_spendability_source_path.as_ref());
+    let source_sha256 =
+        operator_evidence.and_then(|evidence| evidence.venue_spendability_source_sha256.as_ref());
+    match (source_path, source_sha256) {
+        (None, None) => {}
+        (Some(path), Some(sha256)) => {
+            if path.trim().is_empty() {
+                errors.push(
+                    "risk.capital_pools enforce_submit_admission requires live_canary.operator_evidence.venue_spendability_source_path"
+                        .to_string(),
+                );
+            }
+            if !is_lowercase_sha256_hex(sha256) {
+                errors.push(
+                    "risk.capital_pools enforce_submit_admission requires live_canary.operator_evidence.venue_spendability_source_sha256 to be a lowercase sha256 hex string"
+                        .to_string(),
+                );
+            }
+        }
+        (None, Some(_)) => errors.push(
+            "risk.capital_pools enforce_submit_admission requires live_canary.operator_evidence.venue_spendability_source_path when venue_spendability_source_sha256 is set"
                 .to_string(),
         ),
-    }
-    match operator_evidence.and_then(|evidence| evidence.venue_spendability_source_sha256.as_ref())
-    {
-        Some(sha256) if is_lowercase_sha256_hex(sha256.trim()) => {}
-        Some(_) => errors.push(
-            "risk.capital_pools enforce_submit_admission requires live_canary.operator_evidence.venue_spendability_source_sha256 to be a lowercase sha256 hex string"
-                .to_string(),
-        ),
-        _ => errors.push(
-            "risk.capital_pools enforce_submit_admission requires live_canary.operator_evidence.venue_spendability_source_sha256"
+        (Some(_), None) => errors.push(
+            "risk.capital_pools enforce_submit_admission requires live_canary.operator_evidence.venue_spendability_source_sha256 when venue_spendability_source_path is set"
                 .to_string(),
         ),
     }

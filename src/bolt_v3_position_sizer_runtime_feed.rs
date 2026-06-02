@@ -31,6 +31,7 @@ use crate::{
 };
 
 const POSITION_SIZER_ORDER_TERMINAL_SOURCE: &str = stringify!(nt_order_terminal_event);
+const NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE: &str = "nt_account_free_collateral";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PositionSizerRuntimeFeedConfig {
@@ -168,6 +169,11 @@ impl PositionSizerRuntimeFeed {
             .map(|balance| balance.free.as_decimal())?;
         self.component_builder.latest_account_free_collateral =
             Some((free_collateral, account_state.ts_event.as_u64()));
+        self.component_builder.record_nt_account_spendability(
+            &self.config,
+            free_collateral,
+            account_state.ts_event.as_u64(),
+        );
         self.publish_components_if_ready()
     }
 
@@ -490,6 +496,7 @@ impl PositionSizerRuntimeComponentBuilder {
             free_collateral,
             total_equity,
         });
+        self.record_nt_account_spendability(config, free_collateral, observed_at_ns);
     }
 
     fn record_venue_spendability(
@@ -501,7 +508,6 @@ impl PositionSizerRuntimeComponentBuilder {
             && snapshot.account_id == config.account_id.to_string()
             && snapshot.collateral_currency == config.collateral_currency;
         if !matches_config {
-            self.latest_venue_spendability = None;
             return;
         }
         if self
@@ -512,6 +518,35 @@ impl PositionSizerRuntimeComponentBuilder {
             return;
         }
         self.latest_venue_spendability = Some(snapshot);
+    }
+
+    fn record_nt_account_spendability(
+        &mut self,
+        config: &PositionSizerRuntimeFeedConfig,
+        free_collateral: Decimal,
+        observed_at_ns: u64,
+    ) {
+        match self.latest_venue_spendability.as_mut() {
+            Some(current) if current.source != NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE => {
+                current.observed_at_ns = current.observed_at_ns.max(observed_at_ns);
+            }
+            Some(current) => {
+                current.observed_at_ns = observed_at_ns;
+                current.spendable_collateral = free_collateral;
+                current.collateral_allowance = free_collateral;
+            }
+            None => {
+                self.latest_venue_spendability = Some(VenueSpendabilitySnapshot {
+                    source: NT_ACCOUNT_FREE_COLLATERAL_SPENDABILITY_SOURCE.to_string(),
+                    observed_at_ns,
+                    venue_id: config.venue_id.clone(),
+                    account_id: config.account_id.to_string(),
+                    collateral_currency: config.collateral_currency.clone(),
+                    spendable_collateral: free_collateral,
+                    collateral_allowance: free_collateral,
+                });
+            }
+        }
     }
 
     fn record_live_order_event(

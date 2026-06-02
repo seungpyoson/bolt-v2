@@ -3732,11 +3732,9 @@ fn build_live_node_with_clients(
         },
         resolved.redaction_values(),
     );
-    if let Err(error) = runtime.refresh_position_sizer_venue_spendability_from_operator_evidence() {
-        log::warn!(
-            "bolt-v3 position sizer could not seed venue spendability from operator evidence: {error:#}"
-        );
-    }
+    runtime
+        .refresh_position_sizer_venue_spendability_from_operator_evidence()
+        .map_err(BoltV3LiveNodeError::Build)?;
     Ok((runtime, summary))
 }
 
@@ -5055,6 +5053,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn startup_build_fails_closed_when_configured_venue_spendability_source_rejects() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let mut loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
+        let operator_evidence = loaded
+            .root
+            .live_canary
+            .as_mut()
+            .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+            .expect("fixture should configure operator evidence");
+        operator_evidence.venue_spendability_source_sha256 = Some(
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        );
+
+        let error = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect_err("bad required venue spendability evidence must fail startup");
+        let rendered = error.to_string();
+
+        assert!(
+            rendered.contains("position sizer venue spendability source rejected")
+                && rendered.contains("Sha256Mismatch"),
+            "startup error should name rejected spendability evidence, got: {rendered}"
+        );
     }
 
     #[test]

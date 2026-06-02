@@ -219,6 +219,45 @@ fn feed_waits_for_matching_account_and_portfolio_before_publish() {
 }
 
 #[test]
+fn feed_derives_default_venue_spendability_from_nt_account_free_collateral() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    let components = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            50.0,
+        ))
+        .expect("NT account plus portfolio state should publish default spendability");
+
+    assert_eq!(
+        components.venue_spendability.source,
+        "nt_account_free_collateral"
+    );
+    assert_eq!(
+        components.venue_spendability.spendable_collateral,
+        Decimal::new(45, 0)
+    );
+    assert_eq!(
+        components.venue_spendability.collateral_allowance,
+        Decimal::new(45, 0)
+    );
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.collateral_allowance, Decimal::new(45, 0));
+}
+
+#[test]
 fn feed_derives_collateral_allowance_from_venue_spendability_minimum() {
     let admission = Arc::new(position_sized_admission());
     let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
@@ -293,7 +332,7 @@ fn feed_uses_spendable_collateral_when_it_binds_before_allowance() {
 }
 
 #[test]
-fn feed_clears_spendability_on_identity_mismatch_until_matching_snapshot_arrives() {
+fn feed_ignores_spendability_identity_mismatch_until_matching_snapshot_arrives() {
     let admission = Arc::new(position_sized_admission());
     let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
 
@@ -322,7 +361,11 @@ fn feed_clears_spendability_on_identity_mismatch_until_matching_snapshot_arrives
 
     let mut mismatched = venue_spendability_snapshot(1_100, 100, 100);
     mismatched.venue_id = "VENUE-B".to_string();
-    assert!(feed.on_venue_spendability_snapshot(mismatched).is_none());
+    let components = feed
+        .on_venue_spendability_snapshot(mismatched)
+        .expect("mismatched spendability must not clear the last valid state");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.collateral_allowance, Decimal::new(100, 0));
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -330,7 +373,7 @@ fn feed_clears_spendability_on_identity_mismatch_until_matching_snapshot_arrives
             1_200,
             100.0
         ))
-        .is_none()
+        .is_some()
     );
 
     assert!(

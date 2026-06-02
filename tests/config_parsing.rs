@@ -413,7 +413,7 @@ fn bolt_v3_operator_evidence_allows_unassigned_order_ids() {
 }
 
 #[test]
-fn enforced_submit_admission_requires_venue_spendability_operator_evidence() {
+fn enforced_submit_admission_uses_nt_account_spendability_without_operator_evidence() {
     let source = replace_in_fixture_root(
         "enforce_submit_admission = false",
         "enforce_submit_admission = true",
@@ -421,20 +421,10 @@ fn enforced_submit_admission_requires_venue_spendability_operator_evidence() {
     let messages = validate_root_messages_from_source(&source);
 
     assert!(
-        messages.iter().any(|message| {
-            message.contains("live_canary.operator_evidence.venue_spendability_source_path")
-                && message.contains("risk.capital_pools")
-                && message.contains("enforce_submit_admission")
+        !messages.iter().any(|message| {
+            message.contains("live_canary.operator_evidence.venue_spendability_source")
         }),
-        "enforced submit admission must require spendability source evidence: {messages:#?}"
-    );
-    assert!(
-        messages.iter().any(|message| {
-            message.contains("live_canary.operator_evidence.venue_spendability_source_sha256")
-                && message.contains("risk.capital_pools")
-                && message.contains("enforce_submit_admission")
-        }),
-        "enforced submit admission must require spendability source sha256: {messages:#?}"
+        "enforced submit admission should use NT account spendability without requiring operator source evidence: {messages:#?}"
     );
 }
 
@@ -456,6 +446,27 @@ fn enforced_submit_admission_rejects_invalid_venue_spendability_sha256_shape() {
                 && message.contains("lowercase sha256")
         }),
         "invalid venue spendability source sha256 must fail at config load: {messages:#?}"
+    );
+}
+
+#[test]
+fn enforced_submit_admission_rejects_whitespace_padded_venue_spendability_sha256() {
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    );
+    let live_canary = shipped_live_canary_toml().replace(
+        "pre_run_state_sha256 = \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\n",
+        "pre_run_state_sha256 = \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\nvenue_spendability_source_path = \"/var/lib/bolt/operator-evidence/venue-spendability.json\"\nvenue_spendability_source_sha256 = \" dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \"\n",
+    );
+    let messages = validate_root_messages_from_source(&format!("{source}\n\n{live_canary}"));
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("live_canary.operator_evidence.venue_spendability_source_sha256")
+                && message.contains("lowercase sha256")
+        }),
+        "whitespace-padded venue spendability sha256 must fail at config load: {messages:#?}"
     );
 }
 

@@ -18,7 +18,7 @@ Colocated low-latency operation is planned as configuration and runbook surface 
 **Target Platform**: Pure Rust `LiveNode` runtime
 **Project Type**: Trading execution adapter integration inside existing Rust binary
 **Performance Goals**: No hard latency claim. Provide TOML-driven local-info-node and region/AZ profile fields so ops can place the process near Hyperliquid infrastructure and measure actual latency.
-**Constraints**: No Python layer, no raw Hyperliquid client, no environment secret fallback, no strategy submit mechanics, one signer owner per runtime, official rate-limit weights, fail-closed product surfaces until proof exists
+**Constraints**: No Python layer, no raw Hyperliquid client, no environment secret fallback, no strategy submit mechanics, one signer owner per runtime, official rate-limit weights, product surfaces fail closed unless an exact surface-bound approval is consumed
 **Scale/Scope**: One Hyperliquid provider family with four product surfaces: standard perps, spot, HIP-3 builder perps, HIP-4 outcomes
 
 ## Evidence Baseline
@@ -108,7 +108,7 @@ MVP includes only provider registration, dependency wiring, config validation, S
 
 ### Phase 3 - Gated Live Execution
 
-Standard perps live submit may proceed only after MVP proof, operator approval artifact, bounded order limits, and no-submit replay proof. Spot, HIP-3, and HIP-4 remain fail-closed until their own submit/cancel/fill/fee/provenance proof exists.
+Each Hyperliquid product surface may proceed only after MVP proof, an operator approval artifact bound to the exact product surface, bounded order limits, and no-submit replay proof. HIP-4 additionally requires positive TOML-owned outcome settlement polling.
 
 ## Implementation Rules
 

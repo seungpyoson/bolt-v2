@@ -44,7 +44,7 @@ The first executable readiness proof must show:
 
 ## Live Submit Gate
 
-Live submit remains blocked until a later slice provides a current approval artifact and product-specific proof. Standard perps are the first candidate surface; spot, HIP-3, and HIP-4 stay fail-closed until separately proven.
+Live submit remains blocked unless a current approval artifact is consumed for the exact configured product surface. Standard perps, spot, HIP-3, and HIP-4 all map through the NT Hyperliquid execution adapter only after that surface-bound approval gate passes. HIP-4 also requires positive TOML-owned outcome settlement polling.
 
 ## Implementation Evidence Packet - 2026-06-02
 
@@ -62,22 +62,24 @@ Implementation commits:
 - `af8cb7b3` live-submit approval artifact schema
 - `b3bc0965` one-time live-submit approval consumption
 - `cb7a2399` standard-perps NT adapter mapping gated by consumed approval
-- `27046f0d` spot, HIP-3, and HIP-4 fail-closed missing-proof rejection
+- `27046f0d` prior MVP spot, HIP-3, and HIP-4 fail-closed missing-proof rejection
 - `45ffdde4` latency-profile ops metadata and artifact export
+- follow-up slice: spot, HIP-3, and HIP-4 NT adapter mapping gated by consumed surface-bound approval
 
 Verification:
 - `cargo fmt --check` - PASS
 - `git diff --check` - PASS
 - `rg -n "TODO|fix later|dbg!|println!|eprintln!" src/bolt_v3_providers/hyperliquid.rs src/bolt_v3_operator_artifacts.rs tests/bolt_v3_provider_binding.rs tests/hyperliquid_no_submit.rs` - PASS, no matches
 - `cargo clippy --locked --lib -- -D warnings` - PASS
-- `cargo test --locked --test bolt_v3_provider_binding` - PASS, 16 tests
+- `cargo test --locked --test bolt_v3_provider_binding` - PASS, 17 tests
 - `cargo test --locked --test bolt_v3_production_entrypoint` - PASS, 5 tests
 - `cargo test --locked --test hyperliquid_product_matrix` - PASS, 8 tests
 - `cargo test --locked --test hyperliquid_no_submit` - PASS, 8 tests
-- `cargo test --locked --test hyperliquid_live_submit_artifact` - PASS, 5 tests
-- `cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_standard_perps` - PASS, 2 tests
+- `cargo test --locked --test hyperliquid_live_submit_artifact` - PASS, 6 tests
+- `cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_` - PASS, 8 tests
 
 Current live-submit state:
-- Standard perps map to the NT Hyperliquid execution adapter only with a consumed, exact approval artifact.
-- Spot, HIP-3, and HIP-4 remain discoverable but fail-closed for live submit with product-specific missing-proof messages.
+- Standard perps, spot, HIP-3, and HIP-4 map to the NT Hyperliquid execution adapter only with a consumed approval artifact for the exact configured product surface.
+- A consumed approval for one surface cannot authorize a different surface.
+- HIP-4 requires positive `outcome_settlement_poll_secs` in TOML before mapper handoff.
 - Latency profile is TOML-owned ops metadata only; it exports an artifact and cannot bypass submit approval gates.

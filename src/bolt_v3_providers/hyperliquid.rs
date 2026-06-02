@@ -436,6 +436,15 @@ fn validate_execution_config(key: &str, execution: &HyperliquidExecutionConfig) 
             execution.retry_delay_initial_ms, execution.retry_delay_max_ms
         ));
     }
+    if execution
+        .product_surfaces
+        .contains(&HyperliquidProductSurface::Hip4Outcomes)
+        && execution.outcome_settlement_poll_secs == 0
+    {
+        errors.push(format!(
+            "clients.{key}.execution.outcome_settlement_poll_secs must be positive when HIP-4 outcomes are enabled"
+        ));
+    }
     if let Some(latency_profile) = &execution.latency_profile {
         errors.extend(validate_latency_profile_config(key, latency_profile));
     }
@@ -638,7 +647,7 @@ fn map_execution(
                 message: error.to_string(),
             }
         })?;
-    validate_standard_perps_live_submit_approval(context.client_key, &cfg, context)?;
+    validate_surface_live_submit_approval(context.client_key, &cfg, context)?;
     let max_retries =
         u32::try_from(cfg.max_retries).map_err(|_| BoltV3AdapterMappingError::NumericRange {
             client_key: context.client_key.to_string(),
@@ -676,33 +685,47 @@ fn map_execution(
     })
 }
 
-fn validate_standard_perps_live_submit_approval(
+fn validate_surface_live_submit_approval(
     client_key: &str,
     cfg: &HyperliquidExecutionConfig,
     context: &ProviderAdapterMapContext<'_>,
 ) -> Result<(), BoltV3AdapterMappingError> {
-    if cfg.product_surfaces.as_slice() != [HyperliquidProductSurface::StandardPerps] {
+    let [configured_surface] = cfg.product_surfaces.as_slice() else {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             client_key: client_key.to_string(),
             field: "execution.product_surfaces",
-            message: unproven_surface_live_submit_rejection(&cfg.product_surfaces),
+            message:
+                "Hyperliquid live submit requires exactly one product surface per execution client"
+                    .to_string(),
+        });
+    };
+    if *configured_surface == HyperliquidProductSurface::Hip4Outcomes
+        && cfg.outcome_settlement_poll_secs == 0
+    {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "execution.outcome_settlement_poll_secs",
+            message: "HIP-4 outcomes live submit requires positive settlement polling".to_string(),
         });
     }
     let Some(expected_approval_id) = cfg.live_submit_approval_id.as_deref() else {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             client_key: client_key.to_string(),
             field: "execution.live_submit_approval_id",
-            message:
-                "standard-perps live submit requires a configured consumed live-submit approval id"
-                    .to_string(),
+            message: format!(
+                "{} live submit requires a configured consumed live-submit approval id",
+                product_surface_name(*configured_surface)
+            ),
         });
     };
     let Some(consumed) = context.runtime_approvals.hyperliquid_live_submit else {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             client_key: client_key.to_string(),
             field: "execution.live_submit_approval_id",
-            message: "standard-perps live submit requires a consumed live-submit approval"
-                .to_string(),
+            message: format!(
+                "{} live submit requires a consumed live-submit approval",
+                product_surface_name(*configured_surface)
+            ),
         });
     };
     if consumed.approval_id() != expected_approval_id {
@@ -713,29 +736,15 @@ fn validate_standard_perps_live_submit_approval(
                 .to_string(),
         });
     }
+    if consumed.product_surface() != *configured_surface {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "execution.product_surfaces",
+            message: "consumed live-submit approval product surface does not match configured product surface"
+                .to_string(),
+        });
+    }
     Ok(())
-}
-
-fn unproven_surface_live_submit_rejection(surfaces: &[HyperliquidProductSurface]) -> String {
-    let surface_names = surfaces
-        .iter()
-        .map(|surface| product_surface_name(*surface))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let missing_proofs = surfaces
-        .iter()
-        .flat_map(|surface| match surface {
-            HyperliquidProductSurface::StandardPerps => STANDARD_PERPS_MISSING_SUBMIT_PROOF,
-            HyperliquidProductSurface::Spot => SPOT_MISSING_SUBMIT_PROOF,
-            HyperliquidProductSurface::Hip3BuilderPerps => HIP3_MISSING_SUBMIT_PROOF,
-            HyperliquidProductSurface::Hip4Outcomes => HIP4_MISSING_SUBMIT_PROOF,
-        })
-        .copied()
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "Hyperliquid live submit for product_surfaces=[{surface_names}] remains fail-closed; missing product-specific proof: {missing_proofs}"
-    )
 }
 
 fn product_surface_name(surface: HyperliquidProductSurface) -> &'static str {

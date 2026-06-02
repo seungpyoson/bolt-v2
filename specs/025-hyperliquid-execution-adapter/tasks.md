@@ -77,18 +77,18 @@
 - [x] T038 [US4] Implement artifact binding and one-time consumption in `src/bolt_v3_providers/mod.rs`.
 - [x] T039 [US4] Add standard-perps submit path only through NT adapter and shared execution/admission code under `src/`.
 
-## Phase 7 - User Story 5: Keep Spot, HIP-3, And HIP-4 Fail-Closed
+## Phase 7 - User Story 5: Gate Spot, HIP-3, And HIP-4 By Surface Approval
 
-**Goal**: Spot, HIP-3, and HIP-4 remain discoverable but blocked for live submit until product-specific proof exists.
+**Goal**: Spot, HIP-3, and HIP-4 remain discoverable and blocked without consumed surface-bound approval; with exact approval they map through the NT Hyperliquid execution adapter. HIP-4 additionally requires positive outcome settlement polling.
 
-**Independent Test**: Enabling any unproven surface fails with missing proof reason.
+**Independent Test**: Enabling any surface without consumed matching approval fails closed; consumed approval for one surface cannot authorize a different surface.
 
 - [x] T040 [US5] Add failing spot live-submit rejection test in `tests/hyperliquid_product_matrix.rs`.
-- [x] T041 [US5] Implement spot missing-proof rejection in `src/bolt_v3_providers/mod.rs`.
+- [x] T041 [US5] Implement spot surface-approval gate in `src/bolt_v3_providers/mod.rs`.
 - [x] T042 [US5] Add failing HIP-3 live-submit rejection test in `tests/hyperliquid_product_matrix.rs`.
-- [x] T043 [US5] Implement HIP-3 missing-proof rejection in `src/bolt_v3_providers/mod.rs`.
+- [x] T043 [US5] Implement HIP-3 surface-approval gate in `src/bolt_v3_providers/mod.rs`.
 - [x] T044 [US5] Add failing HIP-4 live-submit rejection test in `tests/hyperliquid_product_matrix.rs`.
-- [x] T045 [US5] Implement HIP-4 missing-proof rejection in `src/bolt_v3_providers/mod.rs`.
+- [x] T045 [US5] Implement HIP-4 surface-approval and settlement-poll gate in `src/bolt_v3_providers/mod.rs`.
 
 ## Phase 8 - User Story 6: Configure Latency Ops Separately
 

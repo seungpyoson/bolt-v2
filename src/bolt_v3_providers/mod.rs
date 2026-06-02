@@ -163,12 +163,17 @@ pub struct ProviderRuntimeApprovals<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HyperliquidLiveSubmitApprovalConsumption {
     approval_id: String,
+    product_surface: hyperliquid::HyperliquidProductSurface,
     used_at: u64,
 }
 
 impl HyperliquidLiveSubmitApprovalConsumption {
     pub fn approval_id(&self) -> &str {
         self.approval_id.as_str()
+    }
+
+    pub fn product_surface(&self) -> hyperliquid::HyperliquidProductSurface {
+        self.product_surface
     }
 
     pub fn used_at(&self) -> u64 {
@@ -193,6 +198,7 @@ pub fn consume_hyperliquid_live_submit_approval_artifact(
     artifact.used_at = Some(now_unix_seconds);
     Ok(HyperliquidLiveSubmitApprovalConsumption {
         approval_id: expected_approval_id.to_string(),
+        product_surface: binding.product_surface,
         used_at: now_unix_seconds,
     })
 }

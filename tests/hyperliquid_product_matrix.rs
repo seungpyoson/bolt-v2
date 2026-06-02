@@ -62,6 +62,7 @@ fn assert_fail_closed(entry: &HyperliquidProductMatrixEntry, missing_proof: &str
 }
 
 fn hyperliquid_execution_client_for_surface(surface: &str) -> ClientBlock {
+    let outcome_settlement_poll_secs = if surface == "hip4_outcomes" { 5 } else { 0 };
     toml::from_str(&format!(
         r#"
 venue = "HYPERLIQUID"
@@ -83,7 +84,7 @@ normalize_prices = true
 market_order_slippage_bps = 50
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
-outcome_settlement_poll_secs = 0
+outcome_settlement_poll_secs = {outcome_settlement_poll_secs}
 
 [secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
@@ -122,12 +123,12 @@ fn resolved_hyperliquid_secrets() -> ResolvedBoltV3Secrets {
     ResolvedBoltV3Secrets { clients }
 }
 
-fn assert_unproven_surface_rejects_live_submit(surface: &str, expected_missing_proof: &str) {
+fn assert_surface_without_approval_rejects_live_submit(surface: &str) {
     let loaded = loaded_config_for_surface(surface);
     let resolved = resolved_hyperliquid_secrets();
 
     let error = map_bolt_v3_adapters(&loaded, &resolved)
-        .expect_err("unproven Hyperliquid surface must fail closed before live submit");
+        .expect_err("Hyperliquid surface must fail closed without consumed approval");
 
     match error {
         BoltV3AdapterMappingError::ValidationInvariant {
@@ -136,10 +137,10 @@ fn assert_unproven_surface_rejects_live_submit(surface: &str, expected_missing_p
             message,
         } => {
             assert_eq!(client_key, "hyperliquid_unproven_surface");
-            assert_eq!(field, "execution.product_surfaces");
+            assert_eq!(field, "execution.live_submit_approval_id");
             assert!(
-                message.contains(expected_missing_proof),
-                "surface rejection must name missing proof `{expected_missing_proof}`: {message}"
+                message.contains("consumed live-submit approval"),
+                "surface rejection must name missing approval: {message}"
             );
         }
         other => panic!("expected unproven-surface validation invariant, got {other}"),
@@ -237,24 +238,18 @@ fn hip4_outcomes_product_matrix_records_nt_discovery_and_fail_closed_submit() {
 }
 
 #[test]
-fn spot_live_submit_enablement_rejects_with_product_specific_missing_proof() {
-    assert_unproven_surface_rejects_live_submit("spot", "spot order/fill/rounding/fee proof");
+fn spot_live_submit_enablement_rejects_without_consumed_surface_approval() {
+    assert_surface_without_approval_rejects_live_submit("spot");
 }
 
 #[test]
-fn hip3_live_submit_enablement_rejects_with_product_specific_missing_proof() {
-    assert_unproven_surface_rejects_live_submit(
-        "hip3_builder_perps",
-        "HIP-3 asset-id/order/fill/rounding/fee proof",
-    );
+fn hip3_live_submit_enablement_rejects_without_consumed_surface_approval() {
+    assert_surface_without_approval_rejects_live_submit("hip3_builder_perps");
 }
 
 #[test]
-fn hip4_live_submit_enablement_rejects_with_product_specific_missing_proof() {
-    assert_unproven_surface_rejects_live_submit(
-        "hip4_outcomes",
-        "HIP-4 outcome order/fill/rounding/fee/settlement/userOutcome proof",
-    );
+fn hip4_live_submit_enablement_rejects_without_consumed_surface_approval() {
+    assert_surface_without_approval_rejects_live_submit("hip4_outcomes");
 }
 
 #[test]

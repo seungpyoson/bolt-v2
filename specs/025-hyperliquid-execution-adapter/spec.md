@@ -37,11 +37,11 @@ As an operator, I can enable standard-perps live submit only with an explicit ap
 
 **Independent Test**: Live submit is rejected when the approval artifact is missing, stale, reused, mismatched, expired, or wider than configured order limits.
 
-### User Story 5 - Keep Spot, HIP-3, And HIP-4 Fail-Closed Until Proven (Priority: P2)
+### User Story 5 - Gate Spot, HIP-3, And HIP-4 Submit By Surface Approval (Priority: P2)
 
-As an operator, I can discover spot, HIP-3, and HIP-4 metadata while those surfaces remain blocked for live submit until each has product-specific evidence for submit, cancel, fill, fee, and settlement semantics.
+As an operator, I can enable spot, HIP-3, and HIP-4 through the same NT Hyperliquid execution adapter only when the configured product surface has a consumed approval artifact bound to that exact surface.
 
-**Independent Test**: Attempts to enable spot, HIP-3, or HIP-4 live submit fail with product-specific proof requirements.
+**Independent Test**: Attempts to enable spot, HIP-3, or HIP-4 live submit fail without a consumed surface-bound approval; a consumed approval for one surface cannot authorize a different surface.
 
 ### User Story 6 - Configure Latency Ops Separately (Priority: P3)
 
@@ -62,10 +62,10 @@ As an operator, I can configure local info-node and placement profile settings w
 - **FR-009**: The system MUST account for `userFees` using the official request weight.
 - **FR-010**: The system MUST inventory all NT `userFees` callers before wiring fee readiness.
 - **FR-011**: The system MUST discover standard perps, spot, HIP-3, and HIP-4 through NT-supported or officially documented public surfaces.
-- **FR-012**: The system MUST keep spot live execution fail-closed until product-specific order, fill, rounding, and fee proof exists.
-- **FR-013**: The system MUST keep HIP-3 live execution fail-closed until builder-perp asset-id, order, fill, rounding, and fee proof exists.
-- **FR-014**: The system MUST keep HIP-4 live execution fail-closed until outcome order, fill, rounding, fee, settlement, and `userOutcome` proof exists.
-- **FR-015**: The system MUST keep standard perps live submit blocked unless a current live-submit approval artifact exists.
+- **FR-012**: The system MUST keep spot live execution blocked unless a current live-submit approval artifact is consumed for `spot`.
+- **FR-013**: The system MUST keep HIP-3 live execution blocked unless a current live-submit approval artifact is consumed for `hip3_builder_perps`.
+- **FR-014**: The system MUST keep HIP-4 live execution blocked unless a current live-submit approval artifact is consumed for `hip4_outcomes` and TOML config enables positive outcome settlement polling.
+- **FR-015**: The system MUST keep standard perps live submit blocked unless a current live-submit approval artifact exists for `standard_perps`.
 - **FR-016**: The live-submit approval artifact MUST bind base SHA, provider id, product surface, TOML checksum, signer fingerprint, order limits, expiry, and one-time id.
 - **FR-017**: The system MUST treat Hyperliquid priority-fee grouping as out of MVP unless NT exposes and proves the required wire shape.
 - **FR-018**: The system MUST provide TOML-configured local-info-node and colocation profile fields as ops metadata only.

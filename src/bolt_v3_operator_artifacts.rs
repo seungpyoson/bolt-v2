@@ -3676,14 +3676,12 @@ fn validate_hyperliquid_live_submit_sha256_field(
 fn validate_hyperliquid_live_submit_product_surface(
     product_surface: hyperliquid::HyperliquidProductSurface,
 ) -> Result<(), BoltV3OperatorArtifactError> {
-    if product_surface == hyperliquid::HyperliquidProductSurface::StandardPerps {
-        return Ok(());
+    match product_surface {
+        hyperliquid::HyperliquidProductSurface::StandardPerps
+        | hyperliquid::HyperliquidProductSurface::Spot
+        | hyperliquid::HyperliquidProductSurface::Hip3BuilderPerps
+        | hyperliquid::HyperliquidProductSurface::Hip4Outcomes => Ok(()),
     }
-    Err(
-        BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
-            field: "product_surface",
-        },
-    )
 }
 
 fn validate_hyperliquid_live_submit_order_limits(

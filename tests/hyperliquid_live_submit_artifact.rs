@@ -86,6 +86,26 @@ fn standard_perps_live_submit_approval_artifact_binds_runtime_fields() {
 }
 
 #[test]
+fn live_submit_approval_artifact_accepts_each_hyperliquid_product_surface() {
+    for product_surface in [
+        HyperliquidProductSurface::StandardPerps,
+        HyperliquidProductSurface::Spot,
+        HyperliquidProductSurface::Hip3BuilderPerps,
+        HyperliquidProductSurface::Hip4Outcomes,
+    ] {
+        let mut input = approval_input();
+        input.product_surface = product_surface;
+        let mut binding = binding();
+        binding.product_surface = product_surface;
+
+        let approval = build_hyperliquid_live_submit_approval_artifact(input)
+            .expect("surface-bound approval artifact should build");
+        validate_hyperliquid_live_submit_approval_artifact(Some(&approval), &binding, NOW)
+            .expect("approval should validate against the same product surface");
+    }
+}
+
+#[test]
 fn standard_perps_live_submit_approval_artifact_writes_operator_json() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let output_path = temp.path().join("hyperliquid-live-submit-approval.json");

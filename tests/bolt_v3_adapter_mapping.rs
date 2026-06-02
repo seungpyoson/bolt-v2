@@ -78,6 +78,15 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     ResolvedBoltV3Secrets { clients }
 }
 
+fn fixture_resolved_hyperliquid_secrets() -> ResolvedBoltV3Secrets {
+    let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
+    clients.insert(
+        "hyperliquid_perps".to_string(),
+        Arc::new(fixture_hyperliquid_secrets()),
+    );
+    ResolvedBoltV3Secrets { clients }
+}
+
 fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
@@ -91,8 +100,19 @@ fn fixture_loaded_config_with_binance_reference() -> LoadedBoltV3Config {
     loaded
 }
 
-fn hyperliquid_standard_perps_client() -> bolt_v2::bolt_v3_config::ClientBlock {
-    toml::from_str(
+fn hyperliquid_client(
+    product_surface: &str,
+    live_submit_approval_id: &str,
+) -> bolt_v2::bolt_v3_config::ClientBlock {
+    hyperliquid_client_with_outcome_settlement_poll(product_surface, live_submit_approval_id, 0)
+}
+
+fn hyperliquid_client_with_outcome_settlement_poll(
+    product_surface: &str,
+    live_submit_approval_id: &str,
+    outcome_settlement_poll_secs: u64,
+) -> bolt_v2::bolt_v3_config::ClientBlock {
+    toml::from_str(&format!(
         r#"
 venue = "HYPERLIQUID"
 
@@ -100,8 +120,8 @@ venue = "HYPERLIQUID"
 account_id = "HYPERLIQUID-001"
 environment = "testnet"
 execution_mode = "master_account_api_wallet"
-product_surfaces = ["standard_perps"]
-live_submit_approval_id = "hl-standard-perps-approval-001"
+product_surfaces = ["{product_surface}"]
+live_submit_approval_id = "{live_submit_approval_id}"
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -113,29 +133,99 @@ normalize_prices = true
 market_order_slippage_bps = 50
 transport_backend = "sockudo"
 ws_post_timeout_secs = 10
-outcome_settlement_poll_secs = 0
+outcome_settlement_poll_secs = {outcome_settlement_poll_secs}
 
 [secrets]
 private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
 account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
 "#,
-    )
+    ))
     .expect("hyperliquid standard-perps client should parse")
 }
 
+fn hyperliquid_standard_perps_client() -> bolt_v2::bolt_v3_config::ClientBlock {
+    hyperliquid_client("standard_perps", "hl-standard-perps-approval-001")
+}
+
+fn hyperliquid_spot_client() -> bolt_v2::bolt_v3_config::ClientBlock {
+    hyperliquid_client("spot", "hl-spot-approval-001")
+}
+
+fn hyperliquid_hip3_client() -> bolt_v2::bolt_v3_config::ClientBlock {
+    hyperliquid_client("hip3_builder_perps", "hl-hip3-approval-001")
+}
+
+fn hyperliquid_hip4_client() -> bolt_v2::bolt_v3_config::ClientBlock {
+    hyperliquid_client_with_outcome_settlement_poll("hip4_outcomes", "hl-hip4-approval-001", 5)
+}
+
+fn hyperliquid_hip4_without_settlement_poll_client() -> bolt_v2::bolt_v3_config::ClientBlock {
+    hyperliquid_client("hip4_outcomes", "hl-hip4-approval-001")
+}
+
 fn fixture_loaded_config_with_hyperliquid_standard_perps() -> LoadedBoltV3Config {
+    fixture_loaded_config_with_hyperliquid_client(hyperliquid_standard_perps_client())
+}
+
+fn fixture_loaded_config_with_hyperliquid_spot() -> LoadedBoltV3Config {
+    fixture_loaded_config_with_hyperliquid_client(hyperliquid_spot_client())
+}
+
+fn fixture_loaded_config_with_hyperliquid_hip3() -> LoadedBoltV3Config {
+    fixture_loaded_config_with_hyperliquid_client(hyperliquid_hip3_client())
+}
+
+fn fixture_loaded_config_with_hyperliquid_hip4() -> LoadedBoltV3Config {
+    fixture_loaded_config_with_hyperliquid_client(hyperliquid_hip4_client())
+}
+
+fn fixture_loaded_config_with_hyperliquid_hip4_without_settlement_poll() -> LoadedBoltV3Config {
+    fixture_loaded_config_with_hyperliquid_client(hyperliquid_hip4_without_settlement_poll_client())
+}
+
+fn fixture_loaded_config_with_hyperliquid_client(
+    client: bolt_v2::bolt_v3_config::ClientBlock,
+) -> LoadedBoltV3Config {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
     loaded.root.clients.clear();
     loaded.strategies.clear();
-    loaded.root.clients.insert(
-        "hyperliquid_perps".to_string(),
-        hyperliquid_standard_perps_client(),
-    );
+    loaded
+        .root
+        .clients
+        .insert("hyperliquid_perps".to_string(), client);
     loaded
 }
 
-fn consumed_hyperliquid_approval() -> HyperliquidLiveSubmitApprovalConsumption {
+fn consumed_hyperliquid_standard_perps_approval() -> HyperliquidLiveSubmitApprovalConsumption {
+    consumed_hyperliquid_approval(
+        HyperliquidProductSurface::StandardPerps,
+        "hl-standard-perps-approval-001",
+    )
+}
+
+fn consumed_hyperliquid_spot_approval() -> HyperliquidLiveSubmitApprovalConsumption {
+    consumed_hyperliquid_approval(HyperliquidProductSurface::Spot, "hl-spot-approval-001")
+}
+
+fn consumed_hyperliquid_hip3_approval() -> HyperliquidLiveSubmitApprovalConsumption {
+    consumed_hyperliquid_approval(
+        HyperliquidProductSurface::Hip3BuilderPerps,
+        "hl-hip3-approval-001",
+    )
+}
+
+fn consumed_hyperliquid_hip4_approval() -> HyperliquidLiveSubmitApprovalConsumption {
+    consumed_hyperliquid_approval(
+        HyperliquidProductSurface::Hip4Outcomes,
+        "hl-hip4-approval-001",
+    )
+}
+
+fn consumed_hyperliquid_approval(
+    product_surface: HyperliquidProductSurface,
+    approval_id: &str,
+) -> HyperliquidLiveSubmitApprovalConsumption {
     let order_limits = HyperliquidLiveSubmitOrderLimits {
         max_order_count: 1,
         max_order_notional: "10.00".to_string(),
@@ -143,14 +233,14 @@ fn consumed_hyperliquid_approval() -> HyperliquidLiveSubmitApprovalConsumption {
     let binding = HyperliquidLiveSubmitApprovalBinding {
         base_sha: "a".repeat(40),
         provider_id: "hyperliquid_perps".to_string(),
-        product_surface: HyperliquidProductSurface::StandardPerps,
+        product_surface,
         toml_checksum: "b".repeat(64),
         signer_fingerprint: "c".repeat(64),
         order_limits: order_limits.clone(),
     };
     let mut approval =
         build_hyperliquid_live_submit_approval_artifact(HyperliquidLiveSubmitApprovalInput {
-            approval_id: "hl-standard-perps-approval-001".to_string(),
+            approval_id: approval_id.to_string(),
             base_sha: binding.base_sha.clone(),
             provider_id: binding.provider_id.clone(),
             product_surface: binding.product_surface,
@@ -164,7 +254,7 @@ fn consumed_hyperliquid_approval() -> HyperliquidLiveSubmitApprovalConsumption {
     consume_hyperliquid_live_submit_approval_artifact(
         &mut approval,
         &binding,
-        "hl-standard-perps-approval-001",
+        approval_id,
         1_800_000_000,
     )
     .expect("test Hyperliquid approval should consume once")
@@ -319,7 +409,7 @@ fn hyperliquid_standard_perps_execution_maps_to_nt_after_consumed_approval() {
         Arc::new(fixture_hyperliquid_secrets()),
     );
     let resolved = ResolvedBoltV3Secrets { clients };
-    let consumed = consumed_hyperliquid_approval();
+    let consumed = consumed_hyperliquid_standard_perps_approval();
 
     let configs = map_bolt_v3_adapters_with_runtime_approvals(
         &loaded,
@@ -382,6 +472,190 @@ fn hyperliquid_standard_perps_execution_maps_to_nt_after_consumed_approval() {
     assert_eq!(config.config.transport_backend, TransportBackend::Sockudo);
     assert_eq!(config.config.ws_post_timeout_secs, 10);
     assert_eq!(config.config.outcome_settlement_poll_secs, 0);
+}
+
+#[test]
+fn hyperliquid_spot_execution_requires_consumed_surface_approval() {
+    let loaded = fixture_loaded_config_with_hyperliquid_spot();
+    let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
+    clients.insert(
+        "hyperliquid_perps".to_string(),
+        Arc::new(fixture_hyperliquid_secrets()),
+    );
+    let resolved = ResolvedBoltV3Secrets { clients };
+
+    let error = map_bolt_v3_adapters(&loaded, &resolved)
+        .expect_err("Hyperliquid spot live submit must fail without consumed approval");
+
+    match error {
+        BoltV3AdapterMappingError::ValidationInvariant {
+            client_key,
+            field,
+            message,
+        } => {
+            assert_eq!(client_key, "hyperliquid_perps");
+            assert_eq!(field, "execution.live_submit_approval_id");
+            assert!(message.contains("consumed live-submit approval"));
+        }
+        other => panic!("expected Hyperliquid spot approval invariant, got {other}"),
+    }
+}
+
+#[test]
+fn hyperliquid_spot_execution_maps_to_nt_after_consumed_surface_approval() {
+    let loaded = fixture_loaded_config_with_hyperliquid_spot();
+    let resolved = fixture_resolved_hyperliquid_secrets();
+    let consumed = consumed_hyperliquid_spot_approval();
+
+    let configs = map_bolt_v3_adapters_with_runtime_approvals(
+        &loaded,
+        &resolved,
+        ProviderRuntimeApprovals {
+            hyperliquid_live_submit: Some(&consumed),
+        },
+    )
+    .expect("consumed spot approval should open the NT adapter path");
+
+    let hyperliquid = configs
+        .clients
+        .get("hyperliquid_perps")
+        .expect("Hyperliquid client must be present in mapper output");
+    assert!(hyperliquid.data.is_none());
+    let execution = hyperliquid
+        .execution
+        .as_ref()
+        .expect("Hyperliquid spot [execution] block must produce an NT exec config");
+    assert_eq!(execution.factory.name(), "HYPERLIQUID");
+
+    let config = execution
+        .config_as::<HyperliquidExecFactoryConfig>()
+        .expect("Hyperliquid spot execution should downcast to NT HyperliquidExecFactoryConfig");
+    assert_eq!(config.config.environment, NtHyperliquidEnvironment::Testnet);
+    assert_eq!(
+        config.config.base_url_exchange.as_deref(),
+        Some("https://api.hyperliquid-testnet.xyz/exchange")
+    );
+}
+
+#[test]
+fn hyperliquid_hip3_execution_maps_to_nt_after_consumed_surface_approval() {
+    let loaded = fixture_loaded_config_with_hyperliquid_hip3();
+    let resolved = fixture_resolved_hyperliquid_secrets();
+    let consumed = consumed_hyperliquid_hip3_approval();
+
+    let configs = map_bolt_v3_adapters_with_runtime_approvals(
+        &loaded,
+        &resolved,
+        ProviderRuntimeApprovals {
+            hyperliquid_live_submit: Some(&consumed),
+        },
+    )
+    .expect("consumed HIP-3 approval should open the NT adapter path");
+
+    let execution = configs
+        .clients
+        .get("hyperliquid_perps")
+        .and_then(|client| client.execution.as_ref())
+        .expect("Hyperliquid HIP-3 execution config must map");
+    assert_eq!(execution.factory.name(), "HYPERLIQUID");
+    execution
+        .config_as::<HyperliquidExecFactoryConfig>()
+        .expect("Hyperliquid HIP-3 execution should downcast to NT config");
+}
+
+#[test]
+fn hyperliquid_hip4_execution_requires_positive_settlement_poll() {
+    let loaded = fixture_loaded_config_with_hyperliquid_hip4_without_settlement_poll();
+    let resolved = fixture_resolved_hyperliquid_secrets();
+    let consumed = consumed_hyperliquid_hip4_approval();
+
+    let error = map_bolt_v3_adapters_with_runtime_approvals(
+        &loaded,
+        &resolved,
+        ProviderRuntimeApprovals {
+            hyperliquid_live_submit: Some(&consumed),
+        },
+    )
+    .expect_err("HIP-4 execution must not map with disabled settlement polling");
+
+    match error {
+        BoltV3AdapterMappingError::ValidationInvariant {
+            client_key,
+            field,
+            message,
+        } => {
+            assert_eq!(client_key, "hyperliquid_perps");
+            assert_eq!(field, "execution.outcome_settlement_poll_secs");
+            assert!(
+                message.contains("HIP-4"),
+                "HIP-4 settlement guard must be named: {message}"
+            );
+        }
+        other => panic!("expected HIP-4 settlement poll invariant, got {other}"),
+    }
+}
+
+#[test]
+fn hyperliquid_hip4_execution_maps_to_nt_after_consumed_surface_approval() {
+    let loaded = fixture_loaded_config_with_hyperliquid_hip4();
+    let resolved = fixture_resolved_hyperliquid_secrets();
+    let consumed = consumed_hyperliquid_hip4_approval();
+
+    let configs = map_bolt_v3_adapters_with_runtime_approvals(
+        &loaded,
+        &resolved,
+        ProviderRuntimeApprovals {
+            hyperliquid_live_submit: Some(&consumed),
+        },
+    )
+    .expect("consumed HIP-4 approval should open the NT adapter path");
+
+    let execution = configs
+        .clients
+        .get("hyperliquid_perps")
+        .and_then(|client| client.execution.as_ref())
+        .expect("Hyperliquid HIP-4 execution config must map");
+    assert_eq!(execution.factory.name(), "HYPERLIQUID");
+    let config = execution
+        .config_as::<HyperliquidExecFactoryConfig>()
+        .expect("Hyperliquid HIP-4 execution should downcast to NT config");
+    assert_eq!(
+        config.config.outcome_settlement_poll_secs, 5,
+        "HIP-4 settlement polling stays TOML-owned"
+    );
+}
+
+#[test]
+fn hyperliquid_surface_approval_cannot_authorize_different_surface() {
+    let loaded = fixture_loaded_config_with_hyperliquid_hip3();
+    let resolved = fixture_resolved_hyperliquid_secrets();
+    let consumed =
+        consumed_hyperliquid_approval(HyperliquidProductSurface::Spot, "hl-hip3-approval-001");
+
+    let error = map_bolt_v3_adapters_with_runtime_approvals(
+        &loaded,
+        &resolved,
+        ProviderRuntimeApprovals {
+            hyperliquid_live_submit: Some(&consumed),
+        },
+    )
+    .expect_err("spot approval must not authorize HIP-3 execution");
+
+    match error {
+        BoltV3AdapterMappingError::ValidationInvariant {
+            client_key,
+            field,
+            message,
+        } => {
+            assert_eq!(client_key, "hyperliquid_perps");
+            assert_eq!(field, "execution.product_surfaces");
+            assert!(
+                message.contains("product surface does not match"),
+                "surface mismatch must be named: {message}"
+            );
+        }
+        other => panic!("expected Hyperliquid surface mismatch invariant, got {other}"),
+    }
 }
 
 #[test]

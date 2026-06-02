@@ -29,8 +29,8 @@
 //! The caller owns the `LiveNode`; the build path never opens an
 //! external network connection. Opt-in controlled-connect/no-submit
 //! readiness boundaries may open adapter sockets. The production
-//! trading runner entrypoint is [`run_bolt_v3_live_node`], which first
-//! arms submit admission from the configured live bounds. The no-submit
+//! trading runner entrypoint is [`run_bolt_v3_live_node`], which rejects a
+//! missing live-canary block before entering NT's runner loop. The no-submit
 //! readiness path builds a strategy-free node before using NT's supported
 //! runner loop with handle-driven stop; its dedicated quote probes call
 //! only NT quote subscribe/unsubscribe APIs for configured strategy
@@ -2174,6 +2174,12 @@ pub async fn run_bolt_v3_live_node(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
+    if loaded.root.live_canary.is_none() {
+        return Err(BoltV3LiveNodeError::LiveCanaryGate(
+            BoltV3LiveCanaryGateError::MissingConfig,
+        ));
+    }
+
     let node = &mut runtime.node;
     let node_handle = node.handle();
     let mut capture_guards = wire_bolt_v3_runtime_capture(node, node_handle, loaded)

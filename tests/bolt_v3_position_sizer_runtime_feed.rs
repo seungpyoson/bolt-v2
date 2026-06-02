@@ -485,6 +485,25 @@ fn terminal_order_suppression_expires_after_configured_snapshot_window() {
     config.max_snapshot_age_ns = 100;
     let mut feed = PositionSizerRuntimeFeed::new(config, admission.clone());
 
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            50.0
+        ))
+        .is_some()
+    );
+
     let _ = feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
         "client-order-A",
         1_200,
@@ -497,7 +516,7 @@ fn terminal_order_suppression_expires_after_configured_snapshot_window() {
 
     assert!(
         feed.seed_open_order_cache(vec!["client-order-A".to_string()], 1_450)
-            .is_none()
+            .is_some()
     );
     let state = admission
         .position_sizer_state_snapshot()

@@ -49,6 +49,7 @@ pub struct PositionSizerRuntimeFeed {
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     component_builder: PositionSizerRuntimeComponentBuilder,
     latest_terminal_observed_at_ns: Option<u64>,
+    fill_position_updates_seen: BTreeSet<(String, String, String)>,
 }
 
 pub struct PositionSizerRuntimeFeedSubscription {
@@ -141,6 +142,7 @@ impl PositionSizerRuntimeFeed {
             submit_admission,
             component_builder,
             latest_terminal_observed_at_ns: None,
+            fill_position_updates_seen: BTreeSet::new(),
         }
     }
 
@@ -339,6 +341,17 @@ impl PositionSizerRuntimeFeed {
             observed_at_ns,
         );
         if decision.unknown_reservation {
+            if !fill.reconciliation {
+                self.record_fill_position_delta_once(
+                    fill.client_order_id.to_string(),
+                    fill.trade_id.to_string(),
+                    &instrument_id,
+                    side,
+                    fill.last_qty.as_decimal(),
+                    observed_at_ns,
+                );
+                self.publish_components_if_ready();
+            }
             return None;
         }
         let fill_changes_position = decision.accepted
@@ -348,7 +361,9 @@ impl PositionSizerRuntimeFeed {
                     | crate::bolt_v3_position_sizer::PositionSizingLifecycleAction::Released
             );
         if fill_changes_position {
-            self.component_builder.record_fill_position_delta(
+            self.record_fill_position_delta_once(
+                fill.client_order_id.to_string(),
+                fill.trade_id.to_string(),
                 &instrument_id,
                 side,
                 fill.last_qty.as_decimal(),
@@ -365,6 +380,31 @@ impl PositionSizerRuntimeFeed {
             self.publish_components_if_ready();
         }
         Some(decision)
+    }
+
+    fn record_fill_position_delta_once(
+        &mut self,
+        client_order_id: String,
+        trade_id: String,
+        instrument_id: &str,
+        side: BoltV3CompiledOrderSide,
+        fill_quantity: Decimal,
+        observed_at_ns: u64,
+    ) -> bool {
+        if trade_id.trim().is_empty() || fill_quantity <= Decimal::ZERO {
+            return false;
+        }
+        let key = (client_order_id, trade_id, instrument_id.to_string());
+        if !self.fill_position_updates_seen.insert(key) {
+            return false;
+        }
+        self.component_builder.record_fill_position_delta(
+            instrument_id,
+            side,
+            fill_quantity,
+            observed_at_ns,
+        );
+        true
     }
 
     #[must_use]

@@ -17,11 +17,11 @@ use bolt_v2::bolt_v3_sizing_state::{
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
     BoltV3CompiledOrderSizingEvidence, BoltV3CompiledProductKind, BoltV3PositionSizerRejectReason,
-    BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
-    BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, BoltV3SubmitPositionSizerConfig,
-    BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderReservation,
-    BoltV3SubmitPositionSizingOpenOrderSnapshot, BoltV3SubmitPositionSizingRebuildDecision,
-    PredictionMarketOutcomeSide,
+    BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
+    BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
+    BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingNtComponents,
+    BoltV3SubmitPositionSizingOpenOrderReservation, BoltV3SubmitPositionSizingOpenOrderSnapshot,
+    BoltV3SubmitPositionSizingRebuildDecision, PredictionMarketOutcomeSide,
 };
 use nautilus_common::msgbus::{
     TypedHandler, publish_account_state, publish_order_event, publish_portfolio_snapshot,
@@ -812,6 +812,84 @@ fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
     let second = admission
         .admit_at(&sized_sell_submit_request("client-order-2"), 1_150)
         .expect_err("sell above post-fill inventory should reject");
+    assert_eq!(
+        second,
+        BoltV3SubmitAdmissionError::PositionSizingRejected {
+            reason: BoltV3PositionSizerRejectReason::SizingRejected,
+        }
+    );
+}
+
+#[test]
+fn unreserved_risk_reducing_exit_fill_reduces_inventory_before_next_exit() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_cache_snapshot(
+            Vec::<String>::new(),
+            Decimal::new(10, 0),
+            Decimal::ZERO,
+            1_000,
+        )
+        .is_some()
+    );
+    rebuild_empty_position_sizer(&admission);
+
+    admission
+        .admit_at(
+            &risk_reducing_exit_submit_request("exit-order-1", Decimal::new(10, 0)),
+            1_010,
+        )
+        .expect("first exit should reduce seeded inventory")
+        .commit_submitted();
+
+    assert!(
+        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "exit-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(10),
+            OrderSide::Sell,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .is_none(),
+        "risk-reducing exit fills have no reservation lifecycle decision"
+    );
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("risk-reducing fill should publish updated inventory");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_order_fill");
+    assert_eq!(product.observed_at_ns, 1_100);
+    assert_eq!(product.yes_position, Decimal::ZERO);
+
+    let second = admission
+        .admit_at(
+            &risk_reducing_exit_submit_request("exit-order-2", Decimal::new(10, 0)),
+            1_150,
+        )
+        .expect_err("second exit against post-fill zero inventory should reject");
     assert_eq!(
         second,
         BoltV3SubmitAdmissionError::PositionSizingRejected {
@@ -1698,6 +1776,29 @@ fn sized_sell_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequ
         .as_mut()
         .expect("sized request should carry evidence")
         .side = BoltV3CompiledOrderSide::Sell;
+    request
+}
+
+fn risk_reducing_exit_submit_request(
+    client_order_id: &str,
+    quantity: Decimal,
+) -> BoltV3SubmitAdmissionRequest {
+    let mut request = sized_sell_submit_request(client_order_id);
+    request.notional = quantity * Decimal::new(40, 2);
+    request.order_side = OrderSide::Sell;
+    request.order_quantity = quantity;
+    request.intent_kind = BoltV3SubmitIntentKind::RiskReducingExit;
+    request.risk_reducing_exit_proof = Some(BoltV3RiskReducingExitProof {
+        position_id: "position-1".to_string(),
+        instrument_id: "instrument-yes.VENUE-A".to_string(),
+        position_side: PositionSide::Long,
+        exit_order_side: OrderSide::Sell,
+        position_quantity: quantity,
+        exit_quantity: quantity,
+    });
+    if let Some(position_sizing) = request.position_sizing.as_mut() {
+        position_sizing.quantity = quantity;
+    }
     request
 }
 

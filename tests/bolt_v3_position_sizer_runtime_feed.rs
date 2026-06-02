@@ -1,6 +1,6 @@
 mod support;
 
-use std::sync::{Arc, Mutex};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use bolt_v2::bolt_v3_capital_reservation::CapitalPoolSnapshot;
 use bolt_v2::bolt_v3_position_sizer::{
@@ -33,11 +33,12 @@ use nautilus_core::{UUID4, UnixNanos};
 use nautilus_model::{
     enums::{
         AccountType, CurrencyType, LiquiditySide, OrderSide, OrderType, PositionAdjustmentType,
+        PositionSide,
     },
     events::{
         AccountState, OrderAccepted, OrderCanceled, OrderDenied, OrderEventAny, OrderExpired,
         OrderFilled, OrderRejected, OrderSubmitted, PortfolioSnapshot, PositionAdjusted,
-        PositionEvent,
+        PositionChanged, PositionClosed, PositionEvent,
     },
     identifiers::{
         AccountId, ClientOrderId, InstrumentId, PositionId, StrategyId, TradeId, TraderId,
@@ -81,7 +82,7 @@ fn runtime_feed_uses_verified_nt_msgbus_symbols() {
 #[test]
 fn subscribed_account_and_portfolio_events_publish_sizing_components() {
     let admission = Arc::new(position_sized_admission());
-    let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+    let feed = Rc::new(RefCell::new(PositionSizerRuntimeFeed::new(
         runtime_feed_config(),
         admission.clone(),
     )));
@@ -119,7 +120,7 @@ fn position_sizer_runtime_subscription_drop_unsubscribes_all_handlers() {
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
-    let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+    let feed = Rc::new(RefCell::new(PositionSizerRuntimeFeed::new(
         runtime_feed_config(),
         admission.clone(),
     )));
@@ -148,12 +149,7 @@ fn position_sizer_runtime_subscription_drop_unsubscribes_all_handlers() {
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::new(43, 1))
     );
-    assert_eq!(
-        feed.lock()
-            .expect("feed mutex should not be poisoned")
-            .latest_terminal_observed_at_ns(),
-        None
-    );
+    assert_eq!(feed.borrow().latest_terminal_observed_at_ns(), None);
 }
 
 #[test]
@@ -223,6 +219,91 @@ fn feed_waits_for_matching_account_and_portfolio_before_publish() {
         .is_none()
     );
     assert_eq!(admission.position_sizer_state_snapshot(), None);
+}
+
+#[test]
+fn matching_position_event_updates_configured_binary_inventory() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            45.0
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            50.0
+        ))
+        .is_some()
+    );
+
+    assert!(
+        feed.on_position_event(&changed_position_event(
+            AccountId::from("ACCOUNT-001"),
+            "instrument-yes.VENUE-A",
+            "3",
+            1_200
+        ))
+        .is_some()
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("matching NT position event should publish product state");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_position_event");
+    assert_eq!(product.observed_at_ns, 1_200);
+    assert_eq!(product.yes_position, Decimal::new(3, 0));
+    assert_eq!(product.no_position, Decimal::ZERO);
+}
+
+#[test]
+fn matching_position_closed_event_clears_configured_binary_inventory() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    let _ = feed.on_account_state(&account_state(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        1_000,
+        45.0,
+    ));
+    let _ = feed.on_portfolio_snapshot(&portfolio_snapshot(
+        AccountId::from("ACCOUNT-001"),
+        "USD",
+        1_100,
+        50.0,
+    ));
+    let _ = feed.on_position_event(&changed_position_event(
+        AccountId::from("ACCOUNT-001"),
+        "instrument-yes.VENUE-A",
+        "3",
+        1_200,
+    ));
+
+    assert!(
+        feed.on_position_event(&closed_position_event(
+            AccountId::from("ACCOUNT-001"),
+            "instrument-yes.VENUE-A",
+            1_300
+        ))
+        .is_some()
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("matching NT closed-position event should publish product state");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_position_event");
+    assert_eq!(product.observed_at_ns, 1_300);
+    assert_eq!(product.yes_position, Decimal::ZERO);
+    assert_eq!(product.no_position, Decimal::ZERO);
 }
 
 #[test]
@@ -395,6 +476,43 @@ fn cache_seed_and_concurrent_order_event_do_not_double_count() {
         .position_sizer_state_snapshot()
         .expect("stale cache seed should not resurrect terminal order");
     assert_eq!(state.order_lifecycle.open_order_count, 0);
+}
+
+#[test]
+fn terminal_order_suppression_expires_after_configured_snapshot_window() {
+    let admission = Arc::new(position_sized_admission());
+    let mut config = runtime_feed_config();
+    config.max_snapshot_age_ns = 100;
+    let mut feed = PositionSizerRuntimeFeed::new(config, admission.clone());
+
+    let _ = feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "client-order-A",
+        1_200,
+        AccountId::from("ACCOUNT-001"),
+    )));
+    let _ = feed.on_order_event(&OrderEventAny::Canceled(order_canceled_event(
+        "client-order-A",
+        1_400,
+    )));
+
+    assert!(
+        feed.seed_open_order_cache(vec!["client-order-A".to_string()], 1_450)
+            .is_some()
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("fresh stale cache seed should still suppress terminal order");
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+
+    assert!(
+        feed.seed_open_order_cache(vec!["client-order-A".to_string()], 1_501)
+            .is_some()
+    );
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("expired stale cache seed should publish fail-closed lifecycle state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+    assert!(!state.order_lifecycle.all_open_orders_attributed);
 }
 
 #[test]
@@ -1091,7 +1209,7 @@ fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
         .expect("fresh sizing state should admit")
         .commit_submitted();
 
-    let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+    let feed = Rc::new(RefCell::new(PositionSizerRuntimeFeed::new(
         runtime_feed_config(),
         admission.clone(),
     )));
@@ -1107,12 +1225,7 @@ fn subscribed_terminal_nt_order_event_releases_committed_submit_reservation() {
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
-    assert_eq!(
-        feed.lock()
-            .expect("feed mutex should not be poisoned")
-            .latest_terminal_observed_at_ns(),
-        Some(1_100)
-    );
+    assert_eq!(feed.borrow().latest_terminal_observed_at_ns(), Some(1_100));
 }
 
 #[test]
@@ -1263,6 +1376,7 @@ fn runtime_feed_config() -> PositionSizerRuntimeFeedConfig {
             },
         ),
         startup_observed_at_ns: 900,
+        max_snapshot_age_ns: 5_000,
     }
 }
 
@@ -1327,6 +1441,74 @@ fn adjusted_position_event(account_id: AccountId, ts_event: u64) -> PositionEven
         UnixNanos::from(ts_event),
         UnixNanos::from(ts_event),
     ))
+}
+
+fn changed_position_event(
+    account_id: AccountId,
+    instrument_id: &str,
+    quantity: &str,
+    ts_event: u64,
+) -> PositionEvent {
+    PositionEvent::PositionChanged(PositionChanged {
+        trader_id: TraderId::from("TRADER-001"),
+        strategy_id: StrategyId::from("strategy-a"),
+        instrument_id: InstrumentId::from(instrument_id),
+        position_id: PositionId::from("position-1"),
+        account_id,
+        opening_order_id: ClientOrderId::from("client-order-1"),
+        entry: OrderSide::Buy,
+        side: PositionSide::Long,
+        signed_qty: 1.0,
+        quantity: Quantity::from(quantity),
+        peak_quantity: Quantity::from(quantity),
+        last_qty: Quantity::from(quantity),
+        last_px: Price::from("1.00"),
+        currency: test_currency("USD"),
+        avg_px_open: 1.0,
+        avg_px_close: None,
+        realized_return: 0.0,
+        realized_pnl: None,
+        unrealized_pnl: Money::new(0.0, test_currency("USD")),
+        event_id: UUID4::default(),
+        ts_opened: UnixNanos::from(1),
+        ts_event: UnixNanos::from(ts_event),
+        ts_init: UnixNanos::from(ts_event),
+    })
+}
+
+fn closed_position_event(
+    account_id: AccountId,
+    instrument_id: &str,
+    ts_event: u64,
+) -> PositionEvent {
+    PositionEvent::PositionClosed(PositionClosed {
+        trader_id: TraderId::from("TRADER-001"),
+        strategy_id: StrategyId::from("strategy-a"),
+        instrument_id: InstrumentId::from(instrument_id),
+        position_id: PositionId::from("position-1"),
+        account_id,
+        opening_order_id: ClientOrderId::from("client-order-1"),
+        closing_order_id: Some(ClientOrderId::from("client-order-close")),
+        entry: OrderSide::Buy,
+        side: PositionSide::Flat,
+        signed_qty: 0.0,
+        quantity: Quantity::from("0"),
+        peak_quantity: Quantity::from("3"),
+        last_qty: Quantity::from("3"),
+        last_px: Price::from("1.00"),
+        currency: test_currency("USD"),
+        avg_px_open: 1.0,
+        avg_px_close: Some(1.0),
+        realized_return: 0.0,
+        realized_pnl: None,
+        unrealized_pnl: Money::new(0.0, test_currency("USD")),
+        duration: 1,
+        event_id: UUID4::default(),
+        ts_opened: UnixNanos::from(1),
+        ts_closed: Some(UnixNanos::from(ts_event)),
+        ts_event: UnixNanos::from(ts_event),
+        ts_init: UnixNanos::from(ts_event),
+    })
 }
 
 fn test_currency(currency_code: &str) -> Currency {

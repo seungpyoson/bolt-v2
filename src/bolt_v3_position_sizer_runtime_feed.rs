@@ -1,6 +1,8 @@
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex},
+    rc::Rc,
+    sync::Arc,
 };
 
 use nautilus_common::msgbus::{
@@ -9,7 +11,7 @@ use nautilus_common::msgbus::{
     unsubscribe_portfolio_snapshot, unsubscribe_position_events,
 };
 use nautilus_model::{
-    enums::OrderSide,
+    enums::{OrderSide, PositionSide},
     events::{AccountState, OrderEventAny, OrderFilled, PortfolioSnapshot, PositionEvent},
     identifiers::AccountId,
 };
@@ -37,6 +39,7 @@ pub struct PositionSizerRuntimeFeedConfig {
     pub collateral_currency: String,
     pub product_state: ProductSizingSnapshot,
     pub startup_observed_at_ns: u64,
+    pub max_snapshot_age_ns: u64,
 }
 
 #[derive(Debug)]
@@ -59,45 +62,34 @@ struct PositionSizerRuntimeComponentBuilder {
     latest_account_free_collateral: Option<(Decimal, u64)>,
     latest_portfolio: Option<PortfolioSizingSnapshot>,
     live_order_attribution: BTreeMap<String, bool>,
-    terminal_order_ids_seen: BTreeSet<String>,
+    terminal_order_ids_seen: BTreeMap<String, u64>,
     order_lifecycle: OrderLifecycleSizingSnapshot,
     product_state: ProductSizingSnapshot,
+    max_snapshot_age_ns: u64,
 }
 
 #[must_use]
 pub fn subscribe_position_sizer_runtime_feed(
-    feed: Arc<Mutex<PositionSizerRuntimeFeed>>,
+    feed: Rc<RefCell<PositionSizerRuntimeFeed>>,
 ) -> PositionSizerRuntimeFeedSubscription {
-    let order_feed = Arc::clone(&feed);
+    let order_feed = Rc::clone(&feed);
     let order_events = TypedHandler::from(move |event: &OrderEventAny| {
-        order_feed
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .on_order_event(event);
+        order_feed.borrow_mut().on_order_event(event);
     });
     subscribe_order_events(order_events_pattern(), order_events.clone(), None);
-    let position_feed = Arc::clone(&feed);
+    let position_feed = Rc::clone(&feed);
     let position_events = TypedHandler::from(move |event: &PositionEvent| {
-        position_feed
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .on_position_event(event);
+        position_feed.borrow_mut().on_position_event(event);
     });
     subscribe_position_events(position_events_pattern(), position_events.clone(), None);
-    let account_feed = Arc::clone(&feed);
+    let account_feed = Rc::clone(&feed);
     let account_states = TypedHandler::from(move |event: &AccountState| {
-        account_feed
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .on_account_state(event);
+        account_feed.borrow_mut().on_account_state(event);
     });
     subscribe_account_state(account_states_pattern(), account_states.clone(), None);
-    let portfolio_feed = Arc::clone(&feed);
+    let portfolio_feed = Rc::clone(&feed);
     let portfolio_snapshots = TypedHandler::from(move |event: &PortfolioSnapshot| {
-        portfolio_feed
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .on_portfolio_snapshot(event);
+        portfolio_feed.borrow_mut().on_portfolio_snapshot(event);
     });
     subscribe_portfolio_snapshot(
         portfolio_snapshots_pattern(),
@@ -192,8 +184,22 @@ impl PositionSizerRuntimeFeed {
         self.publish_components_if_ready()
     }
 
-    pub fn on_position_event(&mut self, _event: &PositionEvent) -> Option<()> {
-        None
+    pub fn on_position_event(
+        &mut self,
+        event: &PositionEvent,
+    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+        if event.account_id() != self.config.account_id {
+            return None;
+        }
+        let (quantity, observed_at_ns) = position_event_inventory(event)?;
+        let instrument_id = event.instrument_id().to_string();
+        if !self
+            .component_builder
+            .record_position_event(&instrument_id, quantity, observed_at_ns)
+        {
+            return None;
+        }
+        self.publish_components_if_ready()
     }
 
     #[must_use]
@@ -384,7 +390,7 @@ impl PositionSizerRuntimeComponentBuilder {
             latest_account_free_collateral: None,
             latest_portfolio: None,
             live_order_attribution: BTreeMap::new(),
-            terminal_order_ids_seen: BTreeSet::new(),
+            terminal_order_ids_seen: BTreeMap::new(),
             order_lifecycle: OrderLifecycleSizingSnapshot {
                 source: "nt_order_lifecycle_seed".to_string(),
                 observed_at_ns: config.startup_observed_at_ns,
@@ -392,6 +398,7 @@ impl PositionSizerRuntimeComponentBuilder {
                 all_open_orders_attributed: false,
             },
             product_state: config.product_state.clone(),
+            max_snapshot_age_ns: config.max_snapshot_age_ns,
         }
     }
 
@@ -404,6 +411,7 @@ impl PositionSizerRuntimeComponentBuilder {
     ) where
         I: IntoIterator<Item = String>,
     {
+        self.prune_terminal_order_ids(observed_at_ns);
         let cache_open_ids = client_order_ids.into_iter().collect::<BTreeSet<_>>();
         let existing_live_order_ids = self
             .live_order_attribution
@@ -415,7 +423,8 @@ impl PositionSizerRuntimeComponentBuilder {
             .cloned()
             .collect::<BTreeSet<_>>();
         self.live_order_attribution = merged_live_order_ids
-            .difference(&self.terminal_order_ids_seen)
+            .iter()
+            .filter(|client_order_id| !self.terminal_order_ids_seen.contains_key(*client_order_id))
             .map(|client_order_id| {
                 let attributed = self
                     .live_order_attribution
@@ -447,7 +456,8 @@ impl PositionSizerRuntimeComponentBuilder {
         attributed: bool,
         observed_at_ns: u64,
     ) {
-        if !self.terminal_order_ids_seen.contains(&client_order_id) {
+        self.prune_terminal_order_ids(observed_at_ns);
+        if !self.terminal_order_ids_seen.contains_key(&client_order_id) {
             self.live_order_attribution
                 .entry(client_order_id)
                 .and_modify(|existing| *existing = *existing || attributed)
@@ -474,9 +484,19 @@ impl PositionSizerRuntimeComponentBuilder {
     }
 
     fn record_terminal_order_event(&mut self, client_order_id: String, observed_at_ns: u64) {
-        self.terminal_order_ids_seen.insert(client_order_id.clone());
+        self.terminal_order_ids_seen
+            .insert(client_order_id.clone(), observed_at_ns);
+        self.prune_terminal_order_ids(observed_at_ns);
         self.live_order_attribution.remove(&client_order_id);
         self.refresh_order_lifecycle_from_event(observed_at_ns);
+    }
+
+    fn prune_terminal_order_ids(&mut self, observed_at_ns: u64) {
+        let max_snapshot_age_ns = self.max_snapshot_age_ns;
+        self.terminal_order_ids_seen
+            .retain(|_, terminal_observed_at_ns| {
+                observed_at_ns.saturating_sub(*terminal_observed_at_ns) <= max_snapshot_age_ns
+            });
     }
 
     fn refresh_order_lifecycle_from_event(&mut self, observed_at_ns: u64) {
@@ -530,6 +550,26 @@ impl PositionSizerRuntimeComponentBuilder {
         snapshot.observed_at_ns = observed_at_ns;
     }
 
+    fn record_position_event(
+        &mut self,
+        instrument_id: &str,
+        position_quantity: Decimal,
+        observed_at_ns: u64,
+    ) -> bool {
+        let ProductSizingSnapshot::PredictionMarketBinary(snapshot) = &mut self.product_state;
+        let outcome_position = if instrument_id == snapshot.yes_instrument_id {
+            &mut snapshot.yes_position
+        } else if instrument_id == snapshot.no_instrument_id {
+            &mut snapshot.no_position
+        } else {
+            return false;
+        };
+        *outcome_position = position_quantity;
+        snapshot.source = "nt_position_event".to_string();
+        snapshot.observed_at_ns = observed_at_ns;
+        true
+    }
+
     fn components(
         &self,
         _config: &PositionSizerRuntimeFeedConfig,
@@ -556,6 +596,30 @@ impl PositionSizerRuntimeComponentBuilder {
             product_state,
             loss_snapshot: None,
         })
+    }
+}
+
+fn position_event_inventory(event: &PositionEvent) -> Option<(Decimal, u64)> {
+    match event {
+        PositionEvent::PositionOpened(position) => Some((
+            long_inventory_quantity(position.side, position.quantity.as_decimal()),
+            position.ts_event.as_u64(),
+        )),
+        PositionEvent::PositionChanged(position) => Some((
+            long_inventory_quantity(position.side, position.quantity.as_decimal()),
+            position.ts_event.as_u64(),
+        )),
+        PositionEvent::PositionClosed(position) => {
+            Some((Decimal::ZERO, position.ts_event.as_u64()))
+        }
+        PositionEvent::PositionAdjusted(_) => None,
+    }
+}
+
+fn long_inventory_quantity(side: PositionSide, quantity: Decimal) -> Decimal {
+    match side {
+        PositionSide::Long => quantity,
+        PositionSide::Flat | PositionSide::Short | PositionSide::NoPositionSide => Decimal::ZERO,
     }
 }
 

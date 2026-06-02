@@ -142,7 +142,7 @@ pub struct BoltV3LiveNodeRuntime {
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
-    position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
+    position_sizer_runtime_feed: Option<Rc<RefCell<PositionSizerRuntimeFeed>>>,
     position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
     submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
     redaction_values: Vec<Zeroizing<String>>,
@@ -1647,7 +1647,7 @@ impl BoltV3DecisionEvidenceWriter for NoStrategyDecisionEvidenceWriter {
 struct BoltV3LiveNodeRuntimeFeeds {
     loss_runtime_feed: Option<Rc<RefCell<LossGovernorRuntimeFeed>>>,
     loss_runtime_feed_subscription: Option<LossGovernorRuntimeFeedSubscription>,
-    position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
+    position_sizer_runtime_feed: Option<Rc<RefCell<PositionSizerRuntimeFeed>>>,
     position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
     submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
 }
@@ -1758,7 +1758,7 @@ impl BoltV3LiveNodeRuntime {
     ) -> BoltV3SubmitPositionSizingRebuildDecision {
         let (account_id, binary_instrument_ids) = match self.position_sizer_runtime_feed.as_ref() {
             Some(feed) => {
-                let feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let feed = feed.borrow();
                 (
                     Some(feed.configured_account_id()),
                     feed.configured_binary_instrument_ids(),
@@ -1805,14 +1805,12 @@ impl BoltV3LiveNodeRuntime {
 
         // Seed live NT order and position state before rebuilding reservations from the same snapshot.
         if let Some(feed) = self.position_sizer_runtime_feed.as_ref() {
-            feed.lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .seed_cache_snapshot(
-                    open_client_order_ids.clone(),
-                    yes_position,
-                    no_position,
-                    now_ns,
-                );
+            feed.borrow_mut().seed_cache_snapshot(
+                open_client_order_ids.clone(),
+                yes_position,
+                no_position,
+                now_ns,
+            );
         }
 
         let recovered_reservations = if open_order_snapshots.is_empty() {
@@ -3530,7 +3528,7 @@ fn build_live_node_with_clients(
     let (position_sizer_runtime_feed, position_sizer_runtime_feed_subscription) =
         match position_sizer_runtime_feed_config {
             Some(config) => {
-                let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
+                let feed = Rc::new(RefCell::new(PositionSizerRuntimeFeed::new(
                     config,
                     submit_admission.clone(),
                 )));
@@ -3675,6 +3673,7 @@ fn position_sizer_runtime_feed_config_from_loaded(
             },
         ),
         startup_observed_at_ns,
+        max_snapshot_age_ns: pool.max_snapshot_age_ns,
     })
 }
 
@@ -5248,6 +5247,7 @@ mod tests {
         assert_eq!(config.account_id, account_id);
         assert_eq!(config.collateral_currency, "PUSD");
         assert_eq!(config.startup_observed_at_ns, 1_234);
+        assert_eq!(config.max_snapshot_age_ns, 5_000_000_000);
         match config.product_state {
             ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
                 assert_eq!(snapshot.source, "bolt_configured_binary_product");

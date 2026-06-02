@@ -133,6 +133,46 @@ fn subscribed_nt_events_update_submit_admission_loss_snapshot() {
 }
 
 #[test]
+fn subscribed_halt_action_runs_after_feed_borrow_is_released() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+    let account_id = AccountId::from("SIM-LOSS-HALT-REENTRY-001");
+    let feed_slot: Rc<RefCell<Option<Rc<RefCell<LossGovernorRuntimeFeed>>>>> =
+        Rc::new(RefCell::new(None));
+    let handler_feed_slot = Rc::clone(&feed_slot);
+    let feed = Rc::new(RefCell::new(
+        LossGovernorRuntimeFeed::new(
+            LossGovernorRuntimeFeedConfig {
+                account_id,
+                rolling_window_ns: 500,
+            },
+            admission,
+        )
+        .with_halt_action_handler(Rc::new(move |_, _| {
+            let feed_slot = handler_feed_slot.borrow();
+            let feed = feed_slot
+                .as_ref()
+                .expect("test should install feed before publishing");
+            assert!(
+                feed.try_borrow().is_ok(),
+                "subscribed halt action must run after the feed borrow is released"
+            );
+        })),
+    ));
+    *feed_slot.borrow_mut() = Some(Rc::clone(&feed));
+    let mut subscription = subscribe_loss_governor_runtime_feed(feed);
+
+    publish_portfolio_snapshot(
+        "events.portfolio.SIM-LOSS-HALT-REENTRY-001".into(),
+        &portfolio_snapshot(account_id, 2_000, -4.0, -3.0, 1_000.0),
+    );
+    subscription.unsubscribe_all();
+}
+
+#[test]
 fn rolling_window_advances_from_portfolio_pnl_deltas_and_evicts_on_heartbeat() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(

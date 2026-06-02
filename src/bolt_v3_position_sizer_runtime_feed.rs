@@ -201,6 +201,10 @@ impl PositionSizerRuntimeFeed {
         self.config.account_id
     }
 
+    pub fn configured_collateral_currency(&self) -> String {
+        self.config.collateral_currency.clone()
+    }
+
     pub fn seed_open_order_cache<I>(
         &mut self,
         client_order_ids: I,
@@ -231,6 +235,21 @@ impl PositionSizerRuntimeFeed {
             client_order_ids,
             yes_position,
             no_position,
+            observed_at_ns,
+        );
+        self.publish_components_if_ready()
+    }
+
+    pub fn seed_account_portfolio_snapshot(
+        &mut self,
+        free_collateral: Decimal,
+        total_equity: Decimal,
+        observed_at_ns: u64,
+    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+        self.component_builder.seed_account_portfolio_snapshot(
+            &self.config,
+            free_collateral,
+            total_equity,
             observed_at_ns,
         );
         self.publish_components_if_ready()
@@ -439,6 +458,25 @@ impl PositionSizerRuntimeComponentBuilder {
                 snapshot.no_position = no_position;
             }
         }
+    }
+
+    fn seed_account_portfolio_snapshot(
+        &mut self,
+        config: &PositionSizerRuntimeFeedConfig,
+        free_collateral: Decimal,
+        total_equity: Decimal,
+        observed_at_ns: u64,
+    ) {
+        self.latest_account_free_collateral = Some((free_collateral, observed_at_ns));
+        self.latest_portfolio = Some(PortfolioSizingSnapshot {
+            source: "nt_account_cache".to_string(),
+            observed_at_ns,
+            venue_id: config.venue_id.clone(),
+            account_id: config.account_id.to_string(),
+            collateral_currency: config.collateral_currency.clone(),
+            free_collateral,
+            total_equity,
+        });
     }
 
     fn record_live_order_event(

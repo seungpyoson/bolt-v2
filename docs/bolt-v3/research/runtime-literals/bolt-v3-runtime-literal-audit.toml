@@ -15600,6 +15600,14 @@ reason = "This labels portfolio/account sizing components derived from NT accoun
 [[allowed]]
 path = "src/bolt_v3_position_sizer_runtime_feed.rs"
 kind = "string"
+literal = '''"nt_account_cache"'''
+context = '''source: "nt_account_cache".to_string(),'''
+classification = "position_sizer_evidence_source_label"
+reason = "This labels startup portfolio/account sizing components seeded from the configured NT account cache; balances and equity remain NT-owned facts."
+
+[[allowed]]
+path = "src/bolt_v3_position_sizer_runtime_feed.rs"
+kind = "string"
 literal = '''"nt_position_cache"'''
 context = '''snapshot.source = "nt_position_cache".to_string();'''
 classification = "position_sizer_evidence_source_label"

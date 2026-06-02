@@ -1752,16 +1752,18 @@ impl BoltV3LiveNodeRuntime {
         &self,
         now_ns: u64,
     ) -> BoltV3SubmitPositionSizingRebuildDecision {
-        let (account_id, binary_instrument_ids) = match self.position_sizer_runtime_feed.as_ref() {
-            Some(feed) => {
-                let feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                (
-                    Some(feed.configured_account_id()),
-                    feed.configured_binary_instrument_ids(),
-                )
-            }
-            None => (None, None),
-        };
+        let (account_id, binary_instrument_ids, collateral_currency) =
+            match self.position_sizer_runtime_feed.as_ref() {
+                Some(feed) => {
+                    let feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    (
+                        Some(feed.configured_account_id()),
+                        feed.configured_binary_instrument_ids(),
+                        Some(feed.configured_collateral_currency()),
+                    )
+                }
+                None => (None, None, None),
+            };
         let cache = self.node.kernel().cache();
         let cache = cache.borrow();
         let open_order_snapshots = match account_id.as_ref() {
@@ -1780,6 +1782,18 @@ impl BoltV3LiveNodeRuntime {
             .iter()
             .map(|order| order.client_order_id().to_string())
             .collect::<Vec<_>>();
+        let cached_account_balances = match (account_id.as_ref(), collateral_currency.as_deref()) {
+            (Some(account_id), Some(collateral_currency)) => {
+                cache.account_owned(account_id).and_then(|account| {
+                    let balances = account.balances();
+                    balances
+                        .values()
+                        .find(|balance| balance.currency.code.as_str() == collateral_currency)
+                        .map(|balance| (balance.free.as_decimal(), balance.total.as_decimal()))
+                })
+            }
+            _ => None,
+        };
         let (yes_position, no_position) =
             match (account_id.as_ref(), binary_instrument_ids.as_ref()) {
                 (Some(account_id), Some((yes_instrument_id, no_instrument_id))) => {
@@ -1801,14 +1815,16 @@ impl BoltV3LiveNodeRuntime {
 
         // Seed live NT order and position state before rebuilding reservations from the same snapshot.
         if let Some(feed) = self.position_sizer_runtime_feed.as_ref() {
-            feed.lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .seed_cache_snapshot(
-                    open_client_order_ids.clone(),
-                    yes_position,
-                    no_position,
-                    now_ns,
-                );
+            let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some((free_collateral, total_equity)) = cached_account_balances {
+                feed.seed_account_portfolio_snapshot(free_collateral, total_equity, now_ns);
+            }
+            feed.seed_cache_snapshot(
+                open_client_order_ids.clone(),
+                yes_position,
+                no_position,
+                now_ns,
+            );
         }
 
         let recovered_reservations = if open_order_snapshots.is_empty() {
@@ -4169,18 +4185,22 @@ fn canary_proof_executor_enabled(loaded: &LoadedBoltV3Config) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bolt_v3_capital_reservation::ReservationRejectionReason;
     use crate::bolt_v3_config::{
         BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeBookType,
         DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetBlock,
-        DataClientReadinessProbeQuoteTargetSource, LiveCanaryProofPolicyBlock,
-        LiveCanaryProofTimeInForce, ReferenceDataBlock,
+        DataClientReadinessProbeQuoteTargetSource, LiveCanaryBlock,
+        LiveCanaryOperatorEvidenceBlock, LiveCanaryProofPolicyBlock, LiveCanaryProofTimeInForce,
+        ReferenceDataBlock,
     };
+    use crate::bolt_v3_decision_evidence::BoltV3SubmitReservationMetadataEvidence;
     use nautilus_core::{UUID4, UnixNanos};
     use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
-    use nautilus_model::enums::{BookAction, OrderSide, TimeInForce};
-    use nautilus_model::identifiers::{ClientOrderId, TraderId};
+    use nautilus_model::enums::{AccountType, BookAction, CurrencyType, OrderSide, TimeInForce};
+    use nautilus_model::events::{AccountState, OrderAccepted, OrderEventAny, OrderSubmitted};
+    use nautilus_model::identifiers::{AccountId, ClientOrderId, TraderId, VenueOrderId};
     use nautilus_model::orders::{LimitOrder, MarketOrder, OrderAny};
-    use nautilus_model::types::{Price, Quantity};
+    use nautilus_model::types::{AccountBalance, Currency, Money, Price, Quantity};
 
     #[test]
     fn chunk_universe_splits_into_consecutive_chunks_of_at_most_n() {
@@ -4818,6 +4838,153 @@ mod tests {
     }
 
     #[test]
+    fn startup_rebuild_recovers_known_submit_reservation_from_nt_cache() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let metadata = fixture_submit_reservation_metadata(
+            "startup-known-client-order",
+            "condition-fixture-yes.POLYMARKET",
+            "Buy",
+            "10",
+            "0.4",
+            "0.3",
+            "4.3",
+        );
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+        write_submit_reservation_metadata(&loaded, &metadata);
+        seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+        seed_accepted_open_limit_order(
+            &runtime,
+            generic_limit_order(
+                "startup-known-client-order",
+                "condition-fixture-yes.POLYMARKET",
+                OrderSide::Buy,
+                Quantity::from(6),
+                Price::from("0.40"),
+            ),
+            "POLYMARKET-001",
+        );
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(
+            rebuild,
+            BoltV3SubmitPositionSizingRebuildDecision {
+                accepted: true,
+                reason: None,
+                attempted_reservation_count: 1,
+                rebuilt_reservation_count: 1,
+                live_reserved_liability: Decimal::new(27, 1),
+            }
+        );
+        assert_eq!(runtime.position_sizer_reconciled(), Some(true));
+        assert_eq!(
+            runtime
+                .submit_admission
+                .position_sizer_live_reserved_liability(),
+            Some(Decimal::new(27, 1))
+        );
+        assert!(
+            runtime
+                .submit_admission
+                .position_sizer_has_live_reservation("startup-known-client-order"),
+            "startup rebuild must install the recovered reservation for later fill/cancel release"
+        );
+    }
+
+    #[test]
+    fn startup_rebuild_stays_closed_for_unknown_nt_cache_order() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+        seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+        seed_accepted_open_limit_order(
+            &runtime,
+            generic_limit_order(
+                "startup-unknown-client-order",
+                "condition-fixture-yes.POLYMARKET",
+                OrderSide::Buy,
+                Quantity::from(6),
+                Price::from("0.40"),
+            ),
+            "POLYMARKET-001",
+        );
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(
+            rebuild,
+            BoltV3SubmitPositionSizingRebuildDecision {
+                accepted: false,
+                reason: Some(ReservationRejectionReason::MissingEvidence),
+                attempted_reservation_count: 1,
+                rebuilt_reservation_count: 0,
+                live_reserved_liability: Decimal::ZERO,
+            }
+        );
+        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+        assert!(
+            !runtime
+                .submit_admission
+                .position_sizer_has_live_reservation("startup-unknown-client-order")
+        );
+    }
+
+    #[test]
+    fn startup_rebuild_rejects_known_metadata_when_open_quantity_exceeds_submitted() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let metadata = fixture_submit_reservation_metadata(
+            "startup-overopen-client-order",
+            "condition-fixture-yes.POLYMARKET",
+            "Buy",
+            "10",
+            "0.4",
+            "0.3",
+            "4.3",
+        );
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        write_submit_reservation_metadata(&loaded, &metadata);
+        seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 100.0);
+        seed_accepted_open_limit_order(
+            &runtime,
+            generic_limit_order(
+                "startup-overopen-client-order",
+                "condition-fixture-yes.POLYMARKET",
+                OrderSide::Buy,
+                Quantity::from(11),
+                Price::from("0.40"),
+            ),
+            "POLYMARKET-001",
+        );
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(
+            rebuild,
+            BoltV3SubmitPositionSizingRebuildDecision {
+                accepted: false,
+                reason: Some(ReservationRejectionReason::MissingEvidence),
+                attempted_reservation_count: 1,
+                rebuilt_reservation_count: 0,
+                live_reserved_liability: Decimal::ZERO,
+            }
+        );
+        assert_eq!(runtime.position_sizer_reconciled(), Some(false));
+        assert!(
+            !runtime
+                .submit_admission
+                .position_sizer_has_live_reservation("startup-overopen-client-order")
+        );
+    }
+
+    #[test]
     fn nt_limit_order_snapshot_maps_to_generic_open_order_evidence() {
         let order = generic_limit_order(
             "client-order-1",
@@ -4849,6 +5016,220 @@ mod tests {
         );
 
         assert!(nt_open_order_evidence_from_order(&order, 1_000).is_none());
+    }
+
+    fn loaded_config_with_submit_sizer_recovery(temp_path: &std::path::Path) -> LoadedBoltV3Config {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        loaded.strategies.clear();
+        loaded
+            .root
+            .risk
+            .capital_pools
+            .as_mut()
+            .expect("fixture should configure capital pools")[0]
+            .enforce_submit_admission = true;
+        loaded.root.persistence.catalog_directory = temp_path.to_string_lossy().to_string();
+        loaded.root.live_canary = Some(test_live_canary_with_operator_evidence(temp_path));
+        loaded
+    }
+
+    fn test_live_canary_with_operator_evidence(temp_path: &std::path::Path) -> LiveCanaryBlock {
+        let artifact_path = |name: &str| temp_path.join(name).to_string_lossy().to_string();
+        let sha256_zero = "0".repeat(64);
+        LiveCanaryBlock {
+            approval_id: "startup-rebuild-test-approval".to_string(),
+            no_submit_readiness_report_path: artifact_path("no-submit-readiness.json"),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: 60,
+            reference_quote_max_age_seconds: 60,
+            reference_quote_wait_timeout_seconds: 1,
+            reference_quote_probe_actor_id: "data.probe".to_string(),
+            reference_quote_probe_log_events: false,
+            reference_quote_probe_log_commands: false,
+            max_live_order_count: 2,
+            max_notional_per_order: "1.00".to_string(),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: Some(LiveCanaryOperatorEvidenceBlock {
+                head_sha: "0000000000000000000000000000000000000000".to_string(),
+                max_operator_evidence_file_bytes: 100_000,
+                approval_consumption_max_age_seconds: 60,
+                approval_envelope_path: artifact_path("approval-envelope.json"),
+                approval_envelope_sha256: sha256_zero.clone(),
+                ssm_manifest_path: artifact_path("ssm-manifest.json"),
+                ssm_manifest_sha256: sha256_zero.clone(),
+                strategy_input_evidence_path: artifact_path("strategy-input.jsonl"),
+                strategy_input_evidence_sha256: sha256_zero.clone(),
+                gate_session_path: None,
+                expected_gate_session_sha256: None,
+                financial_envelope_path: artifact_path("financial-envelope.json"),
+                financial_envelope_sha256: sha256_zero.clone(),
+                pre_run_state_path: artifact_path("pre-run-state.json"),
+                pre_run_state_sha256: sha256_zero.clone(),
+                abort_plan_path: artifact_path("abort-plan.json"),
+                abort_plan_sha256: sha256_zero.clone(),
+                canary_proof_candidate_source_path: None,
+                canary_proof_candidate_source_sha256: None,
+                canary_proof_order_intent_path: None,
+                canary_proof_order_intent_sha256: None,
+                no_submit_readiness_report_sha256: None,
+                canary_evidence_path: artifact_path("canary-evidence.json"),
+                approval_not_before_unix_seconds: 0,
+                approval_not_after_unix_seconds: i64::MAX,
+                approval_nonce_path: artifact_path("approval-nonce.txt"),
+                approval_nonce_sha256: sha256_zero.clone(),
+                approval_consumption_path: artifact_path("approval-consumption.json"),
+                decision_evidence_path: artifact_path("decision-evidence.jsonl"),
+                nt_submit_event_path: artifact_path("nt-submit-event.json"),
+                venue_order_state_path: artifact_path("venue-order-state.json"),
+                strategy_cancel_path: None,
+                restart_reconciliation_path: artifact_path("restart-reconciliation.json"),
+                post_run_hygiene_path: artifact_path("post-run-hygiene.json"),
+            }),
+        }
+    }
+
+    fn fixture_submit_reservation_metadata(
+        client_order_id: &str,
+        instrument_id: &str,
+        side: &str,
+        submitted_quantity: &str,
+        liability_factor: &str,
+        additive_liability: &str,
+        reserved_liability: &str,
+    ) -> BoltV3SubmitReservationMetadataEvidence {
+        BoltV3SubmitReservationMetadataEvidence {
+            client_order_id: client_order_id.to_string(),
+            submit_reservation_id: format!("{client_order_id}#submit"),
+            venue_id: "POLYMARKET".to_string(),
+            account_id: "POLYMARKET-001".to_string(),
+            product_kind: "prediction_market_binary".to_string(),
+            collateral_currency: "PUSD".to_string(),
+            capital_pool_id: "polymarket-prediction-live".to_string(),
+            collateral_group_id: "condition-fixture".to_string(),
+            instrument_id: instrument_id.to_string(),
+            side: side.to_string(),
+            submitted_quantity: submitted_quantity.to_string(),
+            liability_factor: liability_factor.to_string(),
+            additive_liability: additive_liability.to_string(),
+            reserved_liability: reserved_liability.to_string(),
+            observed_at_ns: 1_000,
+            source: "submit_admission".to_string(),
+        }
+    }
+
+    fn write_submit_reservation_metadata(
+        loaded: &LoadedBoltV3Config,
+        metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) {
+        let writer = JsonlBoltV3DecisionEvidenceWriter::from_loaded_config(loaded)
+            .expect("decision evidence writer should open");
+        writer
+            .record_submit_reservation_metadata(metadata)
+            .expect("submit reservation metadata should write");
+    }
+
+    fn fake_bolt_v3_resolver(_region: &str, path: &str) -> Result<String, &'static str> {
+        match path {
+            "/bolt/polymarket_main/private_key" => Ok(
+                "0x4242424242424242424242424242424242424242424242424242424242424242".to_string(),
+            ),
+            "/bolt/polymarket_main/api_key" => Ok("polymarket-api-key".to_string()),
+            "/bolt/polymarket_main/api_secret" => Ok("YWJj".to_string()),
+            "/bolt/polymarket_main/passphrase" => Ok("polymarket-passphrase".to_string()),
+            "/bolt/binance_reference/api_key" => Ok("binance-api-key".to_string()),
+            "/bolt/binance_reference/api_secret" => {
+                Ok("MC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f".to_string())
+            }
+            _ => Err("unexpected SSM path requested by bolt-v3 fake resolver"),
+        }
+    }
+
+    fn seed_cached_account_state(
+        runtime: &BoltV3LiveNodeRuntime,
+        account_id: &str,
+        currency_code: &str,
+        total: f64,
+        free: f64,
+    ) {
+        let currency = test_currency(currency_code);
+        let account_state = AccountState::new(
+            AccountId::from(account_id),
+            AccountType::Cash,
+            vec![AccountBalance::new(
+                Money::new(total, currency),
+                Money::new(total - free, currency),
+                Money::new(free, currency),
+            )],
+            vec![],
+            true,
+            UUID4::default(),
+            UnixNanos::from(1),
+            UnixNanos::from(1),
+            Some(currency),
+        );
+        runtime
+            .node
+            .kernel()
+            .cache()
+            .borrow_mut()
+            .update_account_state(&account_state)
+            .expect("NT cache should apply account state");
+    }
+
+    fn test_currency(currency_code: &str) -> Currency {
+        if currency_code == "PUSD" {
+            return Currency::new("PUSD", 2, 0, "Test PUSD", CurrencyType::Fiat);
+        }
+        Currency::from(currency_code)
+    }
+
+    fn seed_accepted_open_limit_order(
+        runtime: &BoltV3LiveNodeRuntime,
+        order: OrderAny,
+        account_id: &str,
+    ) {
+        let cache = runtime.node.kernel().cache();
+        let mut cache = cache.borrow_mut();
+        cache
+            .add_order(
+                order.clone(),
+                None,
+                Some(ClientId::from("polymarket_main")),
+                false,
+            )
+            .expect("NT cache should accept initialized order");
+        cache
+            .update_order(&OrderEventAny::Submitted(OrderSubmitted::new(
+                order.trader_id(),
+                order.strategy_id(),
+                order.instrument_id(),
+                order.client_order_id(),
+                AccountId::from(account_id),
+                UUID4::default(),
+                UnixNanos::from(1),
+                UnixNanos::from(1),
+            )))
+            .expect("NT cache should apply submitted event");
+        cache
+            .update_order(&OrderEventAny::Accepted(OrderAccepted::new(
+                order.trader_id(),
+                order.strategy_id(),
+                order.instrument_id(),
+                order.client_order_id(),
+                VenueOrderId::from("venue-order-startup"),
+                AccountId::from(account_id),
+                UUID4::default(),
+                UnixNanos::from(2),
+                UnixNanos::from(2),
+                false,
+            )))
+            .expect("NT cache should apply accepted event");
     }
 
     fn generic_limit_order(

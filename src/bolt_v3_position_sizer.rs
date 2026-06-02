@@ -106,6 +106,7 @@ pub enum LiabilityError {
     MissingQuoteSetId,
     InsufficientAllowance,
     InsufficientInventory,
+    ArithmeticOverflow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +208,17 @@ impl PositionSizingAdmissionGate {
         self.reservation_ledger = ReservationLedger::unreconciled();
         let mut rebuilt_ledger = ReservationLedger::reconciled();
         for (index, reservation) in open_order_reservations.iter().enumerate() {
+            if pool.pool_id != reservation.pool_id {
+                let attempted_reservation_count = open_order_reservations[..=index].len();
+                return PositionSizingRebuildDecision {
+                    accepted: false,
+                    reason: Some(ReservationRejectionReason::PoolMismatch),
+                    attempted_reservation_count,
+                    rebuilt_reservation_count: index,
+                    live_reserved_liability: self.live_reserved_liability(&pool.pool_id),
+                };
+            }
+
             let decision =
                 rebuilt_ledger.reserve(pool, reservation, now_ns, min_remaining_pool_balance);
             if !decision.accepted {
@@ -424,6 +436,16 @@ pub fn evaluate_position_sizing(inputs: PositionSizingInputs<'_>) -> SizedAdmiss
     let pool_id = inputs.request.pool_id.clone();
     let max_snapshot_age_ns = inputs.capital_pool.max_snapshot_age_ns;
 
+    if inputs.capital_pool.pool_id != pool_id {
+        return rejected_sizing(
+            original_quantity,
+            pool_id,
+            vec![SizedAdmissionReason::Reservation(
+                ReservationRejectionReason::PoolMismatch,
+            )],
+        );
+    }
+
     let Some(state) = inputs.state else {
         return rejected_sizing(
             original_quantity,
@@ -550,7 +572,7 @@ pub fn evaluate_position_sizing(inputs: PositionSizingInputs<'_>) -> SizedAdmiss
             vec![SizedAdmissionReason::Reservation(
                 reservation_decision
                     .reason
-                    .expect("rejected reservation decisions carry a reason"),
+                    .unwrap_or(ReservationRejectionReason::InvalidRequest),
             )],
         );
     }
@@ -686,15 +708,22 @@ fn clipped_liability_quote(
         .ok_or(SizedAdmissionReason::Liability(
             LiabilityError::MissingFeePolicy,
         ))?;
-    let additive_liability = fee_policy.max_fee_liability + fee_policy.max_slippage_liability;
-    let available_base_liability = max_order_liability - additive_liability;
+    let additive_liability = fee_policy
+        .max_fee_liability
+        .checked_add(fee_policy.max_slippage_liability)
+        .ok_or(SizedAdmissionReason::OverMaxOrderLiability)?;
+    let available_base_liability = max_order_liability
+        .checked_sub(additive_liability)
+        .ok_or(SizedAdmissionReason::OverMaxOrderLiability)?;
     if available_base_liability <= Decimal::ZERO {
         return Err(SizedAdmissionReason::OverMaxOrderLiability);
     }
 
     let liability_factor = match request.side {
         IntentSide::Buy => request.limit_price,
-        IntentSide::Sell => Decimal::ONE - request.limit_price,
+        IntentSide::Sell => Decimal::ONE
+            .checked_sub(request.limit_price)
+            .ok_or(SizedAdmissionReason::OverMaxOrderLiability)?,
     };
     if liability_factor <= Decimal::ZERO {
         return Err(SizedAdmissionReason::OverMaxOrderLiability);
@@ -711,7 +740,10 @@ fn clipped_liability_quote(
     } else {
         candidate_quantity
     };
-    let liability_after_sizing = sized_quantity * liability_factor + additive_liability;
+    let liability_after_sizing = sized_quantity
+        .checked_mul(liability_factor)
+        .and_then(|base_liability| base_liability.checked_add(additive_liability))
+        .ok_or(SizedAdmissionReason::OverMaxOrderLiability)?;
 
     Ok(LiabilityQuote {
         original_quantity: quote.original_quantity,
@@ -738,12 +770,20 @@ impl PredictionMarketBinaryLiabilityCalculator {
             .ok_or(LiabilityError::MissingFeePolicy)?;
         validate_fee_slippage_policy(fee_policy)?;
 
-        let base_liability = match request.side {
-            IntentSide::Buy => request.quantity * request.limit_price,
-            IntentSide::Sell => request.quantity * (Decimal::ONE - request.limit_price),
+        let liability_factor = match request.side {
+            IntentSide::Buy => request.limit_price,
+            IntentSide::Sell => Decimal::ONE
+                .checked_sub(request.limit_price)
+                .ok_or(LiabilityError::ArithmeticOverflow)?,
         };
-        let liability =
-            base_liability + fee_policy.max_fee_liability + fee_policy.max_slippage_liability;
+        let base_liability = request
+            .quantity
+            .checked_mul(liability_factor)
+            .ok_or(LiabilityError::ArithmeticOverflow)?;
+        let liability = base_liability
+            .checked_add(fee_policy.max_fee_liability)
+            .and_then(|liability| liability.checked_add(fee_policy.max_slippage_liability))
+            .ok_or(LiabilityError::ArithmeticOverflow)?;
 
         match request.side {
             IntentSide::Buy => {
@@ -1070,6 +1110,30 @@ mod tests {
     }
 
     #[test]
+    fn prediction_market_binary_liability_overflow_rejects_fail_closed() {
+        let calculator = PredictionMarketBinaryLiabilityCalculator;
+        let mut overflow_policy = policy();
+        overflow_policy.fee_slippage_policy = Some(FeeSlippagePolicy {
+            max_fee_liability: Decimal::MAX,
+            max_slippage_liability: Decimal::ZERO,
+        });
+        let mut overflow_state = state();
+        let ProductSizingSnapshot::PredictionMarketBinary(snapshot) = &mut overflow_state;
+        snapshot.collateral_allowance = Decimal::MAX;
+
+        assert_eq!(
+            calculator
+                .worst_case_liability(
+                    &request(IntentSide::Buy, IntentLiquidity::Taker),
+                    &overflow_state,
+                    &overflow_policy,
+                )
+                .expect_err("overflowing liability arithmetic must fail closed"),
+            LiabilityError::ArithmeticOverflow
+        );
+    }
+
+    #[test]
     fn sizer_rejects_when_loss_governor_rejects() {
         let loss_snapshot = LossSnapshot {
             source: "nt_portfolio_snapshot".to_string(),
@@ -1351,6 +1415,32 @@ mod tests {
     }
 
     #[test]
+    fn admission_rejects_pool_mismatch_before_nt_state_validation() {
+        let mut foreign_pool_request = request(IntentSide::Buy, IntentLiquidity::Taker);
+        foreign_pool_request.pool_id = "pool-2".to_string();
+        let mut ledger = ReservationLedger::reconciled();
+
+        let decision = evaluate_position_sizing(PositionSizingInputs {
+            request: &foreign_pool_request,
+            state: None,
+            policy: &policy(),
+            loss_policy: None,
+            capital_pool: &capital_pool(),
+            reservation_ledger: &mut ledger,
+        });
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.reasons,
+            vec![SizedAdmissionReason::Reservation(
+                ReservationRejectionReason::PoolMismatch
+            )]
+        );
+        assert_eq!(ledger.live_reserved_liability("pool-1"), Decimal::ZERO);
+        assert_eq!(ledger.live_reserved_liability("pool-2"), Decimal::ZERO);
+    }
+
+    #[test]
     fn restart_requires_rebuilt_open_order_reservations_before_admission() {
         let loss_snapshot = LossSnapshot {
             source: "nt_portfolio_snapshot".to_string(),
@@ -1448,6 +1538,33 @@ mod tests {
 
         assert!(retry.accepted);
         assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::new(430, 2));
+    }
+
+    #[test]
+    fn startup_rebuild_rejects_foreign_pool_reservation_fail_closed() {
+        let capital_pool = capital_pool();
+        let mut foreign_reservation = rebuilt_open_order_reservation("intent-foreign");
+        foreign_reservation.pool_id = "pool-2".to_string();
+        let mut gate = PositionSizingAdmissionGate::reconciled();
+
+        let rebuild = gate.rebuild_open_order_reservations(
+            &capital_pool,
+            &[foreign_reservation],
+            1_000,
+            None,
+        );
+
+        assert!(!rebuild.accepted);
+        assert_eq!(
+            rebuild.reason,
+            Some(ReservationRejectionReason::PoolMismatch)
+        );
+        assert_eq!(rebuild.attempted_reservation_count, 1);
+        assert_eq!(rebuild.rebuilt_reservation_count, 0);
+        assert_eq!(rebuild.live_reserved_liability, Decimal::ZERO);
+        assert!(!gate.is_reconciled());
+        assert_eq!(gate.live_reserved_liability("pool-1"), Decimal::ZERO);
+        assert_eq!(gate.live_reserved_liability("pool-2"), Decimal::ZERO);
     }
 
     #[test]

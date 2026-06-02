@@ -575,6 +575,11 @@ fn validate_execution_config(key: &str, execution: &HyperliquidExecutionConfig) 
         ));
     }
     if execution.live_submit_approval_id.is_some() {
+        if execution.product_surfaces.len() != 1 {
+            errors.push(format!(
+                "clients.{key}.execution.product_surfaces must select exactly one Hyperliquid product surface when live_submit_approval_id is configured"
+            ));
+        }
         errors.extend(validate_live_submit_approval_config(key, execution));
         errors.extend(validate_user_fees_request_weight_policy(key));
     }

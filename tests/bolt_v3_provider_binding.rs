@@ -618,6 +618,37 @@ fn provider_binding_accepts_hyperliquid_live_submit_when_official_user_fees_weig
 }
 
 #[test]
+fn provider_binding_rejects_hyperliquid_live_submit_with_multiple_product_surfaces() {
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    add_hyperliquid_live_submit_approval(&mut client);
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert(
+            "product_surfaces".to_string(),
+            toml::Value::Array(vec![
+                toml::Value::String("standard_perps".to_string()),
+                toml::Value::String("spot".to_string()),
+            ]),
+        );
+
+    let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
+
+    assert!(
+        rendered.contains(
+            "clients.hyperliquid_perps.execution.product_surfaces must select exactly one Hyperliquid product surface when live_submit_approval_id is configured"
+        ),
+        "multi-surface live-submit config must fail validation before mapping: {rendered}"
+    );
+}
+
+#[test]
 fn provider_binding_models_hyperliquid_egress_with_official_user_fees_weight() {
     let model = bolt_v2::bolt_v3_providers::venue_egress_model("HYPERLIQUID")
         .expect("Hyperliquid execution must have a REST egress model before live submit");

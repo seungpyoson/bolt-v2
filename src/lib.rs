@@ -1,3 +1,4 @@
+pub mod backtesting_vertical_slice;
 pub mod bolt_v3_adapters;
 pub mod bolt_v3_archetypes;
 pub mod bolt_v3_canary_proof_executor;

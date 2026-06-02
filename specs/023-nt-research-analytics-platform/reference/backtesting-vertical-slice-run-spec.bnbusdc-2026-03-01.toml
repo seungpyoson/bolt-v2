@@ -133,7 +133,7 @@ registry_key = "hurst_vpin_directional"
 
 [manifest.strategy.parameters]
 trade_size = "0.01"
-bar_type = "BNBUSDC.BYBIT-1-MINUTE-LAST-EXTERNAL"
+bar_type = "BNBUSDC.BYBIT-1-MINUTE-LAST-INTERNAL"
 
 [manifest.venue]
 nt_venue = "BYBIT"

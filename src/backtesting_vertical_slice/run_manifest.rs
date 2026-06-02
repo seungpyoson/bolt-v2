@@ -496,7 +496,7 @@ mod tests {
                     ("trade_size".to_string(), "0.01".to_string()),
                     (
                         "bar_type".to_string(),
-                        "BNBUSDC.BYBIT-1-MINUTE-LAST-EXTERNAL".to_string(),
+                        "BNBUSDC.BYBIT-1-MINUTE-LAST-INTERNAL".to_string(),
                     ),
                 ]),
             },

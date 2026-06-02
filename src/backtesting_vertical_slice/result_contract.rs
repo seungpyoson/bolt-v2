@@ -307,7 +307,8 @@ mod tests {
                 "No execution-quality, queue-position, or order-book-liquidity claims.".to_string(),
             ],
             warnings: vec![
-                "Trade-only data: strategy received no quotes/bars, so no orders were placed."
+                "No orders placed: trade-only data has no quote ticks and the strategy's entry \
+                 is quote-driven."
                     .to_string(),
             ],
             mechanical_blockers: vec![],

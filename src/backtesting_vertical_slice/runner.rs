@@ -184,8 +184,10 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     let mut warnings = Vec::new();
     if nt_result.total_orders == 0 {
         warnings.push(
-            "Trade-only accepted data: the strategy received no quotes or bars, so no orders \
-             were placed. This reflects the TRADE_REPLAY fidelity of the source, not a defect."
+            "No orders were placed: the accepted data is trade-only and carries no quote ticks, \
+             and the configured strategy's order entry is quote-driven. NautilusTrader still \
+             aggregated the accepted trades into bars and ran the strategy's signal logic. This \
+             reflects the TRADE_REPLAY fidelity of the source, not a defect."
                 .to_string(),
         );
     }

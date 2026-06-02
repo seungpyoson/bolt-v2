@@ -155,7 +155,7 @@ fn catalog_round_trips_trade_ticks_and_node_runs_compiled_strategy() {
     let mut node = BacktestNode::new(vec![run_config]).expect("construct backtest node");
     node.build().expect("build backtest node");
 
-    let bar_type = format!("{instrument_id}-1-MINUTE-LAST-EXTERNAL");
+    let bar_type = format!("{instrument_id}-1-MINUTE-LAST-INTERNAL");
     let strategy_config = HurstVpinDirectionalConfig::new(
         instrument_id,
         bar_type.parse().expect("bar type"),

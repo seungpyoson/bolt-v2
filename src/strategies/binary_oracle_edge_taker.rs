@@ -6239,11 +6239,8 @@ pub fn record_entry_decision_evidence_from_source(
     apply_entry_decision_source_books(&mut strategy, &source.books)?;
 
     match strategy.try_submit_entry_order(source.decision_timestamp_ms) {
-        Err(error) if error.to_string().contains("submit admission is not armed") => Ok(()),
         Err(error) => Err(error),
-        Ok(Some(client_order_id)) => anyhow::bail!(
-            "entry decision evidence source unexpectedly admitted order {client_order_id}; submit admission must stay unarmed"
-        ),
+        Ok(Some(_client_order_id)) => Ok(()),
         Ok(None) => {
             let decision = strategy.entry_submission_decision_at(source.decision_timestamp_ms);
             anyhow::bail!(
@@ -8413,6 +8410,21 @@ mod tests {
         )
     }
 
+    fn submit_admission_armed_with_cap(
+        max_notional_per_order: Decimal,
+        decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    ) -> Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState> {
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
+                decision_evidence,
+            ),
+        );
+        submit_admission
+            .arm(live_canary_gate_report(1, max_notional_per_order))
+            .expect("valid gate report should arm submit admission");
+        submit_admission
+    }
+
     #[test]
     fn decision_evidence_failure_rejects_before_nt_submit() {
         let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
@@ -8479,15 +8491,15 @@ mod tests {
     }
 
     #[test]
-    fn unarmed_submit_admission_rejects_after_evidence_before_nt_submit() {
+    fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
         let submit_admission = Arc::new(
             crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         );
         let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-        // Zero fee leaves the notional unchanged; the unarmed rejection from the
-        // admission gate is what this test exercises.
+        // Zero fee leaves the notional unchanged; with no optional gate armed,
+        // production admission now allows the submit to reach NT.
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
             RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(RecordingDecisionEvidenceWriter),
@@ -8534,19 +8546,19 @@ mod tests {
                 &order,
             );
 
-        let error = strategy
-            .submit_order_with_decision_evidence(
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            strategy.submit_order_with_decision_evidence(
                 intent,
                 order,
                 SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
             )
-            .expect_err("unarmed submit admission must reject before NT submit");
+        }));
 
         assert!(
-            error.to_string().contains("submit admission is not armed"),
-            "{error:#}"
+            result.is_err(),
+            "test strategy is intentionally not registered with NT; ungated admission should reach NT submit"
         );
-        assert_eq!(submit_admission.admitted_order_count(), 0);
+        assert_eq!(submit_admission.admitted_order_count(), 1);
     }
 
     #[test]
@@ -14441,19 +14453,33 @@ mod tests {
 
     #[test]
     fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
-        let mut direct = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let rejecting_submit_admission = submit_admission_armed_with_cap(
+            Decimal::new(1, 2),
+            Arc::new(RecordingDecisionEvidenceWriter),
+        );
+        let mut direct = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            Arc::new(RecordingDecisionEvidenceWriter),
+            rejecting_submit_admission.clone(),
+        );
         register_test_strategy_with_active_instruments(&mut direct);
         let direct_error = direct
             .try_submit_entry_order(1_200)
-            .expect_err("test setup must reach unarmed submit admission");
+            .expect_err("test setup must reach submit-admission cap rejection");
         assert!(
             direct_error
                 .to_string()
-                .contains("submit admission is not armed"),
+                .contains("notional cap is exceeded"),
             "test setup must prove submit-admission failure path: {direct_error:#}"
         );
 
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let rejecting_submit_admission = submit_admission_armed_with_cap(
+            Decimal::new(1, 2),
+            Arc::new(RecordingDecisionEvidenceWriter),
+        );
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            Arc::new(RecordingDecisionEvidenceWriter),
+            rejecting_submit_admission,
+        );
         register_test_strategy_with_active_instruments(&mut strategy);
         let instrument_id = selected_entry_instrument(&strategy);
         let decision = strategy.entry_submission_decision_at(1_200);
@@ -14480,7 +14506,14 @@ mod tests {
 
     #[test]
     fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let rejecting_submit_admission = submit_admission_armed_with_cap(
+            Decimal::new(1, 2),
+            Arc::new(RecordingDecisionEvidenceWriter),
+        );
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            Arc::new(RecordingDecisionEvidenceWriter),
+            rejecting_submit_admission,
+        );
         strategy.active.phase = SelectionPhase::Freeze;
         let instrument_id = selected_entry_instrument(&strategy);
         let position = materialize_configured_position(
@@ -17359,11 +17392,8 @@ mod tests {
     #[test]
     fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_intent() {
         let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-        let submit_admission = Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
-                evidence.clone(),
-            ),
-        );
+        let submit_admission =
+            submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
         let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
             evidence.clone(),
             submit_admission,
@@ -17372,9 +17402,9 @@ mod tests {
 
         let error = strategy
             .try_submit_entry_order(1_200)
-            .expect_err("unarmed submit admission should reject after evidence capture");
+            .expect_err("submit admission should reject after evidence capture");
         assert!(
-            error.to_string().contains("submit admission is not armed"),
+            error.to_string().contains("notional cap is exceeded"),
             "{error:#}"
         );
 
@@ -17431,16 +17461,17 @@ mod tests {
         assert_eq!(snapshot.submission_quantity, intent.quantity);
         assert_eq!(snapshot.client_order_id, intent.client_order_id);
         assert_eq!(admission.client_order_id, intent.client_order_id);
+        assert_eq!(
+            admission.outcome,
+            crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::RejectedNotionalCapExceeded
+        );
     }
 
     #[test]
     fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_seconds() {
         let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-        let submit_admission = Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
-                evidence.clone(),
-            ),
-        );
+        let submit_admission =
+            submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
         let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
             evidence.clone(),
             submit_admission,
@@ -17450,7 +17481,7 @@ mod tests {
 
         strategy
             .try_submit_entry_order(2_000)
-            .expect_err("unarmed submit admission should reject after evidence capture");
+            .expect_err("submit admission should reject after evidence capture");
 
         let events = evidence.events();
         let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
@@ -17470,11 +17501,8 @@ mod tests {
     #[test]
     fn strategy_input_evidence_records_next_market_selection_outcome() {
         let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-        let submit_admission = Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
-                evidence.clone(),
-            ),
-        );
+        let submit_admission =
+            submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
         let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
             evidence.clone(),
             submit_admission,
@@ -17484,7 +17512,7 @@ mod tests {
 
         strategy
             .try_submit_entry_order(2_000)
-            .expect_err("unarmed submit admission should reject after evidence capture");
+            .expect_err("submit admission should reject after evidence capture");
 
         let events = evidence.events();
         let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {

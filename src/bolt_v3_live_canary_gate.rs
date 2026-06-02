@@ -6,9 +6,9 @@
 //! cancel, or mutate NT state.
 //!
 //! The gate validates the configured live-canary bounds before the NT
-//! runner starts. Submit-time admission remains the boundary that must
-//! independently consume validated bounds from this gate before live
-//! order submission is enabled.
+//! runner starts. Submit-time admission can optionally consume validated
+//! bounds from this gate for canary-bounded runs; ordinary production
+//! submission is not blocked on this report.
 
 use std::{
     path::{Component, Path, PathBuf},
@@ -53,8 +53,8 @@ const MILLIS_PER_SECOND_U64: u64 = 1_000;
 /// The report carries the validated operator approval id, resolved
 /// no-submit readiness report path, approved canary order-count bound,
 /// approved per-order notional bound, and root risk notional bound.
-/// Submit-time admission must consume these validated bounds before
-/// any live canary order is allowed.
+/// Submit-time admission can consume these validated bounds when an
+/// operator chooses to run with canary-bounded admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3LiveCanaryGateReport {
     approval_id: String,

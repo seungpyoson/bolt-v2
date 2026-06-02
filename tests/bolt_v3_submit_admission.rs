@@ -2093,6 +2093,128 @@ fn configured_submit_sizer_allows_no_outcome_risk_reducing_exit_without_reservat
 }
 
 #[test]
+fn dropped_uncommitted_risk_reducing_exit_rolls_back_count_and_tracker() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    let mut state = fresh_sizing_state(900);
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut state.product_state;
+    product.yes_position = Decimal::new(10, 0);
+    admission.update_position_sizing_nt_components(components_from_state(state));
+    rebuild_empty_position_sizer(&admission);
+
+    let permit = admission
+        .admit_at(
+            &risk_reducing_exit_submit_request("client-order-1", Decimal::new(10, 0)),
+            1_000,
+        )
+        .expect("risk-reducing exit should admit against seeded inventory");
+    assert_eq!(admission.admitted_order_count(), 1);
+
+    drop(permit);
+
+    assert_eq!(admission.admitted_order_count(), 0);
+    let stale_fill = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Sell,
+            fill_quantity: Decimal::new(10, 0),
+            observed_at_ns: 1_100,
+            reconciliation: false,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_100,
+    );
+    assert!(stale_fill.unknown_reservation);
+
+    admission
+        .admit_at(
+            &risk_reducing_exit_submit_request("client-order-2", Decimal::new(10, 0)),
+            1_101,
+        )
+        .expect("rolled-back exit should not consume the next admission slot");
+}
+
+#[test]
+fn risk_reducing_exit_terminal_order_event_releases_unreserved_tracker() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    let mut state = fresh_sizing_state(900);
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut state.product_state;
+    product.yes_position = Decimal::new(10, 0);
+    admission.update_position_sizing_nt_components(components_from_state(state));
+    rebuild_empty_position_sizer(&admission);
+
+    admission
+        .admit_at(
+            &risk_reducing_exit_submit_request("client-order-1", Decimal::new(10, 0)),
+            1_000,
+        )
+        .expect("risk-reducing exit should admit against seeded inventory")
+        .commit_submitted();
+
+    let terminal = admission.apply_position_sizing_terminal_order_event(
+        "client-order-1".to_string(),
+        1_100,
+        "nt_order_terminal".to_string(),
+    );
+
+    assert!(terminal.accepted);
+    assert!(!terminal.unknown_reservation);
+    assert_eq!(terminal.action, PositionSizingLifecycleAction::Released);
+    let stale_fill = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-1".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Sell,
+            fill_quantity: Decimal::new(10, 0),
+            observed_at_ns: 1_101,
+            reconciliation: false,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_101,
+    );
+    assert!(stale_fill.unknown_reservation);
+}
+
+#[test]
+fn risk_reducing_exit_terminal_lifecycle_update_releases_unreserved_tracker() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    let mut state = fresh_sizing_state(900);
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = &mut state.product_state;
+    product.yes_position = Decimal::new(10, 0);
+    admission.update_position_sizing_nt_components(components_from_state(state));
+    rebuild_empty_position_sizer(&admission);
+
+    admission
+        .admit_at(
+            &risk_reducing_exit_submit_request("client-order-1", Decimal::new(10, 0)),
+            1_000,
+        )
+        .expect("risk-reducing exit should admit against seeded inventory")
+        .commit_submitted();
+
+    let terminal = admission.apply_position_sizing_lifecycle_update(
+        BoltV3SubmitPositionSizingLifecycleUpdate {
+            client_order_id: "client-order-1".to_string(),
+            collateral_group_id: "group-1".to_string(),
+            remaining_liability: Decimal::ZERO,
+            observed_at_ns: 1_100,
+            evidence_label: "nt_order_terminal".to_string(),
+            kind: PositionSizingLifecycleKind::Terminal,
+        },
+        1_100,
+    );
+
+    assert!(terminal.accepted);
+    assert!(!terminal.unknown_reservation);
+    assert_eq!(terminal.action, PositionSizingLifecycleAction::Released);
+}
+
+#[test]
 fn configured_submit_sizer_keeps_committed_reservation_until_terminal_lifecycle_release() {
     let admission = position_sized_admission();
     arm_default(&admission);

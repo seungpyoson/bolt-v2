@@ -659,6 +659,14 @@ impl BoltV3SubmitAdmissionState {
             .get(&update.client_order_id)
             .cloned()
         else {
+            if update.kind == PositionSizingLifecycleKind::Terminal
+                && let Some(decision) = apply_risk_reducing_exit_terminal_order_event(
+                    position_sizer,
+                    &update.client_order_id,
+                )
+            {
+                return decision;
+            }
             log::warn!(
                 "bolt-v3 submit admission received position-sizer lifecycle update for unknown client_order_id={}",
                 update.client_order_id
@@ -865,6 +873,11 @@ impl BoltV3SubmitAdmissionState {
             .get(&client_order_id)
             .cloned()
         else {
+            if let Some(decision) =
+                apply_risk_reducing_exit_terminal_order_event(position_sizer, &client_order_id)
+            {
+                return decision;
+            }
             log::warn!(
                 "bolt-v3 submit admission received position-sizer terminal order event for unknown client_order_id={}",
                 client_order_id
@@ -965,6 +978,10 @@ impl BoltV3SubmitAdmissionState {
         }
         match evaluation.outcome {
             BoltV3AdmissionOutcome::Admitted => {
+                let rollback_risk_reducing_exit_client_order_id = evaluation
+                    .risk_reducing_exit_order
+                    .as_ref()
+                    .map(|_| request.client_order_id.clone());
                 if let Some(order) = evaluation.risk_reducing_exit_order
                     && let Some(position_sizer) = inner.position_sizer.as_mut()
                 {
@@ -986,8 +1003,15 @@ impl BoltV3SubmitAdmissionState {
                 }
                 Ok(BoltV3SubmitAdmissionPermit {
                     inner: self.inner.clone(),
-                    rollback_intent_kind: evaluation.rollback.as_ref().map(|_| request.intent_kind),
+                    rollback_intent_kind: if evaluation.rollback.is_some()
+                        || rollback_risk_reducing_exit_client_order_id.is_some()
+                    {
+                        Some(request.intent_kind)
+                    } else {
+                        None
+                    },
                     rollback: evaluation.rollback,
+                    rollback_risk_reducing_exit_client_order_id,
                     committed: false,
                 })
             }
@@ -1159,6 +1183,7 @@ pub struct BoltV3SubmitAdmissionPermit {
     inner: Arc<Mutex<BoltV3SubmitAdmissionInner>>,
     rollback_intent_kind: Option<BoltV3SubmitIntentKind>,
     rollback: Option<BoltV3PositionSizerReservationRollback>,
+    rollback_risk_reducing_exit_client_order_id: Option<String>,
     committed: bool,
 }
 
@@ -1167,6 +1192,7 @@ impl BoltV3SubmitAdmissionPermit {
         self.committed = true;
         self.rollback_intent_kind = None;
         self.rollback = None;
+        self.rollback_risk_reducing_exit_client_order_id = None;
     }
 }
 
@@ -1175,13 +1201,25 @@ impl Drop for BoltV3SubmitAdmissionPermit {
         if self.committed {
             return;
         }
-        let Some(rollback) = self.rollback.as_ref() else {
+        if self.rollback.is_none()
+            && self.rollback_intent_kind.is_none()
+            && self.rollback_risk_reducing_exit_client_order_id.is_none()
+        {
             return;
-        };
+        }
         // Invariant: callers must not drop an uncommitted permit while already
         // holding the admission lock; rollback is deliberately fail-closed.
         let mut inner = lock_inner(&self.inner);
-        rollback_position_sizer_reservation(&mut inner, rollback);
+        if let Some(rollback) = self.rollback.as_ref() {
+            rollback_position_sizer_reservation(&mut inner, rollback);
+        }
+        if let Some(client_order_id) = self.rollback_risk_reducing_exit_client_order_id.as_ref()
+            && let Some(position_sizer) = inner.position_sizer.as_mut()
+        {
+            position_sizer
+                .risk_reducing_exit_orders
+                .remove(client_order_id);
+        }
         if let Some(intent_kind) = self.rollback_intent_kind {
             rollback_uncommitted_admission_count(&mut inner, intent_kind);
         }
@@ -1835,6 +1873,20 @@ fn lock_inner(
     inner
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn apply_risk_reducing_exit_terminal_order_event(
+    position_sizer: &mut BoltV3SubmitPositionSizerState,
+    client_order_id: &str,
+) -> Option<BoltV3SubmitPositionSizingLifecycleDecision> {
+    position_sizer
+        .risk_reducing_exit_orders
+        .remove(client_order_id)?;
+    Some(BoltV3SubmitPositionSizingLifecycleDecision {
+        accepted: true,
+        unknown_reservation: false,
+        action: PositionSizingLifecycleAction::Released,
+    })
 }
 
 fn apply_risk_reducing_exit_fill_update(

@@ -589,12 +589,15 @@ impl BoltV3LossGovernorRuntimeFeed {
             .push_back((observed_at_ns, account_pnl));
         let seed_startup_rolling_baseline = !self.rolling_baseline_initialized;
         let cutoff_ns = observed_at_ns.saturating_sub(self.rolling_window_ns);
-        while self
-            .rolling_samples
-            .front()
-            .is_some_and(|(sample_ns, _)| *sample_ns < cutoff_ns)
-        {
-            self.rolling_samples.pop_front();
+        while self.rolling_samples.len() > 1 {
+            let Some((next_ns, _)) = self.rolling_samples.get(1) else {
+                break;
+            };
+            if *next_ns < cutoff_ns {
+                self.rolling_samples.pop_front();
+            } else {
+                break;
+            }
         }
         self.latest_rolling_pnl = match (self.rolling_samples.front(), self.rolling_samples.back())
         {
@@ -2328,7 +2331,7 @@ mod tests {
     }
 
     #[test]
-    fn loss_governor_feed_requires_rolling_baseline_inside_configured_window() {
+    fn loss_governor_feed_preserves_latest_sparse_rolling_baseline() {
         let account_id = AccountId::from("POLYMARKET-001");
         let mut feed = BoltV3LossGovernorRuntimeFeed::new(account_id, 1_000);
 
@@ -2341,6 +2344,15 @@ mod tests {
         ))
         .expect("initial portfolio snapshot should seed rolling baseline");
 
+        feed.record_portfolio_snapshot(&portfolio_snapshot(
+            account_id,
+            150,
+            Decimal::new(-2, 0),
+            Decimal::ZERO,
+            Decimal::new(98, 0),
+        ))
+        .expect("second portfolio snapshot should become the preserved sparse baseline");
+
         let second = feed
             .record_portfolio_snapshot(&portfolio_snapshot(
                 account_id,
@@ -2349,9 +2361,9 @@ mod tests {
                 Decimal::ZERO,
                 Decimal::new(90, 0),
             ))
-            .expect("second portfolio snapshot should produce fail-closed rolling fact");
+            .expect("sparse portfolio snapshot should keep the latest pre-window baseline");
 
-        assert_eq!(second.rolling_pnl, None);
+        assert_eq!(second.rolling_pnl, Some(Decimal::new(-8, 0)));
     }
 
     #[test]

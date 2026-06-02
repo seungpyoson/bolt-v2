@@ -206,6 +206,7 @@ pub struct HyperliquidLiveSubmitApprovalInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HyperliquidLiveSubmitApprovalArtifact {
     pub schema_version: u32,
     pub record_kind: String,

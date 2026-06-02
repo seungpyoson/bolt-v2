@@ -111,7 +111,7 @@ fn catalog_round_trips_trade_ticks_and_node_runs_compiled_strategy() {
         .write_instruments(vec![InstrumentAny::CurrencyPair(instrument)])
         .expect("write instrument");
     catalog
-        .write_to_parquet(trades.clone(), None, None, None)
+        .write_to_parquet(trades, None, None, None)
         .expect("write trade ticks");
 
     let loaded: Vec<TradeTick> = catalog

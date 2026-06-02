@@ -47,6 +47,7 @@ struct LossGovernorRuntimeFeedState {
     rolling_samples: VecDeque<TimedDecimal>,
     rolling_pnl: Option<TimedDecimal>,
     per_trade_pnl: Option<TimedDecimal>,
+    per_trade_pnl_source: Option<PerTradePnlSource>,
     current_equity: Option<TimedDecimal>,
     peak_equity: Option<TimedDecimal>,
     latest_snapshot: Option<LossSnapshot>,
@@ -62,6 +63,12 @@ struct TimedDecimal {
 enum PeakEquityAction {
     Preserve,
     RebaselineToCurrent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PerTradePnlSource {
+    PortfolioBaseline,
+    PositionEvent,
 }
 
 impl TimedDecimal {
@@ -156,9 +163,10 @@ impl LossGovernorRuntimeFeed {
             self.config.rolling_window_ns,
         );
         self.state.daily_pnl = Some(TimedDecimal::new(daily_pnl, observed_at_ns));
-        self.state
-            .per_trade_pnl
-            .get_or_insert(TimedDecimal::new(Decimal::ZERO, observed_at_ns));
+        if self.state.per_trade_pnl_source != Some(PerTradePnlSource::PositionEvent) {
+            self.state.per_trade_pnl = Some(TimedDecimal::new(Decimal::ZERO, observed_at_ns));
+            self.state.per_trade_pnl_source = Some(PerTradePnlSource::PortfolioBaseline);
+        }
 
         self.state.current_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
         match (peak_equity_action, self.state.peak_equity) {
@@ -187,6 +195,7 @@ impl LossGovernorRuntimeFeed {
                 per_trade_pnl,
                 position_fact.observed_at_ns,
             ));
+            self.state.per_trade_pnl_source = Some(PerTradePnlSource::PositionEvent);
         }
         self.publish_if_complete()
     }
@@ -206,8 +215,7 @@ impl LossGovernorRuntimeFeed {
             .observed_at_ns
             .min(daily_pnl.observed_at_ns)
             .min(rolling_pnl.observed_at_ns)
-            .min(current_equity.observed_at_ns)
-            .min(peak_equity.observed_at_ns);
+            .min(current_equity.observed_at_ns);
 
         let snapshot = LossSnapshot {
             source: LOSS_RUNTIME_FEED_SOURCE.to_string(),
@@ -251,6 +259,7 @@ impl LossGovernorRuntimeFeedState {
             rolling_samples: VecDeque::new(),
             rolling_pnl: None,
             per_trade_pnl: None,
+            per_trade_pnl_source: None,
             current_equity: None,
             peak_equity: None,
             latest_snapshot: None,

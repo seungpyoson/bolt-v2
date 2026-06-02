@@ -4967,12 +4967,12 @@ fn allows(&self, intent: BoltV3SubmitIntentKind) -> bool {
         &submit_admission_source_path,
         10_000,
     )
-    .expect_err("service submit must be gated by arm state and lifecycle policy");
+    .expect_err("service submit must reject disallowed lifecycle before ungated admission");
 
     assert!(
         error
             .to_string()
-            .contains("submit_admission_rejects_unarmed_and_disallowed_lifecycle"),
+            .contains("submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle"),
         "unguarded service submit should identify service-policy proof: {error}"
     );
 }
@@ -9373,10 +9373,7 @@ fn entry_decision_evidence_replay_derives_price_from_readiness_session() {
     let chain = read_latest_entry_decision_evidence_chain(&written.path, 100_000)
         .expect("written JSONL should contain a complete entry decision chain");
     assert_eq!(chain.snapshot.price_to_beat_value, "3100");
-    assert_eq!(
-        chain.admission.outcome,
-        BoltV3AdmissionOutcome::RejectedNotArmed
-    );
+    assert_eq!(chain.admission.outcome, BoltV3AdmissionOutcome::Admitted);
 }
 
 #[test]
@@ -9649,10 +9646,7 @@ fn entry_decision_evidence_source_collector_writes_configured_runtime_jsonl() {
     );
     assert_eq!(chain.snapshot.price_to_beat_value, "3100");
     assert_eq!(chain.intent.intent_kind, BoltV3OrderIntentKind::Entry);
-    assert_eq!(
-        chain.admission.outcome,
-        BoltV3AdmissionOutcome::RejectedNotArmed
-    );
+    assert_eq!(chain.admission.outcome, BoltV3AdmissionOutcome::Admitted);
     assert_eq!(written.sha256, sha256_file(&written.path));
 }
 
@@ -9867,10 +9861,7 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
         .expect("replayed decision evidence should have a complete entry chain");
     assert_eq!(chain.snapshot.price_to_beat_value, "3100");
     assert_eq!(chain.snapshot.market_id.as_deref(), Some(TEST_MARKET_ID));
-    assert_eq!(
-        chain.admission.outcome,
-        BoltV3AdmissionOutcome::RejectedNotArmed
-    );
+    assert_eq!(chain.admission.outcome, BoltV3AdmissionOutcome::Admitted);
 }
 
 struct EntryDecisionSourceInputProofPaths {
@@ -12154,7 +12145,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
         instrument_id: snapshot.submission_instrument_id.clone(),
         notional: "0.50".to_string(),
         intent_kind: BoltV3SubmitIntentKind::Entry,
-        outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+        outcome: BoltV3AdmissionOutcome::Admitted,
         loss_halt_reasons: Vec::new(),
     };
     let decision_evidence_path = temp.path().join("decision-evidence.jsonl");
@@ -14612,7 +14603,7 @@ fn write_entry_decision_evidence_chain_at(
         instrument_id: snapshot.submission_instrument_id.clone(),
         notional: "0.50".to_string(),
         intent_kind: BoltV3SubmitIntentKind::Entry,
-        outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+        outcome: BoltV3AdmissionOutcome::Admitted,
         loss_halt_reasons: Vec::new(),
     };
     let mut decision_evidence = String::new();

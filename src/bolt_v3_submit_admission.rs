@@ -1082,11 +1082,6 @@ impl BoltV3SubmitAdmissionState {
         request: &BoltV3SubmitAdmissionRequest,
         now_ns: u64,
     ) -> BoltV3SubmitAdmissionEvaluation {
-        let Some(report) = inner.gate_report.as_ref() else {
-            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
-                BoltV3AdmissionOutcome::RejectedNotArmed,
-            );
-        };
         if !request.lifecycle_policy.allows(request.intent_kind) {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed,
@@ -1109,60 +1104,67 @@ impl BoltV3SubmitAdmissionState {
                 BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
             );
         }
-        if matches!(
-            request.intent_kind,
-            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
-        ) && request.notional > report.max_notional_per_order()
-        {
-            return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
-                BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
-            );
-        }
-        if request
-            .canary_proof_claim
-            .as_deref()
-            .is_some_and(|claim| claim != CANARY_PROOF_CLAIM)
-        {
+        let gate_report = inner.gate_report.as_ref();
+        if let Some(report) = gate_report {
+            if matches!(
+                request.intent_kind,
+                BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
+            ) && request.notional > report.max_notional_per_order()
+            {
+                return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                    BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
+                );
+            }
+            if request
+                .canary_proof_claim
+                .as_deref()
+                .is_some_and(|claim| claim != CANARY_PROOF_CLAIM)
+            {
+                return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                    BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim,
+                );
+            }
+            match request.intent_kind {
+                BoltV3SubmitIntentKind::Entry => {
+                    if inner.admitted_entry_order_count >= report.max_live_entry_order_count() {
+                        return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                            BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+                        );
+                    }
+                }
+                BoltV3SubmitIntentKind::RiskReducingExit => {
+                    let Some(proof) = request.risk_reducing_exit_proof.as_ref() else {
+                        return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                            BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
+                        );
+                    };
+                    if !proof.is_valid_for(request) {
+                        return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                            BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
+                        );
+                    }
+                    if inner.admitted_risk_reducing_exit_order_count
+                        >= report.max_live_risk_reducing_exit_order_count()
+                    {
+                        return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                            BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+                        );
+                    }
+                }
+                BoltV3SubmitIntentKind::ReplaceSubmit => {
+                    if inner.admitted_replace_submit_order_count
+                        >= report.max_live_replace_submit_order_count()
+                    {
+                        return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
+                            BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+                        );
+                    }
+                }
+            }
+        } else if request.canary_proof_claim.is_some() {
             return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
                 BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim,
             );
-        }
-        match request.intent_kind {
-            BoltV3SubmitIntentKind::Entry => {
-                if inner.admitted_entry_order_count >= report.max_live_entry_order_count() {
-                    return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
-                        BoltV3AdmissionOutcome::RejectedCountCapExhausted,
-                    );
-                }
-            }
-            BoltV3SubmitIntentKind::RiskReducingExit => {
-                let Some(proof) = request.risk_reducing_exit_proof.as_ref() else {
-                    return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
-                        BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
-                    );
-                };
-                if !proof.is_valid_for(request) {
-                    return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
-                        BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
-                    );
-                }
-                if inner.admitted_risk_reducing_exit_order_count
-                    >= report.max_live_risk_reducing_exit_order_count()
-                {
-                    return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
-                        BoltV3AdmissionOutcome::RejectedCountCapExhausted,
-                    );
-                }
-            }
-            BoltV3SubmitIntentKind::ReplaceSubmit => {
-                if inner.admitted_replace_submit_order_count
-                    >= report.max_live_replace_submit_order_count()
-                {
-                    return BoltV3SubmitAdmissionEvaluation::without_loss_halt(
-                        BoltV3AdmissionOutcome::RejectedCountCapExhausted,
-                    );
-                }
-            }
         }
         if inner.position_sizer.is_some() {
             let decision = evaluate_position_sizer_submit(inner, request, now_ns);
@@ -1183,12 +1185,10 @@ impl BoltV3SubmitAdmissionState {
 
     /// Gate-approved maximum reference-quote age (seconds) carried by the armed
     /// gate report, or `None` when the state is not yet armed. This is the single
-    /// authoritative freshness bound for the armed live path (A5): the submit /
-    /// forced-flat stale check plumbs this value in so the gate-validated
+    /// authoritative freshness bound when the optional gate is armed (A5): the
+    /// submit / forced-flat stale check plumbs this value in so the gate-validated
     /// freshness policy — not an independent strategy-config value — governs
-    /// whether a reference quote is fresh enough to keep trading. `None` (unarmed)
-    /// is irrelevant to live money because admission rejects every order until the
-    /// state is armed.
+    /// whether a reference quote is fresh enough to keep trading.
     pub fn reference_quote_max_age_seconds(&self) -> Option<u64> {
         self.inner
             .lock()

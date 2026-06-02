@@ -377,14 +377,13 @@ const ABORT_PLAN_SERVICE_POLICY_CONTINGENT_MARKER: &str = "self.config.manage_co
 const ABORT_PLAN_SERVICE_POLICY_GTD_MARKER: &str = "self.config.manage_gtd_expiry";
 const ABORT_PLAN_SERVICE_POLICY_STOP_MARKER: &str = "self.config.manage_stop";
 const ABORT_PLAN_SERVICE_ADMISSION_UNARMED_MARKER: &str =
-    "let Some(report) = inner.gate_report.as_ref() else";
-const ABORT_PLAN_SERVICE_ADMISSION_REJECT_NOT_ARMED_MARKER: &str =
-    "BoltV3AdmissionOutcome::RejectedNotArmed";
+    "let gate_report = inner.gate_report.as_ref();";
 const ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_CHECK_MARKER: &str =
     "!request.lifecycle_policy.allows(request.intent_kind)";
 const ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_REJECT_MARKER: &str =
     "BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed";
-const ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER: &str = "BoltV3AdmissionOutcome::Admitted";
+const ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER: &str =
+    "BoltV3SubmitAdmissionEvaluation::without_loss_halt(BoltV3AdmissionOutcome::Admitted)";
 const ABORT_PLAN_SERVICE_REPLACE_ALLOWED_MARKER: &str =
     "BoltV3OrderLifecycleIntent::ReplaceSubmit if self.replace_submit";
 const ABORT_PLAN_SERVICE_REPLACE_SUBMIT_MARKER: &str =
@@ -6839,8 +6838,8 @@ pub fn collect_abort_plan_panic_gate_service_policy_source_proof(
         panic_recovery_enters_blind_recovery: contract.panic_recovery_enters_blind_recovery,
         release_invariant_returns_error: contract.release_invariant_returns_error,
         submit_lifecycle_policy_from_config: contract.submit_lifecycle_policy_from_config,
-        submit_admission_rejects_unarmed_and_disallowed_lifecycle: contract
-            .submit_admission_rejects_unarmed_and_disallowed_lifecycle,
+        submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle: contract
+            .submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle,
         replace_submit_policy_gates_service_submit: contract
             .replace_submit_policy_gates_service_submit,
     };
@@ -11682,7 +11681,7 @@ struct Phase8AbortPlanPanicGateServicePolicySourceProofHashInput<'a> {
     panic_recovery_enters_blind_recovery: bool,
     release_invariant_returns_error: bool,
     submit_lifecycle_policy_from_config: bool,
-    submit_admission_rejects_unarmed_and_disallowed_lifecycle: bool,
+    submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle: bool,
     replace_submit_policy_gates_service_submit: bool,
 }
 
@@ -11711,7 +11710,7 @@ struct AbortPlanPanicGateServicePolicyContract {
     panic_recovery_enters_blind_recovery: bool,
     release_invariant_returns_error: bool,
     submit_lifecycle_policy_from_config: bool,
-    submit_admission_rejects_unarmed_and_disallowed_lifecycle: bool,
+    submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle: bool,
     replace_submit_policy_gates_service_submit: bool,
 }
 
@@ -11933,7 +11932,7 @@ fn require_abort_plan_panic_gate_service_policy_contract(
     require_abort_plan_panic_recovery_enters_blind_recovery(&strategy_code_source)?;
     require_abort_plan_release_invariant_returns_error(&strategy_code_source)?;
     require_abort_plan_submit_lifecycle_policy_from_config(&strategy_code_source)?;
-    require_abort_plan_submit_admission_rejects_unarmed_and_disallowed_lifecycle(
+    require_abort_plan_submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle(
         &admission_code_source,
     )?;
     require_abort_plan_replace_submit_policy_gates_service_submit(&admission_code_source)?;
@@ -11942,7 +11941,7 @@ fn require_abort_plan_panic_gate_service_policy_contract(
         panic_recovery_enters_blind_recovery: true,
         release_invariant_returns_error: true,
         submit_lifecycle_policy_from_config: true,
-        submit_admission_rejects_unarmed_and_disallowed_lifecycle: true,
+        submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle: true,
         replace_submit_policy_gates_service_submit: true,
     })
 }
@@ -12572,7 +12571,7 @@ fn require_abort_plan_submit_lifecycle_policy_from_config(
     }
 }
 
-fn require_abort_plan_submit_admission_rejects_unarmed_and_disallowed_lifecycle(
+fn require_abort_plan_submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle(
     code_source: &str,
 ) -> Result<(), BoltV3OperatorArtifactError> {
     let scope = abort_plan_panic_gate_service_policy_single_function_scope(
@@ -12580,42 +12579,33 @@ fn require_abort_plan_submit_admission_rejects_unarmed_and_disallowed_lifecycle(
         ABORT_PLAN_SERVICE_ADMISSION_EVALUATE_FUNCTION_NAME,
         "submit_admission_evaluate_scope",
     )?;
-    let unarmed = abort_plan_panic_gate_service_policy_single_marker_index(
-        scope,
-        ABORT_PLAN_SERVICE_ADMISSION_UNARMED_MARKER,
-        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
-    )?;
-    let reject_unarmed = abort_plan_panic_gate_service_policy_single_marker_index(
-        scope,
-        ABORT_PLAN_SERVICE_ADMISSION_REJECT_NOT_ARMED_MARKER,
-        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
-    )?;
     let lifecycle_check = abort_plan_panic_gate_service_policy_single_marker_index(
         scope,
         ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_CHECK_MARKER,
-        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+        "submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle",
     )?;
     let lifecycle_reject = abort_plan_panic_gate_service_policy_single_marker_index(
         scope,
         ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_REJECT_MARKER,
-        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+        "submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle",
+    )?;
+    let unarmed = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_SERVICE_ADMISSION_UNARMED_MARKER,
+        "submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle",
     )?;
     let admitted = abort_plan_panic_gate_service_policy_single_marker_index(
         scope,
         ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER,
-        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+        "submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle",
     )?;
 
-    if unarmed < reject_unarmed
-        && reject_unarmed < lifecycle_check
-        && lifecycle_check < lifecycle_reject
-        && lifecycle_reject < admitted
-    {
+    if lifecycle_check < lifecycle_reject && lifecycle_reject < unarmed && unarmed < admitted {
         Ok(())
     } else {
         Err(
             BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceInvalid {
-                field: "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+                field: "submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle",
             },
         )
     }

@@ -20,11 +20,11 @@ use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
 /// Canonical binary-market outcome side (`Up`/`Down`). Homed in the
 /// market-family layer as the single source of truth: updown family
 /// instruments are keyed by it, and the taker decision math
-/// (`bolt_v3_taker_signal`) plus the #488 maker consume it. Variants and
-/// derives match the prior family-local `UpdownOutcomeSide` and the
-/// strategy-local `OutcomeSide` it replaces (pure type-identity unification).
+/// (`bolt_v3_taker_signal`) consumes it. Variants and derives match the
+/// prior family-local `UpdownOutcomeSide` and the strategy-local
+/// `OutcomeSide` it replaces (pure type-identity unification).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutcomeSide {
+pub(crate) enum OutcomeSide {
     Up,
     Down,
 }

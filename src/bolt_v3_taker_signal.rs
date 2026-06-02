@@ -96,7 +96,7 @@ pub fn choose_robust_size(inputs: &RobustSizingInputs) -> f64 {
     (inputs.expected_ev_per_notional / (QUADRATIC_RISK_DIVISOR * inputs.risk_lambda)).min(cap)
 }
 
-pub fn outcome_side_evidence_label(side: OutcomeSide) -> &'static str {
+pub(crate) fn outcome_side_evidence_label(side: OutcomeSide) -> &'static str {
     match side {
         OutcomeSide::Up => "up",
         OutcomeSide::Down => "down",
@@ -104,14 +104,17 @@ pub fn outcome_side_evidence_label(side: OutcomeSide) -> &'static str {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct WorstCaseEvInputs {
-    pub fair_probability: Option<f64>,
-    pub uncertainty_band_probability: f64,
-    pub executable_entry_cost: f64,
-    pub fee_bps: Option<f64>,
+pub(crate) struct WorstCaseEvInputs {
+    pub(crate) fair_probability: Option<f64>,
+    pub(crate) uncertainty_band_probability: f64,
+    pub(crate) executable_entry_cost: f64,
+    pub(crate) fee_bps: Option<f64>,
 }
 
-pub fn compute_worst_case_ev_bps(side: OutcomeSide, inputs: &WorstCaseEvInputs) -> Option<f64> {
+pub(crate) fn compute_worst_case_ev_bps(
+    side: OutcomeSide,
+    inputs: &WorstCaseEvInputs,
+) -> Option<f64> {
     let fair_probability = sanitize_probability(inputs.fair_probability?)?;
     let uncertainty_band_probability = sanitize_probability(inputs.uncertainty_band_probability)?;
     let executable_entry_cost = inputs.executable_entry_cost;
@@ -140,13 +143,13 @@ pub fn compute_worst_case_ev_bps(side: OutcomeSide, inputs: &WorstCaseEvInputs) 
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SideSelectionInputs {
-    pub up_worst_ev_bps: Option<f64>,
-    pub down_worst_ev_bps: Option<f64>,
-    pub min_worst_case_ev_bps: f64,
+pub(crate) struct SideSelectionInputs {
+    pub(crate) up_worst_ev_bps: Option<f64>,
+    pub(crate) down_worst_ev_bps: Option<f64>,
+    pub(crate) min_worst_case_ev_bps: f64,
 }
 
-pub fn choose_entry_side(inputs: &SideSelectionInputs) -> Option<OutcomeSide> {
+pub(crate) fn choose_entry_side(inputs: &SideSelectionInputs) -> Option<OutcomeSide> {
     if !inputs.min_worst_case_ev_bps.is_finite() {
         return None;
     }

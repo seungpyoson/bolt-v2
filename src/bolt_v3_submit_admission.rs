@@ -3,7 +3,7 @@ use crate::bolt_v3_decision_evidence::{
 };
 use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
 use nautilus_model::{
-    enums::OrderSide,
+    enums::{OrderSide, PositionSide},
     instruments::{Instrument, InstrumentAny},
     orders::{Order, OrderAny},
     types::Price,
@@ -69,6 +69,7 @@ struct BoltV3SubmitAdmissionInner {
     admitted_order_count: u32,
     admitted_entry_order_count: u32,
     admitted_risk_reducing_exit_order_count: u32,
+    admitted_replace_submit_order_count: u32,
 }
 
 impl BoltV3SubmitAdmissionState {
@@ -79,6 +80,7 @@ impl BoltV3SubmitAdmissionState {
                 admitted_order_count: 0,
                 admitted_entry_order_count: 0,
                 admitted_risk_reducing_exit_order_count: 0,
+                admitted_replace_submit_order_count: 0,
             }),
             decision_evidence,
         }
@@ -99,6 +101,7 @@ impl BoltV3SubmitAdmissionState {
         inner.admitted_order_count = 0;
         inner.admitted_entry_order_count = 0;
         inner.admitted_risk_reducing_exit_order_count = 0;
+        inner.admitted_replace_submit_order_count = 0;
         Ok(())
     }
 
@@ -134,7 +137,9 @@ impl BoltV3SubmitAdmissionState {
                     BoltV3SubmitIntentKind::RiskReducingExit => {
                         inner.admitted_risk_reducing_exit_order_count += 1;
                     }
-                    BoltV3SubmitIntentKind::ReplaceSubmit => {}
+                    BoltV3SubmitIntentKind::ReplaceSubmit => {
+                        inner.admitted_replace_submit_order_count += 1;
+                    }
                 }
                 Ok(BoltV3SubmitAdmissionPermit(()))
             }
@@ -152,6 +157,9 @@ impl BoltV3SubmitAdmissionState {
             }
             BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim => {
                 Err(BoltV3SubmitAdmissionError::InvalidCanaryProofClaim)
+            }
+            BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof => {
+                Err(BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof)
             }
             BoltV3AdmissionOutcome::RejectedCountCapExhausted => {
                 Err(BoltV3SubmitAdmissionError::CountCapExhausted)
@@ -172,7 +180,11 @@ impl BoltV3SubmitAdmissionState {
         if request.notional <= Decimal::ZERO {
             return BoltV3AdmissionOutcome::RejectedNonPositiveNotional;
         }
-        if request.notional > report.max_notional_per_order() {
+        if matches!(
+            request.intent_kind,
+            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
+        ) && request.notional > report.max_notional_per_order()
+        {
             return BoltV3AdmissionOutcome::RejectedNotionalCapExceeded;
         }
         if request
@@ -182,8 +194,32 @@ impl BoltV3SubmitAdmissionState {
         {
             return BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim;
         }
-        if inner.admitted_order_count >= report.max_live_order_count() {
-            return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+        match request.intent_kind {
+            BoltV3SubmitIntentKind::Entry => {
+                if inner.admitted_entry_order_count >= report.max_live_entry_order_count() {
+                    return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                }
+            }
+            BoltV3SubmitIntentKind::RiskReducingExit => {
+                let Some(proof) = request.risk_reducing_exit_proof.as_ref() else {
+                    return BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof;
+                };
+                if !proof.is_valid_for(request) {
+                    return BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof;
+                }
+                if inner.admitted_risk_reducing_exit_order_count
+                    >= report.max_live_risk_reducing_exit_order_count()
+                {
+                    return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                }
+            }
+            BoltV3SubmitIntentKind::ReplaceSubmit => {
+                if inner.admitted_replace_submit_order_count
+                    >= report.max_live_replace_submit_order_count()
+                {
+                    return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+                }
+            }
         }
         BoltV3AdmissionOutcome::Admitted
     }
@@ -222,6 +258,31 @@ pub enum BoltV3OrderLifecycleIntent {
     RiskReducingExit,
     ReplaceSubmit,
     PlainCancel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3RiskReducingExitProof {
+    pub position_id: String,
+    pub instrument_id: String,
+    pub position_side: PositionSide,
+    pub exit_order_side: OrderSide,
+    pub position_quantity: Decimal,
+    pub exit_quantity: Decimal,
+}
+
+impl BoltV3RiskReducingExitProof {
+    fn is_valid_for(&self, request: &BoltV3SubmitAdmissionRequest) -> bool {
+        self.instrument_id == request.instrument_id
+            && self.exit_order_side == request.order_side
+            && self.exit_quantity == request.order_quantity
+            && self.position_quantity > Decimal::ZERO
+            && self.exit_quantity > Decimal::ZERO
+            && self.exit_quantity <= self.position_quantity
+            && matches!(
+                (self.position_side, self.exit_order_side),
+                (PositionSide::Long, OrderSide::Sell) | (PositionSide::Short, OrderSide::Buy)
+            )
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -265,9 +326,12 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub client_order_id: String,
     pub instrument_id: String,
     pub notional: Decimal,
+    pub order_side: OrderSide,
+    pub order_quantity: Decimal,
     pub intent_kind: BoltV3SubmitIntentKind,
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub canary_proof_claim: Option<String>,
+    pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -530,6 +594,7 @@ pub enum BoltV3SubmitAdmissionError {
         mutation_count: u64,
     },
     InvalidCanaryProofClaim,
+    InvalidRiskReducingExitProof,
     EvidenceWriteFailed {
         reason: String,
     },
@@ -574,6 +639,10 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             Self::InvalidCanaryProofClaim => write!(
                 f,
                 "bolt-v3 submit admission canary proof claim must be proof_only"
+            ),
+            Self::InvalidRiskReducingExitProof => write!(
+                f,
+                "bolt-v3 submit admission risk-reducing exit proof is invalid"
             ),
             Self::EvidenceWriteFailed { reason } => {
                 write!(

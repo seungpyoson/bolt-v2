@@ -49,7 +49,7 @@ use nautilus_core::string::secret::REDACTED;
 use nautilus_model::identifiers::AccountId;
 use nautilus_network::websocket::TransportBackend;
 use nautilus_polymarket::{
-    common::consts::HTTP_RATE_LIMIT,
+    common::consts::{HTTP_RATE_LIMIT, LOT_SIZE_SCALE},
     common::credential::{EvmPrivateKey, Secrets as PolymarketSecrets},
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
@@ -57,6 +57,7 @@ use nautilus_polymarket::{
     filters::{InstrumentFilter, MarketSlugFilter},
     http::clob::PolymarketClobHttpClient,
 };
+use rust_decimal::{Decimal, RoundingStrategy};
 use serde::Deserialize;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -86,6 +87,18 @@ pub const KEY: &str = "POLYMARKET";
 /// the NT adapter's own quota constant so bolt-v3 and NT share one source of
 /// truth for the venue capability.
 pub const REST_EGRESS_CAP_PER_MINUTE: u32 = HTTP_RATE_LIMIT;
+
+pub fn normalize_base_order_quantity(quantity: Decimal) -> Option<Decimal> {
+    if quantity <= Decimal::ZERO {
+        return None;
+    }
+    let normalized = quantity.round_dp_with_strategy(LOT_SIZE_SCALE, RoundingStrategy::ToZero);
+    if normalized > Decimal::ZERO {
+        Some(normalized)
+    } else {
+        None
+    }
+}
 /// Worst-case REST requests a single NT order command issues against Polymarket,
 /// used to derate the command-rate ceiling so a config cannot pass validation
 /// yet over-drive the venue's REST quota. Taken from the pinned NT adapter

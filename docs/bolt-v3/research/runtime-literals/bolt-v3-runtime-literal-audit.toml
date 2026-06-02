@@ -15139,3 +15139,1571 @@ literal = '''2'''
 context = '''max_live_order_count.saturating_mul(2)'''
 classification = '''phase8_entry_exit_order_pair_multiplier'''
 reason = '''Structural Phase 8 proof multiplier for one admitted entry and one admitted exit per configured live order cap; max_live_order_count remains TOML-owned.'''
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"market_data.v1\""
+context = "pub const NORMALIZED_SCHEMA_VERSION: &str = \"market_data.v1\";"
+classification = "backtesting_slice_schema_version"
+reason = "Pinned contract/schema/transform version identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"bybit-public-archive-spot-tick-trades-to-canonical-trades.v1\""
+context = "pub const TRANSFORM_IDENTITY: &str = \"bybit-public-archive-spot-tick-trades-to-canonical-trades.v1\";"
+classification = "backtesting_slice_schema_version"
+reason = "Pinned contract/schema/transform version identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"native\""
+context = "pub const TRADE_SOURCE_TYPE_NATIVE: &str = \"native\";"
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "number"
+literal = "6"
+context = "pub const BYBIT_SPOT_TICK_TRADES_HEADER: [&str; 6] ="
+classification = "backtesting_slice_schema_array_arity"
+reason = "Compile-time cardinality of a fixed typed schema array, kept in lockstep with the field list it sizes."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"id\""
+context = "[\"id\", \"timestamp\", \"price\", \"volume\", \"side\", \"rpi\"];"
+classification = "backtesting_slice_source_csv_header"
+reason = "Fixed column name in the accepted Bybit public-archive CSV input schema; validated against the file header."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"timestamp\""
+context = "[\"id\", \"timestamp\", \"price\", \"volume\", \"side\", \"rpi\"];"
+classification = "backtesting_slice_source_csv_header"
+reason = "Fixed column name in the accepted Bybit public-archive CSV input schema; validated against the file header."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"price\""
+context = "[\"id\", \"timestamp\", \"price\", \"volume\", \"side\", \"rpi\"];"
+classification = "backtesting_slice_source_csv_header"
+reason = "Fixed column name in the accepted Bybit public-archive CSV input schema; validated against the file header."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"volume\""
+context = "[\"id\", \"timestamp\", \"price\", \"volume\", \"side\", \"rpi\"];"
+classification = "backtesting_slice_source_csv_header"
+reason = "Fixed column name in the accepted Bybit public-archive CSV input schema; validated against the file header."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"side\""
+context = "[\"id\", \"timestamp\", \"price\", \"volume\", \"side\", \"rpi\"];"
+classification = "backtesting_slice_source_csv_header"
+reason = "Fixed column name in the accepted Bybit public-archive CSV input schema; validated against the file header."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"rpi\""
+context = "[\"id\", \"timestamp\", \"price\", \"volume\", \"side\", \"rpi\"];"
+classification = "backtesting_slice_source_csv_header"
+reason = "Fixed column name in the accepted Bybit public-archive CSV input schema; validated against the file header."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "number"
+literal = "1_000_000"
+context = "const NANOS_PER_MILLISECOND: i64 = 1_000_000;"
+classification = "backtesting_slice_time_unit_conversion"
+reason = "Nanoseconds-per-millisecond unit-conversion constant for Bybit millisecond timestamps."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"BUYER\""
+context = "Self::Buyer => \"BUYER\","
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"SELLER\""
+context = "Self::Seller => \"SELLER\","
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"buy\""
+context = "\"buy\" => Ok(Self::Buyer),"
+classification = "backtesting_slice_source_aggressor_token"
+reason = "Aggressor-side token as written by the Bybit public archive; parsed into the canonical enum."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"sell\""
+context = "\"sell\" => Ok(Self::Seller),"
+classification = "backtesting_slice_source_aggressor_token"
+reason = "Aggressor-side token as written by the Bybit public archive; parsed into the canonical enum."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"{}/{}/{}\""
+context = "\"{}/{}/{}\","
+classification = "backtesting_slice_path_segment"
+reason = "Canonical path-structure template; the interpolated components are config-derived."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "number"
+literal = "0"
+context = "let trade_id = fields[0].trim();"
+classification = "backtesting_slice_csv_column_index"
+reason = "Fixed column index into the accepted Bybit public-archive CSV schema; the header is validated separately."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "number"
+literal = "1"
+context = "let timestamp_ms: i64 = fields[1]"
+classification = "backtesting_slice_csv_column_index"
+reason = "Fixed column index into the accepted Bybit public-archive CSV schema; the header is validated separately."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "number"
+literal = "2"
+context = "let price_raw = fields[2].trim();"
+classification = "backtesting_slice_csv_column_index"
+reason = "Fixed column index into the accepted Bybit public-archive CSV schema; the header is validated separately."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "number"
+literal = "3"
+context = "let size_raw = fields[3].trim();"
+classification = "backtesting_slice_csv_column_index"
+reason = "Fixed column index into the accepted Bybit public-archive CSV schema; the header is validated separately."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "number"
+literal = "4"
+context = "let side = TradeAggressorSide::parse_bybit(fields[4])?;"
+classification = "backtesting_slice_csv_column_index"
+reason = "Fixed column index into the accepted Bybit public-archive CSV schema; the header is validated separately."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"row {index}: empty trade id\""
+context = "ensure!(!trade_id.is_empty(), \"row {index}: empty trade id\");"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"row {index}: non-positive price\""
+context = "ensure!(price > Decimal::ZERO, \"row {index}: non-positive price\");"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"row {index}: non-positive size\""
+context = "ensure!(size > Decimal::ZERO, \"row {index}: non-positive size\");"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"unexpected schema_version {:?}\""
+context = "\"unexpected schema_version {:?}\","
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"canonical trades table is empty\""
+context = "ensure!(!self.rows.is_empty(), \"canonical trades table is empty\");"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"empty partition/provenance field\""
+context = "ensure!(!field.trim().is_empty(), \"empty partition/provenance field\");"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"row {index}: schema_version mismatch\""
+context = "\"row {index}: schema_version mismatch\""
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "number"
+literal = "0"
+context = "ensure!(row.event_time > 0, \"row {index}: non-positive event_time\");"
+classification = "backtesting_slice_validation_bound"
+reason = "Fail-loud guard rejecting non-positive event_time values."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"row {index}: non-positive event_time\""
+context = "ensure!(row.event_time > 0, \"row {index}: non-positive event_time\");"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"row {index}: event_time {} precedes previous {}\""
+context = "\"row {index}: event_time {} precedes previous {}\","
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"schema_version\""
+context = "utf8(\"schema_version\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"ingest_run_id\""
+context = "utf8(\"ingest_run_id\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"source_binding\""
+context = "utf8(\"source_binding\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"venue\""
+context = "utf8(\"venue\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"product_family\""
+context = "utf8(\"product_family\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"product_category\""
+context = "utf8(\"product_category\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"instrument_id\""
+context = "utf8(\"instrument_id\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"canonical_instrument_key\""
+context = "utf8(\"canonical_instrument_key\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"venue_symbol\""
+context = "utf8(\"venue_symbol\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"nt_instrument_id\""
+context = "utf8(\"nt_instrument_id\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"event_time\""
+context = "int64(\"event_time\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"capture_time\""
+context = "int64(\"capture_time\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"source_sequence\""
+context = "utf8(\"source_sequence\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"raw_payload_id\""
+context = "utf8(\"raw_payload_id\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"source_proof_id\""
+context = "utf8(\"source_proof_id\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"payload_hash\""
+context = "utf8(\"payload_hash\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"transform_hash\""
+context = "utf8(\"transform_hash\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"trade_source_type\""
+context = "utf8(\"trade_source_type\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"trade_id\""
+context = "utf8(\"trade_id\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"aggressor_side\""
+context = "utf8(\"aggressor_side\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"price\""
+context = "utf8(\"price\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"size\""
+context = "utf8(\"size\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/canonical_trades.rs"
+kind = "string"
+literal = "\"notional\""
+context = "utf8(\"notional\"),"
+classification = "backtesting_slice_canonical_schema_column"
+reason = "Canonical normalized-trades column name in the table-contract schema; structural identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/catalog_projection.rs"
+kind = "string"
+literal = "\"TradeTick\""
+context = "pub const NT_DATA_TYPE_TRADE_TICK: &str = \"TradeTick\";"
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/catalog_projection.rs"
+kind = "number"
+literal = "0"
+context = "None => 0,"
+classification = "backtesting_slice_precision_default"
+reason = "Zero fractional digits for an integer-valued price/size increment."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/catalog_projection.rs"
+kind = "string"
+literal = "\"max_notional\""
+context = "spec.max_notional.parse().context(\"max_notional\")?,"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/catalog_projection.rs"
+kind = "string"
+literal = "\"min_notional\""
+context = "spec.min_notional.parse().context(\"min_notional\")?,"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/catalog_projection.rs"
+kind = "string"
+literal = "\"value {value:?} has more precision than instrument allows ({precision})\""
+context = "\"value {value:?} has more precision than instrument allows ({precision})\""
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/catalog_projection.rs"
+kind = "string"
+literal = "\"negative event_time\""
+context = "let ts = UnixNanos::from(u64::try_from(row.event_time).context(\"negative event_time\")?);"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/catalog_projection.rs"
+kind = "number"
+literal = "0"
+context = "instrument_id.to_string() == table.rows[0].nt_instrument_id,"
+classification = "backtesting_slice_first_row_index"
+reason = "First-row representative used to cross-check the instrument id of a homogeneous table."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/catalog_projection.rs"
+kind = "number"
+literal = "0"
+context = "table.rows[0].nt_instrument_id"
+classification = "backtesting_slice_first_row_index"
+reason = "First-row representative used to cross-check the instrument id of a homogeneous table."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/catalog_projection.rs"
+kind = "string"
+literal = "\"write instrument to catalog\""
+context = ".context(\"write instrument to catalog\")?;"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/catalog_projection.rs"
+kind = "string"
+literal = "\"write trade ticks to catalog\""
+context = ".context(\"write trade ticks to catalog\")?;"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/catalog_projection.rs"
+kind = "string"
+literal = "\"query trade ticks from catalog\""
+context = ".context(\"query trade ticks from catalog\")"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/catalog_projection.rs"
+kind = "number"
+literal = "0u8"
+context = "hasher.update([0u8]);"
+classification = "backtesting_slice_hash_domain_separator"
+reason = "Domain-separation byte mixed into the deterministic SHA-256 so distinct fields cannot collide."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"backtest-result-contract.v1\""
+context = "pub const RESULT_CONTRACT_VERSION: &str = \"backtest-result-contract.v1\";"
+classification = "backtesting_slice_schema_version"
+reason = "Pinned contract/schema/transform version identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"../../Cargo.toml\""
+context = "const WORKSPACE_CARGO_TOML: &str = include_str!(\"../../Cargo.toml\");"
+classification = "backtesting_slice_cargo_rev_parse_marker"
+reason = "Marker used to extract the pinned NautilusTrader git rev from the embedded workspace Cargo.toml (single source of truth for nt_version)."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "number"
+literal = "8"
+context = "const BANNED_PROMOTION_PHRASES: [&str; 8] = ["
+classification = "backtesting_slice_schema_array_arity"
+reason = "Compile-time cardinality of a fixed typed schema array, kept in lockstep with the field list it sizes."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"promote\""
+context = "\"promote\","
+classification = "backtesting_slice_banned_promotion_phrase"
+reason = "Promotion/recommendation term the objective result-contract guard rejects, keeping result contracts descriptive rather than advisory."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"recommend\""
+context = "\"recommend\","
+classification = "backtesting_slice_banned_promotion_phrase"
+reason = "Promotion/recommendation term the objective result-contract guard rejects, keeping result contracts descriptive rather than advisory."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"escalate\""
+context = "\"escalate\","
+classification = "backtesting_slice_banned_promotion_phrase"
+reason = "Promotion/recommendation term the objective result-contract guard rejects, keeping result contracts descriptive rather than advisory."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"should use\""
+context = "\"should use\","
+classification = "backtesting_slice_banned_promotion_phrase"
+reason = "Promotion/recommendation term the objective result-contract guard rejects, keeping result contracts descriptive rather than advisory."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"production-ready\""
+context = "\"production-ready\","
+classification = "backtesting_slice_banned_promotion_phrase"
+reason = "Promotion/recommendation term the objective result-contract guard rejects, keeping result contracts descriptive rather than advisory."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"deploy this strategy\""
+context = "\"deploy this strategy\","
+classification = "backtesting_slice_banned_promotion_phrase"
+reason = "Promotion/recommendation term the objective result-contract guard rejects, keeping result contracts descriptive rather than advisory."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"winning strategy\""
+context = "\"winning strategy\","
+classification = "backtesting_slice_banned_promotion_phrase"
+reason = "Promotion/recommendation term the objective result-contract guard rejects, keeping result contracts descriptive rather than advisory."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"best strategy\""
+context = "\"best strategy\","
+classification = "backtesting_slice_banned_promotion_phrase"
+reason = "Promotion/recommendation term the objective result-contract guard rejects, keeping result contracts descriptive rather than advisory."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"nautilus-backtest\""
+context = "if trimmed.starts_with(\"nautilus-backtest\")"
+classification = "backtesting_slice_cargo_rev_parse_marker"
+reason = "Marker used to extract the pinned NautilusTrader git rev from the embedded workspace Cargo.toml (single source of truth for nt_version)."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"rev = \\\"\""
+context = "let marker = \"rev = \\\"\";"
+classification = "backtesting_slice_cargo_rev_parse_marker"
+reason = "Marker used to extract the pinned NautilusTrader git rev from the embedded workspace Cargo.toml (single source of truth for nt_version)."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "number"
+literal = "0u8"
+context = "hasher.update([0u8]);"
+classification = "backtesting_slice_hash_domain_separator"
+reason = "Domain-separation byte mixed into the deterministic SHA-256 so distinct fields cannot collide."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "number"
+literal = "1u8"
+context = "hasher.update([1u8]);"
+classification = "backtesting_slice_hash_domain_separator"
+reason = "Domain-separation byte mixed into the deterministic SHA-256 so distinct fields cannot collide."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"run_id\""
+context = "(\"run_id\", self.run_id.as_str()),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"nt_version\""
+context = "(\"nt_version\", self.nt_version.as_str()),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"source_proof_id\""
+context = "(\"source_proof_id\", self.source_proof_id.as_str()),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"catalog_hash\""
+context = "(\"catalog_hash\", self.catalog_hash.as_str()),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"strategy_config_hash\""
+context = "(\"strategy_config_hash\", self.strategy_config_hash.as_str()),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"created_at\""
+context = "(\"created_at\", self.created_at.as_str()),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"claim_limits\""
+context = "return Err(ResultContractError::MissingField(\"claim_limits\"));"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"warnings\""
+context = "texts.push((\"warnings\", warning.as_str()));"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"mechanical_blockers\""
+context = "texts.push((\"mechanical_blockers\", blocker.as_str()));"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"claim_limits\""
+context = "texts.push((\"claim_limits\", limit.as_str()));"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/result_contract.rs"
+kind = "string"
+literal = "\"nt_version\""
+context = "resolved_nautilus_revision().ok_or(ResultContractError::MissingField(\"nt_version\"))?;"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"hurst_vpin_directional\""
+context = "pub const STRATEGY_HURST_VPIN_DIRECTIONAL: &str = \"hurst_vpin_directional\";"
+classification = "backtesting_slice_strategy_registry_key"
+reason = "Registry key of the single admissible compiled Rust strategy, shared by manifest validation and instantiation."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"strategy.registry_key\""
+context = "return Err(ManifestError::MissingField(\"strategy.registry_key\"));"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"fn \""
+context = "if key.contains(['{', '}', ';', '\\n', '(', ')']) || key.contains(\"fn \") {"
+classification = "backtesting_slice_strategy_source_reject_marker"
+reason = "Guard token rejecting inline code, Python paths, or untracked config blobs as strategy sources."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\".py\""
+context = "if key.ends_with(\".py\") || key.contains(\".py:\") {"
+classification = "backtesting_slice_strategy_source_reject_marker"
+reason = "Guard token rejecting inline code, Python paths, or untracked config blobs as strategy sources."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\".py:\""
+context = "if key.ends_with(\".py\") || key.contains(\".py:\") {"
+classification = "backtesting_slice_strategy_source_reject_marker"
+reason = "Guard token rejecting inline code, Python paths, or untracked config blobs as strategy sources."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"..\""
+context = "if key.contains('/') || key.contains('\\\\') || key.contains(\"..\") || key.ends_with(\".toml\") {"
+classification = "backtesting_slice_strategy_source_reject_marker"
+reason = "Guard token rejecting inline code, Python paths, or untracked config blobs as strategy sources."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\".toml\""
+context = "if key.contains('/') || key.contains('\\\\') || key.contains(\"..\") || key.ends_with(\".toml\") {"
+classification = "backtesting_slice_strategy_source_reject_marker"
+reason = "Guard token rejecting inline code, Python paths, or untracked config blobs as strategy sources."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"run_id\""
+context = "(\"run_id\", self.run_id.as_str()),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"venue_binding_key\""
+context = "(\"venue_binding_key\", self.venue_binding_key.as_str()),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"source_proof_id\""
+context = "(\"source_proof_id\", self.source_proof_id.as_str()),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"artifact_root\""
+context = "(\"artifact_root\", self.artifact_root.as_str()),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"output_prefix\""
+context = "(\"output_prefix\", self.output_prefix.as_str()),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"venue.nt_venue\""
+context = "(\"venue.nt_venue\", self.venue.nt_venue.as_str()),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"catalog_input.catalog_path\""
+context = "\"catalog_input.catalog_path\","
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"catalog_input.nt_instrument_id\""
+context = "\"catalog_input.nt_instrument_id\","
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"{}@{}\""
+context = "\"{}@{}\","
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"{}/backtests/\""
+context = "\"{}/backtests/\","
+classification = "backtesting_slice_path_segment"
+reason = "Canonical path-structure template; the interpolated components are config-derived."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"TradeTick\""
+context = "\"TradeTick\" => NautilusDataType::TradeTick,"
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"NETTING\""
+context = "\"NETTING\" => Ok(OmsType::Netting),"
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"HEDGING\""
+context = "\"HEDGING\" => Ok(OmsType::Hedging),"
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"CASH\""
+context = "\"CASH\" => Ok(AccountType::Cash),"
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"MARGIN\""
+context = "\"MARGIN\" => Ok(AccountType::Margin),"
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"L1_MBP\""
+context = "\"L1_MBP\" => Ok(BookType::L1_MBP),"
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"L2_MBP\""
+context = "\"L2_MBP\" => Ok(BookType::L2_MBP),"
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"L3_MBO\""
+context = "\"L3_MBO\" => Ok(BookType::L3_MBO),"
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"bar_type\""
+context = "const PARAM_BAR_TYPE: &str = \"bar_type\";"
+classification = "backtesting_slice_strategy_param_key"
+reason = "Canonical strategy-parameter key; the parameter value is config-driven from the manifest."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"trade_size\""
+context = "const PARAM_TRADE_SIZE: &str = \"trade_size\";"
+classification = "backtesting_slice_strategy_param_key"
+reason = "Canonical strategy-parameter key; the parameter value is config-driven from the manifest."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"add HurstVpinDirectional strategy\""
+context = ".context(\"add HurstVpinDirectional strategy\")"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"construct BacktestNode\""
+context = "let mut node = BacktestNode::new(vec![run_config]).context(\"construct BacktestNode\")?;"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"build BacktestNode\""
+context = "node.build().context(\"build BacktestNode\")?;"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"run BacktestNode\""
+context = "let mut results = node.run().context(\"run BacktestNode\")?;"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "number"
+literal = "0"
+context = "let nt_result = results.remove(0);"
+classification = "backtesting_slice_single_result_index"
+reason = "Index into the single-run result vector whose length is asserted to equal one."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"normal\""
+context = "RunPurpose::Normal => \"normal\","
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"reproduction\""
+context = "RunPurpose::Reproduction => \"reproduction\","
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"audit\""
+context = "RunPurpose::Audit => \"audit\","
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"regression\""
+context = "RunPurpose::Regression => \"regression\","
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"migration\""
+context = "RunPurpose::Migration => \"migration\","
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"binary-option\""
+context = "MarketStructureFixture::BinaryOption => \"binary-option\","
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"perps-spot\""
+context = "MarketStructureFixture::PerpsSpot => \"perps-spot\","
+classification = "backtesting_slice_canonical_enum_token"
+reason = "Canonical serialization token mapped to a typed enum variant; the selected value is config-driven, the vocabulary is fixed by contract."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"backfill-table-contract.v1\""
+context = "pub const CONTRACT_VERSION: &str = \"backfill-table-contract.v1\";"
+classification = "backtesting_slice_schema_version"
+reason = "Pinned contract/schema/transform version identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"backfill-source-proof.v1\""
+context = "pub const SOURCE_PROOF_SCHEMA_VERSION: &str = \"backfill-source-proof.v1\";"
+classification = "backtesting_slice_schema_version"
+reason = "Pinned contract/schema/transform version identifier."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "number"
+literal = "10"
+context = "fn as_slice(&self) -> [&RequiredCheck; 10] {"
+classification = "backtesting_slice_schema_array_arity"
+reason = "Compile-time cardinality of a fixed typed schema array, kept in lockstep with the field list it sizes."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "number"
+literal = "10"
+context = "const NAMES: [&str; 10] = ["
+classification = "backtesting_slice_schema_array_arity"
+reason = "Compile-time cardinality of a fixed typed schema array, kept in lockstep with the field list it sizes."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"source_access\""
+context = "\"source_access\","
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"license\""
+context = "\"license\","
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"schema\""
+context = "\"schema\","
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"time_semantics\""
+context = "\"time_semantics\","
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"instrument_universe\""
+context = "\"instrument_universe\","
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"coverage\""
+context = "\"coverage\","
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"granularity\""
+context = "\"granularity\","
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"completeness\""
+context = "\"completeness\","
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"nt_mapping\""
+context = "\"nt_mapping\","
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"storage\""
+context = "\"storage\","
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"object date {object_date} outside proven coverage window\""
+context = "\"object date {object_date} outside proven coverage window\""
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "number"
+literal = "13"
+context = "let required: [(&'static str, &str); 13] = ["
+classification = "backtesting_slice_schema_array_arity"
+reason = "Compile-time cardinality of a fixed typed schema array, kept in lockstep with the field list it sizes."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"source_proof_id\""
+context = "(\"source_proof_id\", &self.source_proof_id),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"contract_version\""
+context = "(\"contract_version\", &self.contract_version),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"schema_version\""
+context = "(\"schema_version\", &self.schema_version),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"source_binding\""
+context = "(\"source_binding\", &self.source_binding),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"venue\""
+context = "(\"venue\", &self.venue),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"product_family\""
+context = "(\"product_family\", &self.product_family),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"product_category\""
+context = "(\"product_category\", &self.product_category),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"table_family\""
+context = "(\"table_family\", &self.table_family),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"instrument_universe_id\""
+context = "(\"instrument_universe_id\", &self.instrument_universe_id),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"raw_sample_uri\""
+context = "(\"raw_sample_uri\", &self.raw_sample_uri),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"raw_sample_hash\""
+context = "(\"raw_sample_hash\", &self.raw_sample_hash),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"schema_sample_uri\""
+context = "(\"schema_sample_uri\", &self.schema_sample_uri),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"license_ref\""
+context = "(\"license_ref\", &self.license_ref),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"source_proof_version\""
+context = "return Err(AcceptanceError::MissingField(\"source_proof_version\"));"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"sha256\""
+context = "return Err(AcceptanceError::ManifestRecordIncomplete(\"sha256\"));"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"s3_uri\""
+context = "return Err(AcceptanceError::ManifestRecordIncomplete(\"s3_uri\"));"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"bytes\""
+context = "return Err(AcceptanceError::ManifestRecordIncomplete(\"bytes\"));"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"schema_columns\""
+context = "return Err(AcceptanceError::ManifestRecordIncomplete(\"schema_columns\"));"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"archive_date\""
+context = "return Err(AcceptanceError::ManifestRecordIncomplete(\"archive_date\"));"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "number"
+literal = "0"
+context = "let start_date = start_utc.get(0..10).unwrap_or(start_utc);"
+classification = "backtesting_slice_iso_date_prefix_offset"
+reason = "ISO-8601 calendar-date prefix offset (YYYY-MM-DD spans 10 characters)."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "number"
+literal = "10"
+context = "let start_date = start_utc.get(0..10).unwrap_or(start_utc);"
+classification = "backtesting_slice_iso_date_prefix_offset"
+reason = "ISO-8601 calendar-date prefix offset (YYYY-MM-DD spans 10 characters)."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "number"
+literal = "0"
+context = "let end_date = end_utc.get(0..10).unwrap_or(end_utc);"
+classification = "backtesting_slice_iso_date_prefix_offset"
+reason = "ISO-8601 calendar-date prefix offset (YYYY-MM-DD spans 10 characters)."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "number"
+literal = "10"
+context = "let end_date = end_utc.get(0..10).unwrap_or(end_utc);"
+classification = "backtesting_slice_iso_date_prefix_offset"
+reason = "ISO-8601 calendar-date prefix offset (YYYY-MM-DD spans 10 characters)."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"canonical-trades.parquet\""
+context = "const CANONICAL_ARTIFACT_FILE: &str = \"canonical-trades.parquet\";"
+classification = "backtesting_slice_artifact_filename"
+reason = "Fixed output artifact filename written under the operator-provided output directory."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"nt-catalog\""
+context = "const CATALOG_DIR: &str = \"nt-catalog\";"
+classification = "backtesting_slice_artifact_filename"
+reason = "Fixed output artifact filename written under the operator-provided output directory."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"backtest-result-contract.json\""
+context = "const RESULT_CONTRACT_FILE: &str = \"backtest-result-contract.json\";"
+classification = "backtesting_slice_artifact_filename"
+reason = "Fixed output artifact filename written under the operator-provided output directory."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"accepted-source-proof.json\""
+context = "const ACCEPTED_SOURCE_PROOF_FILE: &str = \"accepted-source-proof.json\";"
+classification = "backtesting_slice_artifact_filename"
+reason = "Fixed output artifact filename written under the operator-provided output directory."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"Run the NautilusTrader backtesting vertical slice over an accepted dataset.\""
+context = "#[command(about = \"Run the NautilusTrader backtesting vertical slice over an accepted dataset.\")]"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"timestamp out of representable nanosecond range\""
+context = ".context(\"timestamp out of representable nanosecond range\")"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"parse run-spec TOML\""
+context = "let spec: RunSpec = toml::from_str(&spec_text).context(\"parse run-spec TOML\")?;"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"decompress gzip object\""
+context = ".context(\"decompress gzip object\")?;"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"serialize accepted source proof\""
+context = "serde_json::to_string_pretty(&accepted_proof).context(\"serialize accepted source proof\")?,"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"serialize result contract\""
+context = "serde_json::to_string_pretty(&output.contract).context(\"serialize result contract\")?,"
+classification = "backtesting_slice_error_context"
+reason = "anyhow error-context label for an I/O, parse, or NautilusTrader step; operator diagnostic, not a runtime-configurable value."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"accepted_object_sha256 = {verified_sha256}\""
+context = "println!(\"accepted_object_sha256 = {verified_sha256}\");"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"source_proof_id = {}\""
+context = "println!(\"source_proof_id = {}\", accepted.source_proof_id);"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"canonical_trades_rows = {}\""
+context = "\"canonical_trades_rows = {}\","
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"canonical_artifact = {}\""
+context = "println!(\"canonical_artifact = {}\", canonical_path.display());"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"nt_catalog_root = {}\""
+context = "println!(\"nt_catalog_root = {}\", catalog_root.display());"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"catalog_hash = {}\""
+context = "println!(\"catalog_hash = {}\", output.projection.catalog_hash);"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"catalog_read_back_trade_ticks = {}\""
+context = "println!(\"catalog_read_back_trade_ticks = {}\", output.read_back_count);"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"nt_version = {}\""
+context = "println!(\"nt_version = {}\", output.contract.nt_version);"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"strategy_config_hash = {}\""
+context = "\"strategy_config_hash = {}\","
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"backtest_run_config_id = {:?}\""
+context = "\"backtest_run_config_id = {:?}\","
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"nt_iterations = {} (market-data points processed by the engine)\""
+context = "\"nt_iterations = {} (market-data points processed by the engine)\","
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"nt_backtest_start = {:?}, nt_backtest_end = {:?}\""
+context = "\"nt_backtest_start = {:?}, nt_backtest_end = {:?}\","
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"nt_total_events = {}, nt_total_orders = {}, nt_total_positions = {}\""
+context = "\"nt_total_events = {}, nt_total_orders = {}, nt_total_positions = {}\","
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"fidelity_class = {:?}\""
+context = "println!(\"fidelity_class = {:?}\", output.contract.fidelity_class);"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"result_contract = {}\""
+context = "println!(\"result_contract = {}\", contract_path.display());"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/bin/backtesting_vertical_slice.rs"
+kind = "string"
+literal = "\"accepted_source_proof = {}\""
+context = "println!(\"accepted_source_proof = {}\", proof_path.display());"
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."

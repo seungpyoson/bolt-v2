@@ -22,7 +22,7 @@ use super::{
         CanonicalInstrumentIdentity, CanonicalTradesTable, normalize_bybit_spot_tick_trades,
     },
     catalog_projection::{
-        BybitSpotInstrumentSpec, CatalogProjection, project_canonical_trades_to_catalog,
+        CatalogProjection, SpotInstrumentSpec, project_canonical_trades_to_catalog,
         read_back_trade_ticks,
     },
     result_contract::{
@@ -41,7 +41,7 @@ const PARAM_TRADE_SIZE: &str = "trade_size";
 pub struct BacktestRunInputs<'a> {
     pub accepted: &'a AcceptedDataset,
     pub identity: &'a CanonicalInstrumentIdentity,
-    pub instrument_spec: &'a BybitSpotInstrumentSpec,
+    pub instrument_spec: &'a SpotInstrumentSpec,
     /// Decompressed text of the accepted object (hash already verified).
     pub csv_text: &'a str,
     pub capture_time_nanos: i64,

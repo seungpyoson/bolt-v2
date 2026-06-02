@@ -6,7 +6,7 @@
 //! the resolved `bolt-v2` NautilusTrader dependency can read the projection back.
 //!
 //! The NautilusTrader instrument is built from accepted instrument-universe
-//! metadata ([`BybitSpotInstrumentSpec`]); price/size precision and increments
+//! metadata ([`SpotInstrumentSpec`]); price/size precision and increments
 //! are derived from the source tick size and base precision, never hardcoded.
 
 use std::{
@@ -40,7 +40,7 @@ pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
 /// Accepted Bybit spot instrument metadata needed to build the NautilusTrader
 /// `CurrencyPair`. Built from the accepted instrument-universe payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BybitSpotInstrumentSpec {
+pub struct SpotInstrumentSpec {
     /// NautilusTrader instrument id, for example `BNBUSDC.BYBIT`.
     pub nt_instrument_id: String,
     /// Venue-native raw symbol, for example `BNBUSDC`.
@@ -93,7 +93,7 @@ fn decimal_places(increment: &str) -> u8 {
 /// # Errors
 ///
 /// Returns an error if any decimal field fails to parse.
-pub fn build_currency_pair(spec: &BybitSpotInstrumentSpec) -> Result<CurrencyPair> {
+pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
     let instrument_id = InstrumentId::from_str(&spec.nt_instrument_id)
         .with_context(|| format!("invalid nt_instrument_id {:?}", spec.nt_instrument_id))?;
     let price_precision = decimal_places(&spec.price_increment);
@@ -195,7 +195,7 @@ pub fn canonical_rows_to_trade_ticks(
 /// fail.
 pub fn project_canonical_trades_to_catalog(
     table: &CanonicalTradesTable,
-    spec: &BybitSpotInstrumentSpec,
+    spec: &SpotInstrumentSpec,
     catalog_root: &Path,
 ) -> Result<CatalogProjection> {
     table.validate()?;
@@ -294,8 +294,8 @@ mod tests {
         },
     };
 
-    fn spec() -> BybitSpotInstrumentSpec {
-        BybitSpotInstrumentSpec {
+    fn spec() -> SpotInstrumentSpec {
+        SpotInstrumentSpec {
             nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
             raw_symbol: "BNBUSDC".to_string(),
             base_currency: "BNB".to_string(),

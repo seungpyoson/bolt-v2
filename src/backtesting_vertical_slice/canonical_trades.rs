@@ -64,7 +64,7 @@ impl TradeAggressorSide {
         match raw.trim().to_ascii_lowercase().as_str() {
             "buy" => Ok(Self::Buyer),
             "sell" => Ok(Self::Seller),
-            other => bail!("unknown Bybit trade side: {other:?}"),
+            other => bail!("unknown trade side token: {other:?}"),
         }
     }
 }
@@ -171,7 +171,7 @@ pub fn normalize_bybit_spot_tick_trades(
 ) -> Result<CanonicalTradesTable> {
     ensure!(
         accepted.object.schema_columns == BYBIT_SPOT_TICK_TRADES_HEADER,
-        "accepted object schema {:?} does not match expected Bybit spot tick-trades header {:?}",
+        "accepted object schema {:?} does not match expected spot tick-trades header {:?}",
         accepted.object.schema_columns,
         BYBIT_SPOT_TICK_TRADES_HEADER
     );

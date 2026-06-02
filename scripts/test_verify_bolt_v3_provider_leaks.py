@@ -109,8 +109,51 @@ def test_real_scan_covers_provider_neutral_source_files() -> None:
         "src/bolt_v3_providers/polymarket.rs",
         "src/bolt_v3_providers/polymarket/fees.rs",
         "src/bolt_v3_market_families/updown.rs",
+        "src/backtesting_vertical_slice/runner.rs",
+        "src/bin/backtesting_vertical_slice.rs",
     ):
         assert rel not in core_files
+
+
+def test_backtesting_vertical_slice_is_scoped_out_of_core_scan() -> None:
+    verifier = load_verifier()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_fixture(
+            root,
+            binding_files()
+            | {
+                "Cargo.toml": """
+                    [dependencies]
+                    nautilus-backtest = "0.0.0"
+                """,
+                "src/backtesting_vertical_slice/runner.rs": """
+                    use nautilus_backtest::node::BacktestNode;
+                    pub struct BinanceBacktestBoundary;
+                """,
+                "src/bin/backtesting_vertical_slice.rs": """
+                    use nautilus_backtest as nt_backtest;
+                    pub fn run() {}
+                """,
+                "src/bolt_v3_live_node.rs": """
+                    use nautilus_backtest::node::BacktestNode;
+                    pub fn live_node() {}
+                """,
+            },
+        )
+
+        findings = verifier.scan_root(root)
+
+        assert not any(
+            finding.path.startswith("src/backtesting_vertical_slice/")
+            or finding.path == "src/bin/backtesting_vertical_slice.rs"
+            for finding in findings
+        )
+        assert any(
+            finding.path == "src/bolt_v3_live_node.rs"
+            and finding.message == "concrete NT provider crate in core production code"
+            for finding in findings
+        )
 
 
 def test_shared_market_data_provider_module_name_is_not_concrete_provider() -> None:
@@ -940,6 +983,8 @@ def test_strict_mode_fails_on_fixture_findings() -> None:
 def main() -> int:
     tests = [
         test_clean_fixture_has_no_findings,
+        test_real_scan_covers_provider_neutral_source_files,
+        test_backtesting_vertical_slice_is_scoped_out_of_core_scan,
         test_closed_provider_variants_and_factory_imports_are_findings,
         test_family_module_and_type_leaks_are_findings_for_new_families,
         test_concrete_market_family_paths_are_not_allowlisted,

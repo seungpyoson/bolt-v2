@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use bolt_v2::backtesting_vertical_slice::{
     canonical_trades::CanonicalInstrumentIdentity,
-    catalog_projection::BybitSpotInstrumentSpec,
+    catalog_projection::SpotInstrumentSpec,
     result_contract::ResultArtifactUris,
     run_manifest::BacktestingRunManifest,
     runner::{BacktestRunInputs, run_backtest},
@@ -53,7 +53,7 @@ struct RunSpec {
     accepted_at_utc: String,
     accepted_object: IngestManifestObjectRecord,
     source_proof: SourceProofReport,
-    instrument_spec: BybitSpotInstrumentSpec,
+    instrument_spec: SpotInstrumentSpec,
     identity: CanonicalInstrumentIdentity,
     manifest: BacktestingRunManifest,
 }

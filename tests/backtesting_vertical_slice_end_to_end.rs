@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use bolt_v2::backtesting_vertical_slice::{
     canonical_trades::CanonicalInstrumentIdentity,
-    catalog_projection::BybitSpotInstrumentSpec,
+    catalog_projection::SpotInstrumentSpec,
     result_contract::ResultArtifactUris,
     run_manifest::{
         BacktestingRunManifest, ManifestCatalogInput, ManifestVenueConfig, MarketStructureFixture,
@@ -112,8 +112,8 @@ fn accepted_dataset() -> AcceptedDataset {
     select_accepted_dataset(&proof, &object, OBJECT_SHA256).expect("select accepted dataset")
 }
 
-fn instrument_spec() -> BybitSpotInstrumentSpec {
-    BybitSpotInstrumentSpec {
+fn instrument_spec() -> SpotInstrumentSpec {
+    SpotInstrumentSpec {
         nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
         raw_symbol: "BNBUSDC".to_string(),
         base_currency: "BNB".to_string(),

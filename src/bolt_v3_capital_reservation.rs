@@ -900,7 +900,6 @@ mod tests {
             &newer_pool,
             &revalue_request("request-async-revalue", Decimal::new(25, 0), 1_050),
             1_070,
-            100,
             None,
         );
 

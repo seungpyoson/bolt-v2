@@ -70,6 +70,7 @@ struct BoltV3SubmitPositionSizerState {
     gate: PositionSizingAdmissionGate,
     next_sequence: u64,
     client_order_reservations: BTreeMap<String, BoltV3SubmitReservationIndex>,
+    risk_reducing_exit_orders: BTreeMap<String, BoltV3RiskReducingExitOrderIndex>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +91,16 @@ struct BoltV3SubmitReservationFillMetadata {
     last_lifecycle_observed_at_ns: u64,
     seen_trade_ids: BTreeSet<String>,
     recovered_from_startup: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BoltV3RiskReducingExitOrderIndex {
+    instrument_id: String,
+    side: BoltV3CompiledOrderSide,
+    original_quantity: Decimal,
+    filled_quantity: Decimal,
+    last_lifecycle_observed_at_ns: u64,
+    seen_trade_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,6 +255,7 @@ impl BoltV3SubmitAdmissionState {
                     gate: PositionSizingAdmissionGate::unreconciled(),
                     next_sequence: 0,
                     client_order_reservations: BTreeMap::new(),
+                    risk_reducing_exit_orders: BTreeMap::new(),
                 }),
             })),
             decision_evidence,
@@ -440,6 +452,7 @@ impl BoltV3SubmitAdmissionState {
             }
             position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
             position_sizer.client_order_reservations.clear();
+            position_sizer.risk_reducing_exit_orders.clear();
             refresh_position_sizer_reservation_snapshot_with_source(
                 position_sizer,
                 snapshot.observed_at_ns,
@@ -460,6 +473,7 @@ impl BoltV3SubmitAdmissionState {
         let Some(state) = position_sizer.state.as_ref() else {
             position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
             position_sizer.client_order_reservations.clear();
+            position_sizer.risk_reducing_exit_orders.clear();
             let decision = BoltV3SubmitPositionSizingRebuildDecision {
                 accepted: false,
                 reason: Some(ReservationRejectionReason::MissingEvidence),
@@ -480,6 +494,7 @@ impl BoltV3SubmitAdmissionState {
             if rebuilt_index.contains_key(&reservation.client_order_id) {
                 position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
                 position_sizer.client_order_reservations.clear();
+                position_sizer.risk_reducing_exit_orders.clear();
                 let decision = BoltV3SubmitPositionSizingRebuildDecision {
                     accepted: false,
                     reason: Some(ReservationRejectionReason::DuplicateReservation),
@@ -494,6 +509,7 @@ impl BoltV3SubmitAdmissionState {
             if !rebuilt_open_order_reservation_metadata_valid(&reservation) {
                 position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
                 position_sizer.client_order_reservations.clear();
+                position_sizer.risk_reducing_exit_orders.clear();
                 let decision = BoltV3SubmitPositionSizingRebuildDecision {
                     accepted: false,
                     reason: Some(ReservationRejectionReason::MissingEvidence),
@@ -547,6 +563,7 @@ impl BoltV3SubmitAdmissionState {
         }
 
         position_sizer.client_order_reservations.clear();
+        position_sizer.risk_reducing_exit_orders.clear();
         let decision = position_sizer.gate.rebuild_open_order_reservations(
             &position_sizer.capital_pool,
             &reservation_requests,
@@ -555,6 +572,7 @@ impl BoltV3SubmitAdmissionState {
         );
         if decision.accepted {
             position_sizer.client_order_reservations = rebuilt_index;
+            position_sizer.risk_reducing_exit_orders.clear();
             if snapshot.observed_open_order_count > 0
                 && let Some(state) = position_sizer.state.as_mut()
             {
@@ -602,6 +620,7 @@ impl BoltV3SubmitAdmissionState {
         if let Some(position_sizer) = inner.position_sizer.as_mut() {
             position_sizer.gate = PositionSizingAdmissionGate::unreconciled();
             position_sizer.client_order_reservations.clear();
+            position_sizer.risk_reducing_exit_orders.clear();
             refresh_position_sizer_reservation_snapshot_with_source(
                 position_sizer,
                 context.observed_at_ns,
@@ -698,6 +717,9 @@ impl BoltV3SubmitAdmissionState {
             .get(&update.client_order_id)
             .cloned()
         else {
+            if let Some(decision) = apply_risk_reducing_exit_fill_update(position_sizer, &update) {
+                return decision;
+            }
             log::warn!(
                 "bolt-v3 submit admission received position-sizer fill update for unknown client_order_id={}",
                 update.client_order_id
@@ -943,6 +965,13 @@ impl BoltV3SubmitAdmissionState {
         }
         match evaluation.outcome {
             BoltV3AdmissionOutcome::Admitted => {
+                if let Some(order) = evaluation.risk_reducing_exit_order
+                    && let Some(position_sizer) = inner.position_sizer.as_mut()
+                {
+                    position_sizer
+                        .risk_reducing_exit_orders
+                        .insert(request.client_order_id.clone(), order);
+                }
                 inner.admitted_order_count += 1;
                 match request.intent_kind {
                     BoltV3SubmitIntentKind::Entry => {
@@ -1095,6 +1124,7 @@ impl BoltV3SubmitAdmissionState {
             return BoltV3SubmitAdmissionEvaluation::admitted_with_rollback(
                 decision.rollback,
                 decision.reservation_metadata,
+                decision.risk_reducing_exit_order,
             );
         }
         BoltV3SubmitAdmissionEvaluation::without_loss_halt(BoltV3AdmissionOutcome::Admitted)
@@ -1165,6 +1195,7 @@ struct BoltV3SubmitAdmissionEvaluation {
     position_sizer_rejection: Option<BoltV3PositionSizerRejectReason>,
     rollback: Option<BoltV3PositionSizerReservationRollback>,
     reservation_metadata: Option<BoltV3SubmitReservationMetadataEvidence>,
+    risk_reducing_exit_order: Option<BoltV3RiskReducingExitOrderIndex>,
 }
 
 impl BoltV3SubmitAdmissionEvaluation {
@@ -1175,6 +1206,7 @@ impl BoltV3SubmitAdmissionEvaluation {
             position_sizer_rejection: None,
             rollback: None,
             reservation_metadata: None,
+            risk_reducing_exit_order: None,
         }
     }
 
@@ -1185,6 +1217,7 @@ impl BoltV3SubmitAdmissionEvaluation {
             position_sizer_rejection: None,
             rollback: None,
             reservation_metadata: None,
+            risk_reducing_exit_order: None,
         }
     }
 
@@ -1195,12 +1228,14 @@ impl BoltV3SubmitAdmissionEvaluation {
             position_sizer_rejection: Some(reason),
             rollback: None,
             reservation_metadata: None,
+            risk_reducing_exit_order: None,
         }
     }
 
     fn admitted_with_rollback(
         rollback: Option<BoltV3PositionSizerReservationRollback>,
         reservation_metadata: Option<BoltV3SubmitReservationMetadataEvidence>,
+        risk_reducing_exit_order: Option<BoltV3RiskReducingExitOrderIndex>,
     ) -> Self {
         Self {
             outcome: BoltV3AdmissionOutcome::Admitted,
@@ -1208,6 +1243,7 @@ impl BoltV3SubmitAdmissionEvaluation {
             position_sizer_rejection: None,
             rollback,
             reservation_metadata,
+            risk_reducing_exit_order,
         }
     }
 }
@@ -1403,6 +1439,7 @@ struct BoltV3PositionSizerSubmitDecision {
     reason: BoltV3PositionSizerRejectReason,
     rollback: Option<BoltV3PositionSizerReservationRollback>,
     reservation_metadata: Option<BoltV3SubmitReservationMetadataEvidence>,
+    risk_reducing_exit_order: Option<BoltV3RiskReducingExitOrderIndex>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1800,6 +1837,59 @@ fn lock_inner(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn apply_risk_reducing_exit_fill_update(
+    position_sizer: &mut BoltV3SubmitPositionSizerState,
+    update: &BoltV3SubmitPositionSizingFillUpdate,
+) -> Option<BoltV3SubmitPositionSizingLifecycleDecision> {
+    let client_order_id = update.client_order_id.clone();
+    let action = {
+        let metadata = position_sizer
+            .risk_reducing_exit_orders
+            .get_mut(&client_order_id)?;
+        if update.trade_id.trim().is_empty()
+            || update.fill_quantity <= Decimal::ZERO
+            || update.instrument_id != metadata.instrument_id
+            || update.side != metadata.side
+        {
+            return Some(BoltV3SubmitPositionSizingLifecycleDecision::unknown());
+        }
+        if metadata.seen_trade_ids.contains(&update.trade_id) {
+            return Some(BoltV3SubmitPositionSizingLifecycleDecision {
+                accepted: true,
+                unknown_reservation: false,
+                action: PositionSizingLifecycleAction::None,
+            });
+        }
+        let Some(next_observed_at_ns) = metadata.last_lifecycle_observed_at_ns.checked_add(1)
+        else {
+            return Some(BoltV3SubmitPositionSizingLifecycleDecision::unknown());
+        };
+        metadata.last_lifecycle_observed_at_ns = update.observed_at_ns.max(next_observed_at_ns);
+        metadata.seen_trade_ids.insert(update.trade_id.clone());
+        if update.reconciliation {
+            PositionSizingLifecycleAction::None
+        } else {
+            let unclamped_filled_quantity = metadata.filled_quantity + update.fill_quantity;
+            metadata.filled_quantity = metadata.original_quantity.min(unclamped_filled_quantity);
+            if metadata.original_quantity - metadata.filled_quantity > Decimal::ZERO {
+                PositionSizingLifecycleAction::Revalued
+            } else {
+                PositionSizingLifecycleAction::Released
+            }
+        }
+    };
+    if action == PositionSizingLifecycleAction::Released {
+        position_sizer
+            .risk_reducing_exit_orders
+            .remove(&client_order_id);
+    }
+    Some(BoltV3SubmitPositionSizingLifecycleDecision {
+        accepted: true,
+        unknown_reservation: false,
+        action,
+    })
+}
+
 fn evaluate_position_sizer_submit(
     inner: &mut BoltV3SubmitAdmissionInner,
     request: &BoltV3SubmitAdmissionRequest,
@@ -1874,7 +1964,14 @@ fn evaluate_position_sizer_submit(
 
     if request.intent_kind == BoltV3SubmitIntentKind::RiskReducingExit {
         if evidence.side == BoltV3CompiledOrderSide::Sell && evidence.quantity <= outcome_position {
-            return accepted_without_reservation();
+            return accepted_risk_reducing_exit(BoltV3RiskReducingExitOrderIndex {
+                instrument_id: request.instrument_id.clone(),
+                side: evidence.side,
+                original_quantity: evidence.quantity,
+                filled_quantity: Decimal::ZERO,
+                last_lifecycle_observed_at_ns: now_ns,
+                seen_trade_ids: BTreeSet::new(),
+            });
         }
         return rejected_position_sizer(BoltV3PositionSizerRejectReason::SizingRejected);
     }
@@ -1979,6 +2076,7 @@ fn evaluate_position_sizer_submit(
             observed_at_ns: now_ns,
         }),
         reservation_metadata: Some(reservation_metadata),
+        risk_reducing_exit_order: None,
     }
 }
 
@@ -2132,6 +2230,19 @@ fn accepted_without_reservation() -> BoltV3PositionSizerSubmitDecision {
         reason: BoltV3PositionSizerRejectReason::Rejected,
         rollback: None,
         reservation_metadata: None,
+        risk_reducing_exit_order: None,
+    }
+}
+
+fn accepted_risk_reducing_exit(
+    order: BoltV3RiskReducingExitOrderIndex,
+) -> BoltV3PositionSizerSubmitDecision {
+    BoltV3PositionSizerSubmitDecision {
+        accepted: true,
+        reason: BoltV3PositionSizerRejectReason::Rejected,
+        rollback: None,
+        reservation_metadata: None,
+        risk_reducing_exit_order: Some(order),
     }
 }
 
@@ -2143,6 +2254,7 @@ fn rejected_position_sizer(
         reason,
         rollback: None,
         reservation_metadata: None,
+        risk_reducing_exit_order: None,
     }
 }
 

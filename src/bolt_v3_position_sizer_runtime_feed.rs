@@ -49,7 +49,7 @@ pub struct PositionSizerRuntimeFeed {
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     component_builder: PositionSizerRuntimeComponentBuilder,
     latest_terminal_observed_at_ns: Option<u64>,
-    fill_position_updates_seen: BTreeSet<(String, String, String)>,
+    fill_position_updates_seen: BTreeMap<(String, String, String), u64>,
 }
 
 pub struct PositionSizerRuntimeFeedSubscription {
@@ -142,7 +142,7 @@ impl PositionSizerRuntimeFeed {
             submit_admission,
             component_builder,
             latest_terminal_observed_at_ns: None,
-            fill_position_updates_seen: BTreeSet::new(),
+            fill_position_updates_seen: BTreeMap::new(),
         }
     }
 
@@ -394,10 +394,12 @@ impl PositionSizerRuntimeFeed {
         if trade_id.trim().is_empty() || fill_quantity <= Decimal::ZERO {
             return false;
         }
+        self.prune_fill_position_updates_seen(observed_at_ns);
         let key = (client_order_id, trade_id, instrument_id.to_string());
-        if !self.fill_position_updates_seen.insert(key) {
+        if self.fill_position_updates_seen.contains_key(&key) {
             return false;
         }
+        self.fill_position_updates_seen.insert(key, observed_at_ns);
         self.component_builder.record_fill_position_delta(
             instrument_id,
             side,
@@ -405,6 +407,14 @@ impl PositionSizerRuntimeFeed {
             observed_at_ns,
         );
         true
+    }
+
+    fn prune_fill_position_updates_seen(&mut self, observed_at_ns: u64) {
+        let max_snapshot_age_ns = self.config.max_snapshot_age_ns;
+        self.fill_position_updates_seen
+            .retain(|_, fill_observed_at_ns| {
+                observed_at_ns.saturating_sub(*fill_observed_at_ns) <= max_snapshot_age_ns
+            });
     }
 
     #[must_use]
@@ -487,6 +497,7 @@ impl PositionSizerRuntimeComponentBuilder {
                 snapshot.observed_at_ns = observed_at_ns;
                 snapshot.yes_position = yes_position;
                 snapshot.no_position = no_position;
+                snapshot.conditional_token_allowance = yes_position + no_position;
             }
         }
     }
@@ -606,6 +617,7 @@ impl PositionSizerRuntimeComponentBuilder {
             return false;
         };
         *outcome_position = position_quantity;
+        snapshot.conditional_token_allowance = snapshot.yes_position + snapshot.no_position;
         snapshot.source = POSITION_SIZER_POSITION_EVENT_SOURCE.to_string();
         snapshot.observed_at_ns = observed_at_ns;
         true
@@ -679,4 +691,119 @@ fn is_live_order_event(event: &OrderEventAny) -> bool {
         event,
         OrderEventAny::Submitted(_) | OrderEventAny::Accepted(_)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bolt_v3_decision_evidence::{
+        BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
+        BoltV3PositionSizerRebuildAuditEvidence, BoltV3StrategyInputEvidenceSnapshot,
+        BoltV3SubmitReservationFillEvidence, BoltV3SubmitReservationMetadataEvidence,
+    };
+    use crate::bolt_v3_position_sizer::PredictionMarketSizingSnapshot;
+
+    #[derive(Debug)]
+    struct NoopDecisionEvidenceWriter;
+
+    impl BoltV3DecisionEvidenceWriter for NoopDecisionEvidenceWriter {
+        fn record_strategy_input_snapshot(
+            &self,
+            _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_admission_decision(
+            &self,
+            _decision: &BoltV3AdmissionDecisionEvidence,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_position_sizer_rebuild_audit(
+            &self,
+            _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_metadata(
+            &self,
+            _metadata: &BoltV3SubmitReservationMetadataEvidence,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn record_submit_reservation_fill(
+            &self,
+            _fill: &BoltV3SubmitReservationFillEvidence,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_runtime_config(max_snapshot_age_ns: u64) -> PositionSizerRuntimeFeedConfig {
+        PositionSizerRuntimeFeedConfig {
+            venue_id: "VENUE-A".to_string(),
+            account_id: AccountId::from("ACCOUNT-001"),
+            collateral_currency: "USD".to_string(),
+            product_state: ProductSizingSnapshot::PredictionMarketBinary(
+                PredictionMarketSizingSnapshot {
+                    source: "test_product_state".to_string(),
+                    observed_at_ns: 0,
+                    yes_instrument_id: "instrument-yes.VENUE-A".to_string(),
+                    no_instrument_id: "instrument-no.VENUE-A".to_string(),
+                    yes_position: Decimal::ZERO,
+                    no_position: Decimal::ZERO,
+                    collateral_allowance: Decimal::ZERO,
+                    conditional_token_allowance: Decimal::ZERO,
+                    collateral_coupled_group_id: "group-1".to_string(),
+                },
+            ),
+            startup_observed_at_ns: 0,
+            max_snapshot_age_ns,
+        }
+    }
+
+    #[test]
+    fn fill_position_dedup_keys_prune_by_snapshot_age() {
+        let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
+            NoopDecisionEvidenceWriter,
+        )));
+        let mut feed = PositionSizerRuntimeFeed::new(test_runtime_config(100), admission);
+
+        assert!(feed.record_fill_position_delta_once(
+            "client-order-1".to_string(),
+            "trade-1".to_string(),
+            "instrument-yes.VENUE-A",
+            BoltV3CompiledOrderSide::Buy,
+            Decimal::ONE,
+            100,
+        ));
+        assert_eq!(feed.fill_position_updates_seen.len(), 1);
+        assert!(!feed.record_fill_position_delta_once(
+            "client-order-1".to_string(),
+            "trade-1".to_string(),
+            "instrument-yes.VENUE-A",
+            BoltV3CompiledOrderSide::Buy,
+            Decimal::ONE,
+            120,
+        ));
+        assert_eq!(feed.fill_position_updates_seen.len(), 1);
+
+        assert!(feed.record_fill_position_delta_once(
+            "client-order-2".to_string(),
+            "trade-2".to_string(),
+            "instrument-yes.VENUE-A",
+            BoltV3CompiledOrderSide::Buy,
+            Decimal::ONE,
+            250,
+        ));
+        assert_eq!(feed.fill_position_updates_seen.len(), 1);
+    }
 }

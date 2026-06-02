@@ -263,6 +263,7 @@ fn matching_position_event_updates_configured_binary_inventory() {
     assert_eq!(product.observed_at_ns, 1_200);
     assert_eq!(product.yes_position, Decimal::new(3, 0));
     assert_eq!(product.no_position, Decimal::ZERO);
+    assert_eq!(product.conditional_token_allowance, Decimal::new(3, 0));
 }
 
 #[test]
@@ -415,6 +416,7 @@ fn position_sizer_cache_seed_updates_configured_yes_no_inventory() {
     assert_eq!(product.observed_at_ns, 1_200);
     assert_eq!(product.yes_position, Decimal::new(7, 0));
     assert_eq!(product.no_position, Decimal::new(2, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(9, 0));
 }
 
 #[test]
@@ -862,8 +864,14 @@ fn unreserved_risk_reducing_exit_fill_reduces_inventory_before_next_exit() {
         .expect("first exit should reduce seeded inventory")
         .commit_submitted();
 
-    assert!(
-        feed.on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "exit-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
             "exit-order-1",
             "trade-1",
             1_100,
@@ -872,13 +880,15 @@ fn unreserved_risk_reducing_exit_fill_reduces_inventory_before_next_exit() {
             OrderSide::Sell,
             InstrumentId::from("instrument-yes.VENUE-A"),
         )))
-        .is_none(),
-        "risk-reducing exit fills have no reservation lifecycle decision"
-    );
+        .expect("full risk-reducing exit fill should close tracked live order");
+    assert!(decision.accepted);
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Released);
 
     let state = admission
         .position_sizer_state_snapshot()
         .expect("risk-reducing fill should publish updated inventory");
+    assert_eq!(state.order_lifecycle.open_order_count, 0);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
     let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
     assert_eq!(product.source, "nt_order_fill");
     assert_eq!(product.observed_at_ns, 1_100);
@@ -896,6 +906,76 @@ fn unreserved_risk_reducing_exit_fill_reduces_inventory_before_next_exit() {
             reason: BoltV3PositionSizerRejectReason::SizingRejected,
         }
     );
+}
+
+#[test]
+fn partial_unreserved_risk_reducing_exit_fill_keeps_live_order_unattributed() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_cache_snapshot(
+            Vec::<String>::new(),
+            Decimal::new(10, 0),
+            Decimal::ZERO,
+            1_000,
+        )
+        .is_some()
+    );
+    rebuild_empty_position_sizer(&admission);
+
+    admission
+        .admit_at(
+            &risk_reducing_exit_submit_request("exit-order-1", Decimal::new(10, 0)),
+            1_010,
+        )
+        .expect("exit should admit against seeded inventory")
+        .commit_submitted();
+    feed.on_order_event(&OrderEventAny::Accepted(order_accepted_event(
+        "exit-order-1",
+        1_050,
+        AccountId::from("ACCOUNT-001"),
+    )));
+
+    let decision = feed
+        .on_order_event(&OrderEventAny::Filled(order_filled_event_with(
+            "exit-order-1",
+            "trade-1",
+            1_100,
+            AccountId::from("ACCOUNT-001"),
+            Quantity::from(4),
+            OrderSide::Sell,
+            InstrumentId::from("instrument-yes.VENUE-A"),
+        )))
+        .expect("partial risk-reducing exit fill should update inventory");
+    assert_eq!(decision.action, PositionSizingLifecycleAction::Revalued);
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("partial risk-reducing fill should publish updated inventory");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+    assert!(!state.order_lifecycle.all_open_orders_attributed);
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_order_fill");
+    assert_eq!(product.yes_position, Decimal::new(6, 0));
 }
 
 #[test]

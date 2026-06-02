@@ -2512,6 +2512,65 @@ fn configured_submit_sizer_full_fill_releases_reservation() {
 }
 
 #[test]
+fn risk_reducing_exit_fill_lifecycle_tracks_unreserved_order_quantity() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    admission
+        .admit_at(
+            &risk_reducing_exit_submit_request("exit-order-1", Decimal::new(10, 0)),
+            1_000,
+        )
+        .expect("risk-reducing exit should admit without a collateral reservation")
+        .commit_submitted();
+
+    let partial_fill = BoltV3SubmitPositionSizingFillUpdate {
+        client_order_id: "exit-order-1".to_string(),
+        trade_id: "trade-1".to_string(),
+        instrument_id: "instrument-yes.VENUE-A".to_string(),
+        side: BoltV3CompiledOrderSide::Sell,
+        fill_quantity: Decimal::new(4, 0),
+        observed_at_ns: 1_100,
+        reconciliation: false,
+        evidence_label: "nt_order_fill".to_string(),
+    };
+
+    let partial = admission.apply_position_sizing_fill_update(partial_fill.clone(), 1_100);
+    assert!(partial.accepted);
+    assert!(!partial.unknown_reservation);
+    assert_eq!(partial.action, PositionSizingLifecycleAction::Revalued);
+    let duplicate = admission.apply_position_sizing_fill_update(partial_fill, 1_150);
+    assert!(duplicate.accepted);
+    assert!(!duplicate.unknown_reservation);
+    assert_eq!(duplicate.action, PositionSizingLifecycleAction::None);
+
+    let terminal = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "exit-order-1".to_string(),
+            trade_id: "trade-2".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Sell,
+            fill_quantity: Decimal::new(6, 0),
+            observed_at_ns: 1_200,
+            reconciliation: false,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_200,
+    );
+    assert!(terminal.accepted);
+    assert!(!terminal.unknown_reservation);
+    assert_eq!(terminal.action, PositionSizingLifecycleAction::Released);
+
+    let stale_terminal = admission.apply_position_sizing_terminal_order_event(
+        "exit-order-1".to_string(),
+        1_250,
+        "nt_order_terminal".to_string(),
+    );
+    assert!(stale_terminal.unknown_reservation);
+}
+
+#[test]
 fn configured_submit_sizer_rejects_mismatched_fill_without_mutation() {
     let admission = position_sized_admission();
     arm_default(&admission);
@@ -3160,6 +3219,31 @@ fn sized_submit_request(client_order_id: &str) -> BoltV3SubmitAdmissionRequest {
             prediction_market_outcome: Some(PredictionMarketOutcomeSide::Yes),
         }),
     }
+}
+
+fn risk_reducing_exit_submit_request(
+    client_order_id: &str,
+    quantity: Decimal,
+) -> BoltV3SubmitAdmissionRequest {
+    let mut request = sized_submit_request(client_order_id);
+    request.intent_kind = BoltV3SubmitIntentKind::RiskReducingExit;
+    request.order_side = OrderSide::Sell;
+    request.order_quantity = quantity;
+    request.risk_reducing_exit_proof = Some(BoltV3RiskReducingExitProof {
+        position_id: "position-yes".to_string(),
+        instrument_id: request.instrument_id.clone(),
+        position_side: PositionSide::Long,
+        exit_order_side: request.order_side,
+        position_quantity: Decimal::new(10, 0),
+        exit_quantity: quantity,
+    });
+    let evidence = request
+        .position_sizing
+        .as_mut()
+        .expect("sized request should carry evidence");
+    evidence.side = BoltV3CompiledOrderSide::Sell;
+    evidence.quantity = quantity;
+    request
 }
 
 fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {

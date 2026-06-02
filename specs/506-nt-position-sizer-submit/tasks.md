@@ -37,11 +37,12 @@
 - [x] Invoke NT cache open-order reconciliation from the live runner before submit admission can arm.
 - [x] Block live-runner startup before submit admission arming when NT cache reports pre-existing open orders that cannot be reconciled.
 - [x] Emit durable position-sizer rebuild audit evidence with source, observation time, attribution status, attempted/recovered counts, acceptance reason, and live reserved liability.
+- [x] Add a pure operator clear-to-Active decision helper for manual loss-governor recovery; automatic good-snapshot recovery remains disabled.
 
 ## Remaining For Production Grade
 
 - [ ] Add a safe NT-owned active cancel/flatten control path for loss halts; submit admission and NT trading-state entry/reduce gating are implemented, but working orders and open positions may remain live.
-- [ ] Add an operator clear-to-Active surface for manual recovery after a latched loss halt.
+- [ ] Wire the operator clear-to-Active live command surface with caller-side evidence file/content-hash verification, operator authorization, separate evidence max-age policy, command serialization, durable audit evidence, fresh reconciliation against the observed trading state, and the NT `RiskEngine::set_trading_state(Active)` call.
 - [ ] Document and implement a safe replace-submit model before enabling `ReplaceSubmit`.
 - [ ] Replace static configured prediction-market metadata with dynamic market-selection metadata when rotating markets.
 - [ ] Add adapter/venue evidence for collateral spendability and venue/instrument allowance.

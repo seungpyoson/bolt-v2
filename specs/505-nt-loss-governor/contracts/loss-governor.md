@@ -61,7 +61,19 @@ When `[risk.loss_governor].enabled = true`, config must explicitly provide:
 
 The trading-state action values are `none`, `reducing`, or `halted`. `none` is an explicit no-op for NT risk-engine state changes; submit-admission rejection and evidence still apply.
 
-Configured NT state changes use `RiskEngine::set_trading_state` and are monotonic: `Active` may move to `Reducing` or `Halted`, and `Reducing` may move to `Halted`; no downgrade or auto-clear to `Active` is performed. `Halted` and `Reducing` do not cancel working orders or flatten positions.
+Configured automatic NT state changes use `RiskEngine::set_trading_state` and are monotonic: `Active` may move to `Reducing` or `Halted`, and `Reducing` may move to `Halted`. Automatic good-snapshot recovery never clears back to `Active`.
+
+Manual operator recovery may request `TradingState::Active` only when all predicates hold:
+
+- `recovery_mode = "manual"`
+- current NT risk state is `Halted` or `Reducing`
+- the latest loss admission decision is accepted
+- a present NT-derived loss snapshot is source-attributed, not future-stamped, and within `max_snapshot_age_ns`
+- operator recovery evidence is structurally valid
+
+Operator recovery evidence validation in the pure loss-halt helper is structural only: non-empty operator id, bounded relative evidence path, lowercase 64-character SHA-256 hex string, and nonzero observation timestamp. File existence, content-hash verification, operator authorization, separate recovery-evidence max age, command serialization, and durable audit emission are caller responsibilities for the live command surface.
+
+`Halted` and `Reducing` do not cancel working orders or flatten positions.
 
 ## Non-Goals
 
@@ -70,7 +82,7 @@ Configured NT state changes use `RiskEngine::set_trading_state` and are monotoni
 - No independent PnL/account truth.
 - No venue-specific code.
 - No positional-sizer live-path enforcement in PR #507.
-- No operator clear-to-Active surface in PR #507.
+- No automatic clear-to-Active on good snapshots.
 
 ## Scope Guards
 

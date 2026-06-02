@@ -1,7 +1,11 @@
-use std::rc::Rc;
+use std::{
+    path::{Component, Path},
+    rc::Rc,
+};
 
 use nautilus_model::enums::TradingState;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshot};
 
@@ -37,6 +41,115 @@ pub struct LossGovernorHaltActionPolicy {
     pub on_loss_breach_trading_state: LossGovernorTradingStateAction,
     pub on_untrusted_snapshot_trading_state: LossGovernorTradingStateAction,
     pub recovery_mode: LossGovernorRecoveryMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LossGovernorManualRecoveryEvidence {
+    operator_id: String,
+    evidence_path: String,
+    evidence_sha256: String,
+    observed_at_ns: u64,
+}
+
+impl LossGovernorManualRecoveryEvidence {
+    pub fn new(
+        operator_id: impl Into<String>,
+        evidence_path: impl Into<String>,
+        evidence_sha256: impl Into<String>,
+        observed_at_ns: u64,
+        max_evidence_path_bytes: usize,
+    ) -> Result<Self, LossGovernorManualRecoveryEvidenceError> {
+        let evidence = Self {
+            operator_id: operator_id.into(),
+            evidence_path: evidence_path.into(),
+            evidence_sha256: evidence_sha256.into(),
+            observed_at_ns,
+        };
+        evidence.validate(max_evidence_path_bytes)?;
+        Ok(evidence)
+    }
+
+    #[must_use]
+    pub fn operator_id(&self) -> &str {
+        &self.operator_id
+    }
+
+    #[must_use]
+    pub fn evidence_path(&self) -> &str {
+        &self.evidence_path
+    }
+
+    #[must_use]
+    pub fn evidence_sha256(&self) -> &str {
+        &self.evidence_sha256
+    }
+
+    #[must_use]
+    pub const fn observed_at_ns(&self) -> u64 {
+        self.observed_at_ns
+    }
+
+    fn validate(
+        &self,
+        max_evidence_path_bytes: usize,
+    ) -> Result<(), LossGovernorManualRecoveryEvidenceError> {
+        if self.operator_id.trim().is_empty() {
+            return Err(LossGovernorManualRecoveryEvidenceError::MissingOperatorId);
+        }
+        if !valid_sha256_hex(&self.evidence_sha256) {
+            return Err(LossGovernorManualRecoveryEvidenceError::InvalidEvidenceSha256);
+        }
+        if self.observed_at_ns == 0 {
+            return Err(LossGovernorManualRecoveryEvidenceError::MissingObservedAt);
+        }
+        validate_recovery_evidence_path(&self.evidence_path, max_evidence_path_bytes)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LossGovernorManualRecoveryEvidenceError {
+    MissingOperatorId,
+    InvalidEvidencePathLimit,
+    EmptyEvidencePath,
+    EvidencePathTooLong,
+    AbsoluteEvidencePath,
+    ParentEvidencePath,
+    InvalidEvidenceSha256,
+    MissingObservedAt,
+}
+
+fn valid_sha256_hex(value: &str) -> bool {
+    value.len() == hex::encode(Sha256::digest([])).len()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn validate_recovery_evidence_path(
+    path: &str,
+    max_evidence_path_bytes: usize,
+) -> Result<(), LossGovernorManualRecoveryEvidenceError> {
+    if max_evidence_path_bytes == 0 {
+        return Err(LossGovernorManualRecoveryEvidenceError::InvalidEvidencePathLimit);
+    }
+    if path.is_empty() {
+        return Err(LossGovernorManualRecoveryEvidenceError::EmptyEvidencePath);
+    }
+    if path.len() > max_evidence_path_bytes {
+        return Err(LossGovernorManualRecoveryEvidenceError::EvidencePathTooLong);
+    }
+    let path = Path::new(path);
+    // This codebase targets Unix paths; reject parent traversal explicitly.
+    if path.is_absolute() {
+        return Err(LossGovernorManualRecoveryEvidenceError::AbsoluteEvidencePath);
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(LossGovernorManualRecoveryEvidenceError::ParentEvidencePath);
+    }
+    Ok(())
 }
 
 #[must_use]
@@ -81,6 +194,39 @@ pub fn next_loss_governor_trading_state(
     (trading_state_severity(target) > trading_state_severity(current_state)).then_some(target)
 }
 
+#[must_use]
+pub fn next_loss_governor_manual_recovery_trading_state(
+    policy: &LossGovernorHaltActionPolicy,
+    current_state: TradingState,
+    decision: &LossAdmissionDecision,
+    snapshot: Option<&LossSnapshot>,
+    now_ns: u64,
+    max_snapshot_age_ns: u64,
+    evidence: Option<&LossGovernorManualRecoveryEvidence>,
+    max_evidence_path_bytes: usize,
+) -> Option<TradingState> {
+    match policy.recovery_mode {
+        LossGovernorRecoveryMode::Manual => {}
+    }
+    if !matches!(current_state, TradingState::Halted | TradingState::Reducing) {
+        return None;
+    }
+    if !decision.accepted || max_snapshot_age_ns == 0 {
+        return None;
+    }
+    let snapshot = snapshot?;
+    if snapshot.source.trim().is_empty() || snapshot.observed_at_ns > now_ns {
+        return None;
+    }
+    if now_ns - snapshot.observed_at_ns > max_snapshot_age_ns {
+        return None;
+    }
+    evidence?
+        .validate(max_evidence_path_bytes)
+        .ok()
+        .map(|()| TradingState::Active)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TradingStateSeverity {
     Active,
@@ -120,11 +266,14 @@ fn strongest_trading_state_action(
 #[cfg(test)]
 mod tests {
     use super::{
-        LossGovernorHaltActionPolicy, LossGovernorRecoveryMode, LossGovernorTradingStateAction,
+        LossGovernorHaltActionPolicy, LossGovernorManualRecoveryEvidence,
+        LossGovernorManualRecoveryEvidenceError, LossGovernorRecoveryMode,
+        LossGovernorTradingStateAction, next_loss_governor_manual_recovery_trading_state,
         next_loss_governor_trading_state,
     };
-    use crate::bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason};
+    use crate::bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshot};
     use nautilus_model::enums::TradingState;
+    use rust_decimal::Decimal;
 
     fn policy(
         on_loss_breach_trading_state: LossGovernorTradingStateAction,
@@ -149,6 +298,50 @@ mod tests {
             accepted: true,
             halt_reasons: Vec::new(),
         }
+    }
+
+    fn fresh_snapshot() -> LossSnapshot {
+        LossSnapshot {
+            source: "nt_portfolio_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            per_trade_pnl: Some(Decimal::ZERO),
+            daily_pnl: Some(Decimal::ZERO),
+            rolling_pnl: Some(Decimal::ZERO),
+            current_equity: Some(Decimal::new(100, 0)),
+            peak_equity: Some(Decimal::new(100, 0)),
+        }
+    }
+
+    fn valid_recovery_evidence() -> LossGovernorManualRecoveryEvidence {
+        LossGovernorManualRecoveryEvidence::new(
+            "operator-1",
+            "manual-recovery/evidence.json",
+            &"a".repeat(64),
+            1_100,
+            128,
+        )
+        .expect("valid manual recovery evidence should build")
+    }
+
+    fn manual_recovery_target(
+        current_state: TradingState,
+        decision: &LossAdmissionDecision,
+        snapshot: Option<&LossSnapshot>,
+        evidence: Option<&LossGovernorManualRecoveryEvidence>,
+    ) -> Option<TradingState> {
+        next_loss_governor_manual_recovery_trading_state(
+            &policy(
+                LossGovernorTradingStateAction::Halted,
+                LossGovernorTradingStateAction::Reducing,
+            ),
+            current_state,
+            decision,
+            snapshot,
+            1_100,
+            1_000,
+            evidence,
+            128,
+        )
     }
 
     #[test]
@@ -263,6 +456,216 @@ mod tests {
         assert_eq!(
             next_loss_governor_trading_state(&policy, TradingState::Halted, &breach),
             None
+        );
+    }
+
+    #[test]
+    fn manual_recovery_evidence_clears_halted_state_after_accepted_fresh_snapshot() {
+        let target = manual_recovery_target(
+            TradingState::Halted,
+            &accepted(),
+            Some(&fresh_snapshot()),
+            Some(&valid_recovery_evidence()),
+        );
+
+        assert_eq!(target, Some(TradingState::Active));
+    }
+
+    #[test]
+    fn manual_recovery_evidence_clears_reducing_state_after_accepted_fresh_snapshot() {
+        let target = manual_recovery_target(
+            TradingState::Reducing,
+            &accepted(),
+            Some(&fresh_snapshot()),
+            Some(&valid_recovery_evidence()),
+        );
+
+        assert_eq!(target, Some(TradingState::Active));
+    }
+
+    #[test]
+    fn manual_recovery_without_evidence_or_when_already_active_is_noop() {
+        assert_eq!(
+            manual_recovery_target(
+                TradingState::Halted,
+                &accepted(),
+                Some(&fresh_snapshot()),
+                None
+            ),
+            None
+        );
+        assert_eq!(
+            manual_recovery_target(
+                TradingState::Active,
+                &accepted(),
+                Some(&fresh_snapshot()),
+                Some(&valid_recovery_evidence()),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn manual_recovery_rejects_loss_breach_missing_stale_future_or_unattributed_snapshot() {
+        let rejected = rejected(vec![LossHaltReason::DailyLossLimit]);
+        let evidence = valid_recovery_evidence();
+        assert_eq!(
+            manual_recovery_target(
+                TradingState::Halted,
+                &rejected,
+                Some(&fresh_snapshot()),
+                Some(&evidence),
+            ),
+            None
+        );
+        assert_eq!(
+            manual_recovery_target(TradingState::Halted, &accepted(), None, Some(&evidence)),
+            None
+        );
+
+        let mut stale = fresh_snapshot();
+        stale.observed_at_ns = 99;
+        assert_eq!(
+            manual_recovery_target(
+                TradingState::Halted,
+                &accepted(),
+                Some(&stale),
+                Some(&evidence)
+            ),
+            None
+        );
+
+        let mut future = fresh_snapshot();
+        future.observed_at_ns = 1_101;
+        assert_eq!(
+            manual_recovery_target(
+                TradingState::Halted,
+                &accepted(),
+                Some(&future),
+                Some(&evidence)
+            ),
+            None
+        );
+
+        let mut unattributed = fresh_snapshot();
+        unattributed.source = " ".to_string();
+        assert_eq!(
+            manual_recovery_target(
+                TradingState::Halted,
+                &accepted(),
+                Some(&unattributed),
+                Some(&evidence),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn manual_recovery_zero_caps_fail_closed() {
+        let evidence = valid_recovery_evidence();
+        assert_eq!(
+            next_loss_governor_manual_recovery_trading_state(
+                &policy(
+                    LossGovernorTradingStateAction::Halted,
+                    LossGovernorTradingStateAction::Reducing,
+                ),
+                TradingState::Halted,
+                &accepted(),
+                Some(&fresh_snapshot()),
+                1_100,
+                0,
+                Some(&evidence),
+                128,
+            ),
+            None
+        );
+        assert_eq!(
+            LossGovernorManualRecoveryEvidence::new(
+                "operator-1",
+                "manual-recovery/evidence.json",
+                &"a".repeat(64),
+                1_100,
+                0,
+            ),
+            Err(LossGovernorManualRecoveryEvidenceError::InvalidEvidencePathLimit)
+        );
+    }
+
+    #[test]
+    fn manual_recovery_evidence_rejects_structural_failures() {
+        assert_eq!(
+            LossGovernorManualRecoveryEvidence::new(
+                " ",
+                "manual-recovery/evidence.json",
+                &"a".repeat(64),
+                1_100,
+                128,
+            ),
+            Err(LossGovernorManualRecoveryEvidenceError::MissingOperatorId)
+        );
+        assert_eq!(
+            LossGovernorManualRecoveryEvidence::new(
+                "operator-1",
+                "manual-recovery/evidence.json",
+                &"a".repeat(63),
+                1_100,
+                128,
+            ),
+            Err(LossGovernorManualRecoveryEvidenceError::InvalidEvidenceSha256)
+        );
+        assert_eq!(
+            LossGovernorManualRecoveryEvidence::new(
+                "operator-1",
+                "manual-recovery/evidence.json",
+                &"A".repeat(64),
+                1_100,
+                128,
+            ),
+            Err(LossGovernorManualRecoveryEvidenceError::InvalidEvidenceSha256)
+        );
+        assert_eq!(
+            LossGovernorManualRecoveryEvidence::new("operator-1", "", &"a".repeat(64), 1_100, 128,),
+            Err(LossGovernorManualRecoveryEvidenceError::EmptyEvidencePath)
+        );
+        assert_eq!(
+            LossGovernorManualRecoveryEvidence::new(
+                "operator-1",
+                "manual-recovery/evidence.json",
+                &"a".repeat(64),
+                1_100,
+                "manual-recovery/evidence.json".len() - 1,
+            ),
+            Err(LossGovernorManualRecoveryEvidenceError::EvidencePathTooLong)
+        );
+        assert_eq!(
+            LossGovernorManualRecoveryEvidence::new(
+                "operator-1",
+                "/manual-recovery/evidence.json",
+                &"a".repeat(64),
+                1_100,
+                128,
+            ),
+            Err(LossGovernorManualRecoveryEvidenceError::AbsoluteEvidencePath)
+        );
+        assert_eq!(
+            LossGovernorManualRecoveryEvidence::new(
+                "operator-1",
+                "manual-recovery/../evidence.json",
+                &"a".repeat(64),
+                1_100,
+                128,
+            ),
+            Err(LossGovernorManualRecoveryEvidenceError::ParentEvidencePath)
+        );
+        assert_eq!(
+            LossGovernorManualRecoveryEvidence::new(
+                "operator-1",
+                "manual-recovery/evidence.json",
+                &"a".repeat(64),
+                0,
+                128,
+            ),
+            Err(LossGovernorManualRecoveryEvidenceError::MissingObservedAt)
         );
     }
 }

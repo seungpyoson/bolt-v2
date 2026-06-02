@@ -774,6 +774,30 @@ reason = "This is the decision-evidence JSONL envelope schema version. v6 adds e
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
+literal = '''"strategy_input_snapshot"'''
+context = '''const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL envelope discriminator for strategy-input snapshot records and is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_intent"'''
+context = '''const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL envelope discriminator for order-intent records and is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"admission_decision"'''
+context = '''const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL envelope discriminator for admission-decision records and is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
 literal = '''"CARGO_PKG_VERSION"'''
 context = '''pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");'''
 classification = "decision_evidence_gate_version_source"
@@ -7934,14 +7958,6 @@ literal = '''"strategy_input_snapshot"'''
 context = '''"strategy_input_snapshot",'''
 classification = "decision_evidence_record_kind_validation"
 reason = "This is the expected JSONL envelope discriminator used when validating runtime decision-evidence provenance, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_decision_evidence.rs"
-kind = "string"
-literal = '''"order_intent"'''
-context = '''header.validate("order_intent", BOLT_V3_ORDER_INTENT_GATE_ID, index)?;'''
-classification = "decision_evidence_record_kind_validation"
-reason = "This is the expected JSONL envelope discriminator used for early envelope validation before order-intent payload deserialization, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"

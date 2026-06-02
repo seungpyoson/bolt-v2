@@ -18,6 +18,9 @@ pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
 pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID: &str = "bolt_v3.strategy_input_snapshot";
+const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";
+const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";
+const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
 const GATE_SATISFACTION_KIND_EVIDENCE: &str = "evidence";
@@ -451,7 +454,7 @@ pub fn read_latest_entry_decision_evidence_chain(
         match header.kind.as_str() {
             "strategy_input_snapshot" => {
                 header.validate(
-                    "strategy_input_snapshot",
+                    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
                     BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
                     index,
                 )?;
@@ -469,7 +472,11 @@ pub fn read_latest_entry_decision_evidence_chain(
                 snapshots.insert(decoded.snapshot.client_order_id.clone(), decoded.snapshot);
             }
             "order_intent" => {
-                header.validate("order_intent", BOLT_V3_ORDER_INTENT_GATE_ID, index)?;
+                header.validate(
+                    BOLT_V3_ORDER_INTENT_RECORD_KIND,
+                    BOLT_V3_ORDER_INTENT_GATE_ID,
+                    index,
+                )?;
                 let decoded: OrderIntentLineOwned =
                     serde_json::from_slice(line).with_context(|| {
                         format!("failed to parse bolt-v3 order intent line at index {index}")
@@ -481,7 +488,7 @@ pub fn read_latest_entry_decision_evidence_chain(
             }
             "admission_decision" => {
                 header.validate(
-                    "admission_decision",
+                    BOLT_V3_ADMISSION_DECISION_RECORD_KIND,
                     BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
                     index,
                 )?;

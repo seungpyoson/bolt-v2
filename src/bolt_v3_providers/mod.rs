@@ -17,6 +17,7 @@
 
 pub mod binance;
 pub mod hyperliquid;
+pub mod hyperliquid_artifacts;
 pub mod market_data;
 pub mod polymarket;
 
@@ -32,8 +33,7 @@ use crate::{
     bolt_v3_operator_artifacts::{
         BoltV3OperatorArtifactError, CanaryProofArtifactsCollectionRequest,
         CanaryProofArtifactsWritten, EntryDecisionSourceCollectionRequest,
-        EntryDecisionSourceInputsWritten, HyperliquidLiveSubmitApprovalArtifact,
-        HyperliquidLiveSubmitApprovalBinding, validate_hyperliquid_live_submit_approval_artifact,
+        EntryDecisionSourceInputsWritten,
     },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     strategies::registry::FeeProvider,
@@ -155,52 +155,15 @@ pub struct ProviderAdapterMapContext<'a> {
     pub runtime_approvals: ProviderRuntimeApprovals<'a>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct ProviderRuntimeApprovals<'a> {
-    pub hyperliquid_live_submit: Option<&'a HyperliquidLiveSubmitApprovalConsumption>,
+    pub live_submit: Option<&'a dyn Any>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HyperliquidLiveSubmitApprovalConsumption {
-    approval_id: String,
-    product_surface: hyperliquid::HyperliquidProductSurface,
-    used_at: u64,
-}
-
-impl HyperliquidLiveSubmitApprovalConsumption {
-    pub fn approval_id(&self) -> &str {
-        self.approval_id.as_str()
+impl<'a> ProviderRuntimeApprovals<'a> {
+    pub const fn none() -> Self {
+        Self { live_submit: None }
     }
-
-    pub fn product_surface(&self) -> hyperliquid::HyperliquidProductSurface {
-        self.product_surface
-    }
-
-    pub fn used_at(&self) -> u64 {
-        self.used_at
-    }
-}
-
-pub fn consume_hyperliquid_live_submit_approval_artifact(
-    artifact: &mut HyperliquidLiveSubmitApprovalArtifact,
-    binding: &HyperliquidLiveSubmitApprovalBinding,
-    expected_approval_id: &str,
-    now_unix_seconds: u64,
-) -> Result<HyperliquidLiveSubmitApprovalConsumption, BoltV3OperatorArtifactError> {
-    validate_hyperliquid_live_submit_approval_artifact(Some(artifact), binding, now_unix_seconds)?;
-    if artifact.approval_id != expected_approval_id {
-        return Err(
-            BoltV3OperatorArtifactError::HyperliquidLiveSubmitApprovalInvalid {
-                field: "approval_id",
-            },
-        );
-    }
-    artifact.used_at = Some(now_unix_seconds);
-    Ok(HyperliquidLiveSubmitApprovalConsumption {
-        approval_id: expected_approval_id.to_string(),
-        product_surface: binding.product_surface,
-        used_at: now_unix_seconds,
-    })
 }
 
 type FeeProviderBuilder = fn(

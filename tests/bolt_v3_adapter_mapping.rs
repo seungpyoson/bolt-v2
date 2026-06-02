@@ -9,14 +9,15 @@ use bolt_v2::{
     },
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
-    bolt_v3_operator_artifacts::{
-        HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalInput,
-        HyperliquidLiveSubmitOrderLimits, build_hyperliquid_live_submit_approval_artifact,
+    bolt_v3_providers::hyperliquid_artifacts::{
+        HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalConsumption,
+        HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
+        build_hyperliquid_live_submit_approval_artifact,
+        consume_hyperliquid_live_submit_approval_artifact,
     },
     bolt_v3_providers::{
-        HyperliquidLiveSubmitApprovalConsumption, ProviderRuntimeApprovals,
+        ProviderRuntimeApprovals,
         binance::ResolvedBoltV3BinanceSecrets,
-        consume_hyperliquid_live_submit_approval_artifact,
         hyperliquid::{HyperliquidProductSurface, ResolvedBoltV3HyperliquidSecrets},
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     },
@@ -415,7 +416,7 @@ fn hyperliquid_standard_perps_execution_maps_to_nt_after_consumed_approval() {
         &loaded,
         &resolved,
         ProviderRuntimeApprovals {
-            hyperliquid_live_submit: Some(&consumed),
+            live_submit: Some(&consumed),
         },
     )
     .expect("consumed approval should open the standard-perps NT adapter path");
@@ -511,7 +512,7 @@ fn hyperliquid_spot_execution_maps_to_nt_after_consumed_surface_approval() {
         &loaded,
         &resolved,
         ProviderRuntimeApprovals {
-            hyperliquid_live_submit: Some(&consumed),
+            live_submit: Some(&consumed),
         },
     )
     .expect("consumed spot approval should open the NT adapter path");
@@ -547,7 +548,7 @@ fn hyperliquid_hip3_execution_maps_to_nt_after_consumed_surface_approval() {
         &loaded,
         &resolved,
         ProviderRuntimeApprovals {
-            hyperliquid_live_submit: Some(&consumed),
+            live_submit: Some(&consumed),
         },
     )
     .expect("consumed HIP-3 approval should open the NT adapter path");
@@ -573,7 +574,7 @@ fn hyperliquid_hip4_execution_requires_positive_settlement_poll() {
         &loaded,
         &resolved,
         ProviderRuntimeApprovals {
-            hyperliquid_live_submit: Some(&consumed),
+            live_submit: Some(&consumed),
         },
     )
     .expect_err("HIP-4 execution must not map with disabled settlement polling");
@@ -605,7 +606,7 @@ fn hyperliquid_hip4_execution_maps_to_nt_after_consumed_surface_approval() {
         &loaded,
         &resolved,
         ProviderRuntimeApprovals {
-            hyperliquid_live_submit: Some(&consumed),
+            live_submit: Some(&consumed),
         },
     )
     .expect("consumed HIP-4 approval should open the NT adapter path");
@@ -636,7 +637,7 @@ fn hyperliquid_surface_approval_cannot_authorize_different_surface() {
         &loaded,
         &resolved,
         ProviderRuntimeApprovals {
-            hyperliquid_live_submit: Some(&consumed),
+            live_submit: Some(&consumed),
         },
     )
     .expect_err("spot approval must not authorize HIP-3 execution");

@@ -7,16 +7,16 @@ use std::{collections::BTreeMap, sync::Arc};
 use bolt_v2::{
     bolt_v3_adapters::{BoltV3AdapterMappingError, map_bolt_v3_adapters},
     bolt_v3_config::{ClientBlock, LoadedBoltV3Config, load_bolt_v3_config},
-    bolt_v3_operator_artifacts::{
-        HyperliquidLatencyProfileArtifactInput, HyperliquidNoSubmitEvidenceRef,
-        HyperliquidNoSubmitReadinessInput, build_hyperliquid_latency_profile_artifact,
-        build_hyperliquid_no_submit_readiness_artifact, write_hyperliquid_latency_profile_artifact,
-        write_hyperliquid_no_submit_readiness_artifact,
-    },
     bolt_v3_providers::hyperliquid::{
         HyperliquidLatencyProfileConfig, HyperliquidProductSurface,
         HyperliquidUserFeesRequestWeightStatus, ResolvedBoltV3HyperliquidSecrets,
         hyperliquid_user_fees_request_weight_policy,
+    },
+    bolt_v3_providers::hyperliquid_artifacts::{
+        HyperliquidLatencyProfileArtifactInput, HyperliquidNoSubmitEvidenceRef,
+        HyperliquidNoSubmitReadinessInput, build_hyperliquid_latency_profile_artifact,
+        build_hyperliquid_no_submit_readiness_artifact, write_hyperliquid_latency_profile_artifact,
+        write_hyperliquid_no_submit_readiness_artifact,
     },
     bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
     bolt_v3_submit_admission::{
@@ -145,7 +145,7 @@ fn resolved_hyperliquid_secrets() -> ResolvedBoltV3Secrets {
 #[test]
 fn standard_perps_no_submit_readiness_artifact_records_zero_mutation_proof() {
     let artifact = build_hyperliquid_no_submit_readiness_artifact(readiness_input(
-        BoltV3ExchangeMutationCounts::default(),
+        BoltV3ExchangeMutationCounts::none(),
     ))
     .expect("zero-mutation Hyperliquid no-submit artifact should build");
 
@@ -170,7 +170,7 @@ fn standard_perps_no_submit_readiness_artifact_writes_operator_json() {
     let output_path = temp.path().join("hyperliquid-no-submit.json");
 
     let written = write_hyperliquid_no_submit_readiness_artifact(
-        readiness_input(BoltV3ExchangeMutationCounts::default()),
+        readiness_input(BoltV3ExchangeMutationCounts::none()),
         &output_path,
     )
     .expect("zero-mutation Hyperliquid no-submit artifact should write");
@@ -193,7 +193,7 @@ fn standard_perps_no_submit_readiness_artifact_writes_operator_json() {
 #[test]
 fn latency_profile_artifact_records_ops_metadata_without_exchange_mutations() {
     let artifact = build_hyperliquid_latency_profile_artifact(latency_profile_artifact_input(
-        BoltV3ExchangeMutationCounts::default(),
+        BoltV3ExchangeMutationCounts::none(),
     ))
     .expect("latency profile artifact should build");
 
@@ -224,7 +224,7 @@ fn latency_profile_artifact_writes_operator_json() {
     let output_path = temp.path().join("hyperliquid-latency-profile.json");
 
     let written = write_hyperliquid_latency_profile_artifact(
-        latency_profile_artifact_input(BoltV3ExchangeMutationCounts::default()),
+        latency_profile_artifact_input(BoltV3ExchangeMutationCounts::none()),
         &output_path,
     )
     .expect("Hyperliquid latency-profile artifact should write");
@@ -275,7 +275,7 @@ fn latency_profile_artifact_rejects_exchange_mutations() {
     let error = build_hyperliquid_latency_profile_artifact(latency_profile_artifact_input(
         BoltV3ExchangeMutationCounts {
             submit: 1,
-            ..BoltV3ExchangeMutationCounts::default()
+            ..BoltV3ExchangeMutationCounts::none()
         },
     ))
     .expect_err("latency-profile artifact must not build after exchange mutation")
@@ -292,23 +292,23 @@ fn exchange_mutation_guard_blocks_any_mutating_request() {
     let mutating_counts = [
         BoltV3ExchangeMutationCounts {
             submit: 1,
-            ..BoltV3ExchangeMutationCounts::default()
+            ..BoltV3ExchangeMutationCounts::none()
         },
         BoltV3ExchangeMutationCounts {
             cancel: 1,
-            ..BoltV3ExchangeMutationCounts::default()
+            ..BoltV3ExchangeMutationCounts::none()
         },
         BoltV3ExchangeMutationCounts {
             modify: 1,
-            ..BoltV3ExchangeMutationCounts::default()
+            ..BoltV3ExchangeMutationCounts::none()
         },
         BoltV3ExchangeMutationCounts {
             transfer: 1,
-            ..BoltV3ExchangeMutationCounts::default()
+            ..BoltV3ExchangeMutationCounts::none()
         },
         BoltV3ExchangeMutationCounts {
             account: 1,
-            ..BoltV3ExchangeMutationCounts::default()
+            ..BoltV3ExchangeMutationCounts::none()
         },
     ];
 

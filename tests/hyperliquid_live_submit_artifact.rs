@@ -1,15 +1,15 @@
 //! Hyperliquid live-submit approval artifact tests.
 
 use bolt_v2::{
-    bolt_v3_operator_artifacts::{
+    bolt_v3_providers::hyperliquid::HyperliquidProductSurface,
+    bolt_v3_providers::hyperliquid_artifacts::{
         HyperliquidLiveSubmitApprovalArtifact, HyperliquidLiveSubmitApprovalBinding,
         HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
         build_hyperliquid_live_submit_approval_artifact,
+        consume_hyperliquid_live_submit_approval_artifact,
         validate_hyperliquid_live_submit_approval_artifact,
         write_hyperliquid_live_submit_approval_artifact,
     },
-    bolt_v3_providers::consume_hyperliquid_live_submit_approval_artifact,
-    bolt_v3_providers::hyperliquid::HyperliquidProductSurface,
 };
 
 const NOW: u64 = 1_000_000;

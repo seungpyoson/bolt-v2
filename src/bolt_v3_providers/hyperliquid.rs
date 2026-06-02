@@ -32,6 +32,8 @@ use crate::{
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
 };
 
+use super::hyperliquid_artifacts::HyperliquidLiveSubmitApprovalConsumption;
+
 pub const KEY: &str = "HYPERLIQUID";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
@@ -718,7 +720,7 @@ fn validate_surface_live_submit_approval(
             ),
         });
     };
-    let Some(consumed) = context.runtime_approvals.hyperliquid_live_submit else {
+    let Some(consumed) = context.runtime_approvals.live_submit else {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             client_key: client_key.to_string(),
             field: "execution.live_submit_approval_id",
@@ -726,6 +728,14 @@ fn validate_surface_live_submit_approval(
                 "{} live submit requires a consumed live-submit approval",
                 product_surface_name(*configured_surface)
             ),
+        });
+    };
+    let Some(consumed) = consumed.downcast_ref::<HyperliquidLiveSubmitApprovalConsumption>() else {
+        return Err(BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "execution.live_submit_approval_id",
+            message: "consumed live-submit approval has an unsupported provider payload"
+                .to_string(),
         });
     };
     if consumed.approval_id() != expected_approval_id {

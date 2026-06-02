@@ -17,7 +17,7 @@ pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
 
 const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
 
-#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct BoltV3ExchangeMutationCounts {
     pub submit: u64,
     pub cancel: u64,
@@ -27,6 +27,16 @@ pub struct BoltV3ExchangeMutationCounts {
 }
 
 impl BoltV3ExchangeMutationCounts {
+    pub const fn none() -> Self {
+        Self {
+            submit: 0,
+            cancel: 0,
+            modify: 0,
+            transfer: 0,
+            account: 0,
+        }
+    }
+
     pub fn total(self) -> Result<u64, BoltV3SubmitAdmissionError> {
         self.submit
             .checked_add(self.cancel)

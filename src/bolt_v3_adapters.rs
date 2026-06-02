@@ -239,11 +239,7 @@ pub fn map_bolt_v3_adapters(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
-    map_bolt_v3_adapters_with_runtime_approvals(
-        loaded,
-        resolved,
-        ProviderRuntimeApprovals::default(),
-    )
+    map_bolt_v3_adapters_with_runtime_approvals(loaded, resolved, ProviderRuntimeApprovals::none())
 }
 
 pub fn map_bolt_v3_adapters_with_runtime_approvals(
@@ -286,7 +282,7 @@ pub fn map_bolt_v3_adapters_with_market_identity(
         resolved,
         plan,
         clock,
-        ProviderRuntimeApprovals::default(),
+        ProviderRuntimeApprovals::none(),
     )
 }
 
@@ -621,7 +617,7 @@ mod tests {
             &resolved,
             &plan,
             clock,
-            ProviderRuntimeApprovals::default(),
+            ProviderRuntimeApprovals::none(),
             |key| {
                 if key == FAKE_UPDOWN_PROVIDER_KEY {
                     Some(&FAKE_UPDOWN_PROVIDER_BINDING)
@@ -673,7 +669,7 @@ mod tests {
             &resolved,
             &plan,
             clock,
-            ProviderRuntimeApprovals::default(),
+            ProviderRuntimeApprovals::none(),
             |key| {
                 if key == FAKE_UPDOWN_PROVIDER_KEY {
                     Some(&FAKE_UNSUPPORTED_PROVIDER_BINDING)
@@ -735,7 +731,7 @@ mod tests {
             &resolved,
             &plan,
             clock,
-            ProviderRuntimeApprovals::default(),
+            ProviderRuntimeApprovals::none(),
             |key| {
                 if key == FAKE_UPDOWN_PROVIDER_KEY {
                     Some(&FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING)

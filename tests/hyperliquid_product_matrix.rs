@@ -10,11 +10,11 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use bolt_v2::bolt_v3_adapters::{BoltV3AdapterMappingError, map_bolt_v3_adapters};
 use bolt_v2::bolt_v3_config::{ClientBlock, LoadedBoltV3Config, load_bolt_v3_config};
-use bolt_v2::bolt_v3_operator_artifacts::write_hyperliquid_product_matrix_artifact;
 use bolt_v2::bolt_v3_providers::hyperliquid::{
     HyperliquidDiscoveryStatus, HyperliquidProductMatrixEntry, HyperliquidProductSurface,
     HyperliquidSubmitStatus, ResolvedBoltV3HyperliquidSecrets, hyperliquid_product_matrix,
 };
+use bolt_v2::bolt_v3_providers::hyperliquid_artifacts::write_hyperliquid_product_matrix_artifact;
 use bolt_v2::bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets};
 use nautilus_hyperliquid::http::query::InfoRequest;
 use zeroize::Zeroizing;

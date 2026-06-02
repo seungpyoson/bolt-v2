@@ -733,8 +733,6 @@ fn forced_reduction_admissible_halt_id(state: &KillSwitchState) -> Option<&str> 
             Some(halt_id)
         }
         KillSwitchState::Armed
-        | KillSwitchState::Cancelling { .. }
-        | KillSwitchState::Flattening { .. }
         | KillSwitchState::Flat { .. }
         | KillSwitchState::FailedManualIntervention { .. } => None,
     }

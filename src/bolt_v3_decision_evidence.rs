@@ -450,6 +450,11 @@ pub fn read_latest_entry_decision_evidence_chain(
             })?;
         match header.kind.as_str() {
             "strategy_input_snapshot" => {
+                header.validate(
+                    "strategy_input_snapshot",
+                    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+                    index,
+                )?;
                 let decoded: StrategyInputSnapshotLineOwned = serde_json::from_slice(line)
                     .with_context(|| {
                         format!(
@@ -464,6 +469,7 @@ pub fn read_latest_entry_decision_evidence_chain(
                 snapshots.insert(decoded.snapshot.client_order_id.clone(), decoded.snapshot);
             }
             "order_intent" => {
+                header.validate("order_intent", BOLT_V3_ORDER_INTENT_GATE_ID, index)?;
                 let decoded: OrderIntentLineOwned =
                     serde_json::from_slice(line).with_context(|| {
                         format!("failed to parse bolt-v3 order intent line at index {index}")
@@ -474,6 +480,11 @@ pub fn read_latest_entry_decision_evidence_chain(
                 }
             }
             "admission_decision" => {
+                header.validate(
+                    "admission_decision",
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
                 let decoded: AdmissionDecisionLineOwned = serde_json::from_slice(line)
                     .with_context(|| {
                         format!("failed to parse bolt-v3 admission decision line at index {index}")

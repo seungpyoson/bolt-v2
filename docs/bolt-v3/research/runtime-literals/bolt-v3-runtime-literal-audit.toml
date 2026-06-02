@@ -7939,6 +7939,14 @@ reason = "This is the expected JSONL envelope discriminator used when validating
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "string"
 literal = '''"order_intent"'''
+context = '''header.validate("order_intent", BOLT_V3_ORDER_INTENT_GATE_ID, index)?;'''
+classification = "decision_evidence_record_kind_validation"
+reason = "This is the expected JSONL envelope discriminator used for early envelope validation before order-intent payload deserialization, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_intent"'''
 context = '''decoded.validate_header("order_intent", BOLT_V3_ORDER_INTENT_GATE_ID, index)?;'''
 classification = "decision_evidence_record_kind_validation"
 reason = "This is the expected JSONL envelope discriminator used when validating runtime decision-evidence provenance, not an operator runtime value."

@@ -48,14 +48,18 @@ pub fn loss_governor_trading_state_action_for_reasons(
         return LossGovernorTradingStateAction::None;
     }
 
-    if halt_reasons
+    halt_reasons
         .iter()
-        .any(|reason| matches!(reason, LossHaltReason::StaleLossSnapshot))
-    {
-        return policy.on_untrusted_snapshot_trading_state;
-    }
-
-    policy.on_loss_breach_trading_state
+        .fold(LossGovernorTradingStateAction::None, |action, reason| {
+            let reason_action = match reason {
+                LossHaltReason::StaleLossSnapshot => policy.on_untrusted_snapshot_trading_state,
+                LossHaltReason::PerTradeLossLimit
+                | LossHaltReason::DailyLossLimit
+                | LossHaltReason::RollingLossLimit
+                | LossHaltReason::MaxDrawdownLimit => policy.on_loss_breach_trading_state,
+            };
+            strongest_trading_state_action(action, reason_action)
+        })
 }
 
 #[must_use]
@@ -89,6 +93,27 @@ const fn trading_state_severity(state: TradingState) -> TradingStateSeverity {
         TradingState::Active => TradingStateSeverity::Active,
         TradingState::Reducing => TradingStateSeverity::Reducing,
         TradingState::Halted => TradingStateSeverity::Halted,
+    }
+}
+
+const fn trading_state_action_severity(
+    action: LossGovernorTradingStateAction,
+) -> TradingStateSeverity {
+    match action {
+        LossGovernorTradingStateAction::None => TradingStateSeverity::Active,
+        LossGovernorTradingStateAction::Reducing => TradingStateSeverity::Reducing,
+        LossGovernorTradingStateAction::Halted => TradingStateSeverity::Halted,
+    }
+}
+
+fn strongest_trading_state_action(
+    current: LossGovernorTradingStateAction,
+    candidate: LossGovernorTradingStateAction,
+) -> LossGovernorTradingStateAction {
+    if trading_state_action_severity(candidate) > trading_state_action_severity(current) {
+        candidate
+    } else {
+        current
     }
 }
 
@@ -172,6 +197,36 @@ mod tests {
         );
 
         assert_eq!(target, None);
+    }
+
+    #[test]
+    fn mixed_halt_reasons_use_strongest_configured_action() {
+        let mixed_reasons = vec![
+            LossHaltReason::StaleLossSnapshot,
+            LossHaltReason::DailyLossLimit,
+        ];
+
+        let target = next_loss_governor_trading_state(
+            &policy(
+                LossGovernorTradingStateAction::Halted,
+                LossGovernorTradingStateAction::None,
+            ),
+            TradingState::Active,
+            &rejected(mixed_reasons.clone()),
+        );
+
+        assert_eq!(target, Some(TradingState::Halted));
+
+        let target = next_loss_governor_trading_state(
+            &policy(
+                LossGovernorTradingStateAction::Reducing,
+                LossGovernorTradingStateAction::Halted,
+            ),
+            TradingState::Active,
+            &rejected(mixed_reasons),
+        );
+
+        assert_eq!(target, Some(TradingState::Halted));
     }
 
     #[test]

@@ -497,7 +497,7 @@ fn terminal_order_suppression_expires_after_configured_snapshot_window() {
 
     assert!(
         feed.seed_open_order_cache(vec!["client-order-A".to_string()], 1_450)
-            .is_some()
+            .is_none()
     );
     let state = admission
         .position_sizer_state_snapshot()

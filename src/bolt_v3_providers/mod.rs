@@ -21,7 +21,7 @@ pub mod hyperliquid_artifacts;
 pub mod market_data;
 pub mod polymarket;
 
-use std::{any::Any, fmt, future::Future, pin::Pin, sync::Arc};
+use std::{any::Any, collections::BTreeMap, fmt, future::Future, pin::Pin, sync::Arc};
 
 use nautilus_model::identifiers::Venue;
 use rust_decimal::Decimal;
@@ -158,6 +158,41 @@ pub struct ProviderAdapterMapContext<'a> {
     pub runtime_approvals: ProviderRuntimeApprovals<'a>,
 }
 
+pub struct ProviderLiveSubmitApprovalContext<'a> {
+    pub loaded: &'a LoadedBoltV3Config,
+    pub client_key: &'a str,
+    pub client: &'a ClientBlock,
+    pub resolved: &'a ResolvedBoltV3Secrets,
+    pub now_unix_seconds: u64,
+    pub build_head_sha: &'a str,
+}
+
+pub struct ProviderLiveSubmitApprovals {
+    by_client: BTreeMap<String, Box<dyn Any>>,
+}
+
+impl ProviderLiveSubmitApprovals {
+    pub fn empty() -> Self {
+        Self {
+            by_client: BTreeMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, client_key: String, approval: Box<dyn Any>) {
+        self.by_client.insert(client_key, approval);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_client.is_empty()
+    }
+
+    pub fn get_as<T: 'static>(&self, client_key: &str) -> Option<&T> {
+        self.by_client
+            .get(client_key)
+            .and_then(|approval| approval.downcast_ref())
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct ProviderRuntimeApprovals<'a> {
     pub live_submit: Option<&'a dyn Any>,
@@ -174,6 +209,10 @@ type FeeProviderBuilder = fn(
     &ClientBlock,
     &ResolvedBoltV3Secrets,
 ) -> Result<Arc<dyn FeeProvider>, BoltV3AdapterMappingError>;
+
+type LiveSubmitApprovalLoader = for<'a> fn(
+    ProviderLiveSubmitApprovalContext<'a>,
+) -> Result<Option<Box<dyn Any>>, anyhow::Error>;
 
 pub struct EntryDecisionSourceProviderContext<'a> {
     pub loaded: &'a LoadedBoltV3Config,
@@ -468,6 +507,7 @@ pub struct ProviderBinding {
         ProviderAdapterMapContext<'a>,
     )
         -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError>,
+    pub load_live_submit_approval: Option<LiveSubmitApprovalLoader>,
     pub build_fee_provider: Option<FeeProviderBuilder>,
     pub collect_entry_decision_source_inputs: Option<EntryDecisionSourceInputCollector>,
     pub collect_canary_proof_artifacts: Option<CanaryProofArtifactsCollector>,
@@ -485,6 +525,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: polymarket::resolve_secrets,
         configured_secret_paths: polymarket::configured_secret_paths,
         map_adapters: polymarket::map_adapters,
+        load_live_submit_approval: None,
         build_fee_provider: Some(polymarket::build_fee_provider),
         collect_entry_decision_source_inputs: Some(
             polymarket::collect_entry_decision_source_inputs,
@@ -502,6 +543,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: binance::resolve_secrets,
         configured_secret_paths: binance::configured_secret_paths,
         map_adapters: binance::map_adapters,
+        load_live_submit_approval: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -517,6 +559,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: hyperliquid::resolve_secrets,
         configured_secret_paths: hyperliquid::configured_secret_paths,
         map_adapters: hyperliquid::map_adapters,
+        load_live_submit_approval: Some(hyperliquid::load_live_submit_approval),
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -532,6 +575,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
         map_adapters: market_data::map_bitmex_adapters,
+        load_live_submit_approval: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -547,6 +591,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
         map_adapters: market_data::map_bybit_adapters,
+        load_live_submit_approval: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -562,6 +607,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
         map_adapters: market_data::map_coinbase_adapters,
+        load_live_submit_approval: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -577,6 +623,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
         map_adapters: market_data::map_deribit_adapters,
+        load_live_submit_approval: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -592,6 +639,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
         map_adapters: market_data::map_okx_adapters,
+        load_live_submit_approval: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -607,6 +655,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
         map_adapters: market_data::map_kraken_adapters,
+        load_live_submit_approval: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,

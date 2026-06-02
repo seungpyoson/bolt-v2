@@ -4,7 +4,7 @@
 //! mapping stays gated behind SSM-resolved credentials, explicit TOML runtime
 //! fields, and a consumed live-submit approval for the standard-perps surface.
 
-use std::{any::Any, sync::Arc};
+use std::{any::Any, str::FromStr, sync::Arc};
 
 use nautilus_core::string::secret::REDACTED;
 use nautilus_hyperliquid::{
@@ -17,6 +17,7 @@ use nautilus_hyperliquid::{
 };
 use nautilus_model::identifiers::AccountId;
 use nautilus_network::websocket::TransportBackend;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use url::Url;
@@ -29,10 +30,17 @@ use crate::{
         BoltV3ExecutionClientAdapterConfig,
     },
     bolt_v3_config::ClientBlock,
+    bolt_v3_config::resolve_root_relative_path,
+    bolt_v3_providers::hyperliquid_artifacts::{
+        HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitOrderLimits,
+        consume_hyperliquid_live_submit_approval_artifact,
+        persist_consumed_hyperliquid_live_submit_approval_artifact,
+        read_hyperliquid_live_submit_approval_artifact,
+    },
     bolt_v3_providers::{
-        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderSecretRequirement,
-        ProviderSecretResolveContext, ProviderSsmPathReference, ResolvedClientSecrets,
-        SsmSecretResolver,
+        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderLiveSubmitApprovalContext,
+        ProviderLiveSubmitApprovals, ProviderSecretRequirement, ProviderSecretResolveContext,
+        ProviderSsmPathReference, ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
 };
@@ -96,6 +104,10 @@ pub struct HyperliquidExecutionConfig {
     pub execution_mode: HyperliquidExecutionMode,
     pub product_surfaces: Vec<HyperliquidProductSurface>,
     pub live_submit_approval_id: Option<String>,
+    pub live_submit_approval_artifact_path: Option<String>,
+    pub live_submit_approval_artifact_max_bytes: Option<u64>,
+    pub live_submit_max_order_count: Option<u32>,
+    pub live_submit_max_order_notional: Option<String>,
     pub base_url_ws: String,
     pub base_url_http: String,
     pub base_url_exchange: String,
@@ -357,6 +369,19 @@ impl ProviderResolvedSecrets for ResolvedBoltV3HyperliquidSecrets {
     }
 }
 
+pub fn hyperliquid_live_submit_signer_fingerprint(private_key: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"bolt-v3-hyperliquid-live-submit-signer-v1:");
+    let normalized = private_key
+        .strip_prefix("0x")
+        .or_else(|| private_key.strip_prefix("0X"))
+        .unwrap_or(private_key);
+    for &byte in normalized.as_bytes() {
+        hasher.update([byte.to_ascii_lowercase()]);
+    }
+    hex::encode(hasher.finalize())
+}
+
 pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
     let mut errors = Vec::new();
     if client.data.is_none() && client.execution.is_none() {
@@ -512,6 +537,7 @@ fn validate_execution_config(key: &str, execution: &HyperliquidExecutionConfig) 
         ));
     }
     if execution.live_submit_approval_id.is_some() {
+        errors.extend(validate_live_submit_approval_config(key, execution));
         errors.extend(validate_user_fees_request_weight_policy(key));
     }
     let positive_fields: &[(&str, u64)] = &[
@@ -545,6 +571,43 @@ fn validate_execution_config(key: &str, execution: &HyperliquidExecutionConfig) 
     }
     if let Some(latency_profile) = &execution.latency_profile {
         errors.extend(validate_latency_profile_config(key, latency_profile));
+    }
+    errors
+}
+
+fn validate_live_submit_approval_config(
+    key: &str,
+    execution: &HyperliquidExecutionConfig,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    match execution.live_submit_approval_artifact_path.as_deref() {
+        Some(path) if !path.trim().is_empty() => {}
+        _ => errors.push(format!(
+            "clients.{key}.execution.live_submit_approval_artifact_path is required when live_submit_approval_id is configured"
+        )),
+    }
+    match execution.live_submit_approval_artifact_max_bytes {
+        Some(value) if value > 0 => {}
+        _ => errors.push(format!(
+            "clients.{key}.execution.live_submit_approval_artifact_max_bytes must be positive when live_submit_approval_id is configured"
+        )),
+    }
+    match execution.live_submit_max_order_count {
+        Some(value) if value > 0 => {}
+        _ => errors.push(format!(
+            "clients.{key}.execution.live_submit_max_order_count must be positive when live_submit_approval_id is configured"
+        )),
+    }
+    match execution.live_submit_max_order_notional.as_deref() {
+        Some(value) => match Decimal::from_str(value.trim()) {
+            Ok(value) if value > Decimal::ZERO => {}
+            _ => errors.push(format!(
+                "clients.{key}.execution.live_submit_max_order_notional must be positive decimal text when live_submit_approval_id is configured"
+            )),
+        },
+        None => errors.push(format!(
+            "clients.{key}.execution.live_submit_max_order_notional is required when live_submit_approval_id is configured"
+        )),
     }
     errors
 }
@@ -693,6 +756,106 @@ pub fn configured_secret_paths(
         });
     }
     Ok(paths)
+}
+
+pub fn load_live_submit_approval(
+    context: ProviderLiveSubmitApprovalContext<'_>,
+) -> Result<Option<Box<dyn Any>>, anyhow::Error> {
+    let Some(execution) = &context.client.execution else {
+        return Ok(None);
+    };
+    let cfg: HyperliquidExecutionConfig = execution.clone().try_into().map_err(|source| {
+        hyperliquid_adapter_validation_error(
+            context.client_key,
+            "execution",
+            format!("Hyperliquid execution config is invalid: {source}"),
+        )
+    })?;
+    let Some(expected_approval_id) = cfg.live_submit_approval_id.as_deref() else {
+        return Ok(None);
+    };
+    let approval_path = cfg
+        .live_submit_approval_artifact_path
+        .as_deref()
+        .ok_or_else(|| {
+            hyperliquid_adapter_validation_error(
+                context.client_key,
+                "execution.live_submit_approval_artifact_path",
+                "Hyperliquid live submit requires a configured approval artifact path",
+            )
+        })?;
+    let approval_max_bytes = cfg.live_submit_approval_artifact_max_bytes.ok_or_else(|| {
+        hyperliquid_adapter_validation_error(
+            context.client_key,
+            "execution.live_submit_approval_artifact_max_bytes",
+            "Hyperliquid live submit requires a configured approval artifact byte cap",
+        )
+    })?;
+    let resolved_path = resolve_root_relative_path(&context.loaded.root_path, approval_path);
+    let binding = live_submit_approval_binding(&context, &cfg)?;
+    let mut approval =
+        read_hyperliquid_live_submit_approval_artifact(&resolved_path, approval_max_bytes)?;
+    let consumed = consume_hyperliquid_live_submit_approval_artifact(
+        &mut approval,
+        &binding,
+        expected_approval_id,
+        context.now_unix_seconds,
+    )?;
+    persist_consumed_hyperliquid_live_submit_approval_artifact(&resolved_path, &approval)?;
+    Ok(Some(Box::new(consumed)))
+}
+
+fn live_submit_approval_binding(
+    context: &ProviderLiveSubmitApprovalContext<'_>,
+    cfg: &HyperliquidExecutionConfig,
+) -> Result<HyperliquidLiveSubmitApprovalBinding, anyhow::Error> {
+    let [product_surface] = cfg.product_surfaces.as_slice() else {
+        return Err(hyperliquid_adapter_validation_error(
+            context.client_key,
+            "execution.product_surfaces",
+            "Hyperliquid live submit requires exactly one product surface per execution client",
+        ));
+    };
+    let secrets = secrets_for(context.client_key, context.resolved)?;
+    let max_order_count = cfg.live_submit_max_order_count.ok_or_else(|| {
+        hyperliquid_adapter_validation_error(
+            context.client_key,
+            "execution.live_submit_max_order_count",
+            "Hyperliquid live submit requires configured max order count",
+        )
+    })?;
+    let max_order_notional = cfg.live_submit_max_order_notional.clone().ok_or_else(|| {
+        hyperliquid_adapter_validation_error(
+            context.client_key,
+            "execution.live_submit_max_order_notional",
+            "Hyperliquid live submit requires configured max order notional",
+        )
+    })?;
+    Ok(HyperliquidLiveSubmitApprovalBinding {
+        base_sha: context.build_head_sha.to_string(),
+        provider_id: context.client_key.to_string(),
+        product_surface: *product_surface,
+        toml_checksum: context.loaded.config_bundle_checksum.clone(),
+        signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(
+            secrets.private_key.as_str(),
+        ),
+        order_limits: HyperliquidLiveSubmitOrderLimits {
+            max_order_count,
+            max_order_notional,
+        },
+    })
+}
+
+fn hyperliquid_adapter_validation_error(
+    client_key: &str,
+    field: &'static str,
+    message: impl Into<String>,
+) -> anyhow::Error {
+    anyhow::Error::new(BoltV3AdapterMappingError::ValidationInvariant {
+        client_key: client_key.to_string(),
+        field,
+        message: message.into(),
+    })
 }
 
 fn parse_secrets_config(
@@ -857,7 +1020,7 @@ fn validate_surface_live_submit_approval(
             ),
         });
     };
-    let Some(consumed) = context.runtime_approvals.live_submit else {
+    let Some(consumed_payload) = context.runtime_approvals.live_submit else {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             client_key: client_key.to_string(),
             field: "execution.live_submit_approval_id",
@@ -867,7 +1030,20 @@ fn validate_surface_live_submit_approval(
             ),
         });
     };
-    let Some(consumed) = consumed.downcast_ref::<HyperliquidLiveSubmitApprovalConsumption>() else {
+    let consumed = if let Some(consumed) =
+        consumed_payload.downcast_ref::<HyperliquidLiveSubmitApprovalConsumption>()
+    {
+        consumed
+    } else if let Some(approvals) = consumed_payload.downcast_ref::<ProviderLiveSubmitApprovals>() {
+        approvals
+            .get_as::<HyperliquidLiveSubmitApprovalConsumption>(client_key)
+            .ok_or_else(|| BoltV3AdapterMappingError::ValidationInvariant {
+                client_key: client_key.to_string(),
+                field: "execution.live_submit_approval_id",
+                message: "consumed live-submit approval bundle does not contain this client"
+                    .to_string(),
+            })?
+    } else {
         return Err(BoltV3AdapterMappingError::ValidationInvariant {
             client_key: client_key.to_string(),
             field: "execution.live_submit_approval_id",

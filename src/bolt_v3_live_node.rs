@@ -76,7 +76,10 @@ use ustr::Ustr;
 use zeroize::Zeroizing;
 
 use crate::{
-    bolt_v3_adapters::{BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters},
+    bolt_v3_adapters::{
+        BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters,
+        map_bolt_v3_adapters_with_runtime_approvals,
+    },
     bolt_v3_canary_proof_executor::register_canary_proof_executor_on_node,
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
@@ -94,7 +97,10 @@ use crate::{
         BoltV3LiveCanaryGateError, check_bolt_v3_live_canary_pre_consumption_gate,
         current_build_head_sha,
     },
-    bolt_v3_providers,
+    bolt_v3_providers::{
+        self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
+        ProviderRuntimeApprovals,
+    },
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
         check_no_forbidden_credential_env_vars, check_no_forbidden_credential_env_vars_with,
@@ -2015,8 +2021,10 @@ pub fn build_bolt_v3_live_node(
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     let transport_loaded = trade_transport_loaded_config(loaded)?;
     let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
-    let adapters = map_bolt_v3_adapters(&transport_loaded, &resolved)
-        .map_err(BoltV3LiveNodeError::AdapterMapping)?;
+    let adapters = live_node_adapter_configs_with_provider_live_submit_approvals(
+        &transport_loaded,
+        &resolved,
+    )?;
     let (runtime, _summary) = build_live_node_with_clients(&transport_loaded, &resolved, adapters)?;
     Ok(runtime)
 }
@@ -2035,6 +2043,108 @@ fn resolve_bolt_v3_live_node_secrets(
     // path is involved before any path has been read.
     let session = SsmResolverSession::new().map_err(BoltV3LiveNodeError::SecretResolverSetup)?;
     resolve_bolt_v3_secrets(&session, loaded).map_err(BoltV3LiveNodeError::SecretResolution)
+}
+
+fn live_node_adapter_configs_with_provider_live_submit_approvals(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+) -> Result<BoltV3AdapterConfigs, BoltV3LiveNodeError> {
+    if configured_provider_live_submit_client_count(loaded)? == 0 {
+        return map_bolt_v3_adapters(loaded, resolved).map_err(BoltV3LiveNodeError::AdapterMapping);
+    }
+    let build_head_sha = current_build_head_sha().ok_or_else(|| {
+        BoltV3LiveNodeError::OperatorApprovalConsumption(anyhow::anyhow!(
+            "bolt-v3 build head_sha is unavailable or invalid"
+        ))
+    })?;
+    let now_unix_seconds = current_unix_seconds_u64()?;
+    live_node_adapter_configs_with_provider_approvals_at(
+        loaded,
+        resolved,
+        now_unix_seconds,
+        build_head_sha,
+    )
+}
+
+fn live_node_adapter_configs_with_provider_approvals_at(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    now_unix_seconds: u64,
+    build_head_sha: &str,
+) -> Result<BoltV3AdapterConfigs, BoltV3LiveNodeError> {
+    let approvals = load_provider_live_submit_approvals_for_live_node(
+        loaded,
+        resolved,
+        now_unix_seconds,
+        build_head_sha,
+    )?;
+    if approvals.is_empty() {
+        return map_bolt_v3_adapters(loaded, resolved).map_err(BoltV3LiveNodeError::AdapterMapping);
+    }
+    map_bolt_v3_adapters_with_runtime_approvals(
+        loaded,
+        resolved,
+        ProviderRuntimeApprovals {
+            live_submit: Some(&approvals),
+        },
+    )
+    .map_err(BoltV3LiveNodeError::AdapterMapping)
+}
+
+fn configured_provider_live_submit_client_count(
+    loaded: &LoadedBoltV3Config,
+) -> Result<usize, BoltV3LiveNodeError> {
+    let mut count = 0;
+    for client in loaded.root.clients.values() {
+        let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str())
+        else {
+            continue;
+        };
+        if binding.load_live_submit_approval.is_some() && client.execution.is_some() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn load_provider_live_submit_approvals_for_live_node(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    now_unix_seconds: u64,
+    build_head_sha: &str,
+) -> Result<ProviderLiveSubmitApprovals, BoltV3LiveNodeError> {
+    let mut approvals = ProviderLiveSubmitApprovals::empty();
+    for (client_key, client) in &loaded.root.clients {
+        let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str())
+        else {
+            continue;
+        };
+        let Some(load_live_submit_approval) = binding.load_live_submit_approval else {
+            continue;
+        };
+        if let Some(approval) = load_live_submit_approval(ProviderLiveSubmitApprovalContext {
+            loaded,
+            client_key,
+            client,
+            resolved,
+            now_unix_seconds,
+            build_head_sha,
+        })
+        .map_err(BoltV3LiveNodeError::OperatorApprovalConsumption)?
+        {
+            approvals.insert(client_key.clone(), approval);
+        }
+    }
+    Ok(approvals)
+}
+
+fn current_unix_seconds_u64() -> Result<u64, BoltV3LiveNodeError> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|source| {
+            BoltV3LiveNodeError::OperatorApprovalConsumption(anyhow::Error::new(source))
+        })?
+        .as_secs())
 }
 
 pub fn build_bolt_v3_no_submit_live_node(
@@ -3203,8 +3313,10 @@ where
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
     let resolved = resolve_bolt_v3_secrets_with(&transport_loaded, resolver)
         .map_err(BoltV3LiveNodeError::SecretResolution)?;
-    let adapters = map_bolt_v3_adapters(&transport_loaded, &resolved)
-        .map_err(BoltV3LiveNodeError::AdapterMapping)?;
+    let adapters = live_node_adapter_configs_with_provider_live_submit_approvals(
+        &transport_loaded,
+        &resolved,
+    )?;
     build_live_node_with_clients(&transport_loaded, &resolved, adapters)
 }
 
@@ -3653,10 +3765,130 @@ mod tests {
         DataClientReadinessProbeQuoteTargetSource, LiveCanaryProofPolicyBlock,
         LiveCanaryProofTimeInForce, ReferenceDataBlock,
     };
+    use crate::bolt_v3_providers::hyperliquid::{
+        ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
+    };
+    use crate::bolt_v3_providers::hyperliquid_artifacts::{
+        HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
+        write_hyperliquid_live_submit_approval_artifact,
+    };
     use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
     use nautilus_model::enums::{BookAction, OrderSide};
     use nautilus_model::identifiers::TraderId;
     use nautilus_model::types::{Price, Quantity};
+
+    #[test]
+    fn live_node_adapter_mapping_consumes_hyperliquid_live_submit_approval_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let private_key = format!("0x{}", "1".repeat(64));
+        let mut loaded = fixture_loaded_config();
+        loaded.config_bundle_checksum = "b".repeat(64);
+        loaded.root.clients.clear();
+        loaded.root.clients.insert(
+            "hyperliquid_perps".to_string(),
+            toml::from_str(&format!(
+                r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit_approval_id = "hl-standard-perps-approval-001"
+live_submit_approval_artifact_path = "{}"
+live_submit_approval_artifact_max_bytes = 16384
+live_submit_max_order_count = 2
+live_submit_max_order_notional = "25.00"
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+                approval_path.display()
+            ))
+            .expect("Hyperliquid client TOML should parse"),
+        );
+        let build_head_sha = "a".repeat(40);
+        let now = 1_800_000_000;
+        write_hyperliquid_live_submit_approval_artifact(
+            HyperliquidLiveSubmitApprovalInput {
+                approval_id: "hl-standard-perps-approval-001".to_string(),
+                base_sha: build_head_sha.clone(),
+                provider_id: "hyperliquid_perps".to_string(),
+                product_surface:
+                    crate::bolt_v3_providers::hyperliquid::HyperliquidProductSurface::StandardPerps,
+                toml_checksum: loaded.config_bundle_checksum.clone(),
+                signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(&private_key),
+                order_limits: HyperliquidLiveSubmitOrderLimits {
+                    max_order_count: 2,
+                    max_order_notional: "25.00".to_string(),
+                },
+                expires_at: now + 300,
+                used_at: None,
+            },
+            &approval_path,
+        )
+        .expect("approval artifact should write");
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::from([(
+                "hyperliquid_perps".to_string(),
+                Arc::new(ResolvedBoltV3HyperliquidSecrets {
+                    private_key: Zeroizing::new(private_key),
+                    account_address: Zeroizing::new(format!("0x{}", "2".repeat(40))),
+                    vault_address: None,
+                }) as _,
+            )]),
+        };
+
+        let adapters = live_node_adapter_configs_with_provider_approvals_at(
+            &loaded,
+            &resolved,
+            now,
+            &build_head_sha,
+        )
+        .expect("production live-node mapping should consume approval and map execution");
+
+        assert!(
+            adapters
+                .clients
+                .get("hyperliquid_perps")
+                .and_then(|client| client.execution.as_ref())
+                .is_some(),
+            "consumed approval should reach the execution adapter mapper"
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&approval_path).expect("consumed approval should still read"),
+        )
+        .expect("consumed approval JSON should parse");
+        assert_eq!(persisted["used_at"], now);
+
+        let error = live_node_adapter_configs_with_provider_approvals_at(
+            &loaded,
+            &resolved,
+            now + 1,
+            &build_head_sha,
+        )
+        .expect_err("persisted consumption must prevent approval reuse");
+        assert!(
+            error.to_string().contains("used_at"),
+            "reuse failure should identify the spent approval field: {error}"
+        );
+    }
 
     #[test]
     fn chunk_universe_splits_into_consecutive_chunks_of_at_most_n() {

@@ -59,7 +59,7 @@
 **Independent Test**: The shared exchange-mutation guard fails closed for submit, cancel, modify, transfer, or account mutation; pinned NT `userFees` mismatch blocks live submit.
 
 - [x] T029 [US3] Remove Hyperliquid-specific no-submit readiness artifact from this slice.
-- [x] T030 [US3] Keep Hyperliquid live submit fail-closed until later product proof and approval wiring.
+- [x] T030 [US3] Keep Hyperliquid live submit fail-closed until later product proof, fee/rate reconciliation, routing, and order-limit enforcement.
 - [x] T031 [US3] Add failing exchange-mutation counter test in `tests/hyperliquid_fail_closed.rs`.
 - [x] T032 [US3] Implement exchange-mutation guard in shared execution/admission code under `src/`.
 - [x] T033 [US3] Add failing `userFees` request-weight test in `tests/hyperliquid_fail_closed.rs`.
@@ -110,6 +110,17 @@
 - [x] T049A [US5] Add failing Hyperliquid data-only mapping test in `tests/bolt_v3_adapter_mapping.rs`.
 - [x] T049B [US5] Implement Hyperliquid data config validation and NT data adapter mapping in `src/bolt_v3_providers/hyperliquid.rs`.
 - [x] T049C [US5] Add provider-binding validation tests for Hyperliquid data config in `tests/bolt_v3_provider_binding.rs`.
+
+## Phase 8B - Shared Live-Node Approval Loading
+
+**Goal**: Production live-node adapter mapping can consume provider-owned live-submit approval artifacts without making core live-node code depend on Hyperliquid internals.
+
+**Independent Test**: Production live-node adapter mapping consumes the configured Hyperliquid approval artifact once, persists `used_at`, maps the execution client, and rejects replay.
+
+- [x] T049D Add failing production live-node approval-consumption test in `src/bolt_v3_live_node.rs`.
+- [x] T049E Add provider-neutral live-submit approval hook and Hyperliquid artifact loading in `src/bolt_v3_providers/mod.rs` and `src/bolt_v3_providers/hyperliquid.rs`.
+- [x] T049F Persist consumed Hyperliquid approval artifacts and pass consumed approvals through provider-neutral runtime approvals.
+- [x] T049G Update literal audit and source-fence coverage for live-node approval loading.
 
 ## Phase 9 - Verification
 

@@ -36,10 +36,15 @@ Validation:
 - `product_surfaces`: enabled discovery surfaces.
 - `account_id`
 - execution endpoints and retry policy.
+- `live_submit_approval_id`
+- `live_submit_approval_artifact_path`
+- `live_submit_approval_artifact_max_bytes`
+- `live_submit_max_order_count`
+- `live_submit_max_order_notional`
 
 Validation:
 - Execution requires SSM-backed secrets.
-- Live-submit mapping requires consumed surface-bound approval.
+- Live-submit mapping requires consumed surface-bound approval loaded through the provider binding before production live-node adapter mapping.
 
 ## HyperliquidSecretSet
 

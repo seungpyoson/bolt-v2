@@ -1,12 +1,17 @@
-use std::{path::Path, str::FromStr};
+use std::{
+    fs,
+    io::{Seek, Write},
+    path::Path,
+    str::FromStr,
+};
 
 use rust_decimal::Decimal;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     bolt_v3_operator_artifacts::{
         BoltV3OperatorArtifactError, WrittenOperatorArtifact, is_lowercase_sha256,
-        write_json_artifact_create_new,
+        read_file_bounded, write_json_artifact_create_new,
     },
     bolt_v3_submit_admission::{BoltV3ExchangeMutationCounts, validate_no_exchange_mutations},
 };
@@ -136,7 +141,7 @@ fn validate_hyperliquid_latency_profile_config(
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HyperliquidLiveSubmitOrderLimits {
     pub max_order_count: u32,
     pub max_order_notional: String,
@@ -165,11 +170,11 @@ pub struct HyperliquidLiveSubmitApprovalInput {
     pub used_at: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HyperliquidLiveSubmitApprovalArtifact {
     pub schema_version: u32,
-    pub record_kind: &'static str,
-    pub provider_key: &'static str,
+    pub record_kind: String,
+    pub provider_key: String,
     pub approval_id: String,
     pub base_sha: String,
     pub provider_id: String,
@@ -186,6 +191,7 @@ pub struct HyperliquidLiveSubmitApprovalConsumption {
     approval_id: String,
     product_surface: HyperliquidProductSurface,
     used_at: u64,
+    order_limits: HyperliquidLiveSubmitOrderLimits,
 }
 
 impl HyperliquidLiveSubmitApprovalConsumption {
@@ -200,6 +206,10 @@ impl HyperliquidLiveSubmitApprovalConsumption {
     pub fn used_at(&self) -> u64 {
         self.used_at
     }
+
+    pub fn order_limits(&self) -> &HyperliquidLiveSubmitOrderLimits {
+        &self.order_limits
+    }
 }
 
 pub fn build_hyperliquid_live_submit_approval_artifact(
@@ -208,8 +218,8 @@ pub fn build_hyperliquid_live_submit_approval_artifact(
     validate_hyperliquid_live_submit_approval_input(&input)?;
     Ok(HyperliquidLiveSubmitApprovalArtifact {
         schema_version: LIVE_SUBMIT_APPROVAL_SCHEMA_VERSION,
-        record_kind: LIVE_SUBMIT_APPROVAL_RECORD_KIND,
-        provider_key: hyperliquid::KEY,
+        record_kind: LIVE_SUBMIT_APPROVAL_RECORD_KIND.to_string(),
+        provider_key: hyperliquid::KEY.to_string(),
         approval_id: input.approval_id,
         base_sha: input.base_sha,
         provider_id: input.provider_id,
@@ -220,6 +230,55 @@ pub fn build_hyperliquid_live_submit_approval_artifact(
         expires_at: input.expires_at,
         used_at: input.used_at,
     })
+}
+
+pub fn read_hyperliquid_live_submit_approval_artifact(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<HyperliquidLiveSubmitApprovalArtifact, BoltV3OperatorArtifactError> {
+    let invalid_artifact =
+        || provider_artifact_invalid(LIVE_SUBMIT_APPROVAL_ARTIFACT, "approval_artifact");
+    let bytes = read_file_bounded(path, max_bytes).map_err(|_| invalid_artifact())?;
+    serde_json::from_slice(&bytes).map_err(|_| invalid_artifact())
+}
+
+pub fn persist_consumed_hyperliquid_live_submit_approval_artifact(
+    path: &Path,
+    artifact: &HyperliquidLiveSubmitApprovalArtifact,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let bytes =
+        serde_json::to_vec_pretty(artifact).map_err(BoltV3OperatorArtifactError::Serialize)?;
+    let mut file =
+        open_hyperliquid_live_submit_approval_file_for_spend(path).map_err(|source| {
+            BoltV3OperatorArtifactError::Write {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
+    file.set_len(0)
+        .and_then(|()| file.rewind())
+        .and_then(|()| file.write_all(&bytes))
+        .and_then(|()| file.sync_all())
+        .map_err(|source| BoltV3OperatorArtifactError::Write {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+#[cfg(unix)]
+fn open_hyperliquid_live_submit_approval_file_for_spend(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_hyperliquid_live_submit_approval_file_for_spend(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new().read(true).write(true).open(path)
 }
 
 pub fn write_hyperliquid_live_submit_approval_artifact(
@@ -292,6 +351,7 @@ pub fn consume_hyperliquid_live_submit_approval_artifact(
         approval_id: expected_approval_id.to_string(),
         product_surface: binding.product_surface,
         used_at: now_unix_seconds,
+        order_limits: binding.order_limits.clone(),
     })
 }
 

@@ -35,7 +35,7 @@ As an operator, I can prove standard-perps fee/rate policy and exchange-mutation
 
 As an operator, I can prove the standard-perps adapter mapper accepts NT execution config only when supplied an already-consumed approval artifact tied to current code, config, surface, limits, expiry, and provider identity.
 
-**Independent Test**: Adapter mapping is rejected when the approval artifact is missing, stale, reused, mismatched, expired, or wider than configured order limits. Production live-node construction remains blocked until a follow-up slice wires approval consumption into the live-node entrypoint.
+**Independent Test**: Adapter mapping is rejected when the approval artifact is missing, stale, reused, mismatched, expired, or wider than configured order limits. Production live-node construction consumes the configured Hyperliquid approval artifact before adapter mapping and rejects replay after `used_at` is persisted.
 
 ### User Story 5 - Register Hyperliquid Market Data (Priority: P2)
 
@@ -100,4 +100,4 @@ As an operator, I can configure local info-node and placement profile settings w
 
 - The current pinned NT revision remains the source of truth unless current `main` requires a coordinated dependency update.
 - Hyperliquid docs and public metadata endpoints are authoritative only for documented public behavior; Bolt proof gates decide live submit readiness.
-- Live standard-perps submit is a later gated slice after fee/rate policy reconciliation and live-node approval wiring, not part of the initial implementation claim.
+- Live standard-perps submit is a later gated slice after fee/rate policy reconciliation, product proof, routing, and submit-admission order-limit enforcement, not part of the initial implementation claim.

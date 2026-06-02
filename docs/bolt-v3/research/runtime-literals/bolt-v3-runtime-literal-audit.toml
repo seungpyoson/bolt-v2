@@ -15104,12 +15104,76 @@ classification = '''blocked_before_submit_zero_admitted_sentinel'''
 reason = '''Structural check that a canary/proof run admitted zero live orders (blocked-before-submit outcome); the operator order-count cap comes from the validated live canary gate report.'''
 
 [[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''let mut count = 0;'''
+classification = '''hyperliquid_live_submit_client_counter_initial_value'''
+reason = '''This initializes a structural count of configured provider live-submit clients; operator approval limits remain TOML/artifact-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''count += 1;'''
+classification = '''hyperliquid_live_submit_client_counter_increment'''
+reason = '''This increments a structural count of configured provider live-submit clients; operator approval limits remain TOML/artifact-owned.'''
+
+[[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''number'''
 literal = '''0'''
 context = '''&& cfg.outcome_settlement_poll_secs == 0'''
 classification = '''hip4_settlement_poll_zero_rejection_sentinel'''
 reason = '''This rejects a zero HIP-4 settlement poll cadence before adapter mapping; the accepted cadence remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution"'''
+context = '''"execution",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels parsing for the TOML-owned Hyperliquid execution block before approval loading; the execution values themselves remain TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.live_submit_approval_artifact_max_bytes"'''
+context = '''"execution.live_submit_approval_artifact_max_bytes",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit approval artifact byte cap; the cap value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.live_submit_approval_artifact_path"'''
+context = '''"execution.live_submit_approval_artifact_path",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit approval artifact path; the path value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.live_submit_max_order_count"'''
+context = '''"execution.live_submit_max_order_count",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit max order count bound; the bound value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.live_submit_max_order_notional"'''
+context = '''"execution.live_submit_max_order_notional",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit max order notional bound; the bound value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.product_surfaces"'''
+context = '''"execution.product_surfaces",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid product surface bound to a consumed live-submit approval; the surface value itself remains TOML-owned.'''
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
@@ -15554,6 +15618,14 @@ reason = '''This is the stable domain-separation tag for hashing signer-owner ev
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''string'''
+literal = '''b"bolt-v3-hyperliquid-live-submit-signer-v1:"'''
+context = '''hasher.update(b"bolt-v3-hyperliquid-live-submit-signer-v1:");'''
+classification = '''hyperliquid_live_submit_signer_fingerprint_hash_domain'''
+reason = '''This is the stable domain-separation tag for hashing the SSM-resolved signer into approval-binding evidence; it does not expose or configure the secret value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
 literal = '''"://"'''
 context = '''|| !value[parsed.scheme().len()..].starts_with("://")'''
 classification = '''url_syntax_validation_literal'''
@@ -15790,6 +15862,22 @@ literal = '''"approval_artifact"'''
 context = '''"approval_artifact",'''
 classification = '''provider_artifact_validation_field'''
 reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"approval_artifact"'''
+context = '''|| provider_artifact_invalid(LIVE_SUBMIT_APPROVAL_ARTIFACT, "approval_artifact");'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact read/parse validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''file.set_len(0)'''
+classification = '''hyperliquid_live_submit_approval_file_truncate_offset'''
+reason = '''This is the structural truncate length used to overwrite a consumed Hyperliquid approval artifact after validation; operator limits remain artifact/TOML-owned.'''
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''

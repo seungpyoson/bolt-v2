@@ -206,10 +206,11 @@
 
 **Goal**: Hyperliquid execution strategies resolve fees through the provider registry instead of failing on a missing provider binding or silently assuming zero fees.
 
-**Independent Test**: The Hyperliquid provider binding builds a fee provider from provider-owned execution config, and that provider returns no fee bound until product-specific Hyperliquid fee proof exists.
+**Independent Test**: The Hyperliquid provider binding builds a fee provider from provider-owned execution config, returns no fee bound before warmup, and warms from the NT `userFees` response for the SSM-resolved account address.
 
 - [x] T049AF Add failing provider-binding test for Hyperliquid fee-provider construction.
-- [x] T049AG Register a Hyperliquid fee-provider builder that fails closed without product fee proof.
+- [x] T049AG Register a Hyperliquid fee-provider builder with an empty cold cache.
+- [x] T049AH Warm the Hyperliquid fee provider from `userFees.userCrossRate` and cache the taker fee bound in basis points.
 
 ## Phase 9 - Verification
 

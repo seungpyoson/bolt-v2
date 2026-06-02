@@ -15233,6 +15233,22 @@ reason = '''This is Hyperliquid's documented fixed Info API userFees request wei
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"userCrossRate"'''
+context = '''const USER_CROSS_RATE_FIELD: &str = "userCrossRate";'''
+classification = '''hyperliquid_protocol_fee_field'''
+reason = '''This is the fixed Hyperliquid userFees response field used to read the account taker/cross rate; account selection and endpoints remain TOML/SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''number'''
+literal = '''10_000'''
+context = '''const BASIS_POINTS_PER_UNIT_RATE: i64 = 10_000;'''
+classification = '''basis_point_conversion_factor'''
+reason = '''This is the fixed conversion from a unit fee rate to basis points; the fee rate itself comes from Hyperliquid userFees.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''number'''
 literal = '''1200'''
 context = '''pub const REST_EGRESS_CAP_PER_MINUTE: u32 = 1200;'''

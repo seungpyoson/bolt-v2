@@ -4,10 +4,10 @@
 
 - Issue: https://github.com/seungpyoson/bolt-v2/issues/517
 - Branch: `codex/517-kill-switch-phase3-runtime-router-plan`
-- Stacked base: `codex/517-kill-switch-phase2-admission` at `ca5dc2107dd24d18e5a9cf10ef466044fe98515a`
+- Stacked base: `codex/517-kill-switch-phase2-admission` at `36b64490a868129cbcf823aeeaf2ccc59245c53b`
 - Upstream Phase 1 PR: https://github.com/seungpyoson/bolt-v2/pull/521
 - Upstream Phase 2 PR: https://github.com/seungpyoson/bolt-v2/pull/523
-- Scope: Phase 3 planning only. The future implementation slice may wire durable kill-switch state into live-node startup admission and add a no-submit action-router skeleton. It must not add live NT cancel, live NT flatten, final reconciliation proof, runtime loss-governor triggers, or operator reset UX.
+- Scope: Phase 3 planning gate. The implementation slice may wire durable kill-switch state into live-node startup admission, add non-executing `Cancelling`/`Flattening` durable states for future NT action phases, and add a no-submit action-router skeleton. It must not add live NT cancel, live NT flatten, final reconciliation proof, runtime loss-governor triggers, or operator reset UX.
 
 ## Decision
 
@@ -20,9 +20,10 @@ Plan the next implementation slice around live-node runtime state synchronizatio
 - Runtime startup must load the durable kill-switch state before strategy registration can create submit-capable runtime behavior.
 - Missing, corrupt, unreadable, or unresolved durable kill-switch state fails closed when kill-switch enforcement is enabled.
 - `Armed` maps to normal startup admission behavior.
+- Phase 3 introduces `Cancelling` and `Flattening` as durable, non-executing in-flight states because the current Phase 2 head only defines `Armed`, `Halting`, `Halted`, `Flat`, and `FailedManualIntervention`.
 - `Halting`, `Halted`, `Cancelling`, `Flattening`, `Flat`, and `FailedManualIntervention` sync into the Phase 2 admission latch before any submit path can admit new entry or replace risk.
 - Pinned NT `RiskEngine::set_trading_state` is used only if a safe runtime handle is available at this boundary.
-- If safe NT trading-state mutation is not accessible from the live-node boundary, Phase 3 documents the exact source gap and proves local admission blocking instead.
+- NT remains preferred whenever the pinned API exposes a safe primitive at the live boundary. If safe NT trading-state mutation is not accessible from the live-node boundary, Phase 3 documents the exact source gap and proves local admission blocking instead of inventing a parallel execution system.
 - `TradingState::Reducing` is never treated as flatten authorization by itself.
 - Any future transition back to `TradingState::Active` stays out of scope until manual reset authorization and clean reconciliation proof are implemented.
 - The no-submit action router emits typed dry-run action decisions and proof metadata only. It must not submit, cancel, replace, amend, flatten, transfer, or call venue-specific APIs.
@@ -32,9 +33,10 @@ Plan the next implementation slice around live-node runtime state synchronizatio
 
 Approach:
 - Add tests that force the live-node startup path to load durable kill-switch state and seed the Phase 2 admission latch before submit-capable runtime behavior exists.
+- Add tests for `Cancelling` and `Flattening` durable state serde, state-kind mapping, and fail-closed reset behavior before runtime sync depends on those states.
 - Add a narrow runtime state-sync boundary that maps durable kill-switch states to local admission latch state.
 - Add a typed no-submit action-router model for future cancel and flatten decisions, but make every action dry-run/proof-only.
-- Probe pinned NT source/API accessibility for `RiskEngine::set_trading_state`; either wire a safe handle or record a source-backed gap with tests proving local fail-closed behavior.
+- Probe pinned NT source/API accessibility for `RiskEngine::set_trading_state`; use it when the live boundary exposes a safe handle, or record a source-backed gap with tests proving local fail-closed behavior.
 - Extend source fences for strategy-local kill-switch runtime/router policy and direct action bypass tokens.
 
 Upside:
@@ -84,24 +86,26 @@ Use Option A. Phase 3 should be a reviewable runtime-connection plan and, after 
 
 ## Phase 3 TDD Sequence
 
-1. RED: live-node startup test proves enabled kill-switch enforcement fails closed when durable state evidence is missing or unreadable.
-2. RED: live-node startup test proves corrupt durable state fails closed and seeds submit admission with a latched state before any entry or replace request can pass.
-3. GREEN: add the minimal durable-state load and admission-latch sync boundary.
-4. RED: startup/admission test proves `Armed` durable state preserves existing submit-admission behavior.
-5. RED: startup/admission test proves `Halting`, `Halted`, `Cancelling`, `Flattening`, `Flat`, and `FailedManualIntervention` block `Entry` and `ReplaceSubmit` through the Phase 2 latch.
-6. GREEN: map every durable kill-switch state into the local admission context exhaustively.
-7. RED: NT source/API probe test proves whether the pinned live boundary can safely call `RiskEngine::set_trading_state`.
-8. GREEN: if accessible, add the minimal trading-state sync adapter and map latched states to the selected NT trading state; if not accessible, add a source-gap artifact enforced by a machine-checkable test and keep local admission blocking as the enforced behavior.
-9. RED: test proves no Phase 3 path restores `TradingState::Active`.
-10. RED: test proves `TradingState::Reducing` alone cannot authorize flatten-equivalent action output or bypass forced-reduction proof metadata.
-11. GREEN: keep reactivation impossible until the later manual-reset and reconciliation slices, and keep `Reducing` as a guardrail rather than an authorization source.
-12. RED: add no-submit action-router tests for dry-run `CancelOutstandingRisk` and `FlattenPositions` action classes, each bound to halt id, action id, config hash, source timestamp, and scope filters.
-13. GREEN: add typed dry-run action requests and proof metadata without executing NT cancel/flatten calls.
-14. RED: router tests prove entry, replace, live submit, live cancel, live flatten, and venue-specific calls are rejected as Phase 3 action outputs.
-15. GREEN: constrain router outputs to proof-only dry-run actions.
-16. RED: source-fence tests prove strategies cannot import or instantiate kill-switch runtime/router policy and cannot reference direct kill/cancel/flatten bypass calls.
-17. GREEN: extend existing source fences without weakening current strategy submit-policy checks.
-18. REFACTOR: keep runtime sync, admission sync, and router model separate enough that later cancel and flatten phases can implement execution without changing submit-admission semantics.
+1. RED: durable state-machine tests prove the current Phase 2 state enum lacks non-executing `Cancelling` and `Flattening` variants required by the design.
+2. GREEN: add `Cancelling` and `Flattening` durable states, state-kind mapping, serde round trips, and fail-closed reset behavior without adding live cancel or flatten execution.
+3. RED: live-node startup test proves enabled kill-switch enforcement fails closed when durable state evidence is missing or unreadable.
+4. RED: live-node startup test proves corrupt durable state fails closed and seeds submit admission with a latched state before any entry or replace request can pass.
+5. GREEN: add the minimal durable-state load and admission-latch sync boundary.
+6. RED: startup/admission test proves `Armed` durable state preserves existing submit-admission behavior.
+7. RED: startup/admission test proves `Halting`, `Halted`, `Cancelling`, `Flattening`, `Flat`, and `FailedManualIntervention` block `Entry` and `ReplaceSubmit` through the Phase 2 latch.
+8. GREEN: map every durable kill-switch state into the local admission context exhaustively.
+9. RED: NT source/API probe test proves whether the pinned live boundary can safely call `RiskEngine::set_trading_state`.
+10. GREEN: if accessible, add the minimal trading-state sync adapter and map latched states to the selected NT trading state; if not accessible, add a source-gap artifact enforced by a machine-checkable test and keep local admission blocking as the enforced behavior.
+11. RED: test proves no Phase 3 path restores `TradingState::Active`.
+12. RED: test proves `TradingState::Reducing` alone cannot authorize flatten-equivalent action output or bypass forced-reduction proof metadata.
+13. GREEN: keep reactivation impossible until the later manual-reset and reconciliation slices, and keep `Reducing` as a guardrail rather than an authorization source.
+14. RED: add no-submit action-router tests for dry-run `CancelOutstandingRisk` and `FlattenPositions` action classes, each bound to halt id, action id, config hash, source timestamp, and scope filters.
+15. GREEN: add typed dry-run action requests and proof metadata without executing NT cancel/flatten calls.
+16. RED: router tests prove entry, replace, live submit, live cancel, live flatten, and venue-specific calls are rejected as Phase 3 action outputs.
+17. GREEN: constrain router outputs to proof-only dry-run actions.
+18. RED: source-fence tests prove strategies cannot import or instantiate kill-switch runtime/router policy and cannot reference direct kill/cancel/flatten bypass calls.
+19. GREEN: extend existing source fences without weakening current strategy submit-policy checks.
+20. REFACTOR: keep runtime sync, admission sync, and router model separate enough that later cancel and flatten phases can implement execution without changing submit-admission semantics.
 
 ## Phase 3 Acceptance
 
@@ -109,6 +113,7 @@ Use Option A. Phase 3 should be a reviewable runtime-connection plan and, after 
 - No live NT cancel, flatten, reconciliation, loss-governor trigger, or operator reset UI is added.
 - Enabled kill-switch runtime startup fails closed on missing, corrupt, unreadable, or unresolved durable state.
 - Durable non-`Armed` kill-switch state seeds the Phase 2 admission latch before entry/replace admission can pass.
+- `Cancelling` and `Flattening` are added only as durable non-executing state-machine states; no NT cancel or flatten execution is introduced in Phase 3.
 - `Armed` durable state preserves current startup and submit-admission behavior.
 - The chosen NT trading-state behavior is source-backed: either a safe `RiskEngine::set_trading_state` handle is used, or an explicit source-gap artifact explains why local admission blocking is the only enforced behavior in this slice.
 - Any `RiskEngine::set_trading_state` source-gap artifact is enforced by a test, not only by prose documentation.

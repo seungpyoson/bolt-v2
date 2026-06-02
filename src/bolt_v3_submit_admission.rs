@@ -270,10 +270,6 @@ impl BoltV3SubmitAdmissionState {
         lock_inner(&self.inner).loss_snapshot = Some(snapshot);
     }
 
-    pub fn update_position_sizing_state(&self, state: NtDerivedSizingState) {
-        self.update_position_sizing_nt_components(components_from_sizing_state(state));
-    }
-
     pub fn update_position_sizing_nt_components(
         &self,
         components: BoltV3SubmitPositionSizingNtComponents,

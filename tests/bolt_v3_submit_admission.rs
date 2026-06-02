@@ -1031,27 +1031,6 @@ fn configured_submit_sizer_rejects_before_startup_rebuild_even_with_fresh_nt_sta
 }
 
 #[test]
-fn direct_state_update_discards_hostile_reservation_evidence() {
-    let admission = position_sized_admission();
-    let mut hostile_state = fresh_sizing_state(1_000);
-    hostile_state.reservation_snapshot.source = "hostile_feed".to_string();
-    hostile_state.reservation_snapshot.observed_at_ns = 9_999;
-    hostile_state
-        .reservation_snapshot
-        .all_live_reservations_attributed = true;
-
-    admission.update_position_sizing_state(hostile_state);
-
-    let state = admission
-        .position_sizer_state_snapshot()
-        .expect("component state should be retained");
-    assert_eq!(state.reservation_snapshot.source, "bolt_reservation_ledger");
-    assert_eq!(state.reservation_snapshot.observed_at_ns, 1_000);
-    assert!(!state.reservation_snapshot.all_live_reservations_attributed);
-    assert_eq!(admission.position_sizer_reconciled(), Some(false));
-}
-
-#[test]
 fn nt_component_update_preserves_submit_owned_reservation_snapshot() {
     let admission = position_sized_admission();
 
@@ -1064,6 +1043,29 @@ fn nt_component_update_preserves_submit_owned_reservation_snapshot() {
     assert_eq!(state.reservation_snapshot.observed_at_ns, 1_000);
     assert!(!state.reservation_snapshot.all_live_reservations_attributed);
     assert_eq!(admission.position_sizer_reconciled(), Some(false));
+}
+
+#[test]
+fn position_sizing_components_source_fence_blocks_whole_state_injection() {
+    let source = std::fs::read_to_string("src/bolt_v3_submit_admission.rs")
+        .expect("submit-admission source should be readable");
+    assert!(
+        !source.contains("pub fn update_position_sizing_state("),
+        "submit admission must not expose public whole-state sizing injection"
+    );
+
+    let components_struct_start = source
+        .find("pub struct BoltV3SubmitPositionSizingNtComponents")
+        .expect("submit admission must expose the NT-components struct");
+    let components_struct_tail = &source[components_struct_start..];
+    let components_struct_end = components_struct_tail
+        .find("\n}\n\n")
+        .expect("NT-components struct must be syntactically closed");
+    let components_struct = &components_struct_tail[..components_struct_end];
+    assert!(
+        !components_struct.contains("reservation_snapshot"),
+        "NT components must not carry reservation_snapshot; Bolt owns the reservation ledger"
+    );
 }
 
 #[test]

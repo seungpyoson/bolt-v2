@@ -83,6 +83,7 @@ use crate::{
         maker_resync::{LegReconcileSnapshot, MarketReconcileSnapshot, cancel_all_on_kill},
         maker_settlement::{SettlementOutcome, TokenLot, settle},
         maker_stale_quote::MarketStaleQuoteAlarm,
+        portfolio_selection::MarketKey,
         quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketQuote},
         registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError},
         requote_budget::RequoteBudget,
@@ -114,10 +115,51 @@ const GENERATION_STEP: u64 = 1;
 const DESERIALIZE_FAILED_CODE: &str = stringify!(deserialize_failed);
 /// Validation error code: a `[parameters]` knob is outside its domain.
 const PARAMETER_OUT_OF_DOMAIN_CODE: &str = stringify!(parameter_out_of_domain);
+/// Validation error code: the `[[markets]]` list is empty, has a duplicate
+/// market id, or carries an unparseable / non-unique outcome instrument id.
+const MARKETS_INVALID_CODE: &str = stringify!(markets_invalid);
+/// Diagnostic label for the YES outcome instrument field, named from the field
+/// ident itself so the label cannot drift from the config field name.
+const YES_INSTRUMENT_LABEL: &str = stringify!(yes_instrument_id);
+/// Diagnostic label for the NO outcome instrument field, named from the field
+/// ident itself so the label cannot drift from the config field name.
+const NO_INSTRUMENT_LABEL: &str = stringify!(no_instrument_id);
 
 // ---------------------------------------------------------------------------
 // TOML configuration
 // ---------------------------------------------------------------------------
+
+/// One binary market the maker quotes (FR-041 multi-market entry).
+///
+/// Carries the per-market identity (`market_id`), the two outcome instruments,
+/// the binary strike fed to the family fair-value model, and the per-market
+/// maintenance window. A `[[markets]]` TOML array of these is the single source
+/// of truth for the set of markets the shell runs — single-market is just a
+/// list of length one (NO DUAL PATHS). Deserialized with `deny_unknown_fields`
+/// so a stale/misspelled per-market knob is a loud parse error, matching the
+/// parent block's contract.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MakerMarketConfig {
+    /// Stable per-market identity, keyed into the per-market state map and the
+    /// market-unique client order id. Non-empty and unique across the list.
+    pub market_id: String,
+
+    /// YES (leg-a / "up") outcome instrument id.
+    pub yes_instrument_id: String,
+    /// NO (leg-b / "down") outcome instrument id.
+    pub no_instrument_id: String,
+
+    /// Binary strike price fed to the family fair-value model.
+    pub strike_price: f64,
+
+    /// Maintenance window start (ms epoch). `window_duration_ms == 0` disables.
+    pub maintenance_window_start_ms: u64,
+    /// Maintenance window duration in ms (0 = no maintenance window configured).
+    pub maintenance_window_duration_ms: u64,
+    /// Pre-flatten lead-up before the maintenance window (ms).
+    pub maintenance_pre_flatten_lead_ms: u64,
+}
 
 /// The maker's NT-runtime and instrument configuration block.
 ///
@@ -137,18 +179,18 @@ pub struct BinaryOracleMakerConfig {
 
     /// Family key for the fair-value seam (`fair_probability_up_for_family`).
     pub family_key: String,
-    /// Binary strike price fed to the family fair-value model.
-    pub strike_price: f64,
 
     /// Reference (oracle) instrument id whose quotes drive spot + realized vol.
     pub reference_instrument_id: String,
     /// Reference venue label keyed into the realized-vol estimator.
     pub reference_venue: String,
 
-    /// YES (leg-a / "up") outcome instrument id.
-    pub yes_instrument_id: String,
-    /// NO (leg-b / "down") outcome instrument id.
-    pub no_instrument_id: String,
+    /// The binary markets this maker quotes concurrently (FR-041 multi-market).
+    /// A single-market deployment is simply a `[[markets]]` list of length one —
+    /// there is NO separate single-market path. Each entry owns its own outcome
+    /// instruments, strike, and maintenance window; everything else (pricing
+    /// knobs, oracle feed, cadences, throttle budget) is shared across markets.
+    pub markets: Vec<MakerMarketConfig>,
 
     /// Per-leg resting quote size in base/share units (sized through NT
     /// `try_make_qty`).
@@ -173,13 +215,6 @@ pub struct BinaryOracleMakerConfig {
     /// Data-gap staleness threshold (ms): a per-leg book/quote gap beyond this in
     /// the watchdog is treated as a probable reconnect.
     pub data_gap_staleness_ms: u64,
-
-    /// Maintenance window start (ms epoch). `window_duration_ms == 0` disables.
-    pub maintenance_window_start_ms: u64,
-    /// Maintenance window duration in ms (0 = no maintenance window configured).
-    pub maintenance_window_duration_ms: u64,
-    /// Pre-flatten lead-up before the maintenance window (ms).
-    pub maintenance_pre_flatten_lead_ms: u64,
 
     /// Requote threshold: minimum desired-vs-resting price move that triggers a
     /// requote (family price units).
@@ -221,6 +256,69 @@ impl BinaryOracleMakerConfig {
             window_secs: self.trade_flow_window_secs,
             max_samples: self.trade_flow_max_samples,
         }
+    }
+
+    /// Validate the `[[markets]]` list, fail-loud and collecting **all** errors
+    /// (one human-readable line per violation, prefixed with `context`). The list
+    /// must be non-empty; every `market_id` must be non-empty and unique; every
+    /// outcome instrument id must parse to an [`InstrumentId`]; and every
+    /// instrument id must be globally unique across ALL markets (so no instrument
+    /// appears in two markets and `yes != no` within a market). On success the
+    /// returned `Vec` is empty.
+    ///
+    /// Per-market strike / maintenance fields carry no further domain check here:
+    /// `strike_price` is consumed by the family fair-value seam (which fails
+    /// closed on a non-finite/degenerate value), and the maintenance windows are
+    /// `u64` (non-negative by type; `duration == 0` is the documented "no window"
+    /// sentinel) — the same domains the single-market fields carried, now per
+    /// market.
+    fn validate_markets(&self, context: &str) -> Vec<String> {
+        let mut errors: Vec<String> = Vec::new();
+        if self.markets.is_empty() {
+            errors.push(format!(
+                "{context}: markets must contain at least one [[markets]] entry"
+            ));
+            return errors;
+        }
+        let mut seen_market_ids: std::collections::BTreeSet<&str> =
+            std::collections::BTreeSet::new();
+        // Maps each instrument id string to the market_id that first claimed it,
+        // so a collision names both markets.
+        let mut seen_instruments: BTreeMap<&str, &str> = BTreeMap::new();
+        for market in &self.markets {
+            if market.market_id.is_empty() {
+                errors.push(format!(
+                    "{context}: every [[markets]] entry must have a non-empty market_id"
+                ));
+            } else if !seen_market_ids.insert(market.market_id.as_str()) {
+                errors.push(format!(
+                    "{context}: duplicate market_id `{}` — every [[markets]] entry must be unique",
+                    market.market_id
+                ));
+            }
+            for (label, raw_id) in [
+                (YES_INSTRUMENT_LABEL, market.yes_instrument_id.as_str()),
+                (NO_INSTRUMENT_LABEL, market.no_instrument_id.as_str()),
+            ] {
+                if InstrumentId::from_str(raw_id).is_err() {
+                    errors.push(format!(
+                        "{context}: market `{}` {label} `{raw_id}` is not a parseable instrument id",
+                        market.market_id
+                    ));
+                    continue;
+                }
+                match seen_instruments.insert(raw_id, market.market_id.as_str()) {
+                    None => {}
+                    Some(prior_market_id) => {
+                        errors.push(format!(
+                            "{context}: instrument id `{raw_id}` ({label}) is used by more than one market (`{prior_market_id}` and `{}`) — every outcome instrument must be globally unique (and yes != no within a market)",
+                            market.market_id
+                        ));
+                    }
+                }
+            }
+        }
+        errors
     }
 }
 
@@ -330,6 +428,124 @@ impl LegSlot {
             client_order_id: None,
             last_rest_ms: None,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-market state unit (FR-041 multi-market)
+// ---------------------------------------------------------------------------
+
+/// All per-market state plus the per-market config values for ONE binary market.
+///
+/// FR-041 runs N concurrent thin binary markets off one shared bankroll, oracle
+/// feed, and pricing-knob set. Everything that is per-market — the two outcome
+/// instrument ids, the strike, the maintenance window, the lifecycle/governor/
+/// inventory state, both leg books and slots, the per-leg signed-trade-flow
+/// buffers, and the data-gap clocks — lives here, keyed by
+/// [`MarketKey`](crate::strategies::portfolio_selection::MarketKey) on the
+/// strategy. The shared spot feed, family, validated knobs, throttle config, and
+/// admission gate stay on [`BinaryOracleMaker`]. There is no `Default`: a unit is
+/// only ever built from a validated [`MakerMarketConfig`] via
+/// [`MarketUnit::from_config`], so an all-zero unit cannot silently exist.
+struct MarketUnit {
+    yes_instrument_id: InstrumentId,
+    no_instrument_id: InstrumentId,
+    strike_price: f64,
+    maintenance_window_start_ms: u64,
+    maintenance_window_duration_ms: u64,
+    maintenance_pre_flatten_lead_ms: u64,
+    market: MarketQuote,
+    governor: MakerGovernor,
+    inventory: MakerInventory,
+    requote_budget: RequoteBudget,
+    yes_book: MakerLegBook,
+    no_book: MakerLegBook,
+    yes_slot: LegSlot,
+    no_slot: LegSlot,
+    yes_trade_flow: SignedTradeFlow,
+    no_trade_flow: SignedTradeFlow,
+    yes_last_data_ms: Option<u64>,
+    no_last_data_ms: Option<u64>,
+    /// Last settlement booking PnL, retained for observability/tests.
+    last_settlement_pnl: Option<f64>,
+}
+
+impl MarketUnit {
+    /// Build a fresh per-market unit from its validated [`MakerMarketConfig`] and
+    /// the shared inputs it needs (the same values the old single-market `new()`
+    /// initialized the moved fields from). Instrument ids are parsed here from the
+    /// per-market config — `validate_config` already proved they parse.
+    fn from_config(
+        market_cfg: &MakerMarketConfig,
+        kill_thresholds: crate::strategies::maker_governor::KillThresholds,
+        requote_budget: RequoteBudget,
+        supports_modify: bool,
+        flow_config: &SignedTradeFlowConfig,
+    ) -> Self {
+        Self {
+            yes_instrument_id: InstrumentId::from(market_cfg.yes_instrument_id.as_str()),
+            no_instrument_id: InstrumentId::from(market_cfg.no_instrument_id.as_str()),
+            strike_price: market_cfg.strike_price,
+            maintenance_window_start_ms: market_cfg.maintenance_window_start_ms,
+            maintenance_window_duration_ms: market_cfg.maintenance_window_duration_ms,
+            maintenance_pre_flatten_lead_ms: market_cfg.maintenance_pre_flatten_lead_ms,
+            market: MarketQuote::new(supports_modify),
+            governor: MakerGovernor::new(kill_thresholds),
+            inventory: MakerInventory::flat(),
+            requote_budget,
+            yes_book: MakerLegBook::empty(),
+            no_book: MakerLegBook::empty(),
+            yes_slot: LegSlot::idle(),
+            no_slot: LegSlot::idle(),
+            yes_trade_flow: SignedTradeFlow::from_config(flow_config),
+            no_trade_flow: SignedTradeFlow::from_config(flow_config),
+            yes_last_data_ms: None,
+            no_last_data_ms: None,
+            last_settlement_pnl: None,
+        }
+    }
+
+    fn instrument_id_for(&self, leg: Leg) -> InstrumentId {
+        match leg {
+            Leg::Yes => self.yes_instrument_id,
+            Leg::No => self.no_instrument_id,
+        }
+    }
+
+    fn book(&self, leg: Leg) -> &MakerLegBook {
+        match leg {
+            Leg::Yes => &self.yes_book,
+            Leg::No => &self.no_book,
+        }
+    }
+
+    fn slot(&self, leg: Leg) -> &LegSlot {
+        match leg {
+            Leg::Yes => &self.yes_slot,
+            Leg::No => &self.no_slot,
+        }
+    }
+
+    fn slot_mut(&mut self, leg: Leg) -> &mut LegSlot {
+        match leg {
+            Leg::Yes => &mut self.yes_slot,
+            Leg::No => &mut self.no_slot,
+        }
+    }
+
+    fn trade_flow_mut(&mut self, leg: Leg) -> &mut SignedTradeFlow {
+        match leg {
+            Leg::Yes => &mut self.yes_trade_flow,
+            Leg::No => &mut self.no_trade_flow,
+        }
+    }
+
+    /// Whether this unit's `leg` slot tracks `client_order_id` as its live order.
+    fn slot_tracks(&self, leg: Leg, client_order_id: &ClientOrderId) -> bool {
+        self.slot(leg)
+            .client_order_id
+            .as_ref()
+            .is_some_and(|id| id == client_order_id)
     }
 }
 
@@ -453,40 +669,33 @@ pub struct BinaryOracleMaker {
     validated: ValidatedMakerConfig,
     context: StrategyBuildContext,
 
-    yes_instrument_id: InstrumentId,
-    no_instrument_id: InstrumentId,
     reference_instrument_id_parsed: Option<InstrumentId>,
 
-    market: MarketQuote,
-    governor: MakerGovernor,
-    inventory: MakerInventory,
-    requote_budget: RequoteBudget,
     family: BinaryFamily,
-
-    yes_book: MakerLegBook,
-    no_book: MakerLegBook,
-    yes_slot: LegSlot,
-    no_slot: LegSlot,
-
     spot: MakerSpotFeed,
-    trade_flow: BTreeMap<InstrumentId, SignedTradeFlow>,
 
-    yes_last_data_ms: Option<u64>,
-    no_last_data_ms: Option<u64>,
+    /// Per-market state, keyed by the market's stable id. The single source of
+    /// truth for which markets the shell runs is `config.markets`; this map is
+    /// built once in `new()` and never resized at runtime.
+    markets: BTreeMap<MarketKey, MarketUnit>,
+    /// Static reverse index from each outcome instrument id to the market + leg
+    /// it belongs to, built once in `new()`. Routes inbound market-data and
+    /// position events to the owning unit; instrument ids are globally unique
+    /// across markets (enforced by `validate_config`), so the mapping is total.
+    instrument_to_market: BTreeMap<InstrumentId, (MarketKey, Leg)>,
 
-    /// Last settlement booking PnL, retained for observability/tests.
-    last_settlement_pnl: Option<f64>,
     /// Test-only capture of the order intents the shell would submit live, used
     /// to assert the MarketAction -> intent translation without a runtime.
     #[cfg(test)]
     submit_attempts: Vec<MakerSubmitAttempt>,
 }
 
-/// A captured submit attempt (test instrumentation): the leg, side, price, and
-/// whether the admit gate permitted it.
+/// A captured submit attempt (test instrumentation): the market, leg, side,
+/// price, and whether the admit gate permitted it.
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 struct MakerSubmitAttempt {
+    market_key: MarketKey,
     leg: Leg,
     side: QuoteSide,
     price: f64,
@@ -511,39 +720,45 @@ impl BinaryOracleMaker {
             .parameters
             .validate(&context_label)
             .expect("validated binary_oracle_maker parameters");
-        let governor = MakerGovernor::new(validated.kill_thresholds());
-        let requote_budget = RequoteBudget::new(
-            config.requote_max_cost_per_window,
-            config.requote_window_ms,
-            validated.requote_min_interval_ms(),
-        );
         let spot = MakerSpotFeed::from_config(&config);
-        let yes_instrument_id = InstrumentId::from(config.yes_instrument_id.as_str());
-        let no_instrument_id = InstrumentId::from(config.no_instrument_id.as_str());
         let reference_instrument_id_parsed =
             InstrumentId::from_str(config.reference_instrument_id.as_str()).ok();
+        // Build the per-market units + the static instrument->market reverse
+        // index from `config.markets` — the single source of truth for the set of
+        // markets. Each unit gets its OWN requote budget (per-market throttle) and
+        // governor, built from the shared validated knobs. The throttle budget,
+        // signed-trade-flow config, and modify capability are shared inputs.
+        let flow_config = config.signed_trade_flow_config();
+        let mut markets: BTreeMap<MarketKey, MarketUnit> = BTreeMap::new();
+        let mut instrument_to_market: BTreeMap<InstrumentId, (MarketKey, Leg)> = BTreeMap::new();
+        for market_cfg in &config.markets {
+            let market_key = MarketKey::new(market_cfg.market_id.clone());
+            let requote_budget = RequoteBudget::new(
+                config.requote_max_cost_per_window,
+                config.requote_window_ms,
+                validated.requote_min_interval_ms(),
+            );
+            let unit = MarketUnit::from_config(
+                market_cfg,
+                validated.kill_thresholds(),
+                requote_budget,
+                config.supports_modify,
+                &flow_config,
+            );
+            instrument_to_market.insert(unit.yes_instrument_id, (market_key.clone(), Leg::Yes));
+            instrument_to_market.insert(unit.no_instrument_id, (market_key.clone(), Leg::No));
+            markets.insert(market_key, unit);
+        }
         Self {
             core: StrategyCore::new(StrategyConfig {
                 strategy_id: Some(StrategyId::from(config.strategy_id.as_str())),
                 order_id_tag: Some(config.order_id_tag.clone()),
                 ..Default::default()
             }),
-            market: MarketQuote::new(config.supports_modify),
-            governor,
-            inventory: MakerInventory::flat(),
-            requote_budget,
             family: BinaryFamily,
-            yes_book: MakerLegBook::empty(),
-            no_book: MakerLegBook::empty(),
-            yes_slot: LegSlot::idle(),
-            no_slot: LegSlot::idle(),
             spot,
-            trade_flow: BTreeMap::new(),
-            yes_last_data_ms: None,
-            no_last_data_ms: None,
-            last_settlement_pnl: None,
-            yes_instrument_id,
-            no_instrument_id,
+            markets,
+            instrument_to_market,
             reference_instrument_id_parsed,
             validated,
             config,
@@ -567,50 +782,47 @@ impl BinaryOracleMaker {
         ClientId::from(self.config.client_id.as_str())
     }
 
-    fn leg_instrument_id(&self, leg: Leg) -> InstrumentId {
-        match leg {
-            Leg::Yes => self.yes_instrument_id,
-            Leg::No => self.no_instrument_id,
-        }
+    /// Borrow the unit for `market_key`. The map is keyed by every configured
+    /// market, so a key the shell itself derived (from `instrument_to_market`,
+    /// `market_and_leg_for_client_order_id`, or the timer-loop key list) is always
+    /// present; `expect` documents that the key came from this strategy's own
+    /// config, never from untrusted input.
+    fn unit(&self, market_key: &MarketKey) -> &MarketUnit {
+        self.markets
+            .get(market_key)
+            .expect("market_key resolved from this strategy's own config must exist")
     }
 
-    fn leg_book(&self, leg: Leg) -> &MakerLegBook {
-        match leg {
-            Leg::Yes => &self.yes_book,
-            Leg::No => &self.no_book,
-        }
+    fn unit_mut(&mut self, market_key: &MarketKey) -> &mut MarketUnit {
+        self.markets
+            .get_mut(market_key)
+            .expect("market_key resolved from this strategy's own config must exist")
     }
 
-    fn leg_slot(&self, leg: Leg) -> &LegSlot {
-        match leg {
-            Leg::Yes => &self.yes_slot,
-            Leg::No => &self.no_slot,
-        }
+    /// Resolve the `(market, leg)` an outcome instrument id belongs to via the
+    /// static reverse index. Instrument ids are globally unique across markets
+    /// (enforced by `validate_config`), so the mapping is total and unambiguous.
+    fn market_and_leg_for_instrument(
+        &self,
+        instrument_id: InstrumentId,
+    ) -> Option<(MarketKey, Leg)> {
+        self.instrument_to_market
+            .get(&instrument_id)
+            .map(|(market_key, leg)| (market_key.clone(), *leg))
     }
 
-    fn leg_slot_mut(&mut self, leg: Leg) -> &mut LegSlot {
-        match leg {
-            Leg::Yes => &mut self.yes_slot,
-            Leg::No => &mut self.no_slot,
-        }
-    }
-
-    fn leg_for_instrument(&self, instrument_id: InstrumentId) -> Option<Leg> {
-        if instrument_id == self.yes_instrument_id {
-            Some(Leg::Yes)
-        } else if instrument_id == self.no_instrument_id {
-            Some(Leg::No)
-        } else {
-            None
-        }
-    }
-
-    fn leg_for_client_order_id(&self, client_order_id: &ClientOrderId) -> Option<Leg> {
-        [Leg::Yes, Leg::No].into_iter().find(|&leg| {
-            self.leg_slot(leg)
-                .client_order_id
-                .as_ref()
-                .is_some_and(|id| id == client_order_id)
+    /// Resolve the `(market, leg)` a tracked client order id belongs to. COIDs are
+    /// market-unique (the id carries the market component), so at most one unit's
+    /// slot can match — the scan is unambiguous.
+    fn market_and_leg_for_client_order_id(
+        &self,
+        client_order_id: &ClientOrderId,
+    ) -> Option<(MarketKey, Leg)> {
+        self.markets.iter().find_map(|(market_key, unit)| {
+            [Leg::Yes, Leg::No]
+                .into_iter()
+                .find(|&leg| unit.slot_tracks(leg, client_order_id))
+                .map(|leg| (market_key.clone(), leg))
         })
     }
 
@@ -634,13 +846,19 @@ impl BinaryOracleMaker {
         }
     }
 
-    /// Subscribe both outcome legs' L2_MBP books + trades, and seed the per-leg
-    /// signed-trade-flow buffers. The maker quotes both legs from the start, so
-    /// both books are armed eagerly in `on_start` (the taker defers its book
-    /// subscriptions until a position exists).
-    fn subscribe_both_legs(&mut self) {
-        let flow_config = self.config.signed_trade_flow_config();
-        for instrument_id in [self.yes_instrument_id, self.no_instrument_id] {
+    /// Subscribe every market's outcome legs' L2_MBP books + trades. The maker
+    /// quotes both legs of every market from the start, so all books are armed
+    /// eagerly in `on_start` (the taker defers its book subscriptions until a
+    /// position exists). The per-leg signed-trade-flow buffers are seeded once at
+    /// unit construction (`MarketUnit::from_config`), the single source of truth
+    /// for a unit's flow state — they are NOT re-seeded here.
+    ///
+    /// `instrument_to_market` already enumerates every outcome instrument across
+    /// every market, so iterating its keys subscribes the full set with no
+    /// per-market dispatch.
+    fn subscribe_all_legs(&mut self) {
+        let instrument_ids: Vec<InstrumentId> = self.instrument_to_market.keys().copied().collect();
+        for instrument_id in instrument_ids {
             #[cfg(not(test))]
             {
                 self.subscribe_book_deltas(
@@ -653,19 +871,21 @@ impl BinaryOracleMaker {
                 );
                 self.subscribe_trades(instrument_id, None, None);
             }
-            self.trade_flow
-                .insert(instrument_id, SignedTradeFlow::from_config(&flow_config));
+            #[cfg(test)]
+            let _ = instrument_id;
         }
     }
 
-    fn unsubscribe_both_legs(&mut self) {
-        for instrument_id in [self.yes_instrument_id, self.no_instrument_id] {
+    fn unsubscribe_all_legs(&mut self) {
+        let instrument_ids: Vec<InstrumentId> = self.instrument_to_market.keys().copied().collect();
+        for instrument_id in instrument_ids {
             #[cfg(not(test))]
             {
                 self.unsubscribe_book_deltas(instrument_id, None, None);
                 self.unsubscribe_trades(instrument_id, None, None);
             }
-            self.trade_flow.remove(&instrument_id);
+            #[cfg(test)]
+            let _ = instrument_id;
         }
     }
 
@@ -718,15 +938,18 @@ impl BinaryOracleMaker {
 
     // -- the per-tick quote pipeline ----------------------------------------
 
-    /// Compute the book-nudged fair anchor for the YES outcome (P(up)) from the
-    /// oracle + venue top-of-book. `None` at any stage = no quote this tick.
-    fn anchored_fair(&self, now_ms: u64) -> Option<f64> {
+    /// Compute the book-nudged fair anchor for one market's YES outcome (P(up))
+    /// from the shared oracle feed + that market's venue top-of-book. `None` at
+    /// any stage = no quote this tick. The strike and maintenance horizon are the
+    /// unit's; the spot/RV feed and validated knobs are shared.
+    fn anchored_fair(&self, market_key: &MarketKey, now_ms: u64) -> Option<f64> {
+        let unit = self.unit(market_key);
         let spot = self.spot.spot()?;
         let realized_vol = self.spot.realized_vol_at(now_ms)?;
-        let seconds_to_market_end = self.seconds_to_market_end(now_ms);
+        let seconds_to_market_end = self.seconds_to_market_end(market_key, now_ms);
         let inputs = FairProbabilityInputs {
             spot_price: spot,
-            strike_price: self.config.strike_price,
+            strike_price: unit.strike_price,
             seconds_to_market_end,
             realized_vol,
             pricing_kurtosis: self.config.pricing_kurtosis,
@@ -736,7 +959,7 @@ impl BinaryOracleMaker {
             &inputs,
         )?;
         // Book nudge: read the YES leg's touch and blend toward the oracle prior.
-        let yes_book = self.leg_book(Leg::Yes);
+        let yes_book = unit.book(Leg::Yes);
         let micro = match (
             yes_book.best_bid,
             yes_book.best_ask,
@@ -751,67 +974,85 @@ impl BinaryOracleMaker {
         micro_price_anchor(p_up, micro, self.validated.micro_weight())
     }
 
-    /// Seconds remaining to the binary's resolution, derived from the maintenance
-    /// horizon when configured. Falls back to the reference-tau horizon so the
-    /// family model and governor always have a positive `τ` to read; the τ-floor
-    /// kill predicate still fires on a too-small value.
-    fn seconds_to_market_end(&self, now_ms: u64) -> u64 {
-        if self.config.maintenance_window_duration_ms > 0
-            && self.config.maintenance_window_start_ms > now_ms
-        {
-            (self.config.maintenance_window_start_ms - now_ms) / MILLIS_PER_SECOND_U64
+    /// Seconds remaining to one market's resolution, derived from that market's
+    /// maintenance horizon when configured. Falls back to the shared reference-tau
+    /// horizon so the family model and governor always have a positive `τ` to
+    /// read; the τ-floor kill predicate still fires on a too-small value.
+    fn seconds_to_market_end(&self, market_key: &MarketKey, now_ms: u64) -> u64 {
+        let unit = self.unit(market_key);
+        if unit.maintenance_window_duration_ms > 0 && unit.maintenance_window_start_ms > now_ms {
+            (unit.maintenance_window_start_ms - now_ms) / MILLIS_PER_SECOND_U64
         } else {
             self.validated.reference_tau() as u64
         }
     }
 
-    /// The governor posture for this tick, folding the maintenance gate alongside
-    /// the W3 market/inventory governor (safety wins — the more restrictive of the
-    /// two postures is taken; a kill is never downgraded back to quoting).
-    fn governor_state(&self, now_ms: u64, oracle_fair: f64) -> MakerGovernorState {
+    /// The governor posture for one market this tick, folding that market's
+    /// maintenance gate alongside its W3 market/inventory governor (safety wins —
+    /// the more restrictive of the two postures is taken; a kill is never
+    /// downgraded back to quoting).
+    fn governor_state(
+        &self,
+        market_key: &MarketKey,
+        now_ms: u64,
+        oracle_fair: f64,
+    ) -> MakerGovernorState {
+        let unit = self.unit(market_key);
         let sigma = self.spot.realized_vol_at(now_ms).unwrap_or(f64::NAN);
-        let venue_mid = self.leg_book(Leg::Yes).venue_mid().unwrap_or(f64::NAN);
-        let tau = self.seconds_to_market_end(now_ms) as f64;
-        let market_state = self.governor.resolve(GovernorInputs {
+        let venue_mid = unit.book(Leg::Yes).venue_mid().unwrap_or(f64::NAN);
+        let tau = self.seconds_to_market_end(market_key, now_ms) as f64;
+        let market_state = unit.governor.resolve(GovernorInputs {
             sigma,
             oracle_fair,
             venue_mid,
             tau,
-            net_position: self.inventory.net_position(),
+            net_position: unit.inventory.net_position(),
         });
         // Fold the maintenance gate ONLY when a window is configured. A duration
         // of zero means "no maintenance window configured" (not a degenerate
         // window), so the gate must not veto — consulting it would fail-closed to
         // CancelOnly and silently stop all quoting. A configured window with a
         // genuinely degenerate shape still fails closed inside the gate.
-        match self.maintenance_governor_state(now_ms) {
+        match self.maintenance_governor_state(market_key, now_ms) {
             Some(maintenance_state) => most_restrictive(market_state, maintenance_state),
             None => market_state,
         }
     }
 
-    /// The maintenance-gate posture for this tick, or `None` when no maintenance
-    /// window is configured (`maintenance_window_duration_ms == 0`). A configured
-    /// window resolves through `maintenance_posture` -> `maintenance_governor_state`
-    /// (which itself fails closed to CancelOnly on a degenerate configured shape).
-    fn maintenance_governor_state(&self, now_ms: u64) -> Option<MakerGovernorState> {
-        if self.config.maintenance_window_duration_ms == 0 {
+    /// One market's maintenance-gate posture for this tick, or `None` when that
+    /// market configures no maintenance window (`maintenance_window_duration_ms ==
+    /// 0`). A configured window resolves through `maintenance_posture` ->
+    /// `maintenance_governor_state` (which itself fails closed to CancelOnly on a
+    /// degenerate configured shape).
+    fn maintenance_governor_state(
+        &self,
+        market_key: &MarketKey,
+        now_ms: u64,
+    ) -> Option<MakerGovernorState> {
+        let unit = self.unit(market_key);
+        if unit.maintenance_window_duration_ms == 0 {
             return None;
         }
         Some(maintenance_governor_state(maintenance_posture(
             now_ms,
-            self.config.maintenance_window_start_ms,
-            self.config.maintenance_window_duration_ms,
-            self.config.maintenance_pre_flatten_lead_ms,
+            unit.maintenance_window_start_ms,
+            unit.maintenance_window_duration_ms,
+            unit.maintenance_pre_flatten_lead_ms,
         )))
     }
 
-    /// Build the two desired quote leg prices for this tick from the full maker
-    /// pipeline. `None` = no quotable target (fail-closed).
-    fn desired_quote_targets(&self, oracle_fair: f64) -> Option<QuoteTargets> {
+    /// Build the two desired quote leg prices for one market this tick from the
+    /// full maker pipeline. `None` = no quotable target (fail-closed). The
+    /// inventory is the unit's; the pricing knobs are shared.
+    fn desired_quote_targets(
+        &self,
+        market_key: &MarketKey,
+        oracle_fair: f64,
+    ) -> Option<QuoteTargets> {
+        let unit = self.unit(market_key);
         let gm = gm_binary_quote(oracle_fair, self.validated.informed_fraction())?;
         let skew = inventory_skew(
-            self.inventory.net_position(),
+            unit.inventory.net_position(),
             self.validated.skew_gain(),
             self.validated.position_cap(),
         )?;
@@ -828,15 +1069,6 @@ impl BinaryOracleMaker {
             time_widen_cap: self.validated.time_widen_cap(),
         };
         self.family.quote_targets(inputs)
-    }
-
-    /// Whether `desired` has moved beyond the requote threshold from `resting`.
-    /// A leg with no resting price always needs a (first) quote.
-    fn requote_needed(&self, resting: Option<f64>, desired: f64) -> bool {
-        match resting {
-            None => true,
-            Some(resting) => (desired - resting).abs() >= self.config.requote_threshold,
-        }
     }
 
     /// The cost of a requote in REST-call units, from the venue's modify
@@ -856,18 +1088,23 @@ impl BinaryOracleMaker {
         }
     }
 
-    /// The main quote loop — runs on the requote timer and on each book delta.
-    fn run_quote_tick(&mut self, now_ms: u64) {
-        let Some(oracle_fair) = self.anchored_fair(now_ms) else {
+    /// The main quote loop for ONE market — runs on the requote timer (per market)
+    /// and on each of that market's book deltas. Every state read/write here is
+    /// scoped to the keyed unit; the only shared reads are the oracle fair and the
+    /// pricing knobs.
+    fn run_quote_tick(&mut self, market_key: &MarketKey, now_ms: u64) {
+        let Some(oracle_fair) = self.anchored_fair(market_key, now_ms) else {
             return;
         };
-        let posture = self.governor_state(now_ms, oracle_fair);
+        let posture = self.governor_state(market_key, now_ms, oracle_fair);
 
         // Safety postures: drain / reduce-one-side BEFORE any quoting.
         match posture {
             MakerGovernorState::HardFlat(_) | MakerGovernorState::CancelOnly => {
-                if let Some(action) = cancel_all_on_kill(posture, &mut self.market) {
-                    self.execute_action(action, None, now_ms);
+                if let Some(action) =
+                    cancel_all_on_kill(posture, &mut self.unit_mut(market_key).market)
+                {
+                    self.execute_action(market_key, action, None, now_ms);
                 }
                 return;
             }
@@ -875,15 +1112,17 @@ impl BinaryOracleMaker {
                 // Cancel the inventory-adding side; keep the reducing side. Net
                 // long YES => stop adding YES (cancel YES side); net short =>
                 // cancel NO side. A flat-but-capped book cancels neither.
-                let net = self.inventory.net_position();
-                if net > ZERO_F64
-                    && let Some(action) = self.market.cancel_one_side(Leg::Yes)
-                {
-                    self.execute_action(action, None, now_ms);
-                } else if net < ZERO_F64
-                    && let Some(action) = self.market.cancel_one_side(Leg::No)
-                {
-                    self.execute_action(action, None, now_ms);
+                let unit = self.unit_mut(market_key);
+                let net = unit.inventory.net_position();
+                let action = if net > ZERO_F64 {
+                    unit.market.cancel_one_side(Leg::Yes)
+                } else if net < ZERO_F64 {
+                    unit.market.cancel_one_side(Leg::No)
+                } else {
+                    None
+                };
+                if let Some(action) = action {
+                    self.execute_action(market_key, action, None, now_ms);
                 }
                 return;
             }
@@ -895,36 +1134,43 @@ impl BinaryOracleMaker {
             MakerGovernorState::Quoting => {}
         }
 
-        let Some(targets) = self.desired_quote_targets(oracle_fair) else {
+        let Some(targets) = self.desired_quote_targets(market_key, oracle_fair) else {
             return;
         };
 
+        let requote_cost = self.requote_cost();
+        let requote_threshold = self.config.requote_threshold;
         for leg in [Leg::Yes, Leg::No] {
             let target = Self::target_leg(&targets, leg);
-            let resting = self.leg_slot(leg).resting_price;
-            let requote_needed = self.requote_needed(resting, target.price);
-            let Some(action) = self
+            let unit = self.unit_mut(market_key);
+            let resting = unit.slot(leg).resting_price;
+            let requote_needed = match resting {
+                None => true,
+                Some(resting) => (target.price - resting).abs() >= requote_threshold,
+            };
+            let Some(action) = unit
                 .market
                 .on_leg_event(leg, LegEvent::QuoteTrigger { requote_needed })
             else {
                 continue;
             };
             // Throttle gate: only act on the lifecycle action if the budget allows.
-            if !self.requote_budget.try_acquire(now_ms, self.requote_cost()) {
+            if !unit.requote_budget.try_acquire(now_ms, requote_cost) {
                 continue;
             }
-            self.leg_slot_mut(leg).pending_price = Some(target.price);
-            self.execute_action(action, Some(target), now_ms);
+            unit.slot_mut(leg).pending_price = Some(target.price);
+            self.execute_action(market_key, action, Some(target), now_ms);
         }
     }
 
     // -- MarketAction -> NT translation -------------------------------------
 
-    /// Translate one [`MarketAction`] from the pure lifecycle/governor layer into
-    /// NT order calls. `target` carries the desired leg price when a Submit/Modify
-    /// is in play. All live submits route through the admit gate.
+    /// Translate one [`MarketAction`] from one market's pure lifecycle/governor
+    /// layer into NT order calls. `target` carries the desired leg price when a
+    /// Submit/Modify is in play. All live submits route through the admit gate.
     fn execute_action(
         &mut self,
+        market_key: &MarketKey,
         action: MarketAction,
         target: Option<QuoteTargetLeg>,
         now_ms: u64,
@@ -933,21 +1179,22 @@ impl BinaryOracleMaker {
             MarketAction::Leg { leg, action } => match action {
                 LifecycleAction::Submit | LifecycleAction::Modify => {
                     if let Some(target) = target {
-                        self.submit_or_modify_leg(leg, target, now_ms);
+                        self.submit_or_modify_leg(market_key, leg, target, now_ms);
                     }
                 }
-                LifecycleAction::Cancel => self.cancel_leg(leg),
+                LifecycleAction::Cancel => self.cancel_leg(market_key, leg),
             },
             MarketAction::CancelAllBothLegs => {
-                self.cancel_all(None);
-                self.yes_slot = LegSlot::idle();
-                self.no_slot = LegSlot::idle();
+                self.cancel_all(market_key, None);
+                let unit = self.unit_mut(market_key);
+                unit.yes_slot = LegSlot::idle();
+                unit.no_slot = LegSlot::idle();
             }
             MarketAction::CancelAllOneSide { leg } => {
                 // Both binary legs rest BIDS; the cancel scope by instrument side
                 // for a resting bid is Buy.
-                self.cancel_all_one_side(leg, OrderSide::Buy);
-                *self.leg_slot_mut(leg) = LegSlot::idle();
+                self.cancel_all_one_side(market_key, leg, OrderSide::Buy);
+                *self.unit_mut(market_key).slot_mut(leg) = LegSlot::idle();
             }
         }
     }
@@ -961,32 +1208,47 @@ impl BinaryOracleMaker {
     /// no runtime is registered and `order_factory()` would panic — it returns a
     /// deterministic synthetic id so the pure quote-loop translation is testable
     /// without a runtime (NT order calls are themselves `#[cfg(not(test))]`).
-    fn next_client_order_id(&mut self, leg: Leg) -> ClientOrderId {
+    fn next_client_order_id(&mut self, market_key: &MarketKey, leg: Leg) -> ClientOrderId {
         #[cfg(not(test))]
         {
-            let _ = leg;
+            let _ = (market_key, leg);
             self.core.order_factory().generate_client_order_id()
         }
         #[cfg(test)]
         {
-            let generation = self.leg_slot(leg).next_generation;
+            let generation = self.unit(market_key).slot(leg).next_generation;
+            // Market component (`market_key.as_str()`) makes the id market-unique,
+            // so a slot scan across units is unambiguous: two markets quoting the
+            // same leg never collide on a client order id.
             ClientOrderId::from(
-                format!("{}-{:?}-{generation}", self.config.strategy_id, leg).as_str(),
+                format!(
+                    "{}-{}-{:?}-{generation}",
+                    self.config.strategy_id,
+                    market_key.as_str(),
+                    leg
+                )
+                .as_str(),
             )
         }
     }
 
-    fn submit_or_modify_leg(&mut self, leg: Leg, target: QuoteTargetLeg, now_ms: u64) {
-        let instrument_id = self.leg_instrument_id(leg);
+    fn submit_or_modify_leg(
+        &mut self,
+        market_key: &MarketKey,
+        leg: Leg,
+        target: QuoteTargetLeg,
+        now_ms: u64,
+    ) {
+        let instrument_id = self.unit(market_key).instrument_id_for(leg);
         let order_side = match target.side {
             QuoteSide::Buy => OrderSide::Buy,
             QuoteSide::Sell => OrderSide::Sell,
         };
-        let client_order_id = self.next_client_order_id(leg);
+        let client_order_id = self.next_client_order_id(market_key, leg);
         // Bump the per-leg fence generation BEFORE submit so a fresh order never
         // inherits the stale order's in-flight reports.
         {
-            let slot = self.leg_slot_mut(leg);
+            let slot = self.unit_mut(market_key).slot_mut(leg);
             let generation = slot.next_generation;
             slot.next_generation = generation.saturating_add(GENERATION_STEP);
             let identity = OrderIdentity::new(
@@ -1013,6 +1275,7 @@ impl BinaryOracleMaker {
             Ok(admitted) => {
                 #[cfg(test)]
                 self.submit_attempts.push(MakerSubmitAttempt {
+                    market_key: market_key.clone(),
                     leg,
                     side: target.side,
                     price: target.price,
@@ -1020,19 +1283,21 @@ impl BinaryOracleMaker {
                 });
                 #[cfg(not(test))]
                 let _ = admitted;
-                self.leg_slot_mut(leg).last_rest_ms = Some(now_ms);
+                self.unit_mut(market_key).slot_mut(leg).last_rest_ms = Some(now_ms);
             }
             Err(error) => {
                 #[cfg(test)]
                 self.submit_attempts.push(MakerSubmitAttempt {
+                    market_key: market_key.clone(),
                     leg,
                     side: target.side,
                     price: target.price,
                     admitted: false,
                 });
                 log::warn!(
-                    "binary_oracle_maker quote submit rejected (gate or build): strategy_id={} leg={:?} instrument_id={} error={:#}",
+                    "binary_oracle_maker quote submit rejected (gate or build): strategy_id={} market_id={} leg={:?} instrument_id={} error={:#}",
                     self.config.strategy_id,
+                    market_key.as_str(),
                     leg,
                     instrument_id,
                     error,
@@ -1161,30 +1426,32 @@ impl BinaryOracleMaker {
         }
     }
 
-    /// Cancel the single resting order on one leg (per-order cancel via the
-    /// leg's tracked client order id).
-    fn cancel_leg(&mut self, leg: Leg) {
-        let Some(client_order_id) = self.leg_slot(leg).client_order_id else {
+    /// Cancel the single resting order on one market's leg (per-order cancel via
+    /// the leg's tracked client order id).
+    fn cancel_leg(&mut self, market_key: &MarketKey, leg: Leg) {
+        let Some(client_order_id) = self.unit(market_key).slot(leg).client_order_id else {
             return;
         };
         #[cfg(not(test))]
         {
             if let Err(error) = self.cancel_order(client_order_id, Some(self.client_id()), None) {
                 log::error!(
-                    "binary_oracle_maker cancel_leg failed: strategy_id={} leg={:?} error={error}",
+                    "binary_oracle_maker cancel_leg failed: strategy_id={} market_id={} leg={:?} error={error}",
                     self.config.strategy_id,
+                    market_key.as_str(),
                     leg,
                 );
             }
         }
         #[cfg(test)]
-        let _ = &client_order_id;
+        let _ = (market_key, &client_order_id);
     }
 
-    fn cancel_all(&mut self, order_side: Option<OrderSide>) {
+    fn cancel_all(&mut self, market_key: &MarketKey, order_side: Option<OrderSide>) {
         #[cfg(not(test))]
         {
-            for instrument_id in [self.yes_instrument_id, self.no_instrument_id] {
+            let unit = self.unit(market_key);
+            for instrument_id in [unit.yes_instrument_id, unit.no_instrument_id] {
                 if let Err(error) =
                     self.cancel_all_orders(instrument_id, order_side, Some(self.client_id()), None)
                 {
@@ -1197,11 +1464,11 @@ impl BinaryOracleMaker {
             }
         }
         #[cfg(test)]
-        let _ = order_side;
+        let _ = (market_key, order_side);
     }
 
-    fn cancel_all_one_side(&mut self, leg: Leg, order_side: OrderSide) {
-        let instrument_id = self.leg_instrument_id(leg);
+    fn cancel_all_one_side(&mut self, market_key: &MarketKey, leg: Leg, order_side: OrderSide) {
+        let instrument_id = self.unit(market_key).instrument_id_for(leg);
         #[cfg(not(test))]
         {
             if let Err(error) = self.cancel_all_orders(
@@ -1228,13 +1495,15 @@ impl BinaryOracleMaker {
     /// `MarketQuote`. A `FenceReject` is dropped (fail-closed) and logged.
     fn ingest_venue_report(
         &mut self,
+        market_key: &MarketKey,
         leg: Leg,
         client_order_id: &ClientOrderId,
         kind: VenueReportKind,
         now_ms: u64,
     ) -> Option<MarketAction> {
         let generation = self
-            .leg_slot(leg)
+            .unit(market_key)
+            .slot(leg)
             .fence
             .expected()
             .map(OrderIdentity::generation)
@@ -1244,40 +1513,52 @@ impl BinaryOracleMaker {
             generation,
             kind,
         };
-        match self.leg_slot(leg).fence.admit(&report) {
+        match self.unit(market_key).slot(leg).fence.admit(&report) {
             Ok(event) => {
-                self.apply_leg_state_side_effects(leg, event, now_ms);
-                self.market.on_leg_event(leg, event)
+                self.apply_leg_state_side_effects(market_key, leg, event, now_ms);
+                self.unit_mut(market_key).market.on_leg_event(leg, event)
             }
             Err(reject) => {
-                self.log_fence_reject(leg, client_order_id, &reject);
+                self.log_fence_reject(market_key, leg, client_order_id, &reject);
                 None
             }
         }
     }
 
-    fn log_fence_reject(&self, leg: Leg, client_order_id: &ClientOrderId, reject: &FenceReject) {
+    fn log_fence_reject(
+        &self,
+        market_key: &MarketKey,
+        leg: Leg,
+        client_order_id: &ClientOrderId,
+        reject: &FenceReject,
+    ) {
         log::warn!(
-            "binary_oracle_maker fence dropped a venue report (fail-closed): strategy_id={} leg={:?} client_order_id={} reject={:?}",
+            "binary_oracle_maker fence dropped a venue report (fail-closed): strategy_id={} market_id={} leg={:?} client_order_id={} reject={:?}",
             self.config.strategy_id,
+            market_key.as_str(),
             leg,
             client_order_id,
             reject,
         );
     }
 
-    /// Update the shell-owned slot state for an admitted leg event before the
-    /// lifecycle machine consumes it (resting price, last-rest timestamp, fence
-    /// clear on terminal events).
-    fn apply_leg_state_side_effects(&mut self, leg: Leg, event: LegEvent, now_ms: u64) {
+    /// Update one market's shell-owned slot state for an admitted leg event before
+    /// the lifecycle machine consumes it (resting price, last-rest timestamp,
+    /// fence clear on terminal events).
+    fn apply_leg_state_side_effects(
+        &mut self,
+        market_key: &MarketKey,
+        leg: Leg,
+        event: LegEvent,
+        now_ms: u64,
+    ) {
+        let slot = self.unit_mut(market_key).slot_mut(leg);
         match event {
             LegEvent::Accepted | LegEvent::Modified => {
-                let slot = self.leg_slot_mut(leg);
                 slot.resting_price = slot.pending_price.take().or(slot.resting_price);
                 slot.last_rest_ms = Some(now_ms);
             }
             LegEvent::Filled | LegEvent::Rejected => {
-                let slot = self.leg_slot_mut(leg);
                 slot.fence.clear();
                 slot.resting_price = None;
                 slot.pending_price = None;
@@ -1289,7 +1570,6 @@ impl BinaryOracleMaker {
                 // lifecycle machine owns that distinction; the shell only clears the
                 // resting price (the leg has no live resting order right now) — a
                 // resubmit re-establishes pending/resting.
-                let slot = self.leg_slot_mut(leg);
                 slot.resting_price = None;
                 slot.last_rest_ms = None;
             }
@@ -1298,39 +1578,50 @@ impl BinaryOracleMaker {
         }
     }
 
-    /// Apply a confirmed fill to the inventory book. A binary maker rests bids on
-    /// both legs, so a maker fill is a Buy on that leg.
-    fn apply_fill_to_inventory(&mut self, leg: Leg, order_side: OrderSide, qty: f64) {
+    /// Apply a confirmed fill to one market's inventory book. A binary maker rests
+    /// bids on both legs, so a maker fill is a Buy on that leg.
+    fn apply_fill_to_inventory(
+        &mut self,
+        market_key: &MarketKey,
+        leg: Leg,
+        order_side: OrderSide,
+        qty: f64,
+    ) {
         let side = match order_side {
             OrderSide::Buy => QuoteSide::Buy,
             OrderSide::Sell => QuoteSide::Sell,
             _ => return,
         };
-        let _ = self.inventory.apply_fill(leg, side, qty);
+        let _ = self
+            .unit_mut(market_key)
+            .inventory
+            .apply_fill(leg, side, qty);
     }
 
     // -- ops cadence: stale-quote alarm + maintenance -----------------------
 
-    fn run_ops_tick(&mut self, now_ms: u64) {
+    fn run_ops_tick(&mut self, market_key: &MarketKey, now_ms: u64) {
+        let unit = self.unit(market_key);
         let alarm = MarketStaleQuoteAlarm::evaluate(
             now_ms,
-            self.yes_slot.last_rest_ms,
-            self.no_slot.last_rest_ms,
+            unit.yes_slot.last_rest_ms,
+            unit.no_slot.last_rest_ms,
             self.config.max_rest_age_ms,
         );
         if alarm.any_stale() {
             log::info!(
-                "binary_oracle_maker stale-quote alarm: strategy_id={} stale_legs={}",
+                "binary_oracle_maker stale-quote alarm: strategy_id={} market_id={} stale_legs={}",
                 self.config.strategy_id,
+                market_key.as_str(),
                 alarm.stale_legs().len(),
             );
             for action in alarm.refresh_plan() {
                 // Drive the cancel through the lifecycle machine so it remains the
                 // single owner of order transitions, then translate to NT.
                 if let MarketAction::Leg { leg, .. } = action
-                    && let Some(lifecycle_action) = self.market.cancel_leg(leg)
+                    && let Some(lifecycle_action) = self.unit_mut(market_key).market.cancel_leg(leg)
                 {
-                    self.execute_action(lifecycle_action, None, now_ms);
+                    self.execute_action(market_key, lifecycle_action, None, now_ms);
                 }
             }
         }
@@ -1338,10 +1629,11 @@ impl BinaryOracleMaker {
         // the ops cadence additionally drains both legs inside / approaching a
         // configured window. With no window configured the gate is skipped (it
         // does not veto), matching `governor_state`.
-        if let Some(maintenance_state) = self.maintenance_governor_state(now_ms)
-            && let Some(action) = cancel_all_on_kill(maintenance_state, &mut self.market)
+        if let Some(maintenance_state) = self.maintenance_governor_state(market_key, now_ms)
+            && let Some(action) =
+                cancel_all_on_kill(maintenance_state, &mut self.unit_mut(market_key).market)
         {
-            self.execute_action(action, None, now_ms);
+            self.execute_action(market_key, action, None, now_ms);
         }
     }
 
@@ -1354,19 +1646,21 @@ impl BinaryOracleMaker {
     /// disconnect and reconcile believed-resting state against venue truth via
     /// `maker_resync` BEFORE re-arming. Under no-submit this is a dry run — the
     /// admit gate blocks any live cancel/submit the reconciliation emits.
-    fn run_reconnect_watchdog(&mut self, now_ms: u64) {
+    fn run_reconnect_watchdog(&mut self, market_key: &MarketKey, now_ms: u64) {
         let gap_threshold = self.config.data_gap_staleness_ms;
         if gap_threshold == 0 {
             return;
         }
-        let yes_gapped = data_gap_exceeds(self.yes_last_data_ms, now_ms, gap_threshold);
-        let no_gapped = data_gap_exceeds(self.no_last_data_ms, now_ms, gap_threshold);
+        let unit = self.unit(market_key);
+        let yes_gapped = data_gap_exceeds(unit.yes_last_data_ms, now_ms, gap_threshold);
+        let no_gapped = data_gap_exceeds(unit.no_last_data_ms, now_ms, gap_threshold);
         if !(yes_gapped || no_gapped) {
             return;
         }
         log::warn!(
-            "binary_oracle_maker data-gap watchdog tripped (probable reconnect): strategy_id={} yes_gapped={} no_gapped={}",
+            "binary_oracle_maker data-gap watchdog tripped (probable reconnect): strategy_id={} market_id={} yes_gapped={} no_gapped={}",
             self.config.strategy_id,
+            market_key.as_str(),
             yes_gapped,
             no_gapped,
         );
@@ -1375,13 +1669,13 @@ impl BinaryOracleMaker {
         // (open orders the exec client/adapter re-synced on reconnect).
         let yes_snapshot = LegReconcileSnapshot::new(
             Leg::Yes,
-            self.leg_slot(Leg::Yes).resting_price.is_some(),
-            self.venue_reports_open(Leg::Yes),
+            self.unit(market_key).slot(Leg::Yes).resting_price.is_some(),
+            self.venue_reports_open(market_key, Leg::Yes),
         );
         let no_snapshot = LegReconcileSnapshot::new(
             Leg::No,
-            self.leg_slot(Leg::No).resting_price.is_some(),
-            self.venue_reports_open(Leg::No),
+            self.unit(market_key).slot(Leg::No).resting_price.is_some(),
+            self.venue_reports_open(market_key, Leg::No),
         );
         let Some(snapshot) = MarketReconcileSnapshot::new(yes_snapshot, no_snapshot) else {
             return;
@@ -1391,28 +1685,29 @@ impl BinaryOracleMaker {
                 MarketAction::Leg {
                     leg,
                     action: LifecycleAction::Submit,
-                } => self.pending_target_for_resubmit(leg),
+                } => self.pending_target_for_resubmit(market_key, leg),
                 _ => None,
             };
-            self.execute_action(action, target, now_ms);
+            self.execute_action(market_key, action, target, now_ms);
         }
         // Reset the gap clocks so a single trip does not re-fire every tick until
         // fresh data arrives.
+        let unit = self.unit_mut(market_key);
         if yes_gapped {
-            self.yes_last_data_ms = Some(now_ms);
+            unit.yes_last_data_ms = Some(now_ms);
         }
         if no_gapped {
-            self.no_last_data_ms = Some(now_ms);
+            unit.no_last_data_ms = Some(now_ms);
         }
     }
 
-    /// Whether the venue reports an open order on `leg` after a reconnect, read
-    /// from the NT cache by the leg's tracked client order id. In tests (no
-    /// registered cache) this is conservatively `false`.
-    fn venue_reports_open(&self, leg: Leg) -> bool {
+    /// Whether the venue reports an open order on one market's `leg` after a
+    /// reconnect, read from the NT cache by the leg's tracked client order id. In
+    /// tests (no registered cache) this is conservatively `false`.
+    fn venue_reports_open(&self, market_key: &MarketKey, leg: Leg) -> bool {
         #[cfg(not(test))]
         {
-            if let Some(client_order_id) = self.leg_slot(leg).client_order_id.as_ref()
+            if let Some(client_order_id) = self.unit(market_key).slot(leg).client_order_id.as_ref()
                 && self.is_registered()
             {
                 return self
@@ -1424,7 +1719,7 @@ impl BinaryOracleMaker {
         }
         #[cfg(test)]
         {
-            let _ = leg;
+            let _ = (market_key, leg);
             false
         }
     }
@@ -1436,29 +1731,36 @@ impl BinaryOracleMaker {
     /// builds two [`TokenLot`]s from the SAME market, and calls [`settle`]. On the
     /// live path NT does NOT auto-book the 0/1 close (NEEDS-VERIFY Q1 resolved),
     /// so this is the sole source of the settlement payout.
-    fn settle_on_resolution(&mut self, outcome: SettlementOutcome) {
-        let yes_lot = self.token_lot_for_instrument(self.yes_instrument_id);
-        let no_lot = self.token_lot_for_instrument(self.no_instrument_id);
+    fn settle_on_resolution(&mut self, market_key: &MarketKey, outcome: SettlementOutcome) {
+        let (yes_instrument_id, no_instrument_id) = {
+            let unit = self.unit(market_key);
+            (unit.yes_instrument_id, unit.no_instrument_id)
+        };
+        let yes_lot = self.token_lot_for_instrument(yes_instrument_id);
+        let no_lot = self.token_lot_for_instrument(no_instrument_id);
         let (Some(yes_lot), Some(no_lot)) = (yes_lot, no_lot) else {
             return;
         };
         let Some(booking) = settle(yes_lot, no_lot, outcome) else {
             log::error!(
-                "binary_oracle_maker settlement booking failed (degenerate lots): strategy_id={}",
+                "binary_oracle_maker settlement booking failed (degenerate lots): strategy_id={} market_id={}",
                 self.config.strategy_id,
+                market_key.as_str(),
             );
             return;
         };
-        self.last_settlement_pnl = Some(booking.realized_pnl());
         log::info!(
-            "binary_oracle_maker settled binary resolution: strategy_id={} outcome={:?} payout={} realized_pnl={}",
+            "binary_oracle_maker settled binary resolution: strategy_id={} market_id={} outcome={:?} payout={} realized_pnl={}",
             self.config.strategy_id,
+            market_key.as_str(),
             outcome,
             booking.payout(),
             booking.realized_pnl(),
         );
-        // Resolution flattens the maker: reset inventory.
-        self.inventory = MakerInventory::flat();
+        let unit = self.unit_mut(market_key);
+        unit.last_settlement_pnl = Some(booking.realized_pnl());
+        // Resolution flattens this market's maker: reset inventory.
+        unit.inventory = MakerInventory::flat();
     }
 
     /// Read NT's position + `avg_px_open` for `instrument_id` into a [`TokenLot`].
@@ -1490,21 +1792,24 @@ impl BinaryOracleMaker {
         }
     }
 
-    /// Resolve the settled outcome for a closed position by instrument identity —
-    /// NT owns the position; the shell only names the side that closed.
+    /// Resolve the `(market, settled outcome)` for a closed position by instrument
+    /// identity — NT owns the position; the shell only names the market + side
+    /// that closed. `SettlementOutcome` is the closing `Leg`. `None` if the
+    /// instrument is not one of this maker's legs.
     fn settlement_outcome_for_close(
         &self,
         instrument_id: InstrumentId,
-    ) -> Option<SettlementOutcome> {
-        self.leg_for_instrument(instrument_id)
+    ) -> Option<(MarketKey, SettlementOutcome)> {
+        self.market_and_leg_for_instrument(instrument_id)
     }
 
-    /// Touch the per-leg data-gap watchdog timestamp from a market-data event.
-    fn touch_leg_data(&mut self, instrument_id: InstrumentId, now_ms: u64) {
-        if instrument_id == self.yes_instrument_id {
-            self.yes_last_data_ms = Some(now_ms);
-        } else if instrument_id == self.no_instrument_id {
-            self.no_last_data_ms = Some(now_ms);
+    /// Touch one market's per-leg data-gap watchdog timestamp from a market-data
+    /// event the handler already routed to `(market_key, leg)`.
+    fn touch_leg_data(&mut self, market_key: &MarketKey, leg: Leg, now_ms: u64) {
+        let unit = self.unit_mut(market_key);
+        match leg {
+            Leg::Yes => unit.yes_last_data_ms = Some(now_ms),
+            Leg::No => unit.no_last_data_ms = Some(now_ms),
         }
     }
 
@@ -1527,10 +1832,16 @@ impl BinaryOracleMaker {
         }
     }
 
-    /// The pending quote target for a requote-cancel resubmit, reconstructed from
-    /// the slot's pending price (the desired price the cancel was emitted for).
-    fn pending_target_for_resubmit(&self, leg: Leg) -> Option<QuoteTargetLeg> {
-        self.leg_slot(leg)
+    /// The pending quote target for one market's requote-cancel resubmit,
+    /// reconstructed from the slot's pending price (the desired price the cancel
+    /// was emitted for).
+    fn pending_target_for_resubmit(
+        &self,
+        market_key: &MarketKey,
+        leg: Leg,
+    ) -> Option<QuoteTargetLeg> {
+        self.unit(market_key)
+            .slot(leg)
             .pending_price
             .map(|price| QuoteTargetLeg {
                 // Both binary legs rest bids.
@@ -1539,15 +1850,21 @@ impl BinaryOracleMaker {
             })
     }
 
-    /// Adopt NT's authoritative position into the maker inventory model (NT owns
-    /// PnL/position). NT's per-leg signed position seeds the inventory book.
+    /// Adopt NT's authoritative position into the owning market's maker inventory
+    /// model (NT owns PnL/position). The position event's instrument id is routed
+    /// to its market + leg via `instrument_to_market`; an instrument that belongs
+    /// to no market is ignored (fail-closed).
     fn adopt_position_into_inventory(
         &mut self,
         instrument_id: InstrumentId,
         side: PositionSide,
         quantity: f64,
     ) {
-        let Some(leg) = self.leg_for_instrument(instrument_id) else {
+        let Some((market_key, leg)) = self
+            .instrument_to_market
+            .get(&instrument_id)
+            .map(|(market_key, leg)| (market_key.clone(), *leg))
+        else {
             return;
         };
         let quote_side = match side {
@@ -1558,7 +1875,10 @@ impl BinaryOracleMaker {
         if !is_positive_finite(quantity) {
             return;
         }
-        let _ = self.inventory.apply_fill(leg, quote_side, quantity);
+        let _ = self
+            .unit_mut(&market_key)
+            .inventory
+            .apply_fill(leg, quote_side, quantity);
     }
 }
 
@@ -1568,18 +1888,25 @@ impl BinaryOracleMaker {
 
 impl DataActor for BinaryOracleMaker {
     fn on_start(&mut self) -> Result<()> {
+        // Subscribe the shared reference once, then arm every market's legs. The
+        // per-leg trade-flow buffers were seeded at unit construction. A single
+        // requote timer + single ops timer drive ALL markets on a shared cadence
+        // (no per-market timers).
         self.subscribe_reference_quotes();
-        self.subscribe_both_legs();
+        self.subscribe_all_legs();
         self.register_timers();
         Ok(())
     }
 
     fn on_stop(&mut self) -> Result<()> {
-        // Cancel resting quotes on both legs (a stop must not leak live quotes),
-        // unsubscribe, deregister timers.
-        self.cancel_all(None);
+        // Cancel resting quotes on every market's legs (a stop must not leak live
+        // quotes), unsubscribe, deregister timers.
+        let keys: Vec<MarketKey> = self.markets.keys().cloned().collect();
+        for key in keys {
+            self.cancel_all(&key, None);
+        }
         self.unsubscribe_reference_quotes();
-        self.unsubscribe_both_legs();
+        self.unsubscribe_all_legs();
         self.deregister_timers();
         Ok(())
     }
@@ -1587,19 +1914,27 @@ impl DataActor for BinaryOracleMaker {
     fn on_time_event(&mut self, event: &TimeEvent) -> Result<()> {
         let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
         let name = event.name.as_str();
+        // Collect the market keys FIRST so the per-market `&mut self` calls below
+        // do not hold a borrow of `self.markets` across the loop body.
+        let keys: Vec<MarketKey> = self.markets.keys().cloned().collect();
         if name == self.requote_timer_name() {
-            // Reconnect watchdog runs first so a probable reconnect reconciles
-            // before any fresh quoting this tick.
-            self.run_reconnect_watchdog(now_ms);
-            self.run_quote_tick(now_ms);
+            for key in &keys {
+                // Reconnect watchdog runs first so a probable reconnect reconciles
+                // before any fresh quoting this tick.
+                self.run_reconnect_watchdog(key, now_ms);
+                self.run_quote_tick(key, now_ms);
+            }
         } else if name == self.ops_timer_name() {
-            self.run_ops_tick(now_ms);
+            for key in &keys {
+                self.run_ops_tick(key, now_ms);
+            }
         }
         Ok(())
     }
 
     fn on_quote(&mut self, quote: &QuoteTick) -> Result<()> {
-        // Drive the maker spot / realized-vol feed from the reference instrument.
+        // Drive the SHARED maker spot / realized-vol feed from the reference
+        // instrument. The reference oracle is shared across all markets.
         if self
             .reference_instrument_id_parsed
             .is_none_or(|instrument_id| quote.instrument_id != instrument_id)
@@ -1616,34 +1951,45 @@ impl DataActor for BinaryOracleMaker {
     }
 
     fn on_book_deltas(&mut self, deltas: &OrderBookDeltas) -> Result<()> {
-        let Some(leg) = self.leg_for_instrument(deltas.instrument_id) else {
+        let Some((market_key, leg)) = self.market_and_leg_for_instrument(deltas.instrument_id)
+        else {
             return Ok(());
         };
         let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
-        match leg {
-            Leg::Yes => self.yes_book.update_from_deltas(deltas),
-            Leg::No => self.no_book.update_from_deltas(deltas),
+        {
+            let unit = self.unit_mut(&market_key);
+            match leg {
+                Leg::Yes => unit.yes_book.update_from_deltas(deltas),
+                Leg::No => unit.no_book.update_from_deltas(deltas),
+            }
         }
-        self.touch_leg_data(deltas.instrument_id, now_ms);
-        // A book move is a reprice trigger alongside the requote timer.
-        self.run_quote_tick(now_ms);
+        self.touch_leg_data(&market_key, leg, now_ms);
+        // A book move is a reprice trigger for THIS market alongside the requote
+        // timer.
+        self.run_quote_tick(&market_key, now_ms);
         Ok(())
     }
 
     fn on_trade(&mut self, trade: &TradeTick) -> Result<()> {
-        if let Some(trade_flow) = self.trade_flow.get_mut(&trade.instrument_id) {
-            trade_flow.observe(trade);
-        }
+        let Some((market_key, leg)) = self.market_and_leg_for_instrument(trade.instrument_id)
+        else {
+            return Ok(());
+        };
         let now_ms = trade.ts_event.as_u64() / NANOS_PER_MILLI_U64;
-        self.touch_leg_data(trade.instrument_id, now_ms);
+        self.unit_mut(&market_key)
+            .trade_flow_mut(leg)
+            .observe(trade);
+        self.touch_leg_data(&market_key, leg, now_ms);
         Ok(())
     }
 
     fn on_order_filled(&mut self, event: &OrderFilled) -> Result<()> {
         let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
-        let Some(leg) = self
-            .leg_for_client_order_id(&event.client_order_id)
-            .or_else(|| self.leg_for_instrument(event.instrument_id))
+        // Resolve the market + leg from the (market-unique) client order id,
+        // falling back to the instrument-id index when the order is not tracked.
+        let Some((market_key, leg)) = self
+            .market_and_leg_for_client_order_id(&event.client_order_id)
+            .or_else(|| self.market_and_leg_for_instrument(event.instrument_id))
         else {
             return Ok(());
         };
@@ -1653,24 +1999,27 @@ impl DataActor for BinaryOracleMaker {
         // the cache (a fully-filled order is closed); treat an order no longer in
         // the cache as a full fill.
         let fully_filled = self.order_is_closed(&event.client_order_id);
-        self.apply_fill_to_inventory(leg, event.order_side, event.last_qty.as_f64());
+        self.apply_fill_to_inventory(&market_key, leg, event.order_side, event.last_qty.as_f64());
         if fully_filled
             && let Some(action) = self.ingest_venue_report(
+                &market_key,
                 leg,
                 &event.client_order_id,
                 VenueReportKind::Filled,
                 now_ms,
             )
         {
-            self.execute_action(action, None, now_ms);
+            self.execute_action(&market_key, action, None, now_ms);
         }
         Ok(())
     }
 
     fn on_order_canceled(&mut self, event: &OrderCanceled) -> Result<()> {
         let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
-        if let Some(leg) = self.leg_for_client_order_id(&event.client_order_id)
+        if let Some((market_key, leg)) =
+            self.market_and_leg_for_client_order_id(&event.client_order_id)
             && let Some(action) = self.ingest_venue_report(
+                &market_key,
                 leg,
                 &event.client_order_id,
                 VenueReportKind::Canceled,
@@ -1679,8 +2028,8 @@ impl DataActor for BinaryOracleMaker {
         {
             // A confirmed requote cancel emits the replacement Submit; drive the
             // resubmit through the slot's pending price when present.
-            let target = self.pending_target_for_resubmit(leg);
-            self.execute_action(action, target, now_ms);
+            let target = self.pending_target_for_resubmit(&market_key, leg);
+            self.execute_action(&market_key, action, target, now_ms);
         }
         Ok(())
     }
@@ -1693,15 +2042,17 @@ impl DataActor for BinaryOracleMaker {
 nautilus_strategy!(BinaryOracleMaker, {
     fn on_order_rejected(&mut self, event: nautilus_model::events::OrderRejected) {
         let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
-        if let Some(leg) = self.leg_for_client_order_id(&event.client_order_id)
+        if let Some((market_key, leg)) =
+            self.market_and_leg_for_client_order_id(&event.client_order_id)
             && let Some(action) = self.ingest_venue_report(
+                &market_key,
                 leg,
                 &event.client_order_id,
                 VenueReportKind::Rejected,
                 now_ms,
             )
         {
-            self.execute_action(action, None, now_ms);
+            self.execute_action(&market_key, action, None, now_ms);
         }
     }
 
@@ -1709,15 +2060,17 @@ nautilus_strategy!(BinaryOracleMaker, {
         // A GTD/short-TTL quote expiry frees the slot; treat it as a cancel (the
         // order left the book without a fill) so the requote loop replaces it.
         let now_ms = event.ts_event.as_u64() / NANOS_PER_MILLI_U64;
-        if let Some(leg) = self.leg_for_client_order_id(&event.client_order_id)
+        if let Some((market_key, leg)) =
+            self.market_and_leg_for_client_order_id(&event.client_order_id)
             && let Some(action) = self.ingest_venue_report(
+                &market_key,
                 leg,
                 &event.client_order_id,
                 VenueReportKind::Canceled,
                 now_ms,
             )
         {
-            self.execute_action(action, None, now_ms);
+            self.execute_action(&market_key, action, None, now_ms);
         }
     }
 
@@ -1739,10 +2092,11 @@ nautilus_strategy!(BinaryOracleMaker, {
 
     fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) {
         // Settlement close-seam: NT delivers the binary resolution as a position
-        // close. Settle the held YES/NO lots here (NT does not auto-book the live
-        // 0/1 payout). See module docs + report for the seam justification.
-        if let Some(outcome) = self.settlement_outcome_for_close(event.instrument_id) {
-            self.settle_on_resolution(outcome);
+        // close. Settle the held YES/NO lots for the owning market here (NT does
+        // not auto-book the live 0/1 payout). See module docs for the seam.
+        if let Some((market_key, outcome)) = self.settlement_outcome_for_close(event.instrument_id)
+        {
+            self.settle_on_resolution(&market_key, outcome);
         }
     }
 });
@@ -1792,6 +2146,16 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
                     message,
                 });
             }
+        }
+        // Fail-loud: surface EVERY [[markets]] error (non-empty, unique ids,
+        // parseable + globally-unique instrument ids), collect-all.
+        let markets_context = format!("{field_prefix}.markets");
+        for message in config.validate_markets(&markets_context) {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.markets"),
+                code: MARKETS_INVALID_CODE,
+                message,
+            });
         }
     }
 
@@ -1901,19 +2265,24 @@ mod tests {
         )
     }
 
-    /// A full, valid maker config. Literals here are test-only (the
-    /// runtime-literal verifier strips this `#[cfg(test)] mod tests` block).
+    /// The single market's stable key for the one-market fixture. A
+    /// single-market deployment is simply a `[[markets]]` list of length one.
+    fn single_market_key() -> MarketKey {
+        MarketKey::new("MKT-A".to_string())
+    }
+
+    /// A full, valid SINGLE-market maker config — a `[[markets]]` list of length
+    /// one (proving single-market = list-of-1, no dual path). Literals here are
+    /// test-only (the runtime-literal verifier strips this `#[cfg(test)] mod
+    /// tests` block).
     fn valid_config_toml() -> &'static str {
         r#"
 strategy_id = "MAKER-001"
 order_id_tag = "001"
 client_id = "POLYMARKET"
 family_key = "updown"
-strike_price = 100.0
 reference_instrument_id = "BTCUSDT-PERP.BINANCE"
 reference_venue = "BINANCE"
-yes_instrument_id = "YESTOKEN.POLYMARKET"
-no_instrument_id = "NOTOKEN.POLYMARKET"
 quote_size = 5.0
 supports_modify = false
 requote_cadence_seconds = 1
@@ -1922,9 +2291,6 @@ requote_max_cost_per_window = 100
 requote_window_ms = 60000
 max_rest_age_ms = 30000
 data_gap_staleness_ms = 10000
-maintenance_window_start_ms = 0
-maintenance_window_duration_ms = 0
-maintenance_pre_flatten_lead_ms = 0
 requote_threshold = 0.001
 pricing_kurtosis = 0.0
 vol_window_secs = 600
@@ -1933,6 +2299,15 @@ vol_min_observations = 3
 vol_bridge_valid_secs = 600
 trade_flow_window_secs = 300
 trade_flow_max_samples = 256
+
+[[markets]]
+market_id = "MKT-A"
+yes_instrument_id = "YESTOKEN.POLYMARKET"
+no_instrument_id = "NOTOKEN.POLYMARKET"
+strike_price = 100.0
+maintenance_window_start_ms = 0
+maintenance_window_duration_ms = 0
+maintenance_pre_flatten_lead_ms = 0
 
 [parameters]
 eps = 0.01
@@ -1967,6 +2342,12 @@ informed_fraction = 0.25
     /// near the oracle fair (otherwise the basis is NaN -> HardFlat). Returns the
     /// `now_ms` at which a fair value should be available.
     fn warm_spot_feed(maker: &mut BinaryOracleMaker) -> u64 {
+        warm_spot_feed_for(maker, &single_market_key())
+    }
+
+    /// As [`warm_spot_feed`] but seeds a specific market's YES-leg touch — used by
+    /// the multi-market isolation test to prove per-market state independence.
+    fn warm_spot_feed_for(maker: &mut BinaryOracleMaker, market_key: &MarketKey) -> u64 {
         let base = 100.0_f64;
         let mut ts = 1_000_u64;
         for i in 0..8u64 {
@@ -1976,10 +2357,11 @@ informed_fraction = 0.25
         }
         // Seed a YES-leg touch straddling ~0.5 (the spot==strike fair) so the
         // governor's |oracle_fair - venue_mid| basis stays well inside basis_cap.
-        maker.yes_book.best_bid = Some(0.49);
-        maker.yes_book.best_bid_size = Some(10.0);
-        maker.yes_book.best_ask = Some(0.51);
-        maker.yes_book.best_ask_size = Some(10.0);
+        let unit = maker.unit_mut(market_key);
+        unit.yes_book.best_bid = Some(0.49);
+        unit.yes_book.best_bid_size = Some(10.0);
+        unit.yes_book.best_ask = Some(0.51);
+        unit.yes_book.best_ask_size = Some(10.0);
         ts
     }
 
@@ -2054,37 +2436,40 @@ informed_fraction = 0.25
     #[test]
     fn a_representative_tick_translates_both_legs_into_submit_attempts() {
         let mut maker = make_maker(unarmed_admission());
+        let key = single_market_key();
         let now_ms = warm_spot_feed(&mut maker);
 
         let fair = maker
-            .anchored_fair(now_ms)
+            .anchored_fair(&key, now_ms)
             .expect("warm spot/RV must yield an oracle fair");
-        assert!(maker.governor_state(now_ms, fair) == MakerGovernorState::Quoting);
+        assert!(maker.governor_state(&key, now_ms, fair) == MakerGovernorState::Quoting);
         let targets = maker
-            .desired_quote_targets(fair)
+            .desired_quote_targets(&key, fair)
             .expect("a healthy tick must produce quote targets");
         assert!(targets.leg_a.price > 0.0 && targets.leg_a.price < 1.0);
         assert!(targets.leg_b.price > 0.0 && targets.leg_b.price < 1.0);
 
-        maker.run_quote_tick(now_ms);
+        maker.run_quote_tick(&key, now_ms);
         assert_eq!(
             maker.submit_attempts.len(),
             2,
             "an idle-both-legs quoting tick must translate into two leg submits"
         );
-        assert_eq!(maker.market.leg_state(Leg::Yes), LegState::SubmitPending);
-        assert_eq!(maker.market.leg_state(Leg::No), LegState::SubmitPending);
+        let market = &maker.unit(&key).market;
+        assert_eq!(market.leg_state(Leg::Yes), LegState::SubmitPending);
+        assert_eq!(market.leg_state(Leg::No), LegState::SubmitPending);
     }
 
     #[test]
     fn no_oracle_fair_skips_quoting_fail_closed() {
         let mut maker = make_maker(unarmed_admission());
-        maker.run_quote_tick(1_000);
+        let key = single_market_key();
+        maker.run_quote_tick(&key, 1_000);
         assert!(
             maker.submit_attempts.is_empty(),
             "a tick with no oracle fair must emit no quotes (fail-closed)"
         );
-        assert_eq!(maker.market.leg_state(Leg::Yes), LegState::Idle);
+        assert_eq!(maker.unit(&key).market.leg_state(Leg::Yes), LegState::Idle);
     }
 
     // 4. Event fence drops a foreign / stale report --------------------------
@@ -2109,31 +2494,46 @@ informed_fraction = 0.25
     #[test]
     fn the_fence_drops_a_stale_generation_report() {
         let mut maker = make_maker(unarmed_admission());
+        let key = single_market_key();
         let now_ms = warm_spot_feed(&mut maker);
-        maker.run_quote_tick(now_ms);
+        maker.run_quote_tick(&key, now_ms);
         let client_order_id = maker
-            .leg_slot(Leg::Yes)
+            .unit(&key)
+            .slot(Leg::Yes)
             .client_order_id
             .expect("a YES submit attempt must have stamped a client order id");
-        assert_eq!(maker.market.leg_state(Leg::Yes), LegState::SubmitPending);
+        assert_eq!(
+            maker.unit(&key).market.leg_state(Leg::Yes),
+            LegState::SubmitPending
+        );
 
         // Forge a STALE report: right client id, older generation than expected.
         let stale_identity =
             OrderIdentity::new(FenceClientOrderId::new(client_order_id.to_string()), 5);
-        maker.yes_slot.fence.requote_to(stale_identity);
+        maker
+            .unit_mut(&key)
+            .yes_slot
+            .fence
+            .requote_to(stale_identity);
         let stale_report = VenueReport {
             client_order_id: FenceClientOrderId::new(client_order_id.to_string()),
             generation: 1, // < 5 expected => StaleGeneration
             kind: VenueReportKind::Filled,
         };
         assert!(
-            maker.yes_slot.fence.admit(&stale_report).is_err(),
+            maker
+                .unit(&key)
+                .yes_slot
+                .fence
+                .admit(&stale_report)
+                .is_err(),
             "a stale-generation report must be rejected"
         );
 
         // And through the shell's ingest path: a genuinely foreign client id is
         // dropped (fail-closed) and produces no MarketAction.
         let foreign = maker.ingest_venue_report(
+            &key,
             Leg::Yes,
             &ClientOrderId::from("totally-foreign"),
             VenueReportKind::Filled,
@@ -2171,8 +2571,9 @@ informed_fraction = 0.25
     fn no_live_order_escapes_the_quote_loop_while_unarmed() {
         let admission = unarmed_admission();
         let mut maker = make_maker(admission.clone());
+        let key = single_market_key();
         let now_ms = warm_spot_feed(&mut maker);
-        maker.run_quote_tick(now_ms);
+        maker.run_quote_tick(&key, now_ms);
         assert_eq!(maker.submit_attempts.len(), 2);
         assert!(
             maker
@@ -2194,9 +2595,239 @@ informed_fraction = 0.25
     #[test]
     fn a_confirmed_yes_buy_fill_lengthens_the_inventory() {
         let mut maker = make_maker(unarmed_admission());
-        maker.apply_fill_to_inventory(Leg::Yes, OrderSide::Buy, 3.0);
-        assert!((maker.inventory.net_position() - 3.0).abs() < 1e-9);
-        maker.apply_fill_to_inventory(Leg::No, OrderSide::Buy, 1.0);
-        assert!((maker.inventory.net_position() - 2.0).abs() < 1e-9);
+        let key = single_market_key();
+        maker.apply_fill_to_inventory(&key, Leg::Yes, OrderSide::Buy, 3.0);
+        assert!((maker.unit(&key).inventory.net_position() - 3.0).abs() < 1e-9);
+        maker.apply_fill_to_inventory(&key, Leg::No, OrderSide::Buy, 1.0);
+        assert!((maker.unit(&key).inventory.net_position() - 2.0).abs() < 1e-9);
+    }
+
+    // 7. FR-041 multi-market state isolation ---------------------------------
+
+    /// A full, valid TWO-market maker config. Shared knobs stay top-level; each
+    /// market owns its own outcome instruments + strike + maintenance window.
+    fn two_market_config_toml() -> &'static str {
+        r#"
+strategy_id = "MAKER-001"
+order_id_tag = "001"
+client_id = "POLYMARKET"
+family_key = "updown"
+reference_instrument_id = "BTCUSDT-PERP.BINANCE"
+reference_venue = "BINANCE"
+quote_size = 5.0
+supports_modify = false
+requote_cadence_seconds = 1
+ops_cadence_seconds = 5
+requote_max_cost_per_window = 100
+requote_window_ms = 60000
+max_rest_age_ms = 30000
+data_gap_staleness_ms = 10000
+requote_threshold = 0.001
+pricing_kurtosis = 0.0
+vol_window_secs = 600
+vol_gap_reset_secs = 120
+vol_min_observations = 3
+vol_bridge_valid_secs = 600
+trade_flow_window_secs = 300
+trade_flow_max_samples = 256
+
+[[markets]]
+market_id = "MKT-A"
+yes_instrument_id = "YESA.POLYMARKET"
+no_instrument_id = "NOA.POLYMARKET"
+strike_price = 100.0
+maintenance_window_start_ms = 0
+maintenance_window_duration_ms = 0
+maintenance_pre_flatten_lead_ms = 0
+
+[[markets]]
+market_id = "MKT-B"
+yes_instrument_id = "YESB.POLYMARKET"
+no_instrument_id = "NOB.POLYMARKET"
+strike_price = 200.0
+maintenance_window_start_ms = 0
+maintenance_window_duration_ms = 0
+maintenance_pre_flatten_lead_ms = 0
+
+[parameters]
+eps = 0.01
+reference_tau = 3600.0
+time_widen_cap = 4.0
+micro_weight = 0.3
+sigma_floor = 0.0
+basis_cap = 1.0
+tau_floor = 0.0
+reduce_only_cap = 100.0
+skew_gain = 0.001
+position_cap = 500.0
+half_spread_floor = 0.005
+max_half_spread = 0.2
+requote_min_interval_ms = 0
+informed_fraction = 0.25
+"#
+    }
+
+    fn make_two_market_maker(admission: Arc<BoltV3SubmitAdmissionState>) -> BinaryOracleMaker {
+        let raw = toml::from_str::<Value>(two_market_config_toml())
+            .expect("two-market config must parse");
+        // It must also clear the builder's market validation (non-empty, unique
+        // ids, parseable + globally-unique instruments).
+        let mut errors: Vec<ValidationError> = Vec::new();
+        BinaryOracleMakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+        assert!(
+            errors.is_empty(),
+            "a valid two-market config must pass validation, got: {errors:?}"
+        );
+        let config =
+            BinaryOracleMakerBuilder::parse_config(&raw).expect("two-market config deserializes");
+        BinaryOracleMaker::new(config, test_context_with(admission))
+    }
+
+    #[test]
+    fn multi_market_state_is_isolated() {
+        let mut maker = make_two_market_maker(unarmed_admission());
+        let key_a = MarketKey::new("MKT-A".to_string());
+        let key_b = MarketKey::new("MKT-B".to_string());
+
+        // (a) The same leg in two markets yields DISTINCT client order ids — the
+        // market component is present, so a slot scan can never be ambiguous.
+        let coid_a = maker.next_client_order_id(&key_a, Leg::Yes);
+        let coid_b = maker.next_client_order_id(&key_b, Leg::Yes);
+        assert_ne!(
+            coid_a, coid_b,
+            "the same leg across two markets must produce distinct client order ids"
+        );
+        assert!(
+            coid_a.to_string().contains("MKT-A") && coid_b.to_string().contains("MKT-B"),
+            "each client order id must carry its market component: {coid_a} / {coid_b}"
+        );
+
+        // (b) instrument_to_market routes each of the 4 instrument ids to the
+        // correct (market, leg).
+        let yes_a = InstrumentId::from("YESA.POLYMARKET");
+        let no_a = InstrumentId::from("NOA.POLYMARKET");
+        let yes_b = InstrumentId::from("YESB.POLYMARKET");
+        let no_b = InstrumentId::from("NOB.POLYMARKET");
+        assert_eq!(
+            maker.market_and_leg_for_instrument(yes_a),
+            Some((key_a.clone(), Leg::Yes))
+        );
+        assert_eq!(
+            maker.market_and_leg_for_instrument(no_a),
+            Some((key_a.clone(), Leg::No))
+        );
+        assert_eq!(
+            maker.market_and_leg_for_instrument(yes_b),
+            Some((key_b.clone(), Leg::Yes))
+        );
+        assert_eq!(
+            maker.market_and_leg_for_instrument(no_b),
+            Some((key_b.clone(), Leg::No))
+        );
+
+        // (c) Mutating market A does NOT touch market B's inventory or books.
+        maker.apply_fill_to_inventory(&key_a, Leg::Yes, OrderSide::Buy, 7.0);
+        maker.unit_mut(&key_a).yes_book.best_bid = Some(0.42);
+        assert!(
+            (maker.unit(&key_a).inventory.net_position() - 7.0).abs() < 1e-9,
+            "market A inventory must reflect its own fill"
+        );
+        assert!(
+            (maker.unit(&key_b).inventory.net_position()).abs() < 1e-9,
+            "market B inventory must remain flat — A's fill must not leak"
+        );
+        assert_eq!(
+            maker.unit(&key_b).yes_book.best_bid,
+            None,
+            "market B book must remain untouched by A's book mutation"
+        );
+        assert_eq!(
+            maker.unit(&key_a).yes_book.best_bid,
+            Some(0.42),
+            "market A book must reflect its own mutation"
+        );
+    }
+
+    /// The config head before the first `[[markets]]` table and the
+    /// `[parameters]` table (with its leading marker), split from the canonical
+    /// two-market fixture so a test can splice a different markets shape between
+    /// them without restating the shared knobs.
+    fn config_head_and_parameters() -> (&'static str, String) {
+        let head = two_market_config_toml()
+            .split("[[markets]]")
+            .next()
+            .expect("config head before markets");
+        let params_tail = two_market_config_toml()
+            .split_once("[parameters]")
+            .expect("config has a [parameters] table")
+            .1;
+        (head, format!("[parameters]{params_tail}"))
+    }
+
+    #[test]
+    fn empty_markets_list_fails_validation() {
+        // An EMPTY `markets = []` list must be rejected loud (fail-closed): there
+        // is no implicit single market. An explicit empty inline array
+        // deserializes fine, so the emptiness is caught by validate_markets (not
+        // by a missing-field error).
+        let (head, parameters) = config_head_and_parameters();
+        let empty_markets = format!("{head}markets = []\n\n{parameters}");
+        let raw =
+            toml::from_str::<Value>(&empty_markets).expect("config with empty markets parses");
+        let mut errors: Vec<ValidationError> = Vec::new();
+        BinaryOracleMakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+        assert!(
+            errors.iter().any(|e| e.message.contains("at least one")),
+            "an empty markets list must fail loud, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn an_absent_markets_field_is_a_loud_deserialize_error() {
+        // A config that omits `markets` entirely must fail to deserialize (the
+        // field is required — there is no defaulted single market).
+        let (head, parameters) = config_head_and_parameters();
+        let no_markets = format!("{head}{parameters}");
+        let raw =
+            toml::from_str::<Value>(&no_markets).expect("config without markets still parses");
+        let result = BinaryOracleMakerBuilder::parse_config(&raw);
+        assert!(
+            result.is_err(),
+            "a config missing the required markets field must fail to deserialize"
+        );
+    }
+
+    #[test]
+    fn duplicate_instrument_across_markets_fails_validation() {
+        // Reusing market A's YES instrument as market B's YES instrument must be
+        // rejected — outcome instruments are globally unique.
+        let toml = two_market_config_toml().replace(
+            "yes_instrument_id = \"YESB.POLYMARKET\"",
+            "yes_instrument_id = \"YESA.POLYMARKET\"",
+        );
+        let raw = toml::from_str::<Value>(&toml).expect("config still parses");
+        let mut errors: Vec<ValidationError> = Vec::new();
+        BinaryOracleMakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("more than one market")),
+            "a duplicate cross-market instrument must fail loud, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_market_id_fails_validation() {
+        let toml =
+            two_market_config_toml().replace("market_id = \"MKT-B\"", "market_id = \"MKT-A\"");
+        let raw = toml::from_str::<Value>(&toml).expect("config still parses");
+        let mut errors: Vec<ValidationError> = Vec::new();
+        BinaryOracleMakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("duplicate market_id")),
+            "a duplicate market_id must fail loud, got: {errors:?}"
+        );
     }
 }

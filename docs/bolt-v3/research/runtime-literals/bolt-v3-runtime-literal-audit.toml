@@ -8478,15 +8478,15 @@ kind = "string"
 literal = '''"let Some(report) = inner.gate_report.as_ref() else"'''
 context = '''"let Some(report) = inner.gate_report.as_ref() else";'''
 classification = "operator_source_proof_static_marker"
-reason = "This marker verifies submit admission checks live-canary arming before admitting orders; it is source evidence, not an operator runtime value."
+reason = "This marker verifies submit admission handles the optional unarmed gate branch after lifecycle checks; it is source evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"return BoltV3AdmissionOutcome::RejectedNotArmed;"'''
-context = '''"return BoltV3AdmissionOutcome::RejectedNotArmed;";'''
+literal = '''"return BoltV3AdmissionOutcome::Admitted;"'''
+context = '''"return BoltV3AdmissionOutcome::Admitted;";'''
 classification = "operator_source_proof_static_marker"
-reason = "This marker verifies unarmed submit admission rejects orders; it is source evidence, not an operator runtime value."
+reason = "This marker verifies unarmed submit admission reaches the explicit allow branch only after lifecycle checks; it is source evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -8503,14 +8503,6 @@ literal = '''"return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;"
 context = '''"return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies disallowed lifecycle submissions fail closed; it is source evidence, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
-kind = "string"
-literal = '''"BoltV3AdmissionOutcome::Admitted"'''
-context = '''const ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER: &str = "BoltV3AdmissionOutcome::Admitted";'''
-classification = "operator_source_proof_static_marker"
-reason = "This marker verifies service-policy rejections occur before the admitted outcome; it is source evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -8619,10 +8611,10 @@ reason = "This field names the submit-admission evaluator function-scope diagnos
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"submit_admission_rejects_unarmed_and_disallowed_lifecycle"'''
-context = '''"submit_admission_rejects_unarmed_and_disallowed_lifecycle",'''
+literal = '''"submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle"'''
+context = '''"submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle",'''
 classification = "operator_source_proof_diagnostic_field"
-reason = "This field names the submit-admission unarmed and lifecycle rejection proof diagnostic, not an operator runtime value."
+reason = "This field names the submit-admission unarmed-allow and lifecycle rejection proof diagnostic, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

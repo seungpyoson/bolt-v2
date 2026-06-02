@@ -382,7 +382,8 @@ const ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_CHECK_MARKER: &str =
     "!request.lifecycle_policy.allows(request.intent_kind)";
 const ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_REJECT_MARKER: &str =
     "return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;";
-const ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER: &str = "BoltV3AdmissionOutcome::Admitted";
+const ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER: &str =
+    "return BoltV3AdmissionOutcome::Admitted;";
 const ABORT_PLAN_SERVICE_REPLACE_ALLOWED_MARKER: &str =
     "BoltV3OrderLifecycleIntent::ReplaceSubmit if self.replace_submit";
 const ABORT_PLAN_SERVICE_REPLACE_SUBMIT_MARKER: &str =

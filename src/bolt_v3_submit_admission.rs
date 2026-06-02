@@ -197,12 +197,10 @@ impl BoltV3SubmitAdmissionState {
 
     /// Gate-approved maximum reference-quote age (seconds) carried by the armed
     /// gate report, or `None` when the state is not yet armed. This is the single
-    /// authoritative freshness bound for the armed live path (A5): the submit /
-    /// forced-flat stale check plumbs this value in so the gate-validated
+    /// authoritative freshness bound when the optional gate is armed (A5): the
+    /// submit / forced-flat stale check plumbs this value in so the gate-validated
     /// freshness policy — not an independent strategy-config value — governs
-    /// whether a reference quote is fresh enough to keep trading. `None` (unarmed)
-    /// is irrelevant to live money because admission rejects every order until the
-    /// state is armed.
+    /// whether a reference quote is fresh enough to keep trading.
     pub fn reference_quote_max_age_seconds(&self) -> Option<u64> {
         self.inner
             .lock()

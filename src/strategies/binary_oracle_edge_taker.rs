@@ -14512,7 +14512,7 @@ mod tests {
         );
         let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
             Arc::new(RecordingDecisionEvidenceWriter),
-            rejecting_submit_admission,
+            rejecting_submit_admission.clone(),
         );
         strategy.active.phase = SelectionPhase::Freeze;
         let instrument_id = selected_entry_instrument(&strategy);
@@ -14538,6 +14538,42 @@ mod tests {
                 && decision.blocked_reason.is_none(),
             "test setup must reach exit submit admission path; got {decision:#?}"
         );
+        let managed_position = strategy
+            .managed_position()
+            .expect("managed position should remain available for exit admission setup");
+        let exit_order_side = decision
+            .order_side
+            .expect("exit decision should include order side");
+        let exit_quantity = Decimal::from_f64(
+            decision
+                .quantity
+                .expect("exit decision should include quantity")
+                .as_f64(),
+        )
+        .expect("exit quantity should convert to decimal");
+        let position_quantity = Decimal::from_f64(managed_position.position.quantity.as_f64())
+            .expect("position quantity should convert to decimal");
+        rejecting_submit_admission
+            .admit(&BoltV3SubmitAdmissionRequest {
+                strategy_id: strategy.config.strategy_id.clone(),
+                client_order_id: "EXIT-SLOT-ALREADY-USED".to_string(),
+                instrument_id: managed_position.position.instrument_id.to_string(),
+                notional: Decimal::new(1, 0),
+                order_side: exit_order_side,
+                order_quantity: exit_quantity,
+                intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
+                lifecycle_policy: strategy.submit_lifecycle_policy(),
+                canary_proof_claim: None,
+                risk_reducing_exit_proof: Some(BoltV3RiskReducingExitProof {
+                    position_id: managed_position.position.position_id.to_string(),
+                    instrument_id: managed_position.position.instrument_id.to_string(),
+                    position_side: managed_position.position.side,
+                    exit_order_side,
+                    position_quantity,
+                    exit_quantity,
+                }),
+            })
+            .expect("test setup should consume the only risk-reducing exit slot");
 
         let result = strategy.on_book_deltas(&book_deltas(
             instrument_id,

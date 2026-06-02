@@ -167,6 +167,14 @@ fn main() -> Result<()> {
         output.nt_result.run_config_id
     );
     println!(
+        "nt_iterations = {} (market-data points processed by the engine)",
+        output.nt_result.iterations
+    );
+    println!(
+        "nt_backtest_start = {:?}, nt_backtest_end = {:?}",
+        output.nt_result.backtest_start, output.nt_result.backtest_end
+    );
+    println!(
         "nt_total_events = {}, nt_total_orders = {}, nt_total_positions = {}",
         output.nt_result.total_events,
         output.nt_result.total_orders,

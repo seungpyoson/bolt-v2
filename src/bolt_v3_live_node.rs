@@ -67,7 +67,7 @@ use nautilus_live::{
 };
 use nautilus_model::{
     data::{OrderBookDeltas, QuoteTick, TradeTick},
-    enums::{BarIntervalType, BookType, OrderSide, OrderType},
+    enums::{BarIntervalType, BookType, OrderSide, OrderType, TradingState},
     identifiers::{ActorId, ClientId, InstrumentId, StrategyId, Venue},
     instruments::Instrument,
     orders::{Order, OrderAny},
@@ -94,7 +94,11 @@ use crate::{
         decision_evidence_path, read_submit_reservation_recovery_evidence,
     },
     bolt_v3_live_canary_gate::current_build_head_sha,
-    bolt_v3_loss_governor::LossGovernorPolicy,
+    bolt_v3_loss_governor::{LossGovernorPolicy, evaluate_loss_admission},
+    bolt_v3_loss_halt_actions::{
+        LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy, LossGovernorRecoveryMode,
+        LossGovernorTradingStateAction, next_loss_governor_trading_state,
+    },
     bolt_v3_loss_runtime_feed::{
         LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
         LossGovernorRuntimeFeedSubscription, subscribe_loss_governor_runtime_feed,
@@ -1729,6 +1733,10 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn loss_governor_runtime_feed_configured(&self) -> bool {
         self.loss_runtime_feed.is_some() && self.loss_runtime_feed_subscription.is_some()
+    }
+
+    pub fn nt_risk_trading_state(&self) -> TradingState {
+        self.node.kernel().risk_engine().borrow().trading_state()
     }
 
     pub fn position_sizer_configured(&self) -> bool {
@@ -3475,6 +3483,7 @@ fn build_live_node_with_clients(
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
     let proof_executor_enabled = canary_proof_executor_enabled(loaded);
     let loss_policy = loss_governor_policy_from_loaded(loaded)?;
+    let loss_halt_action_policy = loss_governor_halt_action_policy_from_loaded(loaded)?;
     let position_sizer = position_sizer_config_from_loaded(loaded)?;
     let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> =
         if loaded.strategies.is_empty() && !proof_executor_enabled && position_sizer.is_none() {
@@ -3498,7 +3507,7 @@ fn build_live_node_with_clients(
     } else {
         None
     };
-    let submit_admission = Arc::new(match (loss_policy, position_sizer) {
+    let submit_admission = Arc::new(match (loss_policy.clone(), position_sizer) {
         (Some(policy), Some(position_sizer)) => {
             BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor_and_position_sizer(
                 decision_evidence.clone(),
@@ -3518,18 +3527,6 @@ fn build_live_node_with_clients(
         }
         (None, None) => BoltV3SubmitAdmissionState::new_unarmed(decision_evidence.clone()),
     });
-    let (loss_runtime_feed, loss_runtime_feed_subscription) =
-        match loss_governor_runtime_feed_config_from_loaded(loaded) {
-            Some(config) => {
-                let feed = Arc::new(Mutex::new(LossGovernorRuntimeFeed::new(
-                    config,
-                    submit_admission.clone(),
-                )));
-                let subscription = subscribe_loss_governor_runtime_feed(feed.clone());
-                (Some(feed), Some(subscription))
-            }
-            None => (None, None),
-        };
     let (position_sizer_runtime_feed, position_sizer_runtime_feed_subscription) =
         match position_sizer_runtime_feed_config {
             Some(config) => {
@@ -3584,6 +3581,30 @@ fn build_live_node_with_clients(
             strategy.registered_strategy_id
         );
     }
+    let loss_halt_action_handler =
+        match (loss_policy.clone(), loss_halt_action_policy.as_ref()) {
+            (Some(policy), Some(action_policy)) => Some(
+                loss_governor_halt_action_handler_from_node(&node, policy, *action_policy),
+            ),
+            _ => None,
+        };
+    if let Some(handler) = loss_halt_action_handler.as_ref() {
+        handler(None, startup_observed_at_ns);
+    }
+    let (loss_runtime_feed, loss_runtime_feed_subscription) =
+        match loss_governor_runtime_feed_config_from_loaded(loaded) {
+            Some(config) => {
+                let feed = LossGovernorRuntimeFeed::new(config, submit_admission.clone());
+                let feed = match loss_halt_action_handler.as_ref() {
+                    Some(handler) => feed.with_halt_action_handler(handler.clone()),
+                    None => feed,
+                };
+                let feed = Arc::new(Mutex::new(feed));
+                let subscription = subscribe_loss_governor_runtime_feed(feed.clone());
+                (Some(feed), Some(subscription))
+            }
+            None => (None, None),
+        };
     Ok((
         BoltV3LiveNodeRuntime::new(
             node,
@@ -3763,6 +3784,63 @@ fn loss_governor_policy_from_loaded(
             block.max_drawdown.as_deref(),
         )?),
     }))
+}
+
+fn loss_governor_halt_action_policy_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<LossGovernorHaltActionPolicy>, BoltV3LiveNodeError> {
+    let Some(block) = loaded.root.risk.loss_governor.as_ref() else {
+        return Ok(None);
+    };
+    if !block.enabled {
+        return Ok(None);
+    }
+    Ok(Some(LossGovernorHaltActionPolicy {
+        on_loss_breach_trading_state: required_loss_governor_trading_state_action(
+            "risk.loss_governor.on_loss_breach_trading_state",
+            block.on_loss_breach_trading_state,
+        )?,
+        on_untrusted_snapshot_trading_state: required_loss_governor_trading_state_action(
+            "risk.loss_governor.on_untrusted_snapshot_trading_state",
+            block.on_untrusted_snapshot_trading_state,
+        )?,
+        recovery_mode: required_loss_governor_recovery_mode(
+            "risk.loss_governor.recovery_mode",
+            block.recovery_mode,
+        )?,
+    }))
+}
+
+fn required_loss_governor_trading_state_action(
+    label: &'static str,
+    value: Option<LossGovernorTradingStateAction>,
+) -> Result<LossGovernorTradingStateAction, BoltV3LiveNodeError> {
+    value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))
+}
+
+fn required_loss_governor_recovery_mode(
+    label: &'static str,
+    value: Option<LossGovernorRecoveryMode>,
+) -> Result<LossGovernorRecoveryMode, BoltV3LiveNodeError> {
+    value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))
+}
+
+fn loss_governor_halt_action_handler_from_node(
+    node: &LiveNode,
+    loss_policy: LossGovernorPolicy,
+    action_policy: LossGovernorHaltActionPolicy,
+) -> LossGovernorHaltActionHandler {
+    let risk_engine = node.kernel().risk_engine().clone();
+    Rc::new(move |snapshot, now_ns| {
+        let decision = evaluate_loss_admission(&loss_policy, snapshot, now_ns);
+        let current_state = risk_engine.borrow().trading_state();
+        let Some(target_state) =
+            next_loss_governor_trading_state(&action_policy, current_state, &decision)
+        else {
+            return;
+        };
+        risk_engine.borrow_mut().set_trading_state(target_state);
+    })
 }
 
 fn required_loss_governor_decimal(

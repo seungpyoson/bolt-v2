@@ -5,7 +5,7 @@
 **Status**: Draft
 **Input**: Prompt `/Users/spson/Downloads/prompts/bolt-v2-circuit-breaker-goal.md`; GitHub issue #505.
 
-**PR #507 Scope Note**: This branch implements the pure loss-governor and positional-sizing core, plus the configured loss-governor gate in shared submit admission. It wires `[risk.loss_governor]` into `bolt_v3_live_node`, subscribes a configured NT portfolio/position runtime feed that publishes loss snapshots to submit admission, rejects entry/replace risk before NT submit on missing/stale/breached loss facts, leaves risk-reducing exits eligible under existing caps, and records schema-v6 halt evidence. It still does not wire the positional sizer into live submit admission, cancel/flatten orders, or call NT `RiskEngine::set_trading_state`.
+**PR #507 Scope Note**: This branch implements the pure loss-governor and positional-sizing core, plus the configured loss-governor gate in shared submit admission. It wires `[risk.loss_governor]` into `bolt_v3_live_node`, subscribes a configured NT portfolio/position runtime feed that publishes loss snapshots to submit admission, rejects entry/replace risk before NT submit on missing/stale/breached loss facts, leaves risk-reducing exits eligible under existing caps, records schema-v6 halt evidence, and applies configured loss-halt actions through NT `RiskEngine::set_trading_state`. The NT state action is latching/manual-recovery only, and `Halted`/`Reducing` are NT command-admission states; they do not cancel existing working orders, flatten positions, or mean the account is flat. This branch still does not actively cancel/flatten orders or expose an operator clear-to-Active surface.
 
 ## User Scenarios & Testing
 
@@ -66,6 +66,8 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - External deposits and withdrawals must not be inferred from residual equity math for max-drawdown high-watermark rebasing. Until an explicit NT account-state or operator cash-flow attribution source exists, a conservative max-drawdown halt remains safer than masking fees, funding, or trading losses.
 - Multiple breach reasons must be reported deterministically.
 - Risk-reducing exits must not be blocked by loss halt policy; existing operator count and lifecycle caps still apply.
+- Configured NT trading-state actions must be monotonic (`Active` to `Reducing` to `Halted`) and must not downgrade or auto-clear to `Active`.
+- `on_untrusted_snapshot_trading_state = "none"` means Bolt admission/evidence only; it intentionally performs no NT risk-engine state change.
 
 ## Requirements
 
@@ -85,6 +87,8 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - **FR-012**: System MUST NOT implement cancel, flatten, or bespoke venue side effects in this slice.
 - **FR-013**: System MUST require every `[risk.loss_governor]` threshold when the governor is enabled.
 - **FR-014**: System MUST evaluate loss snapshots against the latest accepted NT account event timestamp, MUST evict expired rolling-window samples on fresh portfolio heartbeats, and MUST avoid false rolling PnL deltas when NT session-cumulative PnL resets are corroborated by total-equity continuity.
+- **FR-015**: System MUST require explicit `[risk.loss_governor]` halt-action config when enabled: `on_loss_breach_trading_state`, `on_untrusted_snapshot_trading_state`, and `recovery_mode`.
+- **FR-016**: System MUST apply configured loss-halt state changes through NT `RiskEngine::set_trading_state`, using monotonic severity and latching manual recovery.
 
 ### Key Entities
 
@@ -93,6 +97,7 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - **LossAdmissionDecision**: Accept/reject decision with deterministic halt evidence.
 - **LossHaltReason**: Public reason enum for per-trade, daily, rolling, max-drawdown, and stale snapshot failures.
 - **LossGovernorRuntimeFeed**: Live in-process feed that derives governor snapshots from NT `PortfolioSnapshot` and `PositionEvent` messages for the configured account.
+- **LossGovernorHaltActionPolicy**: Config-derived action policy mapping loss breaches and untrusted snapshots to explicit NT trading-state actions (`none`, `reducing`, or `halted`) with manual recovery.
 
 ## Success Criteria
 
@@ -104,10 +109,10 @@ As the operator, I need configured loss-governor policy to reach the live submit
 - **SC-004**: `cargo fmt --check` and `git diff --check` pass.
 - **SC-005**: Submit/live integration tests pass for `bolt_v3_submit_admission`.
 - **SC-006**: `cargo test --locked --test config_parsing` and `cargo test --locked --test bolt_v3_decision_evidence` pass.
-- **SC-007**: Final report separates submit-admission protection from unimplemented cancel/flatten or NT trading-state side effects.
+- **SC-007**: Final report separates submit-admission and NT trading-state protection from unimplemented cancel/flatten and operator clear-to-Active behavior.
 
 ## Assumptions
 
 - Current pinned NautilusTrader revision is `6e059dcbb59ac1e582132fc431a581936c216c3c`.
 - Issue #505 is the tracking issue for this slice.
-- This PR wires configured submit-admission loss protection and the live NT runtime feed that refreshes snapshots. Positional-sizer live enforcement, cancel/flatten behavior, and explicit NT `RiskEngine::set_trading_state` side effects remain later work.
+- This PR wires configured submit-admission loss protection, the live NT runtime feed that refreshes snapshots, and explicit NT `RiskEngine::set_trading_state` side effects for configured loss halts. Active cancel/flatten behavior and an operator clear-to-Active surface remain later work.

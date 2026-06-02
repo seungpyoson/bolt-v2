@@ -20,7 +20,10 @@ use nautilus_model::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
+use crate::{
+    bolt_v3_loss_halt_actions::{LossGovernorRecoveryMode, LossGovernorTradingStateAction},
+    bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies},
+};
 
 pub const TEST_DOUBLE_PROVIDER_KIND: &str = "test_double";
 pub const CHAINLINK_DATA_STREAMS_PROVIDER_KIND: &str = "chainlink_data_streams";
@@ -177,6 +180,9 @@ pub struct LossGovernorBlock {
     pub account_id: AccountId,
     pub max_snapshot_age_ns: u64,
     pub rolling_window_ns: u64,
+    pub on_loss_breach_trading_state: Option<LossGovernorTradingStateAction>,
+    pub on_untrusted_snapshot_trading_state: Option<LossGovernorTradingStateAction>,
+    pub recovery_mode: Option<LossGovernorRecoveryMode>,
     pub max_per_trade_loss: Option<String>,
     pub max_daily_loss: Option<String>,
     pub max_rolling_loss: Option<String>,

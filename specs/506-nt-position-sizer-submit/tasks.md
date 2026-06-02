@@ -40,7 +40,8 @@
 
 ## Remaining For Production Grade
 
-- [ ] Add configured halt actions for threshold breach: stop entries, cancel orders, and optional flatten.
+- [ ] Add a safe NT-owned active cancel/flatten control path for loss halts; submit admission and NT trading-state entry/reduce gating are implemented, but working orders and open positions may remain live.
+- [ ] Add an operator clear-to-Active surface for manual recovery after a latched loss halt.
 - [ ] Document and implement a safe replace-submit model before enabling `ReplaceSubmit`.
 - [ ] Replace static configured prediction-market metadata with dynamic market-selection metadata when rotating markets.
 - [ ] Add adapter/venue evidence for collateral spendability and venue/instrument allowance.

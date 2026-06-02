@@ -949,6 +949,24 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                     errors.push(format!("{label} must be configured when enabled"));
                 }
             }
+            for (label, configured) in [
+                (
+                    "risk.loss_governor.on_loss_breach_trading_state",
+                    loss_governor.on_loss_breach_trading_state.is_some(),
+                ),
+                (
+                    "risk.loss_governor.on_untrusted_snapshot_trading_state",
+                    loss_governor.on_untrusted_snapshot_trading_state.is_some(),
+                ),
+                (
+                    "risk.loss_governor.recovery_mode",
+                    loss_governor.recovery_mode.is_some(),
+                ),
+            ] {
+                if !configured {
+                    errors.push(format!("{label} must be configured when enabled"));
+                }
+            }
         }
         for (label, threshold) in [
             (

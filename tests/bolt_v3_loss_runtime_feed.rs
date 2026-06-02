@@ -17,7 +17,11 @@ use nautilus_model::identifiers::{
 };
 use nautilus_model::types::{Currency, Money, Price, Quantity};
 use rust_decimal::Decimal;
-use std::sync::{Arc, Mutex};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 
 #[test]
 fn nt_runtime_feed_publishes_fresh_portfolio_loss_snapshot_to_submit_admission() {
@@ -59,6 +63,36 @@ fn nt_runtime_feed_publishes_fresh_portfolio_loss_snapshot_to_submit_admission()
         .expect("fresh below-limit NT-derived snapshot should admit entry submit");
     assert_eq!(admission.admitted_order_count(), 1);
     assert_eq!(writer.admission_decisions().len(), 1);
+}
+
+#[test]
+fn nt_runtime_feed_invokes_halt_action_handler_for_published_snapshot() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+        writer,
+        loss_policy(),
+    ));
+
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let handler_calls = Rc::clone(&calls);
+    let account_id = AccountId::from("SIM-LOSS-HALT-001");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 500,
+        },
+        admission,
+    )
+    .with_halt_action_handler(Rc::new(move |snapshot, now_ns| {
+        handler_calls
+            .borrow_mut()
+            .push((snapshot.map(|snapshot| snapshot.observed_at_ns), now_ns));
+    }));
+
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, -4.0, -3.0, 1_000.0))
+        .expect("portfolio facts should publish an NT-derived loss snapshot");
+
+    assert_eq!(calls.borrow().as_slice(), &[(Some(1_000), 1_000)]);
 }
 
 #[test]

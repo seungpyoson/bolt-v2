@@ -12,12 +12,16 @@ Fields:
 - `max_daily_loss`: configured session/day loss threshold.
 - `max_rolling_loss`: configured rolling-window loss threshold.
 - `max_drawdown`: configured drawdown threshold from peak equity to current equity.
+- `on_loss_breach_trading_state`: explicit NT trading-state action for confirmed threshold breaches.
+- `on_untrusted_snapshot_trading_state`: explicit NT trading-state action for missing, stale, or unattributed snapshots.
+- `recovery_mode`: explicit recovery posture; this slice supports `manual` only.
 
 Validation:
 
 - Freshness bound is required.
 - Configured thresholds must be positive.
-- When `[risk.loss_governor].enabled = true`, every threshold must be configured; missing values fail validation instead of falling back to defaults.
+- When `[risk.loss_governor].enabled = true`, every threshold and halt-action field must be configured; missing values fail validation instead of falling back to defaults.
+- `none` is an explicit no-op for NT risk-engine state changes; it still leaves submit admission and evidence behavior active.
 
 ## LossSnapshot
 
@@ -56,6 +60,24 @@ Rules:
 - Derive rolling PnL from deltas between accepted NT portfolio PnL snapshots.
 - Track peak equity from observed NT total-equity snapshots.
 - Publish a `LossSnapshot` to submit admission whenever enough NT-derived facts exist.
+- Invoke the configured halt-action handler on published snapshots; the handler applies NT trading-state changes only when policy evaluation rejects and severity increases.
+
+## LossGovernorHaltActionPolicy
+
+Config-derived action policy for NT trading-state side effects.
+
+Fields:
+
+- `on_loss_breach_trading_state`: `none`, `reducing`, or `halted` for confirmed threshold breaches.
+- `on_untrusted_snapshot_trading_state`: `none`, `reducing`, or `halted` for missing/stale/unattributed snapshots.
+- `recovery_mode`: `manual`.
+
+Rules:
+
+- Uses NT `RiskEngine::set_trading_state`; Bolt does not invent cancel/flatten behavior.
+- Applies state monotonically: `Active` can move to `Reducing` or `Halted`, and `Reducing` can move to `Halted`; no downgrade or auto-clear is performed.
+- `manual` recovery means a later below-limit snapshot does not move NT back to `Active`.
+- `Halted` and `Reducing` are NT command-admission states, not evidence that working orders were canceled or positions flattened.
 
 ## LossAdmissionDecision
 

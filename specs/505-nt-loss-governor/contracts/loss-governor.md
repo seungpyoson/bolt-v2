@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Evaluate whether Bolt may admit new risk using only fresh NT-derived loss/equity facts and configured policy thresholds. PR #507 provides the pure evaluator, positional-sizing core, configured enforcement at the shared submit-admission boundary, and a configured NT portfolio/position runtime feed that publishes loss snapshots to submit admission.
+Evaluate whether Bolt may admit new risk using only fresh NT-derived loss/equity facts and configured policy thresholds. PR #507 provides the pure evaluator, positional-sizing core, configured enforcement at the shared submit-admission boundary, a configured NT portfolio/position runtime feed that publishes loss snapshots to submit admission, and configured NT trading-state halt actions.
 
 ## Public Behavior
 
@@ -51,14 +51,26 @@ The live integration subscribes to NT portfolio snapshot and position event topi
 
 The feed publishes a `LossSnapshot` on accepted account heartbeats. `observed_at_ns` is the latest accepted NT event timestamp for that account, while stale or expired rolling-window samples are evicted on each fresh portfolio snapshot. Historical peak equity remains an input to drawdown but does not make an otherwise fresh portfolio heartbeat stale.
 
+## NT Trading-State Behavior
+
+When `[risk.loss_governor].enabled = true`, config must explicitly provide:
+
+- `on_loss_breach_trading_state`
+- `on_untrusted_snapshot_trading_state`
+- `recovery_mode = "manual"`
+
+The trading-state action values are `none`, `reducing`, or `halted`. `none` is an explicit no-op for NT risk-engine state changes; submit-admission rejection and evidence still apply.
+
+Configured NT state changes use `RiskEngine::set_trading_state` and are monotonic: `Active` may move to `Reducing` or `Halted`, and `Reducing` may move to `Halted`; no downgrade or auto-clear to `Active` is performed. `Halted` and `Reducing` do not cancel working orders or flatten positions.
+
 ## Non-Goals
 
 - No strategy-local risk logic.
 - No cancel/flatten side effects.
-- No direct `RiskEngine::set_trading_state` side effect in this slice.
 - No independent PnL/account truth.
 - No venue-specific code.
 - No positional-sizer live-path enforcement in PR #507.
+- No operator clear-to-Active surface in PR #507.
 
 ## Scope Guards
 
@@ -66,4 +78,4 @@ This slice must not edit:
 
 - `src/strategies/binary_oracle_edge_taker.rs`
 
-The final report must state that submit-admission protection does not prove cancel/flatten or NT trading-state side effects.
+The final report must state that submit-admission and NT trading-state protection do not prove cancel/flatten or flat-position behavior.

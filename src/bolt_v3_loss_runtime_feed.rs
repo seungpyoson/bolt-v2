@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, fmt, sync::Arc};
 
 use nautilus_common::msgbus::{
     TypedHandler, subscribe_portfolio_snapshot, subscribe_position_events,
@@ -13,6 +13,7 @@ use rust_decimal::Decimal;
 
 use crate::{
     bolt_v3_loss_governor::LossSnapshot,
+    bolt_v3_loss_halt_actions::LossGovernorHaltActionHandler,
     bolt_v3_submit_admission::BoltV3SubmitAdmissionState,
     nt_runtime_capture::{portfolio_snapshots_pattern, position_events_pattern},
 };
@@ -25,10 +26,10 @@ pub struct LossGovernorRuntimeFeedConfig {
     pub rolling_window_ns: u64,
 }
 
-#[derive(Debug)]
 pub struct LossGovernorRuntimeFeed {
     config: LossGovernorRuntimeFeedConfig,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
+    halt_action_handler: Option<LossGovernorHaltActionHandler>,
     state: LossGovernorRuntimeFeedState,
 }
 
@@ -131,8 +132,15 @@ impl LossGovernorRuntimeFeed {
         Self {
             config,
             submit_admission,
+            halt_action_handler: None,
             state: LossGovernorRuntimeFeedState::new(),
         }
+    }
+
+    #[must_use]
+    pub fn with_halt_action_handler(mut self, handler: LossGovernorHaltActionHandler) -> Self {
+        self.halt_action_handler = Some(handler);
+        self
     }
 
     pub fn on_portfolio_snapshot(&mut self, snapshot: &PortfolioSnapshot) -> Option<LossSnapshot> {
@@ -217,8 +225,25 @@ impl LossGovernorRuntimeFeed {
             peak_equity: Some(peak_equity.value),
         };
         self.submit_admission.update_loss_snapshot(snapshot.clone());
+        if let Some(handler) = self.halt_action_handler.as_ref() {
+            handler(Some(&snapshot), observed_at_ns);
+        }
         self.state.latest_snapshot = Some(snapshot.clone());
         Some(snapshot)
+    }
+}
+
+impl fmt::Debug for LossGovernorRuntimeFeed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LossGovernorRuntimeFeed")
+            .field("config", &self.config)
+            .field("submit_admission", &self.submit_admission)
+            .field(
+                stringify!(halt_action_handler_configured),
+                &self.halt_action_handler.is_some(),
+            )
+            .field("state", &self.state)
+            .finish()
     }
 }
 

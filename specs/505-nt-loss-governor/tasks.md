@@ -74,7 +74,7 @@
 
 **Independent Test**: Submit-admission/live-node tests prove missing/breached loss snapshots reject new risk before NT submit, fresh below-limit snapshots admit, risk-reducing exits remain possible under existing caps, and live builds carry policy into submit admission.
 
-**PR #507 status**: Partially implemented in this branch. PR #507 includes configured submit-admission loss protection, live-node policy wiring, and a configured NT portfolio/position runtime feed that publishes loss snapshots from subscribed NT events. It still does not include positional-sizer live-path enforcement, cancel/flatten behavior, or NT `RiskEngine::set_trading_state` side effects.
+**PR #507 status**: Partially implemented in this branch. PR #507 includes configured submit-admission loss protection, live-node policy wiring, a configured NT portfolio/position runtime feed that publishes loss snapshots from subscribed NT events, and configured NT `RiskEngine::set_trading_state` halt actions for loss breaches or untrusted snapshots. It still does not include active cancel/flatten behavior or an operator clear-to-Active surface.
 
 - [X] T023 [US3] Add failing submit-admission test for configured loss governor rejecting new risk without a fresh snapshot
 - [X] T024 [US3] Implement `BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor`, `update_loss_snapshot`, deterministic loss halt evidence, and `admit_at`
@@ -87,6 +87,9 @@
 - [X] T031 [US3] Require every enabled loss-governor threshold in config validation
 - [X] T032 [US3] Bump decision-evidence schema to v6 for loss-governor halt evidence
 - [X] T033 [US3] Keep NT feed snapshots fresh to the latest accepted account event while portfolio heartbeats evict expired rolling-window samples
+- [X] T047 [US3] Require explicit loss-governor NT halt-action config and manual recovery mode
+- [X] T048 [US3] Apply configured loss-halt actions through NT `RiskEngine::set_trading_state` with monotonic severity and no auto-clear
+- [X] T049 [US3] Document that NT `Halted`/`Reducing` do not cancel working orders or flatten positions
 
 ---
 

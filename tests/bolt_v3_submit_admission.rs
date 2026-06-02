@@ -37,8 +37,12 @@ use bolt_v2::bolt_v3_submit_admission::{
 use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
 use futures_util::future::{BoxFuture, FutureExt};
-use nautilus_model::enums::{OrderSide, PositionSide};
-use nautilus_model::identifiers::InstrumentId;
+use nautilus_common::msgbus::publish_portfolio_snapshot;
+use nautilus_core::UUID4;
+use nautilus_model::enums::{AccountType, OrderSide, PositionSide, TradingState};
+use nautilus_model::events::PortfolioSnapshot;
+use nautilus_model::identifiers::{AccountId, InstrumentId};
+use nautilus_model::types::{Currency, Money};
 use rust_decimal::Decimal;
 use std::{
     sync::{Arc, Condvar, Mutex, mpsc},
@@ -891,6 +895,82 @@ fn live_node_build_carries_configured_loss_governor_runtime_feed_subscription() 
         runtime.loss_governor_runtime_feed_configured(),
         "live build must subscribe the configured loss governor to NT portfolio and position events"
     );
+}
+
+#[test]
+fn live_node_loss_governor_explicit_none_untrusted_action_keeps_nt_risk_active() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-submit-admission-loss-halt-none-build");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+        .expect("fixture v3 LiveNode should build");
+
+    assert_eq!(runtime.nt_risk_trading_state(), TradingState::Active);
+}
+
+#[test]
+fn live_node_applies_configured_untrusted_loss_halt_to_nt_risk_engine() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-submit-admission-loss-halt-reducing-build");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    loaded
+        .root
+        .risk
+        .loss_governor
+        .as_mut()
+        .expect("fixture should configure loss governor")
+        .on_untrusted_snapshot_trading_state =
+        Some(bolt_v2::bolt_v3_loss_halt_actions::LossGovernorTradingStateAction::Reducing);
+
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+        .expect("fixture v3 LiveNode should build");
+
+    assert_eq!(runtime.nt_risk_trading_state(), TradingState::Reducing);
+}
+
+#[test]
+fn live_node_loss_breach_snapshot_sets_nt_risk_trading_state_from_feed() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let temp = support::TempCaseDir::new("bolt-v3-submit-admission-loss-halt-feed-build");
+    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
+    let account_id = loaded
+        .root
+        .risk
+        .loss_governor
+        .as_ref()
+        .expect("fixture should configure loss governor")
+        .account_id;
+
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+        .expect("fixture v3 LiveNode should build");
+    assert_eq!(runtime.nt_risk_trading_state(), TradingState::Active);
+
+    publish_portfolio_snapshot(
+        format!("events.portfolio.{account_id}").into(),
+        &loss_halt_portfolio_snapshot(account_id, 1_000),
+    );
+
+    assert_eq!(runtime.nt_risk_trading_state(), TradingState::Reducing);
+}
+
+fn loss_halt_portfolio_snapshot(account_id: AccountId, ts_event: u64) -> PortfolioSnapshot {
+    PortfolioSnapshot::new(
+        account_id,
+        AccountType::Cash,
+        Some(Currency::USD()),
+        vec![],
+        vec![],
+        vec![Money::new(0.0, Currency::USD())],
+        vec![Money::new(-8.0, Currency::USD())],
+        vec![Money::new(992.0, Currency::USD())],
+        UUID4::default(),
+        ts_event.into(),
+        ts_event.into(),
+    )
 }
 
 #[test]

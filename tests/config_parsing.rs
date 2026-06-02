@@ -5642,7 +5642,10 @@ fn rejects_nt_risk_bypass_true() {
 
 #[test]
 fn bolt_v3_loss_governor_config_uses_nt_account_id_and_configured_thresholds() {
-    use bolt_v2::bolt_v3_config::load_bolt_v3_config;
+    use bolt_v2::{
+        bolt_v3_config::load_bolt_v3_config,
+        bolt_v3_loss_halt_actions::{LossGovernorRecoveryMode, LossGovernorTradingStateAction},
+    };
     use nautilus_model::identifiers::AccountId;
 
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
@@ -5658,6 +5661,18 @@ fn bolt_v3_loss_governor_config_uses_nt_account_id_and_configured_thresholds() {
     assert_eq!(governor.account_id, AccountId::from("POLYMARKET-001"));
     assert_eq!(governor.max_snapshot_age_ns, 5_000_000_000);
     assert_eq!(governor.rolling_window_ns, 300_000_000_000);
+    assert_eq!(
+        governor.on_loss_breach_trading_state,
+        Some(LossGovernorTradingStateAction::Reducing)
+    );
+    assert_eq!(
+        governor.on_untrusted_snapshot_trading_state,
+        Some(LossGovernorTradingStateAction::None)
+    );
+    assert_eq!(
+        governor.recovery_mode,
+        Some(LossGovernorRecoveryMode::Manual)
+    );
     assert_eq!(governor.max_per_trade_loss.as_deref(), Some("2.50"));
     assert_eq!(governor.max_daily_loss.as_deref(), Some("7.50"));
     assert_eq!(governor.max_rolling_loss.as_deref(), Some("10.00"));
@@ -5703,6 +5718,34 @@ fn rejects_enabled_loss_governor_missing_any_required_threshold() {
         let mutated = replace_in_fixture_root(line, "");
         let root: BoltV3RootConfig =
             toml::from_str(&mutated).expect("missing threshold fixture should parse");
+        let messages = validate_root_only(&root);
+        let expected = format!("risk.loss_governor.{field} must be configured when enabled");
+
+        assert!(
+            messages.iter().any(|message| message.contains(&expected)),
+            "expected `{expected}` validation message, got: {messages:#?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_enabled_loss_governor_missing_required_halt_action_config() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    for (field, line) in [
+        (
+            "on_loss_breach_trading_state",
+            "on_loss_breach_trading_state = \"reducing\"\n",
+        ),
+        (
+            "on_untrusted_snapshot_trading_state",
+            "on_untrusted_snapshot_trading_state = \"none\"\n",
+        ),
+        ("recovery_mode", "recovery_mode = \"manual\"\n"),
+    ] {
+        let mutated = replace_in_fixture_root(line, "");
+        let root: BoltV3RootConfig =
+            toml::from_str(&mutated).expect("missing halt-action fixture should parse");
         let messages = validate_root_only(&root);
         let expected = format!("risk.loss_governor.{field} must be configured when enabled");
 

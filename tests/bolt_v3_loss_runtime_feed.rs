@@ -1,12 +1,12 @@
 mod support;
 
-use bolt_v2::bolt_v3_loss_governor::LossGovernorPolicy;
+use bolt_v2::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason};
 use bolt_v2::bolt_v3_loss_runtime_feed::{
     LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig, subscribe_loss_governor_runtime_feed,
 };
 use bolt_v2::bolt_v3_submit_admission::{
-    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
-    BoltV3SubmitLifecyclePolicy,
+    BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
+    BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
 };
 use nautilus_common::msgbus::publish_portfolio_snapshot;
 use nautilus_core::{UUID4, UnixNanos};
@@ -418,6 +418,54 @@ fn position_adjustment_does_not_mask_larger_per_trade_loss() {
     assert_eq!(
         commission_adjustment.per_trade_pnl,
         Some(Decimal::new(-8, 0))
+    );
+}
+
+#[test]
+fn position_event_does_not_refresh_portfolio_derived_snapshot_age() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor(
+        writer,
+        LossGovernorPolicy {
+            max_snapshot_age_ns: 50,
+            max_per_trade_loss: Some(Decimal::new(10, 0)),
+            max_daily_loss: Some(Decimal::new(25, 0)),
+            max_rolling_loss: Some(Decimal::new(30, 0)),
+            max_drawdown: Some(Decimal::new(100, 0)),
+        },
+    ));
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(5, 0),
+        ))
+        .expect("valid canary report should arm admission");
+
+    let account_id = AccountId::from("SIM-LOSS-013");
+    let mut feed = LossGovernorRuntimeFeed::new(
+        LossGovernorRuntimeFeedConfig {
+            account_id,
+            rolling_window_ns: 250,
+        },
+        admission.clone(),
+    );
+
+    feed.on_portfolio_snapshot(&portfolio_snapshot(account_id, 1_000, 0.0, 0.0, 1_000.0))
+        .expect("portfolio baseline should publish");
+    let position_loss = feed
+        .on_position_event(&changed_position_event(account_id, 1_100, -8.0))
+        .expect("position changed should publish per-trade pnl");
+    assert_eq!(position_loss.observed_at_ns, 1_000);
+    assert_eq!(position_loss.per_trade_pnl, Some(Decimal::new(-8, 0)));
+
+    let rejected = admission
+        .admit_at(&submit_request(Decimal::new(1, 0)), 1_100)
+        .expect_err("old portfolio-derived loss fields should stay stale");
+    assert_eq!(
+        rejected,
+        BoltV3SubmitAdmissionError::LossGovernorHalted {
+            reasons: vec![LossHaltReason::StaleLossSnapshot],
+        }
     );
 }
 

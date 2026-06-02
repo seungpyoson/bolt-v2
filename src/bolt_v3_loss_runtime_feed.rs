@@ -49,7 +49,6 @@ struct LossGovernorRuntimeFeedState {
     per_trade_pnl: Option<TimedDecimal>,
     current_equity: Option<TimedDecimal>,
     peak_equity: Option<TimedDecimal>,
-    latest_observed_at_ns: Option<u64>,
     latest_snapshot: Option<LossSnapshot>,
 }
 
@@ -171,8 +170,6 @@ impl LossGovernorRuntimeFeed {
                 self.state.peak_equity = Some(TimedDecimal::new(current_equity, observed_at_ns));
             }
         }
-        self.state.latest_observed_at_ns = Some(observed_at_ns);
-
         self.publish_if_complete()
     }
 
@@ -191,8 +188,6 @@ impl LossGovernorRuntimeFeed {
                 position_fact.observed_at_ns,
             ));
         }
-        self.state.latest_observed_at_ns = Some(position_fact.observed_at_ns);
-
         self.publish_if_complete()
     }
 
@@ -207,7 +202,12 @@ impl LossGovernorRuntimeFeed {
         let rolling_pnl = self.state.rolling_pnl?;
         let current_equity = self.state.current_equity?;
         let peak_equity = self.state.peak_equity?;
-        let observed_at_ns = self.state.latest_observed_at_ns?;
+        let observed_at_ns = per_trade_pnl
+            .observed_at_ns
+            .min(daily_pnl.observed_at_ns)
+            .min(rolling_pnl.observed_at_ns)
+            .min(current_equity.observed_at_ns)
+            .min(peak_equity.observed_at_ns);
 
         let snapshot = LossSnapshot {
             source: LOSS_RUNTIME_FEED_SOURCE.to_string(),
@@ -253,7 +253,6 @@ impl LossGovernorRuntimeFeedState {
             per_trade_pnl: None,
             current_equity: None,
             peak_equity: None,
-            latest_observed_at_ns: None,
             latest_snapshot: None,
         }
     }

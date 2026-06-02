@@ -120,6 +120,128 @@ fn bolt_v3_cli_exposes_live_submit_approval_artifact_command_without_raw_secret_
 }
 
 #[test]
+fn bolt_v3_cli_exposes_hyperliquid_product_submit_proof_command_without_raw_secret_inputs() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-hyperliquid-product-submit-proof",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 Hyperliquid product-submit proof help should run");
+
+    assert!(
+        output.status.success(),
+        "expected operator-artifacts generate-hyperliquid-product-submit-proof help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--provider-id"), "{stdout}");
+    assert!(stdout.contains("--product-surface"), "{stdout}");
+    assert!(stdout.contains("--toml-checksum"), "{stdout}");
+    assert!(stdout.contains("--order-proof-artifact-path"), "{stdout}");
+    assert!(stdout.contains("--order-proof-artifact-sha256"), "{stdout}");
+    assert!(stdout.contains("--fill-proof-artifact-path"), "{stdout}");
+    assert!(stdout.contains("--fill-proof-artifact-sha256"), "{stdout}");
+    assert!(
+        stdout.contains("--rounding-proof-artifact-path"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("--rounding-proof-artifact-sha256"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("--fee-proof-artifact-path"), "{stdout}");
+    assert!(stdout.contains("--fee-proof-artifact-sha256"), "{stdout}");
+    assert!(
+        stdout.contains("--settlement-proof-artifact-path"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("--settlement-proof-artifact-sha256"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("--output"), "{stdout}");
+    assert!(
+        !stdout.contains("--private-key") && !stdout.contains("--account-address"),
+        "product-submit proof materialization must not accept raw signer secrets: {stdout}"
+    );
+}
+
+#[test]
+fn bolt_v3_cli_writes_hyperliquid_product_submit_proof_artifact() {
+    let temp = tempdir().expect("temp dir should create");
+    let output_path = temp.path().join("hyperliquid-product-submit-proof.json");
+    let toml_checksum = "b".repeat(64);
+    let order_proof_sha256 = "e".repeat(64);
+    let fill_proof_sha256 = "f".repeat(64);
+    let rounding_proof_sha256 = "a".repeat(64);
+    let fee_proof_sha256 = "c".repeat(64);
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-hyperliquid-product-submit-proof",
+            "--provider-id",
+            "hyperliquid-standard-perps-test",
+            "--product-surface",
+            "standard_perps",
+            "--toml-checksum",
+            &toml_checksum,
+            "--order-proof-artifact-path",
+            "operator/order-proof.json",
+            "--order-proof-artifact-sha256",
+            &order_proof_sha256,
+            "--fill-proof-artifact-path",
+            "operator/fill-proof.json",
+            "--fill-proof-artifact-sha256",
+            &fill_proof_sha256,
+            "--rounding-proof-artifact-path",
+            "operator/rounding-proof.json",
+            "--rounding-proof-artifact-sha256",
+            &rounding_proof_sha256,
+            "--fee-proof-artifact-path",
+            "operator/fee-proof.json",
+            "--fee-proof-artifact-sha256",
+            &fee_proof_sha256,
+            "--output",
+            output_path
+                .to_str()
+                .expect("product proof output path should be utf-8"),
+        ])
+        .output()
+        .expect("Hyperliquid product-submit proof command should run");
+
+    assert!(
+        output.status.success(),
+        "expected product-submit proof command to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("command stdout should be JSON");
+    assert_eq!(
+        stdout["path"],
+        output_path
+            .to_str()
+            .expect("product proof output path should be utf-8")
+    );
+    assert_eq!(stdout["sha256"], sha256_file_for_cli_test(&output_path));
+
+    let artifact: serde_json::Value = serde_json::from_slice(
+        &fs::read(&output_path).expect("product proof artifact should read"),
+    )
+    .expect("product proof artifact should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.hyperliquid_product_submit_proof.v1"
+    );
+    assert_eq!(artifact["provider_key"], "HYPERLIQUID");
+    assert_eq!(artifact["product_surface"], "standard_perps");
+    assert!(artifact["settlement_proof"].is_null());
+}
+
+#[test]
 fn bolt_v3_cli_exposes_base_static_operator_artifacts_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args(["operator-artifacts", "generate-base-static", "--help"])

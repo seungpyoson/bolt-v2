@@ -7,12 +7,15 @@ use bolt_v2::{
     bolt_v3_providers::hyperliquid_artifacts::{
         HyperliquidLiveSubmitApprovalArtifact, HyperliquidLiveSubmitApprovalBinding,
         HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
-        HyperliquidProductSubmitProofBinding, build_hyperliquid_live_submit_approval_artifact,
+        HyperliquidProductSubmitProofArtifactInput, HyperliquidProductSubmitProofBinding,
+        HyperliquidProductSubmitProofEvidenceRef, build_hyperliquid_live_submit_approval_artifact,
         consume_hyperliquid_live_submit_approval_artifact,
         persist_consumed_hyperliquid_live_submit_approval_artifact,
         read_hyperliquid_live_submit_approval_artifact,
         validate_hyperliquid_live_submit_approval_artifact,
+        validate_hyperliquid_product_submit_proof_artifact_bytes,
         write_hyperliquid_live_submit_approval_artifact,
+        write_hyperliquid_product_submit_proof_artifact,
     },
 };
 
@@ -37,6 +40,28 @@ fn product_submit_proof() -> HyperliquidProductSubmitProofBinding {
     HyperliquidProductSubmitProofBinding {
         artifact_path: "operator/hyperliquid-standard-perps-product-proof.json".to_string(),
         artifact_sha256: hash('d'),
+    }
+}
+
+fn product_submit_proof_ref(name: &str, seed: char) -> HyperliquidProductSubmitProofEvidenceRef {
+    HyperliquidProductSubmitProofEvidenceRef {
+        artifact_path: format!("operator/{name}.json"),
+        artifact_sha256: hash(seed),
+    }
+}
+
+fn product_submit_proof_input(
+    product_surface: HyperliquidProductSurface,
+) -> HyperliquidProductSubmitProofArtifactInput {
+    HyperliquidProductSubmitProofArtifactInput {
+        provider_id: "hyperliquid-standard-perps-test".to_string(),
+        product_surface,
+        toml_checksum: hash('b'),
+        order_proof: product_submit_proof_ref("order-proof", 'e'),
+        fill_proof: product_submit_proof_ref("fill-proof", 'f'),
+        rounding_proof: product_submit_proof_ref("rounding-proof", 'a'),
+        fee_proof: product_submit_proof_ref("fee-proof", 'c'),
+        settlement_proof: None,
     }
 }
 
@@ -112,6 +137,75 @@ fn live_submit_approval_without_product_submit_proof_fails_closed() {
     assert!(
         error.contains("product_submit_proof"),
         "missing product proof error must name product_submit_proof: {error}"
+    );
+}
+
+#[test]
+fn product_submit_proof_artifact_writes_operator_json_and_validates() {
+    let temp = tempfile::tempdir().expect("temp dir should create");
+    let output_path = temp.path().join("hyperliquid-product-submit-proof.json");
+
+    let written = write_hyperliquid_product_submit_proof_artifact(
+        product_submit_proof_input(HyperliquidProductSurface::StandardPerps),
+        &output_path,
+    )
+    .expect("product submit proof artifact should write");
+
+    assert_eq!(written.path, output_path);
+    let bytes = std::fs::read(&written.path).expect("product proof artifact should read");
+    let mut current = binding();
+    current.product_submit_proof = HyperliquidProductSubmitProofBinding {
+        artifact_path: "operator/hyperliquid-product-submit-proof.json".to_string(),
+        artifact_sha256: written.sha256,
+    };
+    validate_hyperliquid_product_submit_proof_artifact_bytes(&bytes, &current)
+        .expect("written product proof artifact should validate against live-submit binding");
+
+    let artifact: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("product proof JSON should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.hyperliquid_product_submit_proof.v1"
+    );
+    assert_eq!(artifact["provider_key"], "HYPERLIQUID");
+    assert_eq!(artifact["product_surface"], "standard_perps");
+    assert!(artifact["settlement_proof"].is_null());
+}
+
+#[test]
+fn product_submit_proof_artifact_requires_hip4_settlement_proof_only_for_hip4() {
+    let temp = tempfile::tempdir().expect("temp dir should create");
+    let mut hip4_input = product_submit_proof_input(HyperliquidProductSurface::Hip4Outcomes);
+
+    let missing_settlement_error = write_hyperliquid_product_submit_proof_artifact(
+        hip4_input.clone(),
+        &temp.path().join("hip4-missing-settlement.json"),
+    )
+    .expect_err("HIP-4 product proof must include settlement proof")
+    .to_string();
+    assert!(
+        missing_settlement_error.contains("settlement_proof"),
+        "HIP-4 settlement proof error should name settlement_proof: {missing_settlement_error}"
+    );
+
+    hip4_input.settlement_proof = Some(product_submit_proof_ref("settlement-proof", '9'));
+    write_hyperliquid_product_submit_proof_artifact(
+        hip4_input,
+        &temp.path().join("hip4-product-submit-proof.json"),
+    )
+    .expect("HIP-4 product proof should write when settlement proof is present");
+
+    let mut spot_input = product_submit_proof_input(HyperliquidProductSurface::Spot);
+    spot_input.settlement_proof = Some(product_submit_proof_ref("unexpected-settlement", '8'));
+    let unexpected_settlement_error = write_hyperliquid_product_submit_proof_artifact(
+        spot_input,
+        &temp.path().join("spot-with-settlement.json"),
+    )
+    .expect_err("non-HIP-4 product proof must reject settlement proof")
+    .to_string();
+    assert!(
+        unexpected_settlement_error.contains("settlement_proof"),
+        "non-HIP-4 settlement proof error should name settlement_proof: {unexpected_settlement_error}"
     );
 }
 

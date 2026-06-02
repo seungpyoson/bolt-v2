@@ -165,6 +165,18 @@ pub struct HyperliquidProductSubmitProofEvidenceRef {
     pub artifact_sha256: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidProductSubmitProofArtifactInput {
+    pub provider_id: String,
+    pub product_surface: HyperliquidProductSurface,
+    pub toml_checksum: String,
+    pub order_proof: HyperliquidProductSubmitProofEvidenceRef,
+    pub fill_proof: HyperliquidProductSubmitProofEvidenceRef,
+    pub rounding_proof: HyperliquidProductSubmitProofEvidenceRef,
+    pub fee_proof: HyperliquidProductSubmitProofEvidenceRef,
+    pub settlement_proof: Option<HyperliquidProductSubmitProofEvidenceRef>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HyperliquidProductSubmitProofArtifact {
@@ -295,6 +307,33 @@ pub fn validate_hyperliquid_product_submit_proof_artifact_bytes(
             provider_artifact_invalid(PRODUCT_SUBMIT_PROOF_ARTIFACT, "product_submit_proof")
         })?;
     validate_hyperliquid_product_submit_proof_artifact(&artifact, binding)
+}
+
+pub fn build_hyperliquid_product_submit_proof_artifact(
+    input: HyperliquidProductSubmitProofArtifactInput,
+) -> Result<HyperliquidProductSubmitProofArtifact, BoltV3OperatorArtifactError> {
+    validate_hyperliquid_product_submit_proof_artifact_input(&input)?;
+    Ok(HyperliquidProductSubmitProofArtifact {
+        schema_version: PRODUCT_SUBMIT_PROOF_SCHEMA_VERSION,
+        record_kind: PRODUCT_SUBMIT_PROOF_RECORD_KIND.to_string(),
+        provider_key: hyperliquid::KEY.to_string(),
+        provider_id: input.provider_id,
+        product_surface: input.product_surface,
+        toml_checksum: input.toml_checksum,
+        order_proof: input.order_proof,
+        fill_proof: input.fill_proof,
+        rounding_proof: input.rounding_proof,
+        fee_proof: input.fee_proof,
+        settlement_proof: input.settlement_proof,
+    })
+}
+
+pub fn write_hyperliquid_product_submit_proof_artifact(
+    input: HyperliquidProductSubmitProofArtifactInput,
+    output_path: &Path,
+) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
+    let artifact = build_hyperliquid_product_submit_proof_artifact(input)?;
+    write_json_artifact_create_new(output_path, &artifact)
 }
 
 pub fn persist_consumed_hyperliquid_live_submit_approval_artifact(
@@ -710,6 +749,38 @@ fn validate_hyperliquid_product_submit_proof_binding(
     )
 }
 
+fn validate_hyperliquid_product_submit_proof_artifact_input(
+    input: &HyperliquidProductSubmitProofArtifactInput,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    validate_hyperliquid_product_submit_proof_non_empty_field("provider_id", &input.provider_id)?;
+    validate_hyperliquid_live_submit_product_surface(input.product_surface)?;
+    validate_hyperliquid_product_submit_proof_sha256_field("toml_checksum", &input.toml_checksum)?;
+    validate_hyperliquid_product_submit_proof_evidence_ref("order_proof", &input.order_proof)?;
+    validate_hyperliquid_product_submit_proof_evidence_ref("fill_proof", &input.fill_proof)?;
+    validate_hyperliquid_product_submit_proof_evidence_ref(
+        "rounding_proof",
+        &input.rounding_proof,
+    )?;
+    validate_hyperliquid_product_submit_proof_evidence_ref("fee_proof", &input.fee_proof)?;
+    match (input.product_surface, input.settlement_proof.as_ref()) {
+        (HyperliquidProductSurface::Hip4Outcomes, Some(settlement_proof)) => {
+            validate_hyperliquid_product_submit_proof_evidence_ref(
+                "settlement_proof",
+                settlement_proof,
+            )
+        }
+        (HyperliquidProductSurface::Hip4Outcomes, None) => Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            "settlement_proof",
+        )),
+        (_, Some(_)) => Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            "settlement_proof",
+        )),
+        (_, None) => Ok(()),
+    }
+}
+
 fn validate_hyperliquid_product_submit_proof_artifact(
     artifact: &HyperliquidProductSubmitProofArtifact,
     binding: &HyperliquidLiveSubmitApprovalBinding,
@@ -806,6 +877,32 @@ fn validate_hyperliquid_product_submit_proof_evidence_ref(
         return Err(provider_artifact_invalid(
             PRODUCT_SUBMIT_PROOF_ARTIFACT,
             artifact_sha256_field,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_hyperliquid_product_submit_proof_non_empty_field(
+    field: &'static str,
+    value: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if value.trim().is_empty() {
+        return Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            field,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_hyperliquid_product_submit_proof_sha256_field(
+    field: &'static str,
+    value: &str,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if !is_lowercase_sha256(value) {
+        return Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            field,
         ));
     }
     Ok(())

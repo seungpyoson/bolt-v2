@@ -5,7 +5,7 @@
 
 ## Summary
 
-Enable Hyperliquid as a production-grade NautilusTrader-backed data and execution provider for standard perps, spot, HIP-3 builder perps, and HIP-4 outcomes without adding a bespoke client or strategy-level submit mechanics. The first accepted slice registers the NT Hyperliquid Rust adapter behind Bolt's provider registry, maps the NT market-data client for live instruments, quotes, and order books, proves public product discovery and SSM-only credential handling, wires provider-owned production live-node approval loading, enforces bounded approval order limits in shared submit admission, opens the shared `updown` routing gate for HIP-4 outcome targets, and leaves every live submit path fail-closed until product-specific proof, fee/rate policy reconciliation, any remaining product routing, and an explicit bounded live-submit approval artifact exist for the exact product surface.
+Enable Hyperliquid as a production-grade NautilusTrader-backed data and execution provider for standard perps, spot, HIP-3 builder perps, and HIP-4 outcomes without adding a bespoke client or strategy-level submit mechanics. The first accepted slice registers the NT Hyperliquid Rust adapter behind Bolt's provider registry, maps the NT market-data client for live instruments, quotes, and order books, proves public product discovery and SSM-only credential handling, wires provider-owned production live-node approval loading, enforces bounded approval order limits in shared submit admission, opens the shared `updown` routing gate for HIP-4 outcome targets plus `hyperliquid_instrument` routing identity for static/direct Hyperliquid instruments, and leaves every live submit path fail-closed until product-specific proof, fee/rate policy reconciliation, product-compatible strategy runtime, and an explicit bounded live-submit approval artifact exist for the exact product surface.
 
 Colocated low-latency operation is planned as configuration and runbook surface only: local Hyperliquid info node and infrastructure placement may reduce latency, but the adapter must not hardcode endpoints, placement assumptions, fee weights, product IDs, or submit policy in code.
 
@@ -108,7 +108,7 @@ MVP includes only provider registration, dependency wiring, config validation, H
 
 ### Phase 3 - Gated Live Execution
 
-Each Hyperliquid product surface may proceed only after MVP proof, product-specific order/fill/rounding/fee evidence, fee/rate policy reconciliation, provider-owned live-node approval artifact consumption, product-compatible routing, shared submit-admission enforcement of approval order limits, and an operator approval artifact bound to the exact product surface. HIP-4 additionally requires positive TOML-owned outcome settlement polling and uses the existing `updown` market-family route gate for outcome targets.
+Each Hyperliquid product surface may proceed only after MVP proof, product-specific order/fill/rounding/fee evidence, fee/rate policy reconciliation, provider-owned live-node approval artifact consumption, product-compatible strategy runtime, shared submit-admission enforcement of approval order limits, and an operator approval artifact bound to the exact product surface. HIP-4 additionally requires positive TOML-owned outcome settlement polling and uses the existing `updown` market-family route gate for outcome targets. Static/direct Hyperliquid instrument targets use `hyperliquid_instrument` for routing identity and do not enable binary rotating-market selection.
 
 ## Implementation Rules
 

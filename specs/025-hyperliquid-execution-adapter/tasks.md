@@ -163,6 +163,16 @@
 - [x] T049S Add provider-neutral live-submit approval artifact writer hook and Hyperliquid implementation.
 - [x] T049T Add `operator-artifacts generate-live-submit-approval` CLI entry point using Rust SSM secret resolution.
 
+## Phase 8G - Static Hyperliquid Instrument Route Identity
+
+**Goal**: Standard perps, spot, and HIP-3 Hyperliquid targets can pass the shared execution-client market-family compatibility gate without reusing the up/down rotating-market target shape.
+
+**Independent Test**: A static Hyperliquid instrument target projects into `MarketIdentityPlan`, and a consumed standard-perps approval with that target maps instead of failing on `SUPPORTED_MARKET_FAMILIES`.
+
+- [x] T049U Add failing static Hyperliquid instrument market-identity planner test.
+- [x] T049V Add `hyperliquid_instrument` market-family binding with strict static-instrument target parsing and fail-closed binary market-selection APIs.
+- [x] T049W Populate Hyperliquid `SUPPORTED_MARKET_FAMILIES` with `hyperliquid_instrument` and prove adapter mapping passes the route gate.
+
 ## Phase 9 - Verification
 
 - [x] T050 Run `cargo fmt --check` for `Cargo.toml` and `src/`.

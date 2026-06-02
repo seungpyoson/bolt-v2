@@ -9,7 +9,11 @@ use bolt_v2::{
     },
     bolt_v3_config::{BoltV3RootConfig, LoadedBoltV3Config, load_bolt_v3_config},
     bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
-    bolt_v3_market_families::{MarketIdentityPlan, updown::UpdownTargetPlan},
+    bolt_v3_market_families::{
+        MarketIdentityPlan,
+        hyperliquid_instrument::{HyperliquidInstrumentTargetPlan, ProductSurface},
+        updown::UpdownTargetPlan,
+    },
     bolt_v3_providers::hyperliquid_artifacts::{
         HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalConsumption,
         HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
@@ -33,6 +37,7 @@ use nautilus_hyperliquid::{
     common::enums::HyperliquidEnvironment as NtHyperliquidEnvironment,
     config::HyperliquidDataClientConfig, factories::HyperliquidExecFactoryConfig,
 };
+use nautilus_model::identifiers::InstrumentId;
 use nautilus_network::transport::sockudo::SockudoTransport;
 use nautilus_network::websocket::TransportBackend;
 use nautilus_polymarket::{
@@ -98,6 +103,21 @@ fn hyperliquid_updown_target_plan() -> MarketIdentityPlan {
         underlying_asset: "BTC".to_string(),
         cadence_secs: 300,
         cadence_slug_token: "window".to_string(),
+    });
+    plan
+}
+
+fn hyperliquid_static_instrument_target_plan(
+    product_surface: ProductSurface,
+    instrument_id: &str,
+) -> MarketIdentityPlan {
+    let mut plan = MarketIdentityPlan::empty();
+    plan.push_target(HyperliquidInstrumentTargetPlan {
+        strategy_instance_id: "hyperliquid-static-strategy".to_string(),
+        configured_target_id: "hyperliquid-static-target".to_string(),
+        execution_client_id: "hyperliquid_perps".to_string(),
+        product_surface,
+        instrument_id: InstrumentId::from(instrument_id),
     });
     plan
 }
@@ -587,6 +607,41 @@ fn hyperliquid_hip4_execution_accepts_updown_market_family_target_after_consumed
             .and_then(|client| client.execution.as_ref())
             .is_some(),
         "family support should allow the consumed Hyperliquid execution adapter to map"
+    );
+}
+
+#[test]
+fn hyperliquid_standard_perps_execution_accepts_static_instrument_target_after_consumed_approval() {
+    let loaded = fixture_loaded_config_with_hyperliquid_standard_perps();
+    let resolved = fixture_resolved_hyperliquid_secrets();
+    let consumed = consumed_hyperliquid_standard_perps_approval();
+    let mut approvals = bolt_v2::bolt_v3_providers::ProviderLiveSubmitApprovals::empty();
+    approvals.insert(
+        "hyperliquid_perps".to_string(),
+        bolt_v2::bolt_v3_providers::ProviderLiveSubmitApproval::new(Box::new(consumed)),
+    );
+
+    let configs = bolt_v2::bolt_v3_adapters::map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+        &loaded,
+        &resolved,
+        &hyperliquid_static_instrument_target_plan(
+            ProductSurface::StandardPerps,
+            "BTC-PERP.HYPERLIQUID",
+        ),
+        fixed_market_clock(1_800_000_000),
+        ProviderRuntimeApprovals {
+            live_submit: Some(&approvals),
+        },
+    )
+    .expect("Hyperliquid should advertise support for static-instrument targets before provider mapping");
+
+    assert!(
+        configs
+            .clients
+            .get("hyperliquid_perps")
+            .and_then(|client| client.execution.as_ref())
+            .is_some(),
+        "static-instrument family support should allow the consumed Hyperliquid execution adapter to map"
     );
 }
 

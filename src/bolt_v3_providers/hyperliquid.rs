@@ -31,7 +31,7 @@ use crate::{
     },
     bolt_v3_config::ClientBlock,
     bolt_v3_config::resolve_root_relative_path,
-    bolt_v3_market_families::updown,
+    bolt_v3_market_families::{hyperliquid_instrument, updown},
     bolt_v3_operator_artifacts::WrittenOperatorArtifact,
     bolt_v3_providers::hyperliquid_artifacts::{
         HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalInput,
@@ -52,7 +52,7 @@ use crate::{
 use super::hyperliquid_artifacts::HyperliquidLiveSubmitApprovalConsumption;
 
 pub const KEY: &str = "HYPERLIQUID";
-pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
+pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY, hyperliquid_instrument::KEY];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,
     consumer: "Hyperliquid execution client",

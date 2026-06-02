@@ -2136,6 +2136,14 @@ classification = "market_family_dispatch_key"
 reason = "This is the accepted market_family registry key for the currently implemented Bolt-v3 updown binding, not an operator-tunable runtime value."
 
 [[allowed]]
+path = "src/bolt_v3_market_families/hyperliquid_instrument.rs"
+kind = "string"
+literal = "\"hyperliquid_instrument\""
+context = "pub const KEY: &str = \"hyperliquid_instrument\";"
+classification = "market_family_dispatch_key"
+reason = "This is the accepted market_family registry key for static Hyperliquid instrument routing identity; instrument ids and product surfaces remain TOML-owned."
+
+[[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = "\"{asset_lower}-updown-{cadence_slug_token}-{period_start_unix_secs}\""

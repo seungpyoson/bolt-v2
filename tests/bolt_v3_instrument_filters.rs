@@ -26,9 +26,13 @@ mod support;
 
 use bolt_v2::{
     bolt_v3_config::{LoadedStrategy, load_bolt_v3_config},
-    bolt_v3_market_families::updown::{
-        BoltV3MarketIdentityError, UpdownSlugCandidates, UpdownTargetPlan, candidates_for_target,
-        plan_market_identity, target_plans, updown_market_slug, updown_period_pair,
+    bolt_v3_market_families::{
+        market_identity_plan_from_config,
+        updown::{
+            BoltV3MarketIdentityError, UpdownSlugCandidates, UpdownTargetPlan,
+            candidates_for_target, plan_market_identity, target_plans, updown_market_slug,
+            updown_period_pair,
+        },
     },
 };
 
@@ -45,6 +49,71 @@ fn set_target_field(strategy: &mut LoadedStrategy, key: &str, value: toml::Value
         .as_table_mut()
         .expect("strategy [target] should be a TOML table")
         .insert(key.to_string(), value);
+}
+
+#[test]
+fn market_identity_plan_accepts_hyperliquid_static_instrument_target() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy = loaded
+        .strategies
+        .get_mut(0)
+        .expect("fixture should contain one strategy");
+    strategy.config.execution_client_id = "hyperliquid_perps".into();
+    {
+        let target = strategy
+            .config
+            .target
+            .as_table_mut()
+            .expect("strategy [target] should be a TOML table");
+        for key in [
+            "underlying_asset",
+            "cadence_secs",
+            "cadence_slug_token",
+            "market_selection_rule",
+            "retry_interval_secs",
+            "blocked_after_secs",
+            "gate_subscriptions",
+        ] {
+            target.remove(key);
+        }
+    }
+    set_target_field(
+        strategy,
+        "configured_target_id",
+        toml::Value::String("configured_hyperliquid_btc_perp".to_string()),
+    );
+    set_target_field(
+        strategy,
+        "kind",
+        toml::Value::String("static_instrument".to_string()),
+    );
+    set_target_field(
+        strategy,
+        "rotating_market_family",
+        toml::Value::String("hyperliquid_instrument".to_string()),
+    );
+    set_target_field(
+        strategy,
+        "product_surface",
+        toml::Value::String("standard_perps".to_string()),
+    );
+    set_target_field(
+        strategy,
+        "instrument_id",
+        toml::Value::String("BTC-PERP.HYPERLIQUID".to_string()),
+    );
+
+    let plan = market_identity_plan_from_config(&loaded)
+        .expect("hyperliquid static-instrument target should be a supported family");
+    let refs = plan.execution_client_target_refs().collect::<Vec<_>>();
+    assert_eq!(refs.len(), 1, "one direct Hyperliquid target ref");
+    assert_eq!(refs[0].family_key, "hyperliquid_instrument");
+    assert_eq!(
+        refs[0].configured_target_id,
+        "configured_hyperliquid_btc_perp"
+    );
+    assert_eq!(refs[0].execution_client_id, "hyperliquid_perps");
 }
 
 #[test]

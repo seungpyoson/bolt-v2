@@ -46,7 +46,7 @@ The first executable proof must show:
 
 ## Adapter Mapping Gate
 
-Execution adapter mapping remains blocked unless a current approval artifact is consumed for the exact configured product surface. Standard perps, spot, HIP-3, and HIP-4 all map through the NT Hyperliquid execution adapter only after that surface-bound mapper gate passes. Production `build_bolt_v3_live_node` asks provider bindings to load live-submit approvals, and Hyperliquid consumes the configured approval artifact, persists `used_at`, carries its order limits into shared submit admission, and passes the consumed approval through the provider-neutral runtime-approval bundle before NT client registration. Operators can materialize that configured artifact with `bolt-v2 operator-artifacts generate-live-submit-approval --config <root.toml> --client-key <client> --expires-at-unix-seconds <expiry>`; the command resolves signer identity through Rust AWS SSM and does not accept raw key material or an alternate artifact path. Hyperliquid `[data]` maps independently to the NT market-data adapter for live instruments, quotes, and order books without opening live submit. HIP-4 execution also requires positive TOML-owned outcome settlement polling, and Hyperliquid advertises the existing `updown` market family so HIP-4 outcome targets can pass the shared execution-client routing gate. The pinned NT `userFees` underweight is accounted by Bolt's Hyperliquid provider egress model using the official 20-weight policy. Live submit remains blocked by remaining product proof and non-HIP-4 routing work.
+Execution adapter mapping remains blocked unless a current approval artifact is consumed for the exact configured product surface. Standard perps, spot, HIP-3, and HIP-4 all map through the NT Hyperliquid execution adapter only after that surface-bound mapper gate passes. Production `build_bolt_v3_live_node` asks provider bindings to load live-submit approvals, and Hyperliquid consumes the configured approval artifact, persists `used_at`, carries its order limits into shared submit admission, and passes the consumed approval through the provider-neutral runtime-approval bundle before NT client registration. Operators can materialize that configured artifact with `bolt-v2 operator-artifacts generate-live-submit-approval --config <root.toml> --client-key <client> --expires-at-unix-seconds <expiry>`; the command resolves signer identity through Rust AWS SSM and does not accept raw key material or an alternate artifact path. Hyperliquid `[data]` maps independently to the NT market-data adapter for live instruments, quotes, and order books without opening live submit. HIP-4 execution also requires positive TOML-owned outcome settlement polling, and Hyperliquid advertises the existing `updown` market family so HIP-4 outcome targets can pass the shared execution-client routing gate. Hyperliquid also advertises `hyperliquid_instrument` for static/direct standard-perps, spot, and HIP-3 routing identity; that family does not enable binary rotating-market selection. The pinned NT `userFees` underweight is accounted by Bolt's Hyperliquid provider egress model using the official 20-weight policy. Live submit remains blocked by remaining product proof and product-compatible strategy runtime work.
 
 ## Implementation Evidence Packet - 2026-06-02
 
@@ -71,6 +71,7 @@ Implementation commits:
 - current slice update: production live-node Hyperliquid approval artifact loading and persisted consumption
 - current slice update: consumed Hyperliquid approval order limits tighten shared submit-admission caps
 - current slice update: Hyperliquid provider advertises `updown` market-family support for HIP-4 outcome routing gate compatibility
+- current slice update: Hyperliquid provider advertises `hyperliquid_instrument` for static/direct Hyperliquid instrument route identity
 - current slice update: Hyperliquid provider egress model accounts the official `userFees` request weight before live-submit validation
 - current slice update: operator CLI can generate configured Hyperliquid live-submit approval artifacts through the provider binding
 
@@ -90,6 +91,8 @@ Verification:
 - `cargo test --locked --test hyperliquid_live_submit_artifact` - PASS, 6 tests
 - `CARGO_TARGET_DIR=/private/tmp/bolt-v2-hyperliquid-target cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_` - PASS, 10 tests
 - `cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_hip4_execution_accepts_updown_market_family_target_after_consumed_approval` - PASS, 1 test
+- `cargo test --locked --test bolt_v3_instrument_filters market_identity_plan_accepts_hyperliquid_static_instrument_target` - PASS, 1 test
+- `cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_standard_perps_execution_accepts_static_instrument_target_after_consumed_approval` - PASS, 1 test
 - `CARGO_TARGET_DIR=/private/tmp/bolt-v2-hyperliquid-target cargo test --locked --lib live_node_adapter_mapping_consumes_hyperliquid_live_submit_approval_artifact` - PASS, 1 test
 - `CARGO_TARGET_DIR=/private/tmp/bolt-v2-hyperliquid-target cargo test --locked --test bolt_v3_submit_admission live_submit_approval_limits_tighten_canary_caps_before_nt_submit` - PASS, 1 test
 - `just source-fence` - PASS
@@ -101,6 +104,7 @@ Current live-submit state:
 - `operator-artifacts generate-live-submit-approval` writes the configured Hyperliquid artifact path from TOML plus resolved SSM secrets, binding base SHA, config checksum, signer fingerprint, product surface, limits, and expiry without raw secret CLI inputs.
 - A consumed approval for one surface cannot authorize a different surface.
 - HIP-4 requires positive `outcome_settlement_poll_secs` in TOML before mapper handoff and can pass the shared `updown` market-family execution-client routing gate.
+- Static/direct Hyperliquid instrument targets can pass the shared execution-client routing gate through `hyperliquid_instrument`; binary rotating-market selection remains fail-closed for that family.
 - Hyperliquid REST egress is modeled at 1200 weight/min and derates order-command validation by the official 20-weight `userFees` policy while the pinned NT adapter still reports 2.
 - Latency profile is TOML-owned ops metadata only; it exports an artifact and cannot bypass submit approval gates.
 - Hyperliquid-specific no-submit readiness artifacts are not part of this slice.

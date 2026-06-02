@@ -15099,3 +15099,51 @@ literal = '''0'''
 context = '''run_classification_ok && canary_proof_executor_enabled && admitted_order_count == 0'''
 classification = '''blocked_before_submit_zero_admitted_sentinel'''
 reason = '''Structural check that a canary/proof run admitted zero live orders (blocked-before-submit outcome); the operator order-count cap comes from the validated live canary gate report.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''2'''
+context = '''let required_admitted_order_count = u64::from(max_live_order_count).saturating_mul(2);'''
+classification = '''phase8_entry_exit_order_pair_multiplier'''
+reason = '''Structural Phase 8 proof multiplier for one admitted entry and one admitted exit per configured live order cap; max_live_order_count remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_operator_artifacts.rs'''
+kind = '''number'''
+literal = '''2'''
+context = '''live_canary.max_live_order_count.saturating_mul(2),'''
+classification = '''phase8_entry_exit_order_pair_multiplier'''
+reason = '''Structural Phase 8 proof multiplier for one admitted entry and one admitted exit per configured live order cap; max_live_order_count remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''admitted_replace_submit_order_count: 0,'''
+classification = '''submit_admission_counter_zero'''
+reason = '''Initial value for an internal admission counter; operator limits and admissibility values remain TOML-owned and validated separately.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''inner.admitted_replace_submit_order_count = 0;'''
+classification = '''submit_admission_counter_zero'''
+reason = '''Reset value for an internal admission counter; operator limits and admissibility values remain TOML-owned and validated separately.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''inner.admitted_replace_submit_order_count += 1;'''
+classification = '''submit_admission_counter_increment'''
+reason = '''Single-event increment for an internal admission counter; operator limits and admissibility values remain TOML-owned and validated separately.'''
+
+[[allowed]]
+path = '''src/bolt_v3_tiny_canary_evidence.rs'''
+kind = '''number'''
+literal = '''2'''
+context = '''max_live_order_count.saturating_mul(2)'''
+classification = '''phase8_entry_exit_order_pair_multiplier'''
+reason = '''Structural Phase 8 proof multiplier for one admitted entry and one admitted exit per configured live order cap; max_live_order_count remains TOML-owned.'''

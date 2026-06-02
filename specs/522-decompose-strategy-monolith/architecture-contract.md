@@ -27,11 +27,11 @@ Per-target destination + layer (Track A):
 |---|---|
 | `numeric` → `bolt_v3_numeric.rs` | core/shared util |
 | `taker_signal` → `bolt_v3_taker_signal.rs` | shared decision-math (family-agnostic) |
-| `selection` → `…selection` | market-family / shared |
-| `book_sizing` → `bolt_v3_book_sizing.rs` | shared execution |
+| `selection` → **split** — family identity/target-validation → `bolt_v3_market_families/selection.rs`; family-agnostic candidate ranking → shared `bolt_v3_selection.rs` | family **and** shared (split by family-specific vs agnostic; neither half lands in the other) |
+| `book_sizing` → `bolt_v3_book_sizing.rs` | shared execution (book state, VWAP/slippage sizing, **rounding + fee-adjustment**) |
 | `taker_pricing` → `bolt_v3_taker_pricing.rs` | shared pricing-state |
-| `exposure` → `…exposure` | shared **position/exposure accounting**. If the monolith mixes *signal-intent* exposure (a strategy concern) with *position accounting* (shared), **split them** — accounting goes shared, signal-intent stays strategy. |
-| `source_proof` → `…source_proof` | shared evidence/replay |
+| `exposure` → `bolt_v3_exposure.rs` | shared **position/exposure accounting**. If the monolith mixes *signal-intent* exposure (a strategy concern) with *position accounting* (shared), **split them** — accounting goes shared, signal-intent stays strategy. |
+| `source_proof` → `bolt_v3_source_proof.rs` | shared evidence/replay |
 | `config` → `bolt_v3_config.rs` | shared/core |
 | `submit_admission` → `bolt_v3_submit_admission.rs` | shared execution/admission — **owns order construction, quantity-normalization, admission-request construction + valuation, and the submit wrapper. None of these may remain strategy-resident.** |
 
@@ -47,11 +47,17 @@ Track B targets land in `bolt_v3_operator_artifacts/` (see §6).
 - Litmus test: *"if I deleted the strategy, would the shared modules still compile?"*
   They must.
 - **Enforcement (required — this rule is NOT honor-system):** the three existing fences
-  do **not** catch a shared module doing `use crate::strategies::…`. **Before A3**, add a
-  dependency-direction fence (`scripts/verify_bolt_v3_dependency_direction.py`) that fails
-  CI on any `crate::strategies` import or strategy-type reference inside `bolt_v3_*` and
-  `bolt_v3_market_families/*`. Until that fence exists, every slice PR must record an
-  explicit manual grep-check of the moved module (see §4).
+  do **not** catch a shared module doing `use crate::strategies::…`. **Before A3 starts**,
+  land a dependency-direction fence (`scripts/verify_bolt_v3_dependency_direction.py`),
+  wired into the source-fence CI lane, that fails on any `crate::strategies` import or
+  strategy-type reference inside `bolt_v3_*` and `bolt_v3_market_families/*`.
+  **Current code already contains pre-existing back-references** (known:
+  `crate::strategies::registry::FeeProvider` used by `bolt_v3_providers/polymarket/fees.rs`,
+  tracked under #446). So the fence ships with a **frozen allowlist of exactly those
+  pre-existing entries** — it is **green on today's code while blocking every NEW
+  violation**. The allowlist may **only shrink** (an entry is removed when its type is
+  relocated to a shared module); **no new entry may ever be added**. The fence — not a
+  manual grep — is the gate.
 
 ## 3. Naming convention
 
@@ -82,8 +88,8 @@ Track B targets land in `bolt_v3_operator_artifacts/` (see §6).
 - **Real shrink, not gamed:** the original monolith's logic and public interface are
   preserved AND its line count strictly drops — line count alone is insufficient (no
   moving comments/whitespace to fake a drop).
-- **Dependency check passes:** the §2 dependency-direction fence is green (or, until it
-  exists, the PR records the manual grep-check).
+- **Dependency check passes:** the §2 dependency-direction fence is green. It lands before
+  A3 (with its frozen pre-existing allowlist); no slice merges without it.
 - **Tests:** carried to the new home (RED→GREEN); CI green at exact head; all fences +
   the runtime-literal allowlist pass.
 - **Bugs found during a move are ticketed and fixed in a separate follow-up PR** — never

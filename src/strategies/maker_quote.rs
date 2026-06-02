@@ -43,6 +43,7 @@
 
 use crate::bolt_v3_numeric::{TWO_F64, ZERO_F64, is_positive_finite, sanitize_probability};
 use crate::strategies::maker_offsets::compose_binary_legs;
+use crate::strategies::quote_lifecycle::Leg;
 
 /// The side a quote leg rests on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +189,9 @@ pub trait MakerFamily {
     /// degenerate — fail-closed, so the engine treats `None` as "no quotable
     /// target this tick".
     fn quote_targets(&self, inputs: FamilyQuoteInputs) -> Option<QuoteTargets>;
+
+    /// Project a confirmed fill into the family's directional inventory axis.
+    fn signed_fill_qty(&self, leg: Leg, side: QuoteSide, qty: f64) -> f64;
 }
 
 /// Binary (YES/NO outcome-token) family: both legs are BIDS, one on each token,
@@ -197,6 +201,15 @@ pub trait MakerFamily {
 pub struct BinaryFamily;
 
 impl MakerFamily for BinaryFamily {
+    fn signed_fill_qty(&self, leg: Leg, side: QuoteSide, qty: f64) -> f64 {
+        match (leg, side) {
+            (Leg::Yes, QuoteSide::Buy) => qty,
+            (Leg::Yes, QuoteSide::Sell) => -qty,
+            (Leg::No, QuoteSide::Buy) => -qty,
+            (Leg::No, QuoteSide::Sell) => qty,
+        }
+    }
+
     fn quote_targets(&self, inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
         // Guard the fair-value INPUT on the closed [0, 1] (a fair value may sit at
         // a boundary); the OPEN-interval (eps, 1−eps) clamp applies to the emitted
@@ -239,6 +252,13 @@ impl MakerFamily for BinaryFamily {
 pub struct LinearPerpFamily;
 
 impl MakerFamily for LinearPerpFamily {
+    fn signed_fill_qty(&self, _leg: Leg, side: QuoteSide, qty: f64) -> f64 {
+        match side {
+            QuoteSide::Buy => qty,
+            QuoteSide::Sell => -qty,
+        }
+    }
+
     fn quote_targets(&self, inputs: FamilyQuoteInputs) -> Option<QuoteTargets> {
         let (resolved_bid, resolved_ask) = resolve_band(
             inputs.fair,

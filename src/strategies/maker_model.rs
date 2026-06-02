@@ -109,9 +109,9 @@ pub fn gm_half_spread(fair_p_up: f64, informed_fraction: f64) -> Option<f64> {
 /// - `net_position` is not finite;
 /// - `skew_gain` is negative or not finite (a gain of zero disables the skew);
 /// - `position_cap` is not a positive finite share count;
-/// - `|net_position|` exceeds `position_cap` — the maker has breached its hard
-///   inventory limit and must stop quoting to add; the governor reads the `None`
-///   as the signal to go reduce-only.
+/// - `|net_position|` reaches or exceeds `position_cap` — the maker is at its
+///   hard inventory limit and must stop quoting to add; the governor reads the
+///   `None` as the signal to go reduce-only.
 pub fn inventory_skew(net_position: f64, skew_gain: f64, position_cap: f64) -> Option<f64> {
     if !net_position.is_finite() || !skew_gain.is_finite() || skew_gain < ZERO_F64 {
         return None;
@@ -119,7 +119,7 @@ pub fn inventory_skew(net_position: f64, skew_gain: f64, position_cap: f64) -> O
     if !is_positive_finite(position_cap) {
         return None;
     }
-    if net_position.abs() > position_cap {
+    if net_position.abs() >= position_cap {
         return None;
     }
     Some(net_position * skew_gain)
@@ -226,7 +226,8 @@ mod tests {
     #[test]
     fn inventory_skew_fails_closed_beyond_the_position_cap() {
         // Inside the cap it quotes; over the cap the maker must go reduce-only.
-        assert!(inventory_skew(50.0, 0.01, 50.0).is_some());
+        assert!(inventory_skew(49.9999, 0.01, 50.0).is_some());
+        assert!(inventory_skew(50.0, 0.01, 50.0).is_none());
         assert!(inventory_skew(50.0001, 0.01, 50.0).is_none());
     }
 

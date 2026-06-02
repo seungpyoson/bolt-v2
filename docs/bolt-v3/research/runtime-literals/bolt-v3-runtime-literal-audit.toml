@@ -15552,6 +15552,126 @@ classification = '''hyperliquid_signer_owner_hash_domain'''
 reason = '''This is the stable domain-separation tag for hashing signer-owner evidence, not an operator runtime value.'''
 
 [[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"://"'''
+context = '''|| !value[parsed.scheme().len()..].starts_with("://")'''
+classification = '''url_syntax_validation_literal'''
+reason = '''This validates that a TOML-owned Hyperliquid data endpoint uses a normal absolute URL delimiter before NT data-client construction; the endpoint value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"data.base_url_http"'''
+context = '''"data.base_url_http",'''
+classification = '''hyperliquid_data_validation_field_label'''
+reason = '''This labels validation for the Hyperliquid data HTTP endpoint field; the endpoint value itself is TOML-owned and passed to NT.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"data.base_url_ws"'''
+context = '''"data.base_url_ws",'''
+classification = '''hyperliquid_data_validation_field_label'''
+reason = '''This labels validation for the Hyperliquid data WebSocket endpoint field; the endpoint value itself is TOML-owned and passed to NT.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"data.proxy_url"'''
+context = '''"data.proxy_url",'''
+classification = '''hyperliquid_data_validation_field_label'''
+reason = '''This labels validation for the optional Hyperliquid data proxy URL field; the proxy value itself is TOML-owned and passed to NT.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"http"'''
+context = '''&["http", "https"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted HTTP URL scheme for the TOML-owned Hyperliquid data HTTP endpoint.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"http"'''
+context = '''&["http", "https", "socks5", "socks5h"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted HTTP proxy URL scheme for the optional TOML-owned Hyperliquid data proxy.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"http_timeout_secs"'''
+context = '''("http_timeout_secs", data.http_timeout_secs),'''
+classification = '''hyperliquid_data_validation_field_label'''
+reason = '''This label names a Hyperliquid data config timeout field being validated; the value itself is TOML-owned and passed to NT.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"https"'''
+context = '''&["http", "https"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted HTTPS URL scheme for the TOML-owned Hyperliquid data HTTP endpoint.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"https"'''
+context = '''&["http", "https", "socks5", "socks5h"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted HTTPS proxy URL scheme for the optional TOML-owned Hyperliquid data proxy.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"socks5"'''
+context = '''&["http", "https", "socks5", "socks5h"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted SOCKS5 proxy URL scheme for the optional TOML-owned Hyperliquid data proxy.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"socks5h"'''
+context = '''&["http", "https", "socks5", "socks5h"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted SOCKS5-hostname proxy URL scheme for the optional TOML-owned Hyperliquid data proxy.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"update_instruments_interval_mins"'''
+context = '''"update_instruments_interval_mins",'''
+classification = '''hyperliquid_data_validation_field_label'''
+reason = '''This label names the Hyperliquid data instrument-refresh cadence field being validated; the cadence value itself is TOML-owned and passed to NT.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"ws"'''
+context = '''&["ws", "wss"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted WebSocket URL scheme for the TOML-owned Hyperliquid data WebSocket endpoint.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"ws_timeout_secs"'''
+context = '''("ws_timeout_secs", data.ws_timeout_secs),'''
+classification = '''hyperliquid_data_validation_field_label'''
+reason = '''This label names a Hyperliquid data WebSocket timeout field being validated; the value itself is TOML-owned and passed to NT.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"wss"'''
+context = '''&["ws", "wss"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted secure WebSocket URL scheme for the TOML-owned Hyperliquid data WebSocket endpoint.'''
+
+[[allowed]]
 path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''number'''
 literal = '''2'''

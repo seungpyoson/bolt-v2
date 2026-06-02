@@ -131,15 +131,19 @@ impl BoltV3SubmitAdmissionState {
         inner: &BoltV3SubmitAdmissionInner,
         request: &BoltV3SubmitAdmissionRequest,
     ) -> BoltV3AdmissionOutcome {
-        let Some(report) = inner.gate_report.as_ref() else {
-            return BoltV3AdmissionOutcome::RejectedNotArmed;
-        };
         if !request.lifecycle_policy.allows(request.intent_kind) {
             return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;
         }
         if request.notional <= Decimal::ZERO {
             return BoltV3AdmissionOutcome::RejectedNonPositiveNotional;
         }
+        let Some(report) = inner.gate_report.as_ref() else {
+            if request.canary_proof_claim.is_some() {
+                return BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim;
+            }
+            return BoltV3AdmissionOutcome::Admitted;
+        };
+
         if matches!(
             request.intent_kind,
             BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit

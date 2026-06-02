@@ -90,10 +90,7 @@ use crate::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
     },
-    bolt_v3_live_canary_gate::{
-        BoltV3LiveCanaryGateError, build_bolt_v3_live_submit_admission_report_from_config,
-        current_build_head_sha,
-    },
+    bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, current_build_head_sha},
     bolt_v3_providers,
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
@@ -2169,21 +2166,14 @@ fn no_submit_transport_loaded_config(loaded: &LoadedBoltV3Config) -> LoadedBoltV
 
 /// Single bolt-v3 entrypoint for entering NT's runner loop.
 ///
-/// The caller builds the `LiveNode` separately, then this function arms
-/// submit admission from the loaded config's `[live_canary]` bounds before
-/// entering the NT runner loop. Production callers must use this wrapper
-/// rather than invoking the NT runner method directly. If admission cannot
-/// be armed, NT's runner loop is never entered.
+/// The caller builds the `LiveNode` separately, then this function enters the
+/// NT runner loop through the bolt-v3 wrapper that owns runtime capture and
+/// shutdown classification. Production callers must use this wrapper rather
+/// than invoking the NT runner method directly.
 pub async fn run_bolt_v3_live_node(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    let gate_report = build_bolt_v3_live_submit_admission_report_from_config(loaded)
-        .map_err(BoltV3LiveNodeError::LiveCanaryGate)?;
-    runtime
-        .submit_admission
-        .arm(gate_report)
-        .map_err(BoltV3LiveNodeError::SubmitAdmission)?;
     let node = &mut runtime.node;
     let node_handle = node.handle();
     let mut capture_guards = wire_bolt_v3_runtime_capture(node, node_handle, loaded)

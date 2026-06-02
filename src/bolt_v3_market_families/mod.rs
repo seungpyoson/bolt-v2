@@ -17,6 +17,18 @@ use crate::{
 };
 use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
 
+/// Canonical binary-market outcome side (`Up`/`Down`). Homed in the
+/// market-family layer as the single source of truth: updown family
+/// instruments are keyed by it, and the taker decision math
+/// (`bolt_v3_taker_signal`) consumes it. Variants and derives match the
+/// prior family-local `UpdownOutcomeSide` and the strategy-local
+/// `OutcomeSide` it replaces (pure type-identity unification).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutcomeSide {
+    Up,
+    Down,
+}
+
 /// Target metadata read by startup validation before dispatching to a
 /// `target.rotating_market_family` validator.
 #[derive(Debug, Clone, Deserialize)]

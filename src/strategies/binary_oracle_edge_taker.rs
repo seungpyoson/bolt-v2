@@ -48,7 +48,7 @@ use crate::{
         validate_readiness_gate_evidence_snapshot,
     },
     bolt_v3_market_families::{
-        self, FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget,
+        self, FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget, OutcomeSide,
         SelectedMarketSourceIdentity,
     },
     bolt_v3_numeric::{
@@ -69,9 +69,10 @@ use crate::{
         market_style_admission_ceiling_notional,
     },
     bolt_v3_taker_signal::{
-        RobustSizingInputs, ThetaScalerInputs, UncertaintyBandInputs, choose_robust_size,
-        compute_theta_scaler, price_agreement_corr, price_gap_probability,
-        uncertainty_band_probability,
+        RobustSizingInputs, SideSelectionInputs, ThetaScalerInputs, UncertaintyBandInputs,
+        WorstCaseEvInputs, choose_entry_side, choose_robust_size, compute_theta_scaler,
+        compute_worst_case_ev_bps, outcome_side_evidence_label, price_agreement_corr,
+        price_gap_probability, uncertainty_band_probability,
     },
     bolt_v3_volatility::{RealizedVolConfig, RealizedVolEstimator},
     strategies::registry::{
@@ -6939,19 +6940,6 @@ const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quan
 const EXIT_BLOCK_REASON_EXIT_PRICE_MISSING: &str = "exit_price_missing";
 const EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE: &str = "exit_quantity_not_positive";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OutcomeSide {
-    Up,
-    Down,
-}
-
-fn outcome_side_evidence_label(side: OutcomeSide) -> &'static str {
-    match side {
-        OutcomeSide::Up => "up",
-        OutcomeSide::Down => "down",
-    }
-}
-
 fn evidence_number(value: f64) -> String {
     value.to_string()
 }
@@ -7045,68 +7033,6 @@ fn best_healthy_oracle_price(snapshot: &ReferenceSnapshot) -> Option<f64> {
                 .then_with(|| lhs.venue_name.cmp(&rhs.venue_name))
         })
         .and_then(|venue| venue.observed_price)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct WorstCaseEvInputs {
-    fair_probability: Option<f64>,
-    uncertainty_band_probability: f64,
-    executable_entry_cost: f64,
-    fee_bps: Option<f64>,
-}
-
-fn compute_worst_case_ev_bps(side: OutcomeSide, inputs: &WorstCaseEvInputs) -> Option<f64> {
-    let fair_probability = sanitize_probability(inputs.fair_probability?)?;
-    let uncertainty_band_probability = sanitize_probability(inputs.uncertainty_band_probability)?;
-    let executable_entry_cost = inputs.executable_entry_cost;
-    let fee_bps = inputs.fee_bps?;
-
-    if !is_positive_finite(executable_entry_cost) {
-        return None;
-    }
-    if !is_non_negative_finite(fee_bps) {
-        return None;
-    }
-
-    let p_lo = clamp_probability(fair_probability - uncertainty_band_probability);
-    let p_hi = clamp_probability(fair_probability + uncertainty_band_probability);
-    let worst_case_success_probability = match side {
-        OutcomeSide::Up => p_lo,
-        OutcomeSide::Down => UNIT_F64 - p_hi,
-    };
-    let total_entry_cost = executable_entry_cost * (UNIT_F64 + fee_bps / BPS_DENOMINATOR);
-
-    if total_entry_cost <= ZERO_F64 {
-        return None;
-    }
-
-    Some(((worst_case_success_probability - total_entry_cost) / total_entry_cost) * BPS_DENOMINATOR)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct SideSelectionInputs {
-    up_worst_ev_bps: Option<f64>,
-    down_worst_ev_bps: Option<f64>,
-    min_worst_case_ev_bps: f64,
-}
-
-fn choose_entry_side(inputs: &SideSelectionInputs) -> Option<OutcomeSide> {
-    if !inputs.min_worst_case_ev_bps.is_finite() {
-        return None;
-    }
-
-    let up_worst_ev_bps = inputs.up_worst_ev_bps.filter(|value| value.is_finite())?;
-    let down_worst_ev_bps = inputs.down_worst_ev_bps.filter(|value| value.is_finite())?;
-    let up_clears = up_worst_ev_bps > inputs.min_worst_case_ev_bps;
-    let down_clears = down_worst_ev_bps > inputs.min_worst_case_ev_bps;
-
-    match (up_clears, down_clears) {
-        (true, false) => Some(OutcomeSide::Up),
-        (false, true) => Some(OutcomeSide::Down),
-        (true, true) if up_worst_ev_bps > down_worst_ev_bps => Some(OutcomeSide::Up),
-        (true, true) if down_worst_ev_bps > up_worst_ev_bps => Some(OutcomeSide::Down),
-        (true, true) | (false, false) => None,
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16421,132 +16347,6 @@ mod tests {
         let selected = arbitrate_lead_reference(&candidates, 0.80, 25);
 
         assert!(selected.is_none());
-    }
-
-    #[test]
-    fn task4_worst_case_ev_uses_side_specific_bounds_and_fees_fail_closed() {
-        let up_zero_fee = compute_worst_case_ev_bps(
-            OutcomeSide::Up,
-            &WorstCaseEvInputs {
-                fair_probability: Some(0.60),
-                uncertainty_band_probability: 0.05,
-                executable_entry_cost: 0.50,
-                fee_bps: Some(0.0),
-            },
-        )
-        .expect("up zero-fee EV should be computable");
-        let up_paid_fee = compute_worst_case_ev_bps(
-            OutcomeSide::Up,
-            &WorstCaseEvInputs {
-                fair_probability: Some(0.60),
-                uncertainty_band_probability: 0.05,
-                executable_entry_cost: 0.50,
-                fee_bps: Some(200.0),
-            },
-        )
-        .expect("up paid-fee EV should be computable");
-        let down_zero_fee = compute_worst_case_ev_bps(
-            OutcomeSide::Down,
-            &WorstCaseEvInputs {
-                fair_probability: Some(0.60),
-                uncertainty_band_probability: 0.05,
-                executable_entry_cost: 0.50,
-                fee_bps: Some(0.0),
-            },
-        )
-        .expect("down zero-fee EV should be computable");
-
-        assert!(up_paid_fee < up_zero_fee);
-        assert!(up_zero_fee > down_zero_fee);
-        assert_eq!(
-            compute_worst_case_ev_bps(
-                OutcomeSide::Up,
-                &WorstCaseEvInputs {
-                    fair_probability: Some(0.60),
-                    uncertainty_band_probability: 0.05,
-                    executable_entry_cost: 0.50,
-                    fee_bps: None,
-                },
-            ),
-            None
-        );
-        assert_eq!(
-            compute_worst_case_ev_bps(
-                OutcomeSide::Up,
-                &WorstCaseEvInputs {
-                    fair_probability: Some(1.2),
-                    uncertainty_band_probability: 0.05,
-                    executable_entry_cost: 0.50,
-                    fee_bps: Some(0.0),
-                },
-            ),
-            None
-        );
-        assert_eq!(
-            compute_worst_case_ev_bps(
-                OutcomeSide::Up,
-                &WorstCaseEvInputs {
-                    fair_probability: Some(0.60),
-                    uncertainty_band_probability: 1.5,
-                    executable_entry_cost: 0.50,
-                    fee_bps: Some(0.0),
-                },
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn task4_side_selection_picks_higher_worst_case_ev_when_both_clear_threshold() {
-        let side = choose_entry_side(&SideSelectionInputs {
-            up_worst_ev_bps: Some(9.0),
-            down_worst_ev_bps: Some(11.0),
-            min_worst_case_ev_bps: 8.0,
-        });
-
-        assert_eq!(side, Some(OutcomeSide::Down));
-    }
-
-    #[test]
-    fn task4_side_selection_requires_strictly_greater_than_threshold() {
-        let side = choose_entry_side(&SideSelectionInputs {
-            up_worst_ev_bps: Some(8.0),
-            down_worst_ev_bps: Some(7.0),
-            min_worst_case_ev_bps: 8.0,
-        });
-
-        assert_eq!(side, None);
-    }
-
-    #[test]
-    fn task4_side_selection_fails_closed_on_missing_or_invalid_side_ev() {
-        assert_eq!(
-            choose_entry_side(&SideSelectionInputs {
-                up_worst_ev_bps: Some(9.0),
-                down_worst_ev_bps: None,
-                min_worst_case_ev_bps: 8.0,
-            }),
-            None
-        );
-        assert_eq!(
-            choose_entry_side(&SideSelectionInputs {
-                up_worst_ev_bps: Some(f64::NAN),
-                down_worst_ev_bps: Some(9.0),
-                min_worst_case_ev_bps: 8.0,
-            }),
-            None
-        );
-    }
-
-    #[test]
-    fn task4_side_selection_fails_closed_on_equal_positive_evs() {
-        let side = choose_entry_side(&SideSelectionInputs {
-            up_worst_ev_bps: Some(9.0),
-            down_worst_ev_bps: Some(9.0),
-            min_worst_case_ev_bps: 8.0,
-        });
-
-        assert_eq!(side, None);
     }
 
     #[test]

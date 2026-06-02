@@ -403,23 +403,6 @@ impl BoltV3SubmitAdmissionState {
         })
     }
 
-    pub fn rebuild_position_sizing_open_order_reservations(
-        &self,
-        open_order_reservations: Vec<BoltV3SubmitPositionSizingOpenOrderReservation>,
-        now_ns: u64,
-    ) -> BoltV3SubmitPositionSizingRebuildDecision {
-        self.rebuild_position_sizing_open_order_snapshot(
-            BoltV3SubmitPositionSizingOpenOrderSnapshot {
-                observed_at_ns: now_ns,
-                evidence_label: "bolt_recovered_open_order_reservations".to_string(),
-                observed_open_order_count: open_order_reservations.len(),
-                all_open_orders_attributed: true,
-                reservations: open_order_reservations,
-            },
-            now_ns,
-        )
-    }
-
     pub fn rebuild_position_sizing_open_order_snapshot(
         &self,
         snapshot: BoltV3SubmitPositionSizingOpenOrderSnapshot,
@@ -667,7 +650,7 @@ impl BoltV3SubmitAdmissionState {
         let lifecycle_update = PositionSizingLifecycleUpdate {
             intent_id: index.submit_reservation_id.clone(),
             pool_id: position_sizer.capital_pool.pool_id.clone(),
-            collateral_group_id: update.collateral_group_id,
+            collateral_group_id: index.collateral_group_id.clone(),
             remaining_liability: update.remaining_liability,
             observed_at_ns: update.observed_at_ns,
             evidence_label: update.evidence_label,
@@ -743,7 +726,7 @@ impl BoltV3SubmitAdmissionState {
             return BoltV3SubmitPositionSizingLifecycleDecision::unknown();
         };
         let lifecycle_observed_at_ns = update.observed_at_ns.max(next_observed_at_ns);
-        if metadata.recovered_from_startup && update.reconciliation {
+        if update.reconciliation {
             if let Some(current) = position_sizer
                 .client_order_reservations
                 .get_mut(&update.client_order_id)
@@ -974,6 +957,7 @@ impl BoltV3SubmitAdmissionState {
                 }
                 Ok(BoltV3SubmitAdmissionPermit {
                     inner: self.inner.clone(),
+                    rollback_intent_kind: evaluation.rollback.as_ref().map(|_| request.intent_kind),
                     rollback: evaluation.rollback,
                     committed: false,
                 })
@@ -1143,6 +1127,7 @@ impl BoltV3SubmitAdmissionState {
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionPermit {
     inner: Arc<Mutex<BoltV3SubmitAdmissionInner>>,
+    rollback_intent_kind: Option<BoltV3SubmitIntentKind>,
     rollback: Option<BoltV3PositionSizerReservationRollback>,
     committed: bool,
 }
@@ -1150,6 +1135,7 @@ pub struct BoltV3SubmitAdmissionPermit {
 impl BoltV3SubmitAdmissionPermit {
     pub fn commit_submitted(mut self) {
         self.committed = true;
+        self.rollback_intent_kind = None;
         self.rollback = None;
     }
 }
@@ -1166,6 +1152,9 @@ impl Drop for BoltV3SubmitAdmissionPermit {
         // holding the admission lock; rollback is deliberately fail-closed.
         let mut inner = lock_inner(&self.inner);
         rollback_position_sizer_reservation(&mut inner, rollback);
+        if let Some(intent_kind) = self.rollback_intent_kind {
+            rollback_uncommitted_admission_count(&mut inner, intent_kind);
+        }
     }
 }
 
@@ -2180,6 +2169,27 @@ fn rollback_position_sizer_reservation(
     refresh_position_sizer_reservation_snapshot(position_sizer, rollback.observed_at_ns);
 }
 
+fn rollback_uncommitted_admission_count(
+    inner: &mut BoltV3SubmitAdmissionInner,
+    intent_kind: BoltV3SubmitIntentKind,
+) {
+    inner.admitted_order_count = inner.admitted_order_count.saturating_sub(1);
+    match intent_kind {
+        BoltV3SubmitIntentKind::Entry => {
+            inner.admitted_entry_order_count = inner.admitted_entry_order_count.saturating_sub(1);
+        }
+        BoltV3SubmitIntentKind::RiskReducingExit => {
+            inner.admitted_risk_reducing_exit_order_count = inner
+                .admitted_risk_reducing_exit_order_count
+                .saturating_sub(1);
+        }
+        BoltV3SubmitIntentKind::ReplaceSubmit => {
+            inner.admitted_replace_submit_order_count =
+                inner.admitted_replace_submit_order_count.saturating_sub(1);
+        }
+    }
+}
+
 fn map_sized_rejection(
     reasons: &[crate::bolt_v3_position_sizer::SizedAdmissionReason],
 ) -> BoltV3PositionSizerRejectReason {
@@ -2274,7 +2284,16 @@ mod tests {
             ))
             .expect("valid gate report should arm admission");
         admission.update_position_sizing_nt_components(fresh_components(900));
-        let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+        let rebuild = admission.rebuild_position_sizing_open_order_snapshot(
+            BoltV3SubmitPositionSizingOpenOrderSnapshot {
+                observed_at_ns: 1_000,
+                evidence_label: "bolt_recovered_open_order_reservations".to_string(),
+                observed_open_order_count: 0,
+                all_open_orders_attributed: true,
+                reservations: Vec::new(),
+            },
+            1_000,
+        );
         assert!(rebuild.accepted);
 
         let permit = admission

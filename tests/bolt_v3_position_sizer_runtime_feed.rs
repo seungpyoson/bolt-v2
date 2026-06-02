@@ -20,6 +20,7 @@ use bolt_v2::bolt_v3_submit_admission::{
     BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState,
     BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy, BoltV3SubmitPositionSizerConfig,
     BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderReservation,
+    BoltV3SubmitPositionSizingOpenOrderSnapshot, BoltV3SubmitPositionSizingRebuildDecision,
     PredictionMarketOutcomeSide,
 };
 use nautilus_common::msgbus::{
@@ -360,7 +361,7 @@ fn position_sizer_cache_seed_updates_open_order_lifecycle_and_rebuilds_empty() {
             .is_some()
     );
 
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_200);
+    let rebuild = rebuild_position_sizer_from_reservations(&admission, Vec::new(), 1_200);
 
     assert!(rebuild.accepted);
     assert_eq!(admission.position_sizer_reconciled(), Some(true));
@@ -875,7 +876,8 @@ fn fill_event_for_rebuilt_reservation_revalues_residual() {
         ))
         .is_some()
     );
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+    let rebuild = rebuild_position_sizer_from_reservations(
+        &admission,
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -933,7 +935,8 @@ fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
             .is_some()
     );
 
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+    let rebuild = rebuild_position_sizer_from_reservations(
+        &admission,
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -987,7 +990,8 @@ fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attributio
             .is_some()
     );
 
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+    let rebuild = rebuild_position_sizer_from_reservations(
+        &admission,
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -1073,7 +1077,8 @@ fn full_fill_event_for_rebuilt_reservation_releases_and_closes_live_order_count(
         feed.seed_open_order_cache(vec!["client-order-1".to_string()], 1_000)
             .is_some()
     );
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+    let rebuild = rebuild_position_sizer_from_reservations(
+        &admission,
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -1576,12 +1581,30 @@ fn arm_default(admission: &BoltV3SubmitAdmissionState) {
 }
 
 fn rebuild_empty_position_sizer(admission: &BoltV3SubmitAdmissionState) {
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+    let rebuild = rebuild_position_sizer_from_reservations(admission, Vec::new(), 1_000);
     assert!(
         rebuild.accepted,
         "test startup rebuild should open submit admission"
     );
     assert_eq!(admission.position_sizer_reconciled(), Some(true));
+}
+
+fn rebuild_position_sizer_from_reservations(
+    admission: &BoltV3SubmitAdmissionState,
+    reservations: Vec<BoltV3SubmitPositionSizingOpenOrderReservation>,
+    now_ns: u64,
+) -> BoltV3SubmitPositionSizingRebuildDecision {
+    let observed_open_order_count = reservations.len();
+    admission.rebuild_position_sizing_open_order_snapshot(
+        BoltV3SubmitPositionSizingOpenOrderSnapshot {
+            observed_at_ns: now_ns,
+            evidence_label: "bolt_recovered_open_order_reservations".to_string(),
+            observed_open_order_count,
+            all_open_orders_attributed: true,
+            reservations,
+        },
+        now_ns,
+    )
 }
 
 fn open_order_reservation(

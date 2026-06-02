@@ -744,6 +744,9 @@ fn clipped_liability_quote(
         .checked_mul(liability_factor)
         .and_then(|base_liability| base_liability.checked_add(additive_liability))
         .ok_or(SizedAdmissionReason::OverMaxOrderLiability)?;
+    if liability_after_sizing > max_order_liability {
+        return Err(SizedAdmissionReason::OverMaxOrderLiability);
+    }
 
     Ok(LiabilityQuote {
         original_quantity: quote.original_quantity,
@@ -764,6 +767,11 @@ impl PredictionMarketBinaryLiabilityCalculator {
         let ProductSizingSnapshot::PredictionMarketBinary(snapshot) = state;
         validate_request(request)?;
         validate_liquidity(request)?;
+        if request.instrument_id != snapshot.yes_instrument_id
+            && request.instrument_id != snapshot.no_instrument_id
+        {
+            return Err(LiabilityError::InsufficientInventory);
+        }
         let fee_policy = policy
             .fee_slippage_policy
             .as_ref()
@@ -1110,6 +1118,20 @@ mod tests {
     }
 
     #[test]
+    fn prediction_market_binary_liability_rejects_unknown_instrument_for_buy() {
+        let calculator = PredictionMarketBinaryLiabilityCalculator;
+        let mut unknown_instrument_buy = request(IntentSide::Buy, IntentLiquidity::Taker);
+        unknown_instrument_buy.instrument_id = "unknown-instrument".to_string();
+
+        assert_eq!(
+            calculator
+                .worst_case_liability(&unknown_instrument_buy, &state(), &policy())
+                .expect_err("public liability calculator must fail closed on unknown instruments"),
+            LiabilityError::InsufficientInventory
+        );
+    }
+
+    #[test]
     fn prediction_market_binary_liability_overflow_rejects_fail_closed() {
         let calculator = PredictionMarketBinaryLiabilityCalculator;
         let mut overflow_policy = policy();
@@ -1410,6 +1432,36 @@ mod tests {
                 Decimal::MAX,
             )
             .expect_err("overflowing candidate quantity must fail closed"),
+            SizedAdmissionReason::OverMaxOrderLiability
+        );
+    }
+
+    #[test]
+    fn explicit_clip_rejects_decimal_rounding_over_max_order_liability() {
+        let mut clipping_policy = policy();
+        clipping_policy.mode = SizingMode::ExplicitClipToAvailable;
+        clipping_policy.fee_slippage_policy = Some(FeeSlippagePolicy {
+            max_fee_liability: Decimal::ZERO,
+            max_slippage_liability: Decimal::ZERO,
+        });
+        let mut rounding_request = request(IntentSide::Buy, IntentLiquidity::Taker);
+        rounding_request.limit_price = Decimal::new(126, 3);
+        let quote = super::LiabilityQuote {
+            original_quantity: rounding_request.quantity,
+            sized_quantity: rounding_request.quantity,
+            liability_before_sizing: Decimal::new(126, 2),
+            liability_after_sizing: Decimal::new(126, 2),
+            evidence_label: "test_liability_quote".to_string(),
+        };
+
+        assert_eq!(
+            super::clipped_liability_quote(
+                &rounding_request,
+                &clipping_policy,
+                &quote,
+                Decimal::ONE,
+            )
+            .expect_err("rounded liability above the max cap must fail closed"),
             SizedAdmissionReason::OverMaxOrderLiability
         );
     }

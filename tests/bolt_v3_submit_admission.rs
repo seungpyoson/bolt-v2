@@ -1189,7 +1189,7 @@ fn nt_component_update_preserves_same_timestamp_attributed_order_lifecycle() {
 fn position_sizer_direct_rebuild_keeps_gate_closed_without_components() {
     let admission = position_sized_admission();
 
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+    let rebuild = rebuild_position_sizer_from_reservations(&admission, Vec::new(), 1_000);
 
     assert_eq!(
         rebuild,
@@ -1210,7 +1210,7 @@ fn configured_submit_sizer_empty_startup_rebuild_opens_admission() {
     arm_default(&admission);
     admission.update_position_sizing_nt_components(fresh_components(900));
 
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+    let rebuild = rebuild_position_sizer_from_reservations(&admission, Vec::new(), 1_000);
 
     assert_eq!(
         rebuild,
@@ -1240,7 +1240,7 @@ fn rebuild_refreshes_submit_owned_reservation_snapshot() {
     let admission = position_sized_admission();
     admission.update_position_sizing_nt_components(fresh_components(900));
 
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+    let rebuild = rebuild_position_sizer_from_reservations(&admission, Vec::new(), 1_000);
 
     assert!(rebuild.accepted);
     let state = admission
@@ -1407,7 +1407,8 @@ fn configured_submit_sizer_rebuilds_open_order_reservation_for_terminal_release(
     arm_default(&admission);
     admission.update_position_sizing_nt_components(fresh_components(900));
 
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+    let rebuild = rebuild_position_sizer_from_reservations(
+        &admission,
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -1452,7 +1453,8 @@ fn configured_submit_sizer_rebuilt_reservation_partial_fill_revalues_residual() 
     arm_default(&admission);
     admission.update_position_sizing_nt_components(fresh_components(900));
 
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+    let rebuild = rebuild_position_sizer_from_reservations(
+        &admission,
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -1623,8 +1625,7 @@ fn configured_submit_sizer_recovered_reconciliation_fill_does_not_reduce_liabili
             &recovered,
         )
         .expect("known Bolt metadata should rebuild residual open order");
-    let rebuild =
-        admission.rebuild_position_sizing_open_order_reservations(vec![reservation], 1_000);
+    let rebuild = rebuild_position_sizer_from_reservations(&admission, vec![reservation], 1_000);
     assert!(rebuild.accepted);
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
@@ -1686,7 +1687,8 @@ fn configured_submit_sizer_rejects_rebuilt_reservation_liability_mismatch() {
     admission.update_position_sizing_nt_components(fresh_components(900));
     rebuild_empty_position_sizer(&admission);
 
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+    let rebuild = rebuild_position_sizer_from_reservations(
+        &admission,
         vec![open_order_reservation(
             "client-order-1",
             "client-order-1#rebuilt",
@@ -1723,7 +1725,8 @@ fn configured_submit_sizer_failed_rebuild_clears_stale_client_order_index_and_cl
         .expect("first submit should admit")
         .commit_submitted();
 
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+    let rebuild = rebuild_position_sizer_from_reservations(
+        &admission,
         vec![
             open_order_reservation(
                 "client-order-1",
@@ -1787,6 +1790,45 @@ fn configured_submit_sizer_reserves_entry_from_compiled_order_values() {
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::ZERO)
     );
+}
+
+#[test]
+fn configured_submit_sizer_dropped_uncommitted_permit_releases_count_slot() {
+    let admission = position_sized_admission();
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(10, 0),
+        ))
+        .expect("valid gate report should arm admission");
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+
+    let abandoned = admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit first order");
+
+    assert_eq!(admission.admitted_order_count(), 1);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+
+    drop(abandoned);
+
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+    assert_eq!(
+        admission.admitted_order_count(),
+        0,
+        "uncommitted position-sizer permits must not consume the cumulative count cap"
+    );
+
+    admission
+        .admit_at(&sized_submit_request("client-order-2"), 1_001)
+        .expect("released count slot should allow a replacement attempt under cap one");
 }
 
 #[test]
@@ -1882,6 +1924,61 @@ fn configured_submit_sizer_metadata_write_failure_rolls_back_without_admitted_de
     assert!(
         writer.admission_decisions().is_empty(),
         "admitted admission decision must not be written after metadata write failure"
+    );
+}
+
+#[test]
+fn configured_submit_sizer_admission_decision_write_failure_rolls_back_recorded_reservation() {
+    let writer = Arc::new(FailingAdmissionDecisionAfterSubmitReservationMetadataWriter::default());
+    let admission = position_sized_admission_with_writer(writer.clone());
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+
+    let error = admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect_err("admission decision write failure must fail the submit admission");
+
+    match error {
+        BoltV3SubmitAdmissionError::EvidenceWriteFailed { reason } => {
+            assert!(
+                reason.contains("synthetic admission decision write failure"),
+                "unexpected evidence write failure reason: {reason}"
+            );
+        }
+        other => panic!("expected EvidenceWriteFailed, got {other:?}"),
+    }
+    assert_eq!(writer.metadata().len(), 1);
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+}
+
+#[test]
+fn configured_submit_sizer_rejects_replace_submit_without_reserving_capital() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+    let mut request = sized_submit_request("client-order-1");
+    request.intent_kind = BoltV3SubmitIntentKind::ReplaceSubmit;
+
+    let error = admission
+        .admit_at(&request, 1_000)
+        .expect_err("position sizing does not yet support replace-submit reservations");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::PositionSizingRejected {
+            reason: BoltV3PositionSizerRejectReason::ReplaceSubmitUnsupported
+        }
+    ));
+    assert_eq!(admission.admitted_order_count(), 0);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
     );
 }
 
@@ -2032,6 +2129,41 @@ fn configured_submit_sizer_keeps_committed_reservation_until_terminal_lifecycle_
 }
 
 #[test]
+fn configured_submit_sizer_lifecycle_uses_stored_reservation_collateral_group() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+
+    let decision = admission.apply_position_sizing_lifecycle_update(
+        BoltV3SubmitPositionSizingLifecycleUpdate {
+            client_order_id: "client-order-1".to_string(),
+            collateral_group_id: "caller-supplied-wrong-group".to_string(),
+            remaining_liability: Decimal::ZERO,
+            observed_at_ns: 1_100,
+            evidence_label: "nt_order_terminal".to_string(),
+            kind: PositionSizingLifecycleKind::Terminal,
+        },
+        1_100,
+    );
+
+    assert!(
+        decision.accepted,
+        "lifecycle updates should source collateral group from the stored reservation index"
+    );
+    assert!(!decision.unknown_reservation);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::ZERO)
+    );
+}
+
+#[test]
 fn configured_submit_sizer_revalues_residual_liability_from_fill_metadata() {
     let admission = position_sized_admission();
     arm_default(&admission);
@@ -2067,6 +2199,71 @@ fn configured_submit_sizer_revalues_residual_liability_from_fill_metadata() {
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::new(27, 1))
+    );
+}
+
+#[test]
+fn configured_submit_sizer_reconciliation_fill_for_live_reservation_does_not_revalue_liability() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    admission.update_position_sizing_nt_components(fresh_components(900));
+    rebuild_empty_position_sizer(&admission);
+
+    admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect("fresh sizing state and capacity should admit")
+        .commit_submitted();
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
+    );
+
+    let reconciliation = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-replayed-by-reconciliation".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            fill_quantity: Decimal::new(4, 0),
+            observed_at_ns: 1_100,
+            reconciliation: true,
+            evidence_label: "nt_reconciliation_fill".to_string(),
+        },
+        1_100,
+    );
+
+    assert!(reconciliation.accepted);
+    assert!(!reconciliation.unknown_reservation);
+    assert_eq!(reconciliation.action, PositionSizingLifecycleAction::None);
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1)),
+        "reconciliation fills are already reflected by NT open-order state and must not double-apply"
+    );
+
+    let replayed_incremental = admission.apply_position_sizing_fill_update(
+        BoltV3SubmitPositionSizingFillUpdate {
+            client_order_id: "client-order-1".to_string(),
+            trade_id: "trade-replayed-by-reconciliation".to_string(),
+            instrument_id: "instrument-yes.VENUE-A".to_string(),
+            side: BoltV3CompiledOrderSide::Buy,
+            fill_quantity: Decimal::new(4, 0),
+            observed_at_ns: 1_101,
+            reconciliation: false,
+            evidence_label: "nt_order_fill".to_string(),
+        },
+        1_101,
+    );
+
+    assert!(replayed_incremental.accepted);
+    assert!(!replayed_incremental.unknown_reservation);
+    assert_eq!(
+        replayed_incremental.action,
+        PositionSizingLifecycleAction::None
+    );
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(43, 1))
     );
 }
 
@@ -2486,7 +2683,8 @@ fn configured_submit_sizer_rebuilt_reservation_full_fill_releases_reservation() 
     let admission = position_sized_admission();
     arm_default(&admission);
     admission.update_position_sizing_nt_components(fresh_components(900));
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+    let rebuild = rebuild_position_sizer_from_reservations(
+        &admission,
         vec![open_order_reservation(
             "client-order-1",
             "submit-reservation-1",
@@ -2882,7 +3080,7 @@ fn arm_default(admission: &BoltV3SubmitAdmissionState) {
 }
 
 fn rebuild_empty_position_sizer(admission: &BoltV3SubmitAdmissionState) {
-    let rebuild = admission.rebuild_position_sizing_open_order_reservations(Vec::new(), 1_000);
+    let rebuild = rebuild_position_sizer_from_reservations(admission, Vec::new(), 1_000);
     assert_eq!(
         rebuild,
         BoltV3SubmitPositionSizingRebuildDecision {
@@ -2894,6 +3092,24 @@ fn rebuild_empty_position_sizer(admission: &BoltV3SubmitAdmissionState) {
         }
     );
     assert_eq!(admission.position_sizer_reconciled(), Some(true));
+}
+
+fn rebuild_position_sizer_from_reservations(
+    admission: &BoltV3SubmitAdmissionState,
+    reservations: Vec<BoltV3SubmitPositionSizingOpenOrderReservation>,
+    now_ns: u64,
+) -> BoltV3SubmitPositionSizingRebuildDecision {
+    let observed_open_order_count = reservations.len();
+    admission.rebuild_position_sizing_open_order_snapshot(
+        BoltV3SubmitPositionSizingOpenOrderSnapshot {
+            observed_at_ns: now_ns,
+            evidence_label: "bolt_recovered_open_order_reservations".to_string(),
+            observed_open_order_count,
+            all_open_orders_attributed: true,
+            reservations,
+        },
+        now_ns,
+    )
 }
 
 fn open_order_reservation(
@@ -3127,6 +3343,65 @@ impl BoltV3DecisionEvidenceWriter for FailingSubmitReservationMetadataWriter {
         Err(anyhow::anyhow!(
             "synthetic submit reservation metadata write failure"
         ))
+    }
+
+    fn record_submit_reservation_fill(
+        &self,
+        _fill: &BoltV3SubmitReservationFillEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+struct FailingAdmissionDecisionAfterSubmitReservationMetadataWriter {
+    metadata: Mutex<Vec<BoltV3SubmitReservationMetadataEvidence>>,
+}
+
+impl FailingAdmissionDecisionAfterSubmitReservationMetadataWriter {
+    fn metadata(&self) -> Vec<BoltV3SubmitReservationMetadataEvidence> {
+        self.metadata
+            .lock()
+            .expect("failing admission decision writer mutex should not be poisoned")
+            .clone()
+    }
+}
+
+impl BoltV3DecisionEvidenceWriter for FailingAdmissionDecisionAfterSubmitReservationMetadataWriter {
+    fn record_strategy_input_snapshot(
+        &self,
+        _snapshot: &BoltV3StrategyInputEvidenceSnapshot,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_order_intent(&self, _intent: &BoltV3OrderIntentEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_admission_decision(
+        &self,
+        _decision: &BoltV3AdmissionDecisionEvidence,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("synthetic admission decision write failure");
+    }
+
+    fn record_position_sizer_rebuild_audit(
+        &self,
+        _audit: &BoltV3PositionSizerRebuildAuditEvidence,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn record_submit_reservation_metadata(
+        &self,
+        metadata: &BoltV3SubmitReservationMetadataEvidence,
+    ) -> anyhow::Result<()> {
+        self.metadata
+            .lock()
+            .expect("failing admission decision writer mutex should not be poisoned")
+            .push(metadata.clone());
+        Ok(())
     }
 
     fn record_submit_reservation_fill(

@@ -2231,11 +2231,10 @@ fn no_submit_transport_adapter_configs(
 fn trade_transport_loaded_config(
     loaded: &LoadedBoltV3Config,
 ) -> Result<LoadedBoltV3Config, BoltV3LiveNodeError> {
-    if loaded.strategies.is_empty() {
+    let required_clients = trade_transport_client_keys(loaded);
+    if required_clients.is_empty() {
         return Ok(loaded.clone());
     }
-
-    let required_clients = trade_transport_client_keys(loaded);
     let missing_clients = required_clients
         .iter()
         .filter(|client_key| !loaded.root.clients.contains_key(*client_key))
@@ -3822,7 +3821,7 @@ mod tests {
     use crate::bolt_v3_config::{
         BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeBookType,
         DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetBlock,
-        DataClientReadinessProbeQuoteTargetSource, LiveCanaryProofPolicyBlock,
+        DataClientReadinessProbeQuoteTargetSource, LiveCanaryBlock, LiveCanaryProofPolicyBlock,
         LiveCanaryProofTimeInForce, ReferenceDataBlock,
     };
     use crate::bolt_v3_providers::hyperliquid::{
@@ -4232,6 +4231,51 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             },
         );
         loaded
+    }
+
+    fn polymarket_main_proof_policy() -> LiveCanaryProofPolicyBlock {
+        LiveCanaryProofPolicyBlock {
+            enabled: true,
+            policy_kind: "least_bad_strategy_candidate".to_string(),
+            proof_claim: "proof_only".to_string(),
+            executor_strategy_id: "canary-proof-executor-proof".to_string(),
+            strategy_instance_id: "configured_updown_main".to_string(),
+            execution_client_id: "polymarket_main".to_string(),
+            book_type: DataClientReadinessProbeBookType::L2Mbp,
+            book_snapshot_interval_millis: 1_000,
+            time_in_force: LiveCanaryProofTimeInForce::Fok,
+            is_post_only: false,
+            is_reduce_only: false,
+            is_quote_quantity: false,
+            notional_mode: "fixed".to_string(),
+            proof_notional: "5.00".to_string(),
+            candidate_score_source: "proof_source".to_string(),
+            allow_negative_expected_ev: true,
+            rotation_observation_enabled: true,
+            rotation_min_distinct_markets: 1,
+            rotation_max_attempts: 1,
+        }
+    }
+
+    fn live_canary_with_polymarket_main_proof_policy() -> LiveCanaryBlock {
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "no-submit-readiness.json".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: 60,
+            reference_quote_max_age_seconds: 60,
+            reference_quote_wait_timeout_seconds: 5,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: false,
+            reference_quote_probe_log_commands: false,
+            max_live_order_count: 1,
+            max_notional_per_order: "5.00".to_string(),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(polymarket_main_proof_policy()),
+            operator_evidence: None,
+        }
     }
 
     #[test]
@@ -4785,27 +4829,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             .live_canary
             .as_mut()
             .expect("fixture should include live canary config");
-        live_canary.proof_policy = Some(LiveCanaryProofPolicyBlock {
-            enabled: true,
-            policy_kind: "least_bad_strategy_candidate".to_string(),
-            proof_claim: "proof_only".to_string(),
-            executor_strategy_id: "canary-proof-executor-proof".to_string(),
-            strategy_instance_id: "configured_updown_main".to_string(),
-            execution_client_id: "polymarket_main".to_string(),
-            book_type: DataClientReadinessProbeBookType::L2Mbp,
-            book_snapshot_interval_millis: 1_000,
-            time_in_force: LiveCanaryProofTimeInForce::Fok,
-            is_post_only: false,
-            is_reduce_only: false,
-            is_quote_quantity: false,
-            notional_mode: "fixed".to_string(),
-            proof_notional: "5.00".to_string(),
-            candidate_score_source: "proof_source".to_string(),
-            allow_negative_expected_ev: true,
-            rotation_observation_enabled: true,
-            rotation_min_distinct_markets: 1,
-            rotation_max_attempts: 1,
-        });
+        live_canary.proof_policy = Some(polymarket_main_proof_policy());
 
         assert!(
             canary_proof_executor_enabled(&loaded),
@@ -4877,6 +4901,40 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         assert_eq!(scoped.strategies.len(), loaded.strategies.len());
         assert!(
             loaded.root.clients.contains_key("unrelated_data"),
+            "helper must not mutate the caller's full client bundle"
+        );
+    }
+
+    #[test]
+    fn trade_transport_config_keeps_only_proof_policy_client_without_strategies() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let unrelated_client = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        loaded
+            .root
+            .clients
+            .insert("unrelated_execution".to_string(), unrelated_client);
+        loaded.strategies.clear();
+        loaded.root.live_canary = Some(live_canary_with_polymarket_main_proof_policy());
+
+        let scoped = trade_transport_loaded_config(&loaded)
+            .expect("proof-policy transport scope should be derived from config");
+
+        assert_eq!(scoped.root.clients.len(), 1);
+        assert!(scoped.root.clients.contains_key("polymarket_main"));
+        assert!(
+            !scoped.root.clients.contains_key("unrelated_execution"),
+            "proof-only live transport must not retain unrelated execution clients"
+        );
+        assert!(
+            loaded.root.clients.contains_key("unrelated_execution"),
             "helper must not mutate the caller's full client bundle"
         );
     }

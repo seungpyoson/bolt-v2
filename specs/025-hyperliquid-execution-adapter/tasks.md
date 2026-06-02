@@ -193,6 +193,15 @@
 - [x] T049AB Reuse Hyperliquid static target surface validation in the approval loader before artifact consumption.
 - [x] T049AC Keep provider-binding test fakes current with the live-submit approval writer hook.
 
+## Phase 8J - Proof-Policy Transport Approval Scope
+
+**Goal**: A proof-policy-only live run cannot retain unrelated execution clients and accidentally consume unrelated provider live-submit approval artifacts during live-node construction.
+
+**Independent Test**: With no strategies and an enabled proof policy for `polymarket_main`, trade transport scoping drops an unrelated execution client before adapter mapping and approval loading.
+
+- [x] T049AD Add failing proof-policy-only trade transport scoping test.
+- [x] T049AE Derive required trade transport clients from strategy and proof-policy references before the empty-runtime shortcut.
+
 ## Phase 9 - Verification
 
 - [x] T050 Run `cargo fmt --check` for `Cargo.toml` and `src/`.

@@ -223,6 +223,7 @@
 - [x] T049AK Carry product proof binding through consumed Hyperliquid approvals.
 - [x] T049AL Add failing live-node tests proving missing and mismatched product proof files do not spend one-time approvals.
 - [x] T049AM Verify the bound product proof artifact sha256 before consuming Hyperliquid live-submit approvals.
+- [x] T049AMa Add a separate TOML-owned product proof artifact byte cap so proof evidence and approval artifacts do not share one read limit.
 
 ## Phase 8M - Hyperliquid Product Matrix Approval-Gated Status
 
@@ -242,6 +243,16 @@
 - [x] T049AP Add failing operator-artifact test for Hyperliquid static instrument canary proof collection.
 - [x] T049AQ Add TOML-owned static target sizing constraints and selected-market identity for Hyperliquid static instruments.
 - [x] T049AR Register the Hyperliquid canary proof artifact collector with the provider binding and reuse the shared proof-policy projection.
+
+## Phase 8O - External Review Hardening
+
+**Goal**: Address external-review safety gaps without widening live-submit authority.
+
+**Independent Test**: Non-HIP-4 Hyperliquid clients reject `updown` targets even with a consumed non-HIP-4 approval, and test-only submit-admission helpers require the caller's execution client id instead of hardcoding a venue client.
+
+- [x] T049AS Add failing adapter-mapping test for `updown` targets on non-HIP-4 Hyperliquid product surfaces.
+- [x] T049AT Reject `updown` targets unless the Hyperliquid execution client selects `hip4_outcomes`, including the pre-consumption approval-loading path.
+- [x] T049AU Parameterize the test-only submit-admission helper by execution client id to avoid provider-cap masking in future venue tests.
 
 ## Phase 9 - Verification
 

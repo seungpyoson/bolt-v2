@@ -193,6 +193,10 @@ fn add_hyperliquid_live_submit_approval(client: &mut ClientBlock) {
         "live_submit_product_proof_artifact_sha256".to_string(),
         toml::Value::String("d".repeat(64)),
     );
+    execution.insert(
+        "live_submit_product_proof_artifact_max_bytes".to_string(),
+        toml::Value::Integer(65536),
+    );
 }
 
 fn set_hyperliquid_base_url_http(client: &mut ClientBlock, url: String) {

@@ -169,6 +169,7 @@ product_surfaces = ["{product_surface}"]
 live_submit_approval_id = "{live_submit_approval_id}"
 live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
 live_submit_product_proof_artifact_sha256 = "{product_proof_hash}"
+live_submit_product_proof_artifact_max_bytes = 65536
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -621,6 +622,41 @@ fn hyperliquid_hip4_execution_accepts_updown_market_family_target_after_consumed
             .is_some(),
         "family support should allow the consumed Hyperliquid execution adapter to map"
     );
+}
+
+#[test]
+fn hyperliquid_non_hip4_execution_rejects_updown_market_family_target() {
+    let loaded = fixture_loaded_config_with_hyperliquid_standard_perps();
+    let resolved = fixture_resolved_hyperliquid_secrets();
+    let consumed = consumed_hyperliquid_standard_perps_approval();
+    let mut approvals = bolt_v2::bolt_v3_providers::ProviderLiveSubmitApprovals::empty();
+    approvals.insert(
+        "hyperliquid_perps".to_string(),
+        bolt_v2::bolt_v3_providers::ProviderLiveSubmitApproval::new(Box::new(consumed)),
+    );
+
+    let error =
+        bolt_v2::bolt_v3_adapters::map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+            &loaded,
+            &resolved,
+            &hyperliquid_updown_target_plan(),
+            fixed_market_clock(1_800_000_000),
+            ProviderRuntimeApprovals {
+                live_submit: Some(&approvals),
+            },
+        )
+        .expect_err("updown targets must require a HIP-4 Hyperliquid execution surface");
+
+    match error {
+        BoltV3AdapterMappingError::ValidationInvariant { field, message, .. } => {
+            assert_eq!(field, "strategy.target.rotating_market_family");
+            assert!(
+                message.contains("updown") && message.contains("hip4_outcomes"),
+                "failure should identify the family/surface mismatch: {message}"
+            );
+        }
+        other => panic!("expected target-family validation error, got {other:?}"),
+    }
 }
 
 #[test]

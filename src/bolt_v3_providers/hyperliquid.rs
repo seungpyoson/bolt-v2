@@ -140,6 +140,7 @@ pub struct HyperliquidExecutionConfig {
     pub live_submit_max_order_notional: Option<String>,
     pub live_submit_product_proof_artifact_path: Option<String>,
     pub live_submit_product_proof_artifact_sha256: Option<String>,
+    pub live_submit_product_proof_artifact_max_bytes: Option<u64>,
     pub base_url_ws: String,
     pub base_url_http: String,
     pub base_url_exchange: String,
@@ -658,6 +659,12 @@ fn validate_live_submit_approval_config(
             "clients.{key}.execution.live_submit_product_proof_artifact_sha256 must be lowercase sha256 when live_submit_approval_id is configured"
         )),
     }
+    match execution.live_submit_product_proof_artifact_max_bytes {
+        Some(value) if value > 0 => {}
+        _ => errors.push(format!(
+            "clients.{key}.execution.live_submit_product_proof_artifact_max_bytes must be positive when live_submit_approval_id is configured"
+        )),
+    }
     errors
 }
 
@@ -828,7 +835,7 @@ pub fn load_live_submit_approval(
     let Some(expected_approval_id) = cfg.live_submit_approval_id.as_deref() else {
         return Ok(None);
     };
-    validate_static_instrument_target_surfaces_for_live_submit_approval(&context, &cfg)?;
+    validate_target_surfaces_for_live_submit_approval(&context, &cfg)?;
     let approval_path = cfg
         .live_submit_approval_artifact_path
         .as_deref()
@@ -846,13 +853,22 @@ pub fn load_live_submit_approval(
             "Hyperliquid live submit requires a configured approval artifact byte cap",
         )
     })?;
+    let product_proof_max_bytes = cfg
+        .live_submit_product_proof_artifact_max_bytes
+        .ok_or_else(|| {
+            hyperliquid_adapter_validation_error(
+                context.client_key,
+                "execution.live_submit_product_proof_artifact_max_bytes",
+                "Hyperliquid live submit requires a configured product proof artifact byte cap",
+            )
+        })?;
     let resolved_path = resolve_root_relative_path(&context.loaded.root_path, approval_path);
     let binding = live_submit_approval_binding(&context, &cfg)?;
     validate_product_submit_proof_artifact(
         context.client_key,
         &context.loaded.root_path,
         &binding.product_submit_proof,
-        approval_max_bytes,
+        product_proof_max_bytes,
     )?;
     let mut approval =
         read_hyperliquid_live_submit_approval_artifact(&resolved_path, approval_max_bytes)?;
@@ -1478,7 +1494,7 @@ fn map_execution(
                 message: error.to_string(),
             }
         })?;
-    validate_static_instrument_target_surfaces(context.client_key, &cfg, context.plan)?;
+    validate_target_surfaces(context.client_key, &cfg, context.plan)?;
     validate_surface_live_submit_approval(context.client_key, &cfg, context)?;
     let max_retries =
         u32::try_from(cfg.max_retries).map_err(|_| BoltV3AdapterMappingError::NumericRange {
@@ -1517,7 +1533,7 @@ fn map_execution(
     })
 }
 
-fn validate_static_instrument_target_surfaces(
+fn validate_target_surfaces(
     client_key: &str,
     cfg: &HyperliquidExecutionConfig,
     plan: &MarketIdentityPlan,
@@ -1543,10 +1559,29 @@ fn validate_static_instrument_target_surfaces(
             });
         }
     }
+    for target in
+        updown::target_plans(plan).filter(|target| target.execution_client_id == client_key)
+    {
+        if *configured_surface != HyperliquidProductSurface::Hip4Outcomes {
+            return Err(BoltV3AdapterMappingError::ValidationInvariant {
+                client_key: client_key.to_string(),
+                field: "strategy.target.rotating_market_family",
+                message: format!(
+                    "configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}` and this client selects `{}`",
+                    target.configured_target_id,
+                    updown::KEY,
+                    target.execution_client_id,
+                    updown::KEY,
+                    product_surface_name(HyperliquidProductSurface::Hip4Outcomes),
+                    product_surface_name(*configured_surface),
+                ),
+            });
+        }
+    }
     Ok(())
 }
 
-fn validate_static_instrument_target_surfaces_for_live_submit_approval(
+fn validate_target_surfaces_for_live_submit_approval(
     context: &ProviderLiveSubmitApprovalContext<'_>,
     cfg: &HyperliquidExecutionConfig,
 ) -> Result<(), anyhow::Error> {
@@ -1557,8 +1592,7 @@ fn validate_static_instrument_target_surfaces_for_live_submit_approval(
             format!("Hyperliquid target routing is invalid: {source}"),
         )
     })?;
-    validate_static_instrument_target_surfaces(context.client_key, cfg, &plan)
-        .map_err(anyhow::Error::new)
+    validate_target_surfaces(context.client_key, cfg, &plan).map_err(anyhow::Error::new)
 }
 
 fn hyperliquid_static_instrument_surface(

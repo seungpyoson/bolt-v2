@@ -3866,6 +3866,7 @@ live_submit_max_order_count = 2
 live_submit_max_order_notional = "25.00"
 live_submit_product_proof_artifact_path = "{}"
 live_submit_product_proof_artifact_sha256 = "{}"
+live_submit_product_proof_artifact_max_bytes = 16384
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -3977,6 +3978,124 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         hex::encode(Sha256::digest(bytes))
     }
 
+    fn write_hyperliquid_test_product_submit_proof_with_padding(
+        path: &std::path::Path,
+        padding_len: usize,
+    ) -> String {
+        let bytes = format!(
+            r#"{{"provider":"HYPERLIQUID","surface":"standard_perps","padding":"{}"}}"#,
+            "x".repeat(padding_len)
+        )
+        .into_bytes();
+        std::fs::write(path, &bytes).expect("padded product proof should write");
+        hex::encode(Sha256::digest(&bytes))
+    }
+
+    #[test]
+    fn live_node_product_submit_proof_uses_independent_byte_cap() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let product_proof_path = temp.path().join("hyperliquid-product-submit-proof.json");
+        let product_proof_sha256 =
+            write_hyperliquid_test_product_submit_proof_with_padding(&product_proof_path, 6000);
+        let private_key = format!("0x{}", "1".repeat(64));
+        let mut loaded = fixture_loaded_config();
+        loaded.config_bundle_checksum = "b".repeat(64);
+        loaded.root.clients.clear();
+        loaded.root.clients.insert(
+            "hyperliquid_perps".to_string(),
+            toml::from_str(&format!(
+                r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit_approval_id = "hl-standard-perps-approval-001"
+live_submit_approval_artifact_path = "{}"
+live_submit_approval_artifact_max_bytes = 4096
+live_submit_max_order_count = 2
+live_submit_max_order_notional = "25.00"
+live_submit_product_proof_artifact_path = "{}"
+live_submit_product_proof_artifact_sha256 = "{}"
+live_submit_product_proof_artifact_max_bytes = 8192
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+                approval_path.display(),
+                product_proof_path.display(),
+                product_proof_sha256
+            ))
+            .expect("Hyperliquid client TOML should parse"),
+        );
+        let build_head_sha = "a".repeat(40);
+        let now = 1_800_000_000;
+        write_hyperliquid_live_submit_approval_artifact(
+            HyperliquidLiveSubmitApprovalInput {
+                approval_id: "hl-standard-perps-approval-001".to_string(),
+                base_sha: build_head_sha.clone(),
+                provider_id: "hyperliquid_perps".to_string(),
+                product_surface:
+                    crate::bolt_v3_providers::hyperliquid::HyperliquidProductSurface::StandardPerps,
+                toml_checksum: loaded.config_bundle_checksum.clone(),
+                signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(&private_key),
+                order_limits: HyperliquidLiveSubmitOrderLimits {
+                    max_order_count: 2,
+                    max_order_notional: "25.00".to_string(),
+                },
+                product_submit_proof: HyperliquidProductSubmitProofBinding {
+                    artifact_path: product_proof_path.display().to_string(),
+                    artifact_sha256: product_proof_sha256,
+                },
+                expires_at: now + 300,
+                used_at: None,
+            },
+            &approval_path,
+        )
+        .expect("approval artifact should write");
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::from([(
+                "hyperliquid_perps".to_string(),
+                Arc::new(ResolvedBoltV3HyperliquidSecrets {
+                    private_key: Zeroizing::new(private_key),
+                    account_address: Zeroizing::new(format!("0x{}", "2".repeat(40))),
+                    vault_address: None,
+                }) as _,
+            )]),
+        };
+
+        live_node_adapter_bundle_with_provider_approvals_at(
+            &loaded,
+            &resolved,
+            now,
+            &build_head_sha,
+        )
+        .expect("product proof should use its own byte cap before approval consumption");
+
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&approval_path).expect("consumed approval should still read"),
+        )
+        .expect("consumed approval JSON should parse");
+        assert_eq!(persisted["used_at"], now);
+    }
+
     #[test]
     fn live_node_static_target_surface_mismatch_does_not_spend_hyperliquid_approval_artifact() {
         let temp = tempfile::tempdir().expect("tempdir should create");
@@ -4021,6 +4140,7 @@ live_submit_max_order_count = 2
 live_submit_max_order_notional = "25.00"
 live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
 live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+live_submit_product_proof_artifact_max_bytes = 16384
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -4131,6 +4251,7 @@ live_submit_max_order_count = 2
 live_submit_max_order_notional = "25.00"
 live_submit_product_proof_artifact_path = "{}"
 live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+live_submit_product_proof_artifact_max_bytes = 16384
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
@@ -4243,6 +4364,7 @@ live_submit_max_order_count = 2
 live_submit_max_order_notional = "25.00"
 live_submit_product_proof_artifact_path = "{}"
 live_submit_product_proof_artifact_sha256 = "{}"
+live_submit_product_proof_artifact_max_bytes = 16384
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"

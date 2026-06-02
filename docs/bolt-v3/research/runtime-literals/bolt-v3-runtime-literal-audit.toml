@@ -15258,6 +15258,14 @@ reason = '''This labels validation for the TOML-owned Hyperliquid live-submit pr
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''string'''
+literal = '''"execution.live_submit_product_proof_artifact_max_bytes"'''
+context = '''"execution.live_submit_product_proof_artifact_max_bytes",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit product proof artifact byte cap; the cap value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
 literal = '''"product_submit_proof.artifact_path"'''
 context = '''"product_submit_proof.artifact_path",'''
 classification = '''hyperliquid_live_submit_approval_field_label'''
@@ -15486,6 +15494,14 @@ literal = '''"configured target `{}` uses Hyperliquid product surface `{}` on cl
 context = '''"configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`",'''
 classification = '''hyperliquid_static_target_surface_diagnostic'''
 reason = '''This is the provider fail-closed diagnostic when a static Hyperliquid target's TOML product_surface differs from the execution client's configured and approved product surface.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}` and this client selects `{}`"'''
+context = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}` and this client selects `{}`",'''
+classification = '''hyperliquid_updown_surface_diagnostic'''
+reason = '''This is the provider fail-closed diagnostic when an updown target is routed to a Hyperliquid execution client whose TOML product surface is not HIP-4 outcomes; the target and surface values remain TOML-owned.'''
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''

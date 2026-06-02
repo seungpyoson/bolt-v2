@@ -85,6 +85,7 @@ product_surfaces = ["{surface}"]
 live_submit_approval_id = "hl-unproven-surface-approval"
 live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
 live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+live_submit_product_proof_artifact_max_bytes = 65536
 base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
 base_url_http = "https://api.hyperliquid-testnet.xyz/info"
 base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"

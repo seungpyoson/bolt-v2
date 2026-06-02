@@ -197,6 +197,8 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         pre_run_state: PathBuf,
         #[arg(long)]
+        venue_spendability_source: Option<PathBuf>,
+        #[arg(long)]
         abort_plan: PathBuf,
         #[arg(long)]
         canary_proof_candidate_source: Option<PathBuf>,
@@ -833,6 +835,7 @@ fn run_operator_artifacts_command(
             expected_gate_session_sha256,
             financial_envelope,
             pre_run_state,
+            venue_spendability_source,
             abort_plan,
             canary_proof_candidate_source,
             canary_proof_order_intent,
@@ -861,6 +864,7 @@ fn run_operator_artifacts_command(
                     expected_gate_session_sha256: expected_gate_session_sha256.as_str(),
                     financial_envelope_path: &financial_envelope,
                     pre_run_state_path: &pre_run_state,
+                    venue_spendability_source_path: venue_spendability_source.as_deref(),
                     abort_plan_path: &abort_plan,
                     canary_proof_candidate_source_path: canary_proof_candidate_source.as_deref(),
                     canary_proof_order_intent_path: canary_proof_order_intent.as_deref(),

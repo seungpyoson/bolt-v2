@@ -222,6 +222,7 @@ const GATE_SESSION_ARTIFACT_NAME: &str = "gate-session";
 const OPERATOR_EVIDENCE_GATE_SESSION_PATH_FIELD: &str = "gate_session_path";
 const OPERATOR_EVIDENCE_EXPECTED_GATE_SESSION_SHA256_FIELD: &str = "expected_gate_session_sha256";
 const PRE_RUN_STATE_ARTIFACT_NAME: &str = "pre-run-state";
+const VENUE_SPENDABILITY_SOURCE_ARTIFACT_NAME: &str = "venue-spendability-source";
 const ABORT_PLAN_ARTIFACT_NAME: &str = "abort-plan";
 const APPROVAL_NONCE_ARTIFACT_NAME: &str = "approval-nonce";
 const SSM_MANIFEST_FILE_NAME: &str = "ssm-manifest.json";
@@ -7075,6 +7076,7 @@ pub struct OperatorEvidenceJsonBuildInputs<'a> {
     pub expected_gate_session_sha256: &'a str,
     pub financial_envelope_path: &'a Path,
     pub pre_run_state_path: &'a Path,
+    pub venue_spendability_source_path: Option<&'a Path>,
     pub abort_plan_path: &'a Path,
     pub canary_proof_candidate_source_path: Option<&'a Path>,
     pub canary_proof_order_intent_path: Option<&'a Path>,
@@ -13648,6 +13650,19 @@ pub fn write_operator_evidence_json_from_artifact_paths(
             inputs.pre_run_state_path,
             max_bytes,
         )?,
+        venue_spendability_source_path: inputs
+            .venue_spendability_source_path
+            .map(operator_evidence_path_string),
+        venue_spendability_source_sha256: match inputs.venue_spendability_source_path {
+            Some(path) => Some(operator_evidence_artifact_sha256(
+                loaded,
+                VENUE_SPENDABILITY_SOURCE_ARTIFACT_NAME,
+                "venue_spendability_source_path",
+                path,
+                max_bytes,
+            )?),
+            None => None,
+        },
         abort_plan_path: operator_evidence_path_string(inputs.abort_plan_path),
         abort_plan_sha256: operator_evidence_artifact_sha256(
             loaded,

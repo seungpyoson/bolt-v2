@@ -17,7 +17,9 @@ use rust_decimal::Decimal;
 
 use crate::{
     bolt_v3_position_sizer::ProductSizingSnapshot,
-    bolt_v3_sizing_state::{OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot},
+    bolt_v3_sizing_state::{
+        OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot, VenueSpendabilitySnapshot,
+    },
     bolt_v3_submit_admission::{
         BoltV3CompiledOrderSide, BoltV3SubmitAdmissionState, BoltV3SubmitPositionSizingFillUpdate,
         BoltV3SubmitPositionSizingLifecycleDecision, BoltV3SubmitPositionSizingNtComponents,
@@ -58,6 +60,7 @@ pub struct PositionSizerRuntimeFeedSubscription {
 struct PositionSizerRuntimeComponentBuilder {
     latest_account_free_collateral: Option<(Decimal, u64)>,
     latest_portfolio: Option<PortfolioSizingSnapshot>,
+    latest_venue_spendability: Option<VenueSpendabilitySnapshot>,
     live_order_attribution: BTreeMap<String, bool>,
     terminal_order_ids_seen: BTreeSet<String>,
     order_lifecycle: OrderLifecycleSizingSnapshot,
@@ -189,6 +192,15 @@ impl PositionSizerRuntimeFeed {
             free_collateral: Decimal::ZERO,
             total_equity,
         });
+        self.publish_components_if_ready()
+    }
+
+    pub fn on_venue_spendability_snapshot(
+        &mut self,
+        snapshot: VenueSpendabilitySnapshot,
+    ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+        self.component_builder
+            .record_venue_spendability(&self.config, snapshot);
         self.publish_components_if_ready()
     }
 
@@ -402,6 +414,7 @@ impl PositionSizerRuntimeComponentBuilder {
         Self {
             latest_account_free_collateral: None,
             latest_portfolio: None,
+            latest_venue_spendability: None,
             live_order_attribution: BTreeMap::new(),
             terminal_order_ids_seen: BTreeSet::new(),
             order_lifecycle: OrderLifecycleSizingSnapshot {
@@ -477,6 +490,28 @@ impl PositionSizerRuntimeComponentBuilder {
             free_collateral,
             total_equity,
         });
+    }
+
+    fn record_venue_spendability(
+        &mut self,
+        config: &PositionSizerRuntimeFeedConfig,
+        snapshot: VenueSpendabilitySnapshot,
+    ) {
+        let matches_config = snapshot.venue_id == config.venue_id
+            && snapshot.account_id == config.account_id.to_string()
+            && snapshot.collateral_currency == config.collateral_currency;
+        if !matches_config {
+            self.latest_venue_spendability = None;
+            return;
+        }
+        if self
+            .latest_venue_spendability
+            .as_ref()
+            .is_some_and(|current| current.observed_at_ns > snapshot.observed_at_ns)
+        {
+            return;
+        }
+        self.latest_venue_spendability = Some(snapshot);
     }
 
     fn record_live_order_event(
@@ -574,22 +609,30 @@ impl PositionSizerRuntimeComponentBuilder {
     ) -> Option<BoltV3SubmitPositionSizingNtComponents> {
         let (free_collateral, account_observed_at_ns) = self.latest_account_free_collateral?;
         let mut portfolio = self.latest_portfolio.clone()?;
+        let venue_spendability = self.latest_venue_spendability.clone()?;
         portfolio.free_collateral = free_collateral;
         let mut product_state = self.product_state.clone();
         let product_observed_at_ns = match &mut product_state {
             ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
-                snapshot.collateral_allowance = free_collateral;
-                snapshot.observed_at_ns
+                // NT free collateral, venue spendability, and transfer allowance are independent constraints.
+                snapshot.collateral_allowance = free_collateral
+                    .min(venue_spendability.spendable_collateral)
+                    .min(venue_spendability.collateral_allowance);
+                snapshot
+                    .observed_at_ns
+                    .max(venue_spendability.observed_at_ns)
             }
         };
         let observed_at_ns = account_observed_at_ns
             .max(portfolio.observed_at_ns)
+            .max(venue_spendability.observed_at_ns)
             .max(self.order_lifecycle.observed_at_ns)
             .max(product_observed_at_ns);
         Some(BoltV3SubmitPositionSizingNtComponents {
             source: "nt_position_sizer_runtime_components".to_string(),
             observed_at_ns,
             portfolio,
+            venue_spendability,
             order_lifecycle: self.order_lifecycle.clone(),
             product_state,
             loss_snapshot: None,

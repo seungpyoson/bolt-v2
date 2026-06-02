@@ -15715,6 +15715,8 @@ fn test_operator_evidence_packet_bindings(
         financial_envelope_sha256: String::new(),
         pre_run_state_path: dir.join("pre-run-state.json").to_string_lossy().to_string(),
         pre_run_state_sha256: String::new(),
+        venue_spendability_source_path: None,
+        venue_spendability_source_sha256: None,
         abort_plan_path: dir.join("abort-plan.json").to_string_lossy().to_string(),
         abort_plan_sha256: String::new(),
         canary_proof_candidate_source_path: None,

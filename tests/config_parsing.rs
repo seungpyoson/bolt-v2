@@ -413,6 +413,32 @@ fn bolt_v3_operator_evidence_allows_unassigned_order_ids() {
 }
 
 #[test]
+fn enforced_submit_admission_requires_venue_spendability_operator_evidence() {
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    );
+    let messages = validate_root_messages_from_source(&source);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("live_canary.operator_evidence.venue_spendability_source_path")
+                && message.contains("risk.capital_pools")
+                && message.contains("enforce_submit_admission")
+        }),
+        "enforced submit admission must require spendability source evidence: {messages:#?}"
+    );
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("live_canary.operator_evidence.venue_spendability_source_sha256")
+                && message.contains("risk.capital_pools")
+                && message.contains("enforce_submit_admission")
+        }),
+        "enforced submit admission must require spendability source sha256: {messages:#?}"
+    );
+}
+
+#[test]
 fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() {
     for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
         let source = std::fs::read_to_string(support::repo_path(relative_path))

@@ -191,7 +191,45 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
             ));
         }
     }
+    errors.extend(validate_submit_admission_spendability_operator_evidence(
+        root,
+    ));
 
+    errors
+}
+
+fn validate_submit_admission_spendability_operator_evidence(
+    root: &BoltV3RootConfig,
+) -> Vec<String> {
+    let submit_admission_enforced = root
+        .risk
+        .capital_pools
+        .as_ref()
+        .is_some_and(|pools| pools.iter().any(|pool| pool.enforce_submit_admission));
+    if !submit_admission_enforced {
+        return Vec::new();
+    }
+
+    let operator_evidence = root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.operator_evidence.as_ref());
+    let mut errors = Vec::new();
+    match operator_evidence.and_then(|evidence| evidence.venue_spendability_source_path.as_ref()) {
+        Some(path) if !path.trim().is_empty() => {}
+        _ => errors.push(
+            "risk.capital_pools enforce_submit_admission requires live_canary.operator_evidence.venue_spendability_source_path"
+                .to_string(),
+        ),
+    }
+    match operator_evidence.and_then(|evidence| evidence.venue_spendability_source_sha256.as_ref())
+    {
+        Some(sha256) if !sha256.trim().is_empty() => {}
+        _ => errors.push(
+            "risk.capital_pools enforce_submit_admission requires live_canary.operator_evidence.venue_spendability_source_sha256"
+                .to_string(),
+        ),
+    }
     errors
 }
 

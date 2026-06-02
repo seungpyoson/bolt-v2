@@ -462,6 +462,8 @@ pub fn valid_live_canary_operator_evidence() -> LiveCanaryOperatorEvidenceBlock 
         financial_envelope_sha256,
         pre_run_state_path: pre_run_state_path.to_string_lossy().to_string(),
         pre_run_state_sha256,
+        venue_spendability_source_path: None,
+        venue_spendability_source_sha256: None,
         abort_plan_path: abort_plan_path.to_string_lossy().to_string(),
         abort_plan_sha256,
         canary_proof_candidate_source_path: None,

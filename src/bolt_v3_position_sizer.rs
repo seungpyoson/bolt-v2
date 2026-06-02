@@ -408,6 +408,7 @@ pub struct SizedAdmissionDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizingEvidenceKind {
     Portfolio,
+    VenueSpendability,
     OrderLifecycle,
     ProductState,
     ReservationLedger,
@@ -671,6 +672,7 @@ fn sizing_evidence_kind(kind: SizingStateEvidenceKind) -> Option<SizingEvidenceK
     match kind {
         SizingStateEvidenceKind::State => None,
         SizingStateEvidenceKind::Portfolio => Some(SizingEvidenceKind::Portfolio),
+        SizingStateEvidenceKind::VenueSpendability => Some(SizingEvidenceKind::VenueSpendability),
         SizingStateEvidenceKind::OrderLifecycle => Some(SizingEvidenceKind::OrderLifecycle),
         SizingStateEvidenceKind::ProductState => Some(SizingEvidenceKind::ProductState),
         SizingStateEvidenceKind::ReservationLedger => Some(SizingEvidenceKind::ReservationLedger),
@@ -858,7 +860,7 @@ mod tests {
     use crate::bolt_v3_loss_governor::{LossGovernorPolicy, LossHaltReason, LossSnapshot};
     use crate::bolt_v3_sizing_state::{
         NtDerivedSizingState, OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot,
-        ReservationLedgerSnapshot, SizingStateEvidenceKind,
+        ReservationLedgerSnapshot, SizingStateEvidenceKind, VenueSpendabilitySnapshot,
     };
 
     use super::{
@@ -925,6 +927,15 @@ mod tests {
                 collateral_currency: "USD".to_string(),
                 free_collateral: Decimal::new(100, 0),
                 total_equity: Decimal::new(100, 0),
+            },
+            venue_spendability: VenueSpendabilitySnapshot {
+                source: "operator-venue-spendability".to_string(),
+                observed_at_ns: 1_000,
+                venue_id: "venue-a".to_string(),
+                account_id: "account-1".to_string(),
+                collateral_currency: "USD".to_string(),
+                spendable_collateral: Decimal::new(100, 0),
+                collateral_allowance: Decimal::new(100, 0),
             },
             order_lifecycle: OrderLifecycleSizingSnapshot {
                 source: "nt_open_order_cache".to_string(),

@@ -18,7 +18,7 @@ use bolt_v2::bolt_v3_position_sizer::{
 use bolt_v2::bolt_v3_position_sizer::{PositionSizingLifecycleAction, PositionSizingLifecycleKind};
 use bolt_v2::bolt_v3_sizing_state::{
     NtDerivedSizingState, OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot,
-    ReservationLedgerSnapshot,
+    ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
 };
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
@@ -1032,7 +1032,28 @@ fn configured_submit_sizer_rejects_before_startup_rebuild_even_with_fresh_nt_sta
 }
 
 #[test]
-fn direct_state_update_discards_hostile_reservation_evidence() {
+fn configured_submit_sizer_rejects_stale_venue_spendability_before_nt_submit() {
+    let admission = position_sized_admission();
+    arm_default(&admission);
+    let mut components = fresh_components(900);
+    components.venue_spendability.observed_at_ns = 100;
+    admission.update_position_sizing_nt_components(components);
+    rebuild_empty_position_sizer(&admission);
+
+    let error = admission
+        .admit_at(&sized_submit_request("client-order-1"), 1_000)
+        .expect_err("stale venue spendability evidence must reject");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::PositionSizingRejected {
+            reason: BoltV3PositionSizerRejectReason::StaleNtState
+        }
+    ));
+}
+
+#[test]
+fn nt_component_update_cannot_inject_hostile_reservation_evidence() {
     let admission = position_sized_admission();
     let mut hostile_state = fresh_sizing_state(1_000);
     hostile_state.reservation_snapshot.source = "hostile_feed".to_string();
@@ -1041,7 +1062,7 @@ fn direct_state_update_discards_hostile_reservation_evidence() {
         .reservation_snapshot
         .all_live_reservations_attributed = true;
 
-    admission.update_position_sizing_state(hostile_state);
+    admission.update_position_sizing_nt_components(components_from_state(hostile_state));
 
     let state = admission
         .position_sizer_state_snapshot()
@@ -2948,6 +2969,15 @@ fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
             free_collateral: Decimal::new(100, 0),
             total_equity: Decimal::new(100, 0),
         },
+        venue_spendability: VenueSpendabilitySnapshot {
+            source: "operator-venue-spendability".to_string(),
+            observed_at_ns,
+            venue_id: "VENUE-A".to_string(),
+            account_id: "ACCOUNT-001".to_string(),
+            collateral_currency: "USD".to_string(),
+            spendable_collateral: Decimal::new(100, 0),
+            collateral_allowance: Decimal::new(100, 0),
+        },
         order_lifecycle: OrderLifecycleSizingSnapshot {
             source: "nt_open_order_cache".to_string(),
             observed_at_ns,
@@ -2985,6 +3015,7 @@ fn components_from_state(state: NtDerivedSizingState) -> BoltV3SubmitPositionSiz
         source: state.source,
         observed_at_ns: state.observed_at_ns,
         portfolio: state.portfolio,
+        venue_spendability: state.venue_spendability,
         order_lifecycle: state.order_lifecycle,
         product_state: state.product_state,
         loss_snapshot: state.loss_snapshot,

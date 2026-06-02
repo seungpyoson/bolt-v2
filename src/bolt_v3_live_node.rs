@@ -96,7 +96,7 @@ use crate::{
     },
     bolt_v3_live_canary_gate::{
         BoltV3LiveCanaryGateError, build_bolt_v3_live_submit_admission_report_from_config,
-        current_build_head_sha,
+        current_build_head_sha, resolve_configured_path,
     },
     bolt_v3_loss_governor::LossGovernorPolicy,
     bolt_v3_loss_runtime_feed::{
@@ -117,6 +117,10 @@ use crate::{
         check_no_forbidden_credential_env_vars, check_no_forbidden_credential_env_vars_with,
         resolve_bolt_v3_secrets, resolve_bolt_v3_secrets_with,
     },
+    bolt_v3_sizing_state::{
+        VenueSpendabilityIdentity, VenueSpendabilitySourceFileRequest,
+        venue_spendability_snapshot_from_json_file,
+    },
     bolt_v3_strategy_registration::{
         BoltV3StrategyRegistrationError, BoltV3StrategyRegistrationSummary,
         register_bolt_v3_strategies_on_node_with_bindings,
@@ -124,8 +128,8 @@ use crate::{
     bolt_v3_submit_admission::{
         BoltV3CompiledOrderSide, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState,
         BoltV3SubmitPositionSizerConfig, BoltV3SubmitPositionSizingMissingNtAccountCacheBalance,
-        BoltV3SubmitPositionSizingOpenOrderEvidence, BoltV3SubmitPositionSizingOpenOrderSnapshot,
-        BoltV3SubmitPositionSizingRebuildDecision,
+        BoltV3SubmitPositionSizingNtComponents, BoltV3SubmitPositionSizingOpenOrderEvidence,
+        BoltV3SubmitPositionSizingOpenOrderSnapshot, BoltV3SubmitPositionSizingRebuildDecision,
     },
     bolt_v3_tiny_canary_evidence::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
@@ -146,6 +150,8 @@ pub struct BoltV3LiveNodeRuntime {
     position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
     position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
     submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
+    position_sizer_venue_spendability_source:
+        Option<BoltV3PositionSizerVenueSpendabilitySourceConfig>,
     redaction_values: Vec<Zeroizing<String>>,
 }
 
@@ -153,6 +159,16 @@ pub struct BoltV3LiveNodeRuntime {
 struct BoltV3SubmitReservationRecoveryConfig {
     path: PathBuf,
     max_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct BoltV3PositionSizerVenueSpendabilitySourceConfig {
+    path: PathBuf,
+    max_bytes: u64,
+    expected_sha256: String,
+    venue_id: String,
+    account_id: String,
+    collateral_currency: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1651,6 +1667,8 @@ struct BoltV3LiveNodeRuntimeFeeds {
     position_sizer_runtime_feed: Option<Arc<Mutex<PositionSizerRuntimeFeed>>>,
     position_sizer_runtime_feed_subscription: Option<PositionSizerRuntimeFeedSubscription>,
     submit_reservation_recovery: Option<BoltV3SubmitReservationRecoveryConfig>,
+    position_sizer_venue_spendability_source:
+        Option<BoltV3PositionSizerVenueSpendabilitySourceConfig>,
 }
 
 impl BoltV3LiveNodeRuntime {
@@ -1671,6 +1689,8 @@ impl BoltV3LiveNodeRuntime {
             position_sizer_runtime_feed_subscription: feeds
                 .position_sizer_runtime_feed_subscription,
             submit_reservation_recovery: feeds.submit_reservation_recovery,
+            position_sizer_venue_spendability_source: feeds
+                .position_sizer_venue_spendability_source,
             redaction_values,
         }
     }
@@ -1747,6 +1767,33 @@ impl BoltV3LiveNodeRuntime {
 
     pub fn position_sizer_reconciled(&self) -> Option<bool> {
         self.submit_admission.position_sizer_reconciled()
+    }
+
+    pub fn refresh_position_sizer_venue_spendability_from_operator_evidence(
+        &self,
+    ) -> Result<Option<BoltV3SubmitPositionSizingNtComponents>> {
+        let Some(config) = self.position_sizer_venue_spendability_source.as_ref() else {
+            return Ok(None);
+        };
+        let Some(feed) = self.position_sizer_runtime_feed.as_ref() else {
+            return Ok(None);
+        };
+        let snapshot =
+            venue_spendability_snapshot_from_json_file(VenueSpendabilitySourceFileRequest {
+                path: &config.path,
+                max_bytes: config.max_bytes,
+                expected_sha256: &config.expected_sha256,
+                identity: VenueSpendabilityIdentity {
+                    venue_id: &config.venue_id,
+                    account_id: &config.account_id,
+                    collateral_currency: &config.collateral_currency,
+                },
+            })
+            .map_err(|error| {
+                anyhow::anyhow!("position sizer venue spendability source rejected: {error:?}")
+            })?;
+        let mut feed = feed.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        Ok(feed.on_venue_spendability_snapshot(snapshot))
     }
 
     pub fn rebuild_position_sizer_from_nt_cache(
@@ -3578,6 +3625,8 @@ fn build_live_node_with_clients(
     let startup_observed_at_ns = current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
     let position_sizer_runtime_feed_config =
         position_sizer_runtime_feed_config_from_loaded(loaded, startup_observed_at_ns);
+    let position_sizer_venue_spendability_source =
+        position_sizer_venue_spendability_source_config_from_loaded(loaded)?;
     let submit_reservation_recovery = if position_sizer_runtime_feed_config.is_some() {
         submit_reservation_recovery_config_from_loaded(loaded)?
     } else {
@@ -3669,22 +3718,26 @@ fn build_live_node_with_clients(
             strategy.registered_strategy_id
         );
     }
-    Ok((
-        BoltV3LiveNodeRuntime::new(
-            node,
-            summary.clone(),
-            submit_admission,
-            BoltV3LiveNodeRuntimeFeeds {
-                loss_runtime_feed,
-                loss_runtime_feed_subscription,
-                position_sizer_runtime_feed,
-                position_sizer_runtime_feed_subscription,
-                submit_reservation_recovery,
-            },
-            resolved.redaction_values(),
-        ),
-        summary,
-    ))
+    let runtime = BoltV3LiveNodeRuntime::new(
+        node,
+        summary.clone(),
+        submit_admission,
+        BoltV3LiveNodeRuntimeFeeds {
+            loss_runtime_feed,
+            loss_runtime_feed_subscription,
+            position_sizer_runtime_feed,
+            position_sizer_runtime_feed_subscription,
+            submit_reservation_recovery,
+            position_sizer_venue_spendability_source,
+        },
+        resolved.redaction_values(),
+    );
+    if let Err(error) = runtime.refresh_position_sizer_venue_spendability_from_operator_evidence() {
+        log::warn!(
+            "bolt-v3 position sizer could not seed venue spendability from operator evidence: {error:#}"
+        );
+    }
+    Ok((runtime, summary))
 }
 
 fn submit_reservation_recovery_config_from_loaded(
@@ -3701,6 +3754,48 @@ fn submit_reservation_recovery_config_from_loaded(
     Ok(Some(BoltV3SubmitReservationRecoveryConfig {
         path: decision_evidence_path(loaded).map_err(BoltV3LiveNodeError::Build)?,
         max_bytes: operator_evidence.max_operator_evidence_file_bytes,
+    }))
+}
+
+fn position_sizer_venue_spendability_source_config_from_loaded(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<BoltV3PositionSizerVenueSpendabilitySourceConfig>, BoltV3LiveNodeError> {
+    let Some(pool) = loaded
+        .root
+        .risk
+        .capital_pools
+        .as_ref()
+        .and_then(|pools| pools.iter().find(|pool| pool.enforce_submit_admission))
+    else {
+        return Ok(None);
+    };
+    let Some(operator_evidence) = loaded
+        .root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+    else {
+        return Ok(None);
+    };
+    let (Some(path_value), Some(expected_sha256)) = (
+        operator_evidence.venue_spendability_source_path.as_ref(),
+        operator_evidence.venue_spendability_source_sha256.as_ref(),
+    ) else {
+        return Ok(None);
+    };
+    let path = resolve_configured_path(
+        &loaded.root_path,
+        "venue_spendability_source_path",
+        path_value,
+    )
+    .map_err(|error| BoltV3LiveNodeError::Build(anyhow::anyhow!("{error}")))?;
+    Ok(Some(BoltV3PositionSizerVenueSpendabilitySourceConfig {
+        path,
+        max_bytes: operator_evidence.max_operator_evidence_file_bytes,
+        expected_sha256: expected_sha256.clone(),
+        venue_id: pool.venue_id.clone(),
+        account_id: pool.account_id.to_string(),
+        collateral_currency: pool.collateral_currency.clone(),
     }))
 }
 
@@ -4924,6 +5019,45 @@ mod tests {
     }
 
     #[test]
+    fn startup_rebuild_uses_configured_venue_spendability_source() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let mut loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        write_venue_spendability_source(&mut loaded, temp.path(), 1_500, "20", "12");
+        let (account_id, collateral_currency) = configured_submit_sizer_pool_identity(&loaded);
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+        seed_cached_account_state(&runtime, &account_id, &collateral_currency, 50.0, 50.0);
+
+        runtime.rebuild_position_sizer_from_nt_cache(1_600);
+
+        let state = runtime
+            .submit_admission
+            .position_sizer_state_snapshot()
+            .expect("configured spendability source plus NT cache should compose sizing state");
+        assert_eq!(
+            state.venue_spendability.source,
+            "operator_venue_spendability"
+        );
+        assert_eq!(
+            state.venue_spendability.spendable_collateral,
+            Decimal::from(20)
+        );
+        assert_eq!(
+            state.venue_spendability.collateral_allowance,
+            Decimal::from(12)
+        );
+        match state.product_state {
+            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+                assert_eq!(
+                    snapshot.collateral_allowance,
+                    Decimal::from(12),
+                    "product allowance must be bounded by NT free collateral, venue spendability, and venue allowance",
+                );
+            }
+        }
+    }
+
+    #[test]
     fn startup_rebuild_stays_closed_for_unknown_nt_cache_order() {
         let temp = tempfile::tempdir().expect("tempdir should create");
         let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
@@ -5132,6 +5266,73 @@ mod tests {
         loaded
     }
 
+    fn write_venue_spendability_source(
+        loaded: &mut LoadedBoltV3Config,
+        temp_path: &std::path::Path,
+        observed_at_ns: u64,
+        spendable_collateral: &str,
+        collateral_allowance: &str,
+    ) {
+        let path = temp_path.join("venue-spendability-source.json");
+        let (venue_id, account_id, collateral_currency) =
+            configured_submit_sizer_pool_spendability_identity(loaded);
+        let payload = format!(
+            r#"{{
+  "schema_version": {schema_version},
+  "record_kind": "{record_kind}",
+  "source": "operator_venue_spendability",
+  "observed_at_ns": {observed_at_ns},
+  "venue_id": "{venue_id}",
+  "account_id": "{account_id}",
+  "collateral_currency": "{collateral_currency}",
+  "spendable_collateral": "{spendable_collateral}",
+  "collateral_allowance": "{collateral_allowance}"
+}}"#,
+            schema_version = crate::bolt_v3_sizing_state::VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION,
+            record_kind = crate::bolt_v3_sizing_state::VENUE_SPENDABILITY_SOURCE_RECORD_KIND,
+        );
+        std::fs::write(&path, payload.as_bytes()).expect("spendability source should write");
+        let operator_evidence = loaded
+            .root
+            .live_canary
+            .as_mut()
+            .and_then(|live_canary| live_canary.operator_evidence.as_mut())
+            .expect("fixture should configure operator evidence");
+        operator_evidence.venue_spendability_source_path = Some(path.to_string_lossy().to_string());
+        operator_evidence.venue_spendability_source_sha256 = Some(phase8_sha256_text(&payload));
+    }
+
+    fn configured_submit_sizer_pool_identity(loaded: &LoadedBoltV3Config) -> (String, String) {
+        let pool = loaded
+            .root
+            .risk
+            .capital_pools
+            .as_ref()
+            .and_then(|pools| pools.iter().find(|pool| pool.enforce_submit_admission))
+            .expect("fixture should configure enforced submit admission pool");
+        (
+            pool.account_id.to_string(),
+            pool.collateral_currency.clone(),
+        )
+    }
+
+    fn configured_submit_sizer_pool_spendability_identity(
+        loaded: &LoadedBoltV3Config,
+    ) -> (String, String, String) {
+        let pool = loaded
+            .root
+            .risk
+            .capital_pools
+            .as_ref()
+            .and_then(|pools| pools.iter().find(|pool| pool.enforce_submit_admission))
+            .expect("fixture should configure enforced submit admission pool");
+        (
+            pool.venue_id.clone(),
+            pool.account_id.to_string(),
+            pool.collateral_currency.clone(),
+        )
+    }
+
     fn test_live_canary_with_operator_evidence(temp_path: &std::path::Path) -> LiveCanaryBlock {
         let artifact_path = |name: &str| temp_path.join(name).to_string_lossy().to_string();
         let sha256_zero = "0".repeat(64);
@@ -5167,6 +5368,8 @@ mod tests {
                 financial_envelope_sha256: sha256_zero.clone(),
                 pre_run_state_path: artifact_path("pre-run-state.json"),
                 pre_run_state_sha256: sha256_zero.clone(),
+                venue_spendability_source_path: None,
+                venue_spendability_source_sha256: None,
                 abort_plan_path: artifact_path("abort-plan.json"),
                 abort_plan_sha256: sha256_zero.clone(),
                 canary_proof_candidate_source_path: None,

@@ -2574,7 +2574,7 @@ fn operator_evidence_file_hash_bindings(
     ]
 }
 
-fn resolve_configured_path(
+pub(crate) fn resolve_configured_path(
     root_path: &Path,
     field: &'static str,
     configured: &str,
@@ -3006,6 +3006,8 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             pre_run_state_sha256: "d".repeat(64),
+            venue_spendability_source_path: None,
+            venue_spendability_source_sha256: None,
             abort_plan_path: tempdir
                 .path()
                 .join("abort-plan.json")
@@ -3320,6 +3322,8 @@ mod tests {
             financial_envelope_sha256,
             pre_run_state_path,
             pre_run_state_sha256,
+            venue_spendability_source_path: None,
+            venue_spendability_source_sha256: None,
             abort_plan_path,
             abort_plan_sha256,
             canary_proof_candidate_source_path: None,

@@ -1,7 +1,13 @@
 use rust_decimal::Decimal;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::{fs::File, io::Read, path::Path};
 
 use crate::bolt_v3_loss_governor::LossSnapshot;
 use crate::bolt_v3_position_sizer::ProductSizingSnapshot;
+
+pub const VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION: u32 = 1;
+pub const VENUE_SPENDABILITY_SOURCE_RECORD_KIND: &str = "bolt_v3.venue_spendability_source.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizingStateError {
@@ -14,6 +20,7 @@ pub enum SizingStateError {
 pub enum SizingStateEvidenceKind {
     State,
     Portfolio,
+    VenueSpendability,
     OrderLifecycle,
     ProductState,
     ReservationLedger,
@@ -25,6 +32,7 @@ pub struct NtDerivedSizingState {
     pub source: String,
     pub observed_at_ns: u64,
     pub portfolio: PortfolioSizingSnapshot,
+    pub venue_spendability: VenueSpendabilitySnapshot,
     pub order_lifecycle: OrderLifecycleSizingSnapshot,
     pub product_state: ProductSizingSnapshot,
     pub reservation_snapshot: ReservationLedgerSnapshot,
@@ -40,6 +48,166 @@ pub struct PortfolioSizingSnapshot {
     pub collateral_currency: String,
     pub free_collateral: Decimal,
     pub total_equity: Decimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VenueSpendabilitySnapshot {
+    pub source: String,
+    pub observed_at_ns: u64,
+    pub venue_id: String,
+    pub account_id: String,
+    pub collateral_currency: String,
+    pub spendable_collateral: Decimal,
+    pub collateral_allowance: Decimal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VenueSpendabilityIdentity<'a> {
+    pub venue_id: &'a str,
+    pub account_id: &'a str,
+    pub collateral_currency: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VenueSpendabilitySourceError {
+    ReadFailed,
+    FileTooLarge,
+    InvalidSha256,
+    Sha256Mismatch,
+    InvalidPayload,
+    InvalidSchemaVersion,
+    InvalidRecordKind,
+    EmptyField { field: &'static str },
+    InvalidDecimal { field: &'static str },
+    NegativeDecimal { field: &'static str },
+    IdentityMismatch { field: &'static str },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct VenueSpendabilitySourceFileRequest<'a> {
+    pub path: &'a Path,
+    pub max_bytes: u64,
+    pub expected_sha256: &'a str,
+    pub identity: VenueSpendabilityIdentity<'a>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VenueSpendabilitySourceArtifact {
+    schema_version: u32,
+    record_kind: String,
+    source: String,
+    observed_at_ns: u64,
+    venue_id: String,
+    account_id: String,
+    collateral_currency: String,
+    spendable_collateral: String,
+    collateral_allowance: String,
+}
+
+pub fn venue_spendability_snapshot_from_json_bytes(
+    bytes: &[u8],
+    expected: VenueSpendabilityIdentity<'_>,
+) -> Result<VenueSpendabilitySnapshot, VenueSpendabilitySourceError> {
+    let source: VenueSpendabilitySourceArtifact =
+        serde_json::from_slice(bytes).map_err(|_| VenueSpendabilitySourceError::InvalidPayload)?;
+    if source.schema_version != VENUE_SPENDABILITY_SOURCE_SCHEMA_VERSION {
+        return Err(VenueSpendabilitySourceError::InvalidSchemaVersion);
+    }
+    if source.record_kind != VENUE_SPENDABILITY_SOURCE_RECORD_KIND {
+        return Err(VenueSpendabilitySourceError::InvalidRecordKind);
+    }
+    require_non_empty("source", &source.source)?;
+    require_non_empty("venue_id", &source.venue_id)?;
+    require_non_empty("account_id", &source.account_id)?;
+    require_non_empty("collateral_currency", &source.collateral_currency)?;
+    require_identity("venue_id", &source.venue_id, expected.venue_id)?;
+    require_identity("account_id", &source.account_id, expected.account_id)?;
+    require_identity(
+        "collateral_currency",
+        &source.collateral_currency,
+        expected.collateral_currency,
+    )?;
+    let spendable_collateral =
+        parse_non_negative_decimal("spendable_collateral", &source.spendable_collateral)?;
+    let collateral_allowance =
+        parse_non_negative_decimal("collateral_allowance", &source.collateral_allowance)?;
+
+    Ok(VenueSpendabilitySnapshot {
+        source: source.source,
+        observed_at_ns: source.observed_at_ns,
+        venue_id: source.venue_id,
+        account_id: source.account_id,
+        collateral_currency: source.collateral_currency,
+        spendable_collateral,
+        collateral_allowance,
+    })
+}
+
+pub fn venue_spendability_snapshot_from_json_file(
+    request: VenueSpendabilitySourceFileRequest<'_>,
+) -> Result<VenueSpendabilitySnapshot, VenueSpendabilitySourceError> {
+    if !is_lowercase_sha256(request.expected_sha256) {
+        return Err(VenueSpendabilitySourceError::InvalidSha256);
+    }
+    let bytes = read_file_bounded(request.path, request.max_bytes)?;
+    let actual_sha256 = hex::encode(Sha256::digest(&bytes));
+    if actual_sha256 != request.expected_sha256 {
+        return Err(VenueSpendabilitySourceError::Sha256Mismatch);
+    }
+    venue_spendability_snapshot_from_json_bytes(&bytes, request.identity)
+}
+
+fn read_file_bounded(path: &Path, max_bytes: u64) -> Result<Vec<u8>, VenueSpendabilitySourceError> {
+    let mut file = File::open(path).map_err(|_| VenueSpendabilitySourceError::ReadFailed)?;
+    let mut bytes = Vec::new();
+    let length = file
+        .by_ref()
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|_| VenueSpendabilitySourceError::ReadFailed)?;
+    if length as u64 > max_bytes {
+        return Err(VenueSpendabilitySourceError::FileTooLarge);
+    }
+    Ok(bytes)
+}
+
+fn is_lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn require_non_empty(field: &'static str, value: &str) -> Result<(), VenueSpendabilitySourceError> {
+    if value.trim().is_empty() {
+        return Err(VenueSpendabilitySourceError::EmptyField { field });
+    }
+    Ok(())
+}
+
+fn require_identity(
+    field: &'static str,
+    actual: &str,
+    expected: &str,
+) -> Result<(), VenueSpendabilitySourceError> {
+    if actual != expected {
+        return Err(VenueSpendabilitySourceError::IdentityMismatch { field });
+    }
+    Ok(())
+}
+
+fn parse_non_negative_decimal(
+    field: &'static str,
+    value: &str,
+) -> Result<Decimal, VenueSpendabilitySourceError> {
+    let decimal = value
+        .parse::<Decimal>()
+        .map_err(|_| VenueSpendabilitySourceError::InvalidDecimal { field })?;
+    if decimal < Decimal::ZERO {
+        return Err(VenueSpendabilitySourceError::NegativeDecimal { field });
+    }
+    Ok(decimal)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +259,16 @@ pub fn validate_nt_derived_sizing_state(
         now_ns,
         max_snapshot_age_ns,
         SizingStateEvidenceKind::Portfolio,
+    )?;
+    validate_source(
+        &state.venue_spendability.source,
+        SizingStateEvidenceKind::VenueSpendability,
+    )?;
+    validate_freshness(
+        state.venue_spendability.observed_at_ns,
+        now_ns,
+        max_snapshot_age_ns,
+        SizingStateEvidenceKind::VenueSpendability,
     )?;
     validate_source(
         &state.order_lifecycle.source,
@@ -189,6 +367,11 @@ fn evidence_sources(state: &NtDerivedSizingState) -> Vec<SizingStateEvidenceSour
             observed_at_ns: state.portfolio.observed_at_ns,
         },
         SizingStateEvidenceSource {
+            kind: SizingStateEvidenceKind::VenueSpendability,
+            source: state.venue_spendability.source.clone(),
+            observed_at_ns: state.venue_spendability.observed_at_ns,
+        },
+        SizingStateEvidenceSource {
             kind: SizingStateEvidenceKind::OrderLifecycle,
             source: state.order_lifecycle.source.clone(),
             observed_at_ns: state.order_lifecycle.observed_at_ns,
@@ -217,6 +400,7 @@ fn evidence_sources(state: &NtDerivedSizingState) -> Vec<SizingStateEvidenceSour
 #[cfg(test)]
 mod tests {
     use rust_decimal::Decimal;
+    use sha2::{Digest, Sha256};
 
     use crate::bolt_v3_loss_governor::LossSnapshot;
     use crate::bolt_v3_position_sizer::{PredictionMarketSizingSnapshot, ProductSizingSnapshot};
@@ -224,7 +408,9 @@ mod tests {
     use super::{
         NtDerivedSizingState, OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot,
         ReservationLedgerSnapshot, SizingStateError, SizingStateEvidenceKind,
-        validate_nt_derived_sizing_state,
+        VenueSpendabilityIdentity, VenueSpendabilitySnapshot, VenueSpendabilitySourceError,
+        VenueSpendabilitySourceFileRequest, validate_nt_derived_sizing_state,
+        venue_spendability_snapshot_from_json_bytes, venue_spendability_snapshot_from_json_file,
     };
 
     #[test]
@@ -242,11 +428,20 @@ mod tests {
             portfolio: PortfolioSizingSnapshot {
                 source: "nt_portfolio_snapshot".to_string(),
                 observed_at_ns: 1_000,
-                venue_id: "venue-clob".to_string(),
-                account_id: "account-1".to_string(),
-                collateral_currency: "PUSD".to_string(),
+                venue_id: "VENUE-A".to_string(),
+                account_id: "ACCOUNT-A".to_string(),
+                collateral_currency: "USD".to_string(),
                 free_collateral: Decimal::new(100, 0),
                 total_equity: Decimal::new(100, 0),
+            },
+            venue_spendability: VenueSpendabilitySnapshot {
+                source: "operator-venue-spendability".to_string(),
+                observed_at_ns: 1_000,
+                venue_id: "VENUE-A".to_string(),
+                account_id: "ACCOUNT-A".to_string(),
+                collateral_currency: "USD".to_string(),
+                spendable_collateral: Decimal::new(100, 0),
+                collateral_allowance: Decimal::new(100, 0),
             },
             order_lifecycle: OrderLifecycleSizingSnapshot {
                 source: "nt_open_order_cache".to_string(),
@@ -298,6 +493,9 @@ mod tests {
             SizingStateEvidenceKind::Portfolio => {
                 candidate.portfolio.observed_at_ns = observed_at_ns;
             }
+            SizingStateEvidenceKind::VenueSpendability => {
+                candidate.venue_spendability.observed_at_ns = observed_at_ns;
+            }
             SizingStateEvidenceKind::OrderLifecycle => {
                 candidate.order_lifecycle.observed_at_ns = observed_at_ns;
             }
@@ -334,6 +532,7 @@ mod tests {
             vec![
                 SizingStateEvidenceKind::State,
                 SizingStateEvidenceKind::Portfolio,
+                SizingStateEvidenceKind::VenueSpendability,
                 SizingStateEvidenceKind::OrderLifecycle,
                 SizingStateEvidenceKind::ProductState,
                 SizingStateEvidenceKind::ReservationLedger,
@@ -349,7 +548,7 @@ mod tests {
         let evidence = validate_nt_derived_sizing_state(Some(&candidate), 1_000, 100)
             .expect("fresh attributed loss snapshot should be accepted");
 
-        assert_eq!(evidence.sources.len(), 6);
+        assert_eq!(evidence.sources.len(), 7);
         assert_eq!(
             evidence.sources.last().map(|source| source.kind),
             Some(SizingStateEvidenceKind::LossSnapshot)
@@ -368,6 +567,11 @@ mod tests {
                 let mut candidate = state();
                 candidate.portfolio.source = " ".to_string();
                 (candidate, SizingStateEvidenceKind::Portfolio)
+            },
+            {
+                let mut candidate = state();
+                candidate.venue_spendability.source = " ".to_string();
+                (candidate, SizingStateEvidenceKind::VenueSpendability)
             },
             {
                 let mut candidate = state();
@@ -410,6 +614,7 @@ mod tests {
         let kinds = [
             SizingStateEvidenceKind::State,
             SizingStateEvidenceKind::Portfolio,
+            SizingStateEvidenceKind::VenueSpendability,
             SizingStateEvidenceKind::OrderLifecycle,
             SizingStateEvidenceKind::ProductState,
             SizingStateEvidenceKind::ReservationLedger,
@@ -430,6 +635,7 @@ mod tests {
         let kinds = [
             SizingStateEvidenceKind::State,
             SizingStateEvidenceKind::Portfolio,
+            SizingStateEvidenceKind::VenueSpendability,
             SizingStateEvidenceKind::OrderLifecycle,
             SizingStateEvidenceKind::ProductState,
             SizingStateEvidenceKind::ReservationLedger,
@@ -443,5 +649,108 @@ mod tests {
 
             assert_eq!(decision, SizingStateError::StaleNtState(kind));
         }
+    }
+
+    #[test]
+    fn venue_spendability_source_parses_and_rejects_identity_mismatch() {
+        let source = br#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.venue_spendability_source.v1",
+  "source": "operator-venue-spendability",
+  "observed_at_ns": 1200,
+  "venue_id": "VENUE-A",
+  "account_id": "ACCOUNT-001",
+  "collateral_currency": "USD",
+  "spendable_collateral": "30",
+  "collateral_allowance": "25"
+}"#;
+
+        let snapshot = venue_spendability_snapshot_from_json_bytes(
+            source,
+            VenueSpendabilityIdentity {
+                venue_id: "VENUE-A",
+                account_id: "ACCOUNT-001",
+                collateral_currency: "USD",
+            },
+        )
+        .expect("matching venue spendability evidence should parse");
+
+        assert_eq!(snapshot.source, "operator-venue-spendability");
+        assert_eq!(snapshot.observed_at_ns, 1200);
+        assert_eq!(snapshot.venue_id, "VENUE-A");
+        assert_eq!(snapshot.account_id, "ACCOUNT-001");
+        assert_eq!(snapshot.collateral_currency, "USD");
+        assert_eq!(snapshot.spendable_collateral, Decimal::new(30, 0));
+        assert_eq!(snapshot.collateral_allowance, Decimal::new(25, 0));
+
+        let mismatch = venue_spendability_snapshot_from_json_bytes(
+            source,
+            VenueSpendabilityIdentity {
+                venue_id: "VENUE-B",
+                account_id: "ACCOUNT-001",
+                collateral_currency: "USD",
+            },
+        )
+        .expect_err("mismatched venue spendability evidence must fail closed");
+
+        assert_eq!(
+            mismatch,
+            VenueSpendabilitySourceError::IdentityMismatch { field: "venue_id" }
+        );
+    }
+
+    #[test]
+    fn venue_spendability_source_file_checks_sha_and_size() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let path = temp.path().join("venue-spendability.json");
+        let source = br#"{
+  "schema_version": 1,
+  "record_kind": "bolt_v3.venue_spendability_source.v1",
+  "source": "operator-venue-spendability",
+  "observed_at_ns": 1200,
+  "venue_id": "VENUE-A",
+  "account_id": "ACCOUNT-001",
+  "collateral_currency": "USD",
+  "spendable_collateral": "30",
+  "collateral_allowance": "25"
+}"#;
+        std::fs::write(&path, source).expect("fixture should write");
+        let sha256 = hex::encode(Sha256::digest(source));
+        let identity = VenueSpendabilityIdentity {
+            venue_id: "VENUE-A",
+            account_id: "ACCOUNT-001",
+            collateral_currency: "USD",
+        };
+
+        let snapshot =
+            venue_spendability_snapshot_from_json_file(VenueSpendabilitySourceFileRequest {
+                path: &path,
+                max_bytes: source.len() as u64,
+                expected_sha256: &sha256,
+                identity,
+            })
+            .expect("bounded hash-checked artifact should parse");
+        assert_eq!(snapshot.collateral_allowance, Decimal::new(25, 0));
+
+        let wrong_hash = "0".repeat(64);
+        let mismatch =
+            venue_spendability_snapshot_from_json_file(VenueSpendabilitySourceFileRequest {
+                path: &path,
+                max_bytes: source.len() as u64,
+                expected_sha256: &wrong_hash,
+                identity,
+            })
+            .expect_err("sha mismatch must fail closed");
+        assert_eq!(mismatch, VenueSpendabilitySourceError::Sha256Mismatch);
+
+        let too_large =
+            venue_spendability_snapshot_from_json_file(VenueSpendabilitySourceFileRequest {
+                path: &path,
+                max_bytes: source.len() as u64 - 1,
+                expected_sha256: &sha256,
+                identity,
+            })
+            .expect_err("oversized spendability source must fail closed");
+        assert_eq!(too_large, VenueSpendabilitySourceError::FileTooLarge);
     }
 }

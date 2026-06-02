@@ -18,7 +18,7 @@ use crate::bolt_v3_position_sizer::{
 };
 use crate::bolt_v3_sizing_state::{
     NtDerivedSizingState, OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot,
-    ReservationLedgerSnapshot,
+    ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
 };
 use nautilus_model::{
     enums::{OrderSide, PositionSide},
@@ -107,6 +107,7 @@ pub struct BoltV3SubmitPositionSizingNtComponents {
     pub source: String,
     pub observed_at_ns: u64,
     pub portfolio: PortfolioSizingSnapshot,
+    pub venue_spendability: VenueSpendabilitySnapshot,
     pub order_lifecycle: OrderLifecycleSizingSnapshot,
     pub product_state: ProductSizingSnapshot,
     pub loss_snapshot: Option<LossSnapshot>,
@@ -291,10 +292,6 @@ impl BoltV3SubmitAdmissionState {
 
     pub fn update_loss_snapshot(&self, snapshot: LossSnapshot) {
         lock_inner(&self.inner).loss_snapshot = Some(snapshot);
-    }
-
-    pub fn update_position_sizing_state(&self, state: NtDerivedSizingState) {
-        self.update_position_sizing_nt_components(components_from_sizing_state(state));
     }
 
     pub fn update_position_sizing_nt_components(
@@ -2090,20 +2087,6 @@ fn evaluate_position_sizer_submit(
     }
 }
 
-fn components_from_sizing_state(
-    state: NtDerivedSizingState,
-) -> BoltV3SubmitPositionSizingNtComponents {
-    let observed_at_ns = component_observed_at_ns(&state);
-    BoltV3SubmitPositionSizingNtComponents {
-        source: state.source,
-        observed_at_ns,
-        portfolio: state.portfolio,
-        order_lifecycle: state.order_lifecycle,
-        product_state: state.product_state,
-        loss_snapshot: state.loss_snapshot,
-    }
-}
-
 fn refresh_position_sizer_state_from_components(
     position_sizer: &mut BoltV3SubmitPositionSizerState,
     mut components: BoltV3SubmitPositionSizingNtComponents,
@@ -2160,7 +2143,7 @@ fn refresh_position_sizer_reservation_snapshot_with_source(
     let Some(current_state) = position_sizer.state.take() else {
         return;
     };
-    let components = components_from_sizing_state(current_state);
+    let components = nt_components_from_existing_position_sizer_state(current_state);
     let mut state = compose_position_sizing_state_from_components(
         components,
         all_live_reservations_attributed,
@@ -2171,6 +2154,32 @@ fn refresh_position_sizer_reservation_snapshot_with_source(
     state.reservation_snapshot.all_live_reservations_attributed = all_live_reservations_attributed;
     state.observed_at_ns = state.observed_at_ns.max(observed_at_ns);
     position_sizer.state = Some(state);
+}
+
+fn nt_components_from_existing_position_sizer_state(
+    state: NtDerivedSizingState,
+) -> BoltV3SubmitPositionSizingNtComponents {
+    let product_observed_at_ns = match &state.product_state {
+        ProductSizingSnapshot::PredictionMarketBinary(snapshot) => snapshot.observed_at_ns,
+    };
+    let mut observed_at_ns = state
+        .portfolio
+        .observed_at_ns
+        .max(state.venue_spendability.observed_at_ns)
+        .max(state.order_lifecycle.observed_at_ns)
+        .max(product_observed_at_ns);
+    if let Some(loss_snapshot) = state.loss_snapshot.as_ref() {
+        observed_at_ns = observed_at_ns.max(loss_snapshot.observed_at_ns);
+    }
+    BoltV3SubmitPositionSizingNtComponents {
+        source: state.source,
+        observed_at_ns,
+        portfolio: state.portfolio,
+        venue_spendability: state.venue_spendability,
+        order_lifecycle: state.order_lifecycle,
+        product_state: state.product_state,
+        loss_snapshot: state.loss_snapshot,
+    }
 }
 
 fn rebuilt_open_order_reservation_metadata_valid(
@@ -2208,6 +2217,7 @@ fn compose_position_sizing_state_from_components(
         source: components.source,
         observed_at_ns: components.observed_at_ns.max(reservation_observed_at_ns),
         portfolio: components.portfolio,
+        venue_spendability: components.venue_spendability,
         order_lifecycle: components.order_lifecycle,
         product_state: components.product_state,
         reservation_snapshot: ReservationLedgerSnapshot {
@@ -2217,21 +2227,6 @@ fn compose_position_sizing_state_from_components(
         },
         loss_snapshot: components.loss_snapshot,
     }
-}
-
-fn component_observed_at_ns(state: &NtDerivedSizingState) -> u64 {
-    let product_observed_at_ns = match &state.product_state {
-        ProductSizingSnapshot::PredictionMarketBinary(snapshot) => snapshot.observed_at_ns,
-    };
-    let mut observed_at_ns = state
-        .portfolio
-        .observed_at_ns
-        .max(state.order_lifecycle.observed_at_ns)
-        .max(product_observed_at_ns);
-    if let Some(loss_snapshot) = state.loss_snapshot.as_ref() {
-        observed_at_ns = observed_at_ns.max(loss_snapshot.observed_at_ns);
-    }
-    observed_at_ns
 }
 
 fn accepted_without_reservation() -> BoltV3PositionSizerSubmitDecision {
@@ -2529,6 +2524,15 @@ mod tests {
                 free_collateral: Decimal::new(100, 0),
                 total_equity: Decimal::new(100, 0),
             },
+            venue_spendability: VenueSpendabilitySnapshot {
+                source: "operator-venue-spendability".to_string(),
+                observed_at_ns,
+                venue_id: "VENUE-A".to_string(),
+                account_id: "ACCOUNT-A".to_string(),
+                collateral_currency: "USD".to_string(),
+                spendable_collateral: Decimal::new(100, 0),
+                collateral_allowance: Decimal::new(100, 0),
+            },
             order_lifecycle: OrderLifecycleSizingSnapshot {
                 source: "nt_open_order_cache".to_string(),
                 observed_at_ns,
@@ -2563,6 +2567,7 @@ mod tests {
             source: state.source,
             observed_at_ns: state.observed_at_ns,
             portfolio: state.portfolio,
+            venue_spendability: state.venue_spendability,
             order_lifecycle: state.order_lifecycle,
             product_state: state.product_state,
             loss_snapshot: state.loss_snapshot,

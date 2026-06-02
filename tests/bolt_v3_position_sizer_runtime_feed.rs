@@ -12,7 +12,7 @@ use bolt_v2::bolt_v3_position_sizer_runtime_feed::{
 };
 use bolt_v2::bolt_v3_sizing_state::{
     NtDerivedSizingState, OrderLifecycleSizingSnapshot, PortfolioSizingSnapshot,
-    ReservationLedgerSnapshot,
+    ReservationLedgerSnapshot, VenueSpendabilitySnapshot,
 };
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3CompiledOrderKind, BoltV3CompiledOrderLiquidity, BoltV3CompiledOrderSide,
@@ -79,7 +79,7 @@ fn runtime_feed_uses_verified_nt_msgbus_symbols() {
 }
 
 #[test]
-fn subscribed_account_and_portfolio_events_publish_sizing_components() {
+fn subscribed_account_and_portfolio_events_wait_for_spendability() {
     let admission = Arc::new(position_sized_admission());
     let feed = Arc::new(Mutex::new(PositionSizerRuntimeFeed::new(
         runtime_feed_config(),
@@ -97,15 +97,8 @@ fn subscribed_account_and_portfolio_events_publish_sizing_components() {
     );
     subscription.unsubscribe_all();
 
-    let state = admission
-        .position_sizer_state_snapshot()
-        .expect("matching account and portfolio events should publish components");
-    assert_eq!(admission.position_sizer_state_observed_at_ns(), Some(1_100));
-    assert_eq!(admission.position_sizer_reconciled(), Some(false));
-    assert_eq!(state.portfolio.free_collateral, Decimal::new(45, 0));
-    assert_eq!(state.portfolio.total_equity, Decimal::new(50, 0));
-    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
-    assert_eq!(product.collateral_allowance, Decimal::new(45, 0));
+    assert_eq!(admission.position_sizer_state_snapshot(), None);
+    assert_eq!(admission.position_sizer_state_observed_at_ns(), None);
 }
 
 #[test]
@@ -226,6 +219,162 @@ fn feed_waits_for_matching_account_and_portfolio_before_publish() {
 }
 
 #[test]
+fn feed_derives_collateral_allowance_from_venue_spendability_minimum() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(950, 30, 25))
+            .is_none()
+    );
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            100.0
+        ))
+        .is_none()
+    );
+    let components = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            110.0,
+        ))
+        .expect("account, portfolio, and spendability should publish components");
+
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.collateral_allowance, Decimal::new(25, 0));
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("published components should update admission sizing state");
+    assert_eq!(
+        state.venue_spendability.spendable_collateral,
+        Decimal::new(30, 0)
+    );
+    assert_eq!(
+        state.venue_spendability.collateral_allowance,
+        Decimal::new(25, 0)
+    );
+}
+
+#[test]
+fn feed_uses_spendable_collateral_when_it_binds_before_allowance() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(950, 25, 30))
+            .is_none()
+    );
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            100.0
+        ))
+        .is_none()
+    );
+    let components = feed
+        .on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            110.0,
+        ))
+        .expect("complete spendability/account/portfolio state should publish");
+
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.collateral_allowance, Decimal::new(25, 0));
+}
+
+#[test]
+fn feed_clears_spendability_on_identity_mismatch_until_matching_snapshot_arrives() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(900, 100, 100))
+            .is_none()
+    );
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_000,
+            100.0
+        ))
+        .is_some()
+    );
+
+    let mut mismatched = venue_spendability_snapshot(1_100, 100, 100);
+    mismatched.venue_id = "VENUE-B".to_string();
+    assert!(feed.on_venue_spendability_snapshot(mismatched).is_none());
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_200,
+            100.0
+        ))
+        .is_none()
+    );
+
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(1_300, 50, 50))
+            .is_some()
+    );
+}
+
+#[test]
+fn feed_ignores_older_spendability_snapshot_after_newer_one() {
+    let admission = Arc::new(position_sized_admission());
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(1_000, 100, 40))
+            .is_none()
+    );
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_050,
+            100.0
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_100,
+            100.0
+        ))
+        .is_some()
+    );
+
+    let components = feed
+        .on_venue_spendability_snapshot(venue_spendability_snapshot(900, 100, 5))
+        .expect("older spendability should not clear or regress the latest snapshot");
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = components.product_state;
+    assert_eq!(product.collateral_allowance, Decimal::new(40, 0));
+}
+
+#[test]
 fn feed_ignores_account_state_for_other_collateral_currency() {
     let admission = Arc::new(position_sized_admission());
     let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
@@ -265,6 +414,7 @@ fn position_sizer_cache_seed_updates_open_order_lifecycle_and_rebuilds_empty() {
         ))
         .is_none()
     );
+    seed_venue_spendability(&mut feed, 1_050);
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -306,6 +456,7 @@ fn position_sizer_cache_seed_updates_configured_yes_no_inventory() {
         ))
         .is_none()
     );
+    seed_venue_spendability(&mut feed, 1_050);
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -349,6 +500,7 @@ fn cache_seed_and_concurrent_order_event_do_not_double_count() {
         ))
         .is_none()
     );
+    seed_venue_spendability(&mut feed, 1_050);
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -412,6 +564,7 @@ fn account_bound_live_order_events_update_open_order_count() {
         ))
         .is_none()
     );
+    seed_venue_spendability(&mut feed, 1_050);
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -481,6 +634,7 @@ fn live_order_event_for_submit_owned_reservation_keeps_second_submit_open() {
         ))
         .is_none()
     );
+    seed_venue_spendability(&mut feed, 1_050);
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -620,6 +774,7 @@ fn sell_fill_event_reduces_inventory_before_next_sell_admission() {
         ))
         .is_none()
     );
+    seed_venue_spendability(&mut feed, 925);
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -729,6 +884,7 @@ fn fill_event_for_rebuilt_reservation_revalues_residual() {
         ))
         .is_none()
     );
+    seed_venue_spendability(&mut feed, 925);
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -782,6 +938,7 @@ fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
         ))
         .is_none()
     );
+    seed_venue_spendability(&mut feed, 925);
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -836,6 +993,7 @@ fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attributio
         ))
         .is_none()
     );
+    seed_venue_spendability(&mut feed, 925);
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -923,6 +1081,7 @@ fn full_fill_event_for_rebuilt_reservation_releases_and_closes_live_order_count(
         ))
         .is_none()
     );
+    seed_venue_spendability(&mut feed, 925);
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -1420,6 +1579,7 @@ fn committed_submit_runtime_feed() -> (Arc<BoltV3SubmitAdmissionState>, Position
         ))
         .is_none()
     );
+    seed_venue_spendability(&mut feed, 925);
     assert!(
         feed.on_portfolio_snapshot(&portfolio_snapshot(
             AccountId::from("ACCOUNT-001"),
@@ -1490,6 +1650,7 @@ fn fresh_sizing_state(observed_at_ns: u64) -> NtDerivedSizingState {
             free_collateral: Decimal::new(100, 0),
             total_equity: Decimal::new(100, 0),
         },
+        venue_spendability: venue_spendability_snapshot(observed_at_ns, 100, 100),
         order_lifecycle: OrderLifecycleSizingSnapshot {
             source: "nt_open_order_cache".to_string(),
             observed_at_ns,
@@ -1524,9 +1685,33 @@ fn fresh_components(observed_at_ns: u64) -> BoltV3SubmitPositionSizingNtComponen
         source: state.source,
         observed_at_ns: state.observed_at_ns,
         portfolio: state.portfolio,
+        venue_spendability: state.venue_spendability,
         order_lifecycle: state.order_lifecycle,
         product_state: state.product_state,
         loss_snapshot: state.loss_snapshot,
+    }
+}
+
+fn seed_venue_spendability(feed: &mut PositionSizerRuntimeFeed, observed_at_ns: u64) {
+    assert!(
+        feed.on_venue_spendability_snapshot(venue_spendability_snapshot(observed_at_ns, 100, 100))
+            .is_none()
+    );
+}
+
+fn venue_spendability_snapshot(
+    observed_at_ns: u64,
+    spendable_collateral: i64,
+    collateral_allowance: i64,
+) -> VenueSpendabilitySnapshot {
+    VenueSpendabilitySnapshot {
+        source: "operator-venue-spendability".to_string(),
+        observed_at_ns,
+        venue_id: "VENUE-A".to_string(),
+        account_id: "ACCOUNT-001".to_string(),
+        collateral_currency: "USD".to_string(),
+        spendable_collateral: Decimal::new(spendable_collateral, 0),
+        collateral_allowance: Decimal::new(collateral_allowance, 0),
     }
 }
 

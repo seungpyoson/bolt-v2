@@ -4983,6 +4983,53 @@ mod tests {
     }
 
     #[test]
+    fn startup_rebuild_seeds_nt_cached_free_collateral_when_balance_has_locked_amount() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let loaded = loaded_config_with_submit_sizer_recovery(temp.path());
+        let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, fake_bolt_v3_resolver)
+            .expect("fixture v3 LiveNode should build");
+
+        // Helper writes NT AccountBalance as (total, locked, free): total=100, locked=40, free=60.
+        seed_cached_account_state(&runtime, "POLYMARKET-001", "PUSD", 100.0, 60.0);
+        {
+            let account_id = AccountId::from("POLYMARKET-001");
+            let cache = runtime.node.kernel().cache();
+            let cache = cache.borrow();
+            let account = cache
+                .account_owned(&account_id)
+                .expect("seeded account should be present in NT cache");
+            let balance = account
+                .balances()
+                .values()
+                .find(|balance| balance.currency.code.as_str() == "PUSD")
+                .expect("seeded collateral balance should be present in NT cache");
+            assert_eq!(balance.total.as_decimal(), Decimal::new(100, 0));
+            assert_eq!(balance.locked.as_decimal(), Decimal::new(40, 0));
+            assert_eq!(balance.free.as_decimal(), Decimal::new(60, 0));
+        }
+
+        let rebuild = runtime.rebuild_position_sizer_from_nt_cache(2_000);
+
+        assert_eq!(rebuild.missing_nt_account_cache_balance, None);
+        assert_eq!(runtime.position_sizer_reconciled(), Some(true));
+        let state = runtime
+            .submit_admission
+            .position_sizer_state_snapshot()
+            .expect("startup rebuild should seed position sizing state");
+        assert_eq!(state.portfolio.free_collateral, Decimal::new(60, 0));
+        assert_eq!(state.portfolio.total_equity, Decimal::new(100, 0));
+        assert_ne!(
+            state.portfolio.free_collateral, state.portfolio.total_equity,
+            "fixture must prove locked collateral is not treated as spendable"
+        );
+        match state.product_state {
+            ProductSizingSnapshot::PredictionMarketBinary(snapshot) => {
+                assert_eq!(snapshot.collateral_allowance, Decimal::new(60, 0));
+            }
+        }
+    }
+
+    #[test]
     fn startup_rebuild_rejects_known_metadata_when_open_quantity_exceeds_submitted() {
         let temp = tempfile::tempdir().expect("tempdir should create");
         let loaded = loaded_config_with_submit_sizer_recovery(temp.path());

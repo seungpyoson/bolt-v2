@@ -71,6 +71,7 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use ahash::AHashMap;
 use nautilus_backtest::config::{
     BacktestDataConfig, BacktestRunConfig, BacktestVenueConfig, NautilusDataType,
 };
@@ -998,17 +999,17 @@ fn crypto_option_spread_vertical() {
 /// With the `cloud` feature on, `from_uri("s3://...")` constructs the real S3
 /// object-store backend rather than hitting the "Cloud storage support requires
 /// the cloud feature" bail. The builder is lazy — `object_store`'s
-/// `AmazonS3Builder::build` defaults the region and resolves the
-/// instance-credential provider at request time (`object_store-0.13.2`
-/// `aws/builder.rs:1086,1164`), so construction returns `Ok` without touching
-/// the network. The positive `is_ok` path is therefore the primary assertion,
-/// and it also rules out the cloud-feature bail (which is an `Err`). A
-/// live-bucket round-trip is deferred per #438.
+/// `AmazonS3Builder::build` resolves credentials lazily, so construction returns
+/// `Ok` without touching the network when the synthetic fixture passes an
+/// explicit region. The positive `is_ok` path is therefore the primary
+/// assertion, and it also rules out the cloud-feature bail (which is an `Err`).
+/// A live-bucket round-trip is deferred per #438.
 #[test]
 fn gate2_s3_object_store_backend_is_wired() {
     // Synthetic fixture URI, bound from the TOML registry — never contacted.
     let uri = registry().s3_proof_uri;
-    let result = ParquetDataCatalog::from_uri(&uri, None, None, None, None);
+    let options = AHashMap::from([("region".to_string(), "us-east-1".to_string())]);
+    let result = ParquetDataCatalog::from_uri(&uri, Some(options), None, None, None);
     assert!(
         result.is_ok(),
         "s3:// must construct the cloud object-store backend (lazy, no network) \

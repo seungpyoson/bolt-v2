@@ -22,10 +22,13 @@ const PRODUCT_MATRIX_SCHEMA_VERSION: u32 = 1;
 const PRODUCT_MATRIX_RECORD_KIND: &str = "bolt_v3.hyperliquid_product_matrix.v1";
 const LATENCY_PROFILE_SCHEMA_VERSION: u32 = 1;
 const LATENCY_PROFILE_RECORD_KIND: &str = "bolt_v3.hyperliquid_latency_profile.v1";
+const PRODUCT_SUBMIT_PROOF_SCHEMA_VERSION: u32 = 1;
+const PRODUCT_SUBMIT_PROOF_RECORD_KIND: &str = "bolt_v3.hyperliquid_product_submit_proof.v1";
 const LIVE_SUBMIT_APPROVAL_SCHEMA_VERSION: u32 = 1;
 const LIVE_SUBMIT_APPROVAL_RECORD_KIND: &str = "bolt_v3.hyperliquid_live_submit_approval.v1";
 
 const LATENCY_PROFILE_ARTIFACT: &str = "hyperliquid_latency_profile";
+const PRODUCT_SUBMIT_PROOF_ARTIFACT: &str = "hyperliquid_product_submit_proof";
 const LIVE_SUBMIT_APPROVAL_ARTIFACT: &str = "hyperliquid_live_submit_approval";
 const LIVE_SUBMIT_APPROVAL_SPEND_TEMP_SUFFIX: &str = ".spending";
 
@@ -154,6 +157,29 @@ pub struct HyperliquidProductSubmitProofBinding {
     pub artifact_sha256: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HyperliquidProductSubmitProofEvidenceRef {
+    pub artifact_path: String,
+    pub artifact_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HyperliquidProductSubmitProofArtifact {
+    pub schema_version: u32,
+    pub record_kind: String,
+    pub provider_key: String,
+    pub provider_id: String,
+    pub product_surface: HyperliquidProductSurface,
+    pub toml_checksum: String,
+    pub order_proof: HyperliquidProductSubmitProofEvidenceRef,
+    pub fill_proof: HyperliquidProductSubmitProofEvidenceRef,
+    pub rounding_proof: HyperliquidProductSubmitProofEvidenceRef,
+    pub fee_proof: HyperliquidProductSubmitProofEvidenceRef,
+    pub settlement_proof: Option<HyperliquidProductSubmitProofEvidenceRef>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HyperliquidLiveSubmitApprovalBinding {
     pub base_sha: String,
@@ -256,6 +282,17 @@ pub fn read_hyperliquid_live_submit_approval_artifact(
         || provider_artifact_invalid(LIVE_SUBMIT_APPROVAL_ARTIFACT, "approval_artifact");
     let bytes = read_file_bounded(path, max_bytes).map_err(|_| invalid_artifact())?;
     serde_json::from_slice(&bytes).map_err(|_| invalid_artifact())
+}
+
+pub fn validate_hyperliquid_product_submit_proof_artifact_bytes(
+    bytes: &[u8],
+    binding: &HyperliquidLiveSubmitApprovalBinding,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let artifact: HyperliquidProductSubmitProofArtifact =
+        serde_json::from_slice(bytes).map_err(|_| {
+            provider_artifact_invalid(PRODUCT_SUBMIT_PROOF_ARTIFACT, "product_submit_proof")
+        })?;
+    validate_hyperliquid_product_submit_proof_artifact(&artifact, binding)
 }
 
 pub fn persist_consumed_hyperliquid_live_submit_approval_artifact(
@@ -684,6 +721,107 @@ fn validate_hyperliquid_product_submit_proof_binding(
         "product_submit_proof.artifact_sha256",
         &product_submit_proof.artifact_sha256,
     )
+}
+
+fn validate_hyperliquid_product_submit_proof_artifact(
+    artifact: &HyperliquidProductSubmitProofArtifact,
+    binding: &HyperliquidLiveSubmitApprovalBinding,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if artifact.schema_version != PRODUCT_SUBMIT_PROOF_SCHEMA_VERSION {
+        return Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            "schema_version",
+        ));
+    }
+    if artifact.record_kind != PRODUCT_SUBMIT_PROOF_RECORD_KIND {
+        return Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            "record_kind",
+        ));
+    }
+    if artifact.provider_key != hyperliquid::KEY {
+        return Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            "provider_key",
+        ));
+    }
+    if artifact.provider_id != binding.provider_id {
+        return Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            "provider_id",
+        ));
+    }
+    if artifact.product_surface != binding.product_surface {
+        return Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            "product_surface",
+        ));
+    }
+    if artifact.toml_checksum != binding.toml_checksum {
+        return Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            "toml_checksum",
+        ));
+    }
+    validate_hyperliquid_product_submit_proof_evidence_ref("order_proof", &artifact.order_proof)?;
+    validate_hyperliquid_product_submit_proof_evidence_ref("fill_proof", &artifact.fill_proof)?;
+    validate_hyperliquid_product_submit_proof_evidence_ref(
+        "rounding_proof",
+        &artifact.rounding_proof,
+    )?;
+    validate_hyperliquid_product_submit_proof_evidence_ref("fee_proof", &artifact.fee_proof)?;
+    match (binding.product_surface, artifact.settlement_proof.as_ref()) {
+        (HyperliquidProductSurface::Hip4Outcomes, Some(settlement_proof)) => {
+            validate_hyperliquid_product_submit_proof_evidence_ref(
+                "settlement_proof",
+                settlement_proof,
+            )
+        }
+        (HyperliquidProductSurface::Hip4Outcomes, None) => Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            "settlement_proof",
+        )),
+        (_, Some(_)) => Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            "settlement_proof",
+        )),
+        (_, None) => Ok(()),
+    }
+}
+
+fn validate_hyperliquid_product_submit_proof_evidence_ref(
+    field: &'static str,
+    evidence_ref: &HyperliquidProductSubmitProofEvidenceRef,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    let artifact_path_field = match field {
+        "order_proof" => "order_proof.artifact_path",
+        "fill_proof" => "fill_proof.artifact_path",
+        "rounding_proof" => "rounding_proof.artifact_path",
+        "fee_proof" => "fee_proof.artifact_path",
+        "settlement_proof" => "settlement_proof.artifact_path",
+        _ => field,
+    };
+    if evidence_ref.artifact_path.trim().is_empty() {
+        return Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            artifact_path_field,
+        ));
+    }
+    let artifact_sha256_field = match field {
+        "order_proof" => "order_proof.artifact_sha256",
+        "fill_proof" => "fill_proof.artifact_sha256",
+        "rounding_proof" => "rounding_proof.artifact_sha256",
+        "fee_proof" => "fee_proof.artifact_sha256",
+        "settlement_proof" => "settlement_proof.artifact_sha256",
+        _ => field,
+    };
+    if !is_lowercase_sha256(&evidence_ref.artifact_sha256) {
+        return Err(provider_artifact_invalid(
+            PRODUCT_SUBMIT_PROOF_ARTIFACT,
+            artifact_sha256_field,
+        ));
+    }
+    Ok(())
 }
 
 fn provider_artifact_invalid(

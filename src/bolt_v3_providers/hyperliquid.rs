@@ -63,6 +63,7 @@ use crate::{
         consume_hyperliquid_live_submit_approval_artifact,
         persist_consumed_hyperliquid_live_submit_approval_artifact,
         read_hyperliquid_live_submit_approval_artifact,
+        validate_hyperliquid_product_submit_proof_artifact_bytes,
         write_hyperliquid_live_submit_approval_artifact,
     },
     bolt_v3_providers::{
@@ -872,7 +873,7 @@ pub fn load_live_submit_approval(
     validate_product_submit_proof_artifact(
         context.client_key,
         &context.loaded.root_path,
-        &binding.product_submit_proof,
+        &binding,
         product_proof_max_bytes,
     )?;
     let mut approval =
@@ -1253,9 +1254,10 @@ fn live_submit_approval_binding(
 fn validate_product_submit_proof_artifact(
     client_key: &str,
     root_path: &Path,
-    product_submit_proof: &HyperliquidProductSubmitProofBinding,
+    binding: &HyperliquidLiveSubmitApprovalBinding,
     max_bytes: u64,
 ) -> Result<(), anyhow::Error> {
+    let product_submit_proof = &binding.product_submit_proof;
     let resolved_path = resolve_root_relative_path(root_path, &product_submit_proof.artifact_path);
     let bytes = read_file_bounded(&resolved_path, max_bytes).map_err(|source| {
         hyperliquid_adapter_validation_error(
@@ -1265,14 +1267,15 @@ fn validate_product_submit_proof_artifact(
         )
     })?;
     let actual_sha256 = hex::encode(Sha256::digest(&bytes));
-    if actual_sha256 == product_submit_proof.artifact_sha256 {
-        return Ok(());
+    if actual_sha256 != product_submit_proof.artifact_sha256 {
+        return Err(hyperliquid_adapter_validation_error(
+            client_key,
+            "product_submit_proof.artifact_sha256",
+            "Hyperliquid product submit proof artifact sha256 does not match configured live-submit approval binding",
+        ));
     }
-    Err(hyperliquid_adapter_validation_error(
-        client_key,
-        "product_submit_proof.artifact_sha256",
-        "Hyperliquid product submit proof artifact sha256 does not match configured live-submit approval binding",
-    ))
+    validate_hyperliquid_product_submit_proof_artifact_bytes(&bytes, binding)
+        .map_err(anyhow::Error::new)
 }
 
 fn hyperliquid_adapter_validation_error(

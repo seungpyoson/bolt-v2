@@ -49,7 +49,8 @@ Validation:
 - Execution requires SSM-backed secrets.
 - Live-submit mapping requires consumed surface-bound approval loaded through the provider binding before production live-node adapter mapping.
 - Consumed approval order limits must tighten shared submit-admission count and notional caps for the approved execution client.
-- Production live-node approval loading must read the bound product-submit proof artifact under its own configured artifact byte cap and verify its sha256 before consuming the one-time approval or opening live execution mapping.
+- Production live-node approval loading must read the bound product-submit proof artifact under its own configured artifact byte cap, verify its sha256, and validate its schema before consuming the one-time approval or opening live execution mapping.
+- The product-submit proof artifact uses `record_kind = "bolt_v3.hyperliquid_product_submit_proof.v1"`, binds `provider_key`, `provider_id`, `product_surface`, and `toml_checksum`, and carries `order_proof`, `fill_proof`, `rounding_proof`, and `fee_proof` artifact references. HIP-4 outcome product proofs also require `settlement_proof`; non-HIP-4 surfaces reject a settlement proof on this schema.
 
 ## HyperliquidSecretSet
 

@@ -16026,6 +16026,14 @@ reason = '''This is the stable provider-side Hyperliquid operator-artifact schem
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
 kind = '''number'''
+literal = '''1'''
+context = '''const PRODUCT_SUBMIT_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = '''operator_artifact_schema_version'''
+reason = '''This is the stable provider-side Hyperliquid product-submit proof artifact schema version marker; it is not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''number'''
 literal = '''40'''
 context = '''if value.len() == 40'''
 classification = '''git_sha_or_sha256_width_validation'''
@@ -16114,6 +16122,14 @@ reason = '''This is the stable provider-side Hyperliquid operator-artifact recor
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
 kind = '''string'''
+literal = '''"bolt_v3.hyperliquid_product_submit_proof.v1"'''
+context = '''const PRODUCT_SUBMIT_PROOF_RECORD_KIND: &str = "bolt_v3.hyperliquid_product_submit_proof.v1";'''
+classification = '''operator_artifact_record_kind'''
+reason = '''This is the stable provider-side Hyperliquid product-submit proof artifact record-kind marker used for evidence validation, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
 literal = '''"bolt_v3.hyperliquid_product_matrix.v1"'''
 context = '''const PRODUCT_MATRIX_RECORD_KIND: &str = "bolt_v3.hyperliquid_product_matrix.v1";'''
 classification = '''operator_artifact_record_kind'''
@@ -16158,6 +16174,14 @@ literal = '''"hyperliquid_live_submit_approval"'''
 context = '''const LIVE_SUBMIT_APPROVAL_ARTIFACT: &str = "hyperliquid_live_submit_approval";'''
 classification = '''provider_artifact_validation_label'''
 reason = '''This is a provider-side artifact label used in validation diagnostics, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"hyperliquid_product_submit_proof"'''
+context = '''const PRODUCT_SUBMIT_PROOF_ARTIFACT: &str = "hyperliquid_product_submit_proof";'''
+classification = '''provider_artifact_validation_label'''
+reason = '''This is a provider-side product-submit proof artifact label used in validation diagnostics, not a runtime trading value.'''
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
@@ -16226,6 +16250,14 @@ reason = '''This labels a provider-side Hyperliquid live-submit product proof bi
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
 kind = '''string'''
+literal = '''"product_submit_proof"'''
+context = '''provider_artifact_invalid(PRODUCT_SUBMIT_PROOF_ARTIFACT, "product_submit_proof")'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid product-submit proof parse/schema failure; the proof artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
 literal = '''"product_submit_proof.artifact_path"'''
 context = '''"product_submit_proof.artifact_path",'''
 classification = '''provider_artifact_validation_field'''
@@ -16238,6 +16270,206 @@ literal = '''"product_submit_proof.artifact_sha256"'''
 context = '''"product_submit_proof.artifact_sha256",'''
 classification = '''provider_artifact_validation_field'''
 reason = '''This labels a provider-side Hyperliquid live-submit product proof artifact checksum field; the checksum value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_proof"'''
+context = '''validate_hyperliquid_product_submit_proof_evidence_ref("order_proof", &artifact.order_proof)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the order-proof reference required inside a Hyperliquid product-submit proof artifact; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_proof"'''
+context = '''"order_proof" => "order_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the order-proof reference to its artifact-path validation field; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_proof.artifact_path"'''
+context = '''"order_proof" => "order_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the order-proof artifact path inside a Hyperliquid product-submit proof artifact; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_proof"'''
+context = '''"order_proof" => "order_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the order-proof reference to its artifact-sha256 validation field; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_proof.artifact_sha256"'''
+context = '''"order_proof" => "order_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the order-proof artifact checksum inside a Hyperliquid product-submit proof artifact; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fill_proof"'''
+context = '''validate_hyperliquid_product_submit_proof_evidence_ref("fill_proof", &artifact.fill_proof)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fill-proof reference required inside a Hyperliquid product-submit proof artifact; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fill_proof"'''
+context = '''"fill_proof" => "fill_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the fill-proof reference to its artifact-path validation field; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fill_proof.artifact_path"'''
+context = '''"fill_proof" => "fill_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fill-proof artifact path inside a Hyperliquid product-submit proof artifact; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fill_proof"'''
+context = '''"fill_proof" => "fill_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the fill-proof reference to its artifact-sha256 validation field; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fill_proof.artifact_sha256"'''
+context = '''"fill_proof" => "fill_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fill-proof artifact checksum inside a Hyperliquid product-submit proof artifact; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"rounding_proof"'''
+context = '''"rounding_proof",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the rounding-proof reference required inside a Hyperliquid product-submit proof artifact; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"rounding_proof"'''
+context = '''"rounding_proof" => "rounding_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the rounding-proof reference to its artifact-path validation field; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"rounding_proof.artifact_path"'''
+context = '''"rounding_proof" => "rounding_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the rounding-proof artifact path inside a Hyperliquid product-submit proof artifact; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"rounding_proof"'''
+context = '''"rounding_proof" => "rounding_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the rounding-proof reference to its artifact-sha256 validation field; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"rounding_proof.artifact_sha256"'''
+context = '''"rounding_proof" => "rounding_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the rounding-proof artifact checksum inside a Hyperliquid product-submit proof artifact; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fee_proof"'''
+context = '''validate_hyperliquid_product_submit_proof_evidence_ref("fee_proof", &artifact.fee_proof)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fee-proof reference required inside a Hyperliquid product-submit proof artifact; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fee_proof"'''
+context = '''"fee_proof" => "fee_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the fee-proof reference to its artifact-path validation field; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fee_proof.artifact_path"'''
+context = '''"fee_proof" => "fee_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fee-proof artifact path inside a Hyperliquid product-submit proof artifact; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fee_proof"'''
+context = '''"fee_proof" => "fee_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the fee-proof reference to its artifact-sha256 validation field; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fee_proof.artifact_sha256"'''
+context = '''"fee_proof" => "fee_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fee-proof artifact checksum inside a Hyperliquid product-submit proof artifact; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"settlement_proof"'''
+context = '''"settlement_proof",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the HIP-4 settlement-proof reference required inside a Hyperliquid outcome product-submit proof artifact; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"settlement_proof"'''
+context = '''"settlement_proof" => "settlement_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the HIP-4 settlement-proof reference to its artifact-path validation field; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"settlement_proof.artifact_path"'''
+context = '''"settlement_proof" => "settlement_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the HIP-4 settlement-proof artifact path inside a Hyperliquid product-submit proof artifact; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"settlement_proof"'''
+context = '''"settlement_proof" => "settlement_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the HIP-4 settlement-proof reference to its artifact-sha256 validation field; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"settlement_proof.artifact_sha256"'''
+context = '''"settlement_proof" => "settlement_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the HIP-4 settlement-proof artifact checksum inside a Hyperliquid product-submit proof artifact; the checksum value remains evidence-owned.'''
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''

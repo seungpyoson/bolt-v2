@@ -15394,6 +15394,14 @@ reason = '''This is the provider validation diagnostic emitted when a TOML live-
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''string'''
+literal = '''"configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`"'''
+context = '''"configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`",'''
+classification = '''hyperliquid_static_target_surface_diagnostic'''
+reason = '''This is the provider fail-closed diagnostic when a static Hyperliquid target's TOML product_surface differs from the execution client's configured and approved product surface.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
 literal = '''"account_address"'''
 context = '''const RAW_SECRET_FIELD_NAMES: &[&str] = &["private_key", "account_address", "vault_address"];'''
 classification = '''hyperliquid_secret_payload_field_name'''

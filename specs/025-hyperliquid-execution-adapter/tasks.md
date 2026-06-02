@@ -173,6 +173,16 @@
 - [x] T049V Add `hyperliquid_instrument` market-family binding with strict static-instrument target parsing and fail-closed binary market-selection APIs.
 - [x] T049W Populate Hyperliquid `SUPPORTED_MARKET_FAMILIES` with `hyperliquid_instrument` and prove adapter mapping passes the route gate.
 
+## Phase 8H - Static Target Surface Match Guard
+
+**Goal**: A static Hyperliquid instrument target cannot route through a client configured and approved for a different Hyperliquid product surface.
+
+**Independent Test**: A standard-perps execution client with a consumed standard-perps approval rejects a static target configured for `spot`.
+
+- [x] T049X Add failing adapter-mapping test for static target product-surface mismatch.
+- [x] T049Y Enforce static target product-surface compatibility in the Hyperliquid provider mapper.
+- [x] T049Z Document the target/client surface-match invariant.
+
 ## Phase 9 - Verification
 
 - [x] T050 Run `cargo fmt --check` for `Cargo.toml` and `src/`.

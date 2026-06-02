@@ -108,7 +108,7 @@ MVP includes only provider registration, dependency wiring, config validation, H
 
 ### Phase 3 - Gated Live Execution
 
-Each Hyperliquid product surface may proceed only after MVP proof, product-specific order/fill/rounding/fee evidence, fee/rate policy reconciliation, provider-owned live-node approval artifact consumption, product-compatible strategy runtime, shared submit-admission enforcement of approval order limits, and an operator approval artifact bound to the exact product surface. HIP-4 additionally requires positive TOML-owned outcome settlement polling and uses the existing `updown` market-family route gate for outcome targets. Static/direct Hyperliquid instrument targets use `hyperliquid_instrument` for routing identity and do not enable binary rotating-market selection.
+Each Hyperliquid product surface may proceed only after MVP proof, product-specific order/fill/rounding/fee evidence, fee/rate policy reconciliation, provider-owned live-node approval artifact consumption, product-compatible strategy runtime, shared submit-admission enforcement of approval order limits, and an operator approval artifact bound to the exact product surface. HIP-4 additionally requires positive TOML-owned outcome settlement polling and uses the existing `updown` market-family route gate for outcome targets. Static/direct Hyperliquid instrument targets use `hyperliquid_instrument` for routing identity, must match the execution client's single configured and approved product surface, and do not enable binary rotating-market selection.
 
 ## Implementation Rules
 

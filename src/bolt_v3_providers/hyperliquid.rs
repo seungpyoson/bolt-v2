@@ -1046,6 +1046,7 @@ fn map_execution(
                 message: error.to_string(),
             }
         })?;
+    validate_static_instrument_target_surfaces(context.client_key, &cfg, context)?;
     validate_surface_live_submit_approval(context.client_key, &cfg, context)?;
     let max_retries =
         u32::try_from(cfg.max_retries).map_err(|_| BoltV3AdapterMappingError::NumericRange {
@@ -1082,6 +1083,58 @@ fn map_execution(
             outcome_settlement_poll_secs: cfg.outcome_settlement_poll_secs,
         },
     })
+}
+
+fn validate_static_instrument_target_surfaces(
+    client_key: &str,
+    cfg: &HyperliquidExecutionConfig,
+    context: &ProviderAdapterMapContext<'_>,
+) -> Result<(), BoltV3AdapterMappingError> {
+    let [configured_surface] = cfg.product_surfaces.as_slice() else {
+        return Ok(());
+    };
+    for target in hyperliquid_instrument::target_plans(context.plan)
+        .filter(|target| target.execution_client_id == client_key)
+    {
+        let target_surface = hyperliquid_static_instrument_surface(target.product_surface);
+        if target_surface != *configured_surface {
+            return Err(BoltV3AdapterMappingError::ValidationInvariant {
+                client_key: client_key.to_string(),
+                field: "strategy.target.product_surface",
+                message: format!(
+                    "configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`",
+                    target.configured_target_id,
+                    hyperliquid_static_instrument_surface_name(target.product_surface),
+                    target.execution_client_id,
+                    product_surface_name(*configured_surface),
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn hyperliquid_static_instrument_surface(
+    surface: hyperliquid_instrument::ProductSurface,
+) -> HyperliquidProductSurface {
+    match surface {
+        hyperliquid_instrument::ProductSurface::StandardPerps => {
+            HyperliquidProductSurface::StandardPerps
+        }
+        hyperliquid_instrument::ProductSurface::Spot => HyperliquidProductSurface::Spot,
+        hyperliquid_instrument::ProductSurface::Hip3BuilderPerps => {
+            HyperliquidProductSurface::Hip3BuilderPerps
+        }
+        hyperliquid_instrument::ProductSurface::Hip4Outcomes => {
+            HyperliquidProductSurface::Hip4Outcomes
+        }
+    }
+}
+
+fn hyperliquid_static_instrument_surface_name(
+    surface: hyperliquid_instrument::ProductSurface,
+) -> &'static str {
+    product_surface_name(hyperliquid_static_instrument_surface(surface))
 }
 
 fn validate_surface_live_submit_approval(

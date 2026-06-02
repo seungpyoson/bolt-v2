@@ -646,6 +646,55 @@ fn hyperliquid_standard_perps_execution_accepts_static_instrument_target_after_c
 }
 
 #[test]
+fn hyperliquid_static_instrument_target_surface_must_match_execution_surface() {
+    let loaded = fixture_loaded_config_with_hyperliquid_standard_perps();
+    let resolved = fixture_resolved_hyperliquid_secrets();
+    let consumed = consumed_hyperliquid_standard_perps_approval();
+    let mut approvals = bolt_v2::bolt_v3_providers::ProviderLiveSubmitApprovals::empty();
+    approvals.insert(
+        "hyperliquid_perps".to_string(),
+        bolt_v2::bolt_v3_providers::ProviderLiveSubmitApproval::new(Box::new(consumed)),
+    );
+
+    let error =
+        bolt_v2::bolt_v3_adapters::map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+            &loaded,
+            &resolved,
+            &hyperliquid_static_instrument_target_plan(
+                ProductSurface::Spot,
+                "BTC/USDC.HYPERLIQUID",
+            ),
+            fixed_market_clock(1_800_000_000),
+            ProviderRuntimeApprovals {
+                live_submit: Some(&approvals),
+            },
+        )
+        .expect_err(
+            "static Hyperliquid target product surface must match the execution client surface",
+        );
+
+    match error {
+        BoltV3AdapterMappingError::ValidationInvariant {
+            client_key,
+            field,
+            message,
+        } => {
+            assert_eq!(client_key, "hyperliquid_perps");
+            assert_eq!(field, "strategy.target.product_surface");
+            assert!(
+                message.contains("spot"),
+                "target surface must be named: {message}"
+            );
+            assert!(
+                message.contains("standard_perps"),
+                "configured execution surface must be named: {message}"
+            );
+        }
+        other => panic!("expected Hyperliquid static-instrument surface invariant, got {other}"),
+    }
+}
+
+#[test]
 fn hyperliquid_spot_execution_requires_consumed_surface_approval() {
     let loaded = fixture_loaded_config_with_hyperliquid_spot();
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();

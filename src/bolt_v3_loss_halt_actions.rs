@@ -283,8 +283,8 @@ fn strongest_trading_state_action(
 mod tests {
     use super::{
         LossGovernorHaltActionPolicy, LossGovernorManualRecoveryEvidence,
-        LossGovernorManualRecoveryEvidenceError, LossGovernorRecoveryMode,
-        LossGovernorManualRecoveryRequest, LossGovernorTradingStateAction,
+        LossGovernorManualRecoveryEvidenceError, LossGovernorManualRecoveryRequest,
+        LossGovernorRecoveryMode, LossGovernorTradingStateAction,
         next_loss_governor_manual_recovery_trading_state, next_loss_governor_trading_state,
     };
     use crate::bolt_v3_loss_governor::{LossAdmissionDecision, LossHaltReason, LossSnapshot};

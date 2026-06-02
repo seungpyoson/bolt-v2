@@ -30,9 +30,10 @@ This phase intentionally separates four concerns:
 - Every flatten candidate carries NT identifiers and types where available: `AccountId`, `InstrumentId`, `StrategyId`, `PositionId`, `PositionSide` or `PositionSideSpecified`, and `Quantity`.
 - Flatten snapshots explicitly distinguish NT cache `Position` evidence from NT `PositionStatusReport` evidence so the later live adapter cannot replace NT reports with an ad hoc position model.
 - `PositionSide::Long` maps to NT `OrderSide::Sell`; `PositionSide::Short` maps to NT `OrderSide::Buy`; `Flat` and `NoPositionSide` cannot produce a forced-reduction order.
+- Pinned NT source confirms `PositionSide` includes `NoPositionSide`, `Flat`, `Long`, and `Short`, while `PositionSideSpecified` includes `Flat`, `Long`, and `Short`. Phase 5 uses those NT enums directly and must not add a Bolt-specific side wrapper.
 - A forced-reduction order is reduce-only, policy-bound, and tied to a `BoltV3KillSwitchForcedReductionClaim`; ordinary exits remain ordinary exits and continue to obey ordinary caps.
 - The existing `bolt_v3_order_intent` NT order template validation/building contract is reused for flatten order shape. Phase 5 must not invent venue-specific order construction.
-- Top-level `[risk.kill_switch]` forced-reduction settings own admission policy hash, forced live-order cap, and max notional per forced-reduction order. `[risk.kill_switch.flatten]` owns flatten-specific retry, source freshness, route, and order-template settings.
+- Top-level `[risk.kill_switch]` forced-reduction settings own the global admission policy hash, global forced live-order cap, and global max notional per forced-reduction order. `[risk.kill_switch.flatten]` owns local flatten-loop settings named consistently with `[risk.kill_switch.cancel]`: `retry_max_attempts`, `retry_timeout_ms`, `retry_backoff_ms`, `source_freshness_max_age_ms`, `max_position_proof_age_ms`, route settings, and order-template settings. Any local flatten cap must be bounded by the global forced-reduction cap.
 - Missing position proof, stale source timestamps, unsupported route proof, invalid side, unsupported instrument, invalid quantity, exhausted retry budget, rejected submit evidence, or residual position evidence returns manual-intervention or residual-risk evidence rather than silently claiming flat.
 - Retry decisions remain valid only while the latest route context still reports NT `TradingState::Reducing`; a later `Active` or `Halted` observation fails closed instead of continuing a retry loop.
 - Partial fills and filled-before-cancel races do not prove flat. They remain unresolved until fresh NT position evidence proves no residual position.
@@ -107,6 +108,8 @@ Use Option A. Phase 5 should produce a reviewable no-submit flatten-loop proof m
   - Validates flatten policy only when `[risk.kill_switch]` and `[risk.kill_switch.flatten]` are enabled.
 - Modify `scripts/verify_bolt_v3_strategy_policy_fence.py`
   - Rejects strategy imports or direct references to the global flatten-loop module/policy if the implementation introduces names that strategies could misuse.
+- Modify `scripts/test_verify_bolt_v3_strategy_policy_fence.py`
+  - Adds mock strategy self-tests proving the new flatten-loop source-fence rule accepts compliant strategy content and rejects direct global flatten supervisor or policy bypass references.
 - Test `tests/bolt_v3_kill_switch_flatten.rs`
   - Unit tests for NT position evidence, metadata binding, stale proof rejection, side-to-order mapping, forced-reduction admission claim binding, route-proof rejection, outcome transitions, retry exhaustion, and no-submit command decisions.
 - Test `tests/bolt_v3_kill_switch_config.rs`
@@ -137,10 +140,10 @@ Use Option A. Phase 5 should produce a reviewable no-submit flatten-loop proof m
 21. GREEN: add outcome aggregation that reports `AllFlat`, `ResidualPositionRemains`, `OutstandingFlattenSubmit`, `SubmitRejectedManualIntervention`, or `FailedManualIntervention` without claiming final global reconciliation.
 22. RED: test proves retry attempts, timeout, and backoff are policy-owned, retry exhaustion produces `FailedManualIntervention`, and retry allowance is revoked when fresh route context is no longer `TradingState::Reducing`.
 23. GREEN: add retry budget fields and pure retry-decision logic.
-24. RED: config test proves enabled `[risk.kill_switch.flatten]` rejects missing or zero retry, timeout, backoff, freshness, route, max position proof age, and invalid order-template settings; keep existing top-level forced-reduction admission-policy validation in the same config test surface.
+24. RED: config test proves enabled `[risk.kill_switch.flatten]` rejects missing or zero `retry_max_attempts`, `retry_timeout_ms`, `retry_backoff_ms`, `source_freshness_max_age_ms`, route, `max_position_proof_age_ms`, and invalid order-template settings; keep existing top-level forced-reduction admission-policy validation in the same config test surface and prove local flatten caps cannot exceed global forced-reduction caps.
 25. GREEN: extend `KillSwitchConfigBlock`, parsing, and validation for flatten policy settings and order-template validation.
-26. RED: source-fence test proves strategies cannot import `bolt_v3_kill_switch_flatten` or call global flatten supervisor APIs directly.
-27. GREEN: extend the strategy source fence without weakening existing strategy submit/cancel bypass checks.
+26. RED: source-fence self-test proves mock strategy content cannot import `bolt_v3_kill_switch_flatten` or call global flatten supervisor APIs directly, while compliant strategy content still passes.
+27. GREEN: extend the strategy source fence and its self-test suite without weakening existing strategy submit/cancel bypass checks.
 28. REFACTOR: keep position snapshot/proof types, supervisor planning, retry/outcome aggregation, order-template proof, and config validation separated so the later live NT adapter can be added without changing the pure model.
 
 ## Phase 5 Acceptance
@@ -159,7 +162,9 @@ Use Option A. Phase 5 should produce a reviewable no-submit flatten-loop proof m
 - Partial fills and filled-before-cancel races cannot be counted as flat; residual position proof remains unresolved until fresh NT position evidence proves flat.
 - Retry exhaustion, unsupported route proof, stale proof, rejected submit evidence, unsupported instrument, thin-book/no-fillability proof, or retry context no longer in `TradingState::Reducing` returns manual-intervention or residual-risk evidence instead of success.
 - `[risk.kill_switch.flatten]` values are TOML-owned and validated when enabled.
+- `[risk.kill_switch.flatten]` field names follow the existing cancel-policy style: `retry_max_attempts`, `retry_timeout_ms`, `retry_backoff_ms`, `source_freshness_max_age_ms`, and `max_position_proof_age_ms`; local flatten caps are explicitly bounded by the global forced-reduction caps under `[risk.kill_switch]`.
 - Strategy source fences reject strategy-local global flatten supervisor policy and direct flatten bypasses.
+- Strategy source-fence self-tests cover both compliant mock strategy content and forbidden global flatten supervisor or policy references.
 - `just test` passes after implementation.
 - `just fmt-check` passes after implementation.
 - `just clippy` passes after implementation.
@@ -178,6 +183,6 @@ Use Option A. Phase 5 should produce a reviewable no-submit flatten-loop proof m
 
 ## External Review Gate
 
-Before implementation, DeepSeek and GLM must both approve this Phase 5 plan or provide actionable findings. If a provider cannot be used for more than two consecutive attempts in this session, it is skipped for this phase per user instruction and the skip is recorded in PR evidence.
+Before implementation, Claude must approve this Phase 5 plan with no blocking findings. DeepSeek and GLM should also approve or provide actionable findings; if a non-Claude provider cannot be used for more than two consecutive attempts in this session, it is skipped for this phase per user instruction and the skip is recorded in PR evidence.
 
-After implementation and a green exact PR head, the exact Phase 5 diff receives another DeepSeek and GLM review. Both usable reviewers must approve before the Phase 5 PR is marked ready.
+After implementation and a green exact PR head, the exact Phase 5 diff receives another Claude review plus DeepSeek and GLM where usable. Claude approval is required before the Phase 5 PR is marked ready.

@@ -94,6 +94,39 @@ fn live_submit_admission_report_ignores_stale_operator_evidence_head_sha() {
 }
 
 #[test]
+fn live_submit_admission_report_ignores_no_submit_only_config_fields() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let loaded = loaded_with_live_canary(
+        loaded,
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "".to_string(),
+            max_live_order_count: 1,
+            max_notional_per_order: "1.00".to_string(),
+            max_no_submit_readiness_report_bytes: 0,
+            readiness_report_max_age_seconds: 0,
+            reference_quote_max_age_seconds: TEST_READINESS_REPORT_MAX_AGE_SECONDS,
+            reference_quote_wait_timeout_seconds: 0,
+            reference_quote_probe_actor_id: "".to_string(),
+            reference_quote_probe_log_events: true,
+            reference_quote_probe_log_commands: true,
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: None,
+            operator_evidence: None,
+        },
+    );
+
+    let report = build_bolt_v3_live_submit_admission_report_from_config(&loaded)
+        .expect("live start admission should validate only runtime admission fields");
+
+    assert_eq!(report.max_live_order_count(), 1);
+    assert_eq!(report.max_notional_per_order().to_string(), "1.00");
+}
+
+#[test]
 fn live_submit_admission_report_keeps_root_notional_cap() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

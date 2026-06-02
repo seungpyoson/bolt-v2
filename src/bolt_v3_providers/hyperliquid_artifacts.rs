@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -262,6 +262,12 @@ pub fn persist_consumed_hyperliquid_live_submit_approval_artifact(
     path: &Path,
     artifact: &HyperliquidLiveSubmitApprovalArtifact,
 ) -> Result<(), BoltV3OperatorArtifactError> {
+    if artifact.used_at.is_none() {
+        return Err(provider_artifact_invalid(
+            LIVE_SUBMIT_APPROVAL_ARTIFACT,
+            "used_at",
+        ));
+    }
     let bytes =
         serde_json::to_vec_pretty(artifact).map_err(BoltV3OperatorArtifactError::Serialize)?;
     let file = open_hyperliquid_live_submit_approval_file_for_spend(path).map_err(|source| {
@@ -270,7 +276,26 @@ pub fn persist_consumed_hyperliquid_live_submit_approval_artifact(
             source,
         }
     })?;
-    drop(file);
+    try_lock_hyperliquid_live_submit_approval_file_for_spend(&file).map_err(|source| {
+        BoltV3OperatorArtifactError::Write {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    let existing =
+        read_hyperliquid_live_submit_approval_artifact_from_open_file(&file, bytes.len() as u64)?;
+    let mut expected_existing = artifact.clone();
+    expected_existing.used_at = None;
+    if existing != expected_existing {
+        return Err(provider_artifact_invalid(
+            LIVE_SUBMIT_APPROVAL_ARTIFACT,
+            if existing.used_at.is_some() {
+                "used_at"
+            } else {
+                "approval_artifact"
+            },
+        ));
+    }
 
     let temp_path = hyperliquid_live_submit_approval_spend_temp_path(path);
     let mut temp_created = false;
@@ -294,6 +319,7 @@ pub fn persist_consumed_hyperliquid_live_submit_approval_artifact(
         }
         Ok(())
     })();
+    drop(file);
     if result.is_err() && temp_created {
         let _ = fs::remove_file(&temp_path);
     }
@@ -301,6 +327,33 @@ pub fn persist_consumed_hyperliquid_live_submit_approval_artifact(
         path: path.to_path_buf(),
         source,
     })
+}
+
+fn read_hyperliquid_live_submit_approval_artifact_from_open_file(
+    file: &fs::File,
+    max_bytes: u64,
+) -> Result<HyperliquidLiveSubmitApprovalArtifact, BoltV3OperatorArtifactError> {
+    let invalid_artifact =
+        || provider_artifact_invalid(LIVE_SUBMIT_APPROVAL_ARTIFACT, "approval_artifact");
+    let bytes = read_open_file_bounded(file, max_bytes).map_err(|_| invalid_artifact())?;
+    serde_json::from_slice(&bytes).map_err(|_| invalid_artifact())
+}
+
+fn read_open_file_bounded(mut file: &fs::File, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    let length = bytes.len() as u64;
+    if length > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"
+            ),
+        ));
+    }
+    Ok(bytes)
 }
 
 fn hyperliquid_live_submit_approval_spend_temp_path(path: &Path) -> PathBuf {
@@ -322,6 +375,28 @@ fn open_hyperliquid_live_submit_approval_file_for_spend(path: &Path) -> std::io:
 #[cfg(not(unix))]
 fn open_hyperliquid_live_submit_approval_file_for_spend(path: &Path) -> std::io::Result<fs::File> {
     fs::OpenOptions::new().read(true).open(path)
+}
+
+#[cfg(unix)]
+fn try_lock_hyperliquid_live_submit_approval_file_for_spend(
+    file: &fs::File,
+) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: `file.as_raw_fd()` is a live descriptor for the duration of the call.
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn try_lock_hyperliquid_live_submit_approval_file_for_spend(
+    _file: &fs::File,
+) -> std::io::Result<()> {
+    Ok(())
 }
 
 pub fn write_hyperliquid_live_submit_approval_artifact(

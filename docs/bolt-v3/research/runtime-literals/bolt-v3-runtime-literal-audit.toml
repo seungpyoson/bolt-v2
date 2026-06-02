@@ -16026,6 +16026,14 @@ reason = '''This labels a provider-side Hyperliquid operator-artifact read/parse
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
 kind = '''string'''
+literal = '''"approval_artifact"'''
+context = '''"approval_artifact"'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid approval-spend mismatch validation field when the locked on-disk artifact no longer matches the consumed artifact being persisted.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
 literal = '''".spending"'''
 context = '''const LIVE_SUBMIT_APPROVAL_SPEND_TEMP_SUFFIX: &str = ".spending";'''
 classification = '''hyperliquid_live_submit_approval_spend_temp_suffix'''
@@ -16318,6 +16326,30 @@ literal = '''"used_at"'''
 context = '''"used_at",'''
 classification = '''provider_artifact_validation_field'''
 reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"used_at"'''
+context = '''"used_at"'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fail-closed one-time approval spend state when persistence is asked to write an unconsumed artifact or the locked on-disk artifact is already consumed.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''.take(max_bytes.saturating_add(1))'''
+classification = '''bounded_artifact_read_overflow_probe'''
+reason = '''This reads one byte beyond the configured artifact byte cap to detect oversized Hyperliquid approval artifacts without unbounded memory growth.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"'''
+context = '''"operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"'''
+classification = '''bounded_artifact_read_diagnostic_template'''
+reason = '''This diagnostic reports the configured artifact byte cap and observed bounded-read length for a Hyperliquid approval artifact; both values are computed from config and file contents.'''
 
 [[allowed]]
 path = '''src/bolt_v3_submit_admission.rs'''

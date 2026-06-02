@@ -373,3 +373,76 @@ fn consumed_live_submit_approval_persist_rejects_symlinked_spend_temp_path() {
         .expect("unconsumed approval should still parse");
     assert_eq!(approval.used_at, None);
 }
+
+#[cfg(unix)]
+#[test]
+fn consumed_live_submit_approval_persist_rejects_concurrent_spend_lock() {
+    use std::os::fd::AsRawFd;
+
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("hyperliquid-live-submit-approval.json");
+    write_hyperliquid_live_submit_approval_artifact(approval_input(), &path)
+        .expect("approval artifact should write");
+    let locked_approval =
+        std::fs::File::open(&path).expect("approval artifact should open for test lock");
+    // SAFETY: `locked_approval.as_raw_fd()` is a live descriptor for the duration of the call.
+    let lock_result =
+        unsafe { libc::flock(locked_approval.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_eq!(lock_result, 0, "test should hold approval spend lock");
+    let mut consumed = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    consumed.used_at = Some(NOW);
+
+    let error = persist_consumed_hyperliquid_live_submit_approval_artifact(&path, &consumed)
+        .expect_err("concurrent approval spend must fail closed")
+        .to_string();
+
+    assert!(
+        error.contains("write"),
+        "concurrent spend failure should surface as write failure: {error}"
+    );
+    let approval = read_hyperliquid_live_submit_approval_artifact(&path, 4096)
+        .expect("locked approval should remain readable");
+    assert_eq!(approval.used_at, None);
+}
+
+#[test]
+fn consumed_live_submit_approval_persist_rejects_already_consumed_file() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let mut consumed = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    consumed.used_at = Some(NOW);
+    write_hyperliquid_live_submit_approval_artifact(approval_input(), &path)
+        .expect("approval artifact should write");
+    persist_consumed_hyperliquid_live_submit_approval_artifact(&path, &consumed)
+        .expect("first approval spend should persist");
+
+    let error = persist_consumed_hyperliquid_live_submit_approval_artifact(&path, &consumed)
+        .expect_err("already consumed approval file must not be spent again")
+        .to_string();
+
+    assert!(
+        error.contains("used_at"),
+        "already-consumed persistence failure should name used_at: {error}"
+    );
+}
+
+#[test]
+fn consumed_live_submit_approval_persist_rejects_unconsumed_artifact() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let unconsumed = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    write_hyperliquid_live_submit_approval_artifact(approval_input(), &path)
+        .expect("approval artifact should write");
+
+    let error = persist_consumed_hyperliquid_live_submit_approval_artifact(&path, &unconsumed)
+        .expect_err("persisting an unconsumed artifact must fail closed")
+        .to_string();
+
+    assert!(
+        error.contains("used_at"),
+        "unconsumed persistence failure should name used_at: {error}"
+    );
+}

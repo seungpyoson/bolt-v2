@@ -90,6 +90,10 @@ use crate::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
     },
+    bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind},
+    bolt_v3_kill_switch_store::{
+        KillSwitchRecoveryReason, KillSwitchRecoveryState, KillSwitchStore, KillSwitchStoreError,
+    },
     bolt_v3_live_canary_gate::{
         BoltV3LiveCanaryGateError, build_bolt_v3_live_submit_admission_report_from_config,
         current_build_head_sha,
@@ -1657,6 +1661,10 @@ impl BoltV3LiveNodeRuntime {
     pub fn admitted_order_count(&self) -> u32 {
         self.submit_admission.admitted_order_count()
     }
+
+    pub fn kill_switch_state_kind(&self) -> KillSwitchStateKind {
+        self.submit_admission.kill_switch_state_kind()
+    }
 }
 
 impl std::fmt::Debug for BoltV3LiveNodeRuntime {
@@ -1708,6 +1716,17 @@ pub enum BoltV3LiveNodeError {
     BuilderConstruction(BoltV3LiveNodeBuilderError),
     ClientRegistration(BoltV3ClientRegistrationError),
     StrategyRegistration(BoltV3StrategyRegistrationError),
+    /// Enabled kill-switch startup recovery found durable state that cannot
+    /// safely re-arm local admission. The build path fails closed before
+    /// resolving secrets, constructing NT clients, or registering
+    /// submit-capable strategy runtime.
+    KillSwitchRecovery {
+        reason: KillSwitchRecoveryReason,
+    },
+    /// Enabled kill-switch startup recovery could not read the durable
+    /// state store. This is distinct from classified fail-closed states
+    /// because the underlying I/O error is useful operator evidence.
+    KillSwitchStore(KillSwitchStoreError),
     Build(anyhow::Error),
     /// The live canary gate rejected entry to NT's runner loop before
     /// `LiveNode::run` was invoked. This variant wraps the specific
@@ -1846,6 +1865,14 @@ impl std::fmt::Display for BoltV3LiveNodeError {
             BoltV3LiveNodeError::StrategyRegistration(error) => {
                 write!(f, "bolt-v3 strategy registration failed: {error}")
             }
+            BoltV3LiveNodeError::KillSwitchRecovery { reason } => write!(
+                f,
+                "bolt-v3 kill-switch durable state recovery failed closed before live-node build: {reason}"
+            ),
+            BoltV3LiveNodeError::KillSwitchStore(error) => write!(
+                f,
+                "bolt-v3 kill-switch durable state store read failed before live-node build: {error}"
+            ),
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
             BoltV3LiveNodeError::LiveCanaryGate(error) => {
                 write!(
@@ -1978,6 +2005,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::BuilderConstruction(error) => Some(error),
             BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
             BoltV3LiveNodeError::StrategyRegistration(error) => Some(error),
+            BoltV3LiveNodeError::KillSwitchStore(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
             BoltV3LiveNodeError::LiveCanaryGate(error) => Some(error),
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => Some(error.as_ref()),
@@ -1993,6 +2021,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             | BoltV3LiveNodeError::ConnectIncomplete
             | BoltV3LiveNodeError::DisconnectTimeout { .. }
             | BoltV3LiveNodeError::LiveTransportScope { .. }
+            | BoltV3LiveNodeError::KillSwitchRecovery { .. }
             | BoltV3LiveNodeError::BlockedBeforeSubmit { .. }
             | BoltV3LiveNodeError::NoSubmitStartTimeout { .. }
             | BoltV3LiveNodeError::NoSubmitStartTimeoutOverflow
@@ -2014,10 +2043,17 @@ pub fn build_bolt_v3_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     let transport_loaded = trade_transport_loaded_config(loaded)?;
+    let kill_switch_startup_state =
+        recover_kill_switch_state_before_live_node_build(&transport_loaded)?;
     let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
     let adapters = map_bolt_v3_adapters(&transport_loaded, &resolved)
         .map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    let (runtime, _summary) = build_live_node_with_clients(&transport_loaded, &resolved, adapters)?;
+    let (runtime, _summary) = build_live_node_with_clients(
+        &transport_loaded,
+        &resolved,
+        adapters,
+        kill_switch_startup_state,
+    )?;
     Ok(runtime)
 }
 
@@ -2041,10 +2077,17 @@ pub fn build_bolt_v3_no_submit_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     let transport_loaded = trade_transport_loaded_config(loaded)?;
+    let kill_switch_startup_state =
+        recover_kill_switch_state_before_live_node_build(&transport_loaded)?;
     let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
     let adapters = no_submit_transport_adapter_configs(&transport_loaded, &resolved)?;
     let no_submit_loaded = no_submit_transport_loaded_config(&transport_loaded);
-    let (runtime, _summary) = build_live_node_with_clients(&no_submit_loaded, &resolved, adapters)?;
+    let (runtime, _summary) = build_live_node_with_clients(
+        &no_submit_loaded,
+        &resolved,
+        adapters,
+        kill_switch_startup_state,
+    )?;
     Ok(runtime)
 }
 
@@ -2053,21 +2096,34 @@ pub fn build_bolt_v3_no_submit_data_client_probe_live_node(
     client_key: &str,
 ) -> Result<(BoltV3LiveNodeRuntime, LoadedBoltV3Config), BoltV3LiveNodeError> {
     let probe_loaded = data_client_probe_loaded_config(loaded, client_key)?;
+    let kill_switch_startup_state =
+        recover_kill_switch_state_before_live_node_build(&probe_loaded)?;
     let resolved = resolve_bolt_v3_live_node_secrets(&probe_loaded)?;
     let adapters = no_submit_transport_adapter_configs(&probe_loaded, &resolved)?;
     let no_submit_loaded = no_submit_transport_loaded_config(&probe_loaded);
-    let (runtime, _summary) = build_live_node_with_clients(&no_submit_loaded, &resolved, adapters)?;
+    let (runtime, _summary) = build_live_node_with_clients(
+        &no_submit_loaded,
+        &resolved,
+        adapters,
+        kill_switch_startup_state,
+    )?;
     Ok((runtime, no_submit_loaded))
 }
 
 pub fn build_bolt_v3_all_configured_client_mapping_live_node(
     loaded: &LoadedBoltV3Config,
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
+    let kill_switch_startup_state = recover_kill_switch_state_before_live_node_build(loaded)?;
     let resolved = resolve_bolt_v3_live_node_secrets(loaded)?;
     let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
     let mapping_loaded = no_submit_transport_loaded_config(loaded);
-    let (runtime, _summary) = build_live_node_with_clients(&mapping_loaded, &resolved, adapters)?;
+    let (runtime, _summary) = build_live_node_with_clients(
+        &mapping_loaded,
+        &resolved,
+        adapters,
+        kill_switch_startup_state,
+    )?;
     Ok(runtime)
 }
 
@@ -3196,13 +3252,42 @@ where
     E: std::fmt::Display,
 {
     let transport_loaded = trade_transport_loaded_config(loaded)?;
+    let kill_switch_startup_state =
+        recover_kill_switch_state_before_live_node_build(&transport_loaded)?;
     check_no_forbidden_credential_env_vars_with(&transport_loaded.root, env_is_set)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
     let resolved = resolve_bolt_v3_secrets_with(&transport_loaded, resolver)
         .map_err(BoltV3LiveNodeError::SecretResolution)?;
     let adapters = map_bolt_v3_adapters(&transport_loaded, &resolved)
         .map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    build_live_node_with_clients(&transport_loaded, &resolved, adapters)
+    build_live_node_with_clients(
+        &transport_loaded,
+        &resolved,
+        adapters,
+        kill_switch_startup_state,
+    )
+}
+
+fn recover_kill_switch_state_before_live_node_build(
+    loaded: &LoadedBoltV3Config,
+) -> Result<Option<KillSwitchState>, BoltV3LiveNodeError> {
+    let Some(config) = loaded.root.risk.kill_switch.as_ref() else {
+        return Ok(None);
+    };
+    if !config.enabled {
+        return Ok(None);
+    }
+
+    let store = KillSwitchStore::from_root_config_path(&loaded.root_path, config);
+    match store
+        .load_recovery_state()
+        .map_err(BoltV3LiveNodeError::KillSwitchStore)?
+    {
+        KillSwitchRecoveryState::Recovered(state) => Ok(Some(state)),
+        KillSwitchRecoveryState::FailClosed { reason, .. } => {
+            Err(BoltV3LiveNodeError::KillSwitchRecovery { reason })
+        }
+    }
 }
 
 pub fn build_bolt_v3_all_configured_client_mapping_live_node_with_summary<F, R, E>(
@@ -3215,6 +3300,7 @@ where
     R: FnMut(&str, &str) -> Result<String, E>,
     E: std::fmt::Display,
 {
+    let kill_switch_startup_state = recover_kill_switch_state_before_live_node_build(loaded)?;
     check_no_forbidden_credential_env_vars_with(&loaded.root, env_is_set)
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
     let resolved = resolve_bolt_v3_secrets_with(loaded, resolver)
@@ -3222,13 +3308,19 @@ where
     let adapters =
         map_bolt_v3_adapters(loaded, &resolved).map_err(BoltV3LiveNodeError::AdapterMapping)?;
     let mapping_loaded = no_submit_transport_loaded_config(loaded);
-    build_live_node_with_clients(&mapping_loaded, &resolved, adapters)
+    build_live_node_with_clients(
+        &mapping_loaded,
+        &resolved,
+        adapters,
+        kill_switch_startup_state,
+    )
 }
 
 fn build_live_node_with_clients(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
     adapters: BoltV3AdapterConfigs,
+    kill_switch_startup_state: Option<KillSwitchState>,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
     let proof_executor_enabled = canary_proof_executor_enabled(loaded);
     let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> =
@@ -3248,6 +3340,9 @@ fn build_live_node_with_clients(
     let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(
         decision_evidence.clone(),
     ));
+    if let Some(state) = kill_switch_startup_state {
+        submit_admission.replace_kill_switch_state(state);
+    }
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)

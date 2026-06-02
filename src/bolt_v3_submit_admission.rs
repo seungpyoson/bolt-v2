@@ -91,6 +91,14 @@ impl BoltV3SubmitAdmissionState {
         inner.kill_switch_state = state;
     }
 
+    pub fn kill_switch_state_kind(&self) -> KillSwitchStateKind {
+        self.inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned")
+            .kill_switch_state
+            .kind()
+    }
+
     pub fn configure_kill_switch_forced_reduction_policy(
         &self,
         policy: BoltV3KillSwitchForcedReductionPolicy,

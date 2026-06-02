@@ -9,6 +9,7 @@ use bolt_v2::{
         BoltV3KillSwitchOutstandingOrderRiskSurface,
     },
 };
+use nautilus_model::identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId};
 
 const ACTION_ID: &str = "cancel-action-1";
 const POLICY_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -70,21 +71,27 @@ fn cancel_snapshot_reports_missing_mandatory_surface_proof() {
 }
 
 #[test]
-fn cancel_candidate_stores_trimmed_scope_and_identity_fields() {
-    let candidate = BoltV3KillSwitchCancelCandidate::new(
+fn cancel_candidate_stores_nt_order_identity_fields() {
+    let candidate = BoltV3KillSwitchCancelCandidate::from_nt_order_identity(
         BoltV3KillSwitchOutstandingOrderRiskSurface::Open,
-        " POLYMARKET-001 ",
-        " BTC-2026-06-02-UP ",
-        " binary-oracle-edge-taker-001 ",
-        " client-order-1 ",
+        account_id(),
+        instrument_id(),
+        strategy_id("binary-oracle-edge-taker-001"),
+        client_order_id("client-order-1"),
         1_717_200_000_000_000_000,
     )
-    .expect("trimmed cancel candidate should be valid");
+    .expect("NT-backed cancel candidate should be valid");
 
-    assert_eq!(candidate.account_id(), "POLYMARKET-001");
-    assert_eq!(candidate.instrument_id(), "BTC-2026-06-02-UP");
-    assert_eq!(candidate.strategy_id(), "binary-oracle-edge-taker-001");
-    assert_eq!(candidate.client_order_id(), "client-order-1");
+    assert_eq!(candidate.account_id(), account_id());
+    assert_eq!(candidate.instrument_id(), instrument_id());
+    assert_eq!(
+        candidate.strategy_id(),
+        strategy_id("binary-oracle-edge-taker-001")
+    );
+    assert_eq!(
+        candidate.client_order_id(),
+        client_order_id("client-order-1")
+    );
 }
 
 #[test]
@@ -180,7 +187,7 @@ fn cancel_supervisor_commands_bind_request_and_candidate_metadata() {
     let command = plan
         .commands()
         .iter()
-        .find(|command| command.client_order_id() == "client-order-0")
+        .find(|command| command.client_order_id() == client_order_id("client-order-0"))
         .expect("first candidate command should exist");
 
     assert_eq!(command.halt_id(), "halt-1");
@@ -191,10 +198,13 @@ fn cancel_supervisor_commands_bind_request_and_candidate_metadata() {
         command.source_timestamp_unix_nanos(),
         REQUEST_SOURCE_TIMESTAMP_UNIX_NANOS
     );
-    assert_eq!(command.account_id(), "POLYMARKET-001");
-    assert_eq!(command.instrument_id(), "BTC-2026-06-02-UP");
-    assert_eq!(command.strategy_id(), "binary-oracle-edge-taker-001");
-    assert_eq!(command.client_order_id(), "client-order-0");
+    assert_eq!(command.account_id(), account_id());
+    assert_eq!(command.instrument_id(), instrument_id());
+    assert_eq!(
+        command.strategy_id(),
+        strategy_id("binary-oracle-edge-taker-001")
+    );
+    assert_eq!(command.client_order_id(), client_order_id("client-order-0"));
     assert_eq!(
         command.surface(),
         BoltV3KillSwitchOutstandingOrderRiskSurface::Open
@@ -225,19 +235,19 @@ fn cancel_supervisor_rejects_stale_source_timestamps_and_empty_scope_filters() {
 
     for (account_ids, instrument_ids, strategy_ids) in [
         (
-            Vec::<String>::new(),
-            vec!["BTC-2026-06-02-UP".to_string()],
-            vec!["binary-oracle-edge-taker-001".to_string()],
+            Vec::<AccountId>::new(),
+            vec![instrument_id()],
+            vec![strategy_id("binary-oracle-edge-taker-001")],
         ),
         (
-            vec!["POLYMARKET-001".to_string()],
-            Vec::<String>::new(),
-            vec!["binary-oracle-edge-taker-001".to_string()],
+            vec![account_id()],
+            Vec::<InstrumentId>::new(),
+            vec![strategy_id("binary-oracle-edge-taker-001")],
         ),
         (
-            vec!["POLYMARKET-001".to_string()],
-            vec!["BTC-2026-06-02-UP".to_string()],
-            Vec::<String>::new(),
+            vec![account_id()],
+            vec![instrument_id()],
+            Vec::<StrategyId>::new(),
         ),
     ] {
         assert_eq!(
@@ -329,9 +339,9 @@ fn complete_cancel_snapshot_with_timestamp(
 
 fn valid_scope() -> BoltV3KillSwitchCancelScope {
     BoltV3KillSwitchCancelScope::new(
-        vec!["POLYMARKET-001".to_string()],
-        vec!["BTC-2026-06-02-UP".to_string()],
-        vec!["binary-oracle-edge-taker-001".to_string()],
+        vec![account_id()],
+        vec![instrument_id()],
+        vec![strategy_id("binary-oracle-edge-taker-001")],
     )
     .expect("valid cancel scope should construct")
 }
@@ -409,17 +419,34 @@ fn cancel_candidate_with_timestamp(
 
 fn cancel_candidate_for_strategy_with_timestamp(
     surface: BoltV3KillSwitchOutstandingOrderRiskSurface,
-    client_order_id: &str,
-    strategy_id: &str,
+    client_order_id_value: &str,
+    strategy_id_value: &str,
     source_timestamp_unix_nanos: u64,
 ) -> BoltV3KillSwitchCancelCandidate {
-    BoltV3KillSwitchCancelCandidate::new(
+    BoltV3KillSwitchCancelCandidate::from_nt_order_identity(
         surface,
-        "POLYMARKET-001",
-        "BTC-2026-06-02-UP",
-        strategy_id,
-        client_order_id,
+        account_id(),
+        instrument_id(),
+        strategy_id(strategy_id_value),
+        client_order_id(client_order_id_value),
         source_timestamp_unix_nanos,
     )
     .expect("cancel candidate should be valid")
+}
+
+fn account_id() -> AccountId {
+    AccountId::new("POLYMARKET-001")
+}
+
+fn instrument_id() -> InstrumentId {
+    InstrumentId::from_as_ref("BTC-2026-06-02-UP.POLYMARKET")
+        .expect("test instrument ID should parse through NT")
+}
+
+fn strategy_id(value: &str) -> StrategyId {
+    StrategyId::new(value)
+}
+
+fn client_order_id(value: &str) -> ClientOrderId {
+    ClientOrderId::new(value)
 }

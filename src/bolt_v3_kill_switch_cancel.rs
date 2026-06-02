@@ -1,4 +1,5 @@
 use crate::bolt_v3_kill_switch::KillSwitchState;
+use nautilus_model::identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,10 +33,10 @@ impl BoltV3KillSwitchOutstandingOrderRiskSurface {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3KillSwitchCancelCandidate {
     surface: BoltV3KillSwitchOutstandingOrderRiskSurface,
-    account_id: String,
-    instrument_id: String,
-    strategy_id: String,
-    client_order_id: String,
+    account_id: AccountId,
+    instrument_id: InstrumentId,
+    strategy_id: StrategyId,
+    client_order_id: ClientOrderId,
     source_timestamp_unix_nanos: u64,
 }
 
@@ -53,18 +54,32 @@ impl BoltV3KillSwitchCancelCandidate {
         let strategy_id = strategy_id.into().trim().to_string();
         let client_order_id = client_order_id.into().trim().to_string();
 
-        if account_id.is_empty() {
-            return Err(BoltV3KillSwitchCancelError::InvalidAccountId);
-        }
-        if instrument_id.is_empty() {
-            return Err(BoltV3KillSwitchCancelError::InvalidInstrumentId);
-        }
-        if strategy_id.is_empty() {
-            return Err(BoltV3KillSwitchCancelError::InvalidStrategyId);
-        }
-        if client_order_id.is_empty() {
-            return Err(BoltV3KillSwitchCancelError::InvalidClientOrderId);
-        }
+        let account_id = AccountId::new_checked(&account_id)
+            .map_err(|_| BoltV3KillSwitchCancelError::InvalidAccountId)?;
+        let instrument_id = InstrumentId::from_as_ref(&instrument_id)
+            .map_err(|_| BoltV3KillSwitchCancelError::InvalidInstrumentId)?;
+        let strategy_id = StrategyId::new_checked(&strategy_id)
+            .map_err(|_| BoltV3KillSwitchCancelError::InvalidStrategyId)?;
+        let client_order_id = ClientOrderId::new_checked(&client_order_id)
+            .map_err(|_| BoltV3KillSwitchCancelError::InvalidClientOrderId)?;
+        Self::from_nt_order_identity(
+            surface,
+            account_id,
+            instrument_id,
+            strategy_id,
+            client_order_id,
+            source_timestamp_unix_nanos,
+        )
+    }
+
+    pub fn from_nt_order_identity(
+        surface: BoltV3KillSwitchOutstandingOrderRiskSurface,
+        account_id: AccountId,
+        instrument_id: InstrumentId,
+        strategy_id: StrategyId,
+        client_order_id: ClientOrderId,
+        source_timestamp_unix_nanos: u64,
+    ) -> Result<Self, BoltV3KillSwitchCancelError> {
         if source_timestamp_unix_nanos == 0 {
             return Err(BoltV3KillSwitchCancelError::MissingSourceTimestamp);
         }
@@ -83,20 +98,20 @@ impl BoltV3KillSwitchCancelCandidate {
         self.surface
     }
 
-    pub fn account_id(&self) -> &str {
-        &self.account_id
+    pub fn account_id(&self) -> AccountId {
+        self.account_id
     }
 
-    pub fn instrument_id(&self) -> &str {
-        &self.instrument_id
+    pub fn instrument_id(&self) -> InstrumentId {
+        self.instrument_id
     }
 
-    pub fn strategy_id(&self) -> &str {
-        &self.strategy_id
+    pub fn strategy_id(&self) -> StrategyId {
+        self.strategy_id
     }
 
-    pub fn client_order_id(&self) -> &str {
-        &self.client_order_id
+    pub fn client_order_id(&self) -> ClientOrderId {
+        self.client_order_id
     }
 
     pub fn source_timestamp_unix_nanos(&self) -> u64 {
@@ -123,10 +138,10 @@ impl BoltV3KillSwitchCancelSnapshot {
         for candidate in candidates {
             observed_surfaces.insert(candidate.surface());
             let scoped_order_identity = (
-                candidate.account_id.clone(),
-                candidate.instrument_id.clone(),
-                candidate.strategy_id.clone(),
-                candidate.client_order_id.clone(),
+                candidate.account_id,
+                candidate.instrument_id,
+                candidate.strategy_id,
+                candidate.client_order_id,
             );
             scoped_candidates
                 .entry(scoped_order_identity)
@@ -250,20 +265,20 @@ impl BoltV3KillSwitchCancelRouteProof {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3KillSwitchCancelScope {
-    account_ids: Vec<String>,
-    instrument_ids: Vec<String>,
-    strategy_ids: Vec<String>,
+    account_ids: Vec<AccountId>,
+    instrument_ids: Vec<InstrumentId>,
+    strategy_ids: Vec<StrategyId>,
 }
 
 impl BoltV3KillSwitchCancelScope {
     pub fn new(
-        account_ids: Vec<String>,
-        instrument_ids: Vec<String>,
-        strategy_ids: Vec<String>,
+        account_ids: Vec<AccountId>,
+        instrument_ids: Vec<InstrumentId>,
+        strategy_ids: Vec<StrategyId>,
     ) -> Result<Self, BoltV3KillSwitchCancelError> {
-        let account_ids = trim_required_values(account_ids)?;
-        let instrument_ids = trim_required_values(instrument_ids)?;
-        let strategy_ids = trim_required_values(strategy_ids)?;
+        if account_ids.is_empty() || instrument_ids.is_empty() || strategy_ids.is_empty() {
+            return Err(BoltV3KillSwitchCancelError::InvalidScope);
+        }
         Ok(Self {
             account_ids,
             instrument_ids,
@@ -271,34 +286,17 @@ impl BoltV3KillSwitchCancelScope {
         })
     }
 
-    pub fn account_ids(&self) -> &[String] {
+    pub fn account_ids(&self) -> &[AccountId] {
         &self.account_ids
     }
 
-    pub fn instrument_ids(&self) -> &[String] {
+    pub fn instrument_ids(&self) -> &[InstrumentId] {
         &self.instrument_ids
     }
 
-    pub fn strategy_ids(&self) -> &[String] {
+    pub fn strategy_ids(&self) -> &[StrategyId] {
         &self.strategy_ids
     }
-}
-
-fn trim_required_values(values: Vec<String>) -> Result<Vec<String>, BoltV3KillSwitchCancelError> {
-    if values.is_empty() {
-        return Err(BoltV3KillSwitchCancelError::InvalidScope);
-    }
-    values
-        .into_iter()
-        .map(|value| {
-            let value = value.trim().to_string();
-            if value.is_empty() {
-                Err(BoltV3KillSwitchCancelError::InvalidScope)
-            } else {
-                Ok(value)
-            }
-        })
-        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,10 +350,10 @@ impl BoltV3KillSwitchCancelSupervisor {
                 config_sha256: request.config_sha256.clone(),
                 policy_sha256: request.policy_sha256.clone(),
                 source_timestamp_unix_nanos: request.source_timestamp_unix_nanos,
-                account_id: candidate.account_id.clone(),
-                instrument_id: candidate.instrument_id.clone(),
-                strategy_id: candidate.strategy_id.clone(),
-                client_order_id: candidate.client_order_id.clone(),
+                account_id: candidate.account_id,
+                instrument_id: candidate.instrument_id,
+                strategy_id: candidate.strategy_id,
+                client_order_id: candidate.client_order_id,
                 surface: candidate.surface(),
                 route_kind,
             })
@@ -453,10 +451,10 @@ pub struct BoltV3KillSwitchCancelCommand {
     config_sha256: String,
     policy_sha256: String,
     source_timestamp_unix_nanos: u64,
-    account_id: String,
-    instrument_id: String,
-    strategy_id: String,
-    client_order_id: String,
+    account_id: AccountId,
+    instrument_id: InstrumentId,
+    strategy_id: StrategyId,
+    client_order_id: ClientOrderId,
     surface: BoltV3KillSwitchOutstandingOrderRiskSurface,
     route_kind: BoltV3KillSwitchCancelRouteKind,
 }
@@ -482,20 +480,20 @@ impl BoltV3KillSwitchCancelCommand {
         self.source_timestamp_unix_nanos
     }
 
-    pub fn account_id(&self) -> &str {
-        &self.account_id
+    pub fn account_id(&self) -> AccountId {
+        self.account_id
     }
 
-    pub fn instrument_id(&self) -> &str {
-        &self.instrument_id
+    pub fn instrument_id(&self) -> InstrumentId {
+        self.instrument_id
     }
 
-    pub fn strategy_id(&self) -> &str {
-        &self.strategy_id
+    pub fn strategy_id(&self) -> StrategyId {
+        self.strategy_id
     }
 
-    pub fn client_order_id(&self) -> &str {
-        &self.client_order_id
+    pub fn client_order_id(&self) -> ClientOrderId {
+        self.client_order_id
     }
 
     pub fn surface(&self) -> BoltV3KillSwitchOutstandingOrderRiskSurface {

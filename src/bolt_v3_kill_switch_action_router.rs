@@ -9,6 +9,12 @@ use sha2::{Digest, Sha256};
 pub enum BoltV3KillSwitchActionClass {
     CancelOutstandingRisk,
     FlattenPositions,
+    EntrySubmit,
+    ReplaceSubmit,
+    LiveSubmit,
+    LiveCancel,
+    LiveFlatten,
+    VenueSpecificCall,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +60,7 @@ pub struct BoltV3KillSwitchActionRequest {
     pub kill_switch_state: KillSwitchState,
     pub nt_trading_state: TradingState,
     pub action_id: String,
+    pub config_sha256: String,
     pub policy_sha256: String,
     pub source_timestamp_unix_nanos: u64,
     pub scope: BoltV3KillSwitchActionScope,
@@ -66,6 +73,7 @@ pub struct BoltV3KillSwitchActionDecision {
     decision_mode: BoltV3KillSwitchActionDecisionMode,
     halt_id: String,
     action_id: String,
+    config_sha256: String,
     policy_sha256: String,
     source_timestamp_unix_nanos: u64,
     scope: BoltV3KillSwitchActionScope,
@@ -87,6 +95,10 @@ impl BoltV3KillSwitchActionDecision {
 
     pub fn action_id(&self) -> &str {
         &self.action_id
+    }
+
+    pub fn config_sha256(&self) -> &str {
+        &self.config_sha256
     }
 
     pub fn policy_sha256(&self) -> &str {
@@ -123,6 +135,7 @@ pub enum BoltV3KillSwitchVenueCall {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3KillSwitchActionRouterError {
     MissingActionId,
+    InvalidConfigSha256,
     InvalidPolicySha256,
     MissingSourceTimestamp,
     InvalidScope,
@@ -131,6 +144,7 @@ pub enum BoltV3KillSwitchActionRouterError {
     KillSwitchStateNotFlattening,
     ForcedReductionProofRequired,
     ForcedReductionProofMismatch,
+    Phase3ActionOutputDisallowed,
 }
 
 pub struct BoltV3KillSwitchActionRouter;
@@ -143,6 +157,14 @@ impl BoltV3KillSwitchActionRouter {
         match request.action_class {
             BoltV3KillSwitchActionClass::CancelOutstandingRisk => cancel_decision(request),
             BoltV3KillSwitchActionClass::FlattenPositions => flatten_decision(request),
+            BoltV3KillSwitchActionClass::EntrySubmit
+            | BoltV3KillSwitchActionClass::ReplaceSubmit
+            | BoltV3KillSwitchActionClass::LiveSubmit
+            | BoltV3KillSwitchActionClass::LiveCancel
+            | BoltV3KillSwitchActionClass::LiveFlatten
+            | BoltV3KillSwitchActionClass::VenueSpecificCall => {
+                Err(BoltV3KillSwitchActionRouterError::Phase3ActionOutputDisallowed)
+            }
         }
     }
 }
@@ -152,6 +174,9 @@ fn validate_action_metadata(
 ) -> Result<(), BoltV3KillSwitchActionRouterError> {
     if request.action_id.trim().is_empty() {
         return Err(BoltV3KillSwitchActionRouterError::MissingActionId);
+    }
+    if !is_sha256_hex_digest(&request.config_sha256) {
+        return Err(BoltV3KillSwitchActionRouterError::InvalidConfigSha256);
     }
     if !is_sha256_hex_digest(&request.policy_sha256) {
         return Err(BoltV3KillSwitchActionRouterError::InvalidPolicySha256);
@@ -215,6 +240,7 @@ fn proof_only_decision(
         decision_mode: BoltV3KillSwitchActionDecisionMode::DryRunProofOnly,
         halt_id,
         action_id: request.action_id,
+        config_sha256: request.config_sha256,
         policy_sha256: request.policy_sha256,
         source_timestamp_unix_nanos: request.source_timestamp_unix_nanos,
         scope: request.scope,

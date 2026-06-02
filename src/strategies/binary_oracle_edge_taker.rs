@@ -14675,6 +14675,7 @@ mod tests {
                 order_quantity: exit_quantity,
                 intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
                 lifecycle_policy: strategy.submit_lifecycle_policy(),
+                position_sizing: None,
                 canary_proof_claim: None,
                 risk_reducing_exit_proof: Some(BoltV3RiskReducingExitProof {
                     position_id: managed_position.position.position_id.to_string(),

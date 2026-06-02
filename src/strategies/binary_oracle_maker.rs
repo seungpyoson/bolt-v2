@@ -83,7 +83,7 @@ use crate::{
         maker_resync::{LegReconcileSnapshot, MarketReconcileSnapshot, cancel_all_on_kill},
         maker_settlement::{SettlementOutcome, TokenLot, settle},
         maker_stale_quote::MarketStaleQuoteAlarm,
-        portfolio_selection::MarketKey,
+        portfolio_selection::{MarketCandidate, MarketKey, SelectionWeights},
         quote_lifecycle::{Leg, LegEvent, LifecycleAction, MarketAction, MarketQuote},
         registry::{BoxedStrategy, StrategyBuildContext, StrategyBuilder, ValidationError},
         requote_budget::RequoteBudget,
@@ -118,6 +118,13 @@ const PARAMETER_OUT_OF_DOMAIN_CODE: &str = stringify!(parameter_out_of_domain);
 /// Validation error code: the `[[markets]]` list is empty, has a duplicate
 /// market id, or carries an unparseable / non-unique outcome instrument id.
 const MARKETS_INVALID_CODE: &str = stringify!(markets_invalid);
+/// Validation error code: the `[selection]` block is degenerate — its weights
+/// were rejected by `SelectionWeights::new` or `max_active_markets` is below 1.
+const SELECTION_INVALID_CODE: &str = stringify!(selection_invalid);
+/// The minimum `max_active_markets` value: a portfolio must admit at least one
+/// active market for selection to mean anything (zero would quote nothing,
+/// silently). No bare literal on the runtime path — the floor is a named const.
+const MIN_MAX_ACTIVE_MARKETS: u64 = 1;
 /// Diagnostic label for the YES outcome instrument field, named from the field
 /// ident itself so the label cannot drift from the config field name.
 const YES_INSTRUMENT_LABEL: &str = stringify!(yes_instrument_id);
@@ -159,6 +166,35 @@ pub struct MakerMarketConfig {
     pub maintenance_window_duration_ms: u64,
     /// Pre-flatten lead-up before the maintenance window (ms).
     pub maintenance_pre_flatten_lead_ms: u64,
+}
+
+/// Strategy-wide market-selection knobs (FR-041 market-SELECTION layer).
+///
+/// The maker scores its configured markets each quote tick via
+/// [`crate::strategies::portfolio_selection`] and quotes only the most
+/// attractive `max_active_markets`; the rest are not quoted and their resting
+/// quotes are canceled. The three weights are the relative importance of the
+/// three selection features (captured spread, top-of-book liquidity, time to
+/// resolution) and are fed verbatim into
+/// [`SelectionWeights::new`](crate::strategies::portfolio_selection::SelectionWeights::new)
+/// — the single source of truth for their domain (every weight finite and
+/// `>= 0`, at least one strictly positive). A single `[selection]` table on the
+/// strategy config (NOT per-market — selection is a portfolio-wide decision).
+/// Deserialized with `deny_unknown_fields` so a stale/misspelled knob is a loud
+/// parse error, matching the parent block's contract.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MakerSelectionConfig {
+    /// Relative weight of the YES-leg captured spread (wider = more edge).
+    pub spread_weight: f64,
+    /// Relative weight of the YES-leg top-of-book liquidity (deeper = safer).
+    pub liquidity_weight: f64,
+    /// Relative weight of the seconds-to-resolution (more time = more requote
+    /// cycles before the coin-flip).
+    pub tau_weight: f64,
+    /// Maximum number of markets quoted concurrently each tick: the top-K of the
+    /// ranked active set. Must be `>= 1` (zero would quote nothing).
+    pub max_active_markets: u64,
 }
 
 /// The maker's NT-runtime and instrument configuration block.
@@ -239,6 +275,10 @@ pub struct BinaryOracleMakerConfig {
 
     /// The validated pricing/governance/throttle knobs (nested `[parameters]`).
     pub parameters: MakerParametersBlock,
+
+    /// The market-selection weights + top-K cap (nested `[selection]`). Drives
+    /// the per-tick rank that decides which configured markets are quoted.
+    pub selection: MakerSelectionConfig,
 }
 
 impl BinaryOracleMakerConfig {
@@ -319,6 +359,45 @@ impl BinaryOracleMakerConfig {
             }
         }
         errors
+    }
+
+    /// Validate the `[selection]` block, fail-loud and collecting **all** errors
+    /// (one line per violation, prefixed with `context`). The weights are checked
+    /// by **constructing** the pure
+    /// [`SelectionWeights`](crate::strategies::portfolio_selection::SelectionWeights)
+    /// via its guarded `new()` — the single source of truth for the weight domain
+    /// (every weight finite and `>= 0`, at least one strictly positive); a `None`
+    /// is one collected error. `max_active_markets` must be `>= 1` (a top-K of
+    /// zero would silently quote nothing). On success the returned `Vec` is empty.
+    fn validate_selection(&self, context: &str) -> Vec<String> {
+        let mut errors: Vec<String> = Vec::new();
+        if self.validated_selection_weights().is_none() {
+            errors.push(format!(
+                "{context}: weights rejected by SelectionWeights::new — spread_weight (`{}`), liquidity_weight (`{}`), tau_weight (`{}`) must each be finite and >= 0 with at least one strictly positive",
+                self.selection.spread_weight,
+                self.selection.liquidity_weight,
+                self.selection.tau_weight,
+            ));
+        }
+        if self.selection.max_active_markets < MIN_MAX_ACTIVE_MARKETS {
+            errors.push(format!(
+                "{context}: max_active_markets must be >= {MIN_MAX_ACTIVE_MARKETS}: `{}`",
+                self.selection.max_active_markets
+            ));
+        }
+        errors
+    }
+
+    /// Build the validated [`SelectionWeights`] from the `[selection]` block, or
+    /// `None` if the weight set is degenerate. The single construction site for
+    /// the weights — `validate_selection` checks it loud, and `new()` stores the
+    /// `Some` so the tick path never rebuilds/revalidates.
+    fn validated_selection_weights(&self) -> Option<SelectionWeights> {
+        SelectionWeights::new(
+            self.selection.spread_weight,
+            self.selection.liquidity_weight,
+            self.selection.tau_weight,
+        )
     }
 }
 
@@ -674,6 +753,13 @@ pub struct BinaryOracleMaker {
     family: BinaryFamily,
     spot: MakerSpotFeed,
 
+    /// The validated market-selection weights, built once in `new()` from the
+    /// `[selection]` block (the builder's `validate_config` already proved they
+    /// construct), so the per-tick rank never rebuilds/revalidates them.
+    selection_weights: SelectionWeights,
+    /// The top-K cap on the active market set, validated `>= 1`.
+    max_active_markets: u64,
+
     /// Per-market state, keyed by the market's stable id. The single source of
     /// truth for which markets the shell runs is `config.markets`; this map is
     /// built once in `new()` and never resized at runtime.
@@ -720,6 +806,15 @@ impl BinaryOracleMaker {
             .parameters
             .validate(&context_label)
             .expect("validated binary_oracle_maker parameters");
+        // The builder's validate_config already proved the `[selection]` weights
+        // construct; re-building here is the single validated-weights source and
+        // panics loudly if a build bypassed validation (it cannot on the registry
+        // path). The validated max is carried alongside so the per-tick rank reads
+        // it without re-checking.
+        let selection_weights = config
+            .validated_selection_weights()
+            .expect("validated binary_oracle_maker selection weights");
+        let max_active_markets = config.selection.max_active_markets;
         let spot = MakerSpotFeed::from_config(&config);
         let reference_instrument_id_parsed =
             InstrumentId::from_str(config.reference_instrument_id.as_str()).ok();
@@ -757,6 +852,8 @@ impl BinaryOracleMaker {
             }),
             family: BinaryFamily,
             spot,
+            selection_weights,
+            max_active_markets,
             markets,
             instrument_to_market,
             reference_instrument_id_parsed,
@@ -1088,11 +1185,85 @@ impl BinaryOracleMaker {
         }
     }
 
+    /// The market-SELECTION pre-pass for this tick: score every configured market
+    /// from its LIVE state and return the active set — the top `max_active_markets`
+    /// `MarketKey`s by attractiveness. A market produces NO candidate (and is thus
+    /// excluded) when its YES leg has no two-sided touch; the pure ranker
+    /// additionally drops any degenerate/non-positive-tau candidate (fail-closed).
+    /// An empty/all-excluded portfolio yields an empty set — quote nothing.
+    ///
+    /// Borrow discipline: this reads `&self.markets` and returns an OWNED
+    /// `BTreeSet<MarketKey>`, so the caller can hold it across the `&mut self`
+    /// per-market loop without an outstanding `&self.markets` borrow.
+    fn active_market_set(&self, now_ms: u64) -> std::collections::BTreeSet<MarketKey> {
+        let candidates: Vec<MarketCandidate> = self
+            .markets
+            .iter()
+            .filter_map(|(market_key, unit)| self.market_candidate(market_key, unit, now_ms))
+            .collect();
+        self.selection_weights
+            .rank(&candidates)
+            .into_iter()
+            .take(self.max_active_markets as usize)
+            .map(|score| score.market)
+            .collect()
+    }
+
+    /// Build a [`MarketCandidate`] for one market from its LIVE YES-book touch and
+    /// its time-to-resolution, or `None` (excluded) when the YES leg has no
+    /// two-sided touch. The captured spread is `best_ask - best_bid`, the
+    /// top-of-book liquidity is `min(best_bid_size, best_ask_size)`, both on the
+    /// YES book; the time-to-resolution is the unit's `seconds_to_market_end`. A
+    /// missing touch on either side is a fail-closed exclusion (the pure ranker
+    /// then rejects any candidate it cannot score safely).
+    fn market_candidate(
+        &self,
+        market_key: &MarketKey,
+        unit: &MarketUnit,
+        now_ms: u64,
+    ) -> Option<MarketCandidate> {
+        let yes_book = unit.book(Leg::Yes);
+        let best_bid = yes_book.best_bid?;
+        let best_ask = yes_book.best_ask?;
+        let best_bid_size = yes_book.best_bid_size?;
+        let best_ask_size = yes_book.best_ask_size?;
+        Some(MarketCandidate {
+            market: market_key.clone(),
+            captured_spread: best_ask - best_bid,
+            top_of_book_liquidity: best_bid_size.min(best_ask_size),
+            seconds_to_resolution: self.seconds_to_market_end(market_key, now_ms) as f64,
+        })
+    }
+
     /// The main quote loop for ONE market — runs on the requote timer (per market)
     /// and on each of that market's book deltas. Every state read/write here is
     /// scoped to the keyed unit; the only shared reads are the oracle fair and the
     /// pricing knobs.
-    fn run_quote_tick(&mut self, market_key: &MarketKey, now_ms: u64) {
+    ///
+    /// `active` is the tick's market-selection verdict (see [`active_market_set`]):
+    /// a market IN the set quotes normally; a market NOT in the set submits no new
+    /// quotes and has its resting quotes canceled (cancel-on-deselect), reusing the
+    /// same `CancelAllBothLegs` path the `CancelOnly` governor posture drives.
+    fn run_quote_tick(
+        &mut self,
+        market_key: &MarketKey,
+        active: &std::collections::BTreeSet<MarketKey>,
+        now_ms: u64,
+    ) {
+        // Market-selection gate (fail-closed): a deselected market is not quoted,
+        // and any resting quote on it is canceled via the SAME per-market cancel
+        // path the CancelOnly governor posture uses (drive the lifecycle machine so
+        // it stays the single owner of order transitions, then translate to NT).
+        if !active.contains(market_key) {
+            if let Some(action) = cancel_all_on_kill(
+                MakerGovernorState::CancelOnly,
+                &mut self.unit_mut(market_key).market,
+            ) {
+                self.execute_action(market_key, action, None, now_ms);
+            }
+            return;
+        }
+
         let Some(oracle_fair) = self.anchored_fair(market_key, now_ms) else {
             return;
         };
@@ -1918,11 +2089,16 @@ impl DataActor for BinaryOracleMaker {
         // do not hold a borrow of `self.markets` across the loop body.
         let keys: Vec<MarketKey> = self.markets.keys().cloned().collect();
         if name == self.requote_timer_name() {
+            // Market-selection pre-pass, computed ONCE per tick into an owned set
+            // before the `&mut self` per-market loop (same collect-keys-first
+            // borrow pattern). Markets outside the active set are not quoted and
+            // have their resting quotes canceled inside `run_quote_tick`.
+            let active = self.active_market_set(now_ms);
             for key in &keys {
                 // Reconnect watchdog runs first so a probable reconnect reconciles
                 // before any fresh quoting this tick.
                 self.run_reconnect_watchdog(key, now_ms);
-                self.run_quote_tick(key, now_ms);
+                self.run_quote_tick(key, &active, now_ms);
             }
         } else if name == self.ops_timer_name() {
             for key in &keys {
@@ -1965,8 +2141,11 @@ impl DataActor for BinaryOracleMaker {
         }
         self.touch_leg_data(&market_key, leg, now_ms);
         // A book move is a reprice trigger for THIS market alongside the requote
-        // timer.
-        self.run_quote_tick(&market_key, now_ms);
+        // timer. Selection depends on live book state, so re-score the portfolio
+        // (the book that just moved may now rank in or out of the active set);
+        // gate this market's reprice on the fresh verdict — single selection path.
+        let active = self.active_market_set(now_ms);
+        self.run_quote_tick(&market_key, &active, now_ms);
         Ok(())
     }
 
@@ -2157,6 +2336,16 @@ impl StrategyBuilder for BinaryOracleMakerBuilder {
                 message,
             });
         }
+        // Fail-loud: surface EVERY [selection] error (degenerate weights,
+        // sub-unit max_active_markets), collect-all.
+        let selection_context = format!("{field_prefix}.selection");
+        for message in config.validate_selection(&selection_context) {
+            errors.push(ValidationError {
+                field: format!("{field_prefix}.selection"),
+                code: SELECTION_INVALID_CODE,
+                message,
+            });
+        }
     }
 
     fn build(raw: &Value, context: &StrategyBuildContext) -> Result<BoxedStrategy> {
@@ -2309,6 +2498,12 @@ maintenance_window_start_ms = 0
 maintenance_window_duration_ms = 0
 maintenance_pre_flatten_lead_ms = 0
 
+[selection]
+spread_weight = 1.0
+liquidity_weight = 1.0
+tau_weight = 0.0
+max_active_markets = 8
+
 [parameters]
 eps = 0.01
 reference_tau = 3600.0
@@ -2363,6 +2558,19 @@ informed_fraction = 0.25
         unit.yes_book.best_ask = Some(0.51);
         unit.yes_book.best_ask_size = Some(10.0);
         ts
+    }
+
+    /// Run the per-market quote tick through the production selection pre-pass:
+    /// compute the active set exactly as `on_time_event` does, then drive one
+    /// market's tick against it. The single test entry to `run_quote_tick` so
+    /// every quote-loop test exercises the real selection gate.
+    fn run_quote_tick_with_selection(
+        maker: &mut BinaryOracleMaker,
+        market_key: &MarketKey,
+        now_ms: u64,
+    ) {
+        let active = maker.active_market_set(now_ms);
+        maker.run_quote_tick(market_key, &active, now_ms);
     }
 
     // 1. Config validation ---------------------------------------------------
@@ -2449,7 +2657,7 @@ informed_fraction = 0.25
         assert!(targets.leg_a.price > 0.0 && targets.leg_a.price < 1.0);
         assert!(targets.leg_b.price > 0.0 && targets.leg_b.price < 1.0);
 
-        maker.run_quote_tick(&key, now_ms);
+        run_quote_tick_with_selection(&mut maker, &key, now_ms);
         assert_eq!(
             maker.submit_attempts.len(),
             2,
@@ -2464,7 +2672,7 @@ informed_fraction = 0.25
     fn no_oracle_fair_skips_quoting_fail_closed() {
         let mut maker = make_maker(unarmed_admission());
         let key = single_market_key();
-        maker.run_quote_tick(&key, 1_000);
+        run_quote_tick_with_selection(&mut maker, &key, 1_000);
         assert!(
             maker.submit_attempts.is_empty(),
             "a tick with no oracle fair must emit no quotes (fail-closed)"
@@ -2496,7 +2704,7 @@ informed_fraction = 0.25
         let mut maker = make_maker(unarmed_admission());
         let key = single_market_key();
         let now_ms = warm_spot_feed(&mut maker);
-        maker.run_quote_tick(&key, now_ms);
+        run_quote_tick_with_selection(&mut maker, &key, now_ms);
         let client_order_id = maker
             .unit(&key)
             .slot(Leg::Yes)
@@ -2573,7 +2781,7 @@ informed_fraction = 0.25
         let mut maker = make_maker(admission.clone());
         let key = single_market_key();
         let now_ms = warm_spot_feed(&mut maker);
-        maker.run_quote_tick(&key, now_ms);
+        run_quote_tick_with_selection(&mut maker, &key, now_ms);
         assert_eq!(maker.submit_attempts.len(), 2);
         assert!(
             maker
@@ -2664,6 +2872,12 @@ half_spread_floor = 0.005
 max_half_spread = 0.2
 requote_min_interval_ms = 0
 informed_fraction = 0.25
+
+[selection]
+spread_weight = 1.0
+liquidity_weight = 1.0
+tau_weight = 0.0
+max_active_markets = 8
 "#
     }
 
@@ -2828,6 +3042,233 @@ informed_fraction = 0.25
                 .iter()
                 .any(|e| e.message.contains("duplicate market_id")),
             "a duplicate market_id must fail loud, got: {errors:?}"
+        );
+    }
+
+    // 8. FR-041 market selection (rank + top-K + fail-closed exclude + cancel
+    //    on deselect) -------------------------------------------------------
+
+    /// A full, valid THREE-market maker config. Spread-only selection
+    /// (`spread_weight = 1`, others `0`) with `max_active_markets = 1` so the
+    /// pre-pass trims to a single top-K market — the controllable shape for the
+    /// rank + top-K + exclusion assertions. Shared knobs/oracle stay top-level;
+    /// each market owns its own outcome instruments.
+    fn three_market_config_toml() -> &'static str {
+        r#"
+strategy_id = "MAKER-001"
+order_id_tag = "001"
+client_id = "POLYMARKET"
+family_key = "updown"
+reference_instrument_id = "BTCUSDT-PERP.BINANCE"
+reference_venue = "BINANCE"
+quote_size = 5.0
+supports_modify = false
+requote_cadence_seconds = 1
+ops_cadence_seconds = 5
+requote_max_cost_per_window = 100
+requote_window_ms = 60000
+max_rest_age_ms = 30000
+data_gap_staleness_ms = 10000
+requote_threshold = 0.001
+pricing_kurtosis = 0.0
+vol_window_secs = 600
+vol_gap_reset_secs = 120
+vol_min_observations = 3
+vol_bridge_valid_secs = 600
+trade_flow_window_secs = 300
+trade_flow_max_samples = 256
+
+[[markets]]
+market_id = "MKT-A"
+yes_instrument_id = "YESA.POLYMARKET"
+no_instrument_id = "NOA.POLYMARKET"
+strike_price = 100.0
+maintenance_window_start_ms = 0
+maintenance_window_duration_ms = 0
+maintenance_pre_flatten_lead_ms = 0
+
+[[markets]]
+market_id = "MKT-B"
+yes_instrument_id = "YESB.POLYMARKET"
+no_instrument_id = "NOB.POLYMARKET"
+strike_price = 200.0
+maintenance_window_start_ms = 0
+maintenance_window_duration_ms = 0
+maintenance_pre_flatten_lead_ms = 0
+
+[[markets]]
+market_id = "MKT-C"
+yes_instrument_id = "YESC.POLYMARKET"
+no_instrument_id = "NOC.POLYMARKET"
+strike_price = 300.0
+maintenance_window_start_ms = 0
+maintenance_window_duration_ms = 0
+maintenance_pre_flatten_lead_ms = 0
+
+[parameters]
+eps = 0.01
+reference_tau = 3600.0
+time_widen_cap = 4.0
+micro_weight = 0.3
+sigma_floor = 0.0
+basis_cap = 1.0
+tau_floor = 0.0
+reduce_only_cap = 100.0
+skew_gain = 0.001
+position_cap = 500.0
+half_spread_floor = 0.005
+max_half_spread = 0.2
+requote_min_interval_ms = 0
+informed_fraction = 0.25
+
+[selection]
+spread_weight = 1.0
+liquidity_weight = 0.0
+tau_weight = 0.0
+max_active_markets = 1
+"#
+    }
+
+    fn make_three_market_maker(admission: Arc<BoltV3SubmitAdmissionState>) -> BinaryOracleMaker {
+        let raw = toml::from_str::<Value>(three_market_config_toml())
+            .expect("three-market config must parse");
+        let mut errors: Vec<ValidationError> = Vec::new();
+        BinaryOracleMakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+        assert!(
+            errors.is_empty(),
+            "a valid three-market config must pass validation, got: {errors:?}"
+        );
+        let config =
+            BinaryOracleMakerBuilder::parse_config(&raw).expect("three-market config deserializes");
+        BinaryOracleMaker::new(config, test_context_with(admission))
+    }
+
+    /// Seed a YES-leg two-sided touch for one market with an explicit captured
+    /// spread (`best_ask - best_bid`) and symmetric size — the live state the
+    /// selection pre-pass reads to build a candidate.
+    fn seed_yes_touch(
+        maker: &mut BinaryOracleMaker,
+        market_key: &MarketKey,
+        bid: f64,
+        ask: f64,
+        size: f64,
+    ) {
+        let unit = maker.unit_mut(market_key);
+        unit.yes_book.best_bid = Some(bid);
+        unit.yes_book.best_ask = Some(ask);
+        unit.yes_book.best_bid_size = Some(size);
+        unit.yes_book.best_ask_size = Some(size);
+    }
+
+    #[test]
+    fn selection_quotes_top_k_and_excludes_degenerate() {
+        let mut maker = make_three_market_maker(unarmed_admission());
+        let key_a = MarketKey::new("MKT-A".to_string());
+        let key_b = MarketKey::new("MKT-B".to_string());
+        let key_c = MarketKey::new("MKT-C".to_string());
+        let now_ms = 5_000_u64;
+
+        // A: widest captured spread (0.10). B: narrower (0.02). C: NO book at all
+        // (absent touch -> no candidate -> fail-closed exclusion). Spread-only
+        // weighting with max_active_markets = 1 makes A the sole top-K market.
+        seed_yes_touch(&mut maker, &key_a, 0.45, 0.55, 10.0);
+        seed_yes_touch(&mut maker, &key_b, 0.49, 0.51, 10.0);
+        // C left untouched: yes_book has no best_bid/ask.
+
+        // (a) Ranked top-K: only A is active; B is ranked-but-trimmed, C excluded.
+        let active = maker.active_market_set(now_ms);
+        assert!(
+            active.contains(&key_a),
+            "the widest-spread market must rank in"
+        );
+        assert!(
+            !active.contains(&key_b),
+            "a lower-ranked market beyond max_active_markets must be excluded"
+        );
+        // (b) Fail-closed exclude: the market with no book never becomes active.
+        assert!(
+            !active.contains(&key_c),
+            "a market with an absent book must be fail-closed-excluded (no candidate)"
+        );
+        assert_eq!(
+            active.len(),
+            1,
+            "max_active_markets = 1 caps the active set"
+        );
+    }
+
+    #[test]
+    fn deselecting_a_market_cancels_its_resting_quote() {
+        let mut maker = make_three_market_maker(unarmed_admission());
+        let key_a = MarketKey::new("MKT-A".to_string());
+        let now_ms = warm_spot_feed_for(&mut maker, &key_a);
+
+        // Make A the sole active market and quote it: it must rest both legs.
+        seed_yes_touch(&mut maker, &key_a, 0.45, 0.55, 10.0);
+        run_quote_tick_with_selection(&mut maker, &key_a, now_ms);
+        assert_eq!(
+            maker.submit_attempts.len(),
+            2,
+            "the active market must translate into two leg submits"
+        );
+        assert!(
+            maker.unit(&key_a).slot(Leg::Yes).client_order_id.is_some(),
+            "the YES leg must hold a resting client order id after quoting"
+        );
+        let submits_after_quote = maker.submit_attempts.len();
+
+        // Now DESELECT A by removing its book (no candidate -> not active) and run
+        // its tick: the deselected market must cancel its resting quote via the
+        // existing CancelAllBothLegs path (slots reset to idle) and submit nothing
+        // new.
+        {
+            let unit = maker.unit_mut(&key_a);
+            unit.yes_book = MakerLegBook::empty();
+        }
+        let active = maker.active_market_set(now_ms);
+        assert!(
+            !active.contains(&key_a),
+            "removing the book must deselect the market (control for the cancel path)"
+        );
+        maker.run_quote_tick(&key_a, &active, now_ms);
+        assert_eq!(
+            maker.submit_attempts.len(),
+            submits_after_quote,
+            "a deselected market must submit no new quotes"
+        );
+        assert!(
+            maker.unit(&key_a).slot(Leg::Yes).client_order_id.is_none()
+                && maker.unit(&key_a).slot(Leg::No).client_order_id.is_none(),
+            "cancel-on-deselect must reset both leg slots (the CancelAllBothLegs path ran)"
+        );
+    }
+
+    #[test]
+    fn an_invalid_selection_block_fails_loud_through_validate_config() {
+        // All-zero weights are rejected by SelectionWeights::new (no meaningful
+        // ranking) AND max_active_markets = 0 is below the floor — both must
+        // surface as fail-loud selection errors through the builder.
+        let toml = three_market_config_toml()
+            .replace("spread_weight = 1.0", "spread_weight = 0.0")
+            .replace("max_active_markets = 1", "max_active_markets = 0");
+        let raw = toml::from_str::<Value>(&toml).expect("config still parses");
+        let mut errors: Vec<ValidationError> = Vec::new();
+        BinaryOracleMakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("SelectionWeights::new")),
+            "an all-zero weight set must fail loud via the reused guard, got: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("max_active_markets")),
+            "a zero max_active_markets must fail loud, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().all(|e| e.field.ends_with(".selection")),
+            "selection errors must carry the .selection field, got: {errors:?}"
         );
     }
 }

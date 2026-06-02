@@ -15155,3 +15155,11 @@ literal = '''1'''
 context = '''const GENERATION_STEP: u64 = 1;'''
 classification = "strategy_state_invariant"
 reason = "This is the named strictly-positive step the per-leg event-fence generation counter advances by each requote (so a fresh order never inherits a stale order's in-flight reports), a strategy-state invariant, not an operator runtime value."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_maker.rs"
+kind = "number"
+literal = '''1'''
+context = '''const MIN_MAX_ACTIVE_MARKETS: u64 = 1;'''
+classification = "strategy_state_invariant"
+reason = "This is the named structural floor on the [selection] max_active_markets knob — a portfolio must admit at least one active market for market selection to be meaningful (zero would silently quote nothing). It is a fail-closed validation invariant the validate_selection guard enforces, not an operator runtime value (the operator-tunable cap is selection.max_active_markets)."

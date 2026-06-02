@@ -1069,12 +1069,11 @@ impl Phase8CanaryEvidence {
         result_refs: Phase8LiveCanaryResultRefs,
         admitted_order_count: u32,
     ) -> Result<Self> {
-        if admitted_order_count != PHASE8_REQUIRED_LIVE_ORDER_CAP {
-            return Err(anyhow!(
-                "phase8 live canary proof admitted_order_count expected {PHASE8_REQUIRED_LIVE_ORDER_CAP} got {admitted_order_count}"
-            ));
-        }
         validate_phase8_canary_input(&input)?;
+        validate_phase8_live_admitted_order_count(
+            input.max_live_order_count,
+            admitted_order_count,
+        )?;
         validate_phase8_evidence_ref(stringify!(decision_evidence_ref), &decision_evidence_ref)?;
         validate_phase8_live_order_ref(&live_order_ref)?;
         if live_order_ref.strategy_instance_id_hash != input.approved_strategy_instance_id_hash {
@@ -1208,6 +1207,7 @@ impl Phase8CanaryEvidence {
                     &self.submit_admission_ref,
                     SUBMIT_ADMISSION_STATUS_REJECTED,
                     u32::MIN,
+                    u32::MIN,
                     BLOCKED_BEFORE_LIVE_ORDER_REASON,
                 )?;
                 let decision_evidence_ref =
@@ -1233,15 +1233,19 @@ impl Phase8CanaryEvidence {
                     &self.submit_admission_ref,
                     SUBMIT_ADMISSION_STATUS_REJECTED,
                     u32::MIN,
+                    u32::MIN,
                     BLOCKED_BEFORE_SUBMIT_REASON,
                 )
             }
             Phase8CanaryOutcome::LiveCanaryProof => {
                 validate_phase8_block_reasons_absent(&self.block_reasons)?;
+                let required_admitted_order_count =
+                    phase8_max_admitted_order_count(PHASE8_REQUIRED_LIVE_ORDER_CAP);
                 validate_phase8_submit_admission_ref(
                     &self.submit_admission_ref,
                     SUBMIT_ADMISSION_STATUS_ACCEPTED,
-                    PHASE8_REQUIRED_LIVE_ORDER_CAP,
+                    required_admitted_order_count,
+                    required_admitted_order_count,
                     NT_ADAPTER_SUBMIT_PROVEN_REASON,
                 )?;
                 let decision_evidence_ref =
@@ -1439,7 +1443,8 @@ fn validate_phase8_optional_absent(field: &'static str, present: bool) -> Result
 fn validate_phase8_submit_admission_ref(
     submit_admission_ref: &Phase8SubmitAdmissionRef,
     expected_status: &str,
-    expected_admitted_order_count: u32,
+    min_admitted_order_count: u32,
+    max_admitted_order_count: u32,
     expected_reason: &str,
 ) -> Result<()> {
     if submit_admission_ref.status != expected_status {
@@ -1451,12 +1456,15 @@ fn validate_phase8_submit_admission_ref(
             submit_admission_ref.status
         ));
     }
-    if submit_admission_ref.admitted_order_count != expected_admitted_order_count {
+    if submit_admission_ref.admitted_order_count < min_admitted_order_count
+        || submit_admission_ref.admitted_order_count > max_admitted_order_count
+    {
         return Err(anyhow!(
-            "phase8 canary evidence {}.{} expected {} got {}",
+            "phase8 canary evidence {}.{} expected {}..={} got {}",
             stringify!(submit_admission_ref),
             stringify!(admitted_order_count),
-            expected_admitted_order_count,
+            min_admitted_order_count,
+            max_admitted_order_count,
             submit_admission_ref.admitted_order_count
         ));
     }
@@ -1467,6 +1475,25 @@ fn validate_phase8_submit_admission_ref(
             stringify!(reason),
             expected_reason,
             submit_admission_ref.reason
+        ));
+    }
+    Ok(())
+}
+
+fn phase8_max_admitted_order_count(max_live_order_count: u32) -> u32 {
+    max_live_order_count.saturating_mul(2)
+}
+
+fn validate_phase8_live_admitted_order_count(
+    max_live_order_count: u32,
+    admitted_order_count: u32,
+) -> Result<()> {
+    let required_admitted_order_count = phase8_max_admitted_order_count(max_live_order_count);
+    if admitted_order_count != required_admitted_order_count {
+        return Err(anyhow!(
+            "phase8 live canary proof admitted_order_count expected {} got {}",
+            required_admitted_order_count,
+            admitted_order_count
         ));
     }
     Ok(())

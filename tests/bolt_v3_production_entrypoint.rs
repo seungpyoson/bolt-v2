@@ -166,6 +166,13 @@ fn codebase_does_not_expose_dead_platform_runtime_actor_or_catalog_modules() {
         "\"Up\"",
         "\"Down\"",
         "max_buy_execution_within_vwap_slippage_bps",
+        "LOT_SIZE_SCALE",
+        "trunc_with_scale",
+        "adjust_market_buy_amount",
+        "compute_maker_taker_amounts",
+        "polymarket_clob_lot_size_step",
+        "direct amount",
+        "lattice",
         "OutcomeSide::Up => self.active.books.up.best_ask,\n            OutcomeSide::Down => self.active.books.down.best_ask,",
         "OrderSide::Buy,\n            PositionSide::Long,\n            OrderSide::Sell,\n            PositionSide::Long,",
     ] {
@@ -174,6 +181,10 @@ fn codebase_does_not_expose_dead_platform_runtime_actor_or_catalog_modules() {
             "binary oracle strategy must use deeper Module Interfaces instead of inline hardcode `{forbidden}`"
         );
     }
+    assert!(
+        strategy.contains("provider_normalize_base_order_quantity"),
+        "binary oracle strategy must delegate provider-specific base quantity normalization before submit"
+    );
 }
 
 #[test]

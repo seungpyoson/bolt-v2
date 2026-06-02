@@ -24,6 +24,7 @@ fn enabled_kill_switch_config(state_path: &str) -> KillSwitchConfigBlock {
         authorized_operator_ids: vec!["operator-primary".to_string()],
         account_ids: vec!["POLYMARKET-001".to_string()],
         instrument_ids: vec!["BTC-USD.BINANCE".to_string()],
+        cancel: None,
     }
 }
 

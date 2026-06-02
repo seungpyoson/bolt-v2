@@ -1833,7 +1833,9 @@ impl BoltV3LiveNodeRuntime {
                 all_open_orders_attributed = false;
                 break;
             };
-            let Some(evidence) = nt_open_order_evidence_from_order(order, now_ns) else {
+            let Some(evidence) =
+                nt_prediction_market_binary_open_order_evidence_from_order(order, now_ns)
+            else {
                 all_open_orders_attributed = false;
                 break;
             };
@@ -1871,7 +1873,7 @@ impl BoltV3LiveNodeRuntime {
     }
 }
 
-fn nt_open_order_evidence_from_order(
+fn nt_prediction_market_binary_open_order_evidence_from_order(
     order: &OrderAny,
     observed_at_ns: u64,
 ) -> Option<BoltV3SubmitPositionSizingOpenOrderEvidence> {
@@ -1898,6 +1900,7 @@ fn nt_open_order_evidence_from_order(
         open_quantity,
         limit_price,
         observed_at_ns,
+        // Source label stays cache-oriented; the helper name carries product shape.
         evidence_label: "nt_open_order_cache".to_string(),
     })
 }
@@ -2417,9 +2420,8 @@ pub async fn run_bolt_v3_live_node(
         current_unix_nanos().map_err(BoltV3LiveNodeError::Build)?;
     let startup_rebuild =
         runtime.rebuild_position_sizer_from_nt_cache(startup_rebuild_observed_at_ns);
-    // No-open-order startup may need NT to run before account/portfolio
-    // components arrive. Pre-existing open orders are different: they must
-    // be reconciled before the live runner can enter NT.
+    // This reconciles open orders present in NT's cache snapshot at startup.
+    // Orders NT learns about only after reconnect flow through runtime feeds.
     if !startup_rebuild.accepted && startup_rebuild.attempted_reservation_count > 0 {
         return Err(BoltV3LiveNodeError::StartupPositionSizerRebuild(
             startup_rebuild,
@@ -4774,7 +4776,7 @@ mod tests {
     }
 
     #[test]
-    fn nt_limit_order_snapshot_maps_to_generic_open_order_evidence() {
+    fn nt_limit_order_snapshot_maps_to_prediction_market_binary_open_order_evidence() {
         let order = generic_limit_order(
             "client-order-1",
             "instrument-yes.VENUE-A",
@@ -4783,8 +4785,8 @@ mod tests {
             Price::from("0.40"),
         );
 
-        let evidence = nt_open_order_evidence_from_order(&order, 1_000)
-            .expect("bounded NT limit order should produce generic open-order evidence");
+        let evidence = nt_prediction_market_binary_open_order_evidence_from_order(&order, 1_000)
+            .expect("bounded NT limit order should produce prediction-market open-order evidence");
 
         assert_eq!(evidence.client_order_id, "client-order-1");
         assert_eq!(evidence.instrument_id, "instrument-yes.VENUE-A");
@@ -4796,7 +4798,7 @@ mod tests {
     }
 
     #[test]
-    fn nt_non_limit_order_snapshot_is_not_sizing_evidence() {
+    fn nt_non_limit_order_snapshot_is_not_prediction_market_binary_sizing_evidence() {
         let order = generic_market_order(
             "client-order-1",
             "instrument-yes.VENUE-A",
@@ -4804,7 +4806,9 @@ mod tests {
             Quantity::from(10),
         );
 
-        assert!(nt_open_order_evidence_from_order(&order, 1_000).is_none());
+        assert!(
+            nt_prediction_market_binary_open_order_evidence_from_order(&order, 1_000).is_none()
+        );
     }
 
     fn generic_limit_order(

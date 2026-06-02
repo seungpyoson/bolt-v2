@@ -5883,6 +5883,44 @@ max_slippage_liability = "0.20"
 }
 
 #[test]
+fn rejects_submit_enforced_capital_pool_without_operator_evidence() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("submit-enforced fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| message.contains(
+            "risk.capital_pools[*].enforce_submit_admission requires live_canary.operator_evidence"
+        )),
+        "expected operator-evidence dependency validation message, got: {messages:#?}"
+    );
+
+    let operator_root = fs::read_to_string(support::repo_path("config/root.toml"))
+        .expect("root config should read");
+    let live_canary_controls = operator_root
+        .split_once("[live_canary]")
+        .and_then(|(_, tail)| tail.split_once("[logging]").map(|(block, _)| block))
+        .expect("operator root should contain a live canary controls block");
+    let enforced_operator_root = format!("{mutated}\n[live_canary]{live_canary_controls}");
+    let root: BoltV3RootConfig = toml::from_str(&enforced_operator_root)
+        .expect("operator root with submit enforcement should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        !messages.iter().any(|message| message.contains(
+            "risk.capital_pools[*].enforce_submit_admission requires live_canary.operator_evidence"
+        )),
+        "configured operator evidence should satisfy submit-enforcement dependency: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_invalid_prediction_market_binary_metadata() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

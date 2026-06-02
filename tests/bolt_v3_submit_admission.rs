@@ -149,7 +149,7 @@ fn live_node_position_sizer_startup_rebuild_uses_only_known_reservation_metadata
         .find("pub fn rebuild_position_sizer_from_nt_cache")
         .expect("live runtime should expose startup position-sizer rebuild");
     let end = source[start..]
-        .find("fn nt_open_order_evidence_from_order")
+        .find("fn nt_prediction_market_binary_open_order_evidence_from_order")
         .map(|offset| start + offset)
         .expect("open-order evidence helper should bound startup rebuild source");
     let rebuild = &source[start..end];

@@ -165,6 +165,10 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     }
     errors.extend(validate_nautilus_block(&root.nautilus));
     errors.extend(validate_risk_block(&root.risk));
+    errors.extend(validate_submit_enforced_capital_pool_operator_evidence(
+        &root.risk,
+        root.live_canary.as_ref(),
+    ));
     errors.extend(validate_order_rate_within_venue_egress(root));
     errors.extend(validate_persistence_block(&root.persistence));
     errors.extend(validate_aws_block(&root.aws));
@@ -1040,6 +1044,28 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
         }
     }
     errors
+}
+
+fn validate_submit_enforced_capital_pool_operator_evidence(
+    risk: &RiskBlock,
+    live_canary: Option<&LiveCanaryBlock>,
+) -> Vec<String> {
+    let submit_enforcement_enabled = risk
+        .capital_pools
+        .as_ref()
+        .is_some_and(|pools| pools.iter().any(|pool| pool.enforce_submit_admission));
+    let operator_evidence_configured = live_canary
+        .and_then(|live_canary| live_canary.operator_evidence.as_ref())
+        .is_some();
+
+    if submit_enforcement_enabled && !operator_evidence_configured {
+        vec![
+            "risk.capital_pools[*].enforce_submit_admission requires live_canary.operator_evidence for submit reservation recovery"
+                .to_string(),
+        ]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Seconds in one hour / one minute, named so the `HH:MM:SS` interval

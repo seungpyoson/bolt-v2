@@ -234,9 +234,12 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         client_order_id: "client-order-1".to_string(),
         instrument_id: "instrument-1".to_string(),
         notional,
+        order_side: OrderSide::Buy,
+        order_quantity: Decimal::new(1, 0),
         intent_kind: BoltV3SubmitIntentKind::Entry,
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         canary_proof_claim: None,
+        risk_reducing_exit_proof: None,
         position_sizing: None,
     }
 }

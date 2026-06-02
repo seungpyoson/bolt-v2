@@ -145,12 +145,14 @@ fn validate_hyperliquid_latency_profile_config(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HyperliquidLiveSubmitOrderLimits {
     pub max_order_count: u32,
     pub max_order_notional: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HyperliquidProductSubmitProofBinding {
     pub artifact_path: String,
     pub artifact_sha256: String,

@@ -166,6 +166,70 @@ fn live_submit_approval_artifact_rejects_unknown_top_level_fields() {
 }
 
 #[test]
+fn live_submit_approval_artifact_rejects_unknown_order_limit_fields() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_path = temp
+        .path()
+        .join("hyperliquid-live-submit-approval-extra-order-limit-field.json");
+    let approval = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    let mut raw =
+        serde_json::to_value(&approval).expect("approval artifact should serialize to JSON");
+    raw.get_mut("order_limits")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("approval order_limits JSON should be an object")
+        .insert(
+            "unapproved_limit_multiplier".to_string(),
+            serde_json::json!("must not be ignored"),
+        );
+    std::fs::write(
+        &approval_path,
+        serde_json::to_vec_pretty(&raw).expect("approval JSON should encode"),
+    )
+    .expect("approval artifact with unknown nested field should write");
+
+    let error = read_hyperliquid_live_submit_approval_artifact(&approval_path, 16_384)
+        .expect_err("approval artifact reader must reject unknown order limit fields");
+
+    assert!(
+        error.to_string().contains("approval_artifact"),
+        "unknown order limit field rejection should fail at approval artifact parse boundary: {error}"
+    );
+}
+
+#[test]
+fn live_submit_approval_artifact_rejects_unknown_product_submit_proof_fields() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_path = temp
+        .path()
+        .join("hyperliquid-live-submit-approval-extra-product-proof-field.json");
+    let approval = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    let mut raw =
+        serde_json::to_value(&approval).expect("approval artifact should serialize to JSON");
+    raw.get_mut("product_submit_proof")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("approval product_submit_proof JSON should be an object")
+        .insert(
+            "unapproved_proof_override".to_string(),
+            serde_json::json!("must not be ignored"),
+        );
+    std::fs::write(
+        &approval_path,
+        serde_json::to_vec_pretty(&raw).expect("approval JSON should encode"),
+    )
+    .expect("approval artifact with unknown nested field should write");
+
+    let error = read_hyperliquid_live_submit_approval_artifact(&approval_path, 16_384)
+        .expect_err("approval artifact reader must reject unknown product proof fields");
+
+    assert!(
+        error.to_string().contains("approval_artifact"),
+        "unknown product proof field rejection should fail at approval artifact parse boundary: {error}"
+    );
+}
+
+#[test]
 fn live_submit_approval_artifact_accepts_each_hyperliquid_product_surface() {
     for product_surface in [
         HyperliquidProductSurface::StandardPerps,

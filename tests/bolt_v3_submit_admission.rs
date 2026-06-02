@@ -730,11 +730,19 @@ fn submit_request_with_kind_policy_and_exit_proof(
     lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
 ) -> BoltV3SubmitAdmissionRequest {
+    let (order_side, order_quantity) = match intent_kind {
+        BoltV3SubmitIntentKind::RiskReducingExit => (OrderSide::Sell, Decimal::new(264, 2)),
+        BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit => {
+            (OrderSide::Buy, Decimal::new(1, 0))
+        }
+    };
     BoltV3SubmitAdmissionRequest {
         strategy_id: "strategy-a".to_string(),
         client_order_id: "client-order-1".to_string(),
         instrument_id: "instrument-1".to_string(),
         notional,
+        order_side,
+        order_quantity,
         intent_kind,
         lifecycle_policy,
         canary_proof_claim: None,
@@ -1043,6 +1051,92 @@ fn malformed_risk_reducing_exit_proof_fails_closed() {
 }
 
 #[test]
+fn risk_reducing_exit_proof_must_match_actual_order_side() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(1, 0),
+        ))
+        .expect("valid gate report should arm admission");
+
+    let mut request = submit_request_with_kind_and_exit_proof(
+        Decimal::new(264, 2),
+        BoltV3SubmitIntentKind::RiskReducingExit,
+        Some(valid_risk_reducing_exit_proof()),
+    );
+    request.order_side = OrderSide::Buy;
+
+    let error = admission
+        .admit(&request)
+        .expect_err("request order side must match the proof side before an exit bypasses cap");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof
+    ));
+    assert_eq!(admission.admitted_order_count(), 0);
+}
+
+#[test]
+fn risk_reducing_exit_proof_must_match_actual_order_quantity() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(1, 0),
+        ))
+        .expect("valid gate report should arm admission");
+
+    let mut request = submit_request_with_kind_and_exit_proof(
+        Decimal::new(264, 2),
+        BoltV3SubmitIntentKind::RiskReducingExit,
+        Some(valid_risk_reducing_exit_proof()),
+    );
+    request.order_quantity = Decimal::new(132, 2);
+
+    let error = admission
+        .admit(&request)
+        .expect_err("request order quantity must match proof quantity before an exit bypasses cap");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof
+    ));
+    assert_eq!(admission.admitted_order_count(), 0);
+}
+
+#[test]
+fn risk_reducing_exit_proof_rejects_over_position_quantity() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(1, 0),
+        ))
+        .expect("valid gate report should arm admission");
+
+    let mut proof = valid_risk_reducing_exit_proof();
+    proof.position_quantity = Decimal::new(1, 0);
+    let error = admission
+        .admit(&submit_request_with_kind_and_exit_proof(
+            Decimal::new(264, 2),
+            BoltV3SubmitIntentKind::RiskReducingExit,
+            Some(proof),
+        ))
+        .expect_err("exit quantity above position quantity must fail closed");
+
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::InvalidRiskReducingExitProof
+    ));
+    assert_eq!(admission.admitted_order_count(), 0);
+}
+
+#[test]
 fn second_entry_exhausts_entry_slot_even_when_exit_slot_is_unused() {
     let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
     let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
@@ -1137,6 +1231,41 @@ fn second_verified_risk_reducing_exit_exhausts_exit_slot() {
         ]
     );
     assert_eq!(admission.admitted_order_count(), 2);
+}
+
+#[test]
+fn replace_submit_uses_replace_slot_after_entry_and_exit_slots_are_consumed() {
+    let writer = Arc::new(support::RecordingDecisionEvidenceWriter::default());
+    let admission = BoltV3SubmitAdmissionState::new_unarmed(writer.clone());
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            1,
+            Decimal::new(5, 0),
+        ))
+        .expect("valid gate report should arm admission");
+
+    admission
+        .admit(&submit_request_with_kind(
+            Decimal::new(1, 0),
+            BoltV3SubmitIntentKind::Entry,
+        ))
+        .expect("entry should admit");
+    admission
+        .admit(&submit_request_with_kind_and_exit_proof(
+            Decimal::new(264, 2),
+            BoltV3SubmitIntentKind::RiskReducingExit,
+            Some(valid_risk_reducing_exit_proof()),
+        ))
+        .expect("risk-reducing exit should admit");
+
+    admission
+        .admit(&submit_request_with_kind(
+            Decimal::new(1, 0),
+            BoltV3SubmitIntentKind::ReplaceSubmit,
+        ))
+        .expect("replace-submit must use the independent replace slot");
+
+    assert_eq!(admission.admitted_order_count(), 3);
 }
 
 #[test]

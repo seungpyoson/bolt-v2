@@ -15580,11 +15580,8 @@ fn validate_canary_final_evidence(
         submit_ref,
         "canary_evidence_path.submit_admission_ref.admitted_order_count",
     )?;
-    let min_admitted_order_count = u64::from(max_live_order_count);
-    let max_admitted_order_count = min_admitted_order_count.saturating_mul(2);
-    if admitted_order_count < min_admitted_order_count
-        || admitted_order_count > max_admitted_order_count
-    {
+    let required_admitted_order_count = u64::from(max_live_order_count).saturating_mul(2);
+    if admitted_order_count != required_admitted_order_count {
         return Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
             field: "canary_evidence_path.submit_admission_ref.admitted_order_count",
         });
@@ -16326,7 +16323,7 @@ pub fn write_live_canary_post_run_proof_artifacts_from_config(
         decision_evidence_ref,
         live_order_ref,
         result_refs,
-        live_canary.max_live_order_count,
+        live_canary.max_live_order_count.saturating_mul(2),
     )?;
     let canary_evidence_path =
         resolve_loaded_config_path(loaded, &operator_evidence.canary_evidence_path);

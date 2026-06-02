@@ -1239,11 +1239,13 @@ impl Phase8CanaryEvidence {
             }
             Phase8CanaryOutcome::LiveCanaryProof => {
                 validate_phase8_block_reasons_absent(&self.block_reasons)?;
+                let required_admitted_order_count =
+                    phase8_max_admitted_order_count(PHASE8_REQUIRED_LIVE_ORDER_CAP);
                 validate_phase8_submit_admission_ref(
                     &self.submit_admission_ref,
                     SUBMIT_ADMISSION_STATUS_ACCEPTED,
-                    PHASE8_REQUIRED_LIVE_ORDER_CAP,
-                    phase8_max_admitted_order_count(PHASE8_REQUIRED_LIVE_ORDER_CAP),
+                    required_admitted_order_count,
+                    required_admitted_order_count,
                     NT_ADAPTER_SUBMIT_PROVEN_REASON,
                 )?;
                 let decision_evidence_ref =
@@ -1486,14 +1488,11 @@ fn validate_phase8_live_admitted_order_count(
     max_live_order_count: u32,
     admitted_order_count: u32,
 ) -> Result<()> {
-    let max_admitted_order_count = phase8_max_admitted_order_count(max_live_order_count);
-    if admitted_order_count < max_live_order_count
-        || admitted_order_count > max_admitted_order_count
-    {
+    let required_admitted_order_count = phase8_max_admitted_order_count(max_live_order_count);
+    if admitted_order_count != required_admitted_order_count {
         return Err(anyhow!(
-            "phase8 live canary proof admitted_order_count expected {}..={} got {}",
-            max_live_order_count,
-            max_admitted_order_count,
+            "phase8 live canary proof admitted_order_count expected {} got {}",
+            required_admitted_order_count,
             admitted_order_count
         ));
     }

@@ -29,6 +29,7 @@ struct BoltV3SubmitAdmissionInner {
     admitted_order_count: u32,
     admitted_entry_order_count: u32,
     admitted_risk_reducing_exit_order_count: u32,
+    admitted_replace_submit_order_count: u32,
 }
 
 impl BoltV3SubmitAdmissionState {
@@ -39,6 +40,7 @@ impl BoltV3SubmitAdmissionState {
                 admitted_order_count: 0,
                 admitted_entry_order_count: 0,
                 admitted_risk_reducing_exit_order_count: 0,
+                admitted_replace_submit_order_count: 0,
             }),
             decision_evidence,
         }
@@ -59,6 +61,7 @@ impl BoltV3SubmitAdmissionState {
         inner.admitted_order_count = 0;
         inner.admitted_entry_order_count = 0;
         inner.admitted_risk_reducing_exit_order_count = 0;
+        inner.admitted_replace_submit_order_count = 0;
         Ok(())
     }
 
@@ -94,7 +97,9 @@ impl BoltV3SubmitAdmissionState {
                     BoltV3SubmitIntentKind::RiskReducingExit => {
                         inner.admitted_risk_reducing_exit_order_count += 1;
                     }
-                    BoltV3SubmitIntentKind::ReplaceSubmit => {}
+                    BoltV3SubmitIntentKind::ReplaceSubmit => {
+                        inner.admitted_replace_submit_order_count += 1;
+                    }
                 }
                 Ok(BoltV3SubmitAdmissionPermit(()))
             }
@@ -169,7 +174,9 @@ impl BoltV3SubmitAdmissionState {
                 }
             }
             BoltV3SubmitIntentKind::ReplaceSubmit => {
-                if inner.admitted_order_count >= report.max_live_order_count() {
+                if inner.admitted_replace_submit_order_count
+                    >= report.max_live_replace_submit_order_count()
+                {
                     return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
                 }
             }
@@ -226,6 +233,8 @@ pub struct BoltV3RiskReducingExitProof {
 impl BoltV3RiskReducingExitProof {
     fn is_valid_for(&self, request: &BoltV3SubmitAdmissionRequest) -> bool {
         self.instrument_id == request.instrument_id
+            && self.exit_order_side == request.order_side
+            && self.exit_quantity == request.order_quantity
             && self.position_quantity > Decimal::ZERO
             && self.exit_quantity > Decimal::ZERO
             && self.exit_quantity <= self.position_quantity
@@ -277,6 +286,8 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub client_order_id: String,
     pub instrument_id: String,
     pub notional: Decimal,
+    pub order_side: OrderSide,
+    pub order_quantity: Decimal,
     pub intent_kind: BoltV3SubmitIntentKind,
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub canary_proof_claim: Option<String>,

@@ -112,6 +112,12 @@ impl BoltV3LiveCanaryGateReport {
         self.max_live_order_count
     }
 
+    /// Configured live canary round-trip slot count, applied to replace-submit
+    /// orders independently from the entry/exit slots.
+    pub fn max_live_replace_submit_order_count(&self) -> u32 {
+        self.max_live_order_count
+    }
+
     pub fn max_notional_per_order(&self) -> Decimal {
         self.max_notional_per_order
     }

@@ -4394,6 +4394,8 @@ impl BinaryOracleEdgeTaker {
             client_order_id,
             instrument_id: order.instrument_id().to_string(),
             notional,
+            order_side: order.order_side(),
+            order_quantity: quantity,
             intent_kind,
             lifecycle_policy: self.submit_lifecycle_policy(),
             canary_proof_claim: None,
@@ -7650,6 +7652,8 @@ fn submit_admission_request_from_order(
         client_order_id,
         instrument_id: order.instrument_id().to_string(),
         notional,
+        order_side: order.order_side(),
+        order_quantity: quantity,
         intent_kind: match intent.intent_kind {
             BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
             BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
@@ -9820,6 +9824,8 @@ mod tests {
                     client_order_id: "client-order-0".to_string(),
                     instrument_id: "instrument-0".to_string(),
                     notional: Decimal::new(50, 2),
+                    order_side: OrderSide::Buy,
+                    order_quantity: Decimal::new(1, 0),
                     intent_kind: crate::bolt_v3_submit_admission::BoltV3SubmitIntentKind::Entry,
                     lifecycle_policy:
                         crate::bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy::new(true),

@@ -1,12 +1,12 @@
-//! Shared, strategy-agnostic taker decision/sizing math (OutcomeSide-free;
-//! consumed by the binary-oracle taker and reusable by the #488 maker).
+//! Crate-internal decision-math helpers extracted from the binary-oracle taker
+//! strategy (slice A1 of #522).
 
 use crate::bolt_v3_numeric::{
     POWER_OF_TWO, QUADRATIC_RISK_DIVISOR, UNIT_F64, ZERO_F64, clamp_probability,
     is_non_negative_finite, is_positive_finite, sanitize_non_negative, sanitize_probability,
 };
 
-pub fn price_agreement_corr(observed_price: f64, anchor_price: f64) -> Option<f64> {
+pub(crate) fn price_agreement_corr(observed_price: f64, anchor_price: f64) -> Option<f64> {
     if !is_positive_finite(observed_price) || !is_positive_finite(anchor_price) {
         return None;
     }
@@ -15,7 +15,7 @@ pub fn price_agreement_corr(observed_price: f64, anchor_price: f64) -> Option<f6
     ))
 }
 
-pub fn price_gap_probability(observed_price: f64, reference_price: f64) -> Option<f64> {
+pub(crate) fn price_gap_probability(observed_price: f64, reference_price: f64) -> Option<f64> {
     if !is_positive_finite(observed_price) || !is_positive_finite(reference_price) {
         return None;
     }
@@ -25,14 +25,14 @@ pub fn price_gap_probability(observed_price: f64, reference_price: f64) -> Optio
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct UncertaintyBandInputs {
-    pub lead_gap_probability: f64,
-    pub jitter_penalty_probability: f64,
-    pub time_uncertainty_probability: f64,
-    pub fee_uncertainty_probability: f64,
+pub(crate) struct UncertaintyBandInputs {
+    pub(crate) lead_gap_probability: f64,
+    pub(crate) jitter_penalty_probability: f64,
+    pub(crate) time_uncertainty_probability: f64,
+    pub(crate) fee_uncertainty_probability: f64,
 }
 
-pub fn uncertainty_band_probability(inputs: &UncertaintyBandInputs) -> Option<f64> {
+pub(crate) fn uncertainty_band_probability(inputs: &UncertaintyBandInputs) -> Option<f64> {
     sanitize_probability(
         sanitize_probability(inputs.lead_gap_probability)?
             + sanitize_probability(inputs.jitter_penalty_probability)?
@@ -42,13 +42,13 @@ pub fn uncertainty_band_probability(inputs: &UncertaintyBandInputs) -> Option<f6
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ThetaScalerInputs {
-    pub seconds_to_market_end: u64,
-    pub cadence_seconds: u64,
-    pub theta_decay_factor: f64,
+pub(crate) struct ThetaScalerInputs {
+    pub(crate) seconds_to_market_end: u64,
+    pub(crate) cadence_seconds: u64,
+    pub(crate) theta_decay_factor: f64,
 }
 
-pub fn compute_theta_scaler(inputs: &ThetaScalerInputs) -> Option<f64> {
+pub(crate) fn compute_theta_scaler(inputs: &ThetaScalerInputs) -> Option<f64> {
     if !is_non_negative_finite(inputs.theta_decay_factor) {
         return None;
     }
@@ -65,15 +65,15 @@ pub fn compute_theta_scaler(inputs: &ThetaScalerInputs) -> Option<f64> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct RobustSizingInputs {
-    pub expected_ev_per_notional: f64,
-    pub risk_lambda: f64,
-    pub order_notional_target: f64,
-    pub maximum_position_notional: f64,
-    pub impact_cap_notional: f64,
+pub(crate) struct RobustSizingInputs {
+    pub(crate) expected_ev_per_notional: f64,
+    pub(crate) risk_lambda: f64,
+    pub(crate) order_notional_target: f64,
+    pub(crate) maximum_position_notional: f64,
+    pub(crate) impact_cap_notional: f64,
 }
 
-pub fn choose_robust_size(inputs: &RobustSizingInputs) -> f64 {
+pub(crate) fn choose_robust_size(inputs: &RobustSizingInputs) -> f64 {
     if !is_positive_finite(inputs.expected_ev_per_notional) {
         return ZERO_F64;
     }

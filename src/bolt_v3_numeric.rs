@@ -5,34 +5,34 @@
 //! strategy layer. It has no `crate::` dependencies, so it sits below every
 //! other Bolt-v3 module and can be imported without introducing a cycle.
 
-pub const ZERO_F64: f64 = 0.0;
-pub const UNIT_F64: f64 = 1.0;
-pub const POWER_OF_TWO: i32 = 2;
-pub const DAYS_PER_YEAR_F64: f64 = 365.25;
-pub const HOURS_PER_DAY_F64: f64 = 24.0;
-pub const MINUTES_PER_HOUR_F64: f64 = 60.0;
-pub const SECONDS_PER_MINUTE_F64: f64 = 60.0;
-pub const SECONDS_PER_YEAR_F64: f64 =
+pub(crate) const ZERO_F64: f64 = 0.0;
+pub(crate) const UNIT_F64: f64 = 1.0;
+pub(crate) const POWER_OF_TWO: i32 = 2;
+pub(crate) const DAYS_PER_YEAR_F64: f64 = 365.25;
+pub(crate) const HOURS_PER_DAY_F64: f64 = 24.0;
+pub(crate) const MINUTES_PER_HOUR_F64: f64 = 60.0;
+pub(crate) const SECONDS_PER_MINUTE_F64: f64 = 60.0;
+pub(crate) const SECONDS_PER_YEAR_F64: f64 =
     DAYS_PER_YEAR_F64 * HOURS_PER_DAY_F64 * MINUTES_PER_HOUR_F64 * SECONDS_PER_MINUTE_F64;
-pub const MILLIS_PER_SECOND_U64: u64 = 1_000;
-pub const MILLIS_PER_SECOND_F64: f64 = MILLIS_PER_SECOND_U64 as f64;
-pub const BPS_DENOMINATOR: f64 = 10_000.0;
-pub const MIDPOINT_DIVISOR_F64: f64 = 2.0;
-pub const QUADRATIC_RISK_DIVISOR: f64 = 2.0;
+pub(crate) const MILLIS_PER_SECOND_U64: u64 = 1_000;
+pub(crate) const MILLIS_PER_SECOND_F64: f64 = MILLIS_PER_SECOND_U64 as f64;
+pub(crate) const BPS_DENOMINATOR: f64 = 10_000.0;
+pub(crate) const MIDPOINT_DIVISOR_F64: f64 = 2.0;
+pub(crate) const QUADRATIC_RISK_DIVISOR: f64 = 2.0;
 
-pub fn is_positive_finite(value: f64) -> bool {
+pub(crate) fn is_positive_finite(value: f64) -> bool {
     value.is_finite() && value > ZERO_F64
 }
 
-pub fn is_non_negative_finite(value: f64) -> bool {
+pub(crate) fn is_non_negative_finite(value: f64) -> bool {
     value.is_finite() && value >= ZERO_F64
 }
 
-pub fn clamp_probability(value: f64) -> f64 {
+pub(crate) fn clamp_probability(value: f64) -> f64 {
     value.clamp(ZERO_F64, UNIT_F64)
 }
 
-pub fn sanitize_probability(value: f64) -> Option<f64> {
+pub(crate) fn sanitize_probability(value: f64) -> Option<f64> {
     if value.is_finite() && (ZERO_F64..=UNIT_F64).contains(&value) {
         Some(value)
     } else {
@@ -40,7 +40,7 @@ pub fn sanitize_probability(value: f64) -> Option<f64> {
     }
 }
 
-pub fn sanitize_non_negative(value: f64) -> f64 {
+pub(crate) fn sanitize_non_negative(value: f64) -> f64 {
     if value.is_finite() {
         value.max(ZERO_F64)
     } else {

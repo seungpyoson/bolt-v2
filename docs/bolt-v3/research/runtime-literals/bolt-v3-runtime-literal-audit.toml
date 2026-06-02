@@ -4228,7 +4228,7 @@ reason = "This is a named counter increment invariant for the realized-volatilit
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''0.0'''
-context = '''pub const ZERO_F64: f64 = 0.0;'''
+context = '''pub(crate) const ZERO_F64: f64 = 0.0;'''
 classification = "shared_numeric_math_invariant"
 reason = "This is the named zero invariant shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4236,7 +4236,7 @@ reason = "This is the named zero invariant shared by the updown family pricing a
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''1.0'''
-context = '''pub const UNIT_F64: f64 = 1.0;'''
+context = '''pub(crate) const UNIT_F64: f64 = 1.0;'''
 classification = "shared_numeric_math_invariant"
 reason = "This is the named unit invariant shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4244,7 +4244,7 @@ reason = "This is the named unit invariant shared by the updown family pricing a
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''2'''
-context = '''pub const POWER_OF_TWO: i32 = 2;'''
+context = '''pub(crate) const POWER_OF_TWO: i32 = 2;'''
 classification = "shared_numeric_math_invariant"
 reason = "This is the named squaring exponent shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4252,7 +4252,7 @@ reason = "This is the named squaring exponent shared by the updown family pricin
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''365.25'''
-context = '''pub const DAYS_PER_YEAR_F64: f64 = 365.25;'''
+context = '''pub(crate) const DAYS_PER_YEAR_F64: f64 = 365.25;'''
 classification = "annualization_constant"
 reason = "This is a named annualization conversion constant shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4260,7 +4260,7 @@ reason = "This is a named annualization conversion constant shared by the updown
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''24.0'''
-context = '''pub const HOURS_PER_DAY_F64: f64 = 24.0;'''
+context = '''pub(crate) const HOURS_PER_DAY_F64: f64 = 24.0;'''
 classification = "annualization_constant"
 reason = "This is a named calendar conversion constant shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4268,7 +4268,7 @@ reason = "This is a named calendar conversion constant shared by the updown fami
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''60.0'''
-context = '''pub const MINUTES_PER_HOUR_F64: f64 = 60.0;'''
+context = '''pub(crate) const MINUTES_PER_HOUR_F64: f64 = 60.0;'''
 classification = "annualization_constant"
 reason = "This is a named time conversion constant shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4276,7 +4276,7 @@ reason = "This is a named time conversion constant shared by the updown family p
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''60.0'''
-context = '''pub const SECONDS_PER_MINUTE_F64: f64 = 60.0;'''
+context = '''pub(crate) const SECONDS_PER_MINUTE_F64: f64 = 60.0;'''
 classification = "annualization_constant"
 reason = "This is a named time conversion constant shared by the updown family pricing and the strategy, not an operator runtime value."
 
@@ -4348,7 +4348,7 @@ reason = "This is a named coefficient in the normal-CDF approximation, not an op
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''10_000.0'''
-context = '''pub const BPS_DENOMINATOR: f64 = 10_000.0;'''
+context = '''pub(crate) const BPS_DENOMINATOR: f64 = 10_000.0;'''
 classification = "financial_unit_conversion"
 reason = "This is the basis-points denominator for financial unit conversion, not an operator runtime value. Consolidated into the shared numeric module in #522 A1."
 
@@ -4356,7 +4356,7 @@ reason = "This is the basis-points denominator for financial unit conversion, no
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''1_000'''
-context = '''pub const MILLIS_PER_SECOND_U64: u64 = 1_000;'''
+context = '''pub(crate) const MILLIS_PER_SECOND_U64: u64 = 1_000;'''
 classification = "time_unit_conversion"
 reason = "This is a named SI time-unit conversion constant, not an operator runtime value."
 
@@ -4380,7 +4380,7 @@ reason = "This is a named SI time-unit conversion constant, not an operator runt
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''2.0'''
-context = '''pub const MIDPOINT_DIVISOR_F64: f64 = 2.0;'''
+context = '''pub(crate) const MIDPOINT_DIVISOR_F64: f64 = 2.0;'''
 classification = "strategy_math_invariant"
 reason = "This is the named divisor for midpoint calculation, not an operator runtime value. Consolidated into the shared numeric module in #522 A1."
 
@@ -4396,7 +4396,7 @@ reason = "This is a named coefficient in the normal-CDF approximation, not an op
 path = "src/bolt_v3_numeric.rs"
 kind = "number"
 literal = '''2.0'''
-context = '''pub const QUADRATIC_RISK_DIVISOR: f64 = 2.0;'''
+context = '''pub(crate) const QUADRATIC_RISK_DIVISOR: f64 = 2.0;'''
 classification = "pricing_formula_constant"
 reason = "This is a named coefficient in the strategy sizing formula, not an operator runtime value. Consolidated into the shared numeric module in #522 A1."
 

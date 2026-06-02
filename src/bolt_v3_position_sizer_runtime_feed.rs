@@ -31,6 +31,7 @@ use crate::{
 };
 
 const POSITION_SIZER_ORDER_TERMINAL_SOURCE: &str = stringify!(nt_order_terminal_event);
+const POSITION_SIZER_POSITION_EVENT_SOURCE: &str = stringify!(nt_position_event);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PositionSizerRuntimeFeedConfig {
@@ -565,7 +566,7 @@ impl PositionSizerRuntimeComponentBuilder {
             return false;
         };
         *outcome_position = position_quantity;
-        snapshot.source = "nt_position_event".to_string();
+        snapshot.source = POSITION_SIZER_POSITION_EVENT_SOURCE.to_string();
         snapshot.observed_at_ns = observed_at_ns;
         true
     }

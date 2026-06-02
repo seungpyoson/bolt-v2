@@ -43,7 +43,7 @@ use std::{
     path::PathBuf,
     rc::Rc,
     str::FromStr,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 

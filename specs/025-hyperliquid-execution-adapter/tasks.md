@@ -133,6 +133,16 @@
 - [x] T049J Add execution-client identity to submit-admission requests so limits apply to the exact approved client.
 - [x] T049K Verify Hyperliquid approval loading exposes submit-admission limits.
 
+## Phase 8D - HIP-4 Market-Family Route Gate
+
+**Goal**: Hyperliquid HIP-4 outcome execution clients can pass the shared market-family compatibility gate for existing `updown` targets before surface-bound approval mapping.
+
+**Independent Test**: A HIP-4 Hyperliquid execution client with a consumed HIP-4 approval and an `updown` target plan maps instead of failing on `SUPPORTED_MARKET_FAMILIES`.
+
+- [x] T049L Add failing Hyperliquid HIP-4/updown routing gate test in `tests/bolt_v3_adapter_mapping.rs`.
+- [x] T049M Populate Hyperliquid `SUPPORTED_MARKET_FAMILIES` with the existing `updown` market family.
+- [x] T049N Document remaining product-specific routing gaps for standard perps, spot, and HIP-3.
+
 ## Phase 9 - Verification
 
 - [x] T050 Run `cargo fmt --check` for `Cargo.toml` and `src/`.

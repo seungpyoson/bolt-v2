@@ -77,6 +77,7 @@ As an operator, I can configure local info-node and placement profile settings w
 - **FR-018**: The system MUST provide TOML-configured local-info-node and colocation profile fields as ops metadata only.
 - **FR-019**: The system MUST keep strategies intent-only and reject strategy-file changes that implement submit mechanics, sizing, rounding, fillability, or venue admission.
 - **FR-020**: The system MUST map Hyperliquid `[data]` through NT `HyperliquidDataClientFactory` and explicit TOML-owned data endpoints, timeouts, refresh cadence, environment, and transport backend.
+- **FR-021**: The Hyperliquid provider binding MUST advertise the `updown` market family so HIP-4 outcome targets can pass the shared execution-client routing gate before surface-bound approval mapping.
 
 ## Edge Cases
 
@@ -100,4 +101,4 @@ As an operator, I can configure local info-node and placement profile settings w
 
 - The current pinned NT revision remains the source of truth unless current `main` requires a coordinated dependency update.
 - Hyperliquid docs and public metadata endpoints are authoritative only for documented public behavior; Bolt proof gates decide live submit readiness.
-- Live standard-perps submit is a later gated slice after fee/rate policy reconciliation, product proof, and routing, not part of the initial implementation claim.
+- Live standard-perps submit is a later gated slice after fee/rate policy reconciliation, product proof, and standard-perps instrument routing, not part of the initial implementation claim.

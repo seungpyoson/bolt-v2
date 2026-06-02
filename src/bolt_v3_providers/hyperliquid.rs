@@ -2,7 +2,7 @@
 //!
 //! This module registers the provider key and NT crate boundary. Execution
 //! mapping stays gated behind SSM-resolved credentials, explicit TOML runtime
-//! fields, and a consumed live-submit approval for the standard-perps surface.
+//! fields, and a consumed surface-bound live-submit approval.
 
 use std::{any::Any, str::FromStr, sync::Arc};
 
@@ -31,6 +31,7 @@ use crate::{
     },
     bolt_v3_config::ClientBlock,
     bolt_v3_config::resolve_root_relative_path,
+    bolt_v3_market_families::updown,
     bolt_v3_providers::hyperliquid_artifacts::{
         HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitOrderLimits,
         consume_hyperliquid_live_submit_approval_artifact,
@@ -49,7 +50,7 @@ use crate::{
 use super::hyperliquid_artifacts::HyperliquidLiveSubmitApprovalConsumption;
 
 pub const KEY: &str = "HYPERLIQUID";
-pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
+pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[updown::KEY];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Execution,
     consumer: "Hyperliquid execution client",

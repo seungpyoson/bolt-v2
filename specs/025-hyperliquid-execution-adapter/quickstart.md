@@ -46,7 +46,7 @@ The first executable proof must show:
 
 ## Adapter Mapping Gate
 
-Execution adapter mapping remains blocked unless a current approval artifact is consumed for the exact configured product surface. Standard perps, spot, HIP-3, and HIP-4 all map through the NT Hyperliquid execution adapter only after that surface-bound mapper gate passes. Production `build_bolt_v3_live_node` asks provider bindings to load live-submit approvals, and Hyperliquid consumes the configured approval artifact, persists `used_at`, carries its order limits into shared submit admission, and passes the consumed approval through the provider-neutral runtime-approval bundle before NT client registration. Hyperliquid `[data]` maps independently to the NT market-data adapter for live instruments, quotes, and order books without opening live submit. HIP-4 execution also requires positive TOML-owned outcome settlement polling. Live submit remains blocked by the pinned NT `userFees` weight policy plus remaining product proof and routing work.
+Execution adapter mapping remains blocked unless a current approval artifact is consumed for the exact configured product surface. Standard perps, spot, HIP-3, and HIP-4 all map through the NT Hyperliquid execution adapter only after that surface-bound mapper gate passes. Production `build_bolt_v3_live_node` asks provider bindings to load live-submit approvals, and Hyperliquid consumes the configured approval artifact, persists `used_at`, carries its order limits into shared submit admission, and passes the consumed approval through the provider-neutral runtime-approval bundle before NT client registration. Hyperliquid `[data]` maps independently to the NT market-data adapter for live instruments, quotes, and order books without opening live submit. HIP-4 execution also requires positive TOML-owned outcome settlement polling, and Hyperliquid advertises the existing `updown` market family so HIP-4 outcome targets can pass the shared execution-client routing gate. Live submit remains blocked by the pinned NT `userFees` weight policy plus remaining product proof and non-HIP-4 routing work.
 
 ## Implementation Evidence Packet - 2026-06-02
 
@@ -70,6 +70,7 @@ Implementation commits:
 - current slice update: NT Hyperliquid market-data adapter mapping through `[data]`
 - current slice update: production live-node Hyperliquid approval artifact loading and persisted consumption
 - current slice update: consumed Hyperliquid approval order limits tighten shared submit-admission caps
+- current slice update: Hyperliquid provider advertises `updown` market-family support for HIP-4 outcome routing gate compatibility
 
 Verification:
 - `cargo fmt --check` - PASS
@@ -81,7 +82,8 @@ Verification:
 - `cargo test --locked --test hyperliquid_product_matrix` - PASS, 8 tests
 - `cargo test --locked --test hyperliquid_fail_closed` - PASS, 6 tests
 - `cargo test --locked --test hyperliquid_live_submit_artifact` - PASS, 6 tests
-- `CARGO_TARGET_DIR=/private/tmp/bolt-v2-hyperliquid-target cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_` - PASS, 9 tests
+- `CARGO_TARGET_DIR=/private/tmp/bolt-v2-hyperliquid-target cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_` - PASS, 10 tests
+- `cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_hip4_execution_accepts_updown_market_family_target_after_consumed_approval` - PASS, 1 test
 - `CARGO_TARGET_DIR=/private/tmp/bolt-v2-hyperliquid-target cargo test --locked --lib live_node_adapter_mapping_consumes_hyperliquid_live_submit_approval_artifact` - PASS, 1 test
 - `CARGO_TARGET_DIR=/private/tmp/bolt-v2-hyperliquid-target cargo test --locked --test bolt_v3_submit_admission live_submit_approval_limits_tighten_canary_caps_before_nt_submit` - PASS, 1 test
 - `just source-fence` - PASS
@@ -91,6 +93,6 @@ Current live-submit state:
 - Standard perps, spot, HIP-3, and HIP-4 map to the NT Hyperliquid execution adapter at the mapper boundary only with a consumed approval artifact for the exact configured product surface.
 - Production `build_bolt_v3_live_node` consumes Hyperliquid approval artifacts through the provider binding, persists `used_at`, and applies consumed approval order limits in shared submit admission; no-submit and all-configured mapping paths do not spend approvals.
 - A consumed approval for one surface cannot authorize a different surface.
-- HIP-4 requires positive `outcome_settlement_poll_secs` in TOML before mapper handoff.
+- HIP-4 requires positive `outcome_settlement_poll_secs` in TOML before mapper handoff and can pass the shared `updown` market-family execution-client routing gate.
 - Latency profile is TOML-owned ops metadata only; it exports an artifact and cannot bypass submit approval gates.
 - Hyperliquid-specific no-submit readiness artifacts are not part of this slice.

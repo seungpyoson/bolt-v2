@@ -33,6 +33,9 @@ When enabled, submit admission must:
 - track submit-time reservation metadata for orders admitted after process start;
 - revalue residual liability from authoritative NT partial-fill events when submit-time metadata exists;
 - release reservations and open-order count from authoritative NT full-fill events when submit-time metadata exists.
+- rebuild non-empty startup/reconnect NT cache open orders only when each order can be attributed to known Bolt reservation metadata.
+
+If the NT cache reports open orders but the durable Bolt reservation metadata is absent, invalid, or mismatched, live startup/reconnect keeps submit admission closed and the runner fails before arming. This is the intended safe state, not a complete production deployment.
 
 Only `prediction_market_binary` is implemented in this slice. The compiled order kind is explicit, but only `Limit` exists in the current sizing interface.
 
@@ -40,8 +43,6 @@ Only `prediction_market_binary` is implemented in this slice. The compiled order
 
 This slice is not production-grade by itself. It adds the live NT component feed and startup/reconnect cache rebuild boundary, but `enforce_submit_admission = true` is not safe for full production deployment until the remaining liability and operations gaps are closed:
 
-- residual liability for rebuilt pre-existing orders is attributable to known Bolt reservation metadata;
-- non-empty pre-existing NT/exchange open orders can be rebuilt only when their liability is attributable to known Bolt reservations;
 - collateral spendability and venue/instrument allowance are proven by adapter/venue evidence instead of approximated from NT account free balance;
 - safe replace/amend transitions are implemented before `ReplaceSubmit` is enabled;
 - maker quote sets reserve simultaneous adverse fills;

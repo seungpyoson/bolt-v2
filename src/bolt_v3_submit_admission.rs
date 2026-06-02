@@ -325,68 +325,6 @@ impl BoltV3SubmitAdmissionState {
         Some(position_sizer.gate.is_reconciled())
     }
 
-    pub fn position_sizing_open_order_reservation_from_evidence(
-        &self,
-        evidence: BoltV3SubmitPositionSizingOpenOrderEvidence,
-    ) -> Option<BoltV3SubmitPositionSizingOpenOrderReservation> {
-        if evidence.client_order_id.trim().is_empty()
-            || evidence.instrument_id.trim().is_empty()
-            || evidence.evidence_label.trim().is_empty()
-            || evidence.open_quantity <= Decimal::ZERO
-            || evidence.limit_price < Decimal::ZERO
-            || evidence.limit_price > Decimal::ONE
-        {
-            return None;
-        }
-        let inner = lock_inner(&self.inner);
-        let position_sizer = inner.position_sizer.as_ref()?;
-        let state = position_sizer.state.as_ref()?;
-        let ProductSizingSnapshot::PredictionMarketBinary(product) = &state.product_state;
-        if evidence.instrument_id != product.yes_instrument_id
-            && evidence.instrument_id != product.no_instrument_id
-        {
-            return None;
-        }
-        let additive_liability = position_sizer
-            .policy
-            .fee_slippage_policy
-            .as_ref()
-            .map(|policy| policy.max_fee_liability + policy.max_slippage_liability)
-            .unwrap_or(Decimal::ZERO);
-        if additive_liability < Decimal::ZERO {
-            return None;
-        }
-        let liability_factor = match evidence.side.to_position_sizer() {
-            IntentSide::Buy => evidence.limit_price,
-            IntentSide::Sell => Decimal::ONE - evidence.limit_price,
-        };
-        if liability_factor < Decimal::ZERO || liability_factor > Decimal::ONE {
-            return None;
-        }
-        let liability = evidence.open_quantity * liability_factor + additive_liability;
-        Some(BoltV3SubmitPositionSizingOpenOrderReservation {
-            client_order_id: evidence.client_order_id.clone(),
-            // Rebuilt IDs are deliberately namespaced away from submit-time reservation IDs.
-            submit_reservation_id: format!(
-                "{}#{}",
-                evidence.client_order_id, evidence.observed_at_ns
-            ),
-            collateral_group_id: product.collateral_coupled_group_id.clone(),
-            liability,
-            instrument_id: evidence.instrument_id,
-            side: evidence.side,
-            open_quantity: evidence.open_quantity,
-            original_quantity: evidence.open_quantity,
-            filled_quantity: Decimal::ZERO,
-            liability_factor,
-            additive_liability,
-            seen_trade_ids: BTreeSet::new(),
-            recovered_from_startup: false,
-            observed_at_ns: evidence.observed_at_ns,
-            evidence_label: evidence.evidence_label,
-        })
-    }
-
     pub fn position_sizing_open_order_reservation_from_known_metadata(
         &self,
         evidence: BoltV3SubmitPositionSizingOpenOrderEvidence,
@@ -602,8 +540,7 @@ impl BoltV3SubmitAdmissionState {
                     submit_reservation_id: submit_reservation_id.clone(),
                     collateral_group_id: collateral_group_id.clone(),
                     fill_metadata: Some(BoltV3SubmitReservationFillMetadata {
-                        // Known Bolt metadata preserves the original basis; fallback rebuilds use
-                        // the NT cache leaves quantity as both original and residual.
+                        // Known Bolt metadata preserves the original submit basis across restart.
                         instrument_id,
                         side,
                         original_quantity,

@@ -79,6 +79,7 @@ As an operator, I can configure local info-node and placement profile settings w
 - **FR-020**: The system MUST map Hyperliquid `[data]` through NT `HyperliquidDataClientFactory` and explicit TOML-owned data endpoints, timeouts, refresh cadence, environment, and transport backend.
 - **FR-021**: The Hyperliquid provider binding MUST advertise the `updown` market family for HIP-4 outcome targets and `hyperliquid_instrument` for static/direct Hyperliquid instruments so approved execution clients can pass the shared execution-client routing gate before surface-bound approval mapping.
 - **FR-022**: Static/direct Hyperliquid targets MUST fail closed when `target.product_surface` differs from the execution client's single configured and approved `execution.product_surfaces` value.
+- **FR-023**: Production live-node approval loading MUST reject static/direct Hyperliquid target surface mismatches before reading, consuming, or persisting a one-time live-submit approval artifact.
 
 ## Edge Cases
 

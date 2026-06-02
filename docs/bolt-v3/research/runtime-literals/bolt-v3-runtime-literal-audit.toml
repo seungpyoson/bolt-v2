@@ -15394,6 +15394,14 @@ reason = '''This is the provider validation diagnostic emitted when a TOML live-
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''string'''
+literal = '''"strategy.target"'''
+context = '''"strategy.target",'''
+classification = '''hyperliquid_static_target_surface_field_label'''
+reason = '''This names the strategy target block in the provider-owned pre-consumption route validation diagnostic for static Hyperliquid target surface mismatches.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
 literal = '''"configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`"'''
 context = '''"configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`",'''
 classification = '''hyperliquid_static_target_surface_diagnostic'''

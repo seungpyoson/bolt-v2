@@ -183,6 +183,16 @@
 - [x] T049Y Enforce static target product-surface compatibility in the Hyperliquid provider mapper.
 - [x] T049Z Document the target/client surface-match invariant.
 
+## Phase 8I - Pre-Spend Static Target Approval Guard
+
+**Goal**: A known static Hyperliquid target surface mismatch cannot spend a one-time live-submit approval artifact before adapter mapping rejects the client.
+
+**Independent Test**: Production live-node approval loading rejects a spot static target on a standard-perps client and leaves the approval artifact `used_at` unset.
+
+- [x] T049AA Add failing live-node test for static target surface mismatch approval non-consumption.
+- [x] T049AB Reuse Hyperliquid static target surface validation in the approval loader before artifact consumption.
+- [x] T049AC Keep provider-binding test fakes current with the live-submit approval writer hook.
+
 ## Phase 9 - Verification
 
 - [x] T050 Run `cargo fmt --check` for `Cargo.toml` and `src/`.

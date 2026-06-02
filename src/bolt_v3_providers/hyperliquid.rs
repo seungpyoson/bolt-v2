@@ -31,7 +31,9 @@ use crate::{
     },
     bolt_v3_config::ClientBlock,
     bolt_v3_config::resolve_root_relative_path,
-    bolt_v3_market_families::{hyperliquid_instrument, updown},
+    bolt_v3_market_families::{
+        MarketIdentityPlan, hyperliquid_instrument, market_identity_plan_from_config, updown,
+    },
     bolt_v3_operator_artifacts::WrittenOperatorArtifact,
     bolt_v3_providers::hyperliquid_artifacts::{
         HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalInput,
@@ -790,6 +792,7 @@ pub fn load_live_submit_approval(
     let Some(expected_approval_id) = cfg.live_submit_approval_id.as_deref() else {
         return Ok(None);
     };
+    validate_static_instrument_target_surfaces_for_live_submit_approval(&context, &cfg)?;
     let approval_path = cfg
         .live_submit_approval_artifact_path
         .as_deref()
@@ -1046,7 +1049,7 @@ fn map_execution(
                 message: error.to_string(),
             }
         })?;
-    validate_static_instrument_target_surfaces(context.client_key, &cfg, context)?;
+    validate_static_instrument_target_surfaces(context.client_key, &cfg, context.plan)?;
     validate_surface_live_submit_approval(context.client_key, &cfg, context)?;
     let max_retries =
         u32::try_from(cfg.max_retries).map_err(|_| BoltV3AdapterMappingError::NumericRange {
@@ -1088,12 +1091,12 @@ fn map_execution(
 fn validate_static_instrument_target_surfaces(
     client_key: &str,
     cfg: &HyperliquidExecutionConfig,
-    context: &ProviderAdapterMapContext<'_>,
+    plan: &MarketIdentityPlan,
 ) -> Result<(), BoltV3AdapterMappingError> {
     let [configured_surface] = cfg.product_surfaces.as_slice() else {
         return Ok(());
     };
-    for target in hyperliquid_instrument::target_plans(context.plan)
+    for target in hyperliquid_instrument::target_plans(plan)
         .filter(|target| target.execution_client_id == client_key)
     {
         let target_surface = hyperliquid_static_instrument_surface(target.product_surface);
@@ -1112,6 +1115,21 @@ fn validate_static_instrument_target_surfaces(
         }
     }
     Ok(())
+}
+
+fn validate_static_instrument_target_surfaces_for_live_submit_approval(
+    context: &ProviderLiveSubmitApprovalContext<'_>,
+    cfg: &HyperliquidExecutionConfig,
+) -> Result<(), anyhow::Error> {
+    let plan = market_identity_plan_from_config(context.loaded).map_err(|source| {
+        hyperliquid_adapter_validation_error(
+            context.client_key,
+            "strategy.target",
+            format!("Hyperliquid target routing is invalid: {source}"),
+        )
+    })?;
+    validate_static_instrument_target_surfaces(context.client_key, cfg, &plan)
+        .map_err(anyhow::Error::new)
 }
 
 fn hyperliquid_static_instrument_surface(

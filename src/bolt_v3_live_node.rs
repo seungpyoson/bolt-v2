@@ -3962,6 +3962,126 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
     }
 
     #[test]
+    fn live_node_static_target_surface_mismatch_does_not_spend_hyperliquid_approval_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let private_key = format!("0x{}", "1".repeat(64));
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        loaded.config_bundle_checksum = "b".repeat(64);
+        loaded.strategies.truncate(1);
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        strategy.config.execution_client_id = ClientId::from("hyperliquid_perps");
+        strategy.config.target = toml::toml! {
+            configured_target_id = "hl-spot-btc-usdc"
+            kind = "static_instrument"
+            rotating_market_family = "hyperliquid_instrument"
+            product_surface = "spot"
+            instrument_id = "BTC/USDC.HYPERLIQUID"
+        }
+        .into();
+        loaded.root.clients.clear();
+        loaded.root.clients.insert(
+            "hyperliquid_perps".to_string(),
+            toml::from_str(&format!(
+                r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit_approval_id = "hl-standard-perps-approval-001"
+live_submit_approval_artifact_path = "{}"
+live_submit_approval_artifact_max_bytes = 16384
+live_submit_max_order_count = 2
+live_submit_max_order_notional = "25.00"
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+                approval_path.display()
+            ))
+            .expect("Hyperliquid client TOML should parse"),
+        );
+        let build_head_sha = "a".repeat(40);
+        let now = 1_800_000_000;
+        write_hyperliquid_live_submit_approval_artifact(
+            HyperliquidLiveSubmitApprovalInput {
+                approval_id: "hl-standard-perps-approval-001".to_string(),
+                base_sha: build_head_sha.clone(),
+                provider_id: "hyperliquid_perps".to_string(),
+                product_surface:
+                    crate::bolt_v3_providers::hyperliquid::HyperliquidProductSurface::StandardPerps,
+                toml_checksum: loaded.config_bundle_checksum.clone(),
+                signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(&private_key),
+                order_limits: HyperliquidLiveSubmitOrderLimits {
+                    max_order_count: 2,
+                    max_order_notional: "25.00".to_string(),
+                },
+                expires_at: now + 300,
+                used_at: None,
+            },
+            &approval_path,
+        )
+        .expect("approval artifact should write");
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::from([(
+                "hyperliquid_perps".to_string(),
+                Arc::new(ResolvedBoltV3HyperliquidSecrets {
+                    private_key: Zeroizing::new(private_key),
+                    account_address: Zeroizing::new(format!("0x{}", "2".repeat(40))),
+                    vault_address: None,
+                }) as _,
+            )]),
+        };
+
+        let error = live_node_adapter_bundle_with_provider_approvals_at(
+            &loaded,
+            &resolved,
+            now,
+            &build_head_sha,
+        )
+        .expect_err("static target surface mismatch must fail before approval consumption");
+
+        assert!(
+            error
+                .to_string()
+                .contains("strategy.target.product_surface"),
+            "failure should identify the target surface mismatch: {error}"
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&approval_path).expect("unconsumed approval should still read"),
+        )
+        .expect("unconsumed approval JSON should parse");
+        assert_eq!(
+            persisted["used_at"],
+            serde_json::Value::Null,
+            "surface mismatches must not spend one-time approval artifacts"
+        );
+    }
+
+    #[test]
     fn chunk_universe_splits_into_consecutive_chunks_of_at_most_n() {
         let universe: Vec<u32> = (0..10).collect();
         assert_eq!(

@@ -93,6 +93,33 @@ fn bolt_v3_cli_exposes_static_operator_artifacts_command() {
 }
 
 #[test]
+fn bolt_v3_cli_exposes_live_submit_approval_artifact_command_without_raw_secret_inputs() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "generate-live-submit-approval",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 live-submit approval help should run");
+
+    assert!(
+        output.status.success(),
+        "expected operator-artifacts generate-live-submit-approval help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"), "{stdout}");
+    assert!(stdout.contains("--client-key"), "{stdout}");
+    assert!(stdout.contains("--expires-at-unix-seconds"), "{stdout}");
+    assert!(
+        !stdout.contains("--private-key") && !stdout.contains("--account-address"),
+        "live-submit approval materialization must derive signer identity from configured SSM secrets: {stdout}"
+    );
+}
+
+#[test]
 fn bolt_v3_cli_exposes_base_static_operator_artifacts_command() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args(["operator-artifacts", "generate-base-static", "--help"])

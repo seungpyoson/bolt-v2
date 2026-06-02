@@ -1,8 +1,12 @@
 use clap::Parser;
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
+    bolt_v3_live_canary_gate::current_build_head_sha,
     bolt_v3_live_node::{
         BoltV3NoSubmitBookDeltasEvidence, BoltV3NoSubmitDataClientReadinessEvidence,
         BoltV3NoSubmitReferenceQuoteEvidence, BoltV3NoSubmitTradeEvidence,
@@ -62,7 +66,8 @@ use bolt_v2::{
     },
     bolt_v3_providers::{
         ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
-        binding_for_provider_key, sync_clob_v2_balance_allowance_cache_from_configured_account,
+        ProviderLiveSubmitApprovalContext, binding_for_provider_key,
+        sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
     bolt_v3_secrets::{check_no_forbidden_credential_env_vars, resolve_bolt_v3_secrets},
     secrets::SsmResolverSession,
@@ -164,6 +169,14 @@ enum OperatorArtifactsCommand {
     ComputeApprovalEnvelopeSha256 {
         #[arg(short, long)]
         config: PathBuf,
+    },
+    GenerateLiveSubmitApproval {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        client_key: String,
+        #[arg(long)]
+        expires_at_unix_seconds: u64,
     },
     UpdateOperatorEvidenceToml {
         #[arg(short, long)]
@@ -802,6 +815,46 @@ fn run_operator_artifacts_command(
                 serde_json::to_string_pretty(&serde_json::json!({ "sha256": sha256 }))?
             );
             Ok(())
+        }
+        OperatorArtifactsCommand::GenerateLiveSubmitApproval {
+            config,
+            client_key,
+            expires_at_unix_seconds,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            check_no_forbidden_credential_env_vars(&loaded.root)?;
+            let client = loaded.root.clients.get(&client_key).ok_or_else(|| {
+                format!("clients.{client_key} is not configured for live-submit approval")
+            })?;
+            let binding = binding_for_provider_key(client.venue.as_str()).ok_or_else(|| {
+                format!(
+                    "clients.{client_key}.venue `{}` is not supported by this build",
+                    client.venue.as_str()
+                )
+            })?;
+            let writer = binding.write_live_submit_approval_artifact.ok_or_else(|| {
+                format!(
+                    "clients.{client_key}.venue `{}` does not support live-submit approval materialization",
+                    client.venue.as_str()
+                )
+            })?;
+            let ssm_resolver_session = SsmResolverSession::new()?;
+            let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
+            let build_head_sha = current_build_head_sha()
+                .ok_or("bolt-v3 build head_sha is unavailable or invalid")?;
+            let now_unix_seconds = current_unix_seconds_for_cli()?;
+            let written = writer(
+                ProviderLiveSubmitApprovalContext {
+                    loaded: &loaded,
+                    client_key: &client_key,
+                    client,
+                    resolved: &resolved,
+                    now_unix_seconds,
+                    build_head_sha,
+                },
+                expires_at_unix_seconds,
+            )?;
+            print_written_operator_artifact(&written)
         }
         OperatorArtifactsCommand::UpdateOperatorEvidenceToml {
             config,
@@ -1779,6 +1832,10 @@ fn written_operator_artifact_json(written: &WrittenOperatorArtifact) -> serde_js
         "path": &written.path,
         "sha256": &written.sha256,
     })
+}
+
+fn current_unix_seconds_for_cli() -> Result<u64, Box<dyn std::error::Error>> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
 
 fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error::Error>> {

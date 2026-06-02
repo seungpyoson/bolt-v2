@@ -32,11 +32,13 @@ use crate::{
     bolt_v3_config::ClientBlock,
     bolt_v3_config::resolve_root_relative_path,
     bolt_v3_market_families::updown,
+    bolt_v3_operator_artifacts::WrittenOperatorArtifact,
     bolt_v3_providers::hyperliquid_artifacts::{
-        HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitOrderLimits,
-        consume_hyperliquid_live_submit_approval_artifact,
+        HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalInput,
+        HyperliquidLiveSubmitOrderLimits, consume_hyperliquid_live_submit_approval_artifact,
         persist_consumed_hyperliquid_live_submit_approval_artifact,
         read_hyperliquid_live_submit_approval_artifact,
+        write_hyperliquid_live_submit_approval_artifact,
     },
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderLiveSubmitApproval,
@@ -827,6 +829,77 @@ pub fn load_live_submit_approval(
             max_order_notional,
         },
     )))
+}
+
+pub fn write_configured_live_submit_approval_artifact(
+    context: ProviderLiveSubmitApprovalContext<'_>,
+    expires_at_unix_seconds: u64,
+) -> Result<WrittenOperatorArtifact, anyhow::Error> {
+    let Some(execution) = &context.client.execution else {
+        return Err(hyperliquid_adapter_validation_error(
+            context.client_key,
+            "execution",
+            "Hyperliquid live-submit approval materialization requires [execution]",
+        ));
+    };
+    let cfg: HyperliquidExecutionConfig = execution.clone().try_into().map_err(|source| {
+        hyperliquid_adapter_validation_error(
+            context.client_key,
+            "execution",
+            format!("Hyperliquid execution config is invalid: {source}"),
+        )
+    })?;
+    let approval_id = cfg.live_submit_approval_id.as_deref().ok_or_else(|| {
+        hyperliquid_adapter_validation_error(
+            context.client_key,
+            "execution.live_submit_approval_id",
+            "Hyperliquid approval materialization requires configured live_submit_approval_id",
+        )
+    })?;
+    let approval_path = cfg
+        .live_submit_approval_artifact_path
+        .as_deref()
+        .ok_or_else(|| {
+            hyperliquid_adapter_validation_error(
+                context.client_key,
+                "execution.live_submit_approval_artifact_path",
+                "Hyperliquid approval materialization requires configured approval artifact path",
+            )
+        })?;
+    match cfg.live_submit_approval_artifact_max_bytes {
+        Some(value) if value > 0 => {}
+        _ => {
+            return Err(hyperliquid_adapter_validation_error(
+                context.client_key,
+                "execution.live_submit_approval_artifact_max_bytes",
+                "Hyperliquid approval materialization requires configured approval artifact byte cap",
+            ));
+        }
+    }
+    if expires_at_unix_seconds <= context.now_unix_seconds {
+        return Err(hyperliquid_adapter_validation_error(
+            context.client_key,
+            "execution.live_submit_approval_id",
+            "Hyperliquid approval materialization requires expires_at_unix_seconds after the current time",
+        ));
+    }
+    let resolved_path = resolve_root_relative_path(&context.loaded.root_path, approval_path);
+    let binding = live_submit_approval_binding(&context, &cfg)?;
+    write_hyperliquid_live_submit_approval_artifact(
+        HyperliquidLiveSubmitApprovalInput {
+            approval_id: approval_id.to_string(),
+            base_sha: binding.base_sha,
+            provider_id: binding.provider_id,
+            product_surface: binding.product_surface,
+            toml_checksum: binding.toml_checksum,
+            signer_fingerprint: binding.signer_fingerprint,
+            order_limits: binding.order_limits,
+            expires_at: expires_at_unix_seconds,
+            used_at: None,
+        },
+        &resolved_path,
+    )
+    .map_err(anyhow::Error::new)
 }
 
 fn live_submit_approval_binding(

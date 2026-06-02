@@ -153,6 +153,16 @@
 - [x] T049P Add Hyperliquid REST egress model using the official `userFees` weight.
 - [x] T049Q Remove stale `userFees` missing-proof blocker from the product matrix.
 
+## Phase 8F - Operator Approval Artifact Materialization
+
+**Goal**: Operators can generate the exact Hyperliquid live-submit approval artifact that production live-node construction later consumes, without raw secret CLI inputs or a second artifact path.
+
+**Independent Test**: A provider-binding writer derives the approval artifact from loaded TOML plus resolved SSM secrets and writes the configured artifact path, while the CLI exposes `operator-artifacts generate-live-submit-approval` with config/client/expiry inputs and no raw private-key or account-address arguments.
+
+- [x] T049R Add failing provider-binding test for configured Hyperliquid approval artifact materialization.
+- [x] T049S Add provider-neutral live-submit approval artifact writer hook and Hyperliquid implementation.
+- [x] T049T Add `operator-artifacts generate-live-submit-approval` CLI entry point using Rust SSM secret resolution.
+
 ## Phase 9 - Verification
 
 - [x] T050 Run `cargo fmt --check` for `Cargo.toml` and `src/`.

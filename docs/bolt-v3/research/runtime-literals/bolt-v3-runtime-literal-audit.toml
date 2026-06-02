@@ -15162,6 +15162,14 @@ reason = '''This labels parsing for the TOML-owned Hyperliquid execution block b
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''string'''
+literal = '''"execution.live_submit_approval_id"'''
+context = '''"execution.live_submit_approval_id",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit approval id during approval artifact materialization; the approval id value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
 literal = '''"execution.live_submit_approval_artifact_max_bytes"'''
 context = '''"execution.live_submit_approval_artifact_max_bytes",'''
 classification = '''hyperliquid_live_submit_approval_field_label'''

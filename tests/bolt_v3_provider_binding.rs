@@ -30,6 +30,7 @@ mod support;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     sync::{
         Arc,
         atomic::{AtomicI64, Ordering},
@@ -43,7 +44,9 @@ use bolt_v2::{
     bolt_v3_config::{ClientBlock, LoadedStrategy, load_bolt_v3_config},
     bolt_v3_market_families::{MarketIdentityPlan, updown::plan_market_identity},
     bolt_v3_providers::{
-        binance::ResolvedBoltV3BinanceSecrets, binding_for_provider_key,
+        ProviderLiveSubmitApprovalContext, binance::ResolvedBoltV3BinanceSecrets,
+        binding_for_provider_key,
+        hyperliquid_artifacts::read_hyperliquid_live_submit_approval_artifact,
         polymarket::ResolvedBoltV3PolymarketSecrets, validate_client_block,
     },
     bolt_v3_secrets::{
@@ -565,6 +568,88 @@ fn provider_binding_resolves_hyperliquid_execution_secrets_from_ssm_paths() {
             "/bolt/hyperliquid/master_api_wallet/account_address",
         ]
     );
+}
+
+#[test]
+fn provider_binding_writes_hyperliquid_live_submit_approval_from_configured_runtime() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.config_bundle_checksum = "c".repeat(64);
+    loaded.root.clients.clear();
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    add_hyperliquid_live_submit_approval(&mut client);
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert(
+            "live_submit_approval_artifact_path".to_string(),
+            toml::Value::String(
+                approval_path
+                    .to_str()
+                    .expect("approval path should be utf-8")
+                    .to_string(),
+            ),
+        );
+    loaded
+        .root
+        .clients
+        .insert("hyperliquid_perps".to_string(), client);
+    let private_key = "0x4242424242424242424242424242424242424242424242424242424242424242";
+    let account_address = "0x1111111111111111111111111111111111111111";
+    let resolved = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
+        "/bolt/hyperliquid/master_api_wallet/private_key" => Ok(private_key.to_string()),
+        "/bolt/hyperliquid/master_api_wallet/account_address" => Ok(account_address.to_string()),
+        _ => Err("unexpected SSM path requested by Hyperliquid binding"),
+    })
+    .expect("Hyperliquid secrets should resolve from configured SSM paths");
+    let binding =
+        binding_for_provider_key("HYPERLIQUID").expect("Hyperliquid binding should register");
+    let now_unix_seconds = 1_800_000_000;
+    let build_head_sha = "a".repeat(40);
+    let writer = binding
+        .write_live_submit_approval_artifact
+        .expect("Hyperliquid binding should expose live-submit approval materialization");
+
+    let written = writer(
+        ProviderLiveSubmitApprovalContext {
+            loaded: &loaded,
+            client_key: "hyperliquid_perps",
+            client: loaded
+                .root
+                .clients
+                .get("hyperliquid_perps")
+                .expect("test client should exist"),
+            resolved: &resolved,
+            now_unix_seconds,
+            build_head_sha: &build_head_sha,
+        },
+        now_unix_seconds + 600,
+    )
+    .expect("configured Hyperliquid live-submit approval should write");
+
+    assert_eq!(written.path, approval_path);
+    let artifact = read_hyperliquid_live_submit_approval_artifact(&approval_path, 4096)
+        .expect("written approval artifact should parse");
+    assert_eq!(artifact.approval_id, "hl-standard-perps-approval-001");
+    assert_eq!(artifact.provider_id, "hyperliquid_perps");
+    assert_eq!(artifact.base_sha, build_head_sha);
+    assert_eq!(artifact.toml_checksum, loaded.config_bundle_checksum);
+    assert_eq!(artifact.expires_at, now_unix_seconds + 600);
+    assert_eq!(artifact.used_at, None);
+    assert_eq!(artifact.order_limits.max_order_count, 1);
+    assert_eq!(artifact.order_limits.max_order_notional, "10.00");
+
+    let artifact_text = fs::read_to_string(&approval_path).expect("artifact should read");
+    assert!(!artifact_text.contains(private_key));
+    assert!(!artifact_text.contains(account_address));
 }
 
 #[test]

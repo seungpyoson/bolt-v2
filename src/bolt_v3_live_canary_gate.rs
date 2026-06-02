@@ -2566,7 +2566,7 @@ fn is_sha256_hex(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-pub(crate) fn current_build_head_sha() -> Option<&'static str> {
+pub fn current_build_head_sha() -> Option<&'static str> {
     option_env!("BOLT_V3_BUILD_HEAD_SHA").filter(|value| is_git_head_sha(value))
 }
 

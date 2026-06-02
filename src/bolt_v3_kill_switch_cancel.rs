@@ -1,4 +1,5 @@
 use crate::bolt_v3_kill_switch::KillSwitchState;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -198,6 +199,10 @@ pub enum BoltV3KillSwitchCancelDecisionMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoltV3KillSwitchCancelPlanRequest {
     pub kill_switch_state: KillSwitchState,
+    pub action_id: String,
+    pub config_sha256: String,
+    pub policy_sha256: String,
+    pub source_timestamp_unix_nanos: u64,
     pub policy: BoltV3KillSwitchCancelPolicy,
     pub snapshot: BoltV3KillSwitchCancelSnapshot,
 }
@@ -207,6 +212,7 @@ pub struct BoltV3KillSwitchCancelPlan {
     halt_id: String,
     decision_mode: BoltV3KillSwitchCancelDecisionMode,
     candidates: Vec<BoltV3KillSwitchCancelCandidate>,
+    commands: Vec<BoltV3KillSwitchCancelCommand>,
 }
 
 impl BoltV3KillSwitchCancelPlan {
@@ -221,6 +227,10 @@ impl BoltV3KillSwitchCancelPlan {
     pub fn candidates(&self) -> &[BoltV3KillSwitchCancelCandidate] {
         &self.candidates
     }
+
+    pub fn commands(&self) -> &[BoltV3KillSwitchCancelCommand] {
+        &self.commands
+    }
 }
 
 pub struct BoltV3KillSwitchCancelSupervisor;
@@ -229,20 +239,123 @@ impl BoltV3KillSwitchCancelSupervisor {
     pub fn plan_cancel(
         request: BoltV3KillSwitchCancelPlanRequest,
     ) -> Result<BoltV3KillSwitchCancelPlan, BoltV3KillSwitchCancelError> {
-        let KillSwitchState::Cancelling { halt_id } = request.kill_switch_state else {
-            return Err(BoltV3KillSwitchCancelError::KillSwitchStateNotCancelling);
+        let halt_id = match &request.kill_switch_state {
+            KillSwitchState::Cancelling { halt_id } => halt_id.clone(),
+            _ => return Err(BoltV3KillSwitchCancelError::KillSwitchStateNotCancelling),
         };
+        validate_plan_metadata(&request)?;
         request.policy.validate_snapshot(&request.snapshot)?;
+        let action_id = request.action_id.trim().to_string();
+        let commands = request
+            .snapshot
+            .candidates()
+            .iter()
+            .map(|candidate| BoltV3KillSwitchCancelCommand {
+                halt_id: halt_id.clone(),
+                action_id: action_id.clone(),
+                config_sha256: request.config_sha256.clone(),
+                policy_sha256: request.policy_sha256.clone(),
+                source_timestamp_unix_nanos: request.source_timestamp_unix_nanos,
+                account_id: candidate.account_id.clone(),
+                instrument_id: candidate.instrument_id.clone(),
+                strategy_id: candidate.strategy_id.clone(),
+                client_order_id: candidate.client_order_id.clone(),
+                surface: candidate.surface(),
+            })
+            .collect::<Vec<_>>();
         Ok(BoltV3KillSwitchCancelPlan {
             halt_id,
             decision_mode: BoltV3KillSwitchCancelDecisionMode::DryRunProofOnly,
             candidates: request.snapshot.candidates().to_vec(),
+            commands,
         })
+    }
+}
+
+fn validate_plan_metadata(
+    request: &BoltV3KillSwitchCancelPlanRequest,
+) -> Result<(), BoltV3KillSwitchCancelError> {
+    if request.action_id.trim().is_empty() {
+        return Err(BoltV3KillSwitchCancelError::MissingActionId);
+    }
+    if !is_sha256_hex_digest(&request.config_sha256) {
+        return Err(BoltV3KillSwitchCancelError::InvalidConfigSha256);
+    }
+    if !is_sha256_hex_digest(&request.policy_sha256) {
+        return Err(BoltV3KillSwitchCancelError::InvalidPolicySha256);
+    }
+    if request.source_timestamp_unix_nanos == 0 {
+        return Err(BoltV3KillSwitchCancelError::MissingSourceTimestamp);
+    }
+    Ok(())
+}
+
+fn is_sha256_hex_digest(value: &str) -> bool {
+    let expected_len = hex::encode(Sha256::digest([])).len();
+    value.len() == expected_len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3KillSwitchCancelCommand {
+    halt_id: String,
+    action_id: String,
+    config_sha256: String,
+    policy_sha256: String,
+    source_timestamp_unix_nanos: u64,
+    account_id: String,
+    instrument_id: String,
+    strategy_id: String,
+    client_order_id: String,
+    surface: BoltV3KillSwitchOutstandingOrderRiskSurface,
+}
+
+impl BoltV3KillSwitchCancelCommand {
+    pub fn halt_id(&self) -> &str {
+        &self.halt_id
+    }
+
+    pub fn action_id(&self) -> &str {
+        &self.action_id
+    }
+
+    pub fn config_sha256(&self) -> &str {
+        &self.config_sha256
+    }
+
+    pub fn policy_sha256(&self) -> &str {
+        &self.policy_sha256
+    }
+
+    pub fn source_timestamp_unix_nanos(&self) -> u64 {
+        self.source_timestamp_unix_nanos
+    }
+
+    pub fn account_id(&self) -> &str {
+        &self.account_id
+    }
+
+    pub fn instrument_id(&self) -> &str {
+        &self.instrument_id
+    }
+
+    pub fn strategy_id(&self) -> &str {
+        &self.strategy_id
+    }
+
+    pub fn client_order_id(&self) -> &str {
+        &self.client_order_id
+    }
+
+    pub fn surface(&self) -> BoltV3KillSwitchOutstandingOrderRiskSurface {
+        self.surface
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3KillSwitchCancelError {
+    MissingActionId,
+    InvalidConfigSha256,
+    InvalidPolicySha256,
     InvalidAccountId,
     InvalidInstrumentId,
     InvalidStrategyId,

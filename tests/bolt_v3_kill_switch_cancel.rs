@@ -8,6 +8,11 @@ use bolt_v2::{
     },
 };
 
+const ACTION_ID: &str = "cancel-action-1";
+const POLICY_SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const CONFIG_SHA256: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const REQUEST_SOURCE_TIMESTAMP_UNIX_NANOS: u64 = 1_717_200_000_000_000_001;
+
 #[test]
 fn cancel_snapshot_covers_all_mandatory_outstanding_order_risk_surfaces() {
     let mandatory_surfaces = BoltV3KillSwitchOutstandingOrderRiskSurface::mandatory_surfaces();
@@ -158,9 +163,47 @@ fn cancel_supervisor_planning_requires_cancelling_state() {
     );
 }
 
+#[test]
+fn cancel_supervisor_commands_bind_request_and_candidate_metadata() {
+    let plan =
+        BoltV3KillSwitchCancelSupervisor::plan_cancel(cancel_plan_request(cancelling_state()))
+            .expect("cancelling durable state should allow proof-only cancel planning");
+
+    assert_eq!(
+        plan.commands().len(),
+        BoltV3KillSwitchOutstandingOrderRiskSurface::mandatory_surfaces().len()
+    );
+    let command = plan
+        .commands()
+        .iter()
+        .find(|command| command.client_order_id() == "client-order-0")
+        .expect("first candidate command should exist");
+
+    assert_eq!(command.halt_id(), "halt-1");
+    assert_eq!(command.action_id(), ACTION_ID);
+    assert_eq!(command.config_sha256(), CONFIG_SHA256);
+    assert_eq!(command.policy_sha256(), POLICY_SHA256);
+    assert_eq!(
+        command.source_timestamp_unix_nanos(),
+        REQUEST_SOURCE_TIMESTAMP_UNIX_NANOS
+    );
+    assert_eq!(command.account_id(), "POLYMARKET-001");
+    assert_eq!(command.instrument_id(), "BTC-2026-06-02-UP");
+    assert_eq!(command.strategy_id(), "binary-oracle-edge-taker-001");
+    assert_eq!(command.client_order_id(), "client-order-0");
+    assert_eq!(
+        command.surface(),
+        BoltV3KillSwitchOutstandingOrderRiskSurface::Open
+    );
+}
+
 fn cancel_plan_request(kill_switch_state: KillSwitchState) -> BoltV3KillSwitchCancelPlanRequest {
     BoltV3KillSwitchCancelPlanRequest {
         kill_switch_state,
+        action_id: ACTION_ID.to_string(),
+        config_sha256: CONFIG_SHA256.to_string(),
+        policy_sha256: POLICY_SHA256.to_string(),
+        source_timestamp_unix_nanos: REQUEST_SOURCE_TIMESTAMP_UNIX_NANOS,
         policy: mandatory_surface_policy(),
         snapshot: complete_cancel_snapshot(),
     }

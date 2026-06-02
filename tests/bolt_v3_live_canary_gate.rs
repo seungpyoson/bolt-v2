@@ -34,20 +34,132 @@ fn run_bolt_v3_live_node_does_not_require_live_canary_before_nt_run() {
         .find("fn run_blocked_before_submit")
         .map(|offset| start + offset)
         .expect("next helper should bound live runner source");
-    let runner = &source[start..end];
+    let runner = strip_rust_comments(&source[start..end]);
 
     assert!(
         runner.contains("let run_future = node.run();"),
         "live runner should enter NT through the wrapper"
     );
-    assert!(
-        !runner.contains("loaded.root.live_canary.is_none()")
-            && !runner.contains("BoltV3LiveNodeError::LiveCanaryGate")
-            && !runner.contains("check_bolt_v3_live_canary_gate")
-            && !runner.contains("build_bolt_v3_live_submit_admission_report_from_config")
-            && !runner.contains(".arm("),
-        "production live run must not require the live-canary/no-submit submit-admission gate"
-    );
+    for pattern in [
+        "loaded.root.live_canary.is_none()",
+        "BoltV3LiveNodeError::LiveCanaryGate",
+        "check_bolt_v3_live_canary_gate",
+        "build_bolt_v3_live_submit_admission_report_from_config",
+        ".arm(",
+    ] {
+        assert!(
+            !runner.contains(pattern),
+            "production live run must not require the live-canary/no-submit submit-admission gate; found forbidden pattern `{pattern}`"
+        );
+    }
+}
+
+fn strip_rust_comments(source: &str) -> String {
+    enum State {
+        Code,
+        LineComment,
+        BlockComment,
+        String { escaped: bool },
+        RawString { hashes: usize },
+    }
+
+    fn raw_string_hashes_at(chars: &[char], index: usize) -> Option<usize> {
+        if chars.get(index) != Some(&'r') {
+            return None;
+        }
+        let mut cursor = index + 1;
+        let mut hashes = 0;
+        while chars.get(cursor) == Some(&'#') {
+            hashes += 1;
+            cursor += 1;
+        }
+        (chars.get(cursor) == Some(&'"')).then_some(hashes)
+    }
+
+    let chars = source.chars().collect::<Vec<_>>();
+    let mut output = String::with_capacity(source.len());
+    let mut state = State::Code;
+    let mut index = 0;
+    while let Some(&current) = chars.get(index) {
+        match state {
+            State::Code => {
+                if chars.get(index) == Some(&'/') && chars.get(index + 1) == Some(&'/') {
+                    state = State::LineComment;
+                    index += 2;
+                } else if chars.get(index) == Some(&'/') && chars.get(index + 1) == Some(&'*') {
+                    state = State::BlockComment;
+                    index += 2;
+                } else if let Some(hashes) = raw_string_hashes_at(&chars, index) {
+                    output.push('r');
+                    index += 1;
+                    for _ in 0..hashes {
+                        output.push('#');
+                        index += 1;
+                    }
+                    output.push('"');
+                    index += 1;
+                    state = State::RawString { hashes };
+                } else if current == '"' {
+                    output.push(current);
+                    state = State::String { escaped: false };
+                    index += 1;
+                } else {
+                    output.push(current);
+                    index += 1;
+                }
+            }
+            State::LineComment => {
+                if current == '\n' {
+                    output.push(current);
+                    state = State::Code;
+                }
+                index += 1;
+            }
+            State::BlockComment => {
+                if current == '\n' {
+                    output.push(current);
+                    index += 1;
+                } else if current == '*' && chars.get(index + 1) == Some(&'/') {
+                    state = State::Code;
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+            }
+            State::String { escaped } => {
+                output.push(current);
+                state = if escaped {
+                    State::String { escaped: false }
+                } else if current == '\\' {
+                    State::String { escaped: true }
+                } else if current == '"' {
+                    State::Code
+                } else {
+                    State::String { escaped: false }
+                };
+                index += 1;
+            }
+            State::RawString { hashes } => {
+                output.push(current);
+                if current == '"' {
+                    let closes_raw_string =
+                        (1..=hashes).all(|offset| chars.get(index + offset) == Some(&'#'));
+                    if closes_raw_string {
+                        for offset in 1..=hashes {
+                            output.push(chars[index + offset]);
+                        }
+                        index += hashes + 1;
+                        state = State::Code;
+                    } else {
+                        index += 1;
+                    }
+                } else {
+                    index += 1;
+                }
+            }
+        }
+    }
+    output
 }
 
 #[test]

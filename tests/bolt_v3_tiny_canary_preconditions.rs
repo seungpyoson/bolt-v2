@@ -1559,6 +1559,21 @@ fn live_canary_evidence_requires_submit_cancel_and_restart_refs_without_raw_ids(
 }
 
 #[test]
+fn live_canary_evidence_accepts_entry_plus_verified_exit_admission_count() {
+    let evidence = Phase8CanaryEvidence::live_canary_proof(
+        evidence_input(),
+        valid_evidence_ref("cccc", "dddd"),
+        valid_live_order_ref(),
+        valid_live_canary_result_refs(),
+        2,
+    )
+    .expect("entry plus verified exit should satisfy the bounded round-trip admission count");
+
+    assert_eq!(evidence.outcome, Phase8CanaryOutcome::LiveCanaryProof);
+    assert_eq!(evidence.submit_admission_ref.admitted_order_count, 2);
+}
+
+#[test]
 fn live_canary_evidence_writer_rejects_block_reasons() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let evidence_path = temp.path().join("phase8-canary-evidence.json");

@@ -231,6 +231,7 @@ impl CanaryProofExecutor {
                 intent_kind: BoltV3SubmitIntentKind::Entry,
                 lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
                 canary_proof_claim: Some(CANARY_PROOF_CLAIM.to_string()),
+                risk_reducing_exit_proof: None,
             })?;
         self.submit_order(
             order,

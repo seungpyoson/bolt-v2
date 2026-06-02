@@ -61,10 +61,12 @@ use crate::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
         is_observed_open_side,
     },
+    bolt_v3_providers::normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     bolt_v3_submit_admission::{
-        BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-        admission_base_notional_from_order, base_quantity_admission_notional,
-        fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
+        BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind,
+        BoltV3SubmitLifecyclePolicy, admission_base_notional_from_order,
+        base_quantity_admission_notional, fee_inclusive_admission_notional,
+        market_style_admission_ceiling_notional,
     },
     bolt_v3_volatility::{RealizedVolConfig, RealizedVolEstimator},
     strategies::registry::{
@@ -3281,6 +3283,22 @@ impl BinaryOracleEdgeTaker {
         cache.instrument(&instrument_id).cloned()
     }
 
+    fn normalize_base_order_quantity_for_execution_venue(
+        &self,
+        instrument: &InstrumentAny,
+        quantity: Quantity,
+    ) -> Option<Quantity> {
+        let quantity_source = quantity.to_string();
+        let quantity_decimal = Decimal::from_str(quantity_source.trim()).ok()?;
+        let normalized = provider_normalize_base_order_quantity(
+            self.context.execution_venue(),
+            quantity_decimal,
+        )?;
+        instrument
+            .try_make_qty(normalized.to_f64()?, Some(true))
+            .ok()
+    }
+
     fn pending_entry_context_for(&self, instrument_id: InstrumentId) -> Option<PendingEntryState> {
         let pending = self.pending_entry()?.clone();
         if pending.instrument_id != instrument_id {
@@ -4339,17 +4357,47 @@ impl BinaryOracleEdgeTaker {
         };
         let notional = fee_inclusive_admission_notional(notional, max_fee_bps);
 
+        let intent_kind = match intent.intent_kind {
+            BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
+            BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
+        };
+        let risk_reducing_exit_proof = if matches!(
+            intent_kind,
+            BoltV3SubmitIntentKind::RiskReducingExit
+        ) {
+            let managed_position = self.managed_position().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "bolt-v3 submit admission risk-reducing exit requires managed position state for client_order_id={client_order_id}"
+                )
+            })?;
+            let position_quantity_source = managed_position.position.quantity.to_string();
+            let position_quantity =
+                Decimal::from_str(position_quantity_source.trim()).with_context(|| {
+                    format!(
+                        "bolt-v3 submit admission position quantity is not a decimal for client_order_id={client_order_id}"
+                    )
+                })?;
+            Some(BoltV3RiskReducingExitProof {
+                position_id: managed_position.position.position_id.to_string(),
+                instrument_id: managed_position.position.instrument_id.to_string(),
+                position_side: managed_position.position.side,
+                exit_order_side: order.order_side(),
+                position_quantity,
+                exit_quantity: quantity,
+            })
+        } else {
+            None
+        };
+
         Ok(BoltV3SubmitAdmissionRequest {
             strategy_id: intent.strategy_id.clone(),
             client_order_id,
             instrument_id: order.instrument_id().to_string(),
             notional,
-            intent_kind: match intent.intent_kind {
-                BoltV3OrderIntentKind::Entry => BoltV3SubmitIntentKind::Entry,
-                BoltV3OrderIntentKind::Exit => BoltV3SubmitIntentKind::RiskReducingExit,
-            },
+            intent_kind,
             lifecycle_policy: self.submit_lifecycle_policy(),
             canary_proof_claim: None,
+            risk_reducing_exit_proof,
         })
     }
 
@@ -4723,7 +4771,7 @@ impl BinaryOracleEdgeTaker {
             self.log_exit_evaluation(now_ms, &decision);
             return Ok(None);
         };
-        let Some(quantity) = decision.quantity else {
+        let Some(mut quantity) = decision.quantity else {
             self.log_exit_evaluation(now_ms, &decision);
             return Ok(None);
         };
@@ -4733,6 +4781,15 @@ impl BinaryOracleEdgeTaker {
         let instrument = self
             .current_instrument(instrument_id)
             .ok_or_else(|| anyhow::anyhow!("exit instrument missing from cache"))?;
+        let Some(normalized_quantity) =
+            self.normalize_base_order_quantity_for_execution_venue(&instrument, quantity)
+        else {
+            decision.blocked_reason = Some(EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE);
+            self.log_exit_evaluation(now_ms, &decision);
+            return Ok(None);
+        };
+        quantity = normalized_quantity;
+        decision.quantity = Some(quantity);
         let price = Price::new(raw_price, instrument.price_precision());
         let client_order_id = self.core.order_factory().generate_client_order_id();
         decision.client_order_id = Some(client_order_id);
@@ -4865,6 +4922,12 @@ impl BinaryOracleEdgeTaker {
             sized_notional / entry_cost
         };
         let Ok(quantity) = instrument.try_make_qty(shares_value, Some(true)) else {
+            decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
+            return decision;
+        };
+        let Some(quantity) =
+            self.normalize_base_order_quantity_for_execution_venue(&instrument, quantity)
+        else {
             decision.blocked_reason = Some(ENTRY_BLOCK_REASON_QUANTITY_ROUNDING_FAILED);
             return decision;
         };
@@ -7593,6 +7656,7 @@ fn submit_admission_request_from_order(
         },
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         canary_proof_claim: None,
+        risk_reducing_exit_proof: None,
     })
 }
 
@@ -9760,6 +9824,7 @@ mod tests {
                     lifecycle_policy:
                         crate::bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy::new(true),
                     canary_proof_claim: None,
+                    risk_reducing_exit_proof: None,
                 },
             )
             .expect("first admission should consume the only slot");

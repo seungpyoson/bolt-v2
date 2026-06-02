@@ -96,6 +96,22 @@ impl BoltV3LiveCanaryGateReport {
         self.max_live_order_count
     }
 
+    /// Configured live canary round-trip slot count, applied to entries by the
+    /// submit-admission gate. A configured value of `1` means one entry may be
+    /// admitted; it does not consume the independent risk-reducing exit slot
+    /// needed to flatten that entry.
+    pub fn max_live_entry_order_count(&self) -> u32 {
+        self.max_live_order_count
+    }
+
+    /// Configured live canary round-trip slot count, applied to risk-reducing
+    /// exits by the submit-admission gate. This is intentionally independent
+    /// from the entry slot so the gate cannot strand an admitted entry by
+    /// rejecting its flattening order as a second live order.
+    pub fn max_live_risk_reducing_exit_order_count(&self) -> u32 {
+        self.max_live_order_count
+    }
+
     pub fn max_notional_per_order(&self) -> Decimal {
         self.max_notional_per_order
     }

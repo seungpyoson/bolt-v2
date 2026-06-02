@@ -15580,7 +15580,11 @@ fn validate_canary_final_evidence(
         submit_ref,
         "canary_evidence_path.submit_admission_ref.admitted_order_count",
     )?;
-    if admitted_order_count != u64::from(max_live_order_count) {
+    let min_admitted_order_count = u64::from(max_live_order_count);
+    let max_admitted_order_count = min_admitted_order_count.saturating_mul(2);
+    if admitted_order_count < min_admitted_order_count
+        || admitted_order_count > max_admitted_order_count
+    {
         return Err(BoltV3OperatorArtifactError::FinalEvidenceMismatch {
             field: "canary_evidence_path.submit_admission_ref.admitted_order_count",
         });

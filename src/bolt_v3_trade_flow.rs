@@ -66,13 +66,13 @@ impl SignedTradeFlow {
 
     pub(crate) fn observe(&mut self, trade: &TradeTick) {
         let ts_ms = trade.ts_event.as_u64() / NANOS_PER_MILLI_U64;
-        // Reject non-monotonic observations, mirroring `RealizedVolEstimator`: a
-        // timestamp at or before the latest retained sample would break the
+        // Reject out-of-order observations, mirroring `RealizedVolEstimator`: a
+        // timestamp before the latest retained sample would break the
         // oldest-first ordering and the time-window eviction cutoff.
         if self
             .samples
             .back()
-            .is_some_and(|previous| ts_ms <= previous.ts_ms)
+            .is_some_and(|previous| ts_ms < previous.ts_ms)
         {
             return;
         }
@@ -128,5 +128,45 @@ impl SignedTradeFlow {
         self.samples
             .iter()
             .filter(move |trade| trade.ts_ms >= cutoff_ms)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nautilus_core::UnixNanos;
+    use nautilus_model::{
+        identifiers::{InstrumentId, TradeId},
+        types::{Price, Quantity},
+    };
+
+    #[test]
+    fn retains_same_millisecond_trades_but_rejects_older_observations() {
+        let mut flow = SignedTradeFlow::from_config(&SignedTradeFlowConfig {
+            window_secs: 10,
+            max_samples: 10,
+        });
+
+        flow.observe(&trade_tick("TRADE-001", 1_000, AggressorSide::Buyer));
+        flow.observe(&trade_tick("TRADE-002", 1_000, AggressorSide::Seller));
+        flow.observe(&trade_tick("TRADE-003", 999, AggressorSide::NoAggressor));
+
+        let samples = flow.samples().iter().collect::<Vec<_>>();
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].aggressor, AggressorSide::Buyer);
+        assert_eq!(samples[1].aggressor, AggressorSide::Seller);
+    }
+
+    fn trade_tick(trade_id: &str, ts_ms: u64, aggressor: AggressorSide) -> TradeTick {
+        TradeTick::new_checked(
+            InstrumentId::from("SAME-MS.BOLT"),
+            Price::new(1.0, 2),
+            Quantity::new(1.0, 0),
+            aggressor,
+            TradeId::from(trade_id),
+            UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+            UnixNanos::from(ts_ms.saturating_mul(NANOS_PER_MILLI_U64)),
+        )
+        .expect("test trade tick should be valid")
     }
 }

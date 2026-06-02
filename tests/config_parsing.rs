@@ -439,6 +439,27 @@ fn enforced_submit_admission_requires_venue_spendability_operator_evidence() {
 }
 
 #[test]
+fn enforced_submit_admission_rejects_invalid_venue_spendability_sha256_shape() {
+    let source = replace_in_fixture_root(
+        "enforce_submit_admission = false",
+        "enforce_submit_admission = true",
+    );
+    let live_canary = shipped_live_canary_toml().replace(
+        "pre_run_state_sha256 = \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\n",
+        "pre_run_state_sha256 = \"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"\nvenue_spendability_source_path = \"/var/lib/bolt/operator-evidence/venue-spendability.json\"\nvenue_spendability_source_sha256 = \"ABC\"\n",
+    );
+    let messages = validate_root_messages_from_source(&format!("{source}\n\n{live_canary}"));
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("live_canary.operator_evidence.venue_spendability_source_sha256")
+                && message.contains("lowercase sha256")
+        }),
+        "invalid venue spendability source sha256 must fail at config load: {messages:#?}"
+    );
+}
+
+#[test]
 fn shipped_chainlink_gate_provider_configs_keep_only_configured_feed_bindings() {
     for relative_path in ["config/root.toml", "tests/fixtures/bolt_v3/root.toml"] {
         let source = std::fs::read_to_string(support::repo_path(relative_path))
@@ -5160,6 +5181,20 @@ fn root_config_with_live_canary_proof_policy(proof_policy_block: &str) -> String
         "[live_canary.operator_evidence]\n",
         &format!("{proof_policy_block}\n\n[live_canary.operator_evidence]\n"),
     )
+}
+
+fn shipped_live_canary_toml() -> String {
+    let source = fs::read_to_string(support::repo_path("config/root.toml"))
+        .expect("root config should read");
+    let live_canary_and_tail = source
+        .split_once("[live_canary]\n")
+        .expect("root config must contain live canary")
+        .1;
+    let live_canary_body = live_canary_and_tail
+        .split_once("\n[logging]\n")
+        .expect("live canary should precede logging")
+        .0;
+    format!("[live_canary]\n{live_canary_body}")
 }
 
 fn validate_root_messages_with_live_canary_proof_policy(proof_policy_block: &str) -> Vec<String> {

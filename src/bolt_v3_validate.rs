@@ -224,7 +224,11 @@ fn validate_submit_admission_spendability_operator_evidence(
     }
     match operator_evidence.and_then(|evidence| evidence.venue_spendability_source_sha256.as_ref())
     {
-        Some(sha256) if !sha256.trim().is_empty() => {}
+        Some(sha256) if is_lowercase_sha256_hex(sha256.trim()) => {}
+        Some(_) => errors.push(
+            "risk.capital_pools enforce_submit_admission requires live_canary.operator_evidence.venue_spendability_source_sha256 to be a lowercase sha256 hex string"
+                .to_string(),
+        ),
         _ => errors.push(
             "risk.capital_pools enforce_submit_admission requires live_canary.operator_evidence.venue_spendability_source_sha256"
                 .to_string(),
@@ -734,6 +738,13 @@ fn is_lowercase_chainlink_feed_id(value: &str) -> bool {
         && value[2..]
             .chars()
             .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+}
+
+fn is_lowercase_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn validate_gate_provider_freshness(

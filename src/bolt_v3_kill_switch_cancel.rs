@@ -157,6 +157,38 @@ impl BoltV3KillSwitchCancelSnapshot {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3KillSwitchCancelPolicy {
+    mandatory_surfaces: BTreeSet<BoltV3KillSwitchOutstandingOrderRiskSurface>,
+}
+
+impl BoltV3KillSwitchCancelPolicy {
+    pub fn new(
+        mandatory_surfaces: impl IntoIterator<Item = BoltV3KillSwitchOutstandingOrderRiskSurface>,
+    ) -> Result<Self, BoltV3KillSwitchCancelError> {
+        let mandatory_surfaces = mandatory_surfaces.into_iter().collect::<BTreeSet<_>>();
+        if mandatory_surfaces.is_empty() {
+            return Err(BoltV3KillSwitchCancelError::MissingMandatorySurfacePolicy);
+        }
+        Ok(Self { mandatory_surfaces })
+    }
+
+    pub fn validate_snapshot(
+        &self,
+        snapshot: &BoltV3KillSwitchCancelSnapshot,
+    ) -> Result<(), BoltV3KillSwitchCancelError> {
+        let mandatory_surfaces = self.mandatory_surfaces.iter().copied().collect::<Vec<_>>();
+        if snapshot
+            .missing_mandatory_surfaces(&mandatory_surfaces)
+            .is_empty()
+        {
+            Ok(())
+        } else {
+            Err(BoltV3KillSwitchCancelError::MissingMandatorySurfaceProof)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3KillSwitchCancelError {
     InvalidAccountId,
@@ -165,4 +197,6 @@ pub enum BoltV3KillSwitchCancelError {
     InvalidClientOrderId,
     MissingSourceTimestamp,
     MissingCandidates,
+    MissingMandatorySurfacePolicy,
+    MissingMandatorySurfaceProof,
 }

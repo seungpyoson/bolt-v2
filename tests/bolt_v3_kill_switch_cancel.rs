@@ -1,6 +1,6 @@
 use bolt_v2::bolt_v3_kill_switch_cancel::{
-    BoltV3KillSwitchCancelCandidate, BoltV3KillSwitchCancelSnapshot,
-    BoltV3KillSwitchOutstandingOrderRiskSurface,
+    BoltV3KillSwitchCancelCandidate, BoltV3KillSwitchCancelError, BoltV3KillSwitchCancelPolicy,
+    BoltV3KillSwitchCancelSnapshot, BoltV3KillSwitchOutstandingOrderRiskSurface,
 };
 
 #[test]
@@ -101,6 +101,29 @@ fn cancel_snapshot_deduplicates_scoped_order_identity_without_losing_surface_pro
             BoltV3KillSwitchOutstandingOrderRiskSurface::PendingCancel,
         ]),
         Vec::<BoltV3KillSwitchOutstandingOrderRiskSurface>::new()
+    );
+}
+
+#[test]
+fn cancel_policy_rejects_snapshot_missing_mandatory_surface_proof() {
+    let policy = BoltV3KillSwitchCancelPolicy::new(
+        BoltV3KillSwitchOutstandingOrderRiskSurface::mandatory_surfaces()
+            .iter()
+            .copied(),
+    )
+    .expect("mandatory surface policy should be valid");
+    let candidates = BoltV3KillSwitchOutstandingOrderRiskSurface::mandatory_surfaces()
+        .iter()
+        .filter(|surface| **surface != BoltV3KillSwitchOutstandingOrderRiskSurface::Contingent)
+        .enumerate()
+        .map(|(index, surface)| cancel_candidate(*surface, &format!("client-order-{index}")))
+        .collect::<Vec<_>>();
+    let snapshot = BoltV3KillSwitchCancelSnapshot::new(candidates)
+        .expect("partial cancel snapshot should preserve observed risk");
+
+    assert_eq!(
+        policy.validate_snapshot(&snapshot),
+        Err(BoltV3KillSwitchCancelError::MissingMandatorySurfaceProof)
     );
 }
 

@@ -30,7 +30,7 @@ The provider binding must reject:
 - Strategy-file submit mechanics.
 - Standard-perps adapter mapping without a matching consumed approval artifact.
 - Spot, HIP-3, or HIP-4 adapter mapping without product-specific proof and matching consumed approval.
-- Any live submit path while the pinned NT `userFees` weight differs from official Hyperliquid weight policy.
+- Any live submit path unless Bolt's Hyperliquid provider egress model accounts `userFees` at the official Hyperliquid request weight, even when the pinned NT adapter reports a lower internal base weight.
 
 ## Market Data Adapter Contract
 

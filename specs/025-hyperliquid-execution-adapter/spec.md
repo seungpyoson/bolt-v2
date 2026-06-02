@@ -29,7 +29,7 @@ As an operator, I can see an evidence-backed product matrix for standard perps, 
 
 As an operator, I can prove standard-perps fee/rate policy and exchange-mutation guards without publishing a Hyperliquid-specific no-submit readiness artifact.
 
-**Independent Test**: The shared exchange-mutation guard fails closed for submit, cancel, modify, transfer, or account-mutating counts; the pinned NT `userFees` weight mismatch blocks live submit at validation.
+**Independent Test**: The shared exchange-mutation guard fails closed for submit, cancel, modify, transfer, or account-mutating counts; the pinned NT `userFees` weight mismatch is accounted by Bolt's Hyperliquid provider egress policy using the official request weight before live-submit validation can pass.
 
 ### User Story 4 - Gate Standard-Perps Adapter Mapping (Priority: P2)
 

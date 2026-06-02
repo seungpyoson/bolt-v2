@@ -189,10 +189,8 @@ const STANDARD_PERPS_DISCOVERY_SOURCES: &[&str] = &[
 ];
 const STANDARD_PERPS_OFFICIAL_DOCUMENTATION_SOURCES: &[&str] =
     &["Hyperliquid Info endpoint perpetuals metadata `meta`"];
-const STANDARD_PERPS_MISSING_SUBMIT_PROOF: &[&str] = &[
-    "standard perps live-submit approval artifact",
-    "standard perps userFees rate-limit policy reconciliation",
-];
+const STANDARD_PERPS_MISSING_SUBMIT_PROOF: &[&str] =
+    &["standard perps live-submit approval artifact"];
 const SPOT_DISCOVERY_SOURCES: &[&str] = &[
     "nautilus_hyperliquid::http::query::InfoRequest::spot_meta",
     "nautilus_hyperliquid::http::models::SpotMeta",
@@ -263,6 +261,8 @@ pub fn hyperliquid_product_matrix() -> &'static [HyperliquidProductMatrixEntry] 
 }
 
 pub const USER_FEES_OFFICIAL_INFO_REQUEST_WEIGHT: u32 = 20;
+pub const REST_EGRESS_CAP_PER_MINUTE: u32 = 1200;
+pub const MAX_REST_REQUESTS_PER_ORDER_COMMAND: u32 = USER_FEES_OFFICIAL_INFO_REQUEST_WEIGHT;
 pub const USER_FEES_OFFICIAL_RATE_LIMIT_SOURCE: &str =
     "Hyperliquid Docs: Rate limits and user limits - all other documented info requests weight 20";
 pub const USER_FEES_NT_CALLERS: &[&str] = &[
@@ -276,6 +276,7 @@ pub const USER_FEES_NT_CALLERS: &[&str] = &[
 #[serde(rename_all = "snake_case")]
 pub enum HyperliquidUserFeesRequestWeightStatus {
     OfficialWeightAccounted,
+    OfficialWeightAccountedByBoltProviderPolicy,
     FailClosedPinnedNtWeightMismatch,
 }
 
@@ -298,6 +299,8 @@ pub fn hyperliquid_user_fees_request_weight_policy() -> HyperliquidUserFeesReque
         nautilus_hyperliquid::http::rate_limits::info_base_weight(&request);
     let status = if pinned_nt_info_base_weight == USER_FEES_OFFICIAL_INFO_REQUEST_WEIGHT {
         HyperliquidUserFeesRequestWeightStatus::OfficialWeightAccounted
+    } else if hyperliquid_provider_policy_accounts_official_user_fees_weight() {
+        HyperliquidUserFeesRequestWeightStatus::OfficialWeightAccountedByBoltProviderPolicy
     } else {
         HyperliquidUserFeesRequestWeightStatus::FailClosedPinnedNtWeightMismatch
     };
@@ -309,6 +312,10 @@ pub fn hyperliquid_user_fees_request_weight_policy() -> HyperliquidUserFeesReque
         official_documentation_source: USER_FEES_OFFICIAL_RATE_LIMIT_SOURCE,
         nt_callers: USER_FEES_NT_CALLERS,
     }
+}
+
+fn hyperliquid_provider_policy_accounts_official_user_fees_weight() -> bool {
+    MAX_REST_REQUESTS_PER_ORDER_COMMAND >= USER_FEES_OFFICIAL_INFO_REQUEST_WEIGHT
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -616,13 +623,18 @@ fn validate_live_submit_approval_config(
 
 fn validate_user_fees_request_weight_policy(key: &str) -> Vec<String> {
     let policy = hyperliquid_user_fees_request_weight_policy();
-    if policy.status == HyperliquidUserFeesRequestWeightStatus::OfficialWeightAccounted {
-        return Vec::new();
+    match policy.status {
+        HyperliquidUserFeesRequestWeightStatus::OfficialWeightAccounted
+        | HyperliquidUserFeesRequestWeightStatus::OfficialWeightAccountedByBoltProviderPolicy => {
+            Vec::new()
+        }
+        HyperliquidUserFeesRequestWeightStatus::FailClosedPinnedNtWeightMismatch => vec![format!(
+            "clients.{key}.execution.live_submit_approval_id cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit",
+            policy.request_type,
+            policy.pinned_nt_info_base_weight,
+            policy.official_info_request_weight
+        )],
     }
-    vec![format!(
-        "clients.{key}.execution.live_submit_approval_id cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit",
-        policy.request_type, policy.pinned_nt_info_base_weight, policy.official_info_request_weight
-    )]
 }
 
 fn validate_latency_profile_config(

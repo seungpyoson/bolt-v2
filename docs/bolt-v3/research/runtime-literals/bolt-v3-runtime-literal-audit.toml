@@ -15218,6 +15218,14 @@ reason = '''This is Hyperliquid's documented fixed Info API userFees request wei
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''number'''
+literal = '''1200'''
+context = '''pub const REST_EGRESS_CAP_PER_MINUTE: u32 = 1200;'''
+classification = '''hyperliquid_protocol_rest_egress_cap'''
+reason = '''This is Hyperliquid's documented fixed API weight cap per minute used to reconcile Bolt order-rate validation; operator order rates remain TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''number'''
 literal = '''40'''
 context = '''rest.len() == 40'''
 classification = '''evm_address_syntax_gate'''
@@ -15587,15 +15595,7 @@ reason = '''This is the stable Hyperliquid product-surface label used for exact 
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''string'''
 literal = '''"standard perps live-submit approval artifact"'''
-context = '''"standard perps live-submit approval artifact",'''
-classification = '''hyperliquid_operator_evidence_label'''
-reason = '''This is a Hyperliquid operator-evidence checklist label used to gate live submit, not a trading parameter.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid.rs'''
-kind = '''string'''
-literal = '''"standard perps userFees rate-limit policy reconciliation"'''
-context = '''"standard perps userFees rate-limit policy reconciliation",'''
+context = '''&["standard perps live-submit approval artifact"];'''
 classification = '''hyperliquid_operator_evidence_label'''
 reason = '''This is a Hyperliquid operator-evidence checklist label used to gate live submit, not a trading parameter.'''
 

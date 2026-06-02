@@ -742,6 +742,10 @@ pub fn venue_egress_model(venue: &str) -> Option<VenueEgressModel> {
             cap_per_minute: polymarket::REST_EGRESS_CAP_PER_MINUTE,
             max_rest_requests_per_order_command: polymarket::MAX_REST_REQUESTS_PER_ORDER_COMMAND,
         }),
+        hyperliquid::KEY => Some(VenueEgressModel {
+            cap_per_minute: hyperliquid::REST_EGRESS_CAP_PER_MINUTE,
+            max_rest_requests_per_order_command: hyperliquid::MAX_REST_REQUESTS_PER_ORDER_COMMAND,
+        }),
         _ => None,
     }
 }

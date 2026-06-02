@@ -168,9 +168,11 @@ fn standard_perps_product_matrix_records_nt_discovery_and_fail_closed_submit() {
         standard_perps,
         "standard perps live-submit approval artifact",
     );
-    assert_fail_closed(
-        standard_perps,
-        "standard perps userFees rate-limit policy reconciliation",
+    assert!(
+        !standard_perps
+            .missing_submit_proof
+            .contains(&"standard perps userFees rate-limit policy reconciliation"),
+        "userFees official-weight reconciliation is now accounted by the Hyperliquid provider policy"
     );
 }
 

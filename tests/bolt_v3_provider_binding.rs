@@ -138,16 +138,32 @@ account_address_ssm_path = "{account_address_path}"
 }
 
 fn add_hyperliquid_live_submit_approval(client: &mut ClientBlock) {
-    client
+    let execution = client
         .execution
         .as_mut()
         .expect("test Hyperliquid client should have execution")
         .as_table_mut()
-        .expect("test Hyperliquid execution should be a table")
-        .insert(
-            "live_submit_approval_id".to_string(),
-            toml::Value::String("hl-standard-perps-approval-001".to_string()),
-        );
+        .expect("test Hyperliquid execution should be a table");
+    execution.insert(
+        "live_submit_approval_id".to_string(),
+        toml::Value::String("hl-standard-perps-approval-001".to_string()),
+    );
+    execution.insert(
+        "live_submit_approval_artifact_path".to_string(),
+        toml::Value::String("operator/hyperliquid-live-submit-approval.json".to_string()),
+    );
+    execution.insert(
+        "live_submit_approval_artifact_max_bytes".to_string(),
+        toml::Value::Integer(65536),
+    );
+    execution.insert(
+        "live_submit_max_order_count".to_string(),
+        toml::Value::Integer(1),
+    );
+    execution.insert(
+        "live_submit_max_order_notional".to_string(),
+        toml::Value::String("10.00".to_string()),
+    );
 }
 
 fn hyperliquid_execution_client_with_secret_fields(secret_fields: &str) -> ClientBlock {
@@ -478,19 +494,26 @@ fn provider_binding_rejects_hyperliquid_execution_without_secrets() {
 }
 
 #[test]
-fn provider_binding_rejects_hyperliquid_live_submit_on_user_fees_weight_mismatch() {
+fn provider_binding_accepts_hyperliquid_live_submit_when_official_user_fees_weight_is_accounted() {
     let mut client = hyperliquid_execution_client(
         "/bolt/hyperliquid/master_api_wallet/private_key",
         "/bolt/hyperliquid/master_api_wallet/account_address",
     );
     add_hyperliquid_live_submit_approval(&mut client);
 
-    let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
+    assert_eq!(
+        validate_client_block("hyperliquid_perps", &client),
+        Vec::<String>::new()
+    );
+}
 
-    assert!(rendered.contains("live_submit_approval_id"));
-    assert!(rendered.contains("userFees"));
-    assert!(rendered.contains("pinned NautilusTrader"));
-    assert!(rendered.contains("official documented weight"));
+#[test]
+fn provider_binding_models_hyperliquid_egress_with_official_user_fees_weight() {
+    let model = bolt_v2::bolt_v3_providers::venue_egress_model("HYPERLIQUID")
+        .expect("Hyperliquid execution must have a REST egress model before live submit");
+
+    assert_eq!(model.cap_per_minute, 1200);
+    assert_eq!(model.max_rest_requests_per_order_command, 20);
 }
 
 #[test]

@@ -257,9 +257,13 @@ fn user_fees_weight_policy_accounts_official_weight_and_nt_inventory() {
         policy.pinned_nt_info_base_weight,
         info_base_weight(&request)
     );
+    assert_ne!(
+        policy.pinned_nt_info_base_weight, policy.official_info_request_weight,
+        "this regression must prove Bolt accounts for the official weight even while the pinned NT weight differs"
+    );
     assert_eq!(
         policy.status,
-        HyperliquidUserFeesRequestWeightStatus::FailClosedPinnedNtWeightMismatch
+        HyperliquidUserFeesRequestWeightStatus::OfficialWeightAccountedByBoltProviderPolicy
     );
     assert!(
         policy

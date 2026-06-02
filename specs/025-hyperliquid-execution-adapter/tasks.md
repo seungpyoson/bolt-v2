@@ -56,10 +56,10 @@
 
 **Goal**: Standard-perps remains blocked by fee/rate policy and shared exchange-mutation guards until a later live-submit slice supplies complete product proof.
 
-**Independent Test**: The shared exchange-mutation guard fails closed for submit, cancel, modify, transfer, or account mutation; pinned NT `userFees` mismatch blocks live submit.
+**Independent Test**: The shared exchange-mutation guard fails closed for submit, cancel, modify, transfer, or account mutation; pinned NT `userFees` mismatch is reconciled by the Hyperliquid provider egress model using the official request weight.
 
 - [x] T029 [US3] Remove Hyperliquid-specific no-submit readiness artifact from this slice.
-- [x] T030 [US3] Keep Hyperliquid live submit fail-closed until later product proof, fee/rate reconciliation, and routing.
+- [x] T030 [US3] Keep Hyperliquid live submit fail-closed until later product proof and remaining product-compatible routing.
 - [x] T031 [US3] Add failing exchange-mutation counter test in `tests/hyperliquid_fail_closed.rs`.
 - [x] T032 [US3] Implement exchange-mutation guard in shared execution/admission code under `src/`.
 - [x] T033 [US3] Add failing `userFees` request-weight test in `tests/hyperliquid_fail_closed.rs`.
@@ -142,6 +142,16 @@
 - [x] T049L Add failing Hyperliquid HIP-4/updown routing gate test in `tests/bolt_v3_adapter_mapping.rs`.
 - [x] T049M Populate Hyperliquid `SUPPORTED_MARKET_FAMILIES` with the existing `updown` market family.
 - [x] T049N Document remaining product-specific routing gaps for standard perps, spot, and HIP-3.
+
+## Phase 8E - Official UserFees Egress Reconciliation
+
+**Goal**: Live-submit validation no longer fails only because pinned NT internally underweights `userFees`; Bolt's provider policy must reserve the official Hyperliquid weight before validation can pass.
+
+**Independent Test**: Hyperliquid live-submit config validation passes with required approval fields when `venue_egress_model("HYPERLIQUID")` reserves 20 request-weight per order command, while the NT caller inventory still proves the pinned NT base weight is lower.
+
+- [x] T049O Add failing provider-binding test for Hyperliquid egress policy and live-submit validation.
+- [x] T049P Add Hyperliquid REST egress model using the official `userFees` weight.
+- [x] T049Q Remove stale `userFees` missing-proof blocker from the product matrix.
 
 ## Phase 9 - Verification
 

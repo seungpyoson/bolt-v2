@@ -558,6 +558,11 @@ fn partial_fill_event_revalues_residual_reservation() {
         .position_sizer_state_snapshot()
         .expect("partial fill should keep live lifecycle");
     assert_eq!(state.order_lifecycle.open_order_count, 1);
+    let ProductSizingSnapshot::PredictionMarketBinary(product) = state.product_state;
+    assert_eq!(product.source, "nt_order_fill");
+    assert_eq!(product.observed_at_ns, 1_100);
+    assert_eq!(product.yes_position, Decimal::new(4, 0));
+    assert_eq!(product.conditional_token_allowance, Decimal::new(4, 0));
 }
 
 #[test]
@@ -814,6 +819,93 @@ fn attributed_rebuild_after_cache_seed_keeps_next_submit_open() {
     assert_eq!(
         admission.position_sizer_live_reserved_liability(),
         Some(Decimal::new(86, 1))
+    );
+}
+
+#[test]
+fn account_refresh_after_attributed_rebuild_preserves_order_lifecycle_attribution() {
+    let admission = Arc::new(position_sized_admission());
+    arm_default(&admission);
+    let mut feed = PositionSizerRuntimeFeed::new(runtime_feed_config(), admission.clone());
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            900,
+            100.0,
+        ))
+        .is_none()
+    );
+    assert!(
+        feed.on_portfolio_snapshot(&portfolio_snapshot(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            950,
+            100.0,
+        ))
+        .is_some()
+    );
+    assert!(
+        feed.seed_open_order_cache(vec!["client-order-1".to_string()], 1_000)
+            .is_some()
+    );
+
+    let rebuild = admission.rebuild_position_sizing_open_order_reservations(
+        vec![open_order_reservation(
+            "client-order-1",
+            "client-order-1#rebuilt",
+            Decimal::new(43, 1),
+        )],
+        1_000,
+    );
+    assert!(rebuild.accepted);
+
+    assert!(
+        feed.on_account_state(&account_state(
+            AccountId::from("ACCOUNT-001"),
+            "USD",
+            1_050,
+            100.0,
+        ))
+        .is_some()
+    );
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("account refresh should preserve rebuilt NT state");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
+
+    admission
+        .admit_at(&sized_submit_request("client-order-2"), 1_100)
+        .expect("account refresh should not erase attributed startup rebuild")
+        .commit_submitted();
+    let _ = feed.on_order_event(&OrderEventAny::Submitted(order_submitted_event(
+        "client-order-2",
+        1_150,
+        AccountId::from("ACCOUNT-001"),
+    )));
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("second submit event should preserve rebuilt NT state");
+    assert_eq!(state.order_lifecycle.open_order_count, 2);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
+
+    let mut third_request = sized_submit_request("client-order-3");
+    third_request.notional = Decimal::new(4, 1);
+    third_request
+        .position_sizing
+        .as_mut()
+        .expect("third request should carry sizing evidence")
+        .quantity = Decimal::new(1, 0);
+    admission
+        .admit_at(&third_request, 1_200)
+        .expect("submitted event should not erase attributed startup rebuild")
+        .commit_submitted();
+    assert_eq!(
+        admission.position_sizer_live_reserved_liability(),
+        Some(Decimal::new(930, 2))
     );
 }
 

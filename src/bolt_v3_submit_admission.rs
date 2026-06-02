@@ -2076,8 +2076,9 @@ fn components_from_sizing_state(
 
 fn refresh_position_sizer_state_from_components(
     position_sizer: &mut BoltV3SubmitPositionSizerState,
-    components: BoltV3SubmitPositionSizingNtComponents,
+    mut components: BoltV3SubmitPositionSizingNtComponents,
 ) {
+    preserve_fresher_order_lifecycle(position_sizer.state.as_ref(), &mut components);
     let state = compose_position_sizing_state_from_components(
         components,
         position_sizer.gate.is_reconciled(),
@@ -2086,6 +2087,25 @@ fn refresh_position_sizer_state_from_components(
     position_sizer.capital_pool.source = state.portfolio.source.clone();
     position_sizer.capital_pool.observed_at_ns = state.portfolio.observed_at_ns;
     position_sizer.state = Some(state);
+}
+
+fn preserve_fresher_order_lifecycle(
+    current_state: Option<&NtDerivedSizingState>,
+    components: &mut BoltV3SubmitPositionSizingNtComponents,
+) {
+    let Some(current_state) = current_state else {
+        return;
+    };
+    let current = &current_state.order_lifecycle;
+    let incoming = &components.order_lifecycle;
+    let current_is_newer = current.observed_at_ns > incoming.observed_at_ns;
+    let incoming_is_same_open_set_downgrade = current.observed_at_ns == incoming.observed_at_ns
+        && current.open_order_count == incoming.open_order_count
+        && current.all_open_orders_attributed
+        && !incoming.all_open_orders_attributed;
+    if current_is_newer || incoming_is_same_open_set_downgrade {
+        components.order_lifecycle = current.clone();
+    }
 }
 
 fn refresh_position_sizer_reservation_snapshot(

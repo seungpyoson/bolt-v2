@@ -366,6 +366,11 @@ impl PositionSizerRuntimeFeed {
     }
 
     fn publish_components_if_ready(&mut self) -> Option<BoltV3SubmitPositionSizingNtComponents> {
+        let submit_admission = Arc::clone(&self.submit_admission);
+        self.component_builder
+            .refresh_live_order_attribution(|client_order_id| {
+                submit_admission.position_sizer_has_live_reservation(client_order_id)
+            });
         let components = self.component_builder.components(&self.config)?;
         self.submit_admission
             .update_position_sizing_nt_components(components.clone());
@@ -449,6 +454,23 @@ impl PositionSizerRuntimeComponentBuilder {
                 .or_insert(attributed);
         }
         self.refresh_order_lifecycle_from_event(observed_at_ns);
+    }
+
+    fn refresh_live_order_attribution<F>(&mut self, mut has_live_reservation: F)
+    where
+        F: FnMut(&str) -> bool,
+    {
+        let mut changed = false;
+        for (client_order_id, attributed) in &mut self.live_order_attribution {
+            if !*attributed && has_live_reservation(client_order_id) {
+                *attributed = true;
+                changed = true;
+            }
+        }
+        if changed {
+            self.order_lifecycle.open_order_count = self.live_order_attribution.len();
+            self.order_lifecycle.all_open_orders_attributed = self.all_live_orders_attributed();
+        }
     }
 
     fn record_terminal_order_event(&mut self, client_order_id: String, observed_at_ns: u64) {

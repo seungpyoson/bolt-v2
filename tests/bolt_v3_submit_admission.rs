@@ -1063,6 +1063,28 @@ fn nt_component_update_preserves_submit_owned_reservation_snapshot() {
 }
 
 #[test]
+fn nt_component_update_preserves_same_timestamp_attributed_order_lifecycle() {
+    let admission = position_sized_admission();
+    let mut attributed_components = fresh_components(1_000);
+    attributed_components.order_lifecycle.open_order_count = 1;
+    attributed_components
+        .order_lifecycle
+        .all_open_orders_attributed = true;
+    admission.update_position_sizing_nt_components(attributed_components);
+
+    let mut stale_components = fresh_components(1_000);
+    stale_components.order_lifecycle.open_order_count = 1;
+    stale_components.order_lifecycle.all_open_orders_attributed = false;
+    admission.update_position_sizing_nt_components(stale_components);
+
+    let state = admission
+        .position_sizer_state_snapshot()
+        .expect("component state should be retained");
+    assert_eq!(state.order_lifecycle.open_order_count, 1);
+    assert!(state.order_lifecycle.all_open_orders_attributed);
+}
+
+#[test]
 fn position_sizer_direct_rebuild_keeps_gate_closed_without_components() {
     let admission = position_sized_admission();
 

@@ -202,6 +202,15 @@
 - [x] T049AD Add failing proof-policy-only trade transport scoping test.
 - [x] T049AE Derive required trade transport clients from strategy and proof-policy references before the empty-runtime shortcut.
 
+## Phase 8K - Hyperliquid Fee-Provider Boundary
+
+**Goal**: Hyperliquid execution strategies resolve fees through the provider registry instead of failing on a missing provider binding or silently assuming zero fees.
+
+**Independent Test**: The Hyperliquid provider binding builds a fee provider from provider-owned execution config, and that provider returns no fee bound until product-specific Hyperliquid fee proof exists.
+
+- [x] T049AF Add failing provider-binding test for Hyperliquid fee-provider construction.
+- [x] T049AG Register a Hyperliquid fee-provider builder that fails closed without product fee proof.
+
 ## Phase 9 - Verification
 
 - [x] T050 Run `cargo fmt --check` for `Cargo.toml` and `src/`.

@@ -81,6 +81,7 @@ As an operator, I can configure local info-node and placement profile settings w
 - **FR-022**: Static/direct Hyperliquid targets MUST fail closed when `target.product_surface` differs from the execution client's single configured and approved `execution.product_surfaces` value.
 - **FR-023**: Production live-node approval loading MUST reject static/direct Hyperliquid target surface mismatches before reading, consuming, or persisting a one-time live-submit approval artifact.
 - **FR-024**: Production live-node transport scoping MUST drop execution clients outside the active strategy or enabled canary proof-policy client set before provider live-submit approval loading, so unrelated provider approvals cannot be consumed by a proof-only run.
+- **FR-025**: The Hyperliquid provider binding MUST register a provider-owned fee-provider builder, and that fee provider MUST fail closed with no fee bound until product-specific Hyperliquid fee proof is available.
 
 ## Edge Cases
 
@@ -91,6 +92,7 @@ As an operator, I can configure local info-node and placement profile settings w
 - Local info node is stale or unavailable.
 - Live-submit approval artifact matches provider id but not TOML checksum or product surface.
 - Approval artifact is replayed after one use.
+- Hyperliquid strategy registration resolves a fee provider but product fee proof is unavailable.
 
 ## Success Criteria
 
@@ -98,10 +100,11 @@ As an operator, I can configure local info-node and placement profile settings w
 - **SC-002**: Secret-resolution tests prove SSM-only behavior and no environment fallback at NT handoff.
 - **SC-003**: Product matrix tests classify standard perps, spot, HIP-3, and HIP-4 with source evidence and fail-closed submit status.
 - **SC-004**: Fail-closed tests prove latency ops metadata cannot bypass live-submit approval and the shared exchange-mutation guard rejects mutating request counts.
-- **SC-005**: Relay-Claude adversarial review approves the Speckit plan before implementation begins.
+- **SC-005**: Provider-binding tests prove Hyperliquid resolves a fee provider through the provider registry and that the provider returns no fee bound until product fee proof exists.
+- **SC-006**: Relay-Claude adversarial review approves the Speckit plan before implementation begins.
 
 ## Assumptions
 
 - The current pinned NT revision remains the source of truth unless current `main` requires a coordinated dependency update.
 - Hyperliquid docs and public metadata endpoints are authoritative only for documented public behavior; Bolt proof gates decide live submit readiness.
-- Live standard-perps submit is a later gated slice after fee/rate policy reconciliation, product proof, and standard-perps instrument routing, not part of the initial implementation claim.
+- Live standard-perps submit is a later gated slice after product fee proof, product submit proof, and product-compatible strategy runtime, not part of the initial implementation claim.

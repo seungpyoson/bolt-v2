@@ -6,6 +6,7 @@
 
 use std::{any::Any, str::FromStr, sync::Arc};
 
+use futures_util::future::{BoxFuture, FutureExt};
 use nautilus_core::string::secret::REDACTED;
 use nautilus_hyperliquid::{
     common::enums::HyperliquidEnvironment as NtHyperliquidEnvironment,
@@ -15,7 +16,7 @@ use nautilus_hyperliquid::{
         HyperliquidExecutionClientFactory,
     },
 };
-use nautilus_model::identifiers::AccountId;
+use nautilus_model::identifiers::{AccountId, InstrumentId};
 use nautilus_network::websocket::TransportBackend;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,7 @@ use crate::{
         ProviderSsmPathReference, ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
+    strategies::registry::FeeProvider,
 };
 
 use super::hyperliquid_artifacts::HyperliquidLiveSubmitApprovalConsumption;
@@ -275,6 +277,8 @@ pub const USER_FEES_NT_CALLERS: &[&str] = &[
     "nautilus_hyperliquid::http::client::HyperliquidHttpClient::info_user_fees",
     "nautilus_hyperliquid::python::http::HyperliquidHttpClient::py_info_user_fees",
 ];
+const HYPERLIQUID_FEE_PROOF_UNAVAILABLE_REASON: &str =
+    "Hyperliquid product fee proof is not yet available";
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -978,6 +982,57 @@ fn parse_secrets_config(
             field: KEY.to_string(),
             source: format!("invalid hyperliquid secrets schema: {error}"),
         })
+}
+
+#[derive(Debug, Clone)]
+struct HyperliquidFailClosedFeeProvider {
+    reason: &'static str,
+}
+
+impl FeeProvider for HyperliquidFailClosedFeeProvider {
+    fn fee_bps(&self, _instrument_id: InstrumentId) -> Option<Decimal> {
+        None
+    }
+
+    fn warm(&self, _instrument_id: InstrumentId) -> BoxFuture<'_, anyhow::Result<()>> {
+        let reason = self.reason;
+        async move { Err(anyhow::anyhow!("{reason}")) }.boxed()
+    }
+}
+
+pub fn build_fee_provider(
+    client_key: &str,
+    client: &ClientBlock,
+    _resolved: &crate::bolt_v3_secrets::ResolvedBoltV3Secrets,
+) -> Result<Arc<dyn FeeProvider>, BoltV3AdapterMappingError> {
+    let value = client.execution.as_ref().ok_or_else(|| {
+        BoltV3AdapterMappingError::ValidationInvariant {
+            client_key: client_key.to_string(),
+            field: "execution",
+            message: "is required by the Hyperliquid fee-provider boundary".to_string(),
+        }
+    })?;
+    let cfg: HyperliquidExecutionConfig =
+        value.clone().try_into().map_err(|error: toml::de::Error| {
+            BoltV3AdapterMappingError::SchemaParse {
+                client_key: client_key.to_string(),
+                block: "execution",
+                message: error.to_string(),
+            }
+        })?;
+    if let Some(message) = validate_execution_config(client_key, &cfg)
+        .into_iter()
+        .next()
+    {
+        return Err(BoltV3AdapterMappingError::SchemaParse {
+            client_key: client_key.to_string(),
+            block: "execution",
+            message,
+        });
+    }
+    Ok(Arc::new(HyperliquidFailClosedFeeProvider {
+        reason: HYPERLIQUID_FEE_PROOF_UNAVAILABLE_REASON,
+    }))
 }
 
 pub fn map_adapters(

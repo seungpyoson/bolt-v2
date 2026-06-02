@@ -45,7 +45,7 @@ use bolt_v2::{
     bolt_v3_market_families::{MarketIdentityPlan, updown::plan_market_identity},
     bolt_v3_providers::{
         ProviderLiveSubmitApprovalContext, binance::ResolvedBoltV3BinanceSecrets,
-        binding_for_provider_key,
+        binding_for_provider_key, hyperliquid::ResolvedBoltV3HyperliquidSecrets,
         hyperliquid_artifacts::read_hyperliquid_live_submit_approval_artifact,
         polymarket::ResolvedBoltV3PolymarketSecrets, validate_client_block,
     },
@@ -54,7 +54,7 @@ use bolt_v2::{
         check_no_forbidden_credential_env_vars_with, resolve_bolt_v3_secrets_with,
     },
 };
-use nautilus_model::identifiers::Venue;
+use nautilus_model::identifiers::{InstrumentId, Venue};
 use nautilus_polymarket::config::PolymarketDataClientConfig;
 
 /// Mutate a single field in the strategy's raw `[target]` TOML
@@ -102,6 +102,18 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
             }),
         );
     }
+    clients.insert(
+        "hyperliquid_perps".to_string(),
+        Arc::new(ResolvedBoltV3HyperliquidSecrets {
+            private_key: zeroize::Zeroizing::new(
+                "0x1111111111111111111111111111111111111111111111111111111111111111".to_string(),
+            ),
+            account_address: zeroize::Zeroizing::new(
+                "0x2222222222222222222222222222222222222222".to_string(),
+            ),
+            vault_address: None,
+        }),
+    );
     ResolvedBoltV3Secrets { clients }
 }
 
@@ -517,6 +529,27 @@ fn provider_binding_models_hyperliquid_egress_with_official_user_fees_weight() {
 
     assert_eq!(model.cap_per_minute, 1200);
     assert_eq!(model.max_rest_requests_per_order_command, 20);
+}
+
+#[test]
+fn provider_binding_builds_hyperliquid_fee_provider_that_fails_closed_without_fee_proof() {
+    let client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    let binding = binding_for_provider_key("HYPERLIQUID")
+        .expect("Hyperliquid provider binding should be registered");
+    let build_fee_provider = binding
+        .build_fee_provider
+        .expect("Hyperliquid execution must resolve fees through the provider boundary");
+    let provider = build_fee_provider("hyperliquid_perps", &client, &fixture_resolved_secrets())
+        .expect("Hyperliquid fee provider should construct from provider-owned config");
+
+    assert_eq!(
+        provider.fee_bps(InstrumentId::from("BTC-PERP.HYPERLIQUID")),
+        None,
+        "Hyperliquid fee provider must fail closed until product fee proof is available"
+    );
 }
 
 #[test]

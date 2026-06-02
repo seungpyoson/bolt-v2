@@ -619,7 +619,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: Some(
             hyperliquid::write_configured_live_submit_approval_artifact,
         ),
-        build_fee_provider: None,
+        build_fee_provider: Some(hyperliquid::build_fee_provider),
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },

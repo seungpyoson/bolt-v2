@@ -1,6 +1,11 @@
-use bolt_v2::bolt_v3_kill_switch_cancel::{
-    BoltV3KillSwitchCancelCandidate, BoltV3KillSwitchCancelError, BoltV3KillSwitchCancelPolicy,
-    BoltV3KillSwitchCancelSnapshot, BoltV3KillSwitchOutstandingOrderRiskSurface,
+use bolt_v2::{
+    bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState},
+    bolt_v3_kill_switch_cancel::{
+        BoltV3KillSwitchCancelCandidate, BoltV3KillSwitchCancelDecisionMode,
+        BoltV3KillSwitchCancelError, BoltV3KillSwitchCancelPlanRequest,
+        BoltV3KillSwitchCancelPolicy, BoltV3KillSwitchCancelSnapshot,
+        BoltV3KillSwitchCancelSupervisor, BoltV3KillSwitchOutstandingOrderRiskSurface,
+    },
 };
 
 #[test]
@@ -125,6 +130,96 @@ fn cancel_policy_rejects_snapshot_missing_mandatory_surface_proof() {
         policy.validate_snapshot(&snapshot),
         Err(BoltV3KillSwitchCancelError::MissingMandatorySurfaceProof)
     );
+}
+
+#[test]
+fn cancel_supervisor_planning_requires_cancelling_state() {
+    for state in non_cancelling_states() {
+        let error = BoltV3KillSwitchCancelSupervisor::plan_cancel(cancel_plan_request(state))
+            .expect_err("cancel planning must reject non-cancelling durable states");
+        assert_eq!(
+            error,
+            BoltV3KillSwitchCancelError::KillSwitchStateNotCancelling
+        );
+    }
+
+    let plan =
+        BoltV3KillSwitchCancelSupervisor::plan_cancel(cancel_plan_request(cancelling_state()))
+            .expect("cancelling durable state should allow proof-only cancel planning");
+
+    assert_eq!(plan.halt_id(), "halt-1");
+    assert_eq!(
+        plan.decision_mode(),
+        BoltV3KillSwitchCancelDecisionMode::DryRunProofOnly
+    );
+    assert_eq!(
+        plan.candidates().len(),
+        BoltV3KillSwitchOutstandingOrderRiskSurface::mandatory_surfaces().len()
+    );
+}
+
+fn cancel_plan_request(kill_switch_state: KillSwitchState) -> BoltV3KillSwitchCancelPlanRequest {
+    BoltV3KillSwitchCancelPlanRequest {
+        kill_switch_state,
+        policy: mandatory_surface_policy(),
+        snapshot: complete_cancel_snapshot(),
+    }
+}
+
+fn mandatory_surface_policy() -> BoltV3KillSwitchCancelPolicy {
+    BoltV3KillSwitchCancelPolicy::new(
+        BoltV3KillSwitchOutstandingOrderRiskSurface::mandatory_surfaces()
+            .iter()
+            .copied(),
+    )
+    .expect("mandatory surface policy should construct")
+}
+
+fn complete_cancel_snapshot() -> BoltV3KillSwitchCancelSnapshot {
+    let candidates = BoltV3KillSwitchOutstandingOrderRiskSurface::mandatory_surfaces()
+        .iter()
+        .enumerate()
+        .map(|(index, surface)| cancel_candidate(*surface, &format!("client-order-{index}")))
+        .collect::<Vec<_>>();
+    BoltV3KillSwitchCancelSnapshot::new(candidates).expect("complete snapshot should construct")
+}
+
+fn non_cancelling_states() -> Vec<KillSwitchState> {
+    vec![
+        KillSwitchState::Armed,
+        KillSwitchState::Halting {
+            halt_id: "halt-1".to_string(),
+            trigger: loss_trigger(),
+        },
+        KillSwitchState::Halted {
+            halt_id: "halt-1".to_string(),
+            trigger: loss_trigger(),
+        },
+        KillSwitchState::Flattening {
+            halt_id: "halt-1".to_string(),
+        },
+        KillSwitchState::Flat {
+            halt_id: "halt-1".to_string(),
+        },
+        KillSwitchState::FailedManualIntervention {
+            halt_id: "halt-1".to_string(),
+            reason: "cancel route proof missing".to_string(),
+        },
+    ]
+}
+
+fn cancelling_state() -> KillSwitchState {
+    KillSwitchState::Cancelling {
+        halt_id: "halt-1".to_string(),
+    }
+}
+
+fn loss_trigger() -> KillSwitchHaltTrigger {
+    KillSwitchHaltTrigger::loss_governor_breach(
+        "loss-governor",
+        1_717_200_000_000_000_000,
+        "daily loss cap breached",
+    )
 }
 
 fn cancel_candidate(

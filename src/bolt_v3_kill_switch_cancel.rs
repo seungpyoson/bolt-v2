@@ -1,3 +1,4 @@
+use crate::bolt_v3_kill_switch::KillSwitchState;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -190,6 +191,57 @@ impl BoltV3KillSwitchCancelPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3KillSwitchCancelDecisionMode {
+    DryRunProofOnly,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3KillSwitchCancelPlanRequest {
+    pub kill_switch_state: KillSwitchState,
+    pub policy: BoltV3KillSwitchCancelPolicy,
+    pub snapshot: BoltV3KillSwitchCancelSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3KillSwitchCancelPlan {
+    halt_id: String,
+    decision_mode: BoltV3KillSwitchCancelDecisionMode,
+    candidates: Vec<BoltV3KillSwitchCancelCandidate>,
+}
+
+impl BoltV3KillSwitchCancelPlan {
+    pub fn halt_id(&self) -> &str {
+        &self.halt_id
+    }
+
+    pub fn decision_mode(&self) -> BoltV3KillSwitchCancelDecisionMode {
+        self.decision_mode
+    }
+
+    pub fn candidates(&self) -> &[BoltV3KillSwitchCancelCandidate] {
+        &self.candidates
+    }
+}
+
+pub struct BoltV3KillSwitchCancelSupervisor;
+
+impl BoltV3KillSwitchCancelSupervisor {
+    pub fn plan_cancel(
+        request: BoltV3KillSwitchCancelPlanRequest,
+    ) -> Result<BoltV3KillSwitchCancelPlan, BoltV3KillSwitchCancelError> {
+        let KillSwitchState::Cancelling { halt_id } = request.kill_switch_state else {
+            return Err(BoltV3KillSwitchCancelError::KillSwitchStateNotCancelling);
+        };
+        request.policy.validate_snapshot(&request.snapshot)?;
+        Ok(BoltV3KillSwitchCancelPlan {
+            halt_id,
+            decision_mode: BoltV3KillSwitchCancelDecisionMode::DryRunProofOnly,
+            candidates: request.snapshot.candidates().to_vec(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3KillSwitchCancelError {
     InvalidAccountId,
     InvalidInstrumentId,
@@ -199,4 +251,5 @@ pub enum BoltV3KillSwitchCancelError {
     MissingCandidates,
     MissingMandatorySurfacePolicy,
     MissingMandatorySurfaceProof,
+    KillSwitchStateNotCancelling,
 }

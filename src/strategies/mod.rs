@@ -14,6 +14,7 @@ pub mod maker_quote;
 pub mod maker_reservation;
 pub mod maker_resync;
 pub mod maker_reward_phantom_lp;
+pub mod maker_reward_pull;
 pub mod maker_reward_rebate;
 pub mod maker_reward_shaper;
 pub mod maker_settlement;

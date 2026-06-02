@@ -218,6 +218,7 @@ fn evidence_sources(state: &NtDerivedSizingState) -> Vec<SizingStateEvidenceSour
 mod tests {
     use rust_decimal::Decimal;
 
+    use crate::bolt_v3_loss_governor::LossSnapshot;
     use crate::bolt_v3_position_sizer::{PredictionMarketSizingSnapshot, ProductSizingSnapshot};
 
     use super::{
@@ -241,7 +242,7 @@ mod tests {
             portfolio: PortfolioSizingSnapshot {
                 source: "nt_portfolio_snapshot".to_string(),
                 observed_at_ns: 1_000,
-                venue_id: "polymarket-clob".to_string(),
+                venue_id: "venue-clob".to_string(),
                 account_id: "account-1".to_string(),
                 collateral_currency: "PUSD".to_string(),
                 free_collateral: Decimal::new(100, 0),
@@ -275,9 +276,94 @@ mod tests {
         }
     }
 
+    fn loss_snapshot() -> LossSnapshot {
+        LossSnapshot {
+            source: "bolt_loss_snapshot".to_string(),
+            observed_at_ns: 1_000,
+            per_trade_pnl: Some(Decimal::ZERO),
+            daily_pnl: Some(Decimal::ZERO),
+            rolling_pnl: Some(Decimal::ZERO),
+            current_equity: Some(Decimal::new(100, 0)),
+            peak_equity: Some(Decimal::new(100, 0)),
+        }
+    }
+
+    fn state_with_observed_at(
+        kind: SizingStateEvidenceKind,
+        observed_at_ns: u64,
+    ) -> NtDerivedSizingState {
+        let mut candidate = state();
+        match kind {
+            SizingStateEvidenceKind::State => candidate.observed_at_ns = observed_at_ns,
+            SizingStateEvidenceKind::Portfolio => {
+                candidate.portfolio.observed_at_ns = observed_at_ns;
+            }
+            SizingStateEvidenceKind::OrderLifecycle => {
+                candidate.order_lifecycle.observed_at_ns = observed_at_ns;
+            }
+            SizingStateEvidenceKind::ProductState => {
+                let ProductSizingSnapshot::PredictionMarketBinary(snapshot) =
+                    &mut candidate.product_state;
+                snapshot.observed_at_ns = observed_at_ns;
+            }
+            SizingStateEvidenceKind::ReservationLedger => {
+                candidate.reservation_snapshot.observed_at_ns = observed_at_ns;
+            }
+            SizingStateEvidenceKind::LossSnapshot => {
+                let mut snapshot = loss_snapshot();
+                snapshot.observed_at_ns = observed_at_ns;
+                candidate.loss_snapshot = Some(snapshot);
+            }
+        }
+        candidate
+    }
+
+    #[test]
+    fn sizing_state_valid_snapshot_returns_expected_evidence_sources() {
+        let evidence = validate_nt_derived_sizing_state(Some(&state()), 1_000, 100)
+            .expect("fresh attributed NT-derived sizing state should be accepted");
+
+        let kinds = evidence
+            .sources
+            .iter()
+            .map(|source| source.kind)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            kinds,
+            vec![
+                SizingStateEvidenceKind::State,
+                SizingStateEvidenceKind::Portfolio,
+                SizingStateEvidenceKind::OrderLifecycle,
+                SizingStateEvidenceKind::ProductState,
+                SizingStateEvidenceKind::ReservationLedger,
+            ]
+        );
+    }
+
+    #[test]
+    fn sizing_state_valid_loss_snapshot_is_included_in_evidence() {
+        let mut candidate = state();
+        candidate.loss_snapshot = Some(loss_snapshot());
+
+        let evidence = validate_nt_derived_sizing_state(Some(&candidate), 1_000, 100)
+            .expect("fresh attributed loss snapshot should be accepted");
+
+        assert_eq!(evidence.sources.len(), 6);
+        assert_eq!(
+            evidence.sources.last().map(|source| source.kind),
+            Some(SizingStateEvidenceKind::LossSnapshot)
+        );
+    }
+
     #[test]
     fn unattributed_state_transition_fails_closed() {
         let cases = [
+            {
+                let mut candidate = state();
+                candidate.source = " ".to_string();
+                (candidate, SizingStateEvidenceKind::State)
+            },
             {
                 let mut candidate = state();
                 candidate.portfolio.source = " ".to_string();
@@ -302,6 +388,13 @@ mod tests {
                     .all_live_reservations_attributed = false;
                 (candidate, SizingStateEvidenceKind::ReservationLedger)
             },
+            {
+                let mut candidate = state();
+                let mut snapshot = loss_snapshot();
+                snapshot.source = " ".to_string();
+                candidate.loss_snapshot = Some(snapshot);
+                (candidate, SizingStateEvidenceKind::LossSnapshot)
+            },
         ];
 
         for (candidate, expected_kind) in cases {
@@ -309,6 +402,46 @@ mod tests {
                 .expect_err("unattributed NT-derived state must fail closed");
 
             assert_eq!(decision, SizingStateError::UnattributedState(expected_kind));
+        }
+    }
+
+    #[test]
+    fn stale_sizing_state_evidence_fails_closed_for_each_kind() {
+        let kinds = [
+            SizingStateEvidenceKind::State,
+            SizingStateEvidenceKind::Portfolio,
+            SizingStateEvidenceKind::OrderLifecycle,
+            SizingStateEvidenceKind::ProductState,
+            SizingStateEvidenceKind::ReservationLedger,
+            SizingStateEvidenceKind::LossSnapshot,
+        ];
+
+        for kind in kinds {
+            let stale = state_with_observed_at(kind, 899);
+            let decision = validate_nt_derived_sizing_state(Some(&stale), 1_000, 100)
+                .expect_err("stale NT-derived sizing state must fail closed");
+
+            assert_eq!(decision, SizingStateError::StaleNtState(kind));
+        }
+    }
+
+    #[test]
+    fn future_sizing_state_evidence_fails_closed_for_each_kind() {
+        let kinds = [
+            SizingStateEvidenceKind::State,
+            SizingStateEvidenceKind::Portfolio,
+            SizingStateEvidenceKind::OrderLifecycle,
+            SizingStateEvidenceKind::ProductState,
+            SizingStateEvidenceKind::ReservationLedger,
+            SizingStateEvidenceKind::LossSnapshot,
+        ];
+
+        for kind in kinds {
+            let future = state_with_observed_at(kind, 1_001);
+            let decision = validate_nt_derived_sizing_state(Some(&future), 1_000, 100)
+                .expect_err("future NT-derived sizing state must fail closed");
+
+            assert_eq!(decision, SizingStateError::StaleNtState(kind));
         }
     }
 }

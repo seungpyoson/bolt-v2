@@ -1,3 +1,10 @@
+//! Product-agnostic reservation ledger for committed-but-unfilled capital.
+//!
+//! New reservations require request evidence no older than the pool snapshot so submit admission
+//! cannot spend against stale account state. Terminal release and residual revalue events may arrive
+//! from an async order stream that lags a newer pool snapshot; those paths still enforce each event's
+//! freshness window and monotonic lifecycle timestamp against the stored reservation.
+
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
@@ -118,7 +125,6 @@ impl ReservationLedger {
         pool: &CapitalPoolSnapshot,
         request: &ReservationRequest,
         now_ns: u64,
-        max_snapshot_age_ns: u64,
         min_remaining_pool_balance: Option<Decimal>,
     ) -> ReservationDecision {
         let available_before = pool.max_pool_liability
@@ -153,8 +159,8 @@ impl ReservationLedger {
                 available_before,
             );
         }
-        if stale(pool.observed_at_ns, now_ns, max_snapshot_age_ns)
-            || stale(request.observed_at_ns, now_ns, max_snapshot_age_ns)
+        if stale(pool.observed_at_ns, now_ns, pool.max_snapshot_age_ns)
+            || stale(request.observed_at_ns, now_ns, pool.max_snapshot_age_ns)
             || request.observed_at_ns < pool.observed_at_ns
         {
             return rejected(
@@ -217,6 +223,9 @@ impl ReservationLedger {
     }
 
     pub fn rollback_uncommitted(&mut self, pool_id: &str, request_id: &str) -> Option<Decimal> {
+        if !self.reconciliation_complete {
+            return None;
+        }
         let index = self.live_reservations.iter().position(|reservation| {
             reservation.pool_id == pool_id && reservation.request_id == request_id
         })?;
@@ -228,7 +237,6 @@ impl ReservationLedger {
         pool: &CapitalPoolSnapshot,
         request: &ReservationReleaseRequest,
         now_ns: u64,
-        max_snapshot_age_ns: u64,
     ) -> ReservationReleaseDecision {
         if !self.reconciliation_complete {
             return rejected_release(ReservationRejectionReason::ReconciliationRequired);
@@ -245,8 +253,8 @@ impl ReservationLedger {
         if pool.source.trim().is_empty() || request.evidence_label.trim().is_empty() {
             return rejected_release(ReservationRejectionReason::MissingEvidence);
         }
-        if stale(pool.observed_at_ns, now_ns, max_snapshot_age_ns)
-            || stale(request.observed_at_ns, now_ns, max_snapshot_age_ns)
+        if stale(pool.observed_at_ns, now_ns, pool.max_snapshot_age_ns)
+            || stale(request.observed_at_ns, now_ns, pool.max_snapshot_age_ns)
         {
             return rejected_release(ReservationRejectionReason::StaleRequest);
         }
@@ -280,7 +288,6 @@ impl ReservationLedger {
         pool: &CapitalPoolSnapshot,
         request: &ReservationRevalueRequest,
         now_ns: u64,
-        max_snapshot_age_ns: u64,
         min_remaining_pool_balance: Option<Decimal>,
     ) -> ReservationRevalueDecision {
         if !self.reconciliation_complete {
@@ -300,8 +307,8 @@ impl ReservationLedger {
         if pool.source.trim().is_empty() || request.evidence_label.trim().is_empty() {
             return rejected_revalue(ReservationRejectionReason::MissingEvidence);
         }
-        if stale(pool.observed_at_ns, now_ns, max_snapshot_age_ns)
-            || stale(request.observed_at_ns, now_ns, max_snapshot_age_ns)
+        if stale(pool.observed_at_ns, now_ns, pool.max_snapshot_age_ns)
+            || stale(request.observed_at_ns, now_ns, pool.max_snapshot_age_ns)
         {
             return rejected_revalue(ReservationRejectionReason::StaleRequest);
         }
@@ -393,8 +400,8 @@ mod tests {
     use rust_decimal::Decimal;
 
     use super::{
-        CapitalPoolSnapshot, ReservationLedger, ReservationReleaseRequest, ReservationRequest,
-        ReservationRevalueRequest,
+        CapitalPoolSnapshot, LiveReservation, ReservationLedger, ReservationReleaseRequest,
+        ReservationRequest, ReservationRevalueRequest,
     };
 
     fn pool() -> CapitalPoolSnapshot {
@@ -464,7 +471,7 @@ mod tests {
         };
 
         let mut ledger = ReservationLedger::reconciled();
-        let decision = ledger.reserve(&pool, &request, 1_020, 100, None);
+        let decision = ledger.reserve(&pool, &request, 1_020, None);
 
         assert!(decision.accepted);
         assert_eq!(decision.reason, None);
@@ -473,6 +480,214 @@ mod tests {
         assert_eq!(decision.available_after, Some(Decimal::new(35, 0)));
         assert_eq!(
             ledger.live_reserved_liability("polymarket-live"),
+            Decimal::new(40, 0)
+        );
+    }
+
+    #[test]
+    fn reserve_rejects_fail_closed_contract_violations_without_mutating() {
+        let base_pool = pool();
+        let base_request = reservation_request("request-reserve-contract");
+        let cases = [
+            (
+                "unreconciled",
+                false,
+                base_pool.clone(),
+                base_request.clone(),
+                1_020,
+                super::ReservationRejectionReason::ReconciliationRequired,
+            ),
+            (
+                "pool mismatch",
+                true,
+                base_pool.clone(),
+                ReservationRequest {
+                    pool_id: "other-capital-pool".to_string(),
+                    ..base_request.clone()
+                },
+                1_020,
+                super::ReservationRejectionReason::PoolMismatch,
+            ),
+            (
+                "invalid empty identity",
+                true,
+                base_pool.clone(),
+                ReservationRequest {
+                    request_id: " ".to_string(),
+                    ..base_request.clone()
+                },
+                1_020,
+                super::ReservationRejectionReason::InvalidRequest,
+            ),
+            (
+                "invalid non-positive liability",
+                true,
+                base_pool.clone(),
+                ReservationRequest {
+                    liability: Decimal::ZERO,
+                    ..base_request.clone()
+                },
+                1_020,
+                super::ReservationRejectionReason::InvalidRequest,
+            ),
+            (
+                "missing pool source",
+                true,
+                CapitalPoolSnapshot {
+                    source: " ".to_string(),
+                    ..base_pool.clone()
+                },
+                base_request.clone(),
+                1_020,
+                super::ReservationRejectionReason::MissingEvidence,
+            ),
+            (
+                "missing request evidence",
+                true,
+                base_pool.clone(),
+                ReservationRequest {
+                    evidence_label: " ".to_string(),
+                    ..base_request.clone()
+                },
+                1_020,
+                super::ReservationRejectionReason::MissingEvidence,
+            ),
+            (
+                "pool snapshot freshness bound",
+                true,
+                CapitalPoolSnapshot {
+                    max_snapshot_age_ns: 5,
+                    ..base_pool.clone()
+                },
+                base_request.clone(),
+                1_020,
+                super::ReservationRejectionReason::StaleRequest,
+            ),
+            (
+                "request older than pool",
+                true,
+                base_pool.clone(),
+                ReservationRequest {
+                    observed_at_ns: 999,
+                    ..base_request.clone()
+                },
+                1_020,
+                super::ReservationRejectionReason::StaleRequest,
+            ),
+            (
+                "direct over budget",
+                true,
+                CapitalPoolSnapshot {
+                    committed_liability: Decimal::new(90, 0),
+                    ..base_pool.clone()
+                },
+                ReservationRequest {
+                    liability: Decimal::new(20, 0),
+                    ..base_request
+                },
+                1_020,
+                super::ReservationRejectionReason::OverBudget,
+            ),
+        ];
+
+        for (case_name, reconciled, pool, request, now_ns, expected_reason) in cases {
+            let mut ledger = if reconciled {
+                ReservationLedger::reconciled()
+            } else {
+                ReservationLedger::unreconciled()
+            };
+
+            let decision = ledger.reserve(&pool, &request, now_ns, None);
+
+            assert!(!decision.accepted, "{case_name}");
+            assert_eq!(decision.reason, Some(expected_reason), "{case_name}");
+            assert_eq!(
+                ledger.live_reserved_liability(&pool.pool_id),
+                Decimal::ZERO,
+                "{case_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn reserve_rejects_duplicate_reservation_without_mutating() {
+        let pool = pool();
+        let request = reservation_request("request-duplicate");
+        let mut ledger = ReservationLedger::reconciled();
+        assert!(ledger.reserve(&pool, &request, 1_020, None).accepted);
+
+        let duplicate = ledger.reserve(&pool, &request, 1_030, None);
+
+        assert!(!duplicate.accepted);
+        assert_eq!(
+            duplicate.reason,
+            Some(super::ReservationRejectionReason::DuplicateReservation)
+        );
+        assert_eq!(
+            ledger.live_reserved_liability(&pool.pool_id),
+            Decimal::new(40, 0)
+        );
+    }
+
+    #[test]
+    fn rollback_uncommitted_removes_reservation_and_frees_capacity() {
+        let pool = pool();
+        let request = reservation_request("request-rollback");
+        let mut ledger = ReservationLedger::reconciled();
+        assert!(ledger.reserve(&pool, &request, 1_020, None).accepted);
+
+        let rolled_back = ledger.rollback_uncommitted(&pool.pool_id, &request.request_id);
+
+        assert_eq!(rolled_back, Some(Decimal::new(40, 0)));
+        assert_eq!(ledger.live_reserved_liability(&pool.pool_id), Decimal::ZERO);
+        let replacement = ReservationRequest {
+            request_id: "request-after-rollback".to_string(),
+            liability: Decimal::new(100, 0),
+            ..reservation_request("request-after-rollback")
+        };
+        assert!(ledger.reserve(&pool, &replacement, 1_030, None).accepted);
+    }
+
+    #[test]
+    fn rollback_uncommitted_wrong_identity_does_not_mutate() {
+        let pool = pool();
+        let request = reservation_request("request-rollback-identity");
+        let mut ledger = ReservationLedger::reconciled();
+        assert!(ledger.reserve(&pool, &request, 1_020, None).accepted);
+
+        assert_eq!(
+            ledger.rollback_uncommitted("other-capital-pool", &request.request_id),
+            None
+        );
+        assert_eq!(
+            ledger.rollback_uncommitted(&pool.pool_id, "other-request"),
+            None
+        );
+        assert_eq!(
+            ledger.live_reserved_liability(&pool.pool_id),
+            Decimal::new(40, 0)
+        );
+    }
+
+    #[test]
+    fn rollback_uncommitted_rejects_unreconciled_ledger_without_mutating() {
+        let mut ledger = ReservationLedger {
+            live_reservations: vec![LiveReservation {
+                request_id: "request-unreconciled-rollback".to_string(),
+                pool_id: "capital-pool-1".to_string(),
+                collateral_group_id: "collateral-group-1".to_string(),
+                liability: Decimal::new(40, 0),
+                observed_at_ns: 1_010,
+            }],
+            reconciliation_complete: false,
+        };
+
+        let rolled_back =
+            ledger.rollback_uncommitted("capital-pool-1", "request-unreconciled-rollback");
+
+        assert_eq!(rolled_back, None);
+        assert_eq!(
+            ledger.live_reserved_liability("capital-pool-1"),
             Decimal::new(40, 0)
         );
     }
@@ -496,7 +711,7 @@ mod tests {
             evidence_label: "nt-account-and-allowance-snapshot".to_string(),
         };
         let mut ledger = ReservationLedger::reconciled();
-        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+        assert!(ledger.reserve(&pool, &request, 1_020, None).accepted);
 
         let release_request = ReservationReleaseRequest {
             request_id: "request-2".to_string(),
@@ -506,7 +721,7 @@ mod tests {
             evidence_label: "nt-order-terminal".to_string(),
         };
 
-        let release = ledger.release(&pool, &release_request, 1_040, 100);
+        let release = ledger.release(&pool, &release_request, 1_040);
 
         assert!(release.accepted);
         assert_eq!(release.reason, None);
@@ -516,7 +731,7 @@ mod tests {
             Decimal::ZERO
         );
 
-        let duplicate = ledger.release(&pool, &release_request, 1_040, 100);
+        let duplicate = ledger.release(&pool, &release_request, 1_040);
 
         assert!(!duplicate.accepted);
         assert_eq!(
@@ -530,12 +745,7 @@ mod tests {
     fn release_rejects_unreconciled_ledger_before_unknown_release() {
         let pool = pool();
         let mut ledger = ReservationLedger::unreconciled();
-        let release = ledger.release(
-            &pool,
-            &release_request("request-unknown", 1_030),
-            1_040,
-            100,
-        );
+        let release = ledger.release(&pool, &release_request("request-unknown", 1_030), 1_040);
 
         assert!(!release.accepted);
         assert_eq!(
@@ -546,17 +756,96 @@ mod tests {
     }
 
     #[test]
+    fn release_rejects_contract_violations_without_mutating_live_reservation() {
+        let base_pool = pool();
+        let base_request = reservation_request("request-release-contract");
+        let base_release = release_request("request-release-contract", 1_030);
+        let cases = [
+            (
+                "request pool mismatch",
+                base_pool.clone(),
+                ReservationReleaseRequest {
+                    pool_id: "other-capital-pool".to_string(),
+                    ..base_release.clone()
+                },
+                1_040,
+                super::ReservationRejectionReason::PoolMismatch,
+            ),
+            (
+                "invalid request identity",
+                base_pool.clone(),
+                ReservationReleaseRequest {
+                    request_id: " ".to_string(),
+                    ..base_release.clone()
+                },
+                1_040,
+                super::ReservationRejectionReason::InvalidRequest,
+            ),
+            (
+                "missing pool source",
+                CapitalPoolSnapshot {
+                    source: " ".to_string(),
+                    ..base_pool.clone()
+                },
+                base_release.clone(),
+                1_040,
+                super::ReservationRejectionReason::MissingEvidence,
+            ),
+            (
+                "missing release evidence",
+                base_pool.clone(),
+                ReservationReleaseRequest {
+                    evidence_label: " ".to_string(),
+                    ..base_release.clone()
+                },
+                1_040,
+                super::ReservationRejectionReason::MissingEvidence,
+            ),
+            (
+                "stale pool snapshot",
+                CapitalPoolSnapshot {
+                    max_snapshot_age_ns: 5,
+                    ..base_pool.clone()
+                },
+                base_release,
+                1_040,
+                super::ReservationRejectionReason::StaleRequest,
+            ),
+        ];
+
+        for (case_name, pool, release_request, now_ns, expected_reason) in cases {
+            let mut ledger = ReservationLedger::reconciled();
+            assert!(
+                ledger
+                    .reserve(&base_pool, &base_request, 1_020, None)
+                    .accepted,
+                "{case_name}"
+            );
+
+            let release = ledger.release(&pool, &release_request, now_ns);
+
+            assert!(!release.accepted, "{case_name}");
+            assert_eq!(release.reason, Some(expected_reason), "{case_name}");
+            assert_eq!(release.released_liability, None, "{case_name}");
+            assert_eq!(
+                ledger.live_reserved_liability(&base_pool.pool_id),
+                Decimal::new(40, 0),
+                "{case_name}"
+            );
+        }
+    }
+
+    #[test]
     fn stale_or_equal_timestamp_release_rejects_without_mutating_live_reservation() {
         let pool = pool();
         let request = reservation_request("request-stale-release");
         let mut ledger = ReservationLedger::reconciled();
-        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+        assert!(ledger.reserve(&pool, &request, 1_020, None).accepted);
 
         let release = ledger.release(
             &pool,
             &release_request("request-stale-release", 1_010),
             1_040,
-            100,
         );
 
         assert!(!release.accepted);
@@ -576,7 +865,7 @@ mod tests {
         let pool = pool();
         let request = reservation_request("request-async-release");
         let mut ledger = ReservationLedger::reconciled();
-        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+        assert!(ledger.reserve(&pool, &request, 1_020, None).accepted);
         let newer_pool = CapitalPoolSnapshot {
             observed_at_ns: 1_060,
             ..pool
@@ -586,7 +875,6 @@ mod tests {
             &newer_pool,
             &release_request("request-async-release", 1_050),
             1_070,
-            100,
         );
 
         assert!(release.accepted);
@@ -602,7 +890,7 @@ mod tests {
         let pool = pool();
         let request = reservation_request("request-async-revalue");
         let mut ledger = ReservationLedger::reconciled();
-        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+        assert!(ledger.reserve(&pool, &request, 1_020, None).accepted);
         let newer_pool = CapitalPoolSnapshot {
             observed_at_ns: 1_060,
             ..pool
@@ -626,17 +914,145 @@ mod tests {
     }
 
     #[test]
+    fn revalue_rejects_unreconciled_and_unknown_reservation_without_mutating() {
+        let pool = pool();
+        let request = revalue_request("request-unknown-revalue", Decimal::new(25, 0), 1_030);
+        let mut unreconciled_ledger = ReservationLedger::unreconciled();
+        let unreconciled = unreconciled_ledger.revalue(&pool, &request, 1_040, None);
+
+        assert!(!unreconciled.accepted);
+        assert_eq!(
+            unreconciled.reason,
+            Some(super::ReservationRejectionReason::ReconciliationRequired)
+        );
+
+        let mut reconciled_ledger = ReservationLedger::reconciled();
+        let unknown = reconciled_ledger.revalue(&pool, &request, 1_040, None);
+
+        assert!(!unknown.accepted);
+        assert_eq!(
+            unknown.reason,
+            Some(super::ReservationRejectionReason::UnknownReservation)
+        );
+        assert_eq!(
+            reconciled_ledger.live_reserved_liability(&pool.pool_id),
+            Decimal::ZERO
+        );
+    }
+
+    #[test]
+    fn revalue_rejects_contract_violations_without_mutating_live_reservation() {
+        let base_pool = pool();
+        let base_request = reservation_request("request-revalue-contract");
+        let base_revalue = revalue_request("request-revalue-contract", Decimal::new(25, 0), 1_030);
+        let cases = [
+            (
+                "request pool mismatch",
+                base_pool.clone(),
+                ReservationRevalueRequest {
+                    pool_id: "other-capital-pool".to_string(),
+                    ..base_revalue.clone()
+                },
+                1_040,
+                super::ReservationRejectionReason::PoolMismatch,
+            ),
+            (
+                "invalid request identity",
+                base_pool.clone(),
+                ReservationRevalueRequest {
+                    request_id: " ".to_string(),
+                    ..base_revalue.clone()
+                },
+                1_040,
+                super::ReservationRejectionReason::InvalidRequest,
+            ),
+            (
+                "invalid non-positive liability",
+                base_pool.clone(),
+                ReservationRevalueRequest {
+                    liability: Decimal::ZERO,
+                    ..base_revalue.clone()
+                },
+                1_040,
+                super::ReservationRejectionReason::InvalidRequest,
+            ),
+            (
+                "missing pool source",
+                CapitalPoolSnapshot {
+                    source: " ".to_string(),
+                    ..base_pool.clone()
+                },
+                base_revalue.clone(),
+                1_040,
+                super::ReservationRejectionReason::MissingEvidence,
+            ),
+            (
+                "missing revalue evidence",
+                base_pool.clone(),
+                ReservationRevalueRequest {
+                    evidence_label: " ".to_string(),
+                    ..base_revalue.clone()
+                },
+                1_040,
+                super::ReservationRejectionReason::MissingEvidence,
+            ),
+            (
+                "stale pool snapshot",
+                CapitalPoolSnapshot {
+                    max_snapshot_age_ns: 5,
+                    ..base_pool.clone()
+                },
+                base_revalue.clone(),
+                1_040,
+                super::ReservationRejectionReason::StaleRequest,
+            ),
+            (
+                "future revalue evidence",
+                base_pool.clone(),
+                ReservationRevalueRequest {
+                    observed_at_ns: 1_050,
+                    ..base_revalue
+                },
+                1_040,
+                super::ReservationRejectionReason::StaleRequest,
+            ),
+        ];
+
+        for (case_name, pool, revalue_request, now_ns, expected_reason) in cases {
+            let mut ledger = ReservationLedger::reconciled();
+            assert!(
+                ledger
+                    .reserve(&base_pool, &base_request, 1_020, None)
+                    .accepted,
+                "{case_name}"
+            );
+
+            let revalue = ledger.revalue(&pool, &revalue_request, now_ns, None);
+
+            assert!(!revalue.accepted, "{case_name}");
+            assert_eq!(revalue.reason, Some(expected_reason), "{case_name}");
+            assert_eq!(revalue.previous_liability, None, "{case_name}");
+            assert_eq!(revalue.revalued_liability, None, "{case_name}");
+            assert_eq!(
+                ledger.live_reserved_liability(&base_pool.pool_id),
+                Decimal::new(40, 0),
+                "{case_name}"
+            );
+        }
+    }
+
+    #[test]
     fn release_rejects_collateral_group_mismatch_without_mutating_live_reservation() {
         let pool = pool();
         let request = reservation_request("request-collateral-release");
         let mut ledger = ReservationLedger::reconciled();
-        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+        assert!(ledger.reserve(&pool, &request, 1_020, None).accepted);
         let release_request = ReservationReleaseRequest {
             collateral_group_id: "wrong-group".to_string(),
             ..release_request("request-collateral-release", 1_030)
         };
 
-        let release = ledger.release(&pool, &release_request, 1_040, 100);
+        let release = ledger.release(&pool, &release_request, 1_040);
 
         assert!(!release.accepted);
         assert_eq!(
@@ -647,6 +1063,41 @@ mod tests {
         assert_eq!(
             ledger.live_reserved_liability("polymarket-live"),
             Decimal::new(40, 0)
+        );
+    }
+
+    #[test]
+    fn release_rejects_when_existing_reservation_belongs_to_another_pool() {
+        let first_pool = pool();
+        let second_pool = CapitalPoolSnapshot {
+            pool_id: "other-capital-pool".to_string(),
+            ..first_pool.clone()
+        };
+        let request = reservation_request("request-release-pool-mismatch");
+        let release = ReservationReleaseRequest {
+            request_id: request.request_id.clone(),
+            pool_id: second_pool.pool_id.clone(),
+            collateral_group_id: request.collateral_group_id.clone(),
+            observed_at_ns: 1_030,
+            evidence_label: "nt-order-terminal".to_string(),
+        };
+        let mut ledger = ReservationLedger::reconciled();
+        assert!(ledger.reserve(&first_pool, &request, 1_020, None).accepted);
+
+        let decision = ledger.release(&second_pool, &release, 1_040);
+
+        assert!(!decision.accepted);
+        assert_eq!(
+            decision.reason,
+            Some(super::ReservationRejectionReason::PoolMismatch)
+        );
+        assert_eq!(
+            ledger.live_reserved_liability(&first_pool.pool_id),
+            Decimal::new(40, 0)
+        );
+        assert_eq!(
+            ledger.live_reserved_liability(&second_pool.pool_id),
+            Decimal::ZERO
         );
     }
 
@@ -670,7 +1121,7 @@ mod tests {
         };
         let mut ledger = ReservationLedger::reconciled();
 
-        let decision = ledger.reserve(&pool, &request, 1_020, 100, Some(Decimal::new(96, 0)));
+        let decision = ledger.reserve(&pool, &request, 1_020, Some(Decimal::new(96, 0)));
 
         assert!(!decision.accepted);
         assert_eq!(
@@ -712,9 +1163,9 @@ mod tests {
             evidence_label: "nt-partial-fill-snapshot".to_string(),
         };
         let mut ledger = ReservationLedger::reconciled();
-        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+        assert!(ledger.reserve(&pool, &request, 1_020, None).accepted);
 
-        let decision = ledger.revalue(&pool, &revalue, 1_040, 100, None);
+        let decision = ledger.revalue(&pool, &revalue, 1_040, None);
 
         assert!(decision.accepted);
         assert_eq!(decision.reason, None);
@@ -753,9 +1204,9 @@ mod tests {
             evidence_label: "nt-open-order-revalue".to_string(),
         };
         let mut ledger = ReservationLedger::reconciled();
-        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+        assert!(ledger.reserve(&pool, &request, 1_020, None).accepted);
 
-        let decision = ledger.revalue(&pool, &revalue, 1_040, 100, None);
+        let decision = ledger.revalue(&pool, &revalue, 1_040, None);
 
         assert!(!decision.accepted);
         assert_eq!(
@@ -797,9 +1248,9 @@ mod tests {
             evidence_label: "nt-open-order-revalue".to_string(),
         };
         let mut ledger = ReservationLedger::reconciled();
-        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+        assert!(ledger.reserve(&pool, &request, 1_020, None).accepted);
 
-        let decision = ledger.revalue(&pool, &revalue, 1_040, 100, None);
+        let decision = ledger.revalue(&pool, &revalue, 1_040, None);
 
         assert!(decision.accepted);
         assert_eq!(decision.previous_liability, Some(Decimal::new(10, 0)));
@@ -837,9 +1288,9 @@ mod tests {
             evidence_label: "nt-open-order-revalue".to_string(),
         };
         let mut ledger = ReservationLedger::reconciled();
-        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+        assert!(ledger.reserve(&pool, &request, 1_020, None).accepted);
 
-        let decision = ledger.revalue(&pool, &revalue, 1_040, 100, Some(Decimal::new(80, 0)));
+        let decision = ledger.revalue(&pool, &revalue, 1_040, Some(Decimal::new(80, 0)));
 
         assert!(!decision.accepted);
         assert_eq!(
@@ -879,9 +1330,9 @@ mod tests {
             evidence_label: "nt-delayed-partial-fill-snapshot".to_string(),
         };
         let mut ledger = ReservationLedger::reconciled();
-        assert!(ledger.reserve(&pool, &request, 1_040, 100, None).accepted);
+        assert!(ledger.reserve(&pool, &request, 1_040, None).accepted);
 
-        let decision = ledger.revalue(&pool, &revalue, 1_050, 100, None);
+        let decision = ledger.revalue(&pool, &revalue, 1_050, None);
 
         assert!(!decision.accepted);
         assert_eq!(
@@ -921,9 +1372,9 @@ mod tests {
             evidence_label: "nt-duplicate-order-snapshot".to_string(),
         };
         let mut ledger = ReservationLedger::reconciled();
-        assert!(ledger.reserve(&pool, &request, 1_040, 100, None).accepted);
+        assert!(ledger.reserve(&pool, &request, 1_040, None).accepted);
 
-        let decision = ledger.revalue(&pool, &revalue, 1_050, 100, None);
+        let decision = ledger.revalue(&pool, &revalue, 1_050, None);
 
         assert!(!decision.accepted);
         assert_eq!(
@@ -963,9 +1414,9 @@ mod tests {
             evidence_label: "nt-open-order-revalue".to_string(),
         };
         let mut ledger = ReservationLedger::reconciled();
-        assert!(ledger.reserve(&pool, &request, 1_020, 100, None).accepted);
+        assert!(ledger.reserve(&pool, &request, 1_020, None).accepted);
 
-        let decision = ledger.revalue(&pool, &revalue, 1_040, 100, None);
+        let decision = ledger.revalue(&pool, &revalue, 1_040, None);
 
         assert!(!decision.accepted);
         assert_eq!(
@@ -1009,13 +1460,9 @@ mod tests {
             evidence_label: "nt-open-order-revalue".to_string(),
         };
         let mut ledger = ReservationLedger::reconciled();
-        assert!(
-            ledger
-                .reserve(&first_pool, &request, 1_020, 100, None)
-                .accepted
-        );
+        assert!(ledger.reserve(&first_pool, &request, 1_020, None).accepted);
 
-        let decision = ledger.revalue(&second_pool, &revalue, 1_040, 100, None);
+        let decision = ledger.revalue(&second_pool, &revalue, 1_040, None);
 
         assert!(!decision.accepted);
         assert_eq!(

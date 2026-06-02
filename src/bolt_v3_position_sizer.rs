@@ -207,13 +207,8 @@ impl PositionSizingAdmissionGate {
         self.reservation_ledger = ReservationLedger::unreconciled();
         let mut rebuilt_ledger = ReservationLedger::reconciled();
         for (index, reservation) in open_order_reservations.iter().enumerate() {
-            let decision = rebuilt_ledger.reserve(
-                pool,
-                reservation,
-                now_ns,
-                pool.max_snapshot_age_ns,
-                min_remaining_pool_balance,
-            );
+            let decision =
+                rebuilt_ledger.reserve(pool, reservation, now_ns, min_remaining_pool_balance);
             if !decision.accepted {
                 let attempted_reservation_count = open_order_reservations[..=index].len();
                 return PositionSizingRebuildDecision {
@@ -256,8 +251,7 @@ impl PositionSizingAdmissionGate {
         request: &ReservationReleaseRequest,
         now_ns: u64,
     ) -> ReservationReleaseDecision {
-        self.reservation_ledger
-            .release(pool, request, now_ns, pool.max_snapshot_age_ns)
+        self.reservation_ledger.release(pool, request, now_ns)
     }
 
     /// Uses the capital-pool snapshot freshness bound for both pool and revalue evidence.
@@ -268,13 +262,8 @@ impl PositionSizingAdmissionGate {
         now_ns: u64,
         min_remaining_pool_balance: Option<Decimal>,
     ) -> ReservationRevalueDecision {
-        self.reservation_ledger.revalue(
-            pool,
-            request,
-            now_ns,
-            pool.max_snapshot_age_ns,
-            min_remaining_pool_balance,
-        )
+        self.reservation_ledger
+            .revalue(pool, request, now_ns, min_remaining_pool_balance)
     }
 
     pub fn apply_lifecycle_update(
@@ -549,7 +538,6 @@ pub fn evaluate_position_sizing(inputs: PositionSizingInputs<'_>) -> SizedAdmiss
         inputs.capital_pool,
         &reservation_request,
         inputs.request.now_ns,
-        max_snapshot_age_ns,
         inputs.policy.min_remaining_pool_balance,
     );
     if !reservation_decision.accepted {

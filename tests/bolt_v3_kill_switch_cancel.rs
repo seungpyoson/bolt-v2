@@ -5,7 +5,8 @@ use bolt_v2::{
         BoltV3KillSwitchCancelCandidate, BoltV3KillSwitchCancelDecisionMode,
         BoltV3KillSwitchCancelError, BoltV3KillSwitchCancelOutcomeAggregation,
         BoltV3KillSwitchCancelOutcomeEvidence, BoltV3KillSwitchCancelPlanRequest,
-        BoltV3KillSwitchCancelPolicy, BoltV3KillSwitchCancelRouteKind,
+        BoltV3KillSwitchCancelPolicy, BoltV3KillSwitchCancelRetryDecision,
+        BoltV3KillSwitchCancelRetryPolicy, BoltV3KillSwitchCancelRouteKind,
         BoltV3KillSwitchCancelRouteProof, BoltV3KillSwitchCancelScope,
         BoltV3KillSwitchCancelSnapshot, BoltV3KillSwitchCancelSupervisor,
         BoltV3KillSwitchOutstandingOrderRiskSurface,
@@ -339,6 +340,38 @@ fn cancel_outcome_aggregation_uses_nt_order_status_evidence_without_collapsing_r
     assert_eq!(
         aggregate_single_candidate(rejected).result(),
         BoltV3KillSwitchCancelAggregateResult::FailedManualIntervention
+    );
+}
+
+#[test]
+fn cancel_retry_policy_is_owned_by_configured_budget_and_exhausts_to_manual_intervention() {
+    assert_eq!(
+        BoltV3KillSwitchCancelRetryPolicy::new(0, 100, 10),
+        Err(BoltV3KillSwitchCancelError::InvalidRetryPolicy)
+    );
+    assert_eq!(
+        BoltV3KillSwitchCancelRetryPolicy::new(3, 0, 10),
+        Err(BoltV3KillSwitchCancelError::InvalidRetryPolicy)
+    );
+    assert_eq!(
+        BoltV3KillSwitchCancelRetryPolicy::new(3, 100, 0),
+        Err(BoltV3KillSwitchCancelError::InvalidRetryPolicy)
+    );
+
+    let policy = BoltV3KillSwitchCancelRetryPolicy::new(3, 100, 10).expect("valid retry policy");
+    assert_eq!(
+        policy.decision_for(1, 1_717_200_000_000_000_000, 1_717_200_000_000_000_050),
+        Ok(BoltV3KillSwitchCancelRetryDecision::RetryAllowed {
+            next_attempt_unix_nanos: 1_717_200_000_000_000_060,
+        })
+    );
+    assert_eq!(
+        policy.decision_for(3, 1_717_200_000_000_000_000, 1_717_200_000_000_000_050),
+        Ok(BoltV3KillSwitchCancelRetryDecision::FailedManualIntervention)
+    );
+    assert_eq!(
+        policy.decision_for(1, 1_717_200_000_000_000_000, 1_717_200_000_000_000_101),
+        Ok(BoltV3KillSwitchCancelRetryDecision::FailedManualIntervention)
     );
 }
 

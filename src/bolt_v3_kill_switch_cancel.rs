@@ -4,7 +4,10 @@ use nautilus_model::{
     identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId},
 };
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    num::{NonZeroU32, NonZeroU64},
+};
 
 type BoltV3KillSwitchCancelOrderIdentity = (AccountId, InstrumentId, StrategyId, ClientOrderId);
 
@@ -790,6 +793,69 @@ fn merge_aggregate_result(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3KillSwitchCancelRetryDecision {
+    RetryAllowed { next_attempt_unix_nanos: u64 },
+    FailedManualIntervention,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoltV3KillSwitchCancelRetryPolicy {
+    max_attempts: u32,
+    timeout_unix_nanos: u64,
+    backoff_unix_nanos: u64,
+}
+
+impl BoltV3KillSwitchCancelRetryPolicy {
+    pub fn new(
+        max_attempts: u32,
+        timeout_unix_nanos: u64,
+        backoff_unix_nanos: u64,
+    ) -> Result<Self, BoltV3KillSwitchCancelError> {
+        if NonZeroU32::new(max_attempts).is_none()
+            || NonZeroU64::new(timeout_unix_nanos).is_none()
+            || NonZeroU64::new(backoff_unix_nanos).is_none()
+        {
+            return Err(BoltV3KillSwitchCancelError::InvalidRetryPolicy);
+        }
+        Ok(Self {
+            max_attempts,
+            timeout_unix_nanos,
+            backoff_unix_nanos,
+        })
+    }
+
+    pub fn decision_for(
+        &self,
+        attempts_made: u32,
+        first_attempt_unix_nanos: u64,
+        observed_at_unix_nanos: u64,
+    ) -> Result<BoltV3KillSwitchCancelRetryDecision, BoltV3KillSwitchCancelError> {
+        if NonZeroU32::new(attempts_made).is_none()
+            || NonZeroU64::new(first_attempt_unix_nanos).is_none()
+            || NonZeroU64::new(observed_at_unix_nanos).is_none()
+            || observed_at_unix_nanos < first_attempt_unix_nanos
+        {
+            return Err(BoltV3KillSwitchCancelError::InvalidRetryState);
+        }
+        if attempts_made >= self.max_attempts {
+            return Ok(BoltV3KillSwitchCancelRetryDecision::FailedManualIntervention);
+        }
+        let elapsed_unix_nanos = observed_at_unix_nanos - first_attempt_unix_nanos;
+        if elapsed_unix_nanos > self.timeout_unix_nanos {
+            return Ok(BoltV3KillSwitchCancelRetryDecision::FailedManualIntervention);
+        }
+        let Some(next_attempt_unix_nanos) =
+            observed_at_unix_nanos.checked_add(self.backoff_unix_nanos)
+        else {
+            return Ok(BoltV3KillSwitchCancelRetryDecision::FailedManualIntervention);
+        };
+        Ok(BoltV3KillSwitchCancelRetryDecision::RetryAllowed {
+            next_attempt_unix_nanos,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3KillSwitchCancelError {
     MissingActionId,
     InvalidConfigSha256,
@@ -810,4 +876,6 @@ pub enum BoltV3KillSwitchCancelError {
     KillSwitchStateNotCancelling,
     InvalidOutcomeOrderStatus,
     UnknownOutcomeCandidate,
+    InvalidRetryPolicy,
+    InvalidRetryState,
 }

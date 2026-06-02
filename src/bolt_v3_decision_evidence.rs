@@ -1218,12 +1218,15 @@ mod tests {
         for outcome in [
             BoltV3AdmissionOutcome::Admitted,
             BoltV3AdmissionOutcome::RejectedNotArmed,
+            BoltV3AdmissionOutcome::RejectedKillSwitchLatched,
             BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed,
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
             BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim,
             BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
+            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid,
+            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded,
         ] {
             let decision = BoltV3AdmissionDecisionEvidence {
                 strategy_id: "strategy-one".to_string(),
@@ -1259,26 +1262,8 @@ mod tests {
             assert_eq!(decision_field["strategy_id"], "strategy-one");
             assert_eq!(decision_field["notional"], "1.0");
             assert_eq!(decision_field["intent_kind"], "entry");
-            let expected_outcome = match outcome {
-                BoltV3AdmissionOutcome::Admitted => "admitted",
-                BoltV3AdmissionOutcome::RejectedNotArmed => "rejected_not_armed",
-                BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
-                    "rejected_submit_lifecycle_disallowed"
-                }
-                BoltV3AdmissionOutcome::RejectedNonPositiveNotional => {
-                    "rejected_non_positive_notional"
-                }
-                BoltV3AdmissionOutcome::RejectedNotionalCapExceeded => {
-                    "rejected_notional_cap_exceeded"
-                }
-                BoltV3AdmissionOutcome::RejectedInvalidCanaryProofClaim => {
-                    "rejected_invalid_canary_proof_claim"
-                }
-                BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof => {
-                    "rejected_invalid_risk_reducing_exit_proof"
-                }
-                BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",
-            };
+            let expected_outcome =
+                serde_json::to_value(&outcome).expect("outcome should serialize");
             assert_eq!(decision_field["outcome"], expected_outcome);
         }
     }

@@ -15,15 +15,12 @@ use super::hyperliquid::{self, HyperliquidProductSurface};
 
 const PRODUCT_MATRIX_SCHEMA_VERSION: u32 = 1;
 const PRODUCT_MATRIX_RECORD_KIND: &str = "bolt_v3.hyperliquid_product_matrix.v1";
-const NO_SUBMIT_READINESS_SCHEMA_VERSION: u32 = 1;
-const NO_SUBMIT_READINESS_RECORD_KIND: &str = "bolt_v3.hyperliquid_no_submit_readiness.v1";
 const LATENCY_PROFILE_SCHEMA_VERSION: u32 = 1;
 const LATENCY_PROFILE_RECORD_KIND: &str = "bolt_v3.hyperliquid_latency_profile.v1";
 const LIVE_SUBMIT_APPROVAL_SCHEMA_VERSION: u32 = 1;
 const LIVE_SUBMIT_APPROVAL_RECORD_KIND: &str = "bolt_v3.hyperliquid_live_submit_approval.v1";
 
 const LATENCY_PROFILE_ARTIFACT: &str = "hyperliquid_latency_profile";
-const NO_SUBMIT_READINESS_ARTIFACT: &str = "hyperliquid_no_submit_readiness";
 const LIVE_SUBMIT_APPROVAL_ARTIFACT: &str = "hyperliquid_live_submit_approval";
 
 #[derive(Debug, Serialize)]
@@ -137,159 +134,6 @@ fn validate_hyperliquid_latency_profile_config(
         ));
     }
     Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HyperliquidNoSubmitReadinessInput {
-    pub base_sha: String,
-    pub provider_id: String,
-    pub toml_checksum: String,
-    pub signer_fingerprint: String,
-    pub product_surface: HyperliquidProductSurface,
-    pub metadata_evidence: HyperliquidNoSubmitEvidenceRef,
-    pub fee_evidence: HyperliquidNoSubmitEvidenceRef,
-    pub admission_evidence: HyperliquidNoSubmitEvidenceRef,
-    pub exchange_mutations: BoltV3ExchangeMutationCounts,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct HyperliquidNoSubmitEvidenceRef {
-    pub source_kind: String,
-    pub artifact_sha256: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct HyperliquidNoSubmitReadinessArtifact {
-    pub schema_version: u32,
-    pub record_kind: &'static str,
-    pub provider_key: &'static str,
-    pub base_sha: String,
-    pub provider_id: String,
-    pub toml_checksum: String,
-    pub signer_fingerprint: String,
-    pub product_surface: HyperliquidProductSurface,
-    pub metadata_evidence: HyperliquidNoSubmitEvidenceRef,
-    pub fee_evidence: HyperliquidNoSubmitEvidenceRef,
-    pub admission_evidence: HyperliquidNoSubmitEvidenceRef,
-    pub exchange_mutation_count: u64,
-}
-
-pub fn build_hyperliquid_no_submit_readiness_artifact(
-    input: HyperliquidNoSubmitReadinessInput,
-) -> Result<HyperliquidNoSubmitReadinessArtifact, BoltV3OperatorArtifactError> {
-    validate_hyperliquid_no_submit_readiness_input(&input)?;
-    let exchange_mutation_count = validate_no_exchange_mutations(input.exchange_mutations)
-        .map_err(|_| {
-            provider_artifact_invalid(NO_SUBMIT_READINESS_ARTIFACT, "exchange_mutation_count")
-        })?;
-    Ok(HyperliquidNoSubmitReadinessArtifact {
-        schema_version: NO_SUBMIT_READINESS_SCHEMA_VERSION,
-        record_kind: NO_SUBMIT_READINESS_RECORD_KIND,
-        provider_key: hyperliquid::KEY,
-        base_sha: input.base_sha,
-        provider_id: input.provider_id,
-        toml_checksum: input.toml_checksum,
-        signer_fingerprint: input.signer_fingerprint,
-        product_surface: input.product_surface,
-        metadata_evidence: input.metadata_evidence,
-        fee_evidence: input.fee_evidence,
-        admission_evidence: input.admission_evidence,
-        exchange_mutation_count,
-    })
-}
-
-pub fn write_hyperliquid_no_submit_readiness_artifact(
-    input: HyperliquidNoSubmitReadinessInput,
-    output_path: &Path,
-) -> Result<WrittenOperatorArtifact, BoltV3OperatorArtifactError> {
-    let artifact = build_hyperliquid_no_submit_readiness_artifact(input)?;
-    write_json_artifact_create_new(output_path, &artifact)
-}
-
-fn validate_hyperliquid_no_submit_readiness_input(
-    input: &HyperliquidNoSubmitReadinessInput,
-) -> Result<(), BoltV3OperatorArtifactError> {
-    validate_lowercase_hex_field(
-        NO_SUBMIT_READINESS_ARTIFACT,
-        "base_sha",
-        &input.base_sha,
-        40,
-    )?;
-    validate_non_empty_field(
-        NO_SUBMIT_READINESS_ARTIFACT,
-        "provider_id",
-        &input.provider_id,
-    )?;
-    validate_sha256_field(
-        NO_SUBMIT_READINESS_ARTIFACT,
-        "toml_checksum",
-        &input.toml_checksum,
-    )?;
-    validate_sha256_field(
-        NO_SUBMIT_READINESS_ARTIFACT,
-        "signer_fingerprint",
-        &input.signer_fingerprint,
-    )?;
-    if input.product_surface != HyperliquidProductSurface::StandardPerps {
-        return Err(provider_artifact_invalid(
-            NO_SUBMIT_READINESS_ARTIFACT,
-            "product_surface",
-        ));
-    }
-    validate_hyperliquid_no_submit_evidence_ref("metadata_evidence", &input.metadata_evidence)?;
-    validate_hyperliquid_no_submit_evidence_ref("fee_evidence", &input.fee_evidence)?;
-    validate_hyperliquid_no_submit_evidence_ref("admission_evidence", &input.admission_evidence)?;
-    Ok(())
-}
-
-fn validate_hyperliquid_no_submit_evidence_ref(
-    field: &'static str,
-    evidence: &HyperliquidNoSubmitEvidenceRef,
-) -> Result<(), BoltV3OperatorArtifactError> {
-    validate_non_empty_field(NO_SUBMIT_READINESS_ARTIFACT, field, &evidence.source_kind)?;
-    validate_sha256_field(
-        NO_SUBMIT_READINESS_ARTIFACT,
-        field,
-        &evidence.artifact_sha256,
-    )
-}
-
-fn validate_non_empty_field(
-    artifact: &'static str,
-    field: &'static str,
-    value: &str,
-) -> Result<(), BoltV3OperatorArtifactError> {
-    if value.trim().is_empty() {
-        return Err(provider_artifact_invalid(artifact, field));
-    }
-    Ok(())
-}
-
-fn validate_sha256_field(
-    artifact: &'static str,
-    field: &'static str,
-    value: &str,
-) -> Result<(), BoltV3OperatorArtifactError> {
-    if is_lowercase_sha256(value) {
-        return Ok(());
-    }
-    Err(provider_artifact_invalid(artifact, field))
-}
-
-fn validate_lowercase_hex_field(
-    artifact: &'static str,
-    field: &'static str,
-    value: &str,
-    expected_len: usize,
-) -> Result<(), BoltV3OperatorArtifactError> {
-    if value.len() == expected_len
-        && value
-            .chars()
-            .all(|character| matches!(character, '0'..='9' | 'a'..='f'))
-    {
-        return Ok(());
-    }
-    Err(provider_artifact_invalid(artifact, field))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -31,20 +31,21 @@ cargo test --locked bolt_v3_production_entrypoint
 cargo test --locked hyperliquid
 ```
 
-## No-Submit Proof
+## Fail-Closed Proof
 
-The first executable readiness proof must show:
+The first executable proof must show:
 
 - NT Hyperliquid adapter constructed through provider binding.
 - Credentials resolved from SSM only.
 - `HYPERLIQUID_*` environment fallback rejected or scrubbed.
 - Product matrix discovered and recorded.
 - Fee readiness uses official request weights.
-- No exchange-mutating request was attempted.
+- Latency ops metadata cannot bypass live-submit gates.
+- Shared exchange-mutation counters fail closed if a mutating request is observed.
 
-## Live Submit Gate
+## Adapter Mapping Gate
 
-Live submit remains blocked unless a current approval artifact is consumed for the exact configured product surface. Standard perps, spot, HIP-3, and HIP-4 all map through the NT Hyperliquid execution adapter only after that surface-bound approval gate passes. HIP-4 also requires positive TOML-owned outcome settlement polling.
+Adapter mapping remains blocked unless a current approval artifact is consumed for the exact configured product surface. Standard perps, spot, HIP-3, and HIP-4 all map through the NT Hyperliquid execution adapter only after that surface-bound mapper gate passes. HIP-4 also requires positive TOML-owned outcome settlement polling. Production live-node submit remains blocked until a later slice wires approval consumption into the live-node entrypoint and reconciles the pinned NT `userFees` weight policy.
 
 ## Implementation Evidence Packet - 2026-06-02
 
@@ -58,7 +59,7 @@ Base:
 Implementation commits:
 - `4355c974` provider registration, SSM-only secret gates, env-fallback rejection, signer owner validation
 - `bacb0a80` product matrix artifact
-- `9fff450d` no-submit readiness artifact, exchange-mutation guard, `userFees` weight inventory
+- `9fff450d` exchange-mutation guard and `userFees` weight inventory
 - `af8cb7b3` live-submit approval artifact schema
 - `b3bc0965` one-time live-submit approval consumption
 - `cb7a2399` standard-perps NT adapter mapping gated by consumed approval
@@ -69,17 +70,19 @@ Implementation commits:
 Verification:
 - `cargo fmt --check` - PASS
 - `git diff --check` - PASS
-- `rg -n "TODO|fix later|dbg!|println!|eprintln!" src/bolt_v3_providers/hyperliquid.rs src/bolt_v3_operator_artifacts.rs tests/bolt_v3_provider_binding.rs tests/hyperliquid_no_submit.rs` - PASS, no matches
+- `rg -n "TODO|fix later|dbg!|println!|eprintln!" src/bolt_v3_providers/hyperliquid.rs src/bolt_v3_operator_artifacts.rs tests/bolt_v3_provider_binding.rs tests/hyperliquid_fail_closed.rs` - PASS, no matches
 - `cargo clippy --locked --lib -- -D warnings` - PASS
 - `cargo test --locked --test bolt_v3_provider_binding` - PASS, 17 tests
 - `cargo test --locked --test bolt_v3_production_entrypoint` - PASS, 5 tests
 - `cargo test --locked --test hyperliquid_product_matrix` - PASS, 8 tests
-- `cargo test --locked --test hyperliquid_no_submit` - PASS, 8 tests
+- `cargo test --locked --test hyperliquid_fail_closed` - PASS, 6 tests
 - `cargo test --locked --test hyperliquid_live_submit_artifact` - PASS, 6 tests
 - `cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_` - PASS, 8 tests
 
 Current live-submit state:
-- Standard perps, spot, HIP-3, and HIP-4 map to the NT Hyperliquid execution adapter only with a consumed approval artifact for the exact configured product surface.
+- Standard perps, spot, HIP-3, and HIP-4 map to the NT Hyperliquid execution adapter at the mapper boundary only with a consumed approval artifact for the exact configured product surface.
 - A consumed approval for one surface cannot authorize a different surface.
 - HIP-4 requires positive `outcome_settlement_poll_secs` in TOML before mapper handoff.
 - Latency profile is TOML-owned ops metadata only; it exports an artifact and cannot bypass submit approval gates.
+- Hyperliquid-specific no-submit readiness artifacts are not part of this slice.
+- Production `build_bolt_v3_live_node` does not yet consume Hyperliquid approval artifacts.

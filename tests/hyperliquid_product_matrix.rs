@@ -166,11 +166,11 @@ fn standard_perps_product_matrix_records_nt_discovery_and_fail_closed_submit() {
     );
     assert_fail_closed(
         standard_perps,
-        "standard perps no-submit readiness artifact",
+        "standard perps live-submit approval artifact",
     );
     assert_fail_closed(
         standard_perps,
-        "standard perps live-submit approval artifact",
+        "standard perps userFees rate-limit policy reconciliation",
     );
 }
 

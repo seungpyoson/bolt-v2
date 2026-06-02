@@ -15506,8 +15506,8 @@ reason = '''This is a Hyperliquid operator-evidence checklist label used to gate
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''string'''
-literal = '''"standard perps no-submit readiness artifact"'''
-context = '''"standard perps no-submit readiness artifact",'''
+literal = '''"standard perps userFees rate-limit policy reconciliation"'''
+context = '''"standard perps userFees rate-limit policy reconciliation",'''
 classification = '''hyperliquid_operator_evidence_label'''
 reason = '''This is a Hyperliquid operator-evidence checklist label used to gate live submit, not a trading parameter.'''
 
@@ -15651,14 +15651,6 @@ reason = '''This is the stable provider-side Hyperliquid operator-artifact schem
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
 kind = '''number'''
 literal = '''1'''
-context = '''const NO_SUBMIT_READINESS_SCHEMA_VERSION: u32 = 1;'''
-classification = '''operator_artifact_schema_version'''
-reason = '''This is the stable provider-side Hyperliquid operator-artifact schema version marker; it is not an operator runtime value.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
-kind = '''number'''
-literal = '''1'''
 context = '''const PRODUCT_MATRIX_SCHEMA_VERSION: u32 = 1;'''
 classification = '''operator_artifact_schema_version'''
 reason = '''This is the stable provider-side Hyperliquid operator-artifact schema version marker; it is not an operator runtime value.'''
@@ -15667,25 +15659,9 @@ reason = '''This is the stable provider-side Hyperliquid operator-artifact schem
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
 kind = '''number'''
 literal = '''40'''
-context = '''40,'''
-classification = '''git_sha_or_sha256_width_validation'''
-reason = '''This is the fixed lowercase-hex digest width used to validate evidence hashes and git SHAs; the checked value remains artifact-owned.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
-kind = '''number'''
-literal = '''40'''
 context = '''if value.len() == 40'''
 classification = '''git_sha_or_sha256_width_validation'''
 reason = '''This is the fixed lowercase-hex digest width used to validate evidence hashes and git SHAs; the checked value remains artifact-owned.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
-kind = '''string'''
-literal = '''"admission_evidence"'''
-context = '''validate_hyperliquid_no_submit_evidence_ref("admission_evidence", &input.admission_evidence)?;'''
-classification = '''provider_artifact_validation_field'''
-reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
@@ -15746,14 +15722,6 @@ reason = '''This is the stable provider-side Hyperliquid operator-artifact recor
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
 kind = '''string'''
-literal = '''"bolt_v3.hyperliquid_no_submit_readiness.v1"'''
-context = '''const NO_SUBMIT_READINESS_RECORD_KIND: &str = "bolt_v3.hyperliquid_no_submit_readiness.v1";'''
-classification = '''operator_artifact_record_kind'''
-reason = '''This is the stable provider-side Hyperliquid operator-artifact record-kind marker used for evidence validation, not a runtime trading value.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
-kind = '''string'''
 literal = '''"bolt_v3.hyperliquid_product_matrix.v1"'''
 context = '''const PRODUCT_MATRIX_RECORD_KIND: &str = "bolt_v3.hyperliquid_product_matrix.v1";'''
 classification = '''operator_artifact_record_kind'''
@@ -15762,24 +15730,8 @@ reason = '''This is the stable provider-side Hyperliquid operator-artifact recor
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
 kind = '''string'''
-literal = '''"exchange_mutation_count"'''
-context = '''provider_artifact_invalid(NO_SUBMIT_READINESS_ARTIFACT, "exchange_mutation_count")'''
-classification = '''provider_artifact_validation_field'''
-reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
-kind = '''string'''
 literal = '''"expires_at"'''
 context = '''"expires_at",'''
-classification = '''provider_artifact_validation_field'''
-reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
-kind = '''string'''
-literal = '''"fee_evidence"'''
-context = '''validate_hyperliquid_no_submit_evidence_ref("fee_evidence", &input.fee_evidence)?;'''
 classification = '''provider_artifact_validation_field'''
 reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
 
@@ -15818,14 +15770,6 @@ reason = '''This is a provider-side artifact label used in validation diagnostic
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
 kind = '''string'''
-literal = '''"hyperliquid_no_submit_readiness"'''
-context = '''const NO_SUBMIT_READINESS_ARTIFACT: &str = "hyperliquid_no_submit_readiness";'''
-classification = '''provider_artifact_validation_label'''
-reason = '''This is a provider-side artifact label used in validation diagnostics, not a runtime trading value.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
-kind = '''string'''
 literal = '''"latency_profile.local_info_node_url"'''
 context = '''"latency_profile.local_info_node_url",'''
 classification = '''provider_artifact_validation_field'''
@@ -15846,14 +15790,6 @@ literal = '''"latency_profile.placement_profile"'''
 context = '''"latency_profile.placement_profile",'''
 classification = '''provider_artifact_validation_field'''
 reason = '''This labels a provider-side latency-profile evidence field; the field value remains TOML/artifact-owned.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
-kind = '''string'''
-literal = '''"metadata_evidence"'''
-context = '''validate_hyperliquid_no_submit_evidence_ref("metadata_evidence", &input.metadata_evidence)?;'''
-classification = '''provider_artifact_validation_field'''
-reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''

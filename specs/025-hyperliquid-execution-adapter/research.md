@@ -28,9 +28,9 @@
 
 **Rationale**: Product surfaces use different asset-id and market semantics. Discovery proof is not live execution proof.
 
-## Decision 5 - MVP Is No-Submit
+## Decision 5 - MVP Is Fail-Closed Adapter Enablement
 
-**Decision**: Initial implementation proves provider binding, discovery, secrets, fees, signer ownership, and no-submit readiness. It does not place live orders.
+**Decision**: Initial implementation proves provider binding, discovery, secrets, fees, signer ownership, fail-closed approval gates, and latency ops metadata. It does not place live orders or publish Hyperliquid-specific no-submit readiness artifacts.
 
 **Rationale**: Live exchange actions are irreversible side effects. Repo constitution requires evidence before claims and fail-closed live trading.
 

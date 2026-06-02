@@ -158,8 +158,8 @@ const STANDARD_PERPS_DISCOVERY_SOURCES: &[&str] = &[
 const STANDARD_PERPS_OFFICIAL_DOCUMENTATION_SOURCES: &[&str] =
     &["Hyperliquid Info endpoint perpetuals metadata `meta`"];
 const STANDARD_PERPS_MISSING_SUBMIT_PROOF: &[&str] = &[
-    "standard perps no-submit readiness artifact",
     "standard perps live-submit approval artifact",
+    "standard perps userFees rate-limit policy reconciliation",
 ];
 const SPOT_DISCOVERY_SOURCES: &[&str] = &[
     "nautilus_hyperliquid::http::query::InfoRequest::spot_meta",

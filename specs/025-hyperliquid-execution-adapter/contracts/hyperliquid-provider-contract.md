@@ -14,7 +14,6 @@ Hyperliquid support enters Bolt only through `ProviderBinding`. No strategy file
 - `configured_secret_paths`
 - `map_adapters`
 - `build_fee_provider`
-- `venue_egress_model`
 - operator artifact export
 
 ## Fail-Closed Requirements
@@ -28,9 +27,9 @@ The provider binding must reject:
 - Duplicate signer/API-wallet owner in one runtime.
 - Raw `src/clients/hyperliquid.rs`.
 - Strategy-file submit mechanics.
-- Standard-perps live submit without a matching approval artifact.
-- Spot, HIP-3, or HIP-4 live submit without product-specific proof.
-- No-submit readiness if any exchange-mutating request occurs.
+- Standard-perps adapter mapping without a matching consumed approval artifact.
+- Spot, HIP-3, or HIP-4 adapter mapping without product-specific proof and matching consumed approval.
+- Any live submit path while the pinned NT `userFees` weight differs from official Hyperliquid weight policy.
 
 ## Product Surface Evidence Contract
 

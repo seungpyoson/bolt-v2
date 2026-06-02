@@ -61,22 +61,6 @@ Validation:
 - Discovery does not imply submit readiness.
 - Unknown or unsupported surfaces remain fail-closed.
 
-## HyperliquidNoSubmitReadiness
-
-- `base_sha`
-- `provider_id`
-- `toml_checksum`
-- `signer_fingerprint`
-- `product_surface`
-- `metadata_evidence`
-- `fee_evidence`
-- `admission_evidence`
-- `exchange_mutation_count`
-
-Validation:
-- `exchange_mutation_count` must be zero.
-- Any submit/cancel/modify/transfer/account mutation blocks readiness.
-
 ## HyperliquidLiveSubmitApprovalArtifact
 
 - `approval_id`

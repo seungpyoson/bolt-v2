@@ -52,36 +52,36 @@
 - [x] T027 [US2] Implement HIP-4 discovery status and fail-closed submit reason in `src/bolt_v3_providers/mod.rs`.
 - [x] T028 [US2] Export product matrix evidence in `src/bolt_v3_operator_artifacts.rs`.
 
-## Phase 5 - User Story 3: Prove No-Submit Standard Perps
+## Phase 5 - User Story 3: Prove Standard-Perps Fail-Closed Preconditions
 
-**Goal**: Standard-perps readiness exercises adapter construction, metadata, fees, signer, and admission logic with zero exchange-mutating requests.
+**Goal**: Standard-perps remains blocked by fee/rate policy and shared exchange-mutation guards until a later live-submit slice supplies complete product proof.
 
-**Independent Test**: No-submit readiness fails if submit, cancel, modify, transfer, or account mutation occurs.
+**Independent Test**: The shared exchange-mutation guard fails closed for submit, cancel, modify, transfer, or account mutation; pinned NT `userFees` mismatch blocks live submit.
 
-- [x] T029 [US3] Add failing no-submit readiness test in `tests/hyperliquid_no_submit.rs`.
-- [x] T030 [US3] Implement no-submit readiness artifact in `src/bolt_v3_operator_artifacts.rs`.
-- [x] T031 [US3] Add failing exchange-mutation counter test in `tests/hyperliquid_no_submit.rs`.
+- [x] T029 [US3] Remove Hyperliquid-specific no-submit readiness artifact from this slice.
+- [x] T030 [US3] Keep Hyperliquid live submit fail-closed until later product proof and approval wiring.
+- [x] T031 [US3] Add failing exchange-mutation counter test in `tests/hyperliquid_fail_closed.rs`.
 - [x] T032 [US3] Implement exchange-mutation guard in shared execution/admission code under `src/`.
-- [x] T033 [US3] Add failing `userFees` request-weight test in `tests/hyperliquid_no_submit.rs`.
+- [x] T033 [US3] Add failing `userFees` request-weight test in `tests/hyperliquid_fail_closed.rs`.
 - [x] T034 [US3] Implement official `userFees` weight accounting in `src/bolt_v3_providers/mod.rs`.
 
-## Phase 6 - User Story 4: Gate Live Standard Perps Submit
+## Phase 6 - User Story 4: Gate Standard-Perps Adapter Mapping
 
-**Goal**: Standard-perps live submit requires exact live-submit approval artifact.
+**Goal**: Standard-perps adapter mapping requires exact consumed live-submit approval artifact.
 
-**Independent Test**: Missing, stale, mismatched, expired, reused, or overbroad artifacts are rejected.
+**Independent Test**: Missing, stale, mismatched, expired, reused, or overbroad artifacts are rejected at the mapper boundary.
 
 - [x] T035 [US4] Add failing missing-approval test in `tests/hyperliquid_live_submit_artifact.rs`.
 - [x] T036 [US4] Implement live-submit artifact schema in `src/bolt_v3_operator_artifacts.rs`.
 - [x] T037 [US4] Add failing stale/mismatched/expired/reused artifact tests in `tests/hyperliquid_live_submit_artifact.rs`.
 - [x] T038 [US4] Implement artifact binding and one-time consumption in `src/bolt_v3_providers/mod.rs`.
-- [x] T039 [US4] Add standard-perps submit path only through NT adapter and shared execution/admission code under `src/`.
+- [x] T039 [US4] Add standard-perps NT adapter mapping only behind consumed approval under `src/`.
 
-## Phase 7 - User Story 5: Gate Spot, HIP-3, And HIP-4 By Surface Approval
+## Phase 7 - User Story 5: Gate Spot, HIP-3, And HIP-4 Mapping By Surface Approval
 
-**Goal**: Spot, HIP-3, and HIP-4 remain discoverable and blocked without consumed surface-bound approval; with exact approval they map through the NT Hyperliquid execution adapter. HIP-4 additionally requires positive outcome settlement polling.
+**Goal**: Spot, HIP-3, and HIP-4 remain discoverable and blocked without consumed surface-bound approval; with exact approval they map through the NT Hyperliquid execution adapter at the mapper boundary. HIP-4 additionally requires positive outcome settlement polling.
 
-**Independent Test**: Enabling any surface without consumed matching approval fails closed; consumed approval for one surface cannot authorize a different surface.
+**Independent Test**: Mapping any surface without consumed matching approval fails closed; consumed approval for one surface cannot authorize a different surface.
 
 - [x] T040 [US5] Add failing spot live-submit rejection test in `tests/hyperliquid_product_matrix.rs`.
 - [x] T041 [US5] Implement spot surface-approval gate in `src/bolt_v3_providers/mod.rs`.
@@ -98,7 +98,7 @@
 
 - [x] T046 [US6] Add failing latency-profile config test in `tests/bolt_v3_provider_binding.rs`.
 - [x] T047 [US6] Add latency profile fields in `src/bolt_v3_config.rs`.
-- [x] T048 [US6] Add failing latency-profile no-bypass test in `tests/hyperliquid_no_submit.rs`.
+- [x] T048 [US6] Add failing latency-profile no-bypass test in `tests/hyperliquid_fail_closed.rs`.
 - [x] T049 [US6] Export latency profile artifacts without changing submit gates in `src/bolt_v3_operator_artifacts.rs`.
 
 ## Phase 9 - Verification
@@ -108,7 +108,7 @@
 - [x] T052 Run focused provider tests for `tests/bolt_v3_provider_binding.rs`.
 - [x] T053 Run focused entrypoint tests for `tests/bolt_v3_production_entrypoint.rs`.
 - [x] T054 Run focused Hyperliquid matrix tests for `tests/hyperliquid_product_matrix.rs`.
-- [x] T055 Run focused no-submit tests for `tests/hyperliquid_no_submit.rs`.
+- [x] T055 Run focused fail-closed tests for `tests/hyperliquid_fail_closed.rs`.
 - [x] T056 Produce evidence packet in `specs/025-hyperliquid-execution-adapter/quickstart.md`.
 
 ## Dependencies
@@ -122,4 +122,4 @@
 
 ## MVP Scope
 
-MVP is US1, US2, US3, US5 fail-closed guards, and US6 ops metadata. US4 live standard-perps submit remains gated follow-up unless user explicitly approves that slice after MVP proof.
+MVP is US1, US2, US3 fail-closed guards, US5 approval-gated mapping scaffolding, and US6 ops metadata. US4 live standard-perps submit remains gated follow-up unless user explicitly approves that slice after MVP proof.

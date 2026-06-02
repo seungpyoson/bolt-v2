@@ -9,7 +9,7 @@
 
 - "Fastest latency" is treated as a measurable ops objective, not a guaranteed code property.
 - "Colocated" means TOML-configured infrastructure profile and local info-node support; no region, endpoint, or facility value may be hardcoded.
-- The first accepted implementation slice does not place live orders. It proves adapter registration, discovery, secrets, signer ownership, fee accounting, and no-submit readiness.
+- The first accepted implementation slice does not place live orders. It proves adapter registration, discovery, secrets, signer ownership, fee/rate accounting, live-submit approval gating, and fail-closed submit behavior.
 
 ## User Stories And Tests
 
@@ -25,29 +25,29 @@ As an operator, I can see an evidence-backed product matrix for standard perps, 
 
 **Independent Test**: Discovery tests prove each surface from NT-supported public metadata, record source evidence, and mark unsupported or unproven submit paths fail-closed.
 
-### User Story 3 - Prove No-Submit Standard Perps (Priority: P2)
+### User Story 3 - Prove Standard-Perps Fail-Closed Preconditions (Priority: P2)
 
-As an operator, I can run a standard-perps no-submit readiness path that exercises construction, metadata, fee, signer, and admission logic without sending exchange actions.
+As an operator, I can prove standard-perps fee/rate policy and exchange-mutation guards without publishing a Hyperliquid-specific no-submit readiness artifact.
 
-**Independent Test**: No-submit proof fails if any exchange submit, cancel, modify, transfer, or account-mutating request is attempted.
+**Independent Test**: The shared exchange-mutation guard fails closed for submit, cancel, modify, transfer, or account-mutating counts; the pinned NT `userFees` weight mismatch blocks live submit at validation.
 
-### User Story 4 - Gate Live Standard Perps Submit (Priority: P2)
+### User Story 4 - Gate Standard-Perps Adapter Mapping (Priority: P2)
 
-As an operator, I can enable standard-perps live submit only with an explicit approval artifact tied to current code, config, surface, limits, expiry, and provider identity.
+As an operator, I can prove the standard-perps adapter mapper accepts NT execution config only when supplied an already-consumed approval artifact tied to current code, config, surface, limits, expiry, and provider identity.
 
-**Independent Test**: Live submit is rejected when the approval artifact is missing, stale, reused, mismatched, expired, or wider than configured order limits.
+**Independent Test**: Adapter mapping is rejected when the approval artifact is missing, stale, reused, mismatched, expired, or wider than configured order limits. Production live-node construction remains blocked until a follow-up slice wires approval consumption into the live-node entrypoint.
 
-### User Story 5 - Gate Spot, HIP-3, And HIP-4 Submit By Surface Approval (Priority: P2)
+### User Story 5 - Gate Spot, HIP-3, And HIP-4 Mapping By Surface Approval (Priority: P2)
 
-As an operator, I can enable spot, HIP-3, and HIP-4 through the same NT Hyperliquid execution adapter only when the configured product surface has a consumed approval artifact bound to that exact surface.
+As an operator, I can prove spot, HIP-3, and HIP-4 map through the same NT Hyperliquid execution adapter only when the configured product surface has a consumed approval artifact bound to that exact surface.
 
-**Independent Test**: Attempts to enable spot, HIP-3, or HIP-4 live submit fail without a consumed surface-bound approval; a consumed approval for one surface cannot authorize a different surface.
+**Independent Test**: Attempts to map spot, HIP-3, or HIP-4 fail without a consumed surface-bound approval; a consumed approval for one surface cannot authorize a different surface.
 
 ### User Story 6 - Configure Latency Ops Separately (Priority: P3)
 
 As an operator, I can configure local info-node and placement profile settings without changing execution semantics or adding hardcoded endpoints.
 
-**Independent Test**: Latency profile config affects only market-data/readiness endpoints and exported artifacts; it cannot bypass submit gates, signer ownership, or rate accounting.
+**Independent Test**: Latency profile config affects only market-data endpoints and exported artifacts; it cannot bypass submit gates, signer ownership, or rate accounting.
 
 ## Functional Requirements
 
@@ -60,12 +60,12 @@ As an operator, I can configure local info-node and placement profile settings w
 - **FR-007**: The system MUST model execution mode explicitly: direct account, vault, master-account API wallet, or subaccount API wallet.
 - **FR-008**: The system MUST reject multiple execution clients sharing the same signer/API wallet unless a future signer lifecycle owner design explicitly allows it.
 - **FR-009**: The system MUST account for `userFees` using the official request weight.
-- **FR-010**: The system MUST inventory all NT `userFees` callers before wiring fee readiness.
+- **FR-010**: The system MUST inventory all NT `userFees` callers before enabling live submit.
 - **FR-011**: The system MUST discover standard perps, spot, HIP-3, and HIP-4 through NT-supported or officially documented public surfaces.
-- **FR-012**: The system MUST keep spot live execution blocked unless a current live-submit approval artifact is consumed for `spot`.
-- **FR-013**: The system MUST keep HIP-3 live execution blocked unless a current live-submit approval artifact is consumed for `hip3_builder_perps`.
-- **FR-014**: The system MUST keep HIP-4 live execution blocked unless a current live-submit approval artifact is consumed for `hip4_outcomes` and TOML config enables positive outcome settlement polling.
-- **FR-015**: The system MUST keep standard perps live submit blocked unless a current live-submit approval artifact exists for `standard_perps`.
+- **FR-012**: The adapter mapper MUST keep spot execution blocked unless a current live-submit approval artifact is consumed for `spot`.
+- **FR-013**: The adapter mapper MUST keep HIP-3 execution blocked unless a current live-submit approval artifact is consumed for `hip3_builder_perps`.
+- **FR-014**: The adapter mapper MUST keep HIP-4 execution blocked unless a current live-submit approval artifact is consumed for `hip4_outcomes` and TOML config enables positive outcome settlement polling.
+- **FR-015**: The adapter mapper MUST keep standard perps execution blocked unless a current live-submit approval artifact exists for `standard_perps`.
 - **FR-016**: The live-submit approval artifact MUST bind base SHA, provider id, product surface, TOML checksum, signer fingerprint, order limits, expiry, and one-time id.
 - **FR-017**: The system MUST treat Hyperliquid priority-fee grouping as out of MVP unless NT exposes and proves the required wire shape.
 - **FR-018**: The system MUST provide TOML-configured local-info-node and colocation profile fields as ops metadata only.
@@ -86,11 +86,11 @@ As an operator, I can configure local info-node and placement profile settings w
 - **SC-001**: Hyperliquid provider config validates through existing provider-binding tests with no raw client module.
 - **SC-002**: Secret-resolution tests prove SSM-only behavior and no environment fallback at NT handoff.
 - **SC-003**: Product matrix tests classify standard perps, spot, HIP-3, and HIP-4 with source evidence and fail-closed submit status.
-- **SC-004**: No-submit readiness proves no exchange-mutating action can occur without a live-submit approval artifact.
+- **SC-004**: Fail-closed tests prove latency ops metadata cannot bypass live-submit approval and the shared exchange-mutation guard rejects mutating request counts.
 - **SC-005**: Relay-Claude adversarial review approves the Speckit plan before implementation begins.
 
 ## Assumptions
 
 - The current pinned NT revision remains the source of truth unless current `main` requires a coordinated dependency update.
 - Hyperliquid docs and public metadata endpoints are authoritative only for documented public behavior; Bolt proof gates decide live submit readiness.
-- Live standard-perps submit is a later gated slice after MVP no-submit readiness, not part of the initial implementation claim.
+- Live standard-perps submit is a later gated slice after fee/rate policy reconciliation and live-node approval wiring, not part of the initial implementation claim.

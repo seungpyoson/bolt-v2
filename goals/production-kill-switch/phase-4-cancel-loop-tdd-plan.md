@@ -23,6 +23,10 @@ This phase intentionally separates three concerns:
 ## Invariants
 
 - Durable kill-switch state remains the authority. Cancel planning is valid only in `KillSwitchState::Cancelling`.
+- Entering `Cancelling`, leaving `Cancelling`, and replacing the current `Halted -> Flat`
+  reconciliation shortcut are orchestration/state-machine integration work for a later
+  reconciliation phase. Phase 4 consumes an already-durable `Cancelling` state and proves
+  cancel-loop behavior only.
 - Submit admission remains the global exposure-opening block; cancel planning does not create any submit path.
 - Outstanding order risk includes open, inflight, pending-cancel, emulated, algorithm-managed, contingent, and locally accepted-but-not-terminal order surfaces.
 - Every cancel candidate is scoped by config-owned account, instrument, and strategy filters.
@@ -152,13 +156,16 @@ Use Option A. Phase 4 should produce a reviewable no-submit cancel-loop proof mo
 - `python3 scripts/test_verify_bolt_v3_strategy_policy_fence.py` passes.
 - `python3 scripts/verify_bolt_v3_strategy_policy_fence.py` passes.
 - `cargo fmt --check` passes.
-- `cargo clippy --locked --lib -- -D warnings` passes.
+- `just clippy` passes so the repo wrapper checks the configured lint surface instead of only the library target.
 - `just source-fence` passes.
 
 ## Deferred Scope
 
 - Live NT cancel adapter through per-strategy action ports.
 - Live-node command-router cancel adapter.
+- Durable transition orchestration into and out of `Cancelling`, including replacing the current
+  `Halted -> Flat` reconciliation shortcut with the later `Cancelling -> Flattening -> Flat`
+  proof sequence.
 - Flatten routing and forced-reduction order construction.
 - Reconciliation proof that all outstanding order risk and positions are clear.
 - Loss-governor or manual runtime trigger ingestion.

@@ -121,7 +121,7 @@ Use Option A. Phase 3 should be a reviewable runtime-connection plan and, after 
 - `cargo test --locked --test bolt_v3_submit_admission` passes for focused admission-sync cases.
 - Focused live-node/runtime-sync tests pass under the exact test target introduced by the first RED implementation commit.
 - `cargo fmt --check` passes.
-- `cargo clippy --locked --lib -- -D warnings` passes.
+- `just clippy` passes so the repo wrapper checks the configured lint surface instead of only the library target.
 - `just source-fence` passes.
 
 ## Deferred Scope

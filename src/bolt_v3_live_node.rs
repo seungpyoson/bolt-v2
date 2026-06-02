@@ -3999,6 +3999,7 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             rotating_market_family = "hyperliquid_instrument"
             product_surface = "spot"
             instrument_id = "BTC/USDC.HYPERLIQUID"
+            quantity_step = "0.001"
         }
         .into();
         loaded.root.clients.clear();

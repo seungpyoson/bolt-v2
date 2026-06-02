@@ -233,6 +233,16 @@
 - [x] T049AN Add failing product-matrix test for approval-gated status after product-proof binding.
 - [x] T049AO Add `approval_gated` submit status and remove stale missing-proof gaps for all four Hyperliquid surfaces.
 
+## Phase 8N - Static Hyperliquid Canary Proof Artifacts
+
+**Goal**: Operators can generate shared canary proof gate-session, candidate-source, and order-intent artifacts for a static Hyperliquid instrument through the production provider collector path.
+
+**Independent Test**: A static Hyperliquid target with TOML-owned sizing constraints and an enabled proof policy writes a no-resolution gate session plus canary candidate/order-intent artifacts bound to the configured Hyperliquid execution client.
+
+- [x] T049AP Add failing operator-artifact test for Hyperliquid static instrument canary proof collection.
+- [x] T049AQ Add TOML-owned static target sizing constraints and selected-market identity for Hyperliquid static instruments.
+- [x] T049AR Register the Hyperliquid canary proof artifact collector with the provider binding and reuse the shared proof-policy projection.
+
 ## Phase 9 - Verification
 
 - [x] T050 Run `cargo fmt --check` for `Cargo.toml` and `src/`.

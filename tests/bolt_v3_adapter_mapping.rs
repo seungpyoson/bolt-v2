@@ -44,6 +44,7 @@ use nautilus_polymarket::{
     common::enums::SignatureType as NtPolymarketSignatureType,
     config::{PolymarketDataClientConfig, PolymarketExecClientConfig},
 };
+use rust_decimal::Decimal;
 use zeroize::Zeroizing;
 
 fn fixture_polymarket_secrets() -> ResolvedBoltV3PolymarketSecrets {
@@ -118,6 +119,10 @@ fn hyperliquid_static_instrument_target_plan(
         execution_client_id: "hyperliquid_perps".to_string(),
         product_surface,
         instrument_id: InstrumentId::from(instrument_id),
+        quantity_step: Decimal::new(1, 3),
+        notional_step: None,
+        min_quantity: Some(Decimal::new(1, 3)),
+        min_notional: Some(Decimal::new(100, 2)),
     });
     plan
 }

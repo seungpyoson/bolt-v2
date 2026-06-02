@@ -103,6 +103,11 @@ fn market_identity_plan_accepts_hyperliquid_static_instrument_target() {
         "instrument_id",
         toml::Value::String("BTC-PERP.HYPERLIQUID".to_string()),
     );
+    set_target_field(
+        strategy,
+        "quantity_step",
+        toml::Value::String("0.001".to_string()),
+    );
 
     let plan = market_identity_plan_from_config(&loaded)
         .expect("hyperliquid static-instrument target should be a supported family");

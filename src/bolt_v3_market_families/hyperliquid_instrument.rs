@@ -4,18 +4,20 @@
 //! instrument for route validation without reusing the up/down rotating
 //! market shape. Binary market selection remains unsupported here.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bolt_v3_config::LoadedStrategy,
+    bolt_v3_config::{LoadedStrategy, NO_RESOLUTION_KIND, NO_RESOLUTION_VALUE_KIND},
     bolt_v3_instrument_filters::InstrumentFilterError,
     bolt_v3_market_families::{
         FairProbabilityInputs, MarketIdentityPlan, MarketIdentityTarget,
         MarketSelectionCandidateWindow, MarketSelectionTarget, SelectedBinaryOptionMarket,
-        SelectedMarketRequirement, TargetRuntimeFields,
+        SelectedMarketRequirement, SelectedMarketRequirementParts, TargetRuntimeFields,
+        selected_market_metadata_provenance_fields, selected_market_requirement_from_parts,
     },
 };
 
@@ -31,6 +33,11 @@ pub struct TargetBlock {
     pub rotating_market_family: RotatingMarketFamily,
     pub product_surface: ProductSurface,
     pub instrument_id: InstrumentId,
+    pub quantity_step: Decimal,
+    pub notional_step: Option<Decimal>,
+    pub min_quantity: Option<Decimal>,
+    pub min_notional: Option<Decimal>,
+    pub gate_subscriptions: Option<BTreeMap<String, super::updown::TargetGateSubscription>>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -61,6 +68,10 @@ pub struct HyperliquidInstrumentTargetPlan {
     pub execution_client_id: String,
     pub product_surface: ProductSurface,
     pub instrument_id: InstrumentId,
+    pub quantity_step: Decimal,
+    pub notional_step: Option<Decimal>,
+    pub min_quantity: Option<Decimal>,
+    pub min_notional: Option<Decimal>,
 }
 
 impl MarketIdentityTarget for HyperliquidInstrumentTargetPlan {
@@ -114,6 +125,35 @@ pub fn validate_target_block(context: &str, target: &toml::Value) -> Vec<String>
     if instrument_id.is_empty() {
         errors.push(format!("{context}: target.instrument_id must not be empty"));
     }
+    if block.quantity_step <= Decimal::ZERO {
+        errors.push(format!(
+            "{context}: target.quantity_step must be a positive decimal"
+        ));
+    }
+    if block
+        .notional_step
+        .is_some_and(|notional_step| notional_step <= Decimal::ZERO)
+    {
+        errors.push(format!(
+            "{context}: target.notional_step must be a positive decimal when configured"
+        ));
+    }
+    if block
+        .min_quantity
+        .is_some_and(|min_quantity| min_quantity <= Decimal::ZERO)
+    {
+        errors.push(format!(
+            "{context}: target.min_quantity must be a positive decimal when configured"
+        ));
+    }
+    if block
+        .min_notional
+        .is_some_and(|min_notional| min_notional <= Decimal::ZERO)
+    {
+        errors.push(format!(
+            "{context}: target.min_notional must be a positive decimal when configured"
+        ));
+    }
     errors
 }
 
@@ -137,7 +177,37 @@ pub fn plan_strategy_target(
         execution_client_id: strategy.config.execution_client_id.to_string(),
         product_surface: target.product_surface,
         instrument_id: target.instrument_id,
+        quantity_step: target.quantity_step,
+        notional_step: target.notional_step,
+        min_quantity: target.min_quantity,
+        min_notional: target.min_notional,
     })))
+}
+
+pub fn selected_static_instrument_requirement(
+    target: &HyperliquidInstrumentTargetPlan,
+    selected_at_ms: u64,
+) -> Result<SelectedMarketRequirement, InstrumentFilterError> {
+    let instrument_id = target.instrument_id.to_string();
+    selected_market_requirement_from_parts(SelectedMarketRequirementParts {
+        configured_target_id: target.configured_target_id.as_str(),
+        venue: target.instrument_id.venue.as_str(),
+        family_key: KEY,
+        market_id: instrument_id.as_str(),
+        instrument_ids: vec![instrument_id.clone()],
+        market_class: product_surface_key(target.product_surface),
+        resolution_kind: NO_RESOLUTION_KIND,
+        resolution_identity: instrument_id.as_str(),
+        value_kind: NO_RESOLUTION_VALUE_KIND,
+        metadata_provenance_fields: selected_market_metadata_provenance_fields([
+            (
+                "product_surface",
+                product_surface_key(target.product_surface),
+            ),
+            ("instrument_id", instrument_id.as_str()),
+        ]),
+        selected_at_ms,
+    })
 }
 
 pub fn target_runtime_fields(
@@ -176,5 +246,14 @@ pub fn fair_probability_up(_inputs: &FairProbabilityInputs) -> Option<f64> {
 fn binary_market_unsupported() -> InstrumentFilterError {
     InstrumentFilterError::Other {
         message: BINARY_MARKET_UNSUPPORTED.to_string(),
+    }
+}
+
+fn product_surface_key(surface: ProductSurface) -> &'static str {
+    match surface {
+        ProductSurface::StandardPerps => "standard_perps",
+        ProductSurface::Spot => "spot",
+        ProductSurface::Hip3BuilderPerps => "hip3_builder_perps",
+        ProductSurface::Hip4Outcomes => "hip4_outcomes",
     }
 }

@@ -621,7 +621,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         ),
         build_fee_provider: Some(hyperliquid::build_fee_provider),
         collect_entry_decision_source_inputs: None,
-        collect_canary_proof_artifacts: None,
+        collect_canary_proof_artifacts: Some(hyperliquid::collect_canary_proof_artifacts),
     },
     ProviderBinding {
         key: market_data::BITMEX_KEY,

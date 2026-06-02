@@ -6,8 +6,10 @@
 
 use std::{
     any::Any,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
     path::Path,
+    pin::Pin,
     str::FromStr,
     sync::{Arc, Mutex},
 };
@@ -37,12 +39,24 @@ use crate::{
         BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3DataClientAdapterConfig,
         BoltV3ExecutionClientAdapterConfig,
     },
+    bolt_v3_archetypes::{ArchetypeGateRequirement, GateRole},
+    bolt_v3_canary_proof_policy::{
+        CanaryProofCandidate, CanaryProofInstrumentConstraints, CanaryProofOrderSide,
+        CanaryProofPolicyInput, CanaryProofSizingMode, CanaryProofSourcePacket,
+        build_canary_proof_candidate_source_artifact, build_canary_proof_order_intent_artifact,
+    },
     bolt_v3_config::ClientBlock,
     bolt_v3_config::resolve_root_relative_path,
     bolt_v3_market_families::{
         MarketIdentityPlan, hyperliquid_instrument, market_identity_plan_from_config, updown,
     },
-    bolt_v3_operator_artifacts::{WrittenOperatorArtifact, is_lowercase_sha256, read_file_bounded},
+    bolt_v3_operator_artifacts::{
+        BoltV3OperatorArtifactError, CanaryProofArtifactsWritten,
+        EntryDecisionSourceProofFileRequest, EntryReadinessGateSessionRequest, GateArtifactRef,
+        WrittenOperatorArtifact, build_entry_readiness_gate_session,
+        canary_proof_policy_input_from_loaded, is_lowercase_sha256, read_file_bounded,
+        validate_canary_proof_source_files, write_json_artifact_create_new,
+    },
     bolt_v3_providers::hyperliquid_artifacts::{
         HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalInput,
         HyperliquidLiveSubmitOrderLimits, HyperliquidProductSubmitProofBinding,
@@ -52,8 +66,8 @@ use crate::{
         write_hyperliquid_live_submit_approval_artifact,
     },
     bolt_v3_providers::{
-        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderLiveSubmitApproval,
-        ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
+        CanaryProofArtifactsProviderContext, ProviderAdapterMapContext, ProviderCredentialedBlock,
+        ProviderLiveSubmitApproval, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
         ProviderLiveSubmitOrderLimits, ProviderSecretRequirement, ProviderSecretResolveContext,
         ProviderSsmPathReference, ResolvedClientSecrets, SsmSecretResolver,
     },
@@ -932,6 +946,222 @@ pub fn write_configured_live_submit_approval_artifact(
         &resolved_path,
     )
     .map_err(anyhow::Error::new)
+}
+
+pub fn collect_canary_proof_artifacts(
+    context: CanaryProofArtifactsProviderContext<'_>,
+) -> Pin<
+    Box<dyn Future<Output = Result<CanaryProofArtifactsWritten, BoltV3OperatorArtifactError>> + '_>,
+> {
+    Box::pin(async move { collect_canary_proof_artifacts_inner(context).await })
+}
+
+async fn collect_canary_proof_artifacts_inner(
+    context: CanaryProofArtifactsProviderContext<'_>,
+) -> Result<CanaryProofArtifactsWritten, BoltV3OperatorArtifactError> {
+    let strategy = context
+        .loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == context.strategy_instance_id)
+        .ok_or_else(|| {
+            hyperliquid_canary_proof_error(format!(
+                "strategy instance `{}` is not loaded",
+                context.strategy_instance_id
+            ))
+        })?;
+    let execution_client_id = strategy.config.execution_client_id.as_str();
+    let client = context
+        .loaded
+        .root
+        .clients
+        .get(execution_client_id)
+        .ok_or_else(|| {
+            hyperliquid_canary_proof_error(format!(
+                "execution client `{execution_client_id}` is not loaded"
+            ))
+        })?;
+    if client.venue.as_str() != KEY {
+        return Err(hyperliquid_canary_proof_error(format!(
+            "execution client `{execution_client_id}` is not a Hyperliquid client"
+        )));
+    }
+    if client.data.is_none() {
+        return Err(hyperliquid_canary_proof_error(
+            "Hyperliquid canary proof artifacts require a configured [data] block",
+        ));
+    }
+
+    let proof_request = EntryDecisionSourceProofFileRequest {
+        price_to_beat_source_path: context.request.price_to_beat_source_path,
+        max_price_to_beat_source_bytes: context.request.max_price_to_beat_source_bytes,
+        reference_quote_source_path: context.request.reference_quote_source_path,
+        max_reference_quote_source_bytes: context.request.max_reference_quote_source_bytes,
+        realized_volatility_source_path: context.request.realized_volatility_source_path,
+        max_realized_volatility_source_bytes: context.request.max_realized_volatility_source_bytes,
+    };
+    let proof_validation = validate_canary_proof_source_files(proof_request)?;
+    let plan = market_identity_plan_from_config(context.loaded).map_err(|source| {
+        hyperliquid_canary_proof_error(format!("Hyperliquid target routing is invalid: {source}"))
+    })?;
+    let targets = hyperliquid_instrument::target_plans(&plan)
+        .filter(|target| target.strategy_instance_id == context.strategy_instance_id)
+        .collect::<Vec<_>>();
+    let [target] = targets.as_slice() else {
+        return Err(hyperliquid_canary_proof_error(
+            "Hyperliquid canary proof requires exactly one static instrument target for the strategy",
+        ));
+    };
+    if target.execution_client_id != execution_client_id {
+        return Err(hyperliquid_canary_proof_error(
+            "Hyperliquid canary proof target execution_client_id does not match strategy",
+        ));
+    }
+    if target.instrument_id.venue.as_str() != KEY {
+        return Err(hyperliquid_canary_proof_error(
+            "Hyperliquid canary proof target instrument venue must be HYPERLIQUID",
+        ));
+    }
+    let selected_market = hyperliquid_instrument::selected_static_instrument_requirement(
+        target,
+        proof_validation.market_selection_timestamp_ms,
+    )
+    .map_err(|source| {
+        hyperliquid_canary_proof_error(format!(
+            "Hyperliquid static instrument selected-market identity is invalid: {source}"
+        ))
+    })?;
+    let requirements = vec![ArchetypeGateRequirement {
+        role: GateRole::Resolution,
+        required: true,
+        accepted_value_kinds: BTreeSet::new(),
+        allow_no_resolution: true,
+    }];
+    let artifact_refs = vec![
+        bounded_file_artifact_ref(
+            context.request.price_to_beat_source_path,
+            context.request.max_price_to_beat_source_bytes,
+        )?,
+        bounded_file_artifact_ref(
+            context.request.reference_quote_source_path,
+            context.request.max_reference_quote_source_bytes,
+        )?,
+        bounded_file_artifact_ref(
+            context.request.realized_volatility_source_path,
+            context.request.max_realized_volatility_source_bytes,
+        )?,
+    ];
+    let gate_session = build_entry_readiness_gate_session(EntryReadinessGateSessionRequest {
+        loaded: context.loaded,
+        strategy_instance_id: context.strategy_instance_id,
+        selected_market: &selected_market,
+        requirements: &requirements,
+        provider_evidence: &[],
+        created_at_ms: proof_validation.decision_timestamp_ms,
+        artifact_refs,
+    })?;
+    let gate_session_written =
+        write_json_artifact_create_new(context.request.gate_session_output_path, &gate_session)?;
+    let proof_policy = canary_proof_policy_input_from_loaded(
+        context.loaded,
+        context.strategy_instance_id,
+        gate_session.session_hash.as_str(),
+    )?;
+    let sizing_price = decimal_from_f64(
+        proof_validation.reference_quote_price,
+        "Hyperliquid canary proof reference quote price",
+    )?;
+    let candidate = CanaryProofCandidate {
+        strategy_instance_id: proof_policy.strategy_instance_id.clone(),
+        execution_client_id: proof_policy.execution_client_id.clone(),
+        instrument_id: target.instrument_id.to_string(),
+        order_side: CanaryProofOrderSide::Buy,
+        candidate_score: -sizing_price,
+        source_refs: vec![proof_policy.current_source_ref.clone()],
+        sizing_price,
+        constraints: CanaryProofInstrumentConstraints {
+            sizing_mode: CanaryProofSizingMode::BaseQuantity,
+            quantity_step: target.quantity_step,
+            notional_step: target.notional_step,
+            min_quantity: target.min_quantity,
+            min_notional: target.min_notional,
+        },
+    };
+    let source_packet = CanaryProofSourcePacket {
+        current_source_ref: gate_session.session_hash,
+    };
+    let candidate_source =
+        build_canary_proof_candidate_source_artifact(&source_packet, vec![candidate]).map_err(
+            |source| {
+                hyperliquid_canary_proof_error(format!(
+                    "Hyperliquid canary proof candidate source rejected: {source:?}"
+                ))
+            },
+        )?;
+    let order_input = CanaryProofPolicyInput {
+        candidates: candidate_source.candidates.clone(),
+        ..proof_policy
+    };
+    let order_intent = build_canary_proof_order_intent_artifact(&candidate_source, &order_input)
+        .map_err(|source| {
+            hyperliquid_canary_proof_error(format!(
+                "Hyperliquid canary proof order intent rejected: {source:?}"
+            ))
+        })?;
+    let candidate_source_written = write_json_artifact_create_new(
+        context.request.candidate_source_output_path,
+        &candidate_source,
+    )?;
+    let order_intent_written =
+        write_json_artifact_create_new(context.request.order_intent_output_path, &order_intent)?;
+    Ok(CanaryProofArtifactsWritten {
+        gate_session: gate_session_written,
+        candidate_source: candidate_source_written,
+        order_intent: order_intent_written,
+    })
+}
+
+fn decimal_from_f64(
+    value: f64,
+    field: &'static str,
+) -> Result<Decimal, BoltV3OperatorArtifactError> {
+    if !value.is_finite() {
+        return Err(hyperliquid_canary_proof_error(format!(
+            "{field} is not finite"
+        )));
+    }
+    decimal_from_str(value.to_string().as_str(), field)
+}
+
+fn decimal_from_str(
+    value: &str,
+    field: &'static str,
+) -> Result<Decimal, BoltV3OperatorArtifactError> {
+    Decimal::from_str(value.trim()).map_err(|source| {
+        hyperliquid_canary_proof_error(format!("{field} is not decimal: {source}"))
+    })
+}
+
+fn bounded_file_artifact_ref(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<GateArtifactRef, BoltV3OperatorArtifactError> {
+    let bytes = read_file_bounded(path, max_bytes).map_err(|source| {
+        BoltV3OperatorArtifactError::DecisionEvidenceSourceRead {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    Ok(GateArtifactRef {
+        path: path.to_string_lossy().to_string(),
+        sha256: hex::encode(Sha256::digest(&bytes)),
+    })
+}
+
+fn hyperliquid_canary_proof_error(message: impl Into<String>) -> BoltV3OperatorArtifactError {
+    BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
+        message: message.into(),
+    }
 }
 
 fn live_submit_approval_binding(

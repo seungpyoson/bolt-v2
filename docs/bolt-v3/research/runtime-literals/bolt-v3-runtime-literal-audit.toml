@@ -2144,6 +2144,54 @@ classification = "market_family_dispatch_key"
 reason = "This is the accepted market_family registry key for static Hyperliquid instrument routing identity; instrument ids and product surfaces remain TOML-owned."
 
 [[allowed]]
+path = '''src/bolt_v3_market_families/hyperliquid_instrument.rs'''
+kind = '''string'''
+literal = '''"product_surface"'''
+context = '''"product_surface",'''
+classification = '''selected_market_metadata_field'''
+reason = '''This labels static Hyperliquid selected-market provenance; the product surface value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/hyperliquid_instrument.rs'''
+kind = '''string'''
+literal = '''"instrument_id"'''
+context = '''("instrument_id", instrument_id.as_str()),'''
+classification = '''selected_market_metadata_field'''
+reason = '''This labels static Hyperliquid selected-market provenance; the instrument id value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/hyperliquid_instrument.rs'''
+kind = '''string'''
+literal = '''"standard_perps"'''
+context = '''ProductSurface::StandardPerps => "standard_perps",'''
+classification = '''hyperliquid_product_surface_label'''
+reason = '''This is the stable Hyperliquid product-surface label used for exact route/proof identity; the selected surface remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/hyperliquid_instrument.rs'''
+kind = '''string'''
+literal = '''"spot"'''
+context = '''ProductSurface::Spot => "spot",'''
+classification = '''hyperliquid_product_surface_label'''
+reason = '''This is the stable Hyperliquid product-surface label used for exact route/proof identity; the selected surface remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/hyperliquid_instrument.rs'''
+kind = '''string'''
+literal = '''"hip3_builder_perps"'''
+context = '''ProductSurface::Hip3BuilderPerps => "hip3_builder_perps",'''
+classification = '''hyperliquid_product_surface_label'''
+reason = '''This is the stable Hyperliquid product-surface label used for exact route/proof identity; the selected surface remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/hyperliquid_instrument.rs'''
+kind = '''string'''
+literal = '''"hip4_outcomes"'''
+context = '''ProductSurface::Hip4Outcomes => "hip4_outcomes",'''
+classification = '''hyperliquid_product_surface_label'''
+reason = '''This is the stable Hyperliquid product-surface label used for exact route/proof identity; the selected surface remains TOML-owned.'''
+
+[[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = "\"{asset_lower}-updown-{cadence_slug_token}-{period_start_unix_secs}\""
@@ -14392,15 +14440,15 @@ classification = '''canary_proof_decimal_diagnostic_field'''
 reason = '''This is a decimal parse diagnostic label for source-owned proof artifacts, not a runtime trading value.'''
 
 [[allowed]]
-path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''string'''
 literal = '''"canary proof notional"'''
-context = '''proof_notional: decimal_from_str(policy.proof_notional.as_str(), "canary proof notional")?,'''
+context = '''"canary proof notional",'''
 classification = '''canary_proof_decimal_diagnostic_field'''
 reason = '''This is a decimal parse diagnostic label for TOML-owned proof notional, not a hardcoded amount.'''
 
 [[allowed]]
-path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''string'''
 literal = '''"canary proof max notional per order"'''
 context = '''"canary proof max notional per order",'''
@@ -15438,6 +15486,22 @@ literal = '''"configured target `{}` uses Hyperliquid product surface `{}` on cl
 context = '''"configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`",'''
 classification = '''hyperliquid_static_target_surface_diagnostic'''
 reason = '''This is the provider fail-closed diagnostic when a static Hyperliquid target's TOML product_surface differs from the execution client's configured and approved product surface.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"Hyperliquid canary proof artifacts require a configured [data] block"'''
+context = '''"Hyperliquid canary proof artifacts require a configured [data] block",'''
+classification = '''hyperliquid_canary_proof_diagnostic'''
+reason = '''This is a fail-closed diagnostic ensuring Hyperliquid canary proof artifact collection requires the NT market-data adapter config; it is not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"Hyperliquid canary proof reference quote price"'''
+context = '''"Hyperliquid canary proof reference quote price",'''
+classification = '''canary_proof_decimal_diagnostic_field'''
+reason = '''This is a decimal parse diagnostic label for source-owned Hyperliquid reference quote data, not a hardcoded price.'''
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''

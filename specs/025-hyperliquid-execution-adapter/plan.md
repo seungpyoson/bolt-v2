@@ -5,7 +5,7 @@
 
 ## Summary
 
-Enable Hyperliquid as a production-grade NautilusTrader-backed data and execution provider for standard perps, spot, HIP-3 builder perps, and HIP-4 outcomes without adding a bespoke client or strategy-level submit mechanics. The first accepted slice registers the NT Hyperliquid Rust adapter behind Bolt's provider registry, maps the NT market-data client for live instruments, quotes, and order books, proves public product discovery and SSM-only credential handling, wires provider-owned production live-node approval loading, enforces bounded approval order limits in shared submit admission, opens the shared `updown` routing gate for HIP-4 outcome targets plus `hyperliquid_instrument` routing identity for static/direct Hyperliquid instruments, wires Hyperliquid fee-provider resolution through an NT `userFees` warmup boundary, and leaves every live submit path fail-closed until product-specific submit proof, product-compatible strategy runtime, and an explicit bounded live-submit approval artifact exist for the exact product surface.
+Enable Hyperliquid as a production-grade NautilusTrader-backed data and execution provider for standard perps, spot, HIP-3 builder perps, and HIP-4 outcomes without adding a bespoke client or strategy-level submit mechanics. The first accepted slice registers the NT Hyperliquid Rust adapter behind Bolt's provider registry, maps the NT market-data client for live instruments, quotes, and order books, proves public product discovery and SSM-only credential handling, wires provider-owned production live-node approval loading, enforces bounded approval order limits in shared submit admission, opens the shared `updown` routing gate for HIP-4 outcome targets plus `hyperliquid_instrument` routing identity for static/direct Hyperliquid instruments, wires Hyperliquid fee-provider resolution through an NT `userFees` warmup boundary, and keeps every live submit path approval-gated by exact product-surface approval, bound product-proof evidence, product-compatible strategy runtime, and shared submit admission.
 
 Colocated low-latency operation is planned as configuration and runbook surface only: local Hyperliquid info node and infrastructure placement may reduce latency, but the adapter must not hardcode endpoints, placement assumptions, fee weights, product IDs, or submit policy in code.
 
@@ -42,9 +42,9 @@ Colocated low-latency operation is planned as configuration and runbook surface 
 - PASS - NT-first thin layer: use `nautilus-hyperliquid`, not a raw `src/clients/hyperliquid.rs` implementation.
 - PASS - Generic core, concrete edge: Hyperliquid registers as one provider binding; provider registry and execution admission stay shared.
 - PASS - Single config and secret source: runtime values come from TOML; secrets come from AWS SSM via Rust SDK.
-- PASS - Live trading fail-closed: live submit paths remain disabled until exact product proof, fee/rate policy reconciliation, any remaining product routing, and approval artifacts pass.
+- PASS - Live trading approval-gated: live submit paths remain disabled unless exact product proof, fee/rate policy reconciliation, product routing, and approval artifacts pass.
 - PASS - TDD and evidence: every phase has tests or direct source/doc evidence before claims.
-- PASS - Minimal slice: MVP stops at provider registration, NT market-data mapping, discovery, fees, credential fences, fail-closed approval gates, and latency ops metadata. Live perps, spot, HIP-3, and HIP-4 submit are follow-up gated slices.
+- PASS - Minimal slice: MVP stops at provider registration, NT market-data mapping, discovery, fees, credential fences, approval gates, and latency ops metadata. Live perps, spot, HIP-3, and HIP-4 submit remain bounded by explicit approval and submit-admission gates.
 - PASS - Strategy intent only: no changes under `src/strategies/*` may submit, round, size, validate venue rules, or handle fills.
 
 ## Project Structure

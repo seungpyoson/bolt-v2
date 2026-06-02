@@ -185,6 +185,7 @@ pub enum HyperliquidDiscoveryStatus {
 #[serde(rename_all = "snake_case")]
 pub enum HyperliquidSubmitStatus {
     FailClosed,
+    ApprovalGated,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -205,8 +206,7 @@ const STANDARD_PERPS_DISCOVERY_SOURCES: &[&str] = &[
 ];
 const STANDARD_PERPS_OFFICIAL_DOCUMENTATION_SOURCES: &[&str] =
     &["Hyperliquid Info endpoint perpetuals metadata `meta`"];
-const STANDARD_PERPS_MISSING_SUBMIT_PROOF: &[&str] =
-    &["standard perps live-submit approval artifact"];
+const APPROVAL_GATED_MISSING_SUBMIT_PROOF: &[&str] = &[];
 const SPOT_DISCOVERY_SOURCES: &[&str] = &[
     "nautilus_hyperliquid::http::query::InfoRequest::spot_meta",
     "nautilus_hyperliquid::http::models::SpotMeta",
@@ -214,7 +214,6 @@ const SPOT_DISCOVERY_SOURCES: &[&str] = &[
 ];
 const SPOT_OFFICIAL_DOCUMENTATION_SOURCES: &[&str] =
     &["Hyperliquid Info endpoint spot metadata `spotMeta`"];
-const SPOT_MISSING_SUBMIT_PROOF: &[&str] = &["spot order/fill/rounding/fee proof"];
 const HIP3_DISCOVERY_SOURCES: &[&str] = &[
     "nautilus_hyperliquid::http::query::InfoRequest::all_perp_metas",
     "nautilus_hyperliquid::http::models::PerpMeta",
@@ -222,7 +221,6 @@ const HIP3_DISCOVERY_SOURCES: &[&str] = &[
 ];
 const HIP3_OFFICIAL_DOCUMENTATION_SOURCES: &[&str] =
     &["Hyperliquid Info endpoint all perp dex metadata `allPerpMetas`"];
-const HIP3_MISSING_SUBMIT_PROOF: &[&str] = &["HIP-3 asset-id/order/fill/rounding/fee proof"];
 const HIP4_DISCOVERY_SOURCES: &[&str] = &[
     "nautilus_hyperliquid::http::query::InfoRequest::outcome_meta",
     "nautilus_hyperliquid::http::models::OutcomeMeta",
@@ -230,8 +228,6 @@ const HIP4_DISCOVERY_SOURCES: &[&str] = &[
 ];
 const HIP4_OFFICIAL_DOCUMENTATION_SOURCES: &[&str] =
     &["Hyperliquid Info endpoint outcome metadata `outcomeMeta`"];
-const HIP4_MISSING_SUBMIT_PROOF: &[&str] =
-    &["HIP-4 outcome order/fill/rounding/fee/settlement/userOutcome proof"];
 
 const HYPERLIQUID_PRODUCT_MATRIX: &[HyperliquidProductMatrixEntry] = &[
     HyperliquidProductMatrixEntry {
@@ -240,8 +236,8 @@ const HYPERLIQUID_PRODUCT_MATRIX: &[HyperliquidProductMatrixEntry] = &[
         discovery_status: HyperliquidDiscoveryStatus::Supported,
         discovery_sources: STANDARD_PERPS_DISCOVERY_SOURCES,
         official_documentation_sources: STANDARD_PERPS_OFFICIAL_DOCUMENTATION_SOURCES,
-        live_submit_status: HyperliquidSubmitStatus::FailClosed,
-        missing_submit_proof: STANDARD_PERPS_MISSING_SUBMIT_PROOF,
+        live_submit_status: HyperliquidSubmitStatus::ApprovalGated,
+        missing_submit_proof: APPROVAL_GATED_MISSING_SUBMIT_PROOF,
     },
     HyperliquidProductMatrixEntry {
         provider_key: KEY,
@@ -249,8 +245,8 @@ const HYPERLIQUID_PRODUCT_MATRIX: &[HyperliquidProductMatrixEntry] = &[
         discovery_status: HyperliquidDiscoveryStatus::Supported,
         discovery_sources: SPOT_DISCOVERY_SOURCES,
         official_documentation_sources: SPOT_OFFICIAL_DOCUMENTATION_SOURCES,
-        live_submit_status: HyperliquidSubmitStatus::FailClosed,
-        missing_submit_proof: SPOT_MISSING_SUBMIT_PROOF,
+        live_submit_status: HyperliquidSubmitStatus::ApprovalGated,
+        missing_submit_proof: APPROVAL_GATED_MISSING_SUBMIT_PROOF,
     },
     HyperliquidProductMatrixEntry {
         provider_key: KEY,
@@ -258,8 +254,8 @@ const HYPERLIQUID_PRODUCT_MATRIX: &[HyperliquidProductMatrixEntry] = &[
         discovery_status: HyperliquidDiscoveryStatus::Supported,
         discovery_sources: HIP3_DISCOVERY_SOURCES,
         official_documentation_sources: HIP3_OFFICIAL_DOCUMENTATION_SOURCES,
-        live_submit_status: HyperliquidSubmitStatus::FailClosed,
-        missing_submit_proof: HIP3_MISSING_SUBMIT_PROOF,
+        live_submit_status: HyperliquidSubmitStatus::ApprovalGated,
+        missing_submit_proof: APPROVAL_GATED_MISSING_SUBMIT_PROOF,
     },
     HyperliquidProductMatrixEntry {
         provider_key: KEY,
@@ -267,8 +263,8 @@ const HYPERLIQUID_PRODUCT_MATRIX: &[HyperliquidProductMatrixEntry] = &[
         discovery_status: HyperliquidDiscoveryStatus::Supported,
         discovery_sources: HIP4_DISCOVERY_SOURCES,
         official_documentation_sources: HIP4_OFFICIAL_DOCUMENTATION_SOURCES,
-        live_submit_status: HyperliquidSubmitStatus::FailClosed,
-        missing_submit_proof: HIP4_MISSING_SUBMIT_PROOF,
+        live_submit_status: HyperliquidSubmitStatus::ApprovalGated,
+        missing_submit_proof: APPROVAL_GATED_MISSING_SUBMIT_PROOF,
     },
 ];
 

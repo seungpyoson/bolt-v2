@@ -38,18 +38,18 @@
 
 ## Phase 4 - User Story 2: Prove Product Discovery Matrix
 
-**Goal**: Standard perps, spot, HIP-3, and HIP-4 have discovery evidence and independent fail-closed submit status.
+**Goal**: Standard perps, spot, HIP-3, and HIP-4 have discovery evidence and independent approval-gated submit status.
 
 **Independent Test**: Product matrix artifact lists each surface with discovery source and submit readiness status.
 
 - [x] T020 [US2] Add failing standard-perps discovery matrix test in `tests/hyperliquid_product_matrix.rs`.
 - [x] T021 [US2] Implement standard-perps discovery mapping in `src/bolt_v3_providers/mod.rs`.
-- [x] T022 [US2] Add failing spot discovery/fail-closed test in `tests/hyperliquid_product_matrix.rs`.
-- [x] T023 [US2] Implement spot discovery status and fail-closed submit reason in `src/bolt_v3_providers/mod.rs`.
-- [x] T024 [US2] Add failing HIP-3 discovery/fail-closed test in `tests/hyperliquid_product_matrix.rs`.
-- [x] T025 [US2] Implement HIP-3 discovery status and fail-closed submit reason in `src/bolt_v3_providers/mod.rs`.
-- [x] T026 [US2] Add failing HIP-4 discovery/fail-closed test in `tests/hyperliquid_product_matrix.rs`.
-- [x] T027 [US2] Implement HIP-4 discovery status and fail-closed submit reason in `src/bolt_v3_providers/mod.rs`.
+- [x] T022 [US2] Add failing spot discovery/approval-gated test in `tests/hyperliquid_product_matrix.rs`.
+- [x] T023 [US2] Implement spot discovery status and approval-gated submit status in `src/bolt_v3_providers/mod.rs`.
+- [x] T024 [US2] Add failing HIP-3 discovery/approval-gated test in `tests/hyperliquid_product_matrix.rs`.
+- [x] T025 [US2] Implement HIP-3 discovery status and approval-gated submit status in `src/bolt_v3_providers/mod.rs`.
+- [x] T026 [US2] Add failing HIP-4 discovery/approval-gated test in `tests/hyperliquid_product_matrix.rs`.
+- [x] T027 [US2] Implement HIP-4 discovery status and approval-gated submit status in `src/bolt_v3_providers/mod.rs`.
 - [x] T028 [US2] Export product matrix evidence in `src/bolt_v3_operator_artifacts.rs`.
 
 ## Phase 5 - User Story 3: Prove Standard-Perps Fail-Closed Preconditions
@@ -59,7 +59,7 @@
 **Independent Test**: The shared exchange-mutation guard fails closed for submit, cancel, modify, transfer, or account mutation; pinned NT `userFees` mismatch is reconciled by the Hyperliquid provider egress model using the official request weight.
 
 - [x] T029 [US3] Remove Hyperliquid-specific no-submit readiness artifact from this slice.
-- [x] T030 [US3] Keep Hyperliquid live submit fail-closed until later product proof and remaining product-compatible routing.
+- [x] T030 [US3] Keep Hyperliquid live submit approval-gated by product proof, product routing, and one-time approval.
 - [x] T031 [US3] Add failing exchange-mutation counter test in `tests/hyperliquid_fail_closed.rs`.
 - [x] T032 [US3] Implement exchange-mutation guard in shared execution/admission code under `src/`.
 - [x] T033 [US3] Add failing `userFees` request-weight test in `tests/hyperliquid_fail_closed.rs`.
@@ -223,6 +223,15 @@
 - [x] T049AK Carry product proof binding through consumed Hyperliquid approvals.
 - [x] T049AL Add failing live-node tests proving missing and mismatched product proof files do not spend one-time approvals.
 - [x] T049AM Verify the bound product proof artifact sha256 before consuming Hyperliquid live-submit approvals.
+
+## Phase 8M - Hyperliquid Product Matrix Approval-Gated Status
+
+**Goal**: The operator-facing Hyperliquid product matrix must match the implemented live-execution state: standard perps, spot, HIP-3, and HIP-4 are not globally fail-closed once product-proof binding exists, but remain approval-gated by exact consumed surface approval.
+
+**Independent Test**: The matrix artifact serializes all four surfaces with `live_submit_status = "approval_gated"` and empty `missing_submit_proof` arrays while adapter mapping still rejects each surface without a consumed approval.
+
+- [x] T049AN Add failing product-matrix test for approval-gated status after product-proof binding.
+- [x] T049AO Add `approval_gated` submit status and remove stale missing-proof gaps for all four Hyperliquid surfaces.
 
 ## Phase 9 - Verification
 

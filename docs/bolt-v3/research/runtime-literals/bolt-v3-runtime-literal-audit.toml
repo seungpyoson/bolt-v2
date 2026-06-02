@@ -15322,22 +15322,6 @@ reason = '''This normalizes the optional uppercase EVM private-key hex prefix be
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''string'''
-literal = '''"HIP-3 asset-id/order/fill/rounding/fee proof"'''
-context = '''const HIP3_MISSING_SUBMIT_PROOF: &[&str] = &["HIP-3 asset-id/order/fill/rounding/fee proof"];'''
-classification = '''hyperliquid_operator_evidence_label'''
-reason = '''This is a Hyperliquid operator-evidence checklist label used to gate live submit, not a trading parameter.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid.rs'''
-kind = '''string'''
-literal = '''"HIP-4 outcome order/fill/rounding/fee/settlement/userOutcome proof"'''
-context = '''&["HIP-4 outcome order/fill/rounding/fee/settlement/userOutcome proof"];'''
-classification = '''hyperliquid_operator_evidence_label'''
-reason = '''This is a Hyperliquid operator-evidence checklist label used to gate live submit, not a trading parameter.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid.rs'''
-kind = '''string'''
 literal = '''"HYPERLIQUID"'''
 context = '''pub const KEY: &str = "HYPERLIQUID";'''
 classification = '''provider_dispatch_key'''
@@ -15658,26 +15642,10 @@ reason = '''This label names a Hyperliquid execution config field being validate
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''string'''
-literal = '''"spot order/fill/rounding/fee proof"'''
-context = '''const SPOT_MISSING_SUBMIT_PROOF: &[&str] = &["spot order/fill/rounding/fee proof"];'''
-classification = '''hyperliquid_operator_evidence_label'''
-reason = '''This is a Hyperliquid operator-evidence checklist label used to gate live submit, not a trading parameter.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid.rs'''
-kind = '''string'''
 literal = '''"spot"'''
 context = '''HyperliquidProductSurface::Spot => "spot",'''
 classification = '''hyperliquid_product_surface_label'''
 reason = '''This is the stable Hyperliquid product-surface label used for exact approval and evidence matching; the selected surface remains TOML-owned.'''
-
-[[allowed]]
-path = '''src/bolt_v3_providers/hyperliquid.rs'''
-kind = '''string'''
-literal = '''"standard perps live-submit approval artifact"'''
-context = '''&["standard perps live-submit approval artifact"];'''
-classification = '''hyperliquid_operator_evidence_label'''
-reason = '''This is a Hyperliquid operator-evidence checklist label used to gate live submit, not a trading parameter.'''
 
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''

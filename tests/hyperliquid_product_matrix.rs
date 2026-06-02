@@ -43,21 +43,31 @@ fn assert_sources(entry: &HyperliquidProductMatrixEntry, expected_sources: &[&st
     }
 }
 
-fn assert_fail_closed(entry: &HyperliquidProductMatrixEntry, missing_proof: &str) {
+fn assert_approval_gated(entry: &HyperliquidProductMatrixEntry) {
     assert_eq!(
         entry.discovery_status,
         HyperliquidDiscoveryStatus::Supported
     );
     assert_eq!(
         entry.live_submit_status,
-        HyperliquidSubmitStatus::FailClosed
+        HyperliquidSubmitStatus::ApprovalGated
     );
     assert!(
-        entry
-            .missing_submit_proof
-            .iter()
-            .any(|proof| proof == &missing_proof),
-        "matrix missing fail-closed proof gap {missing_proof}"
+        entry.missing_submit_proof.is_empty(),
+        "approval-gated matrix entries should not advertise stale missing submit proof gaps"
+    );
+}
+
+fn assert_serializes_approval_gated(entry: &HyperliquidProductMatrixEntry) {
+    let value = serde_json::to_value(entry).expect("matrix entry should serialize");
+    assert_eq!(
+        value["live_submit_status"], "approval_gated",
+        "operator matrix must reflect approval-gated live submit once product proof binding is verified"
+    );
+    assert_eq!(
+        value["missing_submit_proof"],
+        serde_json::json!([]),
+        "approval-gated surfaces should not advertise stale missing proof gaps"
     );
 }
 
@@ -150,7 +160,19 @@ fn assert_surface_without_approval_rejects_live_submit(surface: &str) {
 }
 
 #[test]
-fn standard_perps_product_matrix_records_nt_discovery_and_fail_closed_submit() {
+fn product_matrix_marks_all_surfaces_approval_gated_after_product_proof_binding() {
+    for surface in [
+        HyperliquidProductSurface::StandardPerps,
+        HyperliquidProductSurface::Spot,
+        HyperliquidProductSurface::Hip3BuilderPerps,
+        HyperliquidProductSurface::Hip4Outcomes,
+    ] {
+        assert_serializes_approval_gated(product_entry(surface));
+    }
+}
+
+#[test]
+fn standard_perps_product_matrix_records_nt_discovery_and_approval_gated_submit() {
     assert_info_request_type(
         InfoRequest::meta(),
         "meta",
@@ -166,10 +188,7 @@ fn standard_perps_product_matrix_records_nt_discovery_and_fail_closed_submit() {
             "nautilus_hyperliquid::http::parse::parse_perp_instruments",
         ],
     );
-    assert_fail_closed(
-        standard_perps,
-        "standard perps live-submit approval artifact",
-    );
+    assert_approval_gated(standard_perps);
     assert!(
         !standard_perps
             .missing_submit_proof
@@ -179,7 +198,7 @@ fn standard_perps_product_matrix_records_nt_discovery_and_fail_closed_submit() {
 }
 
 #[test]
-fn spot_product_matrix_records_nt_discovery_and_fail_closed_submit() {
+fn spot_product_matrix_records_nt_discovery_and_approval_gated_submit() {
     assert_info_request_type(
         InfoRequest::spot_meta(),
         "spotMeta",
@@ -195,11 +214,11 @@ fn spot_product_matrix_records_nt_discovery_and_fail_closed_submit() {
             "nautilus_hyperliquid::http::parse::parse_spot_instruments",
         ],
     );
-    assert_fail_closed(spot, "spot order/fill/rounding/fee proof");
+    assert_approval_gated(spot);
 }
 
 #[test]
-fn hip3_builder_perps_product_matrix_records_nt_discovery_and_fail_closed_submit() {
+fn hip3_builder_perps_product_matrix_records_nt_discovery_and_approval_gated_submit() {
     assert_info_request_type(
         InfoRequest::all_perp_metas(),
         "allPerpMetas",
@@ -215,11 +234,11 @@ fn hip3_builder_perps_product_matrix_records_nt_discovery_and_fail_closed_submit
             "nautilus_hyperliquid::http::parse::parse_perp_instruments",
         ],
     );
-    assert_fail_closed(hip3, "HIP-3 asset-id/order/fill/rounding/fee proof");
+    assert_approval_gated(hip3);
 }
 
 #[test]
-fn hip4_outcomes_product_matrix_records_nt_discovery_and_fail_closed_submit() {
+fn hip4_outcomes_product_matrix_records_nt_discovery_and_approval_gated_submit() {
     assert_info_request_type(
         InfoRequest::outcome_meta(),
         "outcomeMeta",
@@ -235,10 +254,7 @@ fn hip4_outcomes_product_matrix_records_nt_discovery_and_fail_closed_submit() {
             "nautilus_hyperliquid::http::parse::parse_outcome_instruments",
         ],
     );
-    assert_fail_closed(
-        hip4,
-        "HIP-4 outcome order/fill/rounding/fee/settlement/userOutcome proof",
-    );
+    assert_approval_gated(hip4);
 }
 
 #[test]
@@ -292,6 +308,6 @@ fn product_matrix_artifact_exports_all_hyperliquid_surfaces() {
     assert!(
         surfaces
             .iter()
-            .all(|entry| entry["live_submit_status"] == "fail_closed")
+            .all(|entry| entry["live_submit_status"] == "approval_gated")
     );
 }

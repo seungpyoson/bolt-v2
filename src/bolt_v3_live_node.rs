@@ -2233,7 +2233,9 @@ fn trade_transport_loaded_config(
 ) -> Result<LoadedBoltV3Config, BoltV3LiveNodeError> {
     let required_clients = trade_transport_client_keys(loaded);
     if required_clients.is_empty() {
-        return Ok(loaded.clone());
+        let mut transport_loaded = loaded.clone();
+        transport_loaded.root.clients.clear();
+        return Ok(transport_loaded);
     }
     let missing_clients = required_clients
         .iter()
@@ -5305,6 +5307,30 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
         );
         assert!(
             loaded.root.clients.contains_key("unrelated_execution"),
+            "helper must not mutate the caller's full client bundle"
+        );
+    }
+
+    #[test]
+    fn trade_transport_config_uses_empty_client_scope_without_strategies_or_proof_policy() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let configured_client_count = loaded.root.clients.len();
+        loaded.strategies.clear();
+        loaded.root.live_canary = None;
+
+        let scoped = trade_transport_loaded_config(&loaded)
+            .expect("empty trade transport scope should be derived from config");
+
+        assert!(
+            scoped.root.clients.is_empty(),
+            "a live run without strategies or a proof policy must not retain execution clients"
+        );
+        assert_eq!(
+            loaded.root.clients.len(),
+            configured_client_count,
             "helper must not mutate the caller's full client bundle"
         );
     }

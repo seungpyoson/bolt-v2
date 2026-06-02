@@ -64,6 +64,6 @@ A live-submit approval artifact is valid only when all fields match the current 
 - `expires_at`
 - `used_at` absent before consumption
 
-Production live-node construction must call provider live-submit approval hooks before adapter mapping. The Hyperliquid hook consumes the artifact from the TOML path, validates it against the current build, config checksum, signer fingerprint, product surface, and order limits, persists `used_at`, and returns an opaque consumed approval through the provider-neutral runtime-approval bundle.
+Production live-node construction must call provider live-submit approval hooks before adapter mapping. The Hyperliquid hook consumes the artifact from the TOML path, validates it against the current build, config checksum, signer fingerprint, product surface, and order limits, persists `used_at`, returns an opaque consumed approval through the provider-neutral runtime-approval bundle, and carries the artifact order limits into shared submit admission for the approved execution client.
 
 After consumption, `used_at` must be recorded and the artifact must not authorize another submit.

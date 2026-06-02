@@ -9,6 +9,7 @@ use nautilus_model::{
     types::Price,
 };
 use rust_decimal::Decimal;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
@@ -57,6 +58,12 @@ pub fn validate_no_exchange_mutations(
     Err(BoltV3SubmitAdmissionError::ExchangeMutationsObserved { mutation_count })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3LiveSubmitApprovalLimits {
+    pub max_order_count: u32,
+    pub max_order_notional: Decimal,
+}
+
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionState {
     inner: Mutex<BoltV3SubmitAdmissionInner>,
@@ -66,7 +73,9 @@ pub struct BoltV3SubmitAdmissionState {
 #[derive(Debug)]
 struct BoltV3SubmitAdmissionInner {
     gate_report: Option<BoltV3LiveCanaryGateReport>,
+    live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
     admitted_order_count: u32,
+    admitted_order_count_by_execution_client: BTreeMap<String, u32>,
     admitted_entry_order_count: u32,
     admitted_risk_reducing_exit_order_count: u32,
     admitted_replace_submit_order_count: u32,
@@ -74,10 +83,19 @@ struct BoltV3SubmitAdmissionInner {
 
 impl BoltV3SubmitAdmissionState {
     pub fn new_unarmed(decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>) -> Self {
+        Self::new_unarmed_with_live_submit_limits(decision_evidence, BTreeMap::new())
+    }
+
+    pub fn new_unarmed_with_live_submit_limits(
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
+    ) -> Self {
         Self {
             inner: Mutex::new(BoltV3SubmitAdmissionInner {
                 gate_report: None,
+                live_submit_approval_limits,
                 admitted_order_count: 0,
+                admitted_order_count_by_execution_client: BTreeMap::new(),
                 admitted_entry_order_count: 0,
                 admitted_risk_reducing_exit_order_count: 0,
                 admitted_replace_submit_order_count: 0,
@@ -99,6 +117,7 @@ impl BoltV3SubmitAdmissionState {
         }
         inner.gate_report = Some(report);
         inner.admitted_order_count = 0;
+        inner.admitted_order_count_by_execution_client.clear();
         inner.admitted_entry_order_count = 0;
         inner.admitted_risk_reducing_exit_order_count = 0;
         inner.admitted_replace_submit_order_count = 0;
@@ -130,6 +149,10 @@ impl BoltV3SubmitAdmissionState {
         match outcome {
             BoltV3AdmissionOutcome::Admitted => {
                 inner.admitted_order_count += 1;
+                *inner
+                    .admitted_order_count_by_execution_client
+                    .entry(request.execution_client_id.clone())
+                    .or_insert(0) += 1;
                 match request.intent_kind {
                     BoltV3SubmitIntentKind::Entry => {
                         inner.admitted_entry_order_count += 1;
@@ -179,6 +202,23 @@ impl BoltV3SubmitAdmissionState {
         }
         if request.notional <= Decimal::ZERO {
             return BoltV3AdmissionOutcome::RejectedNonPositiveNotional;
+        }
+        if let Some(limits) = inner
+            .live_submit_approval_limits
+            .get(&request.execution_client_id)
+        {
+            if request.notional > limits.max_order_notional {
+                return BoltV3AdmissionOutcome::RejectedNotionalCapExceeded;
+            }
+            if inner
+                .admitted_order_count_by_execution_client
+                .get(&request.execution_client_id)
+                .copied()
+                .unwrap_or(0)
+                >= limits.max_order_count
+            {
+                return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+            }
         }
         if matches!(
             request.intent_kind,
@@ -323,6 +363,7 @@ impl BoltV3SubmitLifecyclePolicy {
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionRequest {
     pub strategy_id: String,
+    pub execution_client_id: String,
     pub client_order_id: String,
     pub instrument_id: String,
     pub notional: Decimal,

@@ -38,8 +38,9 @@ use crate::{
         read_hyperliquid_live_submit_approval_artifact,
     },
     bolt_v3_providers::{
-        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderLiveSubmitApprovalContext,
-        ProviderLiveSubmitApprovals, ProviderSecretRequirement, ProviderSecretResolveContext,
+        ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderLiveSubmitApproval,
+        ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
+        ProviderLiveSubmitOrderLimits, ProviderSecretRequirement, ProviderSecretResolveContext,
         ProviderSsmPathReference, ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
@@ -760,7 +761,7 @@ pub fn configured_secret_paths(
 
 pub fn load_live_submit_approval(
     context: ProviderLiveSubmitApprovalContext<'_>,
-) -> Result<Option<Box<dyn Any>>, anyhow::Error> {
+) -> Result<Option<ProviderLiveSubmitApproval>, anyhow::Error> {
     let Some(execution) = &context.client.execution else {
         return Ok(None);
     };
@@ -802,7 +803,17 @@ pub fn load_live_submit_approval(
         context.now_unix_seconds,
     )?;
     persist_consumed_hyperliquid_live_submit_approval_artifact(&resolved_path, &approval)?;
-    Ok(Some(Box::new(consumed)))
+    let order_limits = consumed.order_limits();
+    let max_order_count = order_limits.max_order_count;
+    let max_order_notional =
+        Decimal::from_str(order_limits.max_order_notional.trim()).map_err(anyhow::Error::new)?;
+    Ok(Some(ProviderLiveSubmitApproval::with_order_limits(
+        Box::new(consumed),
+        ProviderLiveSubmitOrderLimits {
+            max_order_count,
+            max_order_notional,
+        },
+    )))
 }
 
 fn live_submit_approval_binding(

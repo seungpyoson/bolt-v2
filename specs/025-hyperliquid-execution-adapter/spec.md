@@ -100,4 +100,4 @@ As an operator, I can configure local info-node and placement profile settings w
 
 - The current pinned NT revision remains the source of truth unless current `main` requires a coordinated dependency update.
 - Hyperliquid docs and public metadata endpoints are authoritative only for documented public behavior; Bolt proof gates decide live submit readiness.
-- Live standard-perps submit is a later gated slice after fee/rate policy reconciliation, product proof, routing, and submit-admission order-limit enforcement, not part of the initial implementation claim.
+- Live standard-perps submit is a later gated slice after fee/rate policy reconciliation, product proof, and routing, not part of the initial implementation claim.

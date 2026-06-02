@@ -167,8 +167,46 @@ pub struct ProviderLiveSubmitApprovalContext<'a> {
     pub build_head_sha: &'a str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderLiveSubmitOrderLimits {
+    pub max_order_count: u32,
+    pub max_order_notional: Decimal,
+}
+
+pub struct ProviderLiveSubmitApproval {
+    payload: Box<dyn Any>,
+    order_limits: Option<ProviderLiveSubmitOrderLimits>,
+}
+
+impl ProviderLiveSubmitApproval {
+    pub fn new(payload: Box<dyn Any>) -> Self {
+        Self {
+            payload,
+            order_limits: None,
+        }
+    }
+
+    pub fn with_order_limits(
+        payload: Box<dyn Any>,
+        order_limits: ProviderLiveSubmitOrderLimits,
+    ) -> Self {
+        Self {
+            payload,
+            order_limits: Some(order_limits),
+        }
+    }
+
+    pub fn order_limits(&self) -> Option<&ProviderLiveSubmitOrderLimits> {
+        self.order_limits.as_ref()
+    }
+
+    fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+        self.payload.downcast_ref()
+    }
+}
+
 pub struct ProviderLiveSubmitApprovals {
-    by_client: BTreeMap<String, Box<dyn Any>>,
+    by_client: BTreeMap<String, ProviderLiveSubmitApproval>,
 }
 
 impl ProviderLiveSubmitApprovals {
@@ -178,7 +216,7 @@ impl ProviderLiveSubmitApprovals {
         }
     }
 
-    pub fn insert(&mut self, client_key: String, approval: Box<dyn Any>) {
+    pub fn insert(&mut self, client_key: String, approval: ProviderLiveSubmitApproval) {
         self.by_client.insert(client_key, approval);
     }
 
@@ -189,7 +227,15 @@ impl ProviderLiveSubmitApprovals {
     pub fn get_as<T: 'static>(&self, client_key: &str) -> Option<&T> {
         self.by_client
             .get(client_key)
-            .and_then(|approval| approval.downcast_ref())
+            .and_then(ProviderLiveSubmitApproval::downcast_ref)
+    }
+
+    pub fn order_limits(&self) -> impl Iterator<Item = (&String, &ProviderLiveSubmitOrderLimits)> {
+        self.by_client.iter().filter_map(|(client_key, approval)| {
+            approval
+                .order_limits()
+                .map(|order_limits| (client_key, order_limits))
+        })
     }
 }
 
@@ -210,9 +256,10 @@ type FeeProviderBuilder = fn(
     &ResolvedBoltV3Secrets,
 ) -> Result<Arc<dyn FeeProvider>, BoltV3AdapterMappingError>;
 
-type LiveSubmitApprovalLoader = for<'a> fn(
-    ProviderLiveSubmitApprovalContext<'a>,
-) -> Result<Option<Box<dyn Any>>, anyhow::Error>;
+type LiveSubmitApprovalLoader =
+    for<'a> fn(
+        ProviderLiveSubmitApprovalContext<'a>,
+    ) -> Result<Option<ProviderLiveSubmitApproval>, anyhow::Error>;
 
 pub struct EntryDecisionSourceProviderContext<'a> {
     pub loaded: &'a LoadedBoltV3Config,

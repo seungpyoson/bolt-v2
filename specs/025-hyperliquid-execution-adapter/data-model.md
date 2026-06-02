@@ -45,6 +45,7 @@ Validation:
 Validation:
 - Execution requires SSM-backed secrets.
 - Live-submit mapping requires consumed surface-bound approval loaded through the provider binding before production live-node adapter mapping.
+- Consumed approval order limits must tighten shared submit-admission count and notional caps for the approved execution client.
 
 ## HyperliquidSecretSet
 

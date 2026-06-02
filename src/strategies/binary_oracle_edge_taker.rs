@@ -4391,6 +4391,7 @@ impl BinaryOracleEdgeTaker {
 
         Ok(BoltV3SubmitAdmissionRequest {
             strategy_id: intent.strategy_id.clone(),
+            execution_client_id: self.config.client_id.clone(),
             client_order_id,
             instrument_id: order.instrument_id().to_string(),
             notional,
@@ -7649,6 +7650,7 @@ fn submit_admission_request_from_order(
 
     Ok(BoltV3SubmitAdmissionRequest {
         strategy_id: intent.strategy_id.clone(),
+        execution_client_id: "polymarket_main".to_string(),
         client_order_id,
         instrument_id: order.instrument_id().to_string(),
         notional,
@@ -9821,6 +9823,7 @@ mod tests {
             .admit(
                 &crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest {
                     strategy_id: "strategy-a".to_string(),
+                    execution_client_id: "polymarket_main".to_string(),
                     client_order_id: "client-order-0".to_string(),
                     instrument_id: "instrument-0".to_string(),
                     notional: Decimal::new(50, 2),

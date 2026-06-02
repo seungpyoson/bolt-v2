@@ -3002,6 +3002,30 @@ reason = "Each admitted live submit consumes exactly one order-count slot from t
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
 kind = "number"
+literal = "0"
+context = ".or_insert(0) += 1;"
+classification = "submit_admission_counter_identity"
+reason = "The per-client live-submit approval counter starts empty on first admitted order for that execution client; the cap remains artifact-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = ".or_insert(0) += 1;"
+classification = "submit_admission_counter_increment"
+reason = "Each admitted order for an approved execution client consumes exactly one slot from that client's consumed live-submit approval artifact."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = ".unwrap_or(0)"
+classification = "submit_admission_counter_identity"
+reason = "A missing per-client live-submit approval counter means no orders have been admitted for that execution client yet; the cap remains artifact-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
 literal = "1"
 context = "inner.admitted_entry_order_count += 1;"
 classification = "submit_admission_counter_increment"

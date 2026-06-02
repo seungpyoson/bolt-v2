@@ -225,6 +225,7 @@ impl CanaryProofExecutor {
             .submit_admission
             .admit(&BoltV3SubmitAdmissionRequest {
                 strategy_id: self.config.executor_strategy_id.clone(),
+                execution_client_id: self.config.execution_client_id.clone(),
                 client_order_id: order.client_order_id().to_string(),
                 instrument_id: order.instrument_id().to_string(),
                 notional: admission_notional,

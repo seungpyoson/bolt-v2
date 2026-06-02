@@ -59,7 +59,7 @@
 **Independent Test**: The shared exchange-mutation guard fails closed for submit, cancel, modify, transfer, or account mutation; pinned NT `userFees` mismatch blocks live submit.
 
 - [x] T029 [US3] Remove Hyperliquid-specific no-submit readiness artifact from this slice.
-- [x] T030 [US3] Keep Hyperliquid live submit fail-closed until later product proof, fee/rate reconciliation, routing, and order-limit enforcement.
+- [x] T030 [US3] Keep Hyperliquid live submit fail-closed until later product proof, fee/rate reconciliation, and routing.
 - [x] T031 [US3] Add failing exchange-mutation counter test in `tests/hyperliquid_fail_closed.rs`.
 - [x] T032 [US3] Implement exchange-mutation guard in shared execution/admission code under `src/`.
 - [x] T033 [US3] Add failing `userFees` request-weight test in `tests/hyperliquid_fail_closed.rs`.
@@ -121,6 +121,17 @@
 - [x] T049E Add provider-neutral live-submit approval hook and Hyperliquid artifact loading in `src/bolt_v3_providers/mod.rs` and `src/bolt_v3_providers/hyperliquid.rs`.
 - [x] T049F Persist consumed Hyperliquid approval artifacts and pass consumed approvals through provider-neutral runtime approvals.
 - [x] T049G Update literal audit and source-fence coverage for live-node approval loading.
+
+## Phase 8C - Shared Approval Order-Limit Enforcement
+
+**Goal**: Consumed provider approval order limits constrain actual submit admission before NT submit can be reached.
+
+**Independent Test**: A provider approval with tighter order count and notional caps than the live canary report rejects wider or excess orders in shared submit admission.
+
+- [x] T049H Add failing submit-admission test for provider approval count and notional caps.
+- [x] T049I Add provider-neutral live-submit order limits and carry Hyperliquid consumed approval limits into live-node construction.
+- [x] T049J Add execution-client identity to submit-admission requests so limits apply to the exact approved client.
+- [x] T049K Verify Hyperliquid approval loading exposes submit-admission limits.
 
 ## Phase 9 - Verification
 

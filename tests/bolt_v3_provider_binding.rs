@@ -119,6 +119,19 @@ account_address_ssm_path = "{account_address_path}"
     ))
 }
 
+fn add_hyperliquid_live_submit_approval(client: &mut ClientBlock) {
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert(
+            "live_submit_approval_id".to_string(),
+            toml::Value::String("hl-standard-perps-approval-001".to_string()),
+        );
+}
+
 fn hyperliquid_execution_client_with_secret_fields(secret_fields: &str) -> ClientBlock {
     data_only_client_from_toml(&format!(
         r#"
@@ -416,6 +429,35 @@ fn provider_binding_accepts_hyperliquid_latency_profile_as_ops_metadata() {
 }
 
 #[test]
+fn provider_binding_rejects_hyperliquid_execution_without_secrets() {
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    client.secrets = None;
+
+    let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
+
+    assert!(rendered.contains("missing the [secrets] block"));
+}
+
+#[test]
+fn provider_binding_rejects_hyperliquid_live_submit_on_user_fees_weight_mismatch() {
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    add_hyperliquid_live_submit_approval(&mut client);
+
+    let rendered = validate_client_block("hyperliquid_perps", &client).join("\n");
+
+    assert!(rendered.contains("live_submit_approval_id"));
+    assert!(rendered.contains("userFees"));
+    assert!(rendered.contains("pinned NautilusTrader"));
+    assert!(rendered.contains("official documented weight"));
+}
+
+#[test]
 fn provider_binding_rejects_hip4_execution_without_settlement_poll() {
     let client = hyperliquid_hip4_execution_client_without_settlement_poll();
     let errors = validate_client_block("hyperliquid_hip4", &client);
@@ -537,11 +579,13 @@ fn provider_binding_rejects_duplicate_hyperliquid_signer_owner() {
         );
     }
 
-    let duplicate_private_key =
-        "0x4343434343434343434343434343434343434343434343434343434343434343";
+    let duplicate_private_key_hex =
+        "4343434343434343434343434343434343434343434343434343434343434343";
     let error = resolve_bolt_v3_secrets_with(&loaded, |_region, path| match path {
-        "/bolt/hyperliquid/api_wallet_a/private_key"
-        | "/bolt/hyperliquid/api_wallet_b/private_key" => Ok(duplicate_private_key.to_string()),
+        "/bolt/hyperliquid/api_wallet_a/private_key" => {
+            Ok(format!("0x{duplicate_private_key_hex}"))
+        }
+        "/bolt/hyperliquid/api_wallet_b/private_key" => Ok(duplicate_private_key_hex.to_string()),
         "/bolt/hyperliquid/api_wallet_a/account_address" => {
             Ok("0x1111111111111111111111111111111111111111".to_string())
         }
@@ -555,7 +599,7 @@ fn provider_binding_rejects_duplicate_hyperliquid_signer_owner() {
 
     assert!(rendered.contains("signer/API-wallet owner"));
     assert!(rendered.contains("hyperliquid_perps_a"));
-    assert!(!rendered.contains(duplicate_private_key));
+    assert!(!rendered.contains(duplicate_private_key_hex));
     assert!(!rendered.contains("0x1111111111111111111111111111111111111111"));
     assert!(!rendered.contains("0x2222222222222222222222222222222222222222"));
 }

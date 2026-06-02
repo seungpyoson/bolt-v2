@@ -15146,6 +15146,22 @@ reason = '''This is the required EVM hexadecimal address prefix enforced by Hype
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid.rs'''
 kind = '''string'''
+literal = '''"0x"'''
+context = '''.strip_prefix("0x")'''
+classification = '''evm_private_key_normalization_prefix'''
+reason = '''This normalizes the optional lowercase EVM private-key hex prefix before hashing Hyperliquid signer-owner evidence; the secret value remains SSM-owned and redacted.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"0X"'''
+context = '''.or_else(|| private_key.strip_prefix("0X"))'''
+classification = '''evm_private_key_normalization_prefix'''
+reason = '''This normalizes the optional uppercase EVM private-key hex prefix before hashing Hyperliquid signer-owner evidence; the secret value remains SSM-owned and redacted.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
 literal = '''"HIP-3 asset-id/order/fill/rounding/fee proof"'''
 context = '''const HIP3_MISSING_SUBMIT_PROOF: &[&str] = &["HIP-3 asset-id/order/fill/rounding/fee proof"];'''
 classification = '''hyperliquid_operator_evidence_label'''

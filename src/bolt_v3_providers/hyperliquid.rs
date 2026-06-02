@@ -324,7 +324,12 @@ impl ProviderResolvedSecrets for ResolvedBoltV3HyperliquidSecrets {
     fn exclusive_signer_owner(&self) -> Option<ProviderExclusiveSignerOwner> {
         let mut hasher = Sha256::new();
         hasher.update(b"bolt-v3-hyperliquid-signer-owner-v1:");
-        for &byte in self.private_key.as_bytes() {
+        let private_key = self.private_key.as_str();
+        let normalized = private_key
+            .strip_prefix("0x")
+            .or_else(|| private_key.strip_prefix("0X"))
+            .unwrap_or(private_key);
+        for &byte in normalized.as_bytes() {
             hasher.update([byte.to_ascii_lowercase()]);
         }
         Some(ProviderExclusiveSignerOwner {
@@ -344,6 +349,11 @@ pub fn validate_client(key: &str, client: &ClientBlock) -> Vec<String> {
     if client.data.is_some() {
         errors.push(format!(
             "clients.{key} (provider={KEY}) data mapping is not enabled in this slice"
+        ));
+    }
+    if client.execution.is_some() && client.secrets.is_none() {
+        errors.push(format!(
+            "clients.{key} (provider={KEY}) has [execution] configured but is missing the [secrets] block"
         ));
     }
     let parsed_execution = if let Some(execution) = &client.execution {
@@ -418,6 +428,9 @@ fn validate_execution_config(key: &str, execution: &HyperliquidExecutionConfig) 
             "clients.{key}.execution.live_submit_approval_id must be non-empty when configured"
         ));
     }
+    if execution.live_submit_approval_id.is_some() {
+        errors.extend(validate_user_fees_request_weight_policy(key));
+    }
     let positive_fields: &[(&str, u64)] = &[
         ("http_timeout_secs", execution.http_timeout_secs),
         ("max_retries", execution.max_retries),
@@ -451,6 +464,17 @@ fn validate_execution_config(key: &str, execution: &HyperliquidExecutionConfig) 
         errors.extend(validate_latency_profile_config(key, latency_profile));
     }
     errors
+}
+
+fn validate_user_fees_request_weight_policy(key: &str) -> Vec<String> {
+    let policy = hyperliquid_user_fees_request_weight_policy();
+    if policy.status == HyperliquidUserFeesRequestWeightStatus::OfficialWeightAccounted {
+        return Vec::new();
+    }
+    vec![format!(
+        "clients.{key}.execution.live_submit_approval_id cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit",
+        policy.request_type, policy.pinned_nt_info_base_weight, policy.official_info_request_weight
+    )]
 }
 
 fn validate_latency_profile_config(

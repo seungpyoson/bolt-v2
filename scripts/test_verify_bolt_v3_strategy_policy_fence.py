@@ -44,7 +44,10 @@ class StrategyPolicyFenceTests(unittest.TestCase):
             let _ = KillSwitchState::Armed;
             self.kill_switch = true;
             self.forced_reduction_submit(order);
+            self.cancel_orders(vec![order_id]);
             self.cancel_all_orders();
+            self.close_position(position_id, None, None);
+            self.close_all_positions(None, None);
             self.flatten_all_positions();
             """
         )
@@ -71,6 +74,17 @@ class StrategyPolicyFenceTests(unittest.TestCase):
         )
 
         self.assertEqual(labels, set())
+
+    def test_detects_nt_batch_cancel_and_close_position_bypass_helpers(self) -> None:
+        labels = self.labels_for(
+            """
+            self.cancel_orders(vec![order_id]);
+            self.close_position(position_id, None, None);
+            self.close_all_positions(None, None);
+            """
+        )
+
+        self.assertIn("direct kill-switch action bypass", labels)
 
     def test_current_strategy_has_no_policy_hardcode_violations(self) -> None:
         self.assertEqual(VERIFIER.collect_violations(), [])

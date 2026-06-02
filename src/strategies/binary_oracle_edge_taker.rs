@@ -3288,8 +3288,7 @@ impl BinaryOracleEdgeTaker {
         instrument: &InstrumentAny,
         quantity: Quantity,
     ) -> Option<Quantity> {
-        let quantity_source = quantity.to_string();
-        let quantity_decimal = Decimal::from_str(quantity_source.trim()).ok()?;
+        let quantity_decimal = Decimal::from_f64(quantity.as_f64())?;
         let normalized = provider_normalize_base_order_quantity(
             self.context.execution_venue(),
             quantity_decimal,
@@ -4370,13 +4369,14 @@ impl BinaryOracleEdgeTaker {
                     "bolt-v3 submit admission risk-reducing exit requires managed position state for client_order_id={client_order_id}"
                 )
             })?;
-            let position_quantity_source = managed_position.position.quantity.to_string();
             let position_quantity =
-                Decimal::from_str(position_quantity_source.trim()).with_context(|| {
-                    format!(
-                        "bolt-v3 submit admission position quantity is not a decimal for client_order_id={client_order_id}"
-                    )
-                })?;
+                Decimal::from_f64(managed_position.position.quantity.as_f64()).with_context(
+                    || {
+                        format!(
+                            "bolt-v3 submit admission position quantity is not a decimal for client_order_id={client_order_id}"
+                        )
+                    },
+                )?;
             Some(BoltV3RiskReducingExitProof {
                 position_id: managed_position.position.position_id.to_string(),
                 instrument_id: managed_position.position.instrument_id.to_string(),

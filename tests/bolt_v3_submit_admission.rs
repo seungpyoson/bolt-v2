@@ -566,7 +566,11 @@ fn breached_loss_governor_halts_entries_but_allows_risk_reducing_exit_within_cou
 
     admission
         .admit_at(
-            &submit_request_with_kind(Decimal::new(1, 1), BoltV3SubmitIntentKind::RiskReducingExit),
+            &submit_request_with_kind_and_exit_proof(
+                Decimal::new(264, 2),
+                BoltV3SubmitIntentKind::RiskReducingExit,
+                Some(valid_risk_reducing_exit_proof()),
+            ),
             10_100,
         )
         .expect("loss halt must not block risk-reducing exit inside count cap");

@@ -44,7 +44,8 @@ use bolt_v2::{
     bolt_v3_config::{ClientBlock, LoadedStrategy, load_bolt_v3_config},
     bolt_v3_market_families::{MarketIdentityPlan, updown::plan_market_identity},
     bolt_v3_providers::{
-        ProviderLiveSubmitApprovalContext, binance::ResolvedBoltV3BinanceSecrets,
+        ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
+        ProviderProductSubmitProofArtifactRequest, binance::ResolvedBoltV3BinanceSecrets,
         binding_for_provider_key, hyperliquid::ResolvedBoltV3HyperliquidSecrets,
         hyperliquid_artifacts::read_hyperliquid_live_submit_approval_artifact,
         polymarket::ResolvedBoltV3PolymarketSecrets, validate_client_block,
@@ -57,6 +58,7 @@ use bolt_v2::{
 use nautilus_model::identifiers::{InstrumentId, Venue};
 use nautilus_polymarket::config::PolymarketDataClientConfig;
 use rust_decimal::Decimal;
+use sha2::{Digest, Sha256};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -888,6 +890,191 @@ fn provider_binding_writes_hyperliquid_live_submit_approval_from_configured_runt
     let artifact_text = fs::read_to_string(&approval_path).expect("artifact should read");
     assert!(!artifact_text.contains(private_key));
     assert!(!artifact_text.contains(account_address));
+}
+
+#[test]
+fn provider_binding_preflights_hyperliquid_live_submit_arming_without_consuming_approval() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let operator_dir = temp.path().join("operator");
+    fs::create_dir_all(&operator_dir).expect("operator dir should create");
+    let product_proof_path = operator_dir.join("hyperliquid-product-submit-proof.json");
+    let approval_path = operator_dir.join("hyperliquid-live-submit-approval.json");
+    let root_path = temp.path().join("root.toml");
+    let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture v3 config should load");
+    loaded.root_path = root_path;
+    loaded.config_bundle_checksum = "c".repeat(64);
+    loaded.root.clients.clear();
+    let binding =
+        binding_for_provider_key("HYPERLIQUID").expect("Hyperliquid binding should register");
+    let product_writer = binding
+        .write_product_submit_proof_artifact
+        .expect("Hyperliquid binding should expose product-submit proof materialization");
+    let order_proof_sha256 = "a".repeat(64);
+    let fill_proof_sha256 = "b".repeat(64);
+    let rounding_proof_sha256 = "d".repeat(64);
+    let fee_proof_sha256 = "e".repeat(64);
+    let product_written = product_writer(ProviderProductSubmitProofArtifactRequest {
+        provider_id: "hyperliquid_perps",
+        product_surface: "standard_perps",
+        toml_checksum: &loaded.config_bundle_checksum,
+        order_proof: ProviderArtifactReference {
+            artifact_path: "operator/order-proof.json",
+            artifact_sha256: &order_proof_sha256,
+        },
+        fill_proof: ProviderArtifactReference {
+            artifact_path: "operator/fill-proof.json",
+            artifact_sha256: &fill_proof_sha256,
+        },
+        rounding_proof: ProviderArtifactReference {
+            artifact_path: "operator/rounding-proof.json",
+            artifact_sha256: &rounding_proof_sha256,
+        },
+        fee_proof: ProviderArtifactReference {
+            artifact_path: "operator/fee-proof.json",
+            artifact_sha256: &fee_proof_sha256,
+        },
+        settlement_proof: None,
+        output_path: &product_proof_path,
+    })
+    .expect("product-submit proof should write");
+    assert_eq!(
+        product_written.sha256,
+        hex::encode(Sha256::digest(
+            fs::read(&product_proof_path).expect("product proof should read")
+        ))
+    );
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    add_hyperliquid_live_submit_approval(&mut client);
+    client
+        .execution
+        .as_mut()
+        .expect("test Hyperliquid client should have execution")
+        .as_table_mut()
+        .expect("test Hyperliquid execution should be a table")
+        .insert(
+            "live_submit_product_proof_artifact_sha256".to_string(),
+            toml::Value::String(product_written.sha256),
+        );
+    loaded
+        .root
+        .clients
+        .insert("hyperliquid_perps".to_string(), client);
+    let resolved = fixture_resolved_secrets();
+    let now_unix_seconds = 1_800_000_000;
+    let build_head_sha = "a".repeat(40);
+    let context = ProviderLiveSubmitApprovalContext {
+        loaded: &loaded,
+        client_key: "hyperliquid_perps",
+        client: loaded
+            .root
+            .clients
+            .get("hyperliquid_perps")
+            .expect("test client should exist"),
+        resolved: &resolved,
+        now_unix_seconds,
+        build_head_sha: &build_head_sha,
+    };
+    let writer = binding
+        .write_live_submit_approval_artifact
+        .expect("Hyperliquid binding should expose live-submit approval materialization");
+    writer(context, now_unix_seconds + 600)
+        .expect("configured Hyperliquid live-submit approval should write");
+    let before = fs::read(&approval_path).expect("approval artifact should read before preflight");
+    let preflight = binding
+        .preflight_live_submit_arming
+        .expect("Hyperliquid binding should expose live-submit arming preflight");
+
+    let report = preflight(context)
+        .expect("configured Hyperliquid live-submit arming should preflight")
+        .expect("armed Hyperliquid client should return a preflight report");
+
+    let after = fs::read(&approval_path).expect("approval artifact should read after preflight");
+    assert_eq!(
+        before, after,
+        "preflight must not consume or rewrite the one-time approval artifact"
+    );
+    let approval = read_hyperliquid_live_submit_approval_artifact(&approval_path, 65536)
+        .expect("approval artifact should remain readable");
+    assert_eq!(approval.used_at, None);
+    assert_eq!(report.provider_key, "HYPERLIQUID");
+    assert_eq!(report.client_key, "hyperliquid_perps");
+    assert_eq!(report.product_surface, "standard_perps");
+    assert_eq!(
+        report.approval_artifact_path,
+        "operator/hyperliquid-live-submit-approval.json"
+    );
+    assert_eq!(
+        report.product_submit_proof_artifact_path,
+        "operator/hyperliquid-product-submit-proof.json"
+    );
+    assert_eq!(report.max_order_count, 1);
+    assert_eq!(report.max_order_notional, "10.00");
+}
+
+#[test]
+fn provider_binding_preflight_rejects_missing_product_submit_proof_without_consuming_approval() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let operator_dir = temp.path().join("operator");
+    fs::create_dir_all(&operator_dir).expect("operator dir should create");
+    let approval_path = operator_dir.join("hyperliquid-live-submit-approval.json");
+    let root_path = temp.path().join("root.toml");
+    let mut loaded = load_bolt_v3_config(&support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture v3 config should load");
+    loaded.root_path = root_path;
+    loaded.config_bundle_checksum = "c".repeat(64);
+    loaded.root.clients.clear();
+    let mut client = hyperliquid_execution_client(
+        "/bolt/hyperliquid/master_api_wallet/private_key",
+        "/bolt/hyperliquid/master_api_wallet/account_address",
+    );
+    add_hyperliquid_live_submit_approval(&mut client);
+    loaded
+        .root
+        .clients
+        .insert("hyperliquid_perps".to_string(), client);
+    let resolved = fixture_resolved_secrets();
+    let binding =
+        binding_for_provider_key("HYPERLIQUID").expect("Hyperliquid binding should register");
+    let now_unix_seconds = 1_800_000_000;
+    let build_head_sha = "a".repeat(40);
+    let context = ProviderLiveSubmitApprovalContext {
+        loaded: &loaded,
+        client_key: "hyperliquid_perps",
+        client: loaded
+            .root
+            .clients
+            .get("hyperliquid_perps")
+            .expect("test client should exist"),
+        resolved: &resolved,
+        now_unix_seconds,
+        build_head_sha: &build_head_sha,
+    };
+    let writer = binding
+        .write_live_submit_approval_artifact
+        .expect("Hyperliquid binding should expose live-submit approval materialization");
+    writer(context, now_unix_seconds + 600)
+        .expect("configured Hyperliquid live-submit approval should write");
+    let before = fs::read(&approval_path).expect("approval artifact should read before preflight");
+    let preflight = binding
+        .preflight_live_submit_arming
+        .expect("Hyperliquid binding should expose live-submit arming preflight");
+
+    let err = preflight(context).expect_err("missing product proof should fail preflight");
+
+    let rendered = err.to_string();
+    assert!(rendered.contains("product_submit_proof.artifact_path"));
+    let after = fs::read(&approval_path).expect("approval artifact should read after preflight");
+    assert_eq!(
+        before, after,
+        "failed preflight must not consume or rewrite the one-time approval artifact"
+    );
+    let approval = read_hyperliquid_live_submit_approval_artifact(&approval_path, 65536)
+        .expect("approval artifact should remain readable");
+    assert_eq!(approval.used_at, None);
 }
 
 #[test]

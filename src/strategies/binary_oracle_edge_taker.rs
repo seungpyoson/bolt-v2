@@ -14539,6 +14539,7 @@ mod tests {
                     position_quantity,
                     exit_quantity,
                 }),
+                kill_switch_forced_reduction: None,
             })
             .expect("test setup should consume the only risk-reducing exit slot");
 

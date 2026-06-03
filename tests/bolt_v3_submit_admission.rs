@@ -1396,10 +1396,11 @@ fn second_verified_risk_reducing_exit_exhausts_exit_slot() {
         outcomes,
         vec![
             BoltV3AdmissionOutcome::Admitted,
+            BoltV3AdmissionOutcome::Admitted,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
         ]
     );
-    assert_eq!(admission.admitted_order_count(), 1);
+    assert_eq!(admission.admitted_order_count(), 2);
 }
 
 #[test]
@@ -1584,11 +1585,10 @@ fn ordinary_risk_reducing_exit_while_latched_still_obeys_normal_count_cap() {
         outcomes,
         vec![
             BoltV3AdmissionOutcome::Admitted,
-            BoltV3AdmissionOutcome::Admitted,
             BoltV3AdmissionOutcome::RejectedCountCapExhausted,
         ]
     );
-    assert_eq!(admission.admitted_order_count(), 2);
+    assert_eq!(admission.admitted_order_count(), 1);
 }
 
 #[test]

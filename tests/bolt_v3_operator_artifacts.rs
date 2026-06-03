@@ -7,6 +7,9 @@ use bolt_v2::{
     bolt_v3_archetypes::{
         ArchetypeGateRequirement, GateRole, GateValueKind, binary_oracle_edge_taker,
     },
+    bolt_v3_canary_proof_policy::{
+        CanaryProofCandidateSourceArtifact, CanaryProofOrderIntentArtifact, CanaryProofOrderSide,
+    },
     bolt_v3_client_registration::{BoltV3RegisteredClient, BoltV3RegistrationSummary},
     bolt_v3_config::{
         BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
@@ -31,15 +34,16 @@ use bolt_v2::{
     },
     bolt_v3_market_families::{SelectedMarketRequirement, updown::updown_market_slug},
     bolt_v3_operator_artifacts::{
-        ChainlinkReferencePriceReportSourceFile,
+        CanaryProofArtifactsCollectionRequest, ChainlinkReferencePriceReportSourceFile,
         ChainlinkReferenceQuoteObservationsSourceMaterializationRequest,
         DataClientProductionReadinessMatrixSourceFileRequest,
         EntryDecisionProofSourceMaterializationRequest, EntryDecisionSourceBookSideInput,
         EntryDecisionSourceCollectionRequest, EntryDecisionSourceInputRequest,
         EntryDecisionSourceMarketInputs, EntryReadinessGateEvidenceSourceFileRequest,
-        EntryReadinessGateSessionRequest, GateArtifactRef, GateEvidenceCollectionStatus,
-        GateEvidenceInput, GateSatisfaction, WrittenOperatorArtifact,
+        EntryReadinessGateSession, EntryReadinessGateSessionRequest, GateArtifactRef,
+        GateEvidenceCollectionStatus, GateEvidenceInput, GateSatisfaction, WrittenOperatorArtifact,
         build_entry_readiness_gate_session, build_redacted_ssm_manifest,
+        collect_canary_proof_artifacts_from_configured_provider,
         collect_entry_decision_source_inputs_from_configured_provider,
         collect_entry_readiness_gate_evidence_from_source_file, normalize_gate_evidence,
         selected_entry_decision_market_attempts,
@@ -4967,12 +4971,12 @@ fn allows(&self, intent: BoltV3SubmitIntentKind) -> bool {
         &submit_admission_source_path,
         10_000,
     )
-    .expect_err("service submit must be gated by arm state and lifecycle policy");
+    .expect_err("service submit must reject disallowed lifecycle before ungated admission");
 
     assert!(
         error
             .to_string()
-            .contains("submit_admission_rejects_unarmed_and_disallowed_lifecycle"),
+            .contains("submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle"),
         "unguarded service submit should identify service-policy proof: {error}"
     );
 }
@@ -9373,10 +9377,7 @@ fn entry_decision_evidence_replay_derives_price_from_readiness_session() {
     let chain = read_latest_entry_decision_evidence_chain(&written.path, 100_000)
         .expect("written JSONL should contain a complete entry decision chain");
     assert_eq!(chain.snapshot.price_to_beat_value, "3100");
-    assert_eq!(
-        chain.admission.outcome,
-        BoltV3AdmissionOutcome::RejectedNotArmed
-    );
+    assert_eq!(chain.admission.outcome, BoltV3AdmissionOutcome::Admitted);
 }
 
 #[test]
@@ -9649,10 +9650,7 @@ fn entry_decision_evidence_source_collector_writes_configured_runtime_jsonl() {
     );
     assert_eq!(chain.snapshot.price_to_beat_value, "3100");
     assert_eq!(chain.intent.intent_kind, BoltV3OrderIntentKind::Entry);
-    assert_eq!(
-        chain.admission.outcome,
-        BoltV3AdmissionOutcome::RejectedNotArmed
-    );
+    assert_eq!(chain.admission.outcome, BoltV3AdmissionOutcome::Admitted);
     assert_eq!(written.sha256, sha256_file(&written.path));
 }
 
@@ -9867,10 +9865,148 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
         .expect("replayed decision evidence should have a complete entry chain");
     assert_eq!(chain.snapshot.price_to_beat_value, "3100");
     assert_eq!(chain.snapshot.market_id.as_deref(), Some(TEST_MARKET_ID));
-    assert_eq!(
-        chain.admission.outcome,
-        BoltV3AdmissionOutcome::RejectedNotArmed
+    assert_eq!(chain.admission.outcome, BoltV3AdmissionOutcome::Admitted);
+}
+
+#[test]
+fn hyperliquid_static_instrument_canary_proof_collector_writes_order_intent() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
+    loaded.root.clients.clear();
+    loaded.root.clients.insert(
+        "hyperliquid_perps".to_string(),
+        toml::from_str(
+            r#"
+venue = "HYPERLIQUID"
+
+[data]
+environment = "testnet"
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+ws_timeout_secs = 30
+update_instruments_interval_mins = 5
+transport_backend = "sockudo"
+"#,
+        )
+        .expect("Hyperliquid data client should parse"),
     );
+    let strategy = loaded
+        .strategies
+        .first_mut()
+        .expect("fixture should load a strategy");
+    strategy.config.execution_client_id = ClientId::from("hyperliquid_perps");
+    strategy.config.target = toml::toml! {
+        configured_target_id = "configured_hyperliquid_btc_perp"
+        kind = "static_instrument"
+        rotating_market_family = "hyperliquid_instrument"
+        product_surface = "standard_perps"
+        instrument_id = "BTC-PERP.HYPERLIQUID"
+        quantity_step = "0.001"
+        min_quantity = "0.001"
+        min_notional = "1.00"
+
+        [gate_subscriptions.resolution]
+        required = true
+        allowed_value_kinds = ["none"]
+        allow_no_resolution = true
+    }
+    .into();
+    let strategy_instance_id = strategy.config.strategy_instance_id.clone();
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should be configured")
+        .proof_policy = Some(LiveCanaryProofPolicyBlock {
+        strategy_instance_id: strategy_instance_id.clone(),
+        execution_client_id: "hyperliquid_perps".to_string(),
+        proof_notional: "3.30".to_string(),
+        ..test_live_canary_proof_policy()
+    });
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let gate_session_output = temp.path().join("hl-gate-session.json");
+    let candidate_source_output = temp.path().join("hl-candidate-source.json");
+    let order_intent_output = temp.path().join("hl-order-intent.json");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+
+    let written = runtime
+        .block_on(collect_canary_proof_artifacts_from_configured_provider(
+            &loaded,
+            &strategy_instance_id,
+            CanaryProofArtifactsCollectionRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                gate_session_output_path: &gate_session_output,
+                candidate_source_output_path: &candidate_source_output,
+                order_intent_output_path: &order_intent_output,
+            },
+        ))
+        .expect("Hyperliquid canary proof collector should write artifacts");
+
+    let gate_session: EntryReadinessGateSession = serde_json::from_slice(
+        &std::fs::read(&written.gate_session.path).expect("gate session should read"),
+    )
+    .expect("gate session should parse");
+    assert_eq!(gate_session.selected_market.venue, "HYPERLIQUID");
+    assert_eq!(
+        gate_session.selected_market.family_key,
+        "hyperliquid_instrument"
+    );
+    assert_eq!(
+        gate_session.selected_market.instrument_ids,
+        vec!["BTC-PERP.HYPERLIQUID"]
+    );
+    assert!(matches!(
+        gate_session
+            .satisfied_roles
+            .get(RESOLUTION_GATE_ROLE)
+            .expect("resolution role should be satisfied"),
+        GateSatisfaction::NoResolution { .. }
+    ));
+
+    let candidate_source: CanaryProofCandidateSourceArtifact = serde_json::from_slice(
+        &std::fs::read(&written.candidate_source.path).expect("candidate source should read"),
+    )
+    .expect("candidate source should parse");
+    assert_eq!(
+        candidate_source.current_source_ref,
+        gate_session.session_hash
+    );
+    assert_eq!(candidate_source.candidate_count, 1);
+    let candidate = candidate_source
+        .candidates
+        .first()
+        .expect("one Hyperliquid candidate should be written");
+    assert_eq!(candidate.execution_client_id, "hyperliquid_perps");
+    assert_eq!(candidate.instrument_id, "BTC-PERP.HYPERLIQUID");
+    assert_eq!(candidate.order_side, CanaryProofOrderSide::Buy);
+    assert_eq!(candidate.sizing_price, Decimal::new(3300, 0));
+    assert_eq!(candidate.constraints.quantity_step, Decimal::new(1, 3));
+    assert_eq!(candidate.constraints.min_quantity, Some(Decimal::new(1, 3)));
+    assert_eq!(
+        candidate.constraints.min_notional,
+        Some(Decimal::new(100, 2))
+    );
+
+    let order_intent: CanaryProofOrderIntentArtifact = serde_json::from_slice(
+        &std::fs::read(&written.order_intent.path).expect("order intent should read"),
+    )
+    .expect("order intent should parse");
+    assert_eq!(order_intent.execution_client_id, "hyperliquid_perps");
+    assert_eq!(order_intent.instrument_id, "BTC-PERP.HYPERLIQUID");
+    assert_eq!(order_intent.notional, Decimal::new(330, 2));
+    assert_eq!(order_intent.quantity, Decimal::new(1, 3));
 }
 
 struct EntryDecisionSourceInputProofPaths {
@@ -12150,17 +12286,18 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
     };
     let admission = BoltV3AdmissionDecisionEvidence {
         strategy_id: snapshot.strategy_id.clone(),
+        execution_client_id: TEST_EXECUTION_CLIENT_ID.to_string(),
         client_order_id: snapshot.client_order_id.clone(),
         instrument_id: snapshot.submission_instrument_id.clone(),
         notional: "0.50".to_string(),
         intent_kind: BoltV3SubmitIntentKind::Entry,
-        outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+        outcome: BoltV3AdmissionOutcome::Admitted,
     };
     let decision_evidence_path = temp.path().join("decision-evidence.jsonl");
     let mut decision_evidence = String::new();
     for line in [
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -12168,7 +12305,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "snapshot": snapshot.clone(),
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -12176,7 +12313,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "intent": intent.clone(),
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",
@@ -12240,7 +12377,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
     let mut wrong_decision_evidence = String::new();
     for line in [
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -12248,7 +12385,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "snapshot": wrong_snapshot,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -12256,7 +12393,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "intent": wrong_intent,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",
@@ -14607,16 +14744,17 @@ fn write_entry_decision_evidence_chain_at(
     };
     let admission = BoltV3AdmissionDecisionEvidence {
         strategy_id: snapshot.strategy_id.clone(),
+        execution_client_id: TEST_EXECUTION_CLIENT_ID.to_string(),
         client_order_id: snapshot.client_order_id.clone(),
         instrument_id: snapshot.submission_instrument_id.clone(),
         notional: "0.50".to_string(),
         intent_kind: BoltV3SubmitIntentKind::Entry,
-        outcome: BoltV3AdmissionOutcome::RejectedNotArmed,
+        outcome: BoltV3AdmissionOutcome::Admitted,
     };
     let mut decision_evidence = String::new();
     for line in [
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -14624,7 +14762,7 @@ fn write_entry_decision_evidence_chain_at(
             "snapshot": snapshot,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -14632,7 +14770,7 @@ fn write_entry_decision_evidence_chain_at(
             "intent": intent,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",

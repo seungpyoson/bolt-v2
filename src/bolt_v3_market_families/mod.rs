@@ -4,6 +4,7 @@
 //! that owns its typed `[target]` fields, cadence checks, slug
 //! construction, and instrument-filter errors.
 
+pub mod hyperliquid_instrument;
 pub mod updown;
 
 use std::{any::Any, collections::BTreeMap, fmt, sync::Arc};
@@ -16,6 +17,18 @@ use crate::{
     bolt_v3_instrument_filters::InstrumentFilterError,
 };
 use nautilus_model::{identifiers::InstrumentId, instruments::InstrumentAny};
+
+/// Canonical binary-market outcome side (`Up`/`Down`). Homed in the
+/// market-family layer as the single source of truth: updown family
+/// instruments are keyed by it, and the taker decision math
+/// (`bolt_v3_taker_signal`) consumes it. Variants and derives match the
+/// prior family-local `UpdownOutcomeSide` and the strategy-local
+/// `OutcomeSide` it replaces (pure type-identity unification).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutcomeSide {
+    Up,
+    Down,
+}
 
 /// Target metadata read by startup validation before dispatching to a
 /// `target.rotating_market_family` validator.
@@ -255,16 +268,29 @@ impl MarketIdentityPlan {
     }
 }
 
-const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[MarketFamilyValidationBinding {
-    key: updown::KEY,
-    validate_target: updown::validate_target_block,
-    plan_strategy_target: updown::plan_strategy_target,
-    target_runtime_fields: updown::target_runtime_fields,
-    select_binary_option_market: updown::select_binary_option_market,
-    market_selection_candidate_windows: updown::market_selection_candidate_windows,
-    selected_market_requirement: updown::selected_market_requirement,
-    fair_probability_up: updown::fair_probability_up,
-}];
+const VALIDATION_BINDINGS: &[MarketFamilyValidationBinding] = &[
+    MarketFamilyValidationBinding {
+        key: updown::KEY,
+        validate_target: updown::validate_target_block,
+        plan_strategy_target: updown::plan_strategy_target,
+        target_runtime_fields: updown::target_runtime_fields,
+        select_binary_option_market: updown::select_binary_option_market,
+        market_selection_candidate_windows: updown::market_selection_candidate_windows,
+        selected_market_requirement: updown::selected_market_requirement,
+        fair_probability_up: updown::fair_probability_up,
+    },
+    MarketFamilyValidationBinding {
+        key: hyperliquid_instrument::KEY,
+        validate_target: hyperliquid_instrument::validate_target_block,
+        plan_strategy_target: hyperliquid_instrument::plan_strategy_target,
+        target_runtime_fields: hyperliquid_instrument::target_runtime_fields,
+        select_binary_option_market: hyperliquid_instrument::select_binary_option_market,
+        market_selection_candidate_windows:
+            hyperliquid_instrument::market_selection_candidate_windows,
+        selected_market_requirement: hyperliquid_instrument::selected_market_requirement,
+        fair_probability_up: hyperliquid_instrument::fair_probability_up,
+    },
+];
 
 pub fn validation_bindings() -> &'static [MarketFamilyValidationBinding] {
     VALIDATION_BINDINGS

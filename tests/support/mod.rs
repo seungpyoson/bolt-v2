@@ -609,6 +609,7 @@ fn write_valid_decision_evidence_chain(path: &Path, now_ms: u64, notional: &str)
     };
     let admission = BoltV3AdmissionDecisionEvidence {
         strategy_id: snapshot.strategy_id.clone(),
+        execution_client_id: "polymarket_main".to_string(),
         client_order_id: snapshot.client_order_id.clone(),
         instrument_id: snapshot.submission_instrument_id.clone(),
         notional: notional.to_string(),
@@ -617,7 +618,7 @@ fn write_valid_decision_evidence_chain(path: &Path, now_ms: u64, notional: &str)
     };
     let lines = [
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -625,7 +626,7 @@ fn write_valid_decision_evidence_chain(path: &Path, now_ms: u64, notional: &str)
             "snapshot": snapshot,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -633,7 +634,7 @@ fn write_valid_decision_evidence_chain(path: &Path, now_ms: u64, notional: &str)
             "intent": intent,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",

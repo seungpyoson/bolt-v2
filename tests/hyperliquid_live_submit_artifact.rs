@@ -1,0 +1,622 @@
+//! Hyperliquid live-submit approval artifact tests.
+
+use std::io::{Read, Seek};
+
+use bolt_v2::{
+    bolt_v3_providers::hyperliquid::HyperliquidProductSurface,
+    bolt_v3_providers::hyperliquid_artifacts::{
+        HyperliquidLiveSubmitApprovalArtifact, HyperliquidLiveSubmitApprovalBinding,
+        HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
+        HyperliquidProductSubmitProofArtifactInput, HyperliquidProductSubmitProofBinding,
+        HyperliquidProductSubmitProofEvidenceRef, build_hyperliquid_live_submit_approval_artifact,
+        consume_hyperliquid_live_submit_approval_artifact,
+        persist_consumed_hyperliquid_live_submit_approval_artifact,
+        read_hyperliquid_live_submit_approval_artifact,
+        validate_hyperliquid_live_submit_approval_artifact,
+        validate_hyperliquid_product_submit_proof_artifact_bytes,
+        write_hyperliquid_live_submit_approval_artifact,
+        write_hyperliquid_product_submit_proof_artifact,
+    },
+};
+
+const NOW: u64 = 1_000_000;
+
+fn hash(seed: char) -> String {
+    std::iter::repeat_n(seed, 64).collect()
+}
+
+fn git_sha(seed: char) -> String {
+    std::iter::repeat_n(seed, 40).collect()
+}
+
+fn order_limits() -> HyperliquidLiveSubmitOrderLimits {
+    HyperliquidLiveSubmitOrderLimits {
+        max_order_count: 1,
+        max_order_notional: "10.00".to_string(),
+    }
+}
+
+fn product_submit_proof() -> HyperliquidProductSubmitProofBinding {
+    HyperliquidProductSubmitProofBinding {
+        artifact_path: "operator/hyperliquid-standard-perps-product-proof.json".to_string(),
+        artifact_sha256: hash('d'),
+    }
+}
+
+fn product_submit_proof_ref(name: &str, seed: char) -> HyperliquidProductSubmitProofEvidenceRef {
+    HyperliquidProductSubmitProofEvidenceRef {
+        artifact_path: format!("operator/{name}.json"),
+        artifact_sha256: hash(seed),
+    }
+}
+
+fn product_submit_proof_input(
+    product_surface: HyperliquidProductSurface,
+) -> HyperliquidProductSubmitProofArtifactInput {
+    HyperliquidProductSubmitProofArtifactInput {
+        provider_id: "hyperliquid-standard-perps-test".to_string(),
+        product_surface,
+        toml_checksum: hash('b'),
+        order_proof: product_submit_proof_ref("order-proof", 'e'),
+        fill_proof: product_submit_proof_ref("fill-proof", 'f'),
+        rounding_proof: product_submit_proof_ref("rounding-proof", 'a'),
+        fee_proof: product_submit_proof_ref("fee-proof", 'c'),
+        settlement_proof: None,
+    }
+}
+
+fn binding() -> HyperliquidLiveSubmitApprovalBinding {
+    HyperliquidLiveSubmitApprovalBinding {
+        base_sha: git_sha('a'),
+        provider_id: "hyperliquid-standard-perps-test".to_string(),
+        product_surface: HyperliquidProductSurface::StandardPerps,
+        toml_checksum: hash('b'),
+        signer_fingerprint: hash('c'),
+        order_limits: order_limits(),
+        product_submit_proof: product_submit_proof(),
+    }
+}
+
+fn approval_input() -> HyperliquidLiveSubmitApprovalInput {
+    let current = binding();
+    HyperliquidLiveSubmitApprovalInput {
+        approval_id: "hl-standard-perps-approval-001".to_string(),
+        base_sha: current.base_sha,
+        provider_id: current.provider_id,
+        product_surface: current.product_surface,
+        toml_checksum: current.toml_checksum,
+        signer_fingerprint: current.signer_fingerprint,
+        order_limits: current.order_limits,
+        product_submit_proof: current.product_submit_proof,
+        expires_at: NOW + 60,
+        used_at: None,
+    }
+}
+
+fn legacy_approval_without_product_submit_proof() -> HyperliquidLiveSubmitApprovalArtifact {
+    serde_json::from_value(serde_json::json!({
+        "schema_version": 1,
+        "record_kind": "bolt_v3.hyperliquid_live_submit_approval.v1",
+        "provider_key": "HYPERLIQUID",
+        "approval_id": "hl-standard-perps-approval-001",
+        "base_sha": git_sha('a'),
+        "provider_id": "hyperliquid-standard-perps-test",
+        "product_surface": "standard_perps",
+        "toml_checksum": hash('b'),
+        "signer_fingerprint": hash('c'),
+        "order_limits": {
+            "max_order_count": 1,
+            "max_order_notional": "10.00"
+        },
+        "expires_at": NOW + 60,
+        "used_at": null
+    }))
+    .expect("legacy approval JSON should parse before product-proof validation")
+}
+
+#[test]
+fn missing_standard_perps_live_submit_approval_fails_closed() {
+    let error = validate_hyperliquid_live_submit_approval_artifact(None, &binding(), NOW)
+        .expect_err("standard perps live submit must reject a missing approval artifact");
+
+    assert!(
+        error.to_string().contains("approval_artifact"),
+        "missing approval error must name the gate: {error}"
+    );
+}
+
+#[test]
+fn live_submit_approval_without_product_submit_proof_fails_closed() {
+    let approval = legacy_approval_without_product_submit_proof();
+
+    let error =
+        validate_hyperliquid_live_submit_approval_artifact(Some(&approval), &binding(), NOW)
+            .expect_err("live submit approval without product submit proof must fail closed")
+            .to_string();
+
+    assert!(
+        error.contains("product_submit_proof"),
+        "missing product proof error must name product_submit_proof: {error}"
+    );
+}
+
+#[test]
+fn product_submit_proof_artifact_writes_operator_json_and_validates() {
+    let temp = tempfile::tempdir().expect("temp dir should create");
+    let output_path = temp.path().join("hyperliquid-product-submit-proof.json");
+
+    let written = write_hyperliquid_product_submit_proof_artifact(
+        product_submit_proof_input(HyperliquidProductSurface::StandardPerps),
+        &output_path,
+    )
+    .expect("product submit proof artifact should write");
+
+    assert_eq!(written.path, output_path);
+    let bytes = std::fs::read(&written.path).expect("product proof artifact should read");
+    let mut current = binding();
+    current.product_submit_proof = HyperliquidProductSubmitProofBinding {
+        artifact_path: "operator/hyperliquid-product-submit-proof.json".to_string(),
+        artifact_sha256: written.sha256,
+    };
+    validate_hyperliquid_product_submit_proof_artifact_bytes(&bytes, &current)
+        .expect("written product proof artifact should validate against live-submit binding");
+
+    let artifact: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("product proof JSON should parse");
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.hyperliquid_product_submit_proof.v1"
+    );
+    assert_eq!(artifact["provider_key"], "HYPERLIQUID");
+    assert_eq!(artifact["product_surface"], "standard_perps");
+    assert!(artifact["settlement_proof"].is_null());
+}
+
+#[test]
+fn product_submit_proof_artifact_requires_hip4_settlement_proof_only_for_hip4() {
+    let temp = tempfile::tempdir().expect("temp dir should create");
+    let mut hip4_input = product_submit_proof_input(HyperliquidProductSurface::Hip4Outcomes);
+
+    let missing_settlement_error = write_hyperliquid_product_submit_proof_artifact(
+        hip4_input.clone(),
+        &temp.path().join("hip4-missing-settlement.json"),
+    )
+    .expect_err("HIP-4 product proof must include settlement proof")
+    .to_string();
+    assert!(
+        missing_settlement_error.contains("settlement_proof"),
+        "HIP-4 settlement proof error should name settlement_proof: {missing_settlement_error}"
+    );
+
+    hip4_input.settlement_proof = Some(product_submit_proof_ref("settlement-proof", '9'));
+    write_hyperliquid_product_submit_proof_artifact(
+        hip4_input,
+        &temp.path().join("hip4-product-submit-proof.json"),
+    )
+    .expect("HIP-4 product proof should write when settlement proof is present");
+
+    let mut spot_input = product_submit_proof_input(HyperliquidProductSurface::Spot);
+    spot_input.settlement_proof = Some(product_submit_proof_ref("unexpected-settlement", '8'));
+    let unexpected_settlement_error = write_hyperliquid_product_submit_proof_artifact(
+        spot_input,
+        &temp.path().join("spot-with-settlement.json"),
+    )
+    .expect_err("non-HIP-4 product proof must reject settlement proof")
+    .to_string();
+    assert!(
+        unexpected_settlement_error.contains("settlement_proof"),
+        "non-HIP-4 settlement proof error should name settlement_proof: {unexpected_settlement_error}"
+    );
+}
+
+#[test]
+fn standard_perps_live_submit_approval_artifact_binds_runtime_fields() {
+    let approval = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+
+    validate_hyperliquid_live_submit_approval_artifact(Some(&approval), &binding(), NOW)
+        .expect("matching unexpired unused approval artifact should validate");
+    assert_eq!(
+        approval.record_kind,
+        "bolt_v3.hyperliquid_live_submit_approval.v1"
+    );
+    assert_eq!(approval.provider_key, "HYPERLIQUID");
+    assert_eq!(
+        approval.product_surface,
+        HyperliquidProductSurface::StandardPerps
+    );
+    assert_eq!(approval.used_at, None);
+}
+
+#[test]
+fn live_submit_approval_artifact_rejects_unknown_top_level_fields() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_path = temp
+        .path()
+        .join("hyperliquid-live-submit-approval-extra-field.json");
+    let approval = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    let mut raw =
+        serde_json::to_value(&approval).expect("approval artifact should serialize to JSON");
+    raw.as_object_mut()
+        .expect("approval artifact JSON should be an object")
+        .insert(
+            "unapproved_operator_note".to_string(),
+            serde_json::json!("must not be ignored"),
+        );
+    std::fs::write(
+        &approval_path,
+        serde_json::to_vec_pretty(&raw).expect("approval JSON should encode"),
+    )
+    .expect("approval artifact with unknown field should write");
+
+    let error = read_hyperliquid_live_submit_approval_artifact(&approval_path, 16_384)
+        .expect_err("approval artifact reader must reject unknown top-level fields");
+
+    assert!(
+        error.to_string().contains("approval_artifact"),
+        "unknown field rejection should fail at approval artifact parse boundary: {error}"
+    );
+}
+
+#[test]
+fn live_submit_approval_artifact_rejects_unknown_order_limit_fields() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_path = temp
+        .path()
+        .join("hyperliquid-live-submit-approval-extra-order-limit-field.json");
+    let approval = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    let mut raw =
+        serde_json::to_value(&approval).expect("approval artifact should serialize to JSON");
+    raw.get_mut("order_limits")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("approval order_limits JSON should be an object")
+        .insert(
+            "unapproved_limit_multiplier".to_string(),
+            serde_json::json!("must not be ignored"),
+        );
+    std::fs::write(
+        &approval_path,
+        serde_json::to_vec_pretty(&raw).expect("approval JSON should encode"),
+    )
+    .expect("approval artifact with unknown nested field should write");
+
+    let error = read_hyperliquid_live_submit_approval_artifact(&approval_path, 16_384)
+        .expect_err("approval artifact reader must reject unknown order limit fields");
+
+    assert!(
+        error.to_string().contains("approval_artifact"),
+        "unknown order limit field rejection should fail at approval artifact parse boundary: {error}"
+    );
+}
+
+#[test]
+fn live_submit_approval_artifact_rejects_unknown_product_submit_proof_fields() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let approval_path = temp
+        .path()
+        .join("hyperliquid-live-submit-approval-extra-product-proof-field.json");
+    let approval = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    let mut raw =
+        serde_json::to_value(&approval).expect("approval artifact should serialize to JSON");
+    raw.get_mut("product_submit_proof")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("approval product_submit_proof JSON should be an object")
+        .insert(
+            "unapproved_proof_override".to_string(),
+            serde_json::json!("must not be ignored"),
+        );
+    std::fs::write(
+        &approval_path,
+        serde_json::to_vec_pretty(&raw).expect("approval JSON should encode"),
+    )
+    .expect("approval artifact with unknown nested field should write");
+
+    let error = read_hyperliquid_live_submit_approval_artifact(&approval_path, 16_384)
+        .expect_err("approval artifact reader must reject unknown product proof fields");
+
+    assert!(
+        error.to_string().contains("approval_artifact"),
+        "unknown product proof field rejection should fail at approval artifact parse boundary: {error}"
+    );
+}
+
+#[test]
+fn live_submit_approval_artifact_accepts_each_hyperliquid_product_surface() {
+    for product_surface in [
+        HyperliquidProductSurface::StandardPerps,
+        HyperliquidProductSurface::Spot,
+        HyperliquidProductSurface::Hip3BuilderPerps,
+        HyperliquidProductSurface::Hip4Outcomes,
+    ] {
+        let mut input = approval_input();
+        input.product_surface = product_surface;
+        let mut binding = binding();
+        binding.product_surface = product_surface;
+
+        let approval = build_hyperliquid_live_submit_approval_artifact(input)
+            .expect("surface-bound approval artifact should build");
+        validate_hyperliquid_live_submit_approval_artifact(Some(&approval), &binding, NOW)
+            .expect("approval should validate against the same product surface");
+    }
+}
+
+#[test]
+fn standard_perps_live_submit_approval_artifact_writes_operator_json() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let output_path = temp.path().join("hyperliquid-live-submit-approval.json");
+
+    let written = write_hyperliquid_live_submit_approval_artifact(approval_input(), &output_path)
+        .expect("bounded approval artifact should write");
+    let rendered = std::fs::read_to_string(&written.path).expect("artifact should read");
+    let artifact: serde_json::Value =
+        serde_json::from_str(&rendered).expect("artifact should parse");
+
+    assert_eq!(
+        artifact["record_kind"],
+        "bolt_v3.hyperliquid_live_submit_approval.v1"
+    );
+    assert_eq!(artifact["provider_key"], "HYPERLIQUID");
+    assert_eq!(artifact["product_surface"], "standard_perps");
+    assert_eq!(artifact["approval_id"], "hl-standard-perps-approval-001");
+    assert_eq!(artifact["order_limits"]["max_order_count"], 1);
+    assert_eq!(artifact["order_limits"]["max_order_notional"], "10.00");
+    assert_eq!(
+        artifact["product_submit_proof"]["artifact_path"],
+        "operator/hyperliquid-standard-perps-product-proof.json"
+    );
+    assert_eq!(
+        artifact["product_submit_proof"]["artifact_sha256"],
+        hash('d')
+    );
+    assert!(artifact["used_at"].is_null());
+}
+
+#[test]
+fn standard_perps_live_submit_approval_rejects_stale_mismatched_expired_reused_and_overbroad() {
+    let current = binding();
+    let broader_order_count = current.order_limits.max_order_count + 1;
+
+    for (field, mutate) in [
+        (
+            "base_sha",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.base_sha = git_sha('d');
+            }) as Box<dyn Fn(&mut HyperliquidLiveSubmitApprovalArtifact)>,
+        ),
+        (
+            "provider_id",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.provider_id = "other-hyperliquid-provider".to_string();
+            }),
+        ),
+        (
+            "product_surface",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.product_surface = HyperliquidProductSurface::Spot;
+            }),
+        ),
+        (
+            "toml_checksum",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.toml_checksum = hash('e');
+            }),
+        ),
+        (
+            "signer_fingerprint",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.signer_fingerprint = hash('f');
+            }),
+        ),
+        (
+            "expires_at",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.expires_at = NOW;
+            }),
+        ),
+        (
+            "used_at",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact.used_at = Some(NOW - 1);
+            }),
+        ),
+        (
+            "order_limits",
+            Box::new(
+                move |artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                    artifact.order_limits.max_order_count = broader_order_count;
+                },
+            ),
+        ),
+        (
+            "product_submit_proof",
+            Box::new(|artifact: &mut HyperliquidLiveSubmitApprovalArtifact| {
+                artifact
+                    .product_submit_proof
+                    .as_mut()
+                    .expect("valid approval should have product submit proof")
+                    .artifact_sha256 = hash('9');
+            }),
+        ),
+    ] {
+        let mut approval = build_hyperliquid_live_submit_approval_artifact(approval_input())
+            .expect("valid approval artifact should build before mutation");
+        mutate(&mut approval);
+        let error =
+            validate_hyperliquid_live_submit_approval_artifact(Some(&approval), &current, NOW)
+                .expect_err("invalid approval must fail closed")
+                .to_string();
+        assert!(
+            error.contains(field),
+            "error for {field} must name failed binding: {error}"
+        );
+    }
+}
+
+#[test]
+fn provider_consumes_standard_perps_live_submit_approval_once() {
+    let current = binding();
+    let mut approval = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+
+    let consumed = consume_hyperliquid_live_submit_approval_artifact(
+        &mut approval,
+        &current,
+        "hl-standard-perps-approval-001",
+        NOW,
+    )
+    .expect("matching unused approval should consume once");
+    assert_eq!(consumed.approval_id(), "hl-standard-perps-approval-001");
+    assert_eq!(consumed.used_at(), NOW);
+    assert_eq!(consumed.product_submit_proof(), &product_submit_proof());
+    assert_eq!(approval.used_at, Some(NOW));
+
+    let error = consume_hyperliquid_live_submit_approval_artifact(
+        &mut approval,
+        &current,
+        "hl-standard-perps-approval-001",
+        NOW + 1,
+    )
+    .expect_err("reused approval must fail closed")
+    .to_string();
+    assert!(
+        error.contains("used_at"),
+        "reused approval error must name used_at: {error}"
+    );
+}
+
+#[test]
+fn consumed_live_submit_approval_persist_updates_open_descriptors_in_place() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("hyperliquid-live-submit-approval.json");
+    write_hyperliquid_live_submit_approval_artifact(approval_input(), &path)
+        .expect("approval artifact should write");
+    let mut held_original =
+        std::fs::File::open(&path).expect("test should hold original approval fd");
+    let mut consumed = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    consumed.used_at = Some(NOW);
+
+    persist_consumed_hyperliquid_live_submit_approval_artifact(&path, &consumed)
+        .expect("consumed approval should persist");
+
+    let persisted = read_hyperliquid_live_submit_approval_artifact(&path, 4096)
+        .expect("persisted consumed approval should parse");
+    assert_eq!(persisted.used_at, Some(NOW));
+    let mut held_bytes = Vec::new();
+    held_original
+        .rewind()
+        .expect("held original approval fd should rewind");
+    held_original
+        .read_to_end(&mut held_bytes)
+        .expect("held original approval fd should read");
+    let held_artifact: HyperliquidLiveSubmitApprovalArtifact =
+        serde_json::from_slice(&held_bytes).expect("held approval fd should parse");
+    assert_eq!(
+        held_artifact.used_at,
+        Some(NOW),
+        "held approval descriptors must observe the spent artifact so stale openers cannot double-spend"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn consumed_live_submit_approval_persist_rejects_symlinked_approval_path() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let symlink_target = temp.path().join("symlink-target.json");
+    write_hyperliquid_live_submit_approval_artifact(approval_input(), &symlink_target)
+        .expect("approval artifact should write");
+    std::os::unix::fs::symlink(&symlink_target, &path)
+        .expect("approval path symlink should create");
+    let mut consumed = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    consumed.used_at = Some(NOW);
+
+    let error = persist_consumed_hyperliquid_live_submit_approval_artifact(&path, &consumed)
+        .expect_err("symlinked approval path must fail closed")
+        .to_string();
+
+    assert!(
+        error.contains("write"),
+        "approval-path symlink failure should surface as write failure: {error}"
+    );
+    let approval = read_hyperliquid_live_submit_approval_artifact(&symlink_target, 4096)
+        .expect("unconsumed symlink target approval should still parse");
+    assert_eq!(approval.used_at, None);
+}
+
+#[cfg(unix)]
+#[test]
+fn consumed_live_submit_approval_persist_rejects_concurrent_spend_lock() {
+    use std::os::fd::AsRawFd;
+
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("hyperliquid-live-submit-approval.json");
+    write_hyperliquid_live_submit_approval_artifact(approval_input(), &path)
+        .expect("approval artifact should write");
+    let locked_approval =
+        std::fs::File::open(&path).expect("approval artifact should open for test lock");
+    // SAFETY: `locked_approval.as_raw_fd()` is a live descriptor for the duration of the call.
+    let lock_result =
+        unsafe { libc::flock(locked_approval.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_eq!(lock_result, 0, "test should hold approval spend lock");
+    let mut consumed = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    consumed.used_at = Some(NOW);
+
+    let error = persist_consumed_hyperliquid_live_submit_approval_artifact(&path, &consumed)
+        .expect_err("concurrent approval spend must fail closed")
+        .to_string();
+
+    assert!(
+        error.contains("write"),
+        "concurrent spend failure should surface as write failure: {error}"
+    );
+    let approval = read_hyperliquid_live_submit_approval_artifact(&path, 4096)
+        .expect("locked approval should remain readable");
+    assert_eq!(approval.used_at, None);
+}
+
+#[test]
+fn consumed_live_submit_approval_persist_rejects_already_consumed_file() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let mut consumed = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    consumed.used_at = Some(NOW);
+    write_hyperliquid_live_submit_approval_artifact(approval_input(), &path)
+        .expect("approval artifact should write");
+    persist_consumed_hyperliquid_live_submit_approval_artifact(&path, &consumed)
+        .expect("first approval spend should persist");
+
+    let error = persist_consumed_hyperliquid_live_submit_approval_artifact(&path, &consumed)
+        .expect_err("already consumed approval file must not be spent again")
+        .to_string();
+
+    assert!(
+        error.contains("used_at"),
+        "already-consumed persistence failure should name used_at: {error}"
+    );
+}
+
+#[test]
+fn consumed_live_submit_approval_persist_rejects_unconsumed_artifact() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let path = temp.path().join("hyperliquid-live-submit-approval.json");
+    let unconsumed = build_hyperliquid_live_submit_approval_artifact(approval_input())
+        .expect("bounded approval artifact should build");
+    write_hyperliquid_live_submit_approval_artifact(approval_input(), &path)
+        .expect("approval artifact should write");
+
+    let error = persist_consumed_hyperliquid_live_submit_approval_artifact(&path, &unconsumed)
+        .expect_err("persisting an unconsumed artifact must fail closed")
+        .to_string();
+
+    assert!(
+        error.contains("used_at"),
+        "unconsumed persistence failure should name used_at: {error}"
+    );
+}

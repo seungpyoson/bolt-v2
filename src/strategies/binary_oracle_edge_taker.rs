@@ -48,7 +48,7 @@ use crate::{
         validate_readiness_gate_evidence_snapshot,
     },
     bolt_v3_market_families::{
-        self, FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget,
+        self, FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget, OutcomeSide,
         SelectedMarketSourceIdentity,
     },
     bolt_v3_numeric::{
@@ -69,9 +69,10 @@ use crate::{
         market_style_admission_ceiling_notional,
     },
     bolt_v3_taker_signal::{
-        RobustSizingInputs, ThetaScalerInputs, UncertaintyBandInputs, choose_robust_size,
-        compute_theta_scaler, price_agreement_corr, price_gap_probability,
-        uncertainty_band_probability,
+        RobustSizingInputs, SideSelectionInputs, ThetaScalerInputs, UncertaintyBandInputs,
+        WorstCaseEvInputs, choose_entry_side, choose_robust_size, compute_theta_scaler,
+        compute_worst_case_ev_bps, outcome_side_evidence_label, price_agreement_corr,
+        price_gap_probability, uncertainty_band_probability,
     },
     bolt_v3_volatility::{RealizedVolConfig, RealizedVolEstimator},
     strategies::registry::{
@@ -4396,6 +4397,7 @@ impl BinaryOracleEdgeTaker {
 
         Ok(BoltV3SubmitAdmissionRequest {
             strategy_id: intent.strategy_id.clone(),
+            execution_client_id: self.config.client_id.clone(),
             client_order_id,
             instrument_id: order.instrument_id().to_string(),
             notional,
@@ -6240,11 +6242,8 @@ pub fn record_entry_decision_evidence_from_source(
     apply_entry_decision_source_books(&mut strategy, &source.books)?;
 
     match strategy.try_submit_entry_order(source.decision_timestamp_ms) {
-        Err(error) if error.to_string().contains("submit admission is not armed") => Ok(()),
         Err(error) => Err(error),
-        Ok(Some(client_order_id)) => anyhow::bail!(
-            "entry decision evidence source unexpectedly admitted order {client_order_id}; submit admission must stay unarmed"
-        ),
+        Ok(Some(_client_order_id)) => Ok(()),
         Ok(None) => {
             let decision = strategy.entry_submission_decision_at(source.decision_timestamp_ms);
             anyhow::bail!(
@@ -6940,19 +6939,6 @@ const EXIT_BLOCK_REASON_EXIT_QUOTE_QUANTITY_UNSUPPORTED: &str = "exit_quote_quan
 const EXIT_BLOCK_REASON_EXIT_PRICE_MISSING: &str = "exit_price_missing";
 const EXIT_BLOCK_REASON_EXIT_QUANTITY_NOT_POSITIVE: &str = "exit_quantity_not_positive";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OutcomeSide {
-    Up,
-    Down,
-}
-
-fn outcome_side_evidence_label(side: OutcomeSide) -> &'static str {
-    match side {
-        OutcomeSide::Up => "up",
-        OutcomeSide::Down => "down",
-    }
-}
-
 fn evidence_number(value: f64) -> String {
     value.to_string()
 }
@@ -7046,68 +7032,6 @@ fn best_healthy_oracle_price(snapshot: &ReferenceSnapshot) -> Option<f64> {
                 .then_with(|| lhs.venue_name.cmp(&rhs.venue_name))
         })
         .and_then(|venue| venue.observed_price)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct WorstCaseEvInputs {
-    fair_probability: Option<f64>,
-    uncertainty_band_probability: f64,
-    executable_entry_cost: f64,
-    fee_bps: Option<f64>,
-}
-
-fn compute_worst_case_ev_bps(side: OutcomeSide, inputs: &WorstCaseEvInputs) -> Option<f64> {
-    let fair_probability = sanitize_probability(inputs.fair_probability?)?;
-    let uncertainty_band_probability = sanitize_probability(inputs.uncertainty_band_probability)?;
-    let executable_entry_cost = inputs.executable_entry_cost;
-    let fee_bps = inputs.fee_bps?;
-
-    if !is_positive_finite(executable_entry_cost) {
-        return None;
-    }
-    if !is_non_negative_finite(fee_bps) {
-        return None;
-    }
-
-    let p_lo = clamp_probability(fair_probability - uncertainty_band_probability);
-    let p_hi = clamp_probability(fair_probability + uncertainty_band_probability);
-    let worst_case_success_probability = match side {
-        OutcomeSide::Up => p_lo,
-        OutcomeSide::Down => UNIT_F64 - p_hi,
-    };
-    let total_entry_cost = executable_entry_cost * (UNIT_F64 + fee_bps / BPS_DENOMINATOR);
-
-    if total_entry_cost <= ZERO_F64 {
-        return None;
-    }
-
-    Some(((worst_case_success_probability - total_entry_cost) / total_entry_cost) * BPS_DENOMINATOR)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct SideSelectionInputs {
-    up_worst_ev_bps: Option<f64>,
-    down_worst_ev_bps: Option<f64>,
-    min_worst_case_ev_bps: f64,
-}
-
-fn choose_entry_side(inputs: &SideSelectionInputs) -> Option<OutcomeSide> {
-    if !inputs.min_worst_case_ev_bps.is_finite() {
-        return None;
-    }
-
-    let up_worst_ev_bps = inputs.up_worst_ev_bps.filter(|value| value.is_finite())?;
-    let down_worst_ev_bps = inputs.down_worst_ev_bps.filter(|value| value.is_finite())?;
-    let up_clears = up_worst_ev_bps > inputs.min_worst_case_ev_bps;
-    let down_clears = down_worst_ev_bps > inputs.min_worst_case_ev_bps;
-
-    match (up_clears, down_clears) {
-        (true, false) => Some(OutcomeSide::Up),
-        (false, true) => Some(OutcomeSide::Down),
-        (true, true) if up_worst_ev_bps > down_worst_ev_bps => Some(OutcomeSide::Up),
-        (true, true) if down_worst_ev_bps > up_worst_ev_bps => Some(OutcomeSide::Down),
-        (true, true) | (false, false) => None,
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7507,7 +7431,8 @@ fn evaluate_forced_flat_predicates(inputs: &ForcedFlatInputs) -> Vec<ForcedFlatR
 }
 
 #[cfg(test)]
-fn submit_admission_request_from_order(
+fn submit_admission_request_from_order_for_client(
+    execution_client_id: &str,
     intent: &BoltV3OrderIntentEvidence,
     order: &nautilus_model::orders::OrderAny,
 ) -> Result<BoltV3SubmitAdmissionRequest> {
@@ -7548,6 +7473,7 @@ fn submit_admission_request_from_order(
 
     Ok(BoltV3SubmitAdmissionRequest {
         strategy_id: intent.strategy_id.clone(),
+        execution_client_id: execution_client_id.to_string(),
         client_order_id,
         instrument_id: order.instrument_id().to_string(),
         notional,
@@ -8415,6 +8341,21 @@ mod tests {
         )
     }
 
+    fn submit_admission_armed_with_cap(
+        max_notional_per_order: Decimal,
+        decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+    ) -> Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState> {
+        let submit_admission = Arc::new(
+            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
+                decision_evidence,
+            ),
+        );
+        submit_admission
+            .arm(live_canary_gate_report(1, max_notional_per_order))
+            .expect("valid gate report should arm submit admission");
+        submit_admission
+    }
+
     #[test]
     fn decision_evidence_failure_rejects_before_nt_submit() {
         let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
@@ -8481,15 +8422,15 @@ mod tests {
     }
 
     #[test]
-    fn unarmed_submit_admission_rejects_after_evidence_before_nt_submit() {
+    fn ungated_submit_admission_allows_after_evidence_before_nt_submit() {
         let submit_admission = Arc::new(
             crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
                 RecordingDecisionEvidenceWriter,
             )),
         );
         let instrument_id = selected_entry_instrument(&ready_to_trade_strategy());
-        // Zero fee leaves the notional unchanged; the unarmed rejection from the
-        // admission gate is what this test exercises.
+        // Zero fee leaves the notional unchanged; with no optional gate armed,
+        // production admission now allows the submit to reach NT.
         let mut strategy = test_strategy_with_fee_provider_decision_evidence_and_submit_admission(
             RecordingFeeProvider::with_fee(&instrument_id.to_string(), Decimal::ZERO),
             Arc::new(RecordingDecisionEvidenceWriter),
@@ -8536,19 +8477,19 @@ mod tests {
                 &order,
             );
 
-        let error = strategy
-            .submit_order_with_decision_evidence(
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            strategy.submit_order_with_decision_evidence(
                 intent,
                 order,
                 SubmitContext::with_client_id(ClientId::from("POLYMARKET")),
             )
-            .expect_err("unarmed submit admission must reject before NT submit");
+        }));
 
         assert!(
-            error.to_string().contains("submit admission is not armed"),
-            "{error:#}"
+            result.is_err(),
+            "test strategy is intentionally not registered with NT; ungated admission should reach NT submit"
         );
-        assert_eq!(submit_admission.admitted_order_count(), 0);
+        assert_eq!(submit_admission.admitted_order_count(), 1);
     }
 
     #[test]
@@ -9721,6 +9662,7 @@ mod tests {
             .admit(
                 &crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest {
                     strategy_id: "strategy-a".to_string(),
+                    execution_client_id: "polymarket_main".to_string(),
                     client_order_id: "client-order-0".to_string(),
                     instrument_id: "instrument-0".to_string(),
                     notional: Decimal::new(50, 2),
@@ -12319,10 +12261,41 @@ mod tests {
         );
         intent.canary_proof_claim = Some("proof_only".to_string());
 
-        let admission = submit_admission_request_from_order(&intent, &order)
-            .expect("entry intent should map into submit admission");
+        let admission =
+            submit_admission_request_from_order_for_client("polymarket_main", &intent, &order)
+                .expect("entry intent should map into submit admission");
 
         assert_eq!(admission.canary_proof_claim, None);
+    }
+
+    #[test]
+    fn submit_admission_test_helper_uses_explicit_execution_client_id() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(2.0, 2);
+        let price = Price::new(0.50, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-HL-1"),
+            )
+            .expect("configured entry order should build");
+        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+            strategy.config.strategy_id.clone(),
+            BoltV3OrderIntentKind::Entry,
+            price.to_string(),
+            &order,
+        );
+
+        let admission =
+            submit_admission_request_from_order_for_client("hyperliquid_perps", &intent, &order)
+                .expect("entry intent should map into submit admission");
+
+        assert_eq!(admission.execution_client_id, "hyperliquid_perps");
     }
 
     #[test]
@@ -12923,7 +12896,8 @@ mod tests {
             )
             .expect("StopLimit order with explicit trigger price should build");
 
-        let admission = submit_admission_request_from_order(
+        let admission = submit_admission_request_from_order_for_client(
+            "polymarket_main",
             &BoltV3OrderIntentEvidence::from_compiled_order(
                 strategy.config.strategy_id.clone(),
                 BoltV3OrderIntentKind::Entry,
@@ -13008,7 +12982,8 @@ mod tests {
             )
             .expect("LimitIfTouched entry order with explicit trigger price should build");
 
-        let admission = submit_admission_request_from_order(
+        let admission = submit_admission_request_from_order_for_client(
+            "polymarket_main",
             &BoltV3OrderIntentEvidence::from_compiled_order(
                 strategy.config.strategy_id.clone(),
                 BoltV3OrderIntentKind::Entry,
@@ -14444,19 +14419,33 @@ mod tests {
 
     #[test]
     fn book_delta_submit_admission_error_does_not_escape_actor_loop() {
-        let mut direct = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let rejecting_submit_admission = submit_admission_armed_with_cap(
+            Decimal::new(1, 2),
+            Arc::new(RecordingDecisionEvidenceWriter),
+        );
+        let mut direct = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            Arc::new(RecordingDecisionEvidenceWriter),
+            rejecting_submit_admission.clone(),
+        );
         register_test_strategy_with_active_instruments(&mut direct);
         let direct_error = direct
             .try_submit_entry_order(1_200)
-            .expect_err("test setup must reach unarmed submit admission");
+            .expect_err("test setup must reach submit-admission cap rejection");
         assert!(
             direct_error
                 .to_string()
-                .contains("submit admission is not armed"),
+                .contains("notional cap is exceeded"),
             "test setup must prove submit-admission failure path: {direct_error:#}"
         );
 
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let rejecting_submit_admission = submit_admission_armed_with_cap(
+            Decimal::new(1, 2),
+            Arc::new(RecordingDecisionEvidenceWriter),
+        );
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            Arc::new(RecordingDecisionEvidenceWriter),
+            rejecting_submit_admission,
+        );
         register_test_strategy_with_active_instruments(&mut strategy);
         let instrument_id = selected_entry_instrument(&strategy);
         let decision = strategy.entry_submission_decision_at(1_200);
@@ -14483,7 +14472,14 @@ mod tests {
 
     #[test]
     fn book_delta_exit_submit_admission_error_does_not_escape_actor_loop() {
-        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let rejecting_submit_admission = submit_admission_armed_with_cap(
+            Decimal::new(1, 2),
+            Arc::new(RecordingDecisionEvidenceWriter),
+        );
+        let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
+            Arc::new(RecordingDecisionEvidenceWriter),
+            rejecting_submit_admission.clone(),
+        );
         strategy.active.phase = SelectionPhase::Freeze;
         let instrument_id = selected_entry_instrument(&strategy);
         let position = materialize_configured_position(
@@ -14508,6 +14504,43 @@ mod tests {
                 && decision.blocked_reason.is_none(),
             "test setup must reach exit submit admission path; got {decision:#?}"
         );
+        let managed_position = strategy
+            .managed_position()
+            .expect("managed position should remain available for exit admission setup");
+        let exit_order_side = decision
+            .order_side
+            .expect("exit decision should include order side");
+        let exit_quantity = Decimal::from_f64(
+            decision
+                .quantity
+                .expect("exit decision should include quantity")
+                .as_f64(),
+        )
+        .expect("exit quantity should convert to decimal");
+        let position_quantity = Decimal::from_f64(managed_position.position.quantity.as_f64())
+            .expect("position quantity should convert to decimal");
+        rejecting_submit_admission
+            .admit(&BoltV3SubmitAdmissionRequest {
+                strategy_id: strategy.config.strategy_id.clone(),
+                execution_client_id: strategy.config.client_id.clone(),
+                client_order_id: "EXIT-SLOT-ALREADY-USED".to_string(),
+                instrument_id: managed_position.position.instrument_id.to_string(),
+                notional: Decimal::new(1, 0),
+                order_side: exit_order_side,
+                order_quantity: exit_quantity,
+                intent_kind: BoltV3SubmitIntentKind::RiskReducingExit,
+                lifecycle_policy: strategy.submit_lifecycle_policy(),
+                canary_proof_claim: None,
+                risk_reducing_exit_proof: Some(BoltV3RiskReducingExitProof {
+                    position_id: managed_position.position.position_id.to_string(),
+                    instrument_id: managed_position.position.instrument_id.to_string(),
+                    position_side: managed_position.position.side,
+                    exit_order_side,
+                    position_quantity,
+                    exit_quantity,
+                }),
+            })
+            .expect("test setup should consume the only risk-reducing exit slot");
 
         let result = strategy.on_book_deltas(&book_deltas(
             instrument_id,
@@ -16427,132 +16460,6 @@ mod tests {
     }
 
     #[test]
-    fn task4_worst_case_ev_uses_side_specific_bounds_and_fees_fail_closed() {
-        let up_zero_fee = compute_worst_case_ev_bps(
-            OutcomeSide::Up,
-            &WorstCaseEvInputs {
-                fair_probability: Some(0.60),
-                uncertainty_band_probability: 0.05,
-                executable_entry_cost: 0.50,
-                fee_bps: Some(0.0),
-            },
-        )
-        .expect("up zero-fee EV should be computable");
-        let up_paid_fee = compute_worst_case_ev_bps(
-            OutcomeSide::Up,
-            &WorstCaseEvInputs {
-                fair_probability: Some(0.60),
-                uncertainty_band_probability: 0.05,
-                executable_entry_cost: 0.50,
-                fee_bps: Some(200.0),
-            },
-        )
-        .expect("up paid-fee EV should be computable");
-        let down_zero_fee = compute_worst_case_ev_bps(
-            OutcomeSide::Down,
-            &WorstCaseEvInputs {
-                fair_probability: Some(0.60),
-                uncertainty_band_probability: 0.05,
-                executable_entry_cost: 0.50,
-                fee_bps: Some(0.0),
-            },
-        )
-        .expect("down zero-fee EV should be computable");
-
-        assert!(up_paid_fee < up_zero_fee);
-        assert!(up_zero_fee > down_zero_fee);
-        assert_eq!(
-            compute_worst_case_ev_bps(
-                OutcomeSide::Up,
-                &WorstCaseEvInputs {
-                    fair_probability: Some(0.60),
-                    uncertainty_band_probability: 0.05,
-                    executable_entry_cost: 0.50,
-                    fee_bps: None,
-                },
-            ),
-            None
-        );
-        assert_eq!(
-            compute_worst_case_ev_bps(
-                OutcomeSide::Up,
-                &WorstCaseEvInputs {
-                    fair_probability: Some(1.2),
-                    uncertainty_band_probability: 0.05,
-                    executable_entry_cost: 0.50,
-                    fee_bps: Some(0.0),
-                },
-            ),
-            None
-        );
-        assert_eq!(
-            compute_worst_case_ev_bps(
-                OutcomeSide::Up,
-                &WorstCaseEvInputs {
-                    fair_probability: Some(0.60),
-                    uncertainty_band_probability: 1.5,
-                    executable_entry_cost: 0.50,
-                    fee_bps: Some(0.0),
-                },
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn task4_side_selection_picks_higher_worst_case_ev_when_both_clear_threshold() {
-        let side = choose_entry_side(&SideSelectionInputs {
-            up_worst_ev_bps: Some(9.0),
-            down_worst_ev_bps: Some(11.0),
-            min_worst_case_ev_bps: 8.0,
-        });
-
-        assert_eq!(side, Some(OutcomeSide::Down));
-    }
-
-    #[test]
-    fn task4_side_selection_requires_strictly_greater_than_threshold() {
-        let side = choose_entry_side(&SideSelectionInputs {
-            up_worst_ev_bps: Some(8.0),
-            down_worst_ev_bps: Some(7.0),
-            min_worst_case_ev_bps: 8.0,
-        });
-
-        assert_eq!(side, None);
-    }
-
-    #[test]
-    fn task4_side_selection_fails_closed_on_missing_or_invalid_side_ev() {
-        assert_eq!(
-            choose_entry_side(&SideSelectionInputs {
-                up_worst_ev_bps: Some(9.0),
-                down_worst_ev_bps: None,
-                min_worst_case_ev_bps: 8.0,
-            }),
-            None
-        );
-        assert_eq!(
-            choose_entry_side(&SideSelectionInputs {
-                up_worst_ev_bps: Some(f64::NAN),
-                down_worst_ev_bps: Some(9.0),
-                min_worst_case_ev_bps: 8.0,
-            }),
-            None
-        );
-    }
-
-    #[test]
-    fn task4_side_selection_fails_closed_on_equal_positive_evs() {
-        let side = choose_entry_side(&SideSelectionInputs {
-            up_worst_ev_bps: Some(9.0),
-            down_worst_ev_bps: Some(9.0),
-            min_worst_case_ev_bps: 8.0,
-        });
-
-        assert_eq!(side, None);
-    }
-
-    #[test]
     fn task5_entry_gate_reports_all_frozen_block_reasons_explicitly() {
         let mut strategy = test_strategy();
         strategy.apply_selection_snapshot(freeze_snapshot_with_start("MKT-1", 1_000));
@@ -17362,11 +17269,8 @@ mod tests {
     #[test]
     fn strategy_input_evidence_records_source_bound_entry_snapshot_before_order_intent() {
         let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-        let submit_admission = Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
-                evidence.clone(),
-            ),
-        );
+        let submit_admission =
+            submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
         let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
             evidence.clone(),
             submit_admission,
@@ -17375,9 +17279,9 @@ mod tests {
 
         let error = strategy
             .try_submit_entry_order(1_200)
-            .expect_err("unarmed submit admission should reject after evidence capture");
+            .expect_err("submit admission should reject after evidence capture");
         assert!(
-            error.to_string().contains("submit admission is not armed"),
+            error.to_string().contains("notional cap is exceeded"),
             "{error:#}"
         );
 
@@ -17434,16 +17338,17 @@ mod tests {
         assert_eq!(snapshot.submission_quantity, intent.quantity);
         assert_eq!(snapshot.client_order_id, intent.client_order_id);
         assert_eq!(admission.client_order_id, intent.client_order_id);
+        assert_eq!(
+            admission.outcome,
+            crate::bolt_v3_decision_evidence::BoltV3AdmissionOutcome::RejectedNotionalCapExceeded
+        );
     }
 
     #[test]
     fn strategy_input_evidence_market_end_uses_selection_expiry_not_remaining_seconds() {
         let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-        let submit_admission = Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
-                evidence.clone(),
-            ),
-        );
+        let submit_admission =
+            submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
         let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
             evidence.clone(),
             submit_admission,
@@ -17453,7 +17358,7 @@ mod tests {
 
         strategy
             .try_submit_entry_order(2_000)
-            .expect_err("unarmed submit admission should reject after evidence capture");
+            .expect_err("submit admission should reject after evidence capture");
 
         let events = evidence.events();
         let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {
@@ -17473,11 +17378,8 @@ mod tests {
     #[test]
     fn strategy_input_evidence_records_next_market_selection_outcome() {
         let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
-        let submit_admission = Arc::new(
-            crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState::new_unarmed(
-                evidence.clone(),
-            ),
-        );
+        let submit_admission =
+            submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
         let mut strategy = ready_to_trade_strategy_with_decision_evidence_and_submit_admission(
             evidence.clone(),
             submit_admission,
@@ -17487,7 +17389,7 @@ mod tests {
 
         strategy
             .try_submit_entry_order(2_000)
-            .expect_err("unarmed submit admission should reject after evidence capture");
+            .expect_err("submit admission should reject after evidence capture");
 
         let events = evidence.events();
         let Some(RecordedDecisionEvidenceEvent::StrategyInput(snapshot)) = events.first() else {

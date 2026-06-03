@@ -30,7 +30,7 @@ use crate::{
     },
     bolt_v3_canary_proof_policy::{
         CANARY_PROOF_CANDIDATE_SOURCE_RECORD_KIND, CANARY_PROOF_CLAIM,
-        CANARY_PROOF_ORDER_INTENT_RECORD_KIND,
+        CANARY_PROOF_ORDER_INTENT_RECORD_KIND, CanaryProofPolicyInput,
     },
     bolt_v3_client_registration::BoltV3RegistrationSummary,
     bolt_v3_config::{
@@ -378,13 +378,12 @@ const ABORT_PLAN_SERVICE_POLICY_GTD_MARKER: &str = "self.config.manage_gtd_expir
 const ABORT_PLAN_SERVICE_POLICY_STOP_MARKER: &str = "self.config.manage_stop";
 const ABORT_PLAN_SERVICE_ADMISSION_UNARMED_MARKER: &str =
     "let Some(report) = inner.gate_report.as_ref() else";
-const ABORT_PLAN_SERVICE_ADMISSION_REJECT_NOT_ARMED_MARKER: &str =
-    "return BoltV3AdmissionOutcome::RejectedNotArmed;";
 const ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_CHECK_MARKER: &str =
     "!request.lifecycle_policy.allows(request.intent_kind)";
 const ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_REJECT_MARKER: &str =
     "return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;";
-const ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER: &str = "BoltV3AdmissionOutcome::Admitted";
+const ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER: &str =
+    "return BoltV3AdmissionOutcome::Admitted;";
 const ABORT_PLAN_SERVICE_REPLACE_ALLOWED_MARKER: &str =
     "BoltV3OrderLifecycleIntent::ReplaceSubmit if self.replace_submit";
 const ABORT_PLAN_SERVICE_REPLACE_SUBMIT_MARKER: &str =
@@ -1237,6 +1236,10 @@ pub enum BoltV3OperatorArtifactError {
     DataClientProductionReadinessMatrixSourceInvalid {
         field: &'static str,
     },
+    ProviderArtifactInvalid {
+        artifact: &'static str,
+        field: &'static str,
+    },
     SecretInventory(BoltV3SecretError),
     FinancialEnvelope(anyhow::Error),
     MarketSelection(anyhow::Error),
@@ -1617,6 +1620,10 @@ impl fmt::Display for BoltV3OperatorArtifactError {
             Self::DataClientProductionReadinessMatrixSourceInvalid { field } => write!(
                 f,
                 "data-client production-readiness matrix source field `{field}` is invalid or unproven"
+            ),
+            Self::ProviderArtifactInvalid { artifact, field } => write!(
+                f,
+                "provider artifact `{artifact}` field `{field}` is invalid or unproven"
             ),
             Self::SecretInventory(error) => write!(f, "{error}"),
             Self::FinancialEnvelope(error) => write!(f, "{error}"),
@@ -6839,8 +6846,8 @@ pub fn collect_abort_plan_panic_gate_service_policy_source_proof(
         panic_recovery_enters_blind_recovery: contract.panic_recovery_enters_blind_recovery,
         release_invariant_returns_error: contract.release_invariant_returns_error,
         submit_lifecycle_policy_from_config: contract.submit_lifecycle_policy_from_config,
-        submit_admission_rejects_unarmed_and_disallowed_lifecycle: contract
-            .submit_admission_rejects_unarmed_and_disallowed_lifecycle,
+        submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle: contract
+            .submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle,
         replace_submit_policy_gates_service_submit: contract
             .replace_submit_policy_gates_service_submit,
     };
@@ -7277,6 +7284,8 @@ pub(crate) struct EntryDecisionSourceProofFileRequest<'a> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EntryDecisionSourceProofValidation {
     pub market_selection_timestamp_ms: u64,
+    pub decision_timestamp_ms: u64,
+    pub reference_quote_price: f64,
 }
 
 pub(crate) fn validate_entry_decision_source_proof_files(
@@ -7288,6 +7297,92 @@ pub(crate) fn validate_entry_decision_source_proof_files(
         read_validated_entry_decision_source_proofs(loaded, strategy_instance_id, request)?;
     Ok(EntryDecisionSourceProofValidation {
         market_selection_timestamp_ms: proofs.price_source.market_selection_timestamp_ms,
+        decision_timestamp_ms: proofs.price_source.decision_timestamp_ms,
+        reference_quote_price: proofs.reference_quote.price,
+    })
+}
+
+pub(crate) fn validate_canary_proof_source_files(
+    request: EntryDecisionSourceProofFileRequest<'_>,
+) -> Result<EntryDecisionSourceProofValidation, BoltV3OperatorArtifactError> {
+    let price_source: SourceBoundPriceToBeatSource = read_decision_source_json_file(
+        request.price_to_beat_source_path,
+        request.max_price_to_beat_source_bytes,
+    )?;
+    let reference_quote: ReferenceQuoteSource = read_decision_source_json_file(
+        request.reference_quote_source_path,
+        request.max_reference_quote_source_bytes,
+    )?;
+    let realized_volatility: RealizedVolatilitySource = read_decision_source_json_file(
+        request.realized_volatility_source_path,
+        request.max_realized_volatility_source_bytes,
+    )?;
+    validate_source_bound_price_to_beat_shape(&price_source)?;
+    validate_reference_quote_source(
+        &reference_quote,
+        price_source.market_selection_timestamp_ms,
+        price_source.decision_timestamp_ms,
+    )?;
+    validate_realized_volatility_source(
+        &realized_volatility,
+        price_source.market_selection_timestamp_ms,
+        price_source.decision_timestamp_ms,
+    )?;
+    Ok(EntryDecisionSourceProofValidation {
+        market_selection_timestamp_ms: price_source.market_selection_timestamp_ms,
+        decision_timestamp_ms: price_source.decision_timestamp_ms,
+        reference_quote_price: reference_quote.price,
+    })
+}
+
+pub(crate) fn canary_proof_policy_input_from_loaded(
+    loaded: &LoadedBoltV3Config,
+    strategy_instance_id: &str,
+    current_source_ref: &str,
+) -> Result<CanaryProofPolicyInput, BoltV3OperatorArtifactError> {
+    let live_canary = loaded.root.live_canary.as_ref().ok_or_else(|| {
+        entry_decision_source_invalid("live_canary block is required for canary proof artifacts")
+    })?;
+    let policy = live_canary.proof_policy.as_ref().ok_or_else(|| {
+        entry_decision_source_invalid(
+            "live_canary.proof_policy block is required for canary proof artifacts",
+        )
+    })?;
+    if !policy.enabled {
+        return Err(entry_decision_source_invalid(
+            "live_canary.proof_policy must be enabled for canary proof artifacts",
+        ));
+    }
+    if policy.strategy_instance_id != strategy_instance_id {
+        return Err(entry_decision_source_invalid(
+            "live_canary.proof_policy.strategy_instance_id does not match requested strategy",
+        ));
+    }
+    Ok(CanaryProofPolicyInput {
+        strategy_instance_id: policy.strategy_instance_id.clone(),
+        execution_client_id: policy.execution_client_id.clone(),
+        proof_claim: policy.proof_claim.clone(),
+        proof_notional: canary_proof_decimal_from_str(
+            policy.proof_notional.as_str(),
+            "canary proof notional",
+        )?,
+        max_notional_per_order: canary_proof_decimal_from_str(
+            live_canary.max_notional_per_order.as_str(),
+            "canary proof max notional per order",
+        )?,
+        allow_negative_expected_ev: policy.allow_negative_expected_ev,
+        source_ready: true,
+        current_source_ref: current_source_ref.to_string(),
+        candidates: Vec::new(),
+    })
+}
+
+fn canary_proof_decimal_from_str(
+    value: &str,
+    field: &'static str,
+) -> Result<Decimal, BoltV3OperatorArtifactError> {
+    Decimal::from_str(value.trim()).map_err(|source| {
+        entry_decision_source_invalid(format!("{field} is not decimal: {source}"))
     })
 }
 
@@ -11682,7 +11777,7 @@ struct Phase8AbortPlanPanicGateServicePolicySourceProofHashInput<'a> {
     panic_recovery_enters_blind_recovery: bool,
     release_invariant_returns_error: bool,
     submit_lifecycle_policy_from_config: bool,
-    submit_admission_rejects_unarmed_and_disallowed_lifecycle: bool,
+    submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle: bool,
     replace_submit_policy_gates_service_submit: bool,
 }
 
@@ -11711,7 +11806,7 @@ struct AbortPlanPanicGateServicePolicyContract {
     panic_recovery_enters_blind_recovery: bool,
     release_invariant_returns_error: bool,
     submit_lifecycle_policy_from_config: bool,
-    submit_admission_rejects_unarmed_and_disallowed_lifecycle: bool,
+    submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle: bool,
     replace_submit_policy_gates_service_submit: bool,
 }
 
@@ -11933,7 +12028,7 @@ fn require_abort_plan_panic_gate_service_policy_contract(
     require_abort_plan_panic_recovery_enters_blind_recovery(&strategy_code_source)?;
     require_abort_plan_release_invariant_returns_error(&strategy_code_source)?;
     require_abort_plan_submit_lifecycle_policy_from_config(&strategy_code_source)?;
-    require_abort_plan_submit_admission_rejects_unarmed_and_disallowed_lifecycle(
+    require_abort_plan_submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle(
         &admission_code_source,
     )?;
     require_abort_plan_replace_submit_policy_gates_service_submit(&admission_code_source)?;
@@ -11942,7 +12037,7 @@ fn require_abort_plan_panic_gate_service_policy_contract(
         panic_recovery_enters_blind_recovery: true,
         release_invariant_returns_error: true,
         submit_lifecycle_policy_from_config: true,
-        submit_admission_rejects_unarmed_and_disallowed_lifecycle: true,
+        submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle: true,
         replace_submit_policy_gates_service_submit: true,
     })
 }
@@ -12572,7 +12667,7 @@ fn require_abort_plan_submit_lifecycle_policy_from_config(
     }
 }
 
-fn require_abort_plan_submit_admission_rejects_unarmed_and_disallowed_lifecycle(
+fn require_abort_plan_submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle(
     code_source: &str,
 ) -> Result<(), BoltV3OperatorArtifactError> {
     let scope = abort_plan_panic_gate_service_policy_single_function_scope(
@@ -12580,42 +12675,33 @@ fn require_abort_plan_submit_admission_rejects_unarmed_and_disallowed_lifecycle(
         ABORT_PLAN_SERVICE_ADMISSION_EVALUATE_FUNCTION_NAME,
         "submit_admission_evaluate_scope",
     )?;
-    let unarmed = abort_plan_panic_gate_service_policy_single_marker_index(
-        scope,
-        ABORT_PLAN_SERVICE_ADMISSION_UNARMED_MARKER,
-        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
-    )?;
-    let reject_unarmed = abort_plan_panic_gate_service_policy_single_marker_index(
-        scope,
-        ABORT_PLAN_SERVICE_ADMISSION_REJECT_NOT_ARMED_MARKER,
-        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
-    )?;
     let lifecycle_check = abort_plan_panic_gate_service_policy_single_marker_index(
         scope,
         ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_CHECK_MARKER,
-        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+        "submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle",
     )?;
     let lifecycle_reject = abort_plan_panic_gate_service_policy_single_marker_index(
         scope,
         ABORT_PLAN_SERVICE_ADMISSION_LIFECYCLE_REJECT_MARKER,
-        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+        "submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle",
+    )?;
+    let unarmed = abort_plan_panic_gate_service_policy_single_marker_index(
+        scope,
+        ABORT_PLAN_SERVICE_ADMISSION_UNARMED_MARKER,
+        "submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle",
     )?;
     let admitted = abort_plan_panic_gate_service_policy_single_marker_index(
         scope,
         ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER,
-        "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+        "submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle",
     )?;
 
-    if unarmed < reject_unarmed
-        && reject_unarmed < lifecycle_check
-        && lifecycle_check < lifecycle_reject
-        && lifecycle_reject < admitted
-    {
+    if lifecycle_check < lifecycle_reject && lifecycle_reject < unarmed && unarmed < admitted {
         Ok(())
     } else {
         Err(
             BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceInvalid {
-                field: "submit_admission_rejects_unarmed_and_disallowed_lifecycle",
+                field: "submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle",
             },
         )
     }
@@ -17029,7 +17115,7 @@ fn validate_operator_evidence_toml_path(
     validate_output_path_shape(field, value)
 }
 
-fn is_lowercase_sha256(value: &str) -> bool {
+pub(crate) fn is_lowercase_sha256(value: &str) -> bool {
     value.len() == 64
         && value
             .chars()

@@ -3,7 +3,6 @@
 # The verifier scans every current production Rust source file under `src/`,
 # skips tests and diagnostics by rule, and requires every remaining candidate
 # runtime literal to be recorded here with a classification and rationale.
-
 [[allowed]]
 path = "src/bin/stream_to_lake.rs"
 kind = "string"
@@ -767,10 +766,34 @@ reason = "This domain separator pins the config-bundle checksum format used to b
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
 kind = "number"
-literal = '''5'''
-context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 5;'''
+literal = '''6'''
+context = '''pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 6;'''
 classification = "decision_evidence_envelope_schema_version"
-reason = "This is the decision-evidence JSONL envelope schema version. v5 combines compiled NT order-field evidence with strategy-input snapshot evidence; it is part of the audit-record contract, not an operator runtime value."
+reason = "This is the decision-evidence JSONL envelope schema version. v6 adds execution_client_id to submit-admission decisions so approval-limit evidence is auditable by execution client; it is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"strategy_input_snapshot"'''
+context = '''const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL envelope discriminator for strategy-input snapshot records and is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"order_intent"'''
+context = '''const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL envelope discriminator for order-intent records and is part of the audit-record contract, not an operator runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_decision_evidence.rs"
+kind = "string"
+literal = '''"admission_decision"'''
+context = '''const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";'''
+classification = "decision_evidence_record_kind"
+reason = "This is the JSONL envelope discriminator for admission-decision records and is part of the audit-record contract, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_decision_evidence.rs"
@@ -2060,7 +2083,7 @@ reason = "This is a canonical selected-market metadata-provenance field name pop
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = "\"Down\""
-context = "\"Down\" => UpdownOutcomeSide::Down,"
+context = "\"Down\" => OutcomeSide::Down,"
 classification = "nt_binary_option_outcome_value"
 reason = "The updown market-family module owns the NautilusTrader BinaryOption outcome label for the down instrument; strategy code consumes typed selected-market facts."
 
@@ -2068,7 +2091,7 @@ reason = "The updown market-family module owns the NautilusTrader BinaryOption o
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "string"
 literal = "\"Up\""
-context = "\"Up\" => UpdownOutcomeSide::Up,"
+context = "\"Up\" => OutcomeSide::Up,"
 classification = "nt_binary_option_outcome_value"
 reason = "The updown market-family module owns the NautilusTrader BinaryOption outcome label for the up instrument; strategy code consumes typed selected-market facts."
 
@@ -2135,6 +2158,62 @@ literal = "\"updown\""
 context = "pub const KEY: &str = \"updown\";"
 classification = "market_family_dispatch_key"
 reason = "This is the accepted market_family registry key for the currently implemented Bolt-v3 updown binding, not an operator-tunable runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_market_families/hyperliquid_instrument.rs"
+kind = "string"
+literal = "\"hyperliquid_instrument\""
+context = "pub const KEY: &str = \"hyperliquid_instrument\";"
+classification = "market_family_dispatch_key"
+reason = "This is the accepted market_family registry key for static Hyperliquid instrument routing identity; instrument ids and product surfaces remain TOML-owned."
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/hyperliquid_instrument.rs'''
+kind = '''string'''
+literal = '''"product_surface"'''
+context = '''"product_surface",'''
+classification = '''selected_market_metadata_field'''
+reason = '''This labels static Hyperliquid selected-market provenance; the product surface value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/hyperliquid_instrument.rs'''
+kind = '''string'''
+literal = '''"instrument_id"'''
+context = '''("instrument_id", instrument_id.as_str()),'''
+classification = '''selected_market_metadata_field'''
+reason = '''This labels static Hyperliquid selected-market provenance; the instrument id value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/hyperliquid_instrument.rs'''
+kind = '''string'''
+literal = '''"standard_perps"'''
+context = '''ProductSurface::StandardPerps => "standard_perps",'''
+classification = '''hyperliquid_product_surface_label'''
+reason = '''This is the stable Hyperliquid product-surface label used for exact route/proof identity; the selected surface remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/hyperliquid_instrument.rs'''
+kind = '''string'''
+literal = '''"spot"'''
+context = '''ProductSurface::Spot => "spot",'''
+classification = '''hyperliquid_product_surface_label'''
+reason = '''This is the stable Hyperliquid product-surface label used for exact route/proof identity; the selected surface remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/hyperliquid_instrument.rs'''
+kind = '''string'''
+literal = '''"hip3_builder_perps"'''
+context = '''ProductSurface::Hip3BuilderPerps => "hip3_builder_perps",'''
+classification = '''hyperliquid_product_surface_label'''
+reason = '''This is the stable Hyperliquid product-surface label used for exact route/proof identity; the selected surface remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_market_families/hyperliquid_instrument.rs'''
+kind = '''string'''
+literal = '''"hip4_outcomes"'''
+context = '''ProductSurface::Hip4Outcomes => "hip4_outcomes",'''
+classification = '''hyperliquid_product_surface_label'''
+reason = '''This is the stable Hyperliquid product-surface label used for exact route/proof identity; the selected surface remains TOML-owned.'''
 
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
@@ -2999,6 +3078,30 @@ literal = "1"
 context = "inner.admitted_order_count += 1;"
 classification = "submit_admission_counter_increment"
 reason = "Each admitted live submit consumes exactly one order-count slot from the operator-provided gate cap."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = ".or_insert(0) += 1;"
+classification = "submit_admission_counter_identity"
+reason = "The per-client live-submit approval counter starts empty on first admitted order for that execution client; the cap remains artifact-owned."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "1"
+context = ".or_insert(0) += 1;"
+classification = "submit_admission_counter_increment"
+reason = "Each admitted order for an approved execution client consumes exactly one slot from that client's consumed live-submit approval artifact."
+
+[[allowed]]
+path = "src/bolt_v3_submit_admission.rs"
+kind = "number"
+literal = "0"
+context = ".unwrap_or(0)"
+classification = "submit_admission_counter_identity"
+reason = "A missing per-client live-submit approval counter means no orders have been admitted for that execution client yet; the cap remains artifact-owned."
 
 [[allowed]]
 path = "src/bolt_v3_submit_admission.rs"
@@ -4425,20 +4528,20 @@ classification = "strategy_evidence_reason_code"
 reason = "This is a stable evidence reason code describing computed uncertainty-band provenance, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_taker_signal.rs"
 kind = "string"
 literal = '''"down"'''
 context = '''OutcomeSide::Down => "down",'''
 classification = "strategy_evidence_outcome_side_label"
-reason = "This is a stable evidence label for the binary outcome side already selected by strategy logic; it records provenance and does not configure trading behavior."
+reason = "This is a stable evidence label for the binary outcome side, emitted by the shared taker-signal decision math (bolt_v3_taker_signal::outcome_side_evidence_label); it records provenance and does not configure trading behavior."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_taker_signal.rs"
 kind = "string"
 literal = '''"up"'''
 context = '''OutcomeSide::Up => "up",'''
 classification = "strategy_evidence_outcome_side_label"
-reason = "This is a stable evidence label for the binary outcome side already selected by strategy logic; it records provenance and does not configure trading behavior."
+reason = "This is a stable evidence label for the binary outcome side, emitted by the shared taker-signal decision math (bolt_v3_taker_signal::outcome_side_evidence_label); it records provenance and does not configure trading behavior."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
@@ -8478,15 +8581,15 @@ kind = "string"
 literal = '''"let Some(report) = inner.gate_report.as_ref() else"'''
 context = '''"let Some(report) = inner.gate_report.as_ref() else";'''
 classification = "operator_source_proof_static_marker"
-reason = "This marker verifies submit admission checks live-canary arming before admitting orders; it is source evidence, not an operator runtime value."
+reason = "This marker verifies submit admission handles the optional unarmed gate branch after lifecycle checks; it is source evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"return BoltV3AdmissionOutcome::RejectedNotArmed;"'''
-context = '''"return BoltV3AdmissionOutcome::RejectedNotArmed;";'''
+literal = '''"return BoltV3AdmissionOutcome::Admitted;"'''
+context = '''"return BoltV3AdmissionOutcome::Admitted;";'''
 classification = "operator_source_proof_static_marker"
-reason = "This marker verifies unarmed submit admission rejects orders; it is source evidence, not an operator runtime value."
+reason = "This marker verifies unarmed submit admission reaches the explicit allow branch only after lifecycle checks; it is source evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -8503,14 +8606,6 @@ literal = '''"return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;"
 context = '''"return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;";'''
 classification = "operator_source_proof_static_marker"
 reason = "This marker verifies disallowed lifecycle submissions fail closed; it is source evidence, not an operator runtime value."
-
-[[allowed]]
-path = "src/bolt_v3_operator_artifacts.rs"
-kind = "string"
-literal = '''"BoltV3AdmissionOutcome::Admitted"'''
-context = '''const ABORT_PLAN_SERVICE_ADMISSION_ADMITTED_MARKER: &str = "BoltV3AdmissionOutcome::Admitted";'''
-classification = "operator_source_proof_static_marker"
-reason = "This marker verifies service-policy rejections occur before the admitted outcome; it is source evidence, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -8619,10 +8714,10 @@ reason = "This field names the submit-admission evaluator function-scope diagnos
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "string"
-literal = '''"submit_admission_rejects_unarmed_and_disallowed_lifecycle"'''
-context = '''"submit_admission_rejects_unarmed_and_disallowed_lifecycle",'''
+literal = '''"submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle"'''
+context = '''"submit_admission_allows_unarmed_and_rejects_disallowed_lifecycle",'''
 classification = "operator_source_proof_diagnostic_field"
-reason = "This field names the submit-admission unarmed and lifecycle rejection proof diagnostic, not an operator runtime value."
+reason = "This field names the submit-admission unarmed-allow and lifecycle rejection proof diagnostic, not an operator runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"
@@ -14361,15 +14456,15 @@ classification = '''canary_proof_decimal_diagnostic_field'''
 reason = '''This is a decimal parse diagnostic label for source-owned proof artifacts, not a runtime trading value.'''
 
 [[allowed]]
-path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''string'''
 literal = '''"canary proof notional"'''
-context = '''proof_notional: decimal_from_str(policy.proof_notional.as_str(), "canary proof notional")?,'''
+context = '''"canary proof notional",'''
 classification = '''canary_proof_decimal_diagnostic_field'''
 reason = '''This is a decimal parse diagnostic label for TOML-owned proof notional, not a hardcoded amount.'''
 
 [[allowed]]
-path = '''src/bolt_v3_providers/polymarket/entry_decision_source_inputs.rs'''
+path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''string'''
 literal = '''"canary proof max notional per order"'''
 context = '''"canary proof max notional per order",'''
@@ -15071,6 +15166,7 @@ literal = '''".spending"'''
 context = '''const PHASE8_NONCE_SPEND_TEMP_SUFFIX: &str = ".spending";'''
 classification = '''phase8_nonce_spend_temp_suffix'''
 reason = '''Internal filesystem suffix for the sibling temp file used to atomically and durably overwrite the operator approval nonce on consume (write temp + fsync + atomic rename over the nonce + parent-directory fsync, so the spend is the first durable one-way transition). Not an operator runtime value; it is appended to the configured nonce path to form a same-directory staging file name.'''
+
 [[allowed]]
 path = "src/bolt_v3_market_families/updown.rs"
 kind = "number"
@@ -15078,6 +15174,7 @@ literal = '''2.0'''
 context = '''const SIGMA_SQUARED_HALF_DIVISOR: f64 = 2.0;'''
 classification = "pricing_formula_constant"
 reason = "This is the named sigma-squared-over-two divisor in the updown family's fair-probability formula, not an operator runtime value."
+
 [[allowed]]
 path = '''src/bolt_v3_live_canary_gate.rs'''
 kind = '''string'''
@@ -15085,6 +15182,7 @@ literal = '''"no_submit_readiness_report_sha256"'''
 context = '''"no_submit_readiness_report_sha256",'''
 classification = '''no_submit_readiness_operator_evidence_field'''
 reason = '''This names a TOML-owned operator-evidence hash field that binds the no-submit readiness report to the approval envelope, consumed by the live gate; the value remains config-owned.'''
+
 [[allowed]]
 path = '''src/bolt_v3_operator_artifacts.rs'''
 kind = '''string'''
@@ -15092,6 +15190,7 @@ literal = '''"no_submit_readiness_report_path"'''
 context = '''validate_operator_evidence_toml_path("no_submit_readiness_report_path", configured_path)?;'''
 classification = '''no_submit_readiness_operator_evidence_field'''
 reason = '''This labels validation for a TOML-owned no-submit readiness-report artifact path; the path value remains config-owned.'''
+
 [[allowed]]
 path = '''src/bolt_v3_live_node.rs'''
 kind = '''number'''
@@ -15099,6 +15198,718 @@ literal = '''0'''
 context = '''run_classification_ok && canary_proof_executor_enabled && admitted_order_count == 0'''
 classification = '''blocked_before_submit_zero_admitted_sentinel'''
 reason = '''Structural check that a canary/proof run admitted zero live orders (blocked-before-submit outcome); the operator order-count cap comes from the validated live canary gate report.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''let mut count = 0;'''
+classification = '''hyperliquid_live_submit_client_counter_initial_value'''
+reason = '''This initializes a structural count of configured provider live-submit clients; operator approval limits remain TOML/artifact-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_live_node.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''count += 1;'''
+classification = '''hyperliquid_live_submit_client_counter_increment'''
+reason = '''This increments a structural count of configured provider live-submit clients; operator approval limits remain TOML/artifact-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''&& cfg.outcome_settlement_poll_secs == 0'''
+classification = '''hip4_settlement_poll_zero_rejection_sentinel'''
+reason = '''This rejects a zero HIP-4 settlement poll cadence before adapter mapping; the accepted cadence remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution"'''
+context = '''"execution",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels parsing for the TOML-owned Hyperliquid execution block before approval loading; the execution values themselves remain TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.live_submit_approval_id"'''
+context = '''"execution.live_submit_approval_id",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit approval id during approval artifact materialization; the approval id value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.live_submit_approval_artifact_max_bytes"'''
+context = '''"execution.live_submit_approval_artifact_max_bytes",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit approval artifact byte cap; the cap value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.live_submit_approval_artifact_path"'''
+context = '''"execution.live_submit_approval_artifact_path",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit approval artifact path; the path value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.live_submit_product_proof_artifact_path"'''
+context = '''"execution.live_submit_product_proof_artifact_path",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit product proof artifact path; the path value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.live_submit_product_proof_artifact_sha256"'''
+context = '''"execution.live_submit_product_proof_artifact_sha256",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit product proof artifact checksum; the checksum value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.live_submit_product_proof_artifact_max_bytes"'''
+context = '''"execution.live_submit_product_proof_artifact_max_bytes",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit product proof artifact byte cap; the cap value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"product_submit_proof.artifact_path"'''
+context = '''"product_submit_proof.artifact_path",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels runtime validation for the TOML/evidence-owned Hyperliquid product proof artifact path before one-time approval consumption; the path value itself remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"product_submit_proof.artifact_sha256"'''
+context = '''"product_submit_proof.artifact_sha256",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels runtime validation for the TOML/evidence-owned Hyperliquid product proof artifact checksum before one-time approval consumption; the checksum value itself remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.live_submit_max_order_count"'''
+context = '''"execution.live_submit_max_order_count",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit max order count bound; the bound value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.live_submit_max_order_notional"'''
+context = '''"execution.live_submit_max_order_notional",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid live-submit max order notional bound; the bound value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"execution.product_surfaces"'''
+context = '''"execution.product_surfaces",'''
+classification = '''hyperliquid_live_submit_approval_field_label'''
+reason = '''This labels validation for the TOML-owned Hyperliquid product surface bound to a consumed live-submit approval; the surface value itself remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''&& execution.outcome_settlement_poll_secs == 0'''
+classification = '''hip4_settlement_poll_zero_rejection_sentinel'''
+reason = '''This rejects a zero HIP-4 settlement poll cadence before adapter mapping; the accepted cadence remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''number'''
+literal = '''20'''
+context = '''pub const USER_FEES_OFFICIAL_INFO_REQUEST_WEIGHT: u32 = 20;'''
+classification = '''hyperliquid_protocol_request_weight'''
+reason = '''This is Hyperliquid's documented fixed Info API userFees request weight, not an operator-tunable runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"userCrossRate"'''
+context = '''const USER_CROSS_RATE_FIELD: &str = "userCrossRate";'''
+classification = '''hyperliquid_protocol_fee_field'''
+reason = '''This is the fixed Hyperliquid userFees response field used to read the account taker/cross rate; account selection and endpoints remain TOML/SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''number'''
+literal = '''10_000'''
+context = '''const BASIS_POINTS_PER_UNIT_RATE: i64 = 10_000;'''
+classification = '''basis_point_conversion_factor'''
+reason = '''This is the fixed conversion from a unit fee rate to basis points; the fee rate itself comes from Hyperliquid userFees.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''number'''
+literal = '''1200'''
+context = '''pub const REST_EGRESS_CAP_PER_MINUTE: u32 = 1200;'''
+classification = '''hyperliquid_protocol_rest_egress_cap'''
+reason = '''This is Hyperliquid's documented fixed API weight cap per minute used to reconcile Bolt order-rate validation; operator order rates remain TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''number'''
+literal = '''40'''
+context = '''rest.len() == 40'''
+classification = '''evm_address_syntax_gate'''
+reason = '''This is the required 20-byte EVM address payload length after the 0x prefix, enforced before Hyperliquid credentials are accepted.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"0x"'''
+context = '''.strip_prefix("0x")'''
+classification = '''evm_address_syntax_gate'''
+reason = '''This is the required EVM hexadecimal address prefix enforced by Hyperliquid account/vault address validation.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"0x"'''
+context = '''.strip_prefix("0x")'''
+classification = '''evm_private_key_normalization_prefix'''
+reason = '''This normalizes the optional lowercase EVM private-key hex prefix before hashing Hyperliquid signer-owner evidence; the secret value remains SSM-owned and redacted.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"0X"'''
+context = '''.or_else(|| private_key.strip_prefix("0X"))'''
+classification = '''evm_private_key_normalization_prefix'''
+reason = '''This normalizes the optional uppercase EVM private-key hex prefix before hashing Hyperliquid signer-owner evidence; the secret value remains SSM-owned and redacted.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"HYPERLIQUID"'''
+context = '''pub const KEY: &str = "HYPERLIQUID";'''
+classification = '''provider_dispatch_key'''
+reason = '''This is the accepted NT Venue identifier for the Hyperliquid venue binding, not an operator-tunable runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"HYPERLIQUID_ACCOUNT_ADDRESS"'''
+context = '''"HYPERLIQUID_ACCOUNT_ADDRESS",'''
+classification = '''forbidden_environment_variable'''
+reason = '''Runtime contract Section 3 requires rejecting canonical Hyperliquid environment-variable secret fallbacks before NT client construction.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"HYPERLIQUID_PK"'''
+context = '''"HYPERLIQUID_PK",'''
+classification = '''forbidden_environment_variable'''
+reason = '''Runtime contract Section 3 requires rejecting canonical Hyperliquid environment-variable secret fallbacks before NT client construction.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"HYPERLIQUID_TESTNET_PK"'''
+context = '''"HYPERLIQUID_TESTNET_PK",'''
+classification = '''forbidden_environment_variable'''
+reason = '''Runtime contract Section 3 requires rejecting canonical Hyperliquid environment-variable secret fallbacks before NT client construction.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"HYPERLIQUID_TESTNET_VAULT"'''
+context = '''"HYPERLIQUID_TESTNET_VAULT",'''
+classification = '''forbidden_environment_variable'''
+reason = '''Runtime contract Section 3 requires rejecting canonical Hyperliquid environment-variable secret fallbacks before NT client construction.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"HYPERLIQUID_VAULT"'''
+context = '''"HYPERLIQUID_VAULT",'''
+classification = '''forbidden_environment_variable'''
+reason = '''Runtime contract Section 3 requires rejecting canonical Hyperliquid environment-variable secret fallbacks before NT client construction.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"Hyperliquid Docs: Rate limits and user limits - all other documented info requests weight 20"'''
+context = '''"Hyperliquid Docs: Rate limits and user limits - all other documented info requests weight 20";'''
+classification = '''hyperliquid_protocol_request_weight_evidence_label'''
+reason = '''This labels the vendor documentation source for the fixed userFees request weight in readiness evidence, not a runtime parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"Hyperliquid Info endpoint all perp dex metadata `allPerpMetas`"'''
+context = '''&["Hyperliquid Info endpoint all perp dex metadata `allPerpMetas`"];'''
+classification = '''hyperliquid_operator_evidence_label'''
+reason = '''This is a Hyperliquid operator-evidence checklist label used to gate live submit, not a trading parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"Hyperliquid Info endpoint outcome metadata `outcomeMeta`"'''
+context = '''&["Hyperliquid Info endpoint outcome metadata `outcomeMeta`"];'''
+classification = '''hyperliquid_operator_evidence_label'''
+reason = '''This is a Hyperliquid operator-evidence checklist label used to gate live submit, not a trading parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"Hyperliquid Info endpoint perpetuals metadata `meta`"'''
+context = '''&["Hyperliquid Info endpoint perpetuals metadata `meta`"];'''
+classification = '''hyperliquid_operator_evidence_label'''
+reason = '''This is a Hyperliquid operator-evidence checklist label used to gate live submit, not a trading parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"Hyperliquid Info endpoint spot metadata `spotMeta`"'''
+context = '''&["Hyperliquid Info endpoint spot metadata `spotMeta`"];'''
+classification = '''hyperliquid_operator_evidence_label'''
+reason = '''This is a Hyperliquid operator-evidence checklist label used to gate live submit, not a trading parameter.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"Hyperliquid execution client"'''
+context = '''consumer: "Hyperliquid execution client",'''
+classification = '''provider_secret_requirement_label'''
+reason = '''This label explains the provider-owned credential-consuming block covered by central required-[secrets] validation.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"clients.{key}.execution.live_submit_approval_id cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit"'''
+context = '''"clients.{key}.execution.live_submit_approval_id cannot enable Hyperliquid live submit while pinned NautilusTrader {} info request weight is {} but the official documented weight is {}; update the NT pin or the provider rate-limit policy before live submit",'''
+classification = '''hyperliquid_fail_closed_rate_limit_diagnostic'''
+reason = '''This is the provider validation diagnostic emitted when a TOML live-submit approval is configured while the pinned NT Hyperliquid userFees request weight undercounts the official protocol weight; the request weights themselves are fixed evidence values, not operator-tunable runtime inputs.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"strategy.target"'''
+context = '''"strategy.target",'''
+classification = '''hyperliquid_static_target_surface_field_label'''
+reason = '''This names the strategy target block in the provider-owned pre-consumption route validation diagnostic for static Hyperliquid target surface mismatches.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`"'''
+context = '''"configured target `{}` uses Hyperliquid product surface `{}` on client `{}`, but execution.product_surfaces selects `{}`",'''
+classification = '''hyperliquid_static_target_surface_diagnostic'''
+reason = '''This is the provider fail-closed diagnostic when a static Hyperliquid target's TOML product_surface differs from the execution client's configured and approved product surface.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}` and this client selects `{}`"'''
+context = '''"configured target `{}` uses `{}` market family on client `{}`, but Hyperliquid `{}` targets require execution.product_surfaces `{}` and this client selects `{}`",'''
+classification = '''hyperliquid_updown_surface_diagnostic'''
+reason = '''This is the provider fail-closed diagnostic when an updown target is routed to a Hyperliquid execution client whose TOML product surface is not HIP-4 outcomes; the target and surface values remain TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"Hyperliquid canary proof artifacts require a configured [data] block"'''
+context = '''"Hyperliquid canary proof artifacts require a configured [data] block",'''
+classification = '''hyperliquid_canary_proof_diagnostic'''
+reason = '''This is a fail-closed diagnostic ensuring Hyperliquid canary proof artifact collection requires the NT market-data adapter config; it is not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"Hyperliquid canary proof reference quote price"'''
+context = '''"Hyperliquid canary proof reference quote price",'''
+classification = '''canary_proof_decimal_diagnostic_field'''
+reason = '''This is a decimal parse diagnostic label for source-owned Hyperliquid reference quote data, not a hardcoded price.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"account_address"'''
+context = '''const RAW_SECRET_FIELD_NAMES: &[&str] = &["private_key", "account_address", "vault_address"];'''
+classification = '''hyperliquid_secret_payload_field_name'''
+reason = '''This names an expected non-logged Hyperliquid SSM secret payload field; the secret value remains SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"hip3_builder_perps"'''
+context = '''HyperliquidProductSurface::Hip3BuilderPerps => "hip3_builder_perps",'''
+classification = '''hyperliquid_product_surface_label'''
+reason = '''This is the stable Hyperliquid product-surface label used for exact approval and evidence matching; the selected surface remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"hip4_outcomes"'''
+context = '''HyperliquidProductSurface::Hip4Outcomes => "hip4_outcomes",'''
+classification = '''hyperliquid_product_surface_label'''
+reason = '''This is the stable Hyperliquid product-surface label used for exact approval and evidence matching; the selected surface remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"http://"'''
+context = '''|| !(latency_profile.local_info_node_url.starts_with("http://")'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted HTTP URL scheme prefix used to fail closed on malformed TOML/artifact-owned Hyperliquid info-node URLs.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"http_timeout_secs"'''
+context = '''("http_timeout_secs", execution.http_timeout_secs),'''
+classification = '''validation_field_label'''
+reason = '''This label names a Hyperliquid execution config field being validated; the value itself is TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"https://"'''
+context = '''|| latency_profile.local_info_node_url.starts_with("https://"))'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted HTTPS URL scheme prefix used to fail closed on malformed TOML/artifact-owned Hyperliquid info-node URLs.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"max_retries"'''
+context = '''("max_retries", execution.max_retries),'''
+classification = '''validation_field_label'''
+reason = '''This label names a Hyperliquid execution config field being validated; the value itself is TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::common::credential"'''
+context = '''pub const CREDENTIAL_LOG_MODULES: &[&str] = &["nautilus_hyperliquid::common::credential"];'''
+classification = '''provider_credential_log_module'''
+reason = '''The Hyperliquid provider binding owns the NT credential-log module path that Bolt-v3 forces to WARN before LiveNode construction.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::http::client::HyperliquidHttpClient::info_user_fees"'''
+context = '''"nautilus_hyperliquid::http::client::HyperliquidHttpClient::info_user_fees",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::http::client::InnerHyperliquidHttpClient::info_user_fees"'''
+context = '''"nautilus_hyperliquid::http::client::InnerHyperliquidHttpClient::info_user_fees",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::http::models::OutcomeMeta"'''
+context = '''"nautilus_hyperliquid::http::models::OutcomeMeta",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::http::models::PerpMeta"'''
+context = '''"nautilus_hyperliquid::http::models::PerpMeta",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::http::models::SpotMeta"'''
+context = '''"nautilus_hyperliquid::http::models::SpotMeta",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::http::parse::parse_outcome_instruments"'''
+context = '''"nautilus_hyperliquid::http::parse::parse_outcome_instruments",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::http::parse::parse_perp_instruments"'''
+context = '''"nautilus_hyperliquid::http::parse::parse_perp_instruments",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::http::parse::parse_spot_instruments"'''
+context = '''"nautilus_hyperliquid::http::parse::parse_spot_instruments",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::http::query::InfoRequest::all_perp_metas"'''
+context = '''"nautilus_hyperliquid::http::query::InfoRequest::all_perp_metas",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::http::query::InfoRequest::meta"'''
+context = '''"nautilus_hyperliquid::http::query::InfoRequest::meta",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::http::query::InfoRequest::outcome_meta"'''
+context = '''"nautilus_hyperliquid::http::query::InfoRequest::outcome_meta",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::http::query::InfoRequest::spot_meta"'''
+context = '''"nautilus_hyperliquid::http::query::InfoRequest::spot_meta",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::http::query::InfoRequest::user_fees"'''
+context = '''"nautilus_hyperliquid::http::query::InfoRequest::user_fees",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"nautilus_hyperliquid::python::http::HyperliquidHttpClient::py_info_user_fees"'''
+context = '''"nautilus_hyperliquid::python::http::HyperliquidHttpClient::py_info_user_fees",'''
+classification = '''hyperliquid_nt_api_symbol'''
+reason = '''This names an NT Hyperliquid API symbol used in readiness/proof evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"private_key"'''
+context = '''const RAW_SECRET_FIELD_NAMES: &[&str] = &["private_key", "account_address", "vault_address"];'''
+classification = '''hyperliquid_secret_payload_field_name'''
+reason = '''This names an expected non-logged Hyperliquid SSM secret payload field; the secret value remains SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"retry_delay_initial_ms"'''
+context = '''("retry_delay_initial_ms", execution.retry_delay_initial_ms),'''
+classification = '''validation_field_label'''
+reason = '''This label names a Hyperliquid execution config field being validated; the value itself is TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"retry_delay_max_ms"'''
+context = '''("retry_delay_max_ms", execution.retry_delay_max_ms),'''
+classification = '''validation_field_label'''
+reason = '''This label names a Hyperliquid execution config field being validated; the value itself is TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"spot"'''
+context = '''HyperliquidProductSurface::Spot => "spot",'''
+classification = '''hyperliquid_product_surface_label'''
+reason = '''This is the stable Hyperliquid product-surface label used for exact approval and evidence matching; the selected surface remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"standard_perps"'''
+context = '''HyperliquidProductSurface::StandardPerps => "standard_perps",'''
+classification = '''hyperliquid_product_surface_label'''
+reason = '''This is the stable Hyperliquid product-surface label used for exact approval and evidence matching; the selected surface remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"userFees"'''
+context = '''request_type: "userFees",'''
+classification = '''hyperliquid_protocol_request_type'''
+reason = '''This is the Hyperliquid Info API request type for fee evidence, fixed by vendor protocol.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"vault_address"'''
+context = '''const RAW_SECRET_FIELD_NAMES: &[&str] = &["private_key", "account_address", "vault_address"];'''
+classification = '''hyperliquid_secret_payload_field_name'''
+reason = '''This names an expected non-logged Hyperliquid SSM secret payload field; the secret value remains SSM-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"ws_post_timeout_secs"'''
+context = '''("ws_post_timeout_secs", execution.ws_post_timeout_secs),'''
+classification = '''validation_field_label'''
+reason = '''This label names a Hyperliquid execution config field being validated; the value itself is TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''b"bolt-v3-hyperliquid-signer-owner-v1:"'''
+context = '''hasher.update(b"bolt-v3-hyperliquid-signer-owner-v1:");'''
+classification = '''hyperliquid_signer_owner_hash_domain'''
+reason = '''This is the stable domain-separation tag for hashing signer-owner evidence, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''b"bolt-v3-hyperliquid-live-submit-signer-v1:"'''
+context = '''hasher.update(b"bolt-v3-hyperliquid-live-submit-signer-v1:");'''
+classification = '''hyperliquid_live_submit_signer_fingerprint_hash_domain'''
+reason = '''This is the stable domain-separation tag for hashing the SSM-resolved signer into approval-binding evidence; it does not expose or configure the secret value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"://"'''
+context = '''|| !value[parsed.scheme().len()..].starts_with("://")'''
+classification = '''url_syntax_validation_literal'''
+reason = '''This validates that a TOML-owned Hyperliquid data endpoint uses a normal absolute URL delimiter before NT data-client construction; the endpoint value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"data.base_url_http"'''
+context = '''"data.base_url_http",'''
+classification = '''hyperliquid_data_validation_field_label'''
+reason = '''This labels validation for the Hyperliquid data HTTP endpoint field; the endpoint value itself is TOML-owned and passed to NT.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"data.base_url_ws"'''
+context = '''"data.base_url_ws",'''
+classification = '''hyperliquid_data_validation_field_label'''
+reason = '''This labels validation for the Hyperliquid data WebSocket endpoint field; the endpoint value itself is TOML-owned and passed to NT.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"data.proxy_url"'''
+context = '''"data.proxy_url",'''
+classification = '''hyperliquid_data_validation_field_label'''
+reason = '''This labels validation for the optional Hyperliquid data proxy URL field; the proxy value itself is TOML-owned and passed to NT.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"http"'''
+context = '''&["http", "https"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted HTTP URL scheme for the TOML-owned Hyperliquid data HTTP endpoint.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"http"'''
+context = '''&["http", "https", "socks5", "socks5h"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted HTTP proxy URL scheme for the optional TOML-owned Hyperliquid data proxy.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"http_timeout_secs"'''
+context = '''("http_timeout_secs", data.http_timeout_secs),'''
+classification = '''hyperliquid_data_validation_field_label'''
+reason = '''This label names a Hyperliquid data config timeout field being validated; the value itself is TOML-owned and passed to NT.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"https"'''
+context = '''&["http", "https"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted HTTPS URL scheme for the TOML-owned Hyperliquid data HTTP endpoint.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"https"'''
+context = '''&["http", "https", "socks5", "socks5h"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted HTTPS proxy URL scheme for the optional TOML-owned Hyperliquid data proxy.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"socks5"'''
+context = '''&["http", "https", "socks5", "socks5h"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted SOCKS5 proxy URL scheme for the optional TOML-owned Hyperliquid data proxy.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"socks5h"'''
+context = '''&["http", "https", "socks5", "socks5h"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted SOCKS5-hostname proxy URL scheme for the optional TOML-owned Hyperliquid data proxy.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"update_instruments_interval_mins"'''
+context = '''"update_instruments_interval_mins",'''
+classification = '''hyperliquid_data_validation_field_label'''
+reason = '''This label names the Hyperliquid data instrument-refresh cadence field being validated; the cadence value itself is TOML-owned and passed to NT.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"ws"'''
+context = '''&["ws", "wss"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted WebSocket URL scheme for the TOML-owned Hyperliquid data WebSocket endpoint.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"ws_timeout_secs"'''
+context = '''("ws_timeout_secs", data.ws_timeout_secs),'''
+classification = '''hyperliquid_data_validation_field_label'''
+reason = '''This label names a Hyperliquid data WebSocket timeout field being validated; the value itself is TOML-owned and passed to NT.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid.rs'''
+kind = '''string'''
+literal = '''"wss"'''
+context = '''&["ws", "wss"],'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted secure WebSocket URL scheme for the TOML-owned Hyperliquid data WebSocket endpoint.'''
 
 [[allowed]]
 path = '''src/bolt_v3_operator_artifacts.rs'''
@@ -15120,6 +15931,14 @@ reason = '''Structural Phase 8 proof multiplier for one admitted entry and one a
 path = '''src/bolt_v3_submit_admission.rs'''
 kind = '''number'''
 literal = '''0'''
+context = '''submit: 0,'''
+classification = '''no_submit_mutation_count_none_invariant'''
+reason = '''This initializes the source-owned no-exchange-mutation proof counter for submit requests; observed counts come from captured exchange traffic, not operator config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''0'''
 context = '''admitted_replace_submit_order_count: 0,'''
 classification = '''submit_admission_counter_zero'''
 reason = '''Initial value for an internal admission counter; operator limits and admissibility values remain TOML-owned and validated separately.'''
@@ -15128,9 +15947,705 @@ reason = '''Initial value for an internal admission counter; operator limits and
 path = '''src/bolt_v3_submit_admission.rs'''
 kind = '''number'''
 literal = '''0'''
+context = '''cancel: 0,'''
+classification = '''no_submit_mutation_count_none_invariant'''
+reason = '''This initializes the source-owned no-exchange-mutation proof counter for cancel requests; observed counts come from captured exchange traffic, not operator config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''0'''
 context = '''inner.admitted_replace_submit_order_count = 0;'''
 classification = '''submit_admission_counter_zero'''
 reason = '''Reset value for an internal admission counter; operator limits and admissibility values remain TOML-owned and validated separately.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''modify: 0,'''
+classification = '''no_submit_mutation_count_none_invariant'''
+reason = '''This initializes the source-owned no-exchange-mutation proof counter for modify requests; observed counts come from captured exchange traffic, not operator config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''transfer: 0,'''
+classification = '''no_submit_mutation_count_none_invariant'''
+reason = '''This initializes the source-owned no-exchange-mutation proof counter for transfer requests; observed counts come from captured exchange traffic, not operator config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''account: 0,'''
+classification = '''no_submit_mutation_count_none_invariant'''
+reason = '''This initializes the source-owned no-exchange-mutation proof counter for account requests; observed counts come from captured exchange traffic, not operator config.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''string'''
+literal = '''"bolt-v3 no-submit exchange mutation guard observed {mutation_count} mutating request(s)"'''
+context = '''"bolt-v3 no-submit exchange mutation guard observed {mutation_count} mutating request(s)"'''
+classification = '''no_submit_mutation_guard_diagnostic_template'''
+reason = '''This fail-closed diagnostic reports observed mutating exchange requests during the no-submit guard; the count is computed from captured requests.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const LATENCY_PROFILE_SCHEMA_VERSION: u32 = 1;'''
+classification = '''operator_artifact_schema_version'''
+reason = '''This is the stable provider-side Hyperliquid operator-artifact schema version marker; it is not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const LIVE_SUBMIT_APPROVAL_SCHEMA_VERSION: u32 = 1;'''
+classification = '''operator_artifact_schema_version'''
+reason = '''This is the stable provider-side Hyperliquid operator-artifact schema version marker; it is not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const PRODUCT_MATRIX_SCHEMA_VERSION: u32 = 1;'''
+classification = '''operator_artifact_schema_version'''
+reason = '''This is the stable provider-side Hyperliquid operator-artifact schema version marker; it is not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''const PRODUCT_SUBMIT_PROOF_SCHEMA_VERSION: u32 = 1;'''
+classification = '''operator_artifact_schema_version'''
+reason = '''This is the stable provider-side Hyperliquid product-submit proof artifact schema version marker; it is not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''number'''
+literal = '''40'''
+context = '''if value.len() == 40'''
+classification = '''git_sha_or_sha256_width_validation'''
+reason = '''This is the fixed lowercase-hex digest width used to validate evidence hashes and git SHAs; the checked value remains artifact-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"approval_artifact"'''
+context = '''"approval_artifact",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"approval_artifact"'''
+context = '''|| provider_artifact_invalid(LIVE_SUBMIT_APPROVAL_ARTIFACT, "approval_artifact");'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact read/parse validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"approval_artifact"'''
+context = '''"approval_artifact"'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid approval-spend mismatch validation field when the locked on-disk artifact no longer matches the consumed artifact being persisted.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"approval_id"'''
+context = '''"approval_id",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"approval_id"'''
+context = '''validate_hyperliquid_live_submit_non_empty_field("approval_id", &artifact.approval_id)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"approval_id"'''
+context = '''validate_hyperliquid_live_submit_non_empty_field("approval_id", &input.approval_id)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"base_sha"'''
+context = '''"base_sha",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.hyperliquid_latency_profile.v1"'''
+context = '''const LATENCY_PROFILE_RECORD_KIND: &str = "bolt_v3.hyperliquid_latency_profile.v1";'''
+classification = '''operator_artifact_record_kind'''
+reason = '''This is the stable provider-side Hyperliquid operator-artifact record-kind marker used for evidence validation, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.hyperliquid_live_submit_approval.v1"'''
+context = '''const LIVE_SUBMIT_APPROVAL_RECORD_KIND: &str = "bolt_v3.hyperliquid_live_submit_approval.v1";'''
+classification = '''operator_artifact_record_kind'''
+reason = '''This is the stable provider-side Hyperliquid operator-artifact record-kind marker used for evidence validation, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.hyperliquid_product_submit_proof.v1"'''
+context = '''const PRODUCT_SUBMIT_PROOF_RECORD_KIND: &str = "bolt_v3.hyperliquid_product_submit_proof.v1";'''
+classification = '''operator_artifact_record_kind'''
+reason = '''This is the stable provider-side Hyperliquid product-submit proof artifact record-kind marker used for evidence validation, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"bolt_v3.hyperliquid_product_matrix.v1"'''
+context = '''const PRODUCT_MATRIX_RECORD_KIND: &str = "bolt_v3.hyperliquid_product_matrix.v1";'''
+classification = '''operator_artifact_record_kind'''
+reason = '''This is the stable provider-side Hyperliquid operator-artifact record-kind marker used for evidence validation, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"expires_at"'''
+context = '''"expires_at",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"http://"'''
+context = '''|| !(latency_profile.local_info_node_url.starts_with("http://")'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted HTTP URL scheme prefix used to fail closed on malformed TOML/artifact-owned Hyperliquid info-node URLs.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"https://"'''
+context = '''|| latency_profile.local_info_node_url.starts_with("https://"))'''
+classification = '''url_scheme_validation_literal'''
+reason = '''This is an accepted HTTP URL scheme prefix used to fail closed on malformed TOML/artifact-owned Hyperliquid info-node URLs.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"hyperliquid_latency_profile"'''
+context = '''const LATENCY_PROFILE_ARTIFACT: &str = "hyperliquid_latency_profile";'''
+classification = '''provider_artifact_validation_label'''
+reason = '''This is a provider-side artifact label used in validation diagnostics, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"hyperliquid_live_submit_approval"'''
+context = '''const LIVE_SUBMIT_APPROVAL_ARTIFACT: &str = "hyperliquid_live_submit_approval";'''
+classification = '''provider_artifact_validation_label'''
+reason = '''This is a provider-side artifact label used in validation diagnostics, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"hyperliquid_product_submit_proof"'''
+context = '''const PRODUCT_SUBMIT_PROOF_ARTIFACT: &str = "hyperliquid_product_submit_proof";'''
+classification = '''provider_artifact_validation_label'''
+reason = '''This is a provider-side product-submit proof artifact label used in validation diagnostics, not a runtime trading value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"latency_profile.local_info_node_url"'''
+context = '''"latency_profile.local_info_node_url",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side latency-profile evidence field; the field value remains TOML/artifact-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"latency_profile.measurement_artifact_path"'''
+context = '''"latency_profile.measurement_artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side latency-profile evidence field; the field value remains TOML/artifact-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"latency_profile.placement_profile"'''
+context = '''"latency_profile.placement_profile",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side latency-profile evidence field; the field value remains TOML/artifact-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_limits"'''
+context = '''"order_limits",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side live-submit approval order-limit field; the limit value remains operator-artifact-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_limits.max_order_count"'''
+context = '''"order_limits.max_order_count",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side live-submit approval order-limit field; the limit value remains operator-artifact-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_limits.max_order_notional"'''
+context = '''"order_limits.max_order_notional",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side live-submit approval order-limit field; the limit value remains operator-artifact-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"product_surface"'''
+context = '''"product_surface",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"product_submit_proof"'''
+context = '''"product_submit_proof",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid live-submit product proof binding field; the bound proof value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"product_submit_proof"'''
+context = '''provider_artifact_invalid(PRODUCT_SUBMIT_PROOF_ARTIFACT, "product_submit_proof")'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid product-submit proof parse/schema failure; the proof artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"product_submit_proof.artifact_path"'''
+context = '''"product_submit_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid live-submit product proof artifact path field; the path value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"product_submit_proof.artifact_sha256"'''
+context = '''"product_submit_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid live-submit product proof artifact checksum field; the checksum value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_proof"'''
+context = '''validate_hyperliquid_product_submit_proof_evidence_ref("order_proof", &artifact.order_proof)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the order-proof reference required inside a Hyperliquid product-submit proof artifact; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_proof"'''
+context = '''"order_proof" => "order_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the order-proof reference to its artifact-path validation field; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_proof.artifact_path"'''
+context = '''"order_proof" => "order_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the order-proof artifact path inside a Hyperliquid product-submit proof artifact; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_proof"'''
+context = '''"order_proof" => "order_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the order-proof reference to its artifact-sha256 validation field; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_proof.artifact_sha256"'''
+context = '''"order_proof" => "order_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the order-proof artifact checksum inside a Hyperliquid product-submit proof artifact; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fill_proof"'''
+context = '''validate_hyperliquid_product_submit_proof_evidence_ref("fill_proof", &artifact.fill_proof)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fill-proof reference required inside a Hyperliquid product-submit proof artifact; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fill_proof"'''
+context = '''"fill_proof" => "fill_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the fill-proof reference to its artifact-path validation field; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fill_proof.artifact_path"'''
+context = '''"fill_proof" => "fill_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fill-proof artifact path inside a Hyperliquid product-submit proof artifact; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fill_proof"'''
+context = '''"fill_proof" => "fill_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the fill-proof reference to its artifact-sha256 validation field; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fill_proof.artifact_sha256"'''
+context = '''"fill_proof" => "fill_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fill-proof artifact checksum inside a Hyperliquid product-submit proof artifact; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"rounding_proof"'''
+context = '''"rounding_proof",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the rounding-proof reference required inside a Hyperliquid product-submit proof artifact; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"rounding_proof"'''
+context = '''"rounding_proof" => "rounding_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the rounding-proof reference to its artifact-path validation field; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"rounding_proof.artifact_path"'''
+context = '''"rounding_proof" => "rounding_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the rounding-proof artifact path inside a Hyperliquid product-submit proof artifact; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"rounding_proof"'''
+context = '''"rounding_proof" => "rounding_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the rounding-proof reference to its artifact-sha256 validation field; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"rounding_proof.artifact_sha256"'''
+context = '''"rounding_proof" => "rounding_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the rounding-proof artifact checksum inside a Hyperliquid product-submit proof artifact; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fee_proof"'''
+context = '''validate_hyperliquid_product_submit_proof_evidence_ref("fee_proof", &artifact.fee_proof)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fee-proof reference required inside a Hyperliquid product-submit proof artifact; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fee_proof"'''
+context = '''"fee_proof" => "fee_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the fee-proof reference to its artifact-path validation field; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fee_proof.artifact_path"'''
+context = '''"fee_proof" => "fee_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fee-proof artifact path inside a Hyperliquid product-submit proof artifact; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fee_proof"'''
+context = '''"fee_proof" => "fee_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the fee-proof reference to its artifact-sha256 validation field; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fee_proof.artifact_sha256"'''
+context = '''"fee_proof" => "fee_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fee-proof artifact checksum inside a Hyperliquid product-submit proof artifact; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"settlement_proof"'''
+context = '''"settlement_proof",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the HIP-4 settlement-proof reference required inside a Hyperliquid outcome product-submit proof artifact; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"settlement_proof"'''
+context = '''"settlement_proof" => "settlement_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the HIP-4 settlement-proof reference to its artifact-path validation field; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"settlement_proof.artifact_path"'''
+context = '''"settlement_proof" => "settlement_proof.artifact_path",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the HIP-4 settlement-proof artifact path inside a Hyperliquid product-submit proof artifact; the path value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"settlement_proof"'''
+context = '''"settlement_proof" => "settlement_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This maps the HIP-4 settlement-proof reference to its artifact-sha256 validation field; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"settlement_proof.artifact_sha256"'''
+context = '''"settlement_proof" => "settlement_proof.artifact_sha256",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the HIP-4 settlement-proof artifact checksum inside a Hyperliquid product-submit proof artifact; the checksum value remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"provider_id"'''
+context = '''"provider_id",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"provider_id"'''
+context = '''validate_hyperliquid_live_submit_non_empty_field("provider_id", &artifact.provider_id)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"provider_id"'''
+context = '''validate_hyperliquid_live_submit_non_empty_field("provider_id", &binding.provider_id)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"provider_id"'''
+context = '''validate_hyperliquid_live_submit_non_empty_field("provider_id", &input.provider_id)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"provider_key"'''
+context = '''"provider_key",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"record_kind"'''
+context = '''"record_kind",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"schema_version"'''
+context = '''"schema_version",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"signer_fingerprint"'''
+context = '''"signer_fingerprint",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"signer_fingerprint"'''
+context = '''validate_hyperliquid_live_submit_sha256_field("signer_fingerprint", &input.signer_fingerprint)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"toml_checksum"'''
+context = '''"toml_checksum",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"toml_checksum"'''
+context = '''validate_hyperliquid_live_submit_sha256_field("toml_checksum", &artifact.toml_checksum)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"toml_checksum"'''
+context = '''validate_hyperliquid_live_submit_sha256_field("toml_checksum", &binding.toml_checksum)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"toml_checksum"'''
+context = '''validate_hyperliquid_live_submit_sha256_field("toml_checksum", &input.toml_checksum)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"provider_id"'''
+context = '''validate_hyperliquid_product_submit_proof_non_empty_field("provider_id", &input.provider_id)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the provider id inside a generated Hyperliquid product-submit proof artifact; the provider id value remains operator/config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"toml_checksum"'''
+context = '''validate_hyperliquid_product_submit_proof_sha256_field("toml_checksum", &input.toml_checksum)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the TOML checksum inside a generated Hyperliquid product-submit proof artifact; the checksum value remains config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_proof"'''
+context = '''validate_hyperliquid_product_submit_proof_evidence_ref("order_proof", &input.order_proof)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the order-proof reference supplied to the Hyperliquid product-submit proof artifact writer; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fill_proof"'''
+context = '''validate_hyperliquid_product_submit_proof_evidence_ref("fill_proof", &input.fill_proof)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fill-proof reference supplied to the Hyperliquid product-submit proof artifact writer; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fee_proof"'''
+context = '''validate_hyperliquid_product_submit_proof_evidence_ref("fee_proof", &input.fee_proof)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fee-proof reference supplied to the Hyperliquid product-submit proof artifact writer; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"used_at"'''
+context = '''"used_at",'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels a provider-side Hyperliquid operator-artifact validation field; the artifact value remains TOML/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"used_at"'''
+context = '''"used_at"'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fail-closed one-time approval spend state when persistence is asked to write an unconsumed artifact or the locked on-disk artifact is already consumed.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''file.seek(SeekFrom::Start(0))?;'''
+classification = '''approval_spend_in_place_file_start_offset'''
+reason = '''This rewinds the locked Hyperliquid live-submit approval artifact file descriptor to the beginning before writing the consumed artifact in place; it is a structural filesystem offset, not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''file.set_len(0)?;'''
+classification = '''approval_spend_in_place_truncate_length'''
+reason = '''This truncates the locked Hyperliquid live-submit approval artifact file before writing the consumed artifact in place; crash interruption leaves the artifact invalid and fail-closed, and the value is not operator-configurable runtime behavior.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''.take(max_bytes.saturating_add(1))'''
+classification = '''bounded_artifact_read_overflow_probe'''
+reason = '''This reads one byte beyond the configured artifact byte cap to detect oversized Hyperliquid approval artifacts without unbounded memory growth.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"'''
+context = '''"operator artifact exceeds max_operator_evidence_file_bytes={max_bytes} bytes (length={length})"'''
+classification = '''bounded_artifact_read_diagnostic_template'''
+reason = '''This diagnostic reports the configured artifact byte cap and observed bounded-read length for a Hyperliquid approval artifact; both values are computed from config and file contents.'''
 
 [[allowed]]
 path = '''src/bolt_v3_submit_admission.rs'''

@@ -16,13 +16,16 @@
 //! stay in core and are called from the per-provider modules.
 
 pub mod binance;
+pub mod hyperliquid;
+pub mod hyperliquid_artifacts;
 pub mod market_data;
 pub mod polymarket;
 
-use std::{any::Any, fmt, future::Future, pin::Pin, sync::Arc};
+use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, pin::Pin, sync::Arc};
 
 use nautilus_model::identifiers::Venue;
 use rust_decimal::Decimal;
+use serde::Serialize;
 
 const EXTERNAL_SNAPSHOT_NO_REMAINING_RETRIES: u64 = 0;
 const EXTERNAL_SNAPSHOT_RETRY_DECREMENT: u64 = 1;
@@ -34,7 +37,7 @@ use crate::{
     bolt_v3_operator_artifacts::{
         BoltV3OperatorArtifactError, CanaryProofArtifactsCollectionRequest,
         CanaryProofArtifactsWritten, EntryDecisionSourceCollectionRequest,
-        EntryDecisionSourceInputsWritten,
+        EntryDecisionSourceInputsWritten, WrittenOperatorArtifact,
     },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     strategies::registry::FeeProvider,
@@ -48,9 +51,19 @@ pub trait ProviderResolvedSecrets: fmt::Debug + Send + Sync {
     /// missing override a COMPILE error, so a new provider can't silently contribute
     /// zero redaction values (F10).
     fn redaction_values(&self) -> Vec<&str>;
+
+    fn exclusive_signer_owner(&self) -> Option<ProviderExclusiveSignerOwner> {
+        None
+    }
 }
 
 pub type ResolvedClientSecrets = Arc<dyn ProviderResolvedSecrets>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderExclusiveSignerOwner {
+    pub provider_key: &'static str,
+    pub fingerprint: String,
+}
 
 pub trait SsmSecretResolver {
     fn resolve_secret(&mut self, region: &str, ssm_path: &str) -> Result<String, String>;
@@ -143,6 +156,130 @@ pub struct ProviderAdapterMapContext<'a> {
     pub resolved: &'a ResolvedBoltV3Secrets,
     pub plan: &'a MarketIdentityPlan,
     pub clock: BoltV3MarketClockFn,
+    pub runtime_approvals: ProviderRuntimeApprovals<'a>,
+}
+
+#[derive(Clone, Copy)]
+pub struct ProviderLiveSubmitApprovalContext<'a> {
+    pub loaded: &'a LoadedBoltV3Config,
+    pub client_key: &'a str,
+    pub client: &'a ClientBlock,
+    pub resolved: &'a ResolvedBoltV3Secrets,
+    pub now_unix_seconds: u64,
+    pub build_head_sha: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderArtifactReference<'a> {
+    pub artifact_path: &'a str,
+    pub artifact_sha256: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderProductSubmitProofArtifactRequest<'a> {
+    pub provider_id: &'a str,
+    pub product_surface: &'a str,
+    pub toml_checksum: &'a str,
+    pub order_proof: ProviderArtifactReference<'a>,
+    pub fill_proof: ProviderArtifactReference<'a>,
+    pub rounding_proof: ProviderArtifactReference<'a>,
+    pub fee_proof: ProviderArtifactReference<'a>,
+    pub settlement_proof: Option<ProviderArtifactReference<'a>>,
+    pub output_path: &'a Path,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderLiveSubmitOrderLimits {
+    pub max_order_count: u32,
+    pub max_order_notional: Decimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProviderLiveSubmitArmingPreflight {
+    pub provider_key: &'static str,
+    pub client_key: String,
+    pub product_surface: String,
+    pub approval_artifact_path: String,
+    pub product_submit_proof_artifact_path: String,
+    pub max_order_count: u32,
+    pub max_order_notional: String,
+}
+
+pub struct ProviderLiveSubmitApproval {
+    payload: Box<dyn Any>,
+    order_limits: Option<ProviderLiveSubmitOrderLimits>,
+}
+
+impl ProviderLiveSubmitApproval {
+    pub fn new(payload: Box<dyn Any>) -> Self {
+        Self {
+            payload,
+            order_limits: None,
+        }
+    }
+
+    pub fn with_order_limits(
+        payload: Box<dyn Any>,
+        order_limits: ProviderLiveSubmitOrderLimits,
+    ) -> Self {
+        Self {
+            payload,
+            order_limits: Some(order_limits),
+        }
+    }
+
+    pub fn order_limits(&self) -> Option<&ProviderLiveSubmitOrderLimits> {
+        self.order_limits.as_ref()
+    }
+
+    fn downcast_ref<T: 'static>(&self) -> Option<&T> {
+        self.payload.downcast_ref()
+    }
+}
+
+pub struct ProviderLiveSubmitApprovals {
+    by_client: BTreeMap<String, ProviderLiveSubmitApproval>,
+}
+
+impl ProviderLiveSubmitApprovals {
+    pub fn empty() -> Self {
+        Self {
+            by_client: BTreeMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, client_key: String, approval: ProviderLiveSubmitApproval) {
+        self.by_client.insert(client_key, approval);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_client.is_empty()
+    }
+
+    pub fn get_as<T: 'static>(&self, client_key: &str) -> Option<&T> {
+        self.by_client
+            .get(client_key)
+            .and_then(ProviderLiveSubmitApproval::downcast_ref)
+    }
+
+    pub fn order_limits(&self) -> impl Iterator<Item = (&String, &ProviderLiveSubmitOrderLimits)> {
+        self.by_client.iter().filter_map(|(client_key, approval)| {
+            approval
+                .order_limits()
+                .map(|order_limits| (client_key, order_limits))
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ProviderRuntimeApprovals<'a> {
+    pub live_submit: Option<&'a dyn Any>,
+}
+
+impl<'a> ProviderRuntimeApprovals<'a> {
+    pub const fn none() -> Self {
+        Self { live_submit: None }
+    }
 }
 
 type FeeProviderBuilder = fn(
@@ -150,6 +287,27 @@ type FeeProviderBuilder = fn(
     &ClientBlock,
     &ResolvedBoltV3Secrets,
 ) -> Result<Arc<dyn FeeProvider>, BoltV3AdapterMappingError>;
+
+type LiveSubmitApprovalLoader =
+    for<'a> fn(
+        ProviderLiveSubmitApprovalContext<'a>,
+    ) -> Result<Option<ProviderLiveSubmitApproval>, anyhow::Error>;
+
+type LiveSubmitArmingPreflight =
+    for<'a> fn(
+        ProviderLiveSubmitApprovalContext<'a>,
+    ) -> Result<Option<ProviderLiveSubmitArmingPreflight>, anyhow::Error>;
+
+type LiveSubmitApprovalArtifactWriter =
+    for<'a> fn(
+        ProviderLiveSubmitApprovalContext<'a>,
+        u64,
+    ) -> Result<WrittenOperatorArtifact, anyhow::Error>;
+
+type ProductSubmitProofArtifactWriter =
+    for<'a> fn(
+        ProviderProductSubmitProofArtifactRequest<'a>,
+    ) -> Result<WrittenOperatorArtifact, anyhow::Error>;
 
 pub struct EntryDecisionSourceProviderContext<'a> {
     pub loaded: &'a LoadedBoltV3Config,
@@ -444,6 +602,10 @@ pub struct ProviderBinding {
         ProviderAdapterMapContext<'a>,
     )
         -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError>,
+    pub load_live_submit_approval: Option<LiveSubmitApprovalLoader>,
+    pub preflight_live_submit_arming: Option<LiveSubmitArmingPreflight>,
+    pub write_live_submit_approval_artifact: Option<LiveSubmitApprovalArtifactWriter>,
+    pub write_product_submit_proof_artifact: Option<ProductSubmitProofArtifactWriter>,
     pub build_fee_provider: Option<FeeProviderBuilder>,
     pub collect_entry_decision_source_inputs: Option<EntryDecisionSourceInputCollector>,
     pub collect_canary_proof_artifacts: Option<CanaryProofArtifactsCollector>,
@@ -461,6 +623,10 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: polymarket::resolve_secrets,
         configured_secret_paths: polymarket::configured_secret_paths,
         map_adapters: polymarket::map_adapters,
+        load_live_submit_approval: None,
+        preflight_live_submit_arming: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: Some(polymarket::build_fee_provider),
         collect_entry_decision_source_inputs: Some(
             polymarket::collect_entry_decision_source_inputs,
@@ -478,9 +644,34 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: binance::resolve_secrets,
         configured_secret_paths: binance::configured_secret_paths,
         map_adapters: binance::map_adapters,
+        load_live_submit_approval: None,
+        preflight_live_submit_arming: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
+    },
+    ProviderBinding {
+        key: hyperliquid::KEY,
+        validate_client: hyperliquid::validate_client,
+        supported_market_families: hyperliquid::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: hyperliquid::REQUIRED_SECRET_BLOCKS,
+        secret_field_names: hyperliquid::SECRET_FIELD_NAMES,
+        credential_log_modules: hyperliquid::CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: hyperliquid::FORBIDDEN_ENV_VARS,
+        resolve_secrets: hyperliquid::resolve_secrets,
+        configured_secret_paths: hyperliquid::configured_secret_paths,
+        map_adapters: hyperliquid::map_adapters,
+        load_live_submit_approval: Some(hyperliquid::load_live_submit_approval),
+        preflight_live_submit_arming: Some(hyperliquid::preflight_live_submit_arming),
+        write_live_submit_approval_artifact: Some(
+            hyperliquid::write_configured_live_submit_approval_artifact,
+        ),
+        write_product_submit_proof_artifact: Some(hyperliquid::write_product_submit_proof_artifact),
+        build_fee_provider: Some(hyperliquid::build_fee_provider),
+        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: Some(hyperliquid::collect_canary_proof_artifacts),
     },
     ProviderBinding {
         key: market_data::BITMEX_KEY,
@@ -493,6 +684,10 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
         map_adapters: market_data::map_bitmex_adapters,
+        load_live_submit_approval: None,
+        preflight_live_submit_arming: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -508,6 +703,10 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
         map_adapters: market_data::map_bybit_adapters,
+        load_live_submit_approval: None,
+        preflight_live_submit_arming: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -523,6 +722,10 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
         map_adapters: market_data::map_coinbase_adapters,
+        load_live_submit_approval: None,
+        preflight_live_submit_arming: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -538,6 +741,10 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
         map_adapters: market_data::map_deribit_adapters,
+        load_live_submit_approval: None,
+        preflight_live_submit_arming: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -553,6 +760,10 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
         map_adapters: market_data::map_okx_adapters,
+        load_live_submit_approval: None,
+        preflight_live_submit_arming: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -568,6 +779,10 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
         map_adapters: market_data::map_kraken_adapters,
+        load_live_submit_approval: None,
+        preflight_live_submit_arming: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -606,6 +821,10 @@ pub fn venue_egress_model(venue: &str) -> Option<VenueEgressModel> {
         polymarket::KEY => Some(VenueEgressModel {
             cap_per_minute: polymarket::REST_EGRESS_CAP_PER_MINUTE,
             max_rest_requests_per_order_command: polymarket::MAX_REST_REQUESTS_PER_ORDER_COMMAND,
+        }),
+        hyperliquid::KEY => Some(VenueEgressModel {
+            cap_per_minute: hyperliquid::REST_EGRESS_CAP_PER_MINUTE,
+            max_rest_requests_per_order_command: hyperliquid::MAX_REST_REQUESTS_PER_ORDER_COMMAND,
         }),
         _ => None,
     }

@@ -9,11 +9,12 @@ use bolt_v2::bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState};
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_submit_admission::{
     BoltV3KillSwitchForcedReductionClaim, BoltV3KillSwitchForcedReductionPolicy,
-    BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderSide,
-    BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
-    BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-    conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
-    market_style_admission_ceiling_notional, rounded_order_admission_notional,
+    BoltV3LiveSubmitApprovalLimits, BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput,
+    BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
+    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
+    BoltV3SubmitLifecyclePolicy, conservative_quote_quantity_admission_notional,
+    fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
+    rounded_order_admission_notional,
 };
 use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
@@ -22,6 +23,7 @@ use nautilus_model::enums::{OrderSide, PositionSide};
 use nautilus_model::identifiers::InstrumentId;
 use rust_decimal::Decimal;
 use std::{
+    collections::BTreeMap,
     sync::{Arc, Condvar, Mutex, mpsc},
     thread,
     time::Duration,
@@ -78,7 +80,7 @@ fn live_node_runtime_does_not_expose_manual_admission_or_raw_run_bypass() {
 }
 
 #[test]
-fn live_node_runner_arms_submit_admission_from_config_before_nt_run() {
+fn live_node_runner_does_not_require_live_canary_submit_admission_before_nt_run() {
     let source = support::repo_text("src/bolt_v3_live_node.rs");
     let start = source
         .find("pub async fn run_bolt_v3_live_node")
@@ -89,19 +91,21 @@ fn live_node_runner_arms_submit_admission_from_config_before_nt_run() {
         .expect("next helper should bound live runner source");
     let runner = &source[start..end];
 
-    let report_index = runner
-        .find("build_bolt_v3_live_submit_admission_report_from_config")
-        .expect("live runner must derive submit-admission bounds from config before arming");
-    let arm_index = runner
-        .find(".arm(")
-        .expect("live runner should arm submit admission");
     let run_index = runner
         .find("let run_future = node.run();")
-        .expect("live runner should enter NT run after submit admission is armed");
+        .expect("live runner should enter NT run through the wrapper");
+    let capture_index = runner
+        .find("wire_bolt_v3_runtime_capture(node, node_handle, loaded)")
+        .expect("live runner should wire runtime capture before NT run");
 
     assert!(
-        report_index < arm_index && arm_index < run_index,
-        "live runner must derive admission bounds, arm submit admission, then enter NT run"
+        capture_index < run_index,
+        "live runner must wire runtime capture before entering NT run"
+    );
+    assert!(
+        !runner.contains("build_bolt_v3_live_submit_admission_report_from_config")
+            && !runner.contains(".arm("),
+        "live runner must not require the no-submit/live-canary submit-admission gate"
     );
     assert!(
         !runner.contains("consume_bolt_v3_live_runner_approval"),
@@ -110,7 +114,7 @@ fn live_node_runner_arms_submit_admission_from_config_before_nt_run() {
 }
 
 #[test]
-fn unarmed_submit_admission_rejects_before_nt_submit() {
+fn ungated_submit_admission_allows_production_submit() {
     let admission = BoltV3SubmitAdmissionState::new_unarmed(Arc::new(
         support::RecordingDecisionEvidenceWriter::default(),
     ));
@@ -118,10 +122,10 @@ fn unarmed_submit_admission_rejects_before_nt_submit() {
 
     let result = admission.admit(&request);
     let nt_submit_called = result.is_ok();
-    let error = result.expect_err("unarmed admission must reject");
 
-    assert!(matches!(error, BoltV3SubmitAdmissionError::NotArmed));
-    assert!(!nt_submit_called, "NT submit must not be reached");
+    result.expect("ungated production admission should allow a valid submit");
+    assert!(nt_submit_called, "NT submit may be reached after admission");
+    assert_eq!(admission.admitted_order_count(), 1);
 }
 
 #[test]
@@ -156,6 +160,56 @@ fn armed_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
     ));
     assert_eq!(admission.admitted_order_count(), 1);
     assert_eq!(nt_submit_calls, 1, "second NT submit must not be reached");
+}
+
+#[test]
+fn live_submit_approval_limits_tighten_canary_caps_before_nt_submit() {
+    let admission = BoltV3SubmitAdmissionState::new_unarmed_with_live_submit_limits(
+        Arc::new(support::RecordingDecisionEvidenceWriter::default()),
+        BTreeMap::from([(
+            "hyperliquid_perps".to_string(),
+            BoltV3LiveSubmitApprovalLimits {
+                max_order_count: 1,
+                max_order_notional: Decimal::new(25, 0),
+            },
+        )]),
+    );
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            3,
+            Decimal::new(100, 0),
+        ))
+        .expect("wider live canary report should arm admission");
+
+    let over_approval_notional = admission.admit(&submit_request_for_execution_client(
+        "hyperliquid_perps",
+        Decimal::new(26, 0),
+    ));
+    let error = over_approval_notional
+        .expect_err("provider approval notional must tighten the live canary cap");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::NotionalCapExceeded
+    ));
+    assert_eq!(admission.admitted_order_count(), 0);
+
+    admission
+        .admit(&submit_request_for_execution_client(
+            "hyperliquid_perps",
+            Decimal::new(25, 0),
+        ))
+        .expect("first order within provider approval limits should admit");
+
+    let exhausted = admission.admit(&submit_request_for_execution_client(
+        "hyperliquid_perps",
+        Decimal::new(1, 0),
+    ));
+    let error = exhausted.expect_err("provider approval count must be consumed by admission");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::CountCapExhausted
+    ));
+    assert_eq!(admission.admitted_order_count(), 1);
 }
 
 #[test]
@@ -669,11 +723,11 @@ fn strategy_build_context_carries_shared_submit_admission_handle() {
     );
 
     assert!(Arc::ptr_eq(&admission, &context.submit_admission_arc()));
-    let error = context
+    context
         .submit_admission()
         .admit(&submit_request(Decimal::new(1, 0)))
-        .expect_err("shared context admission should still be unarmed");
-    assert!(matches!(error, BoltV3SubmitAdmissionError::NotArmed));
+        .expect("shared context admission should allow ungated production submits");
+    assert_eq!(admission.admitted_order_count(), 1);
 }
 
 #[derive(Debug)]
@@ -691,6 +745,15 @@ impl FeeProvider for NoopFeeProvider {
 
 fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
     submit_request_with_kind(notional, BoltV3SubmitIntentKind::Entry)
+}
+
+fn submit_request_for_execution_client(
+    execution_client_id: &str,
+    notional: Decimal,
+) -> BoltV3SubmitAdmissionRequest {
+    let mut request = submit_request(notional);
+    request.execution_client_id = execution_client_id.to_string();
+    request
 }
 
 fn submit_request_with_kind(
@@ -741,6 +804,7 @@ fn submit_request_with_kind_policy_and_exit_proof(
     };
     BoltV3SubmitAdmissionRequest {
         strategy_id: "strategy-a".to_string(),
+        execution_client_id: "polymarket_main".to_string(),
         client_order_id: "client-order-1".to_string(),
         instrument_id: "instrument-1".to_string(),
         notional,
@@ -987,6 +1051,10 @@ fn admit_records_admission_decision_evidence_on_admit_outcome() {
     );
     assert_eq!(decisions[0].outcome, BoltV3AdmissionOutcome::Admitted);
     assert_eq!(decisions[0].strategy_id, request.strategy_id);
+    assert_eq!(
+        decisions[0].execution_client_id,
+        request.execution_client_id
+    );
     assert_eq!(decisions[0].client_order_id, request.client_order_id);
     assert_eq!(decisions[0].instrument_id, request.instrument_id);
     assert_eq!(decisions[0].notional, request.notional.to_string());
@@ -1655,7 +1723,7 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
 
     admission
         .admit(&submit_request(Decimal::new(1, 0)))
-        .expect_err("unarmed admission must reject");
+        .expect("ungated production admission should admit before the optional gate is armed");
     admission
         .arm(support::validated_bolt_v3_live_canary_gate_report(
             1,
@@ -1683,7 +1751,7 @@ fn admit_records_admission_decision_evidence_for_each_rejection_path() {
     assert_eq!(
         outcomes,
         vec![
-            BoltV3AdmissionOutcome::RejectedNotArmed,
+            BoltV3AdmissionOutcome::Admitted,
             BoltV3AdmissionOutcome::RejectedNonPositiveNotional,
             BoltV3AdmissionOutcome::RejectedNotionalCapExceeded,
             BoltV3AdmissionOutcome::Admitted,

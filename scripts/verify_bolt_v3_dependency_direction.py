@@ -128,10 +128,6 @@ FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = (
 )
 
 
-def line_number(text: str, pos: int) -> int:
-    return text.count("\n", 0, pos) + 1
-
-
 def strip_comments(text: str) -> str:
     """Remove `//` line comments and `/* */` block comments while preserving every
     newline (so line numbers stay accurate). Comment characters become spaces."""
@@ -315,7 +311,7 @@ def find_violations(root: Path) -> list[Finding]:
         clean = strip_comments(text)
         for match in USE_STATEMENT.finditer(clean):
             stmt = match.group(0)
-            line = line_number(clean, match.start())
+            line = clean.count("\n", 0, match.start()) + 1
             body = stmt[len("use") : -1]  # drop the `use` keyword and trailing `;`
             body = re.sub(r"\s+as\s+\w+", "", body)
             body = re.sub(r"\s+", "", body)

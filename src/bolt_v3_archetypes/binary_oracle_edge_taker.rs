@@ -486,19 +486,17 @@ pub fn raw_taker_config(
                 ),
             })?;
     }
-    if let Some(signal_data) = signal_data {
-        loaded
-            .root
-            .clients
-            .get(signal_data.data_client_id.as_str())
-            .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
-                strategy_instance_id: strategy.config.strategy_instance_id.clone(),
-                message: format!(
-                    "signal_data data_client_id `{}` is not present in loaded clients",
-                    signal_data.data_client_id
-                ),
-            })?;
-    }
+    loaded
+        .root
+        .clients
+        .get(signal_data.data_client_id.as_str())
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: format!(
+                "signal_data data_client_id `{}` is not present in loaded clients",
+                signal_data.data_client_id
+            ),
+        })?;
 
     let order_notional_target = decimal_string_to_f64(
         &strategy.config.strategy_instance_id,
@@ -648,18 +646,16 @@ pub fn raw_taker_config(
         (None, None) => {}
         (Some(_), Some(_)) => unreachable!("dual reference paths are rejected above"),
     }
-    if let Some(signal_data) = signal_data {
-        insert_string(
-            &mut table,
-            "signal_venue",
-            signal_data.data_client_id.to_string(),
-        );
-        insert_string(
-            &mut table,
-            "signal_instrument_id",
-            signal_data.instrument_id.to_string(),
-        );
-    }
+    insert_string(
+        &mut table,
+        "signal_venue",
+        signal_data.data_client_id.to_string(),
+    );
+    insert_string(
+        &mut table,
+        "signal_instrument_id",
+        signal_data.instrument_id.to_string(),
+    );
     insert_order_config(
         &mut table,
         strategy_instance_id,
@@ -1240,14 +1236,14 @@ fn configured_reference_data(
 
 fn configured_signal_data(
     strategy: &LoadedStrategy,
-) -> Result<
-    Option<&crate::bolt_v3_config::ReferenceDataBlock>,
-    BinaryOracleEdgeTakerRuntimeConfigError,
-> {
+) -> Result<&crate::bolt_v3_config::ReferenceDataBlock, BinaryOracleEdgeTakerRuntimeConfigError> {
     let mut entries = strategy.config.signal_data.iter();
     match (entries.next(), entries.next()) {
-        (Some((_role, block)), None) => Ok(Some(block)),
-        (None, _) => Ok(None),
+        (Some((_role, block)), None) => Ok(block),
+        (None, _) => Err(BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: "requires exactly one [signal_data.<role>] block".to_string(),
+        }),
         (Some(_), Some(_)) => Err(BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
             strategy_instance_id: strategy.config.strategy_instance_id.clone(),
             message: format!(
@@ -1286,6 +1282,11 @@ fn validate_required_reference_data(context: &str, strategy: &BoltV3StrategyConf
     if strategy.signal_data.len() > 1 {
         errors.push(format!(
             "{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [signal_data.<role>] block"
+        ));
+    }
+    if strategy.signal_data.is_empty() {
+        errors.push(format!(
+            "{context}: strategy_archetype `binary_oracle_edge_taker` requires exactly one [signal_data.<role>] block"
         ));
     }
     errors

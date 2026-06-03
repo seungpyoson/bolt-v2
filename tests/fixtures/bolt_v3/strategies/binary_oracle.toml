@@ -59,7 +59,9 @@ provider_id = "resolution_oracle_primary"
 
 [reference_data]
 
-[signal_data]
+[signal_data.primary]
+data_client_id = "okx_data"
+instrument_id = "BTC-USDT.OKX"
 
 [parameters.runtime]
 reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-001"

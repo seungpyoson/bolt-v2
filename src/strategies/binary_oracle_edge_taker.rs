@@ -5831,18 +5831,23 @@ impl BinaryOracleEdgeTakerBuilder {
                 BinaryOracleEdgeTakerFieldType::String,
             );
         }
-        if table.contains_key("signal_venue") != table.contains_key("signal_instrument_id") {
-            let missing = if table.contains_key("signal_venue") {
-                "signal_instrument_id"
-            } else {
-                "signal_venue"
-            };
-            Self::push_missing(
+        match (
+            table.contains_key("signal_venue"),
+            table.contains_key("signal_instrument_id"),
+        ) {
+            (true, true) => {}
+            (true, false) => Self::push_missing(
                 errors,
-                format!("{field_prefix}.{missing}"),
+                format!("{field_prefix}.signal_instrument_id"),
                 "missing_signal_data_pair",
                 BinaryOracleEdgeTakerFieldType::String,
-            );
+            ),
+            (false, true) | (false, false) => Self::push_missing(
+                errors,
+                format!("{field_prefix}.signal_venue"),
+                "missing_signal_data_pair",
+                BinaryOracleEdgeTakerFieldType::String,
+            ),
         }
         Self::validate_order_table(
             table,
@@ -6091,9 +6096,9 @@ impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {
     }
 }
 
-pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 2;
+pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 3;
 pub const ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND: &str =
-    "bolt_v3.binary_oracle_entry_decision_source.v2";
+    "bolt_v3.binary_oracle_entry_decision_source.v3";
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryOracleEntryDecisionEvidenceSource {
@@ -8299,6 +8304,27 @@ mod tests {
         assert!(!strategy.core.config.log_events);
         assert!(!strategy.core.config.log_commands);
         assert!(!strategy.core.config.log_rejected_due_post_only_as_warning);
+    }
+
+    #[test]
+    fn validate_config_rejects_missing_signal_data_pair() {
+        let mut raw = valid_raw_config();
+        let table = raw
+            .as_table_mut()
+            .expect("valid raw config should be a TOML table");
+        table.remove("signal_venue");
+        table.remove("signal_instrument_id");
+
+        let mut errors = Vec::new();
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        assert!(
+            errors.iter().any(|error| {
+                error.field == "strategies[0].config.signal_venue"
+                    && error.code == "missing_signal_data_pair"
+            }),
+            "missing signal role should fail raw strategy validation: {errors:#?}"
+        );
     }
 
     fn quote_tick(instrument_id: &str, bid: f64, ask: f64, ts_ms: u64) -> QuoteTick {

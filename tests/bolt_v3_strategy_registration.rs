@@ -436,6 +436,27 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
 }
 
 #[test]
+fn binary_oracle_runtime_mapping_rejects_missing_signal_data_role() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    loaded.strategies[strategy_index].config.signal_data.clear();
+
+    let error =
+        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
+            .expect_err("binary oracle strategy should reject missing signal_data role");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("signal_data") && rendered.contains("requires exactly one"),
+        "rejection should explain that signal_data is required, got: {rendered}"
+    );
+}
+
+#[test]
 fn binary_oracle_runtime_mapping_uses_target_resolution_mapping_without_chainlink_special_case() {
     let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
     let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");

@@ -68,6 +68,9 @@ use bolt_v2::{
         Phase8OperatorApprovalEnvelope, Phase8PreRunStateSourceProofs,
         Phase8StrategyInputSafetyAudit,
     },
+    strategies::binary_oracle_edge_taker::{
+        ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND, ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION,
+    },
 };
 use nautilus_core::Params;
 use nautilus_model::{
@@ -78,6 +81,15 @@ use nautilus_model::{
 };
 
 mod support;
+
+#[test]
+fn entry_decision_source_schema_version_tracks_signal_quote_split() {
+    assert_eq!(ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION, 3);
+    assert_eq!(
+        ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND,
+        "bolt_v3.binary_oracle_entry_decision_source.v3"
+    );
+}
 use support::{repo_path, valid_entry_readiness_gate_session_json};
 
 // Test-only updown fixture values mirror tests/fixtures/bolt_v3/strategies/binary_oracle.toml.
@@ -9216,8 +9228,8 @@ fn entry_decision_evidence_source_fixture(
     std::fs::write(
         &decision_source_path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 2,
-            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "schema_version": 3,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v3",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
             "readiness_session": readiness_session,
@@ -9326,8 +9338,8 @@ fn entry_decision_evidence_replay_derives_price_from_readiness_session() {
     std::fs::write(
         &fixture.decision_source_path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 2,
-            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "schema_version": 3,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v3",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
             "readiness_session": readiness_session,
@@ -9482,8 +9494,8 @@ fn entry_decision_evidence_replay_uses_source_selected_rotated_market() {
     std::fs::write(
         &decision_source_path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 2,
-            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "schema_version": 3,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v3",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
             "readiness_session": readiness_session,
@@ -9559,8 +9571,8 @@ fn entry_decision_evidence_source_collector_reports_no_entry_decision() {
     std::fs::write(
         &fixture.decision_source_path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 2,
-            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "schema_version": 3,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v3",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
             "readiness_session": readiness_session,

@@ -551,14 +551,6 @@ reason = "This validation code labels a missing paired reference data field; it 
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"signal_venue"'''
-context = '''"signal_venue"'''
-classification = "strategy_runtime_schema_field"
-reason = "This is the taker StrategyConfig field name for the configured signal data client id."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"signal_venue"'''
 context = '''Self::validate_optional_string_field(table, field_prefix, "signal_venue", errors);'''
 classification = "strategy_runtime_schema_field"
 reason = "This validates the taker StrategyConfig field name for the configured signal data client id."
@@ -567,17 +559,9 @@ reason = "This validates the taker StrategyConfig field name for the configured 
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"signal_venue"'''
-context = '''if table.contains_key("signal_venue") != table.contains_key("signal_instrument_id") {'''
+context = '''table.contains_key("signal_venue"),'''
 classification = "strategy_runtime_schema_field"
 reason = "This enforces paired configured signal data fields in the taker config schema."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"signal_venue"'''
-context = '''let missing = if table.contains_key("signal_venue") {'''
-classification = "strategy_runtime_schema_field"
-reason = "This builds a diagnostic for the paired configured signal data fields in the taker config schema."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
@@ -591,14 +575,6 @@ reason = "This whitelists the taker StrategyConfig signal data client field name
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"signal_instrument_id"'''
-context = '''"signal_instrument_id"'''
-classification = "strategy_runtime_schema_field"
-reason = "This is the taker StrategyConfig field name for the configured signal instrument id."
-
-[[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
-kind = "string"
-literal = '''"signal_instrument_id"'''
 context = '''Self::validate_optional_string_field(table, field_prefix, "signal_instrument_id", errors);'''
 classification = "strategy_runtime_schema_field"
 reason = "This validates the taker StrategyConfig field name for the configured signal instrument id."
@@ -607,7 +583,7 @@ reason = "This validates the taker StrategyConfig field name for the configured 
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"signal_instrument_id"'''
-context = '''if table.contains_key("signal_venue") != table.contains_key("signal_instrument_id") {'''
+context = '''table.contains_key("signal_instrument_id"),'''
 classification = "strategy_runtime_schema_field"
 reason = "This enforces paired configured signal data fields in the taker config schema."
 
@@ -990,16 +966,16 @@ reason = "This is the JSONL line separator for one evidence record per line, not
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "number"
-literal = '''2'''
-context = '''pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 2;'''
+literal = '''3'''
+context = '''pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 3;'''
 classification = "operator_source_schema_version"
 reason = "This pins the local source-owned entry decision evidence source schema consumed by the non-live operator artifact command; trading values remain source/config-owned."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"bolt_v3.binary_oracle_entry_decision_source.v2"'''
-context = '''"bolt_v3.binary_oracle_entry_decision_source.v2";'''
+literal = '''"bolt_v3.binary_oracle_entry_decision_source.v3"'''
+context = '''"bolt_v3.binary_oracle_entry_decision_source.v3";'''
 classification = "operator_source_record_kind"
 reason = "This is the structural record_kind for source-owned entry decision evidence inputs, not a venue, market, quantity, timeout, or trading value."
 

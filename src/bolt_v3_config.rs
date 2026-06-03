@@ -471,6 +471,7 @@ pub struct BoltV3StrategyConfig {
     /// strategy envelope itself is target-shape-neutral.
     pub target: toml::Value,
     pub reference_data: BTreeMap<String, ReferenceDataBlock>,
+    pub signal_data: BTreeMap<String, ReferenceDataBlock>,
     pub parameters: toml::Value,
 }
 

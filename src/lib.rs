@@ -17,6 +17,7 @@ pub mod bolt_v3_numeric;
 pub mod bolt_v3_operator_artifacts;
 pub mod bolt_v3_order_intent;
 pub mod bolt_v3_position_contract;
+pub mod bolt_v3_price_to_beat;
 pub mod bolt_v3_providers;
 pub mod bolt_v3_readiness;
 pub mod bolt_v3_secrets;

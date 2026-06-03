@@ -1403,6 +1403,61 @@ fn binary_oracle_runtime_mapping_uses_configured_reference_data_role_key() {
 }
 
 #[test]
+fn binary_oracle_runtime_mapping_allows_signal_data_with_decision_reference() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.insert(
+        "binance_reference".to_string(),
+        toml::from_str(&support::repo_text(
+            "tests/fixtures/bolt_v3/binance_reference_client.toml",
+        ))
+        .expect("binance provider fixture client should parse"),
+    );
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    loaded.strategies[strategy_index].config.signal_data.insert(
+        "primary".to_string(),
+        ReferenceDataBlock {
+            data_client_id: ClientId::from("binance_reference"),
+            instrument_id: InstrumentId::from("BTCUSDT.BINANCE"),
+        },
+    );
+
+    let strategy = &loaded.strategies[strategy_index];
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect("signal_data and decision_reference should be independent roles");
+    let table = raw
+        .as_table()
+        .expect("mapped raw taker config should be a table");
+
+    assert_eq!(
+        table
+            .get("reference_venue")
+            .and_then(|value| value.as_str()),
+        Some("resolution_oracle_primary")
+    );
+    assert_eq!(
+        table
+            .get("reference_instrument_id")
+            .and_then(|value| value.as_str()),
+        Some("configured-reference-price")
+    );
+    assert_eq!(
+        table.get("signal_venue").and_then(|value| value.as_str()),
+        Some("binance_reference")
+    );
+    assert_eq!(
+        table
+            .get("signal_instrument_id")
+            .and_then(|value| value.as_str()),
+        Some("BTCUSDT.BINANCE")
+    );
+}
+
+#[test]
 fn binary_oracle_runtime_mapping_uses_market_family_target_projection() {
     let source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
 

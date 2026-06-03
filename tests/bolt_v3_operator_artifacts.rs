@@ -98,6 +98,7 @@ const TEST_DOWN_OUTCOME: &str = "Down";
 const TEST_BINARY_OPTION_SIZE_INCREMENT: &str = "0.01";
 const TEST_EXECUTION_CLIENT_ID: &str = "polymarket_main";
 const TEST_REFERENCE_DATA_CLIENT_ID: &str = "reference_data_client";
+const TEST_SIGNAL_DATA_CLIENT_ID: &str = "signal_data_client";
 const TEST_REFERENCE_INSTRUMENT_ID: &str = "REFERENCE.SOURCE";
 const TEST_DATA_CLIENT_PROBE_TARGET_ID: &str = "configured_quote_probe";
 const TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID: &str = "REFERENCE.POLYMARKET";
@@ -9226,6 +9227,11 @@ fn entry_decision_evidence_source_fixture(
                 "price": 3300.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
+            "signal_quote": {
+                "venue": TEST_SIGNAL_DATA_CLIENT_ID,
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
             "realized_volatility": {
                 "value": 1.5,
                 "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
@@ -9328,6 +9334,11 @@ fn entry_decision_evidence_replay_derives_price_from_readiness_session() {
             "warmup_count": 20,
             "reference_quote": {
                 "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "signal_quote": {
+                "venue": TEST_SIGNAL_DATA_CLIENT_ID,
                 "price": 3300.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
@@ -9482,6 +9493,11 @@ fn entry_decision_evidence_replay_uses_source_selected_rotated_market() {
                 "price": 3300.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
+            "signal_quote": {
+                "venue": TEST_SIGNAL_DATA_CLIENT_ID,
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
             "realized_volatility": {
                 "value": 1.5,
                 "ready_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
@@ -9551,6 +9567,11 @@ fn entry_decision_evidence_source_collector_reports_no_entry_decision() {
             "warmup_count": 20,
             "reference_quote": {
                 "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3100.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "signal_quote": {
+                "venue": TEST_SIGNAL_DATA_CLIENT_ID,
                 "price": 3100.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },

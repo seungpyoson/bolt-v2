@@ -59,6 +59,8 @@ provider_id = "resolution_oracle_primary"
 
 [reference_data]
 
+[signal_data]
+
 [parameters.runtime]
 reference_publish_topic = "platform.runtime.selection.binary_oracle_edge_taker-001"
 warmup_tick_count = 20

@@ -224,7 +224,7 @@ pub fn transition_kill_switch_state(
 }
 
 impl KillSwitchState {
-    fn kind(&self) -> KillSwitchStateKind {
+    pub fn kind(&self) -> KillSwitchStateKind {
         match self {
             KillSwitchState::Armed => KillSwitchStateKind::Armed,
             KillSwitchState::Halting { .. } => KillSwitchStateKind::Halting,

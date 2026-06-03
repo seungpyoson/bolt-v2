@@ -70,6 +70,23 @@ FORBIDDEN_RULES: tuple[Rule, ...] = (
             re.MULTILINE,
         ),
     ),
+    Rule(
+        "strategy-local kill switch policy",
+        re.compile(
+            r"(?<![A-Za-z0-9_])KillSwitch[A-Za-z0-9_]*"
+            r"|(?<![A-Za-z0-9_])kill_switch(?![A-Za-z0-9_])"
+        ),
+    ),
+    Rule(
+        "direct kill-switch action bypass",
+        re.compile(
+            r"(?<![A-Za-z0-9_])forced_reduction_submit(?![A-Za-z0-9_])"
+            r"|(?<![A-Za-z0-9_])submit_forced_reduction(?![A-Za-z0-9_])"
+            r"|(?<![A-Za-z0-9_])force_flatten(?![A-Za-z0-9_])"
+            r"|(?<![A-Za-z0-9_])cancel_all_orders(?![A-Za-z0-9_])"
+            r"|(?<![A-Za-z0-9_])flatten_all_positions(?![A-Za-z0-9_])"
+        ),
+    ),
 )
 
 

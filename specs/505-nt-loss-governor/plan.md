@@ -16,8 +16,8 @@ Build a Bolt-owned loss governor that consumes NT-derived loss/equity facts and 
 **Target Platform**: bolt-v3 pure Rust LiveNode path
 **Project Type**: Rust trading runtime and shared policy module
 **Performance Goals**: Bounded admission evaluation and bounded in-process rolling-window sample retention; no polling, adapter simulation, or venue calls
-**Constraints**: No hardcoded runtime thresholds, no alternate account truth, no cancel/flatten side effects, and no strategy-local halt mechanics
-**Scale/Scope**: Shared policy module, TOML config binding, capital reservation, NT-derived sizing-state validation, configured submit-admission enforcement, NT portfolio/position runtime feed, configured NT trading-state halt actions, and focused tests; later slices must add positional-sizer live-path enforcement and active cancel/flatten behavior
+**Constraints**: No hardcoded runtime thresholds, no alternate account truth, no Bolt-built cancel/flatten side effects, and no strategy-local halt mechanics
+**Scale/Scope**: Shared policy module, TOML config binding, capital reservation, NT-derived sizing-state validation, configured submit-admission enforcement, NT portfolio/position runtime feed, configured NT trading-state halt actions, configured NT market-exit dispatch, and focused tests; later slices must add the operator clear-to-Active surface and remaining production-grade sizing gaps
 
 ## Constitution Check
 
@@ -61,7 +61,7 @@ src/
 └── lib.rs
 ```
 
-**Structure Decision**: Keep strategy code unchanged. Put policy math, reservation, sizing-state validation, product liability calculation, NT portfolio/position feed derivation, and NT trading-state halt actions in shared modules. Positional-sizer live-path enforcement and active cancel/flatten behavior remain later work.
+**Structure Decision**: Keep strategy code unchanged. Put policy math, reservation, sizing-state validation, product liability calculation, NT portfolio/position feed derivation, NT trading-state halt actions, and NT market-exit dispatch in shared modules. Operator clear-to-Active and remaining production-grade sizing gaps remain later work.
 
 ## Phase 0: Research
 
@@ -91,7 +91,7 @@ Design outputs:
 - Consume NT-derived snapshots only; do not build independent PnL/account truth.
 - Do not add runtime threshold defaults.
 - Do not touch `src/strategies/binary_oracle_edge_taker.rs`.
-- Do not claim positional-sizer live-path enforcement, active cancel/flatten, flat-position behavior, or operator clear-to-Active recovery from the current submit-admission/runtime-feed/trading-state slice.
+- Do not claim full production-grade sizing, flat-position behavior, or operator clear-to-Active recovery from the current submit-admission/runtime-feed/trading-state/market-exit slices.
 
 ## Complexity Tracking
 

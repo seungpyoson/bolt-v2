@@ -72,6 +72,7 @@ use nautilus_model::{
     instruments::Instrument,
     orders::{Order, OrderAny},
 };
+use nautilus_system::trader::Trader;
 use rust_decimal::Decimal;
 use ustr::Ustr;
 use zeroize::Zeroizing;
@@ -96,8 +97,9 @@ use crate::{
     bolt_v3_live_canary_gate::current_build_head_sha,
     bolt_v3_loss_governor::{LossGovernorPolicy, evaluate_loss_admission},
     bolt_v3_loss_halt_actions::{
-        LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy, LossGovernorRecoveryMode,
-        LossGovernorTradingStateAction, next_loss_governor_trading_state,
+        LossGovernorHaltActionHandler, LossGovernorHaltActionPolicy, LossGovernorMarketExitAction,
+        LossGovernorMarketExitLatch, LossGovernorRecoveryMode, LossGovernorTradingStateAction,
+        next_loss_governor_halt_action,
     },
     bolt_v3_loss_runtime_feed::{
         LossGovernorRuntimeFeed, LossGovernorRuntimeFeedConfig,
@@ -3803,6 +3805,14 @@ fn loss_governor_halt_action_policy_from_loaded(
             "risk.loss_governor.on_untrusted_snapshot_trading_state",
             block.on_untrusted_snapshot_trading_state,
         )?,
+        on_loss_breach_market_exit: required_loss_governor_market_exit_action(
+            "risk.loss_governor.on_loss_breach_market_exit",
+            block.on_loss_breach_market_exit,
+        )?,
+        on_untrusted_snapshot_market_exit: required_loss_governor_market_exit_action(
+            "risk.loss_governor.on_untrusted_snapshot_market_exit",
+            block.on_untrusted_snapshot_market_exit,
+        )?,
         recovery_mode: required_loss_governor_recovery_mode(
             "risk.loss_governor.recovery_mode",
             block.recovery_mode,
@@ -3814,6 +3824,13 @@ fn required_loss_governor_trading_state_action(
     label: &'static str,
     value: Option<LossGovernorTradingStateAction>,
 ) -> Result<LossGovernorTradingStateAction, BoltV3LiveNodeError> {
+    value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))
+}
+
+fn required_loss_governor_market_exit_action(
+    label: &'static str,
+    value: Option<crate::bolt_v3_loss_halt_actions::LossGovernorMarketExitAction>,
+) -> Result<crate::bolt_v3_loss_halt_actions::LossGovernorMarketExitAction, BoltV3LiveNodeError> {
     value.ok_or_else(|| BoltV3LiveNodeError::RiskPolicy(anyhow::anyhow!("{label} missing")))
 }
 
@@ -3830,15 +3847,38 @@ fn loss_governor_halt_action_handler_from_node(
     action_policy: LossGovernorHaltActionPolicy,
 ) -> LossGovernorHaltActionHandler {
     let risk_engine = node.kernel().risk_engine().clone();
+    let trader = node.kernel().trader().clone();
+    let market_exit_latch = Rc::new(RefCell::new(LossGovernorMarketExitLatch::new()));
     Rc::new(move |snapshot, now_ns| {
         let decision = evaluate_loss_admission(&loss_policy, snapshot, now_ns);
         let current_state = risk_engine.borrow().trading_state();
-        let Some(target_state) =
-            next_loss_governor_trading_state(&action_policy, current_state, &decision)
-        else {
+        if decision.accepted && current_state == TradingState::Active {
+            market_exit_latch.borrow_mut().clear();
             return;
-        };
-        risk_engine.borrow_mut().set_trading_state(target_state);
+        }
+
+        let action = next_loss_governor_halt_action(&action_policy, current_state, &decision);
+        if let Some(target_state) = action.target_trading_state {
+            risk_engine.borrow_mut().set_trading_state(target_state);
+        }
+        if action.market_exit_action != LossGovernorMarketExitAction::AllRegisteredStrategies {
+            return;
+        }
+
+        let strategy_ids = trader.borrow().strategy_ids();
+        for strategy_id in strategy_ids {
+            if !market_exit_latch
+                .borrow_mut()
+                .mark_dispatch_attempted(strategy_id)
+            {
+                continue;
+            }
+            if let Err(error) = Trader::market_exit_strategy(&trader, &strategy_id) {
+                log::error!(
+                    "loss-governor NT market exit failed for strategy {strategy_id}: {error}"
+                );
+            }
+        }
     })
 }
 

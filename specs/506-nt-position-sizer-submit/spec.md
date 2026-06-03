@@ -46,6 +46,5 @@ This slice is not production-grade by itself. It adds the live NT component feed
 - collateral spendability and venue/instrument allowance are proven by adapter/venue evidence instead of approximated from NT account free balance;
 - safe replace/amend transitions are implemented before `ReplaceSubmit` is enabled;
 - maker quote sets reserve simultaneous adverse fills;
-- active cancel/flatten behavior is implemented through a safe NT-owned control path for configured loss/capital halts.
 
 Until those items exist, this code is a submit-admission and live-state-feed slice, not a complete production-grade positional sizer.

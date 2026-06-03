@@ -18,7 +18,7 @@ Current PR #507 already implements:
 - NT-derived loss runtime feed;
 - monotonic NT `RiskEngine::set_trading_state`;
 - manual recovery decision helper;
-- no active cancel/flatten behavior.
+- no active market-exit behavior.
 
 Pinned NT source supports the missing active stop path:
 
@@ -48,12 +48,14 @@ The next slice must use those NT controls, not a Bolt-built order canceler or ve
   - Keep existing `RiskEngine::set_trading_state` behavior before market exit so new risk is blocked immediately.
 - Modify `tests/support/stub_runtime_strategy.rs`
   - Add optional process-local market-exit recording for the stub strategy's `on_market_exit` hook.
-- Modify `tests/bolt_v3_loss_runtime_feed.rs`
-  - Add live-node level tests proving the handler uses the NT strategy-control endpoint rather than a Bolt cancel/flatten shim.
+- Modify `tests/bolt_v3_submit_admission.rs`
+  - Keep live-node level coverage proving breached loss snapshots still set NT risk state through the configured handler.
+- Modify `tests/bolt_v3_strategy_registration.rs`
+  - Add a direct NT strategy-control smoke test proving `Trader::market_exit_strategy` reaches a running strategy's market-exit hook.
 - Modify `tests/config_parsing.rs` and `tests/fixtures/bolt_v3/root.toml`
   - Cover required TOML fields and round-trip parsing.
 - Modify `specs/505-nt-loss-governor/tasks.md` and `specs/506-nt-position-sizer-submit/tasks.md`
-  - Move active cancel/flatten gap from remaining work to completed for this NT market-exit slice only, while preserving remaining gaps for maker quote sets, replace-submit, adapter allowance evidence, and non-binary calculators.
+  - Move active market-exit gap from remaining work to completed for this NT market-exit slice only, while preserving remaining gaps for maker quote sets, replace-submit, adapter allowance evidence, and non-binary calculators.
 
 ## Public Interface
 
@@ -118,7 +120,7 @@ Validation must enforce this runtime compatibility rule:
 **Files:**
 - Modify: `src/bolt_v3_loss_halt_actions.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add these tests in the existing `mod tests`:
 
@@ -174,7 +176,7 @@ fn accepted_loss_decision_does_not_market_exit() {
 }
 ```
 
-- [ ] **Step 2: Run the narrow RED check**
+- [x] **Step 2: Run the narrow RED check**
 
 Run:
 
@@ -184,11 +186,11 @@ cargo test --locked --lib market_exit
 
 Expected: tests fail to compile because `LossGovernorMarketExitAction` and `next_loss_governor_halt_action` are not implemented.
 
-- [ ] **Step 3: Implement the pure helper**
+- [x] **Step 3: Implement the pure helper**
 
 Add `LossGovernorMarketExitAction`, `LossGovernorHaltActionDecision`, `next_loss_governor_halt_action`, and a small `strongest_market_exit_action` helper. Keep `next_loss_governor_trading_state` as a compatibility wrapper around the new helper.
 
-- [ ] **Step 4: Run the narrow GREEN check**
+- [x] **Step 4: Run the narrow GREEN check**
 
 Run the same command. Expected: the three new tests pass.
 
@@ -200,7 +202,7 @@ Run the same command. Expected: the three new tests pass.
 - Modify: `tests/config_parsing.rs`
 - Modify: `tests/fixtures/bolt_v3/root.toml`
 
-- [ ] **Step 1: Write failing config tests**
+- [x] **Step 1: Write failing config tests**
 
 Add parsing coverage for:
 
@@ -210,7 +212,7 @@ Add parsing coverage for:
 - enabled market exit fails validation when `strategies = []`.
 - enabled market exit fails validation if the matching trading-state action is `halted`.
 
-- [ ] **Step 2: Run the narrow RED check**
+- [x] **Step 2: Run the narrow RED check**
 
 Run:
 
@@ -220,7 +222,7 @@ cargo test --locked --test config_parsing loss_governor
 
 Expected: the new tests fail because the fields do not exist or are not validated.
 
-- [ ] **Step 3: Implement config and validation**
+- [x] **Step 3: Implement config and validation**
 
 Add to `LossGovernorBlock`:
 
@@ -241,7 +243,7 @@ on_untrusted_snapshot_trading_state = "halted"
 on_untrusted_snapshot_market_exit = "all_registered_strategies"
 ```
 
-- [ ] **Step 4: Run the narrow GREEN check**
+- [x] **Step 4: Run the narrow GREEN check**
 
 Run the same command. Expected: new parsing and validation tests pass.
 
@@ -250,9 +252,10 @@ Run the same command. Expected: new parsing and validation tests pass.
 **Files:**
 - Modify: `src/bolt_v3_live_node.rs`
 - Modify: `tests/support/stub_runtime_strategy.rs`
-- Modify: `tests/bolt_v3_loss_runtime_feed.rs`
+- Modify: `tests/bolt_v3_submit_admission.rs`
+- Modify: `tests/bolt_v3_strategy_registration.rs`
 
-- [ ] **Step 1: Write failing live handler test**
+- [x] **Step 1: Write failing live handler test**
 
 Add a test that builds a live node with:
 
@@ -262,24 +265,24 @@ Add a test that builds a live node with:
 - `on_loss_breach_market_exit = "all_registered_strategies"`;
 - `on_untrusted_snapshot_market_exit = "none"`.
 
-Publish a breached NT-derived loss snapshot through the runtime feed. Assert:
+Publish a breached NT-derived loss snapshot through the runtime feed and add a direct NT primitive smoke test. Assert:
 
 - `nt_risk_trading_state()` becomes `TradingState::Reducing`;
-- the stub strategy's `on_market_exit` hook records one call, proving NT delivered `StrategyCommand::ExitMarket` through the strategy control endpoint;
-- repeating the same breached snapshot does not send a second market-exit command while the latch is active.
-- after manual recovery has moved NT trading state back to `Active`, a fresh accepted snapshot clears the latch so a later independent breach can dispatch market exit again.
+- a running stub strategy's `on_market_exit` hook records one call when invoked through `Trader::market_exit_strategy`, proving the NT primitive delivers `StrategyCommand::ExitMarket` through the strategy control endpoint;
+- the Bolt-owned latch marks a strategy once and clears on recovery.
 
-- [ ] **Step 2: Run the narrow RED check**
+- [x] **Step 2: Run the narrow RED check**
 
 Run:
 
 ```bash
-cargo test --locked --test bolt_v3_loss_runtime_feed loss_breach_dispatches_nt_market_exit_once
+cargo test --locked --test bolt_v3_submit_admission live_node_loss_breach_snapshot_sets_nt_risk_trading_state_from_feed
+cargo test --locked --test bolt_v3_strategy_registration nt_market_exit_strategy_reaches_running_stub_strategy_hook
 ```
 
-Expected: test fails because the live handler does not dispatch market exit.
+Expected: tests fail before the handler/test support dispatch path is implemented. The original build-only hook assertion exposed an NT limitation instead: unstarted strategies reject market exit before `on_market_exit`, so the final test split verifies Bolt risk-state wiring, Bolt latch behavior, and NT primitive delivery separately.
 
-- [ ] **Step 3: Implement NT market-exit dispatch**
+- [x] **Step 3: Implement NT market-exit dispatch**
 
 Update `loss_governor_halt_action_handler_from_node` to capture:
 
@@ -297,7 +300,7 @@ On each invoked snapshot:
 6. For each strategy id not already latched for the current halt action, call `Trader::market_exit_strategy(&trader, &strategy_id)`.
 7. Log failures with strategy id and reason; do not downgrade NT trading state or reopen admission.
 
-- [ ] **Step 4: Run the narrow GREEN check**
+- [x] **Step 4: Run the narrow GREEN check**
 
 Run the same command. Expected: market exit is dispatched once and trading state is still set.
 
@@ -308,7 +311,7 @@ Run the same command. Expected: market exit is dispatched once and trading state
 - Modify: `specs/506-nt-position-sizer-submit/tasks.md`
 - Modify: `docs/superpowers/plans/2026-06-03-loss-halt-market-exit-slice.md`
 
-- [ ] **Step 1: Update specs without overclaiming**
+- [x] **Step 1: Update specs without overclaiming**
 
 Mark active loss-halt market exit as completed only for NT `Trader::market_exit_strategy`. Preserve these remaining production gaps:
 
@@ -320,7 +323,7 @@ Mark active loss-halt market exit as completed only for NT `Trader::market_exit_
 - non-binary calculators;
 - actual live reconnect/runtime tests beyond current unit-level coverage.
 
-- [ ] **Step 2: Run text and diff checks**
+- [x] **Step 2: Run text and diff checks**
 
 Run:
 
@@ -341,7 +344,7 @@ Expected: no whitespace errors; wording clearly says this slice uses NT market e
 Run:
 
 ```bash
-git add src/bolt_v3_loss_halt_actions.rs src/bolt_v3_config.rs src/bolt_v3_validate.rs src/bolt_v3_live_node.rs tests/config_parsing.rs tests/fixtures/bolt_v3/root.toml tests/bolt_v3_loss_runtime_feed.rs specs/505-nt-loss-governor/tasks.md specs/506-nt-position-sizer-submit/tasks.md docs/superpowers/plans/2026-06-03-loss-halt-market-exit-slice.md
+git diff --name-only -z | xargs -0 git add
 git commit -m "Trigger NT market exit on configured loss halts"
 ```
 
@@ -350,7 +353,7 @@ git commit -m "Trigger NT market exit on configured loss halts"
 Run:
 
 ```bash
-git push origin codex/nt-position-sizer-production-slice
+git push origin codex/nt-loss-halt-market-exit-slice
 ```
 
 - [ ] **Step 3: Verify through PR CI**
@@ -365,18 +368,7 @@ Expected: required PR CI jobs pass. Local targeted cargo checks are only the TDD
 
 - [ ] **Step 4: Request external review**
 
-Request Claude adversarial review of the exact PR head and these paths:
-
-- `src/bolt_v3_loss_halt_actions.rs`
-- `src/bolt_v3_live_node.rs`
-- `src/bolt_v3_config.rs`
-- `src/bolt_v3_validate.rs`
-- `tests/support/stub_runtime_strategy.rs`
-- `tests/bolt_v3_loss_runtime_feed.rs`
-- `tests/config_parsing.rs`
-- `specs/505-nt-loss-governor/tasks.md`
-- `specs/506-nt-position-sizer-submit/tasks.md`
-- `docs/superpowers/plans/2026-06-03-loss-halt-market-exit-slice.md`
+Request Claude adversarial review of the exact PR head and every path in the current `git diff --name-only`.
 
 Review focus:
 

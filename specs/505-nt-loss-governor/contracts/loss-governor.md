@@ -78,7 +78,7 @@ Operator recovery evidence validation in the pure loss-halt helper is structural
 ## Non-Goals
 
 - No strategy-local risk logic.
-- No cancel/flatten side effects.
+- No Bolt-built cancel/flatten side effects; configured active exits must use NT strategy-control primitives.
 - No independent PnL/account truth.
 - No venue-specific code.
 - No positional-sizer live-path enforcement in PR #507.
@@ -90,4 +90,4 @@ This slice must not edit:
 
 - `src/strategies/binary_oracle_edge_taker.rs`
 
-The final report must state that submit-admission and NT trading-state protection do not prove cancel/flatten or flat-position behavior.
+The final report must state that submit-admission, NT trading-state protection, and NT market-exit dispatch do not prove flat-position behavior.

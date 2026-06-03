@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    bolt_v3_loss_halt_actions::{LossGovernorRecoveryMode, LossGovernorTradingStateAction},
+    bolt_v3_loss_halt_actions::{
+        LossGovernorMarketExitAction, LossGovernorRecoveryMode, LossGovernorTradingStateAction,
+    },
     bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies},
 };
 
@@ -182,6 +184,8 @@ pub struct LossGovernorBlock {
     pub rolling_window_ns: u64,
     pub on_loss_breach_trading_state: Option<LossGovernorTradingStateAction>,
     pub on_untrusted_snapshot_trading_state: Option<LossGovernorTradingStateAction>,
+    pub on_loss_breach_market_exit: Option<LossGovernorMarketExitAction>,
+    pub on_untrusted_snapshot_market_exit: Option<LossGovernorMarketExitAction>,
     pub recovery_mode: Option<LossGovernorRecoveryMode>,
     pub max_per_trade_loss: Option<String>,
     pub max_daily_loss: Option<String>,

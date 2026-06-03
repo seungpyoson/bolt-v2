@@ -74,7 +74,7 @@ Fields:
 
 Rules:
 
-- Uses NT `RiskEngine::set_trading_state`; Bolt does not invent cancel/flatten behavior.
+- Uses NT `RiskEngine::set_trading_state`; the follow-on active stop path uses NT `Trader::market_exit_strategy`. Bolt does not invent a cancel/flatten path.
 - Applies state monotonically: `Active` can move to `Reducing` or `Halted`, and `Reducing` can move to `Halted`; no downgrade or auto-clear is performed.
 - `manual` recovery means a later below-limit snapshot does not move NT back to `Active`.
 - `Halted` and `Reducing` are NT command-admission states, not evidence that working orders were canceled or positions flattened.

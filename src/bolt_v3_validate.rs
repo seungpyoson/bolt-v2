@@ -55,6 +55,9 @@ use crate::bolt_v3_config::{
     TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
+use crate::bolt_v3_loss_halt_actions::{
+    LossGovernorMarketExitAction, LossGovernorTradingStateAction,
+};
 
 #[derive(Debug)]
 pub struct BoltV3ValidationError {
@@ -959,6 +962,14 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                     loss_governor.on_untrusted_snapshot_trading_state.is_some(),
                 ),
                 (
+                    "risk.loss_governor.on_loss_breach_market_exit",
+                    loss_governor.on_loss_breach_market_exit.is_some(),
+                ),
+                (
+                    "risk.loss_governor.on_untrusted_snapshot_market_exit",
+                    loss_governor.on_untrusted_snapshot_market_exit.is_some(),
+                ),
+                (
                     "risk.loss_governor.recovery_mode",
                     loss_governor.recovery_mode.is_some(),
                 ),
@@ -967,6 +978,16 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                     errors.push(format!("{label} must be configured when enabled"));
                 }
             }
+            errors.extend(validate_loss_governor_market_exit_pair(
+                "risk.loss_governor.on_loss_breach",
+                loss_governor.on_loss_breach_trading_state,
+                loss_governor.on_loss_breach_market_exit,
+            ));
+            errors.extend(validate_loss_governor_market_exit_pair(
+                "risk.loss_governor.on_untrusted_snapshot",
+                loss_governor.on_untrusted_snapshot_trading_state,
+                loss_governor.on_untrusted_snapshot_market_exit,
+            ));
         }
         for (label, threshold) in [
             (
@@ -1651,8 +1672,42 @@ pub(crate) fn validate_ssm_parameter_path(key: &str, field: &str, value: &str) -
     errors
 }
 
+fn validate_loss_governor_market_exit_pair(
+    label_prefix: &str,
+    trading_state: Option<LossGovernorTradingStateAction>,
+    market_exit: Option<LossGovernorMarketExitAction>,
+) -> Vec<String> {
+    if !matches!(
+        market_exit,
+        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+    ) {
+        return Vec::new();
+    }
+    if matches!(
+        trading_state,
+        Some(LossGovernorTradingStateAction::Reducing)
+    ) {
+        return Vec::new();
+    }
+    vec![format!(
+        "{label_prefix}_market_exit=all_registered_strategies requires {label_prefix}_trading_state=reducing"
+    )]
+}
+
 pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy]) -> Vec<String> {
     let mut errors = Vec::new();
+    if root
+        .risk
+        .loss_governor
+        .as_ref()
+        .is_some_and(loss_governor_market_exit_enabled)
+        && strategies.is_empty()
+    {
+        errors.push(
+            "risk.loss_governor market_exit=all_registered_strategies requires at least one loaded strategy"
+                .to_string(),
+        );
+    }
 
     let mut seen_instance_ids: HashSet<&str> = HashSet::new();
     let mut seen_order_id_tags: HashSet<&str> = HashSet::new();
@@ -1725,6 +1780,18 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
     errors.extend(validate_chainlink_feed_binding_coverage(root, strategies));
 
     errors
+}
+
+fn loss_governor_market_exit_enabled(
+    loss_governor: &crate::bolt_v3_config::LossGovernorBlock,
+) -> bool {
+    matches!(
+        loss_governor.on_loss_breach_market_exit,
+        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+    ) || matches!(
+        loss_governor.on_untrusted_snapshot_market_exit,
+        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+    )
 }
 
 fn validate_target_gate_provider_references(

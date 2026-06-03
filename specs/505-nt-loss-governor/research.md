@@ -111,7 +111,7 @@
 
 ## PR #507 Implementation Evidence
 
-**Decision**: Implemented the pure loss-governor and positional-sizing core, plus configured submit-admission loss protection, configured NT portfolio/position runtime-feed derivation, and configured NT `RiskEngine::set_trading_state` halt actions. Positional-sizer live-path enforcement, active cancel/flatten, and operator clear-to-Active behavior remain out of scope.
+**Decision**: Implemented the pure loss-governor and positional-sizing core, plus configured submit-admission loss protection, configured NT portfolio/position runtime-feed derivation, configured NT `RiskEngine::set_trading_state` halt actions, and configured NT `Trader::market_exit_strategy` dispatch for active market exit. Operator clear-to-Active behavior and remaining production-grade sizing gaps remain out of scope.
 
 **Evidence**:
 
@@ -122,9 +122,9 @@
 - `src/bolt_v3_sizing_state.rs`: validates NT-derived portfolio, order-lifecycle, product, reservation, and optional loss evidence.
 - `src/bolt_v3_position_sizer.rs`: composes policy, worst-case binary liability, loss evaluation, state freshness, and capital reservation into a pure admission decision; the admission gate exposes reserve, release, rebuild, revalue, and an already-attributed lifecycle-update dispatcher for later live wiring.
 - `src/bolt_v3_submit_admission.rs`: carries optional configured loss-governor policy in shared submit admission, accepts explicit loss snapshots, rejects entry/replace risk before NT submit on missing/stale/breached facts, and leaves risk-reducing exits under existing lifecycle/count caps.
-- `src/bolt_v3_loss_halt_actions.rs`: maps loss-governor halt reasons to explicit NT trading-state actions, using monotonic severity and latching manual recovery.
+- `src/bolt_v3_loss_halt_actions.rs`: maps loss-governor halt reasons to explicit NT trading-state and market-exit actions, using monotonic severity, manual recovery, and an idempotent market-exit latch.
 - `src/bolt_v3_loss_runtime_feed.rs`: subscribes to NT portfolio and position event topics, filters to the configured account, derives daily/session PnL, rolling PnL from portfolio PnL deltas, per-trade PnL from position changed/closed events, current equity, and peak equity, publishes a conservative `LossSnapshot` to submit admission, and invokes the configured halt-action handler on published snapshots.
-- `src/bolt_v3_live_node.rs`: maps enabled `[risk.loss_governor]` TOML into the shared submit-admission state, configured NT runtime feed, and NT `RiskEngine::set_trading_state` halt action during live-node build.
+- `src/bolt_v3_live_node.rs`: maps enabled `[risk.loss_governor]` TOML into the shared submit-admission state, configured NT runtime feed, NT `RiskEngine::set_trading_state` halt action, and configured NT `Trader::market_exit_strategy` dispatch during live-node build.
 - `src/bolt_v3_decision_evidence.rs`: bumps decision evidence to schema v6 and records `rejected_loss_governor_halted` plus deterministic `loss_halt_reasons`.
 - `config/root.example.toml`, `tests/fixtures/bolt_v3/root.toml`: add configured loss-governor and capital-pool policy values.
 - TDD red/green evidence:

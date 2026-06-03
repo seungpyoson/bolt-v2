@@ -5644,7 +5644,9 @@ fn rejects_nt_risk_bypass_true() {
 fn bolt_v3_loss_governor_config_uses_nt_account_id_and_configured_thresholds() {
     use bolt_v2::{
         bolt_v3_config::load_bolt_v3_config,
-        bolt_v3_loss_halt_actions::{LossGovernorRecoveryMode, LossGovernorTradingStateAction},
+        bolt_v3_loss_halt_actions::{
+            LossGovernorMarketExitAction, LossGovernorRecoveryMode, LossGovernorTradingStateAction,
+        },
     };
     use nautilus_model::identifiers::AccountId;
 
@@ -5668,6 +5670,14 @@ fn bolt_v3_loss_governor_config_uses_nt_account_id_and_configured_thresholds() {
     assert_eq!(
         governor.on_untrusted_snapshot_trading_state,
         Some(LossGovernorTradingStateAction::None)
+    );
+    assert_eq!(
+        governor.on_loss_breach_market_exit,
+        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+    );
+    assert_eq!(
+        governor.on_untrusted_snapshot_market_exit,
+        Some(LossGovernorMarketExitAction::None)
     );
     assert_eq!(
         governor.recovery_mode,
@@ -5741,6 +5751,14 @@ fn rejects_enabled_loss_governor_missing_required_halt_action_config() {
             "on_untrusted_snapshot_trading_state",
             "on_untrusted_snapshot_trading_state = \"none\"\n",
         ),
+        (
+            "on_loss_breach_market_exit",
+            "on_loss_breach_market_exit = \"all_registered_strategies\"\n",
+        ),
+        (
+            "on_untrusted_snapshot_market_exit",
+            "on_untrusted_snapshot_market_exit = \"none\"\n",
+        ),
         ("recovery_mode", "recovery_mode = \"manual\"\n"),
     ] {
         let mutated = replace_in_fixture_root(line, "");
@@ -5754,6 +5772,61 @@ fn rejects_enabled_loss_governor_missing_required_halt_action_config() {
             "expected `{expected}` validation message, got: {messages:#?}"
         );
     }
+}
+
+#[test]
+fn rejects_loss_governor_market_exit_without_loaded_strategy() {
+    use bolt_v2::{
+        bolt_v3_config::BoltV3RootConfig,
+        bolt_v3_validate::{validate_root_only, validate_strategies},
+    };
+
+    let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(
+        "  \"strategies/binary_oracle.toml\",\n",
+        "",
+    ))
+    .expect("root fixture should parse without strategy files");
+
+    let root_messages = validate_root_only(&root);
+    assert!(
+        root_messages
+            .iter()
+            .any(|message| message.contains("strategy_files must list at least one strategy file")),
+        "expected existing root strategy_files guard, got: {root_messages:#?}"
+    );
+
+    let strategy_messages = validate_strategies(&root, &[]);
+    assert!(
+        strategy_messages.iter().any(|message| {
+            message.contains("risk.loss_governor")
+                && message.contains("all_registered_strategies")
+                && message.contains("at least one loaded strategy")
+        }),
+        "expected market-exit strategy presence guard, got: {strategy_messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_loss_governor_market_exit_with_halted_trading_state() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "on_loss_breach_trading_state = \"reducing\"",
+        "on_loss_breach_trading_state = \"halted\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("unsafe market-exit fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("risk.loss_governor.on_loss_breach_market_exit")
+                && message.contains("all_registered_strategies")
+                && message.contains("on_loss_breach_trading_state")
+                && message.contains("reducing")
+        }),
+        "expected halted plus market-exit validation error, got: {messages:#?}"
+    );
 }
 
 #[test]

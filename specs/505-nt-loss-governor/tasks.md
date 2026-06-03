@@ -74,7 +74,7 @@
 
 **Independent Test**: Submit-admission/live-node tests prove missing/breached loss snapshots reject new risk before NT submit, fresh below-limit snapshots admit, risk-reducing exits remain possible under existing caps, and live builds carry policy into submit admission.
 
-**PR #507 status**: Partially implemented in this branch. PR #507 includes configured submit-admission loss protection, live-node policy wiring, a configured NT portfolio/position runtime feed that publishes loss snapshots from subscribed NT events, and configured NT `RiskEngine::set_trading_state` halt actions for loss breaches or untrusted snapshots. It still does not include active cancel/flatten behavior or an operator clear-to-Active surface.
+**PR #507 status**: PR #507 included configured submit-admission loss protection, live-node policy wiring, a configured NT portfolio/position runtime feed that publishes loss snapshots from subscribed NT events, and configured NT `RiskEngine::set_trading_state` halt actions for loss breaches or untrusted snapshots. It did not include active market-exit behavior or an operator clear-to-Active surface. This follow-on market-exit slice adds configured dispatch through NT `Trader::market_exit_strategy`; it still does not include the operator clear-to-Active live command surface.
 
 - [X] T023 [US3] Add failing submit-admission test for configured loss governor rejecting new risk without a fresh snapshot
 - [X] T024 [US3] Implement `BoltV3SubmitAdmissionState::new_unarmed_with_loss_governor`, `update_loss_snapshot`, deterministic loss halt evidence, and `admit_at`
@@ -90,6 +90,10 @@
 - [X] T047 [US3] Require explicit loss-governor NT halt-action config and manual recovery mode
 - [X] T048 [US3] Apply configured loss-halt actions through NT `RiskEngine::set_trading_state` with monotonic severity and no auto-clear
 - [X] T049 [US3] Document that NT `Halted`/`Reducing` do not cancel working orders or flatten positions
+- [X] T050 [US3] Require explicit loss-governor market-exit action config and validate that enabled market exit targets NT `TradingState::Reducing`
+- [X] T051 [US3] Dispatch configured active market exit through NT `Trader::market_exit_strategy` for registered strategies after setting the NT risk engine to `Reducing`
+- [X] T052 [US3] Add a Bolt-owned idempotency latch so repeated breached snapshots do not repeatedly dispatch the same NT market-exit action
+- [X] T053 [US3] Add focused tests for market-exit decision policy, config validation, live halt wiring, and NT strategy-control delivery to a running strategy
 
 ---
 

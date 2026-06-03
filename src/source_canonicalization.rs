@@ -220,6 +220,68 @@ pub fn module_source_text(root: &Path, max_bytes: u64) -> io::Result<String> {
     Ok(text)
 }
 
+/// Production-only module source text for a `root`, in the SAME canonicalization
+/// order as the digest, with the bottom `#[cfg(test)] mod tests` submodule
+/// excluded.
+///
+/// This is the SINGLE definition of the production/test boundary for both the
+/// IDENTITY and DIRECTORY cases.
+///
+/// - **IDENTITY case** (single file): the text up to (excluding) the FIRST
+///   top-level [`TEST_MODULE_SPLIT_MARKER`], i.e. byte-for-byte the historical
+///   `source.split("\n#[cfg(test)]\nmod tests").next()` output. A file with no
+///   marker contributes its whole text. The ~37 earlier inline `#[cfg(test)]`
+///   markers are retained (they are not the top-level test-module marker).
+/// - **DIRECTORY case** (post-split, e.g. `{mod.rs, selection.rs}`): the
+///   production half of EACH `*.rs` file — each split independently at its OWN
+///   first top-level marker — concatenated in canonical (relative-path-byte)
+///   order. A file owning the top-level `#[cfg(test)] mod tests` (e.g. `mod.rs`)
+///   contributes only its production half; a file with no marker (e.g.
+///   `selection.rs`, a production-only submodule) contributes its whole text.
+///   This is NOT a `split_once` over the joined text — that would drop every
+///   file sorted after the marker-owning file (`selection.rs` after `mod.rs`)
+///   and silently shrink the production surface. Splitting per file keeps every
+///   submodule's production code in scope while still excluding each file's own
+///   test module. A future test-ONLY submodule file (whose entire content is a
+///   test module) would be a separate concern; today no gated directory contains
+///   one, and any such file would be split at its own marker like the rest.
+pub fn production_module_source_text(root: &Path, max_bytes: u64) -> io::Result<String> {
+    let metadata = std::fs::symlink_metadata(root)?;
+    let file_type = metadata.file_type();
+    if file_type.is_file() {
+        let bytes = read_file_bounded(root, max_bytes)?;
+        let text = utf8_string(bytes, root)?;
+        return Ok(production_half(&text).to_string());
+    }
+    if !file_type.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "source root is neither a regular file nor a directory: {}",
+                root.display()
+            ),
+        ));
+    }
+    let files = collect_rs_files_sorted(root)?;
+    let mut text = String::new();
+    for (_relative, path) in files {
+        let bytes = read_file_bounded(&path, max_bytes)?;
+        let file_text = utf8_string(bytes, &path)?;
+        text.push_str(production_half(&file_text));
+    }
+    Ok(text)
+}
+
+/// The production half of a single file's text: everything before the FIRST
+/// top-level [`TEST_MODULE_SPLIT_MARKER`], or the whole text if the marker is
+/// absent. Byte-for-byte equivalent to `text.split(MARKER).next().unwrap()`.
+fn production_half(text: &str) -> &str {
+    match text.split_once(TEST_MODULE_SPLIT_MARKER) {
+        Some((production, _rest)) => production,
+        None => text,
+    }
+}
+
 fn utf8_string(bytes: Vec<u8>, path: &Path) -> io::Result<String> {
     String::from_utf8(bytes).map_err(|_| {
         io::Error::new(
@@ -257,7 +319,7 @@ pub struct GatedSourceRoot {
 pub const GATED_SOURCE_ROOTS: &[GatedSourceRoot] = &[
     GatedSourceRoot {
         key: STRATEGY_KEY,
-        relative_root: "src/strategies/binary_oracle_edge_taker.rs",
+        relative_root: "src/strategies/binary_oracle_edge_taker",
     },
     GatedSourceRoot {
         key: SUBMIT_ADMISSION_KEY,

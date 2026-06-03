@@ -8,7 +8,15 @@ import unittest
 from pathlib import Path
 
 import verify_bolt_v3_legacy_default_fence as fence
+from bolt_v3_source_roots import STRATEGY_SOURCE_ROOT, module_text, source_files
 from verify_bolt_v3_pure_rust_runtime import production_text
+
+# A current strategy source file, resolved layout-independently (the strategy
+# root is a directory after the A3 split); used as a representative path label in
+# synthetic find_violations_in_text cases and as the runtime-path-membership anchor.
+STRATEGY_SOURCE_FILE = source_files(STRATEGY_SOURCE_ROOT)[0].relative_to(
+    fence.REPO_ROOT
+).as_posix()
 
 
 class LegacyDefaultFenceTests(unittest.TestCase):
@@ -69,7 +77,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         labels = [
             violation.label
             for violation in fence.find_violations_in_text(
-                "src/strategies/binary_oracle_edge_taker.rs",
+                STRATEGY_SOURCE_FILE,
                 source,
             )
         ]
@@ -77,11 +85,11 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         self.assertEqual(labels, ["legacy Polymarket catalog defaults"])
 
     def test_strategy_does_not_reach_legacy_polymarket_catalog(self) -> None:
-        strategy = Path("src/strategies/binary_oracle_edge_taker.rs").read_text(
-            encoding="utf-8"
-        )
+        # Resolve the strategy module layout-independently (a directory after the
+        # A3 split) and scan every file's production text.
+        strategy = production_text_from_string(module_text(STRATEGY_SOURCE_ROOT))
 
-        self.assertNotIn("polymarket_catalog", production_text_from_string(strategy))
+        self.assertNotIn("polymarket_catalog", strategy)
 
     def test_detects_external_crate_legacy_provider_modules(self) -> None:
         source = "\n".join(
@@ -144,7 +152,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         labels = [
             violation.label
             for violation in fence.find_violations_in_text(
-                "src/strategies/binary_oracle_edge_taker.rs",
+                STRATEGY_SOURCE_FILE,
                 source,
             )
         ]
@@ -174,7 +182,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         labels = [
             violation.label
             for violation in fence.find_violations_in_text(
-                "src/strategies/binary_oracle_edge_taker.rs",
+                STRATEGY_SOURCE_FILE,
                 source,
             )
         ]
@@ -231,7 +239,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         self.assertIn("src/venue_contract.rs", fence.RUNTIME_SOURCE_PATHS)
         self.assertIn("src/strategies/registry.rs", fence.RUNTIME_SOURCE_PATHS)
         self.assertIn(
-            "src/strategies/binary_oracle_edge_taker.rs",
+            STRATEGY_SOURCE_FILE,
             fence.RUNTIME_SOURCE_PATHS,
         )
 

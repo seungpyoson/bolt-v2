@@ -17,9 +17,11 @@ use std::{
 #[path = "src/source_canonicalization.rs"]
 mod source_canonicalization;
 
-// Generous in-build cap. The strategy root is 732_776 bytes today; the runtime
-// digest path applies the operator-configured `max_source_bytes` instead. This
-// only bounds the bytes embedded into the binary at build time.
+// Generous in-build cap. The strategy root is now the directory
+// `src/strategies/binary_oracle_edge_taker/` ({mod.rs, selection.rs}), whose
+// framed canonical stream is well under this cap; the runtime digest path applies
+// the operator-configured `max_source_bytes` instead. This only bounds the bytes
+// embedded into the binary at build time.
 const BUILD_CANONICAL_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 fn main() {

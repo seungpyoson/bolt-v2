@@ -3458,15 +3458,23 @@ fn expected_abort_plan_strategy_source_sha256() -> String {
     // Hash the canonical bytes EMBEDDED IN THE BINARY at compile time
     // (`build.rs` re-emits them into `$OUT_DIR/strategy.canonical` via the same
     // walk the runtime digest uses) — layout-independent yet still hashing
-    // compiled-in bytes, so tamper-evidence is preserved.
-    sha256_text(include_str!(concat!(
+    // compiled-in bytes, so tamper-evidence is preserved. The strategy root is a
+    // DIRECTORY (`mod.rs` + `selection.rs`), so its canonical stream carries the
+    // binary path+NUL+length framing and is NOT valid UTF-8; embed it with
+    // `include_bytes!` and hash the raw bytes (the digest is byte-identical to
+    // the runtime `canonical_source_digest`).
+    sha256_bytes(include_bytes!(concat!(
         env!("OUT_DIR"),
         "/strategy.canonical"
     )))
 }
 
 fn expected_abort_plan_submit_admission_source_sha256() -> String {
-    sha256_text(include_str!(concat!(
+    // Embed and hash the canonical bytes as raw bytes — the ONE include path for
+    // every gated root regardless of whether it resolves to a file or directory
+    // (no `include_str!`/`include_bytes!` dual path). For the single-file
+    // submit_admission root this is byte-identical to the prior UTF-8 include.
+    sha256_bytes(include_bytes!(concat!(
         env!("OUT_DIR"),
         "/submit_admission.canonical"
     )))

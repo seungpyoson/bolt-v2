@@ -40,14 +40,12 @@ use toml::Value;
 
 use crate::{
     bolt_v3_decision_evidence::{
-        BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
-        BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT, BoltV3OrderIntentEvidence,
-        BoltV3OrderIntentKind, BoltV3ReadinessGateEvidenceSnapshot, BoltV3RuntimeReadinessSeed,
-        BoltV3StrategyInputEvidenceSnapshot, compiled_order_price_source,
-        validate_readiness_gate_evidence_snapshot,
+        BoltV3OrderIntentEvidence, BoltV3OrderIntentKind, BoltV3ReadinessGateEvidenceSnapshot,
+        BoltV3RuntimeReadinessSeed, BoltV3StrategyInputEvidenceSnapshot,
+        compiled_order_price_source, validate_readiness_gate_evidence_snapshot,
     },
     bolt_v3_market_families::{
-        self, FairProbabilityInputs, MarketSelectionOutcome, MarketSelectionTarget, OutcomeSide,
+        self, FairProbabilityInputs, MarketSelectionOutcome, OutcomeSide,
         SelectedMarketSourceIdentity,
     },
     bolt_v3_numeric::{
@@ -78,6 +76,16 @@ use crate::{
     strategies::registry::{
         BoxedStrategy, FeeProvider, StrategyBuildContext, StrategyBuilder, ValidationError,
     },
+};
+
+mod selection;
+
+use self::selection::{
+    CandidateMarket, RuntimeSelectionSnapshot, SelectionPhase, SelectionState,
+    apply_selection_snapshot_to_active, idle_selection_snapshot, same_market_interval_rollover,
+    selected_market_on_execution_venue, selection_book_subscriptions,
+    selection_snapshot_from_entry_decision_source, selection_snapshot_from_instruments,
+    strategy_input_market_selection_outcome,
 };
 
 trait TomlValueExt {
@@ -405,61 +413,6 @@ macro_rules! validate_order_fields_impl {
 }
 
 binary_oracle_edge_taker_config_fields!(define_config_struct);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SelectionPhase {
-    Active,
-    Freeze,
-    Idle,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct CandidateOutcome {
-    instrument_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct CandidateMarket {
-    market_id: String,
-    instrument_id: String,
-    up: CandidateOutcome,
-    down: CandidateOutcome,
-    source_identity: SelectedMarketSourceIdentity,
-    selection_outcome: MarketSelectionOutcome,
-    price_to_beat: Option<f64>,
-    start_ts_ms: u64,
-    expiration_ts_ms: u64,
-    seconds_to_end: u64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum SelectionState {
-    Active {
-        market: CandidateMarket,
-    },
-    #[cfg(test)]
-    Freeze {
-        market: CandidateMarket,
-        reason: String,
-    },
-    Idle {
-        reason: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct SelectionDecision {
-    ruleset_id: String,
-    state: SelectionState,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct RuntimeSelectionSnapshot {
-    ruleset_id: String,
-    decision: SelectionDecision,
-    eligible_candidates: Vec<CandidateMarket>,
-    published_at_ms: u64,
-}
 
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
@@ -5715,7 +5668,6 @@ const EXIT_ORDER_FIELD: &str = stringify!(exit_order);
 const FORCED_EXIT_ORDER_FIELD: &str = stringify!(forced_exit_order);
 const WRONG_TYPE_CODE: &str = stringify!(wrong_type);
 const UNKNOWN_FIELD_CODE: &str = stringify!(unknown_field);
-const TARGET_MARKET_NOT_FOUND_REASON: &str = stringify!(target_market_not_found);
 
 impl BinaryOracleEdgeTakerBuilder {
     fn parse_config(raw: &Value) -> Result<BinaryOracleEdgeTakerConfig> {
@@ -6512,227 +6464,6 @@ fn apply_entry_decision_source_book(
     book.best_ask = Some(source.best_ask);
     book.liquidity_available = Some(source.liquidity_available);
     Ok(())
-}
-
-fn apply_selection_snapshot_to_active(
-    active: &mut ActiveMarketState,
-    snapshot: &RuntimeSelectionSnapshot,
-    warmup_target: u64,
-) {
-    let previous_books = active.books.clone();
-    let previous_trade_flow = std::mem::take(&mut active.trade_flow);
-    let next = ActiveMarketState::from_snapshot(snapshot, warmup_target);
-    let preserve_books = active.market_id.is_some()
-        && active.market_id == next.market_id
-        && active.instrument_id == next.instrument_id;
-    if active.same_boundary(&next) {
-        active.trade_flow = previous_trade_flow;
-        return;
-    }
-    if same_market_transition(active, &next) {
-        active.phase = next.phase;
-        active.forced_flat = next.forced_flat;
-        active.market_selection_outcome = next.market_selection_outcome;
-        active.interval_end_ms = next.interval_end_ms;
-        active.trade_flow = previous_trade_flow;
-        return;
-    }
-    *active = next;
-    active.trade_flow = previous_trade_flow;
-    if preserve_books {
-        active.books = previous_books;
-    }
-}
-
-fn same_market_transition(current: &ActiveMarketState, next: &ActiveMarketState) -> bool {
-    current.market_id.is_some()
-        && current.market_id == next.market_id
-        && current.instrument_id == next.instrument_id
-        && current.market_selection_outcome == next.market_selection_outcome
-        && current.interval_start_ms == next.interval_start_ms
-        && current.interval_end_ms == next.interval_end_ms
-}
-
-fn same_market_interval_rollover(current: &ActiveMarketState, next: &ActiveMarketState) -> bool {
-    current.market_id.is_some()
-        && current.market_id == next.market_id
-        && current.instrument_id == next.instrument_id
-        && current.interval_start_ms != next.interval_start_ms
-}
-
-fn selection_book_subscriptions(snapshot: &RuntimeSelectionSnapshot) -> OutcomeBookSubscriptions {
-    match &snapshot.decision.state {
-        SelectionState::Active { market } => OutcomeBookSubscriptions::from_market(market),
-        #[cfg(test)]
-        SelectionState::Freeze { market, .. } => OutcomeBookSubscriptions::from_market(market),
-        SelectionState::Idle { .. } => OutcomeBookSubscriptions::empty(),
-    }
-}
-
-/// True unless `snapshot` selects an Active (or, in tests, Freeze) market whose up or down outcome
-/// instrument is on a venue other than `execution_venue`. An Idle snapshot has no selected market to
-/// route a real order to and trivially matches. An outcome instrument id that cannot be parsed fails
-/// closed (treated as NOT on the execution venue), so a malformed selection can never pass the gate.
-fn selected_market_on_execution_venue(
-    snapshot: &RuntimeSelectionSnapshot,
-    execution_venue: Venue,
-) -> bool {
-    let market = match &snapshot.decision.state {
-        SelectionState::Active { market } => market,
-        #[cfg(test)]
-        SelectionState::Freeze { market, .. } => market,
-        SelectionState::Idle { .. } => return true,
-    };
-    outcome_on_execution_venue(&market.up, execution_venue)
-        && outcome_on_execution_venue(&market.down, execution_venue)
-}
-
-fn outcome_on_execution_venue(outcome: &CandidateOutcome, execution_venue: Venue) -> bool {
-    InstrumentId::from_str(&outcome.instrument_id)
-        .map(|instrument_id| instrument_id.venue == execution_venue)
-        .unwrap_or(false)
-}
-
-fn selection_snapshot_from_instruments(
-    config: &BinaryOracleEdgeTakerConfig,
-    instruments: &[InstrumentAny],
-    now_ms: u64,
-) -> RuntimeSelectionSnapshot {
-    let Some(market) = select_configured_market_from_instruments(config, instruments, now_ms)
-    else {
-        return idle_selection_snapshot(config, now_ms, TARGET_MARKET_NOT_FOUND_REASON);
-    };
-    selection_snapshot_for_state(config, now_ms, SelectionState::Active { market })
-}
-
-fn selection_snapshot_from_entry_decision_source(
-    config: &BinaryOracleEdgeTakerConfig,
-    source: &BinaryOracleEntryDecisionEvidenceSource,
-    instruments: &[InstrumentAny],
-) -> RuntimeSelectionSnapshot {
-    let Some(market) = selected_source_market_from_instruments(config, source, instruments) else {
-        return idle_selection_snapshot(
-            config,
-            source.market_selection_timestamp_ms,
-            TARGET_MARKET_NOT_FOUND_REASON,
-        );
-    };
-    selection_snapshot_for_state(
-        config,
-        source.market_selection_timestamp_ms,
-        SelectionState::Active { market },
-    )
-}
-
-fn selected_source_market_from_instruments(
-    config: &BinaryOracleEdgeTakerConfig,
-    source: &BinaryOracleEntryDecisionEvidenceSource,
-    instruments: &[InstrumentAny],
-) -> Option<CandidateMarket> {
-    let selected = &source.readiness_session.selected_market;
-    let expected_instrument_ids = selected
-        .instrument_ids
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    if expected_instrument_ids.len() != selected.instrument_ids.len() {
-        return None;
-    }
-    let cadence_milliseconds = config.cadence_seconds.checked_mul(MILLIS_PER_SECOND_U64)?;
-    let max_attempts = instruments.len().max(COUNTER_INCREMENT);
-    for attempt_index in INITIAL_COUNTER_USIZE..max_attempts {
-        let attempt_offset =
-            cadence_milliseconds.checked_mul(u64::try_from(attempt_index).ok()?)?;
-        let attempt_now_ms = source
-            .market_selection_timestamp_ms
-            .checked_add(attempt_offset)?;
-        let Some(market) =
-            select_configured_market_from_instruments(config, instruments, attempt_now_ms)
-        else {
-            continue;
-        };
-        if market.market_id != selected.market_id {
-            continue;
-        }
-        let market_instrument_ids = BTreeSet::from([
-            market.up.instrument_id.clone(),
-            market.down.instrument_id.clone(),
-        ]);
-        if market_instrument_ids == expected_instrument_ids {
-            return Some(market);
-        }
-    }
-    None
-}
-
-fn idle_selection_snapshot(
-    config: &BinaryOracleEdgeTakerConfig,
-    now_ms: u64,
-    reason: &str,
-) -> RuntimeSelectionSnapshot {
-    selection_snapshot_for_state(
-        config,
-        now_ms,
-        SelectionState::Idle {
-            reason: reason.to_string(),
-        },
-    )
-}
-
-fn selection_snapshot_for_state(
-    config: &BinaryOracleEdgeTakerConfig,
-    now_ms: u64,
-    state: SelectionState,
-) -> RuntimeSelectionSnapshot {
-    let ruleset_id = config.configured_target_id.clone();
-    RuntimeSelectionSnapshot {
-        ruleset_id: ruleset_id.clone(),
-        decision: SelectionDecision { ruleset_id, state },
-        eligible_candidates: Vec::new(),
-        published_at_ms: now_ms,
-    }
-}
-
-fn select_configured_market_from_instruments(
-    config: &BinaryOracleEdgeTakerConfig,
-    instruments: &[InstrumentAny],
-    now_ms: u64,
-) -> Option<CandidateMarket> {
-    let cadence_seconds = i64::try_from(config.cadence_seconds).ok()?;
-    let target = MarketSelectionTarget {
-        family_key: &config.rotating_market_family,
-        underlying_asset: &config.underlying_asset,
-        cadence_seconds,
-        cadence_slug_token: &config.cadence_slug_token,
-    };
-    let market = bolt_v3_market_families::select_binary_option_market_from_target(
-        target,
-        instruments,
-        now_ms,
-    )?;
-    Some(CandidateMarket {
-        market_id: market.market_id,
-        instrument_id: market.instrument_id.to_string(),
-        up: CandidateOutcome {
-            instrument_id: market.up_instrument_id.to_string(),
-        },
-        down: CandidateOutcome {
-            instrument_id: market.down_instrument_id.to_string(),
-        },
-        source_identity: market.source_identity,
-        selection_outcome: market.selection_outcome,
-        price_to_beat: None,
-        start_ts_ms: market.start_timestamp_milliseconds,
-        expiration_ts_ms: market.expiration_timestamp_milliseconds,
-        seconds_to_end: market.seconds_to_end,
-    })
-}
-
-fn strategy_input_market_selection_outcome(outcome: MarketSelectionOutcome) -> &'static str {
-    match outcome {
-        MarketSelectionOutcome::Current => BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
-        MarketSelectionOutcome::Next => BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT,
-    }
 }
 
 fn should_replace_book_subscriptions(
@@ -7592,6 +7323,10 @@ mod tests {
     use rust_decimal::Decimal;
 
     use super::*;
+    // Selection types used only by the test fixtures (the production parent module
+    // imports the rest via `use self::selection::{…}`). Imported here at test
+    // scope so the production build does not flag them as unused.
+    use super::selection::{CandidateOutcome, SelectionDecision};
     use crate::{
         bolt_v3_submit_admission::BoltV3OrderLifecycleIntent,
         strategies::{production_strategy_registry, registry::StrategyBuilder},
@@ -13738,11 +13473,25 @@ mod tests {
 
     #[test]
     fn production_outcome_side_inference_does_not_parse_instrument_suffixes() {
-        let source = include_str!("binary_oracle_edge_taker.rs");
-        let production = source
-            .split("\n#[cfg(test)]\nmod tests")
-            .next()
-            .expect("production source should precede cfg(test) test module");
+        // The strategy is now a directory module: the production code this guard
+        // polices lives across `mod.rs` AND `selection.rs` (the venue-routing
+        // predicates `outcome_on_execution_venue` / `selected_market_on_execution_venue`
+        // moved into `selection.rs` in slice A3). Scan the UNION of every submodule
+        // file's production half — each split at the same top-level test-module
+        // marker — so the guard keeps covering the relocated code, not just `mod.rs`.
+        // When later slices add more submodule files, append their `include_str!`
+        // here; this is the single source of truth for "scan all production text".
+        let mod_src = include_str!("mod.rs");
+        let selection_src = include_str!("selection.rs");
+        let production = [mod_src, selection_src]
+            .iter()
+            .map(|source| {
+                source
+                    .split("\n#[cfg(test)]\nmod tests")
+                    .next()
+                    .expect("production source should precede cfg(test) test module")
+            })
+            .collect::<String>();
         let up_suffix = format!("{}{}{}", "-", "UP", ".");
         let down_suffix = format!("{}{}{}", "-", "DOWN", ".");
 

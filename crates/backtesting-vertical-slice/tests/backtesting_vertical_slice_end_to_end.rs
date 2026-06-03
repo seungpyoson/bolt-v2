@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use bolt_v2::backtesting_vertical_slice::{
+use backtesting_vertical_slice::{
     canonical_trades::CanonicalInstrumentIdentity,
     catalog_projection::SpotInstrumentSpec,
     result_contract::ResultArtifactUris,

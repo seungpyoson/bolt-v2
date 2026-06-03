@@ -429,7 +429,7 @@ pub fn parse_manifest_toml(text: &str) -> Result<BacktestingRunManifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backtesting_vertical_slice::source_proof::{
+    use crate::source_proof::{
         AcceptanceMode, EvidenceState, FixtureType, IngestManifestObjectRecord, NtMappingStatus,
         RequiredCheck, RequiredChecks, SourceProofFidelityClass, SourceProofReport,
         SourceProofStatus, TimeRange, select_accepted_dataset,

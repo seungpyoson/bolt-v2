@@ -457,7 +457,7 @@ impl CanonicalTradesTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backtesting_vertical_slice::source_proof::{
+    use crate::source_proof::{
         AcceptanceMode, EvidenceState, FixtureType, IngestManifestObjectRecord, NtMappingStatus,
         RequiredCheck, RequiredChecks, SourceProofReport, SourceProofStatus, TimeRange,
     };
@@ -527,12 +527,8 @@ mod tests {
         }
         .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
         .expect("accept");
-        crate::backtesting_vertical_slice::source_proof::select_accepted_dataset(
-            &proof,
-            &object,
-            &object.sha256,
-        )
-        .expect("select accepted dataset")
+        crate::source_proof::select_accepted_dataset(&proof, &object, &object.sha256)
+            .expect("select accepted dataset")
     }
 
     fn identity() -> CanonicalInstrumentIdentity {

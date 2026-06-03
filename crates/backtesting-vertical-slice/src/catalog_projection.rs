@@ -324,7 +324,7 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backtesting_vertical_slice::{
+    use crate::{
         canonical_trades::{CanonicalInstrumentIdentity, normalize_bybit_spot_tick_trades},
         source_proof::{
             AcceptanceMode, AcceptedDataset, EvidenceState, FixtureType,

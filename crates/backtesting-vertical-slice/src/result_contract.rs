@@ -19,9 +19,11 @@ use super::{run_manifest::StrategySource, source_proof::SourceProofFidelityClass
 /// Result contract schema version.
 pub const RESULT_CONTRACT_VERSION: &str = "backtest-result-contract.v1";
 
-/// Workspace manifest, embedded at compile time so the recorded NautilusTrader
-/// revision is exactly the one this binary was built against.
-const WORKSPACE_CARGO_TOML: &str = include_str!("../../Cargo.toml");
+/// This crate's manifest, embedded at compile time so the recorded NautilusTrader
+/// revision is exactly the one this binary was built against. This crate's own
+/// `Cargo.toml` is the single source of truth for the pinned `nautilus-backtest`
+/// rev (the slice roots its own workspace + lockfile, isolated from `bolt-v2`).
+const WORKSPACE_CARGO_TOML: &str = include_str!("../Cargo.toml");
 
 /// Phrases that would make a result contract subjective. The contract is an
 /// objective artifact; promotion/escalation belongs to Research Analytics.

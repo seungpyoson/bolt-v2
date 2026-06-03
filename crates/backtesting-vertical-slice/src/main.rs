@@ -15,7 +15,7 @@ use flate2::read::GzDecoder;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-use bolt_v2::backtesting_vertical_slice::{
+use backtesting_vertical_slice::{
     canonical_trades::CanonicalInstrumentIdentity,
     catalog_projection::SpotInstrumentSpec,
     result_contract::ResultArtifactUris,

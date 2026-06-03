@@ -65,20 +65,9 @@ def discovered_core_files(root: Path) -> tuple[str, ...]:
     paths = {
         path
         for path in src.rglob("*.rs")
-        if path.is_file()
-        and not is_concrete_binding_module(root, path)
-        and not is_backtesting_vertical_slice(root, path)
+        if path.is_file() and not is_concrete_binding_module(root, path)
     }
     return tuple(sorted(path.relative_to(root).as_posix() for path in paths))
-
-
-def is_backtesting_vertical_slice(root: Path, path: Path) -> bool:
-    """Return true for the scoped NT backtesting proof boundary."""
-
-    rel = path.relative_to(root).as_posix()
-    return rel.startswith("src/backtesting_vertical_slice/") or rel == (
-        "src/bin/backtesting_vertical_slice.rs"
-    )
 
 
 def is_concrete_binding_module(root: Path, path: Path) -> bool:

@@ -1,0 +1,53 @@
+# Managed-cargo policy for the backtesting-vertical-slice crate.
+#
+# This crate roots its OWN cargo workspace + Cargo.lock (see Cargo.toml), deliberately outside the
+# live `bolt-v2` package's dependency graph. It therefore needs its OWN managed-build policy so its
+# heavy NautilusTrader backtest/cloud build cache lives in a SEPARATE namespace and never thrashes
+# or pollutes the live binary's `bolt-v2` cache. All cargo for this crate routes through the same
+# shared wrapper (scripts/rust_verification.py) as bolt-v2 — only the namespace differs.
+#
+# `build` is a NATIVE release build for the local dev/research host (the stated run environment is
+# local), NOT a cross-compile to the EC2 trading target — the backtester never ships to the trading
+# instance. `test`/`clippy` (the verification path CI runs) build for the host default and are
+# host-agnostic; only `build.target` is pinned, and it changes in one place if a research box is chosen.
+schema_version = 1
+project_id = "backtesting-vertical-slice"
+target_namespace = "backtesting-vertical-slice"
+
+[commands]
+
+[commands.test]
+recipe = "managed-test"
+
+[commands.clippy]
+recipe = "managed-clippy"
+
+[commands.build]
+recipe = "managed-build"
+artifact_layout = "cargo"
+profile = "release"
+target = "aarch64-apple-darwin"
+
+[cache]
+min_free_bytes = 10737418240
+soft_limit_bytes = 53687091200
+active_process_patterns = ["cargo", "cargo-clippy", "cargo-fmt", "cargo-nextest", "rustc", "nextest", "rust_verification.py"]
+
+[cache.retention.debug]
+prune_after_days = 14
+prunable = true
+
+[cache.retention.release]
+prune_after_days = 30
+prunable = true
+
+[cache.retention.cross-target]
+prune_after_days = 30
+prunable = true
+
+[cache.retention.tmp]
+prune_after_days = 1
+prunable = true
+
+[cache.retention.other]
+prunable = false

@@ -34,9 +34,11 @@ token stream. It catches BOTH spellings in one pass:
 
 For every detected path it resolves `crate::`, `self::`, and `super::` roots to
 absolute crate-rooted module paths before checking whether the path enters
-`crate::strategies`. A bare root (`strategies::...`) is an external crate and is
-not flagged; `super::strategies` is flagged only from a top-level `bolt_v3_*`
-module (where `super` == the crate root) and correctly ignored from a nested one.
+`crate::strategies`. Resolution uses the LEXICAL module stack — inline
+`mod NAME { ... }` blocks deepen the module — so `super::super::strategies` from
+inside `mod tests {}` in a top-level `bolt_v3_*` file resolves to the crate root
+and is flagged, while `super::strategies` from a nested file module is not. A
+bare root (`strategies::...`) is an external crate and is never flagged.
 
 Each violation is keyed by (file, the absolute strategy path it reaches) — NOT by
 a surrounding `use` block or a line — so the allowlist is stable against
@@ -48,10 +50,14 @@ the #522 decomposition). They are captured in `FINDING_ALLOWANCES` so the fence 
 GREEN on today's code while FAILING on every NEW back-reference. The allowlist may
 only SHRINK:
 
-- adding a new allowance is forbidden — a new back-reference is a bug to fix, not
-  to allow;
 - a stale allowance (one that no longer matches any reference) FAILS, forcing its
-  removal once the underlying reference is relocated to a shared module.
+  removal once the underlying reference is relocated to a shared module;
+- ADDING an allowance is rejected mechanically: the separate
+  `--check-shrink-only-vs-main` mode (run in CI via `just source-fence`) fails
+  unless the in-tree allowlist is a subset of the one on `origin/main`. A new
+  back-reference is a bug to fix, not to allow. (This is a no-op on the PR that
+  first introduces the fence — there is no mainline baseline yet — and active on
+  every PR thereafter.)
 
 KNOWN LIMITATION (documented, not a bug): the fence reads source text, so it
 cannot see a path that only exists *after macro expansion* — i.e. a strategy path
@@ -63,6 +69,8 @@ a strategy type through a third module under a new name.
 
 from __future__ import annotations
 
+import ast
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -424,13 +432,18 @@ def resolved_strategy_path(segments: list[str], module_parts: list[str]) -> str 
 
 
 def _skip_attributes(tokens: list[Token], i: int) -> int:
-    """Skip any leading `#[ ... ]` attribute groups, returning the next index."""
+    """Skip any leading `#[ ... ]` (outer) or `#![ ... ]` (inner) attribute groups,
+    returning the next index."""
 
     n = len(tokens)
     while i < n and tokens[i].kind == "PUNCT" and tokens[i].value == "#":
-        if i + 1 < n and tokens[i + 1].kind == "PUNCT" and tokens[i + 1].value == "[":
+        # An inner attribute is `#` `!` `[ ... ]`; tolerate the optional `!`.
+        bracket = i + 1
+        if bracket < n and tokens[bracket].kind == "PUNCT" and tokens[bracket].value == "!":
+            bracket += 1
+        if bracket < n and tokens[bracket].kind == "PUNCT" and tokens[bracket].value == "[":
             depth = 0
-            j = i + 1
+            j = bracket
             while j < n:
                 tok = tokens[j]
                 if tok.kind == "PUNCT" and tok.value == "[":
@@ -510,20 +523,59 @@ def detect_strategy_paths(
     tokens: list[Token], module_parts: list[str]
 ) -> list[tuple[str, int]]:
     """Return (absolute strategy path, line) for every strategy reference — both
-    `use` imports and inline fully-qualified paths."""
+    `use` imports and inline fully-qualified paths.
+
+    `self`/`super` resolution uses the LEXICAL module stack, not just the file
+    path: inline `mod NAME { ... }` blocks deepen the module so that, e.g.,
+    `super::super::strategies` from inside `mod tests {}` in a top-level
+    `src/bolt_v3_foo.rs` correctly resolves to the crate root and is flagged.
+    """
 
     out: list[tuple[str, int]] = []
     n = len(tokens)
     i = 0
+    brace_depth = 0
+    mod_stack: list[tuple[str, int]] = []  # (inline module name, body brace depth)
     while i < n:
         tok = tokens[i]
 
-        # `use` statement (the keyword can never be a normal identifier).
+        # Inline module `mod NAME { ... }` (any leading `pub`/attrs are separate,
+        # ignorable tokens). `mod NAME ;` is an external file module — not pushed.
+        if (
+            tok.kind == "IDENT"
+            and tok.value == "mod"
+            and not tok.raw
+            and i + 2 < n
+            and tokens[i + 1].kind == "IDENT"
+            and tokens[i + 2].kind == "PUNCT"
+            and tokens[i + 2].value == "{"
+        ):
+            brace_depth += 1
+            mod_stack.append((tokens[i + 1].value, brace_depth))
+            i += 3
+            continue
+
+        if tok.kind == "PUNCT" and tok.value == "{":
+            brace_depth += 1
+            i += 1
+            continue
+        if tok.kind == "PUNCT" and tok.value == "}":
+            brace_depth -= 1
+            while mod_stack and mod_stack[-1][1] > brace_depth:
+                mod_stack.pop()
+            i += 1
+            continue
+
+        effective = module_parts + [name for name, _ in mod_stack]
+
+        # `use` statement (the keyword can never be a normal identifier). Its own
+        # `{ }` grouped-import braces are consumed inside `_scan_use_statement`, so
+        # they never reach the module-brace counter above.
         if tok.kind == "IDENT" and tok.value == "use" and not tok.raw:
             line = tok.line
             paths, i = _scan_use_statement(tokens, i + 1)
             for segs in paths:
-                strategy_path = resolved_strategy_path(segs, module_parts)
+                strategy_path = resolved_strategy_path(segs, effective)
                 if strategy_path is not None:
                     out.append((strategy_path, line))
             continue
@@ -548,7 +600,7 @@ def detect_strategy_paths(
                         j += 1
                         continue
                     break
-                strategy_path = resolved_strategy_path(segs, module_parts)
+                strategy_path = resolved_strategy_path(segs, effective)
                 if strategy_path is not None:
                     out.append((strategy_path, tok.line))
                 i = j
@@ -619,7 +671,135 @@ def is_allowed(finding: Finding) -> bool:
     )
 
 
-def main() -> int:
+# --------------------------------------------------------------------------- #
+# Shrink-only enforcement
+#
+# The in-tree allowlist alone cannot guarantee "may only shrink": a single PR
+# could add a new `crate::strategies` reference AND a matching allowance and stay
+# green. The only trust anchor that resists that is the protected mainline. So a
+# separate `--check-shrink-only-vs-main` mode asserts the current allowlist is a
+# SUBSET of the allowlist on `origin/main`. The fence's own source is read from
+# the baseline ref and its FINDING_ALLOWANCES parsed via AST (never executed).
+# Before the fence exists on main (the PR that introduces it) there is no
+# baseline to compare to, so the check is a documented no-op until the first
+# merge; after that, every PR is checked.
+# --------------------------------------------------------------------------- #
+
+# The baseline is the protected mainline and ONLY the mainline. `FETCH_HEAD` or a
+# local `main` are deliberately NOT accepted: in a feature worktree `FETCH_HEAD`
+# can point at the branch itself, which would silently compare the allowlist to
+# itself and pass. CI refreshes `origin/main` via `git fetch` before this runs.
+BASELINE_REL = "scripts/verify_bolt_v3_dependency_direction.py"
+BASELINE_REF = "origin/main"
+
+
+def parse_allowances_from_source(text: str) -> set[tuple[str, str]]:
+    """Extract FINDING_ALLOWANCES (path, strategy_path) pairs from fence source via
+    AST, WITHOUT executing it. Handles both annotated and plain assignment."""
+
+    tree = ast.parse(text)
+    pairs: set[tuple[str, str]] = set()
+    found = False
+    for node in ast.walk(tree):
+        names: list[str] = []
+        value = None
+        if isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names = [node.target.id]
+            value = node.value
+        if "FINDING_ALLOWANCES" not in names or value is None:
+            continue
+        found = True
+        elts = value.elts if isinstance(value, (ast.Tuple, ast.List)) else []
+        for elt in elts:
+            if not isinstance(elt, ast.Call):
+                continue
+            path = strat = None
+            positional = [a.value for a in elt.args if isinstance(a, ast.Constant)]
+            if len(positional) >= 2:
+                path, strat = positional[0], positional[1]
+            for kw in elt.keywords:
+                if isinstance(kw.value, ast.Constant):
+                    if kw.arg == "path":
+                        path = kw.value.value
+                    elif kw.arg == "strategy_path":
+                        strat = kw.value.value
+            if isinstance(path, str) and isinstance(strat, str):
+                pairs.add((path, strat))
+    if not found:
+        raise PolicyError("baseline source has no FINDING_ALLOWANCES assignment")
+    return pairs
+
+
+def _read_baseline_source() -> str | None:
+    """Return the fence source from `origin/main`, or None if the fence is not yet
+    present there (the introducing PR). Raises PolicyError if `origin/main` cannot
+    be resolved (fail closed rather than silently skip enforcement)."""
+
+    rev = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{BASELINE_REF}^{{commit}}"],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+    )
+    if rev.returncode != 0:
+        raise PolicyError(
+            f"cannot resolve baseline ref {BASELINE_REF} (fetch it in CI) "
+            "to enforce allowlist shrink-only"
+        )
+    show = subprocess.run(
+        ["git", "show", f"{BASELINE_REF}:{BASELINE_REL}"],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+    )
+    if show.returncode == 0:
+        return show.stdout
+    return None  # ref resolves but the fence is not on it yet (introducing PR)
+
+
+def check_allowlist_shrink_only() -> int:
+    current = {(a.path, a.strategy_path) for a in FINDING_ALLOWANCES}
+    try:
+        baseline_source = _read_baseline_source()
+    except PolicyError as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+
+    if baseline_source is None:
+        print(
+            "OK: dependency fence not yet on the mainline baseline (introducing "
+            "PR); allowlist shrink-only is enforced on every PR after merge."
+        )
+        return 0
+
+    try:
+        baseline = parse_allowances_from_source(baseline_source)
+    except (PolicyError, SyntaxError) as error:
+        print(f"FAIL: cannot parse mainline baseline allowlist: {error}", file=sys.stderr)
+        return 1
+
+    added = sorted(current - baseline)
+    if added:
+        for path, strat in added:
+            print(
+                f"FAIL: {path}: allowlist may only shrink; allowance is not present "
+                f"on the mainline baseline (a new back-reference must be fixed, not "
+                f"allowed): references {strat}",
+                file=sys.stderr,
+            )
+        return 1
+
+    print(
+        "OK: dependency allowlist is a subset of the mainline baseline "
+        f"({len(current)} current, {len(baseline)} baseline)."
+    )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "--check-shrink-only-vs-main" in argv:
+        return check_allowlist_shrink_only()
+
     try:
         findings = find_violations(REPO_ROOT)
     except PolicyError as error:

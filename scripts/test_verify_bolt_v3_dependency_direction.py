@@ -38,7 +38,7 @@ def run_with(root: Path, allowances: tuple | None = None) -> tuple[int, str, str
         if allowances is not None:
             VERIFIER.FINDING_ALLOWANCES = allowances
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            code = VERIFIER.main()
+            code = VERIFIER.main([])
     finally:
         VERIFIER.REPO_ROOT = original_root
         VERIFIER.FINDING_ALLOWANCES = original_allow
@@ -47,6 +47,37 @@ def run_with(root: Path, allowances: tuple | None = None) -> tuple[int, str, str
 
 def allowance(path: str, strategy_path: str):
     return VERIFIER.FindingAllowance(path=path, strategy_path=strategy_path)
+
+
+def baseline_source(pairs) -> str:
+    body = ",\n".join(f'    FindingAllowance("{p}", "{s}")' for p, s in pairs)
+    return f"FINDING_ALLOWANCES = (\n{body},\n)\n"
+
+
+def run_shrink_only(allowances, baseline) -> tuple[int, str, str]:
+    """Run the shrink-only mode with FINDING_ALLOWANCES and the mainline baseline
+    source both injected. `baseline` is a source string, None (introducing PR), or
+    an Exception instance to raise from the baseline reader."""
+
+    orig_allow = VERIFIER.FINDING_ALLOWANCES
+    orig_read = VERIFIER._read_baseline_source
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+
+    def fake_read():
+        if isinstance(baseline, BaseException):
+            raise baseline
+        return baseline
+
+    try:
+        VERIFIER.FINDING_ALLOWANCES = allowances
+        VERIFIER._read_baseline_source = fake_read
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = VERIFIER.main(["--check-shrink-only-vs-main"])
+    finally:
+        VERIFIER.FINDING_ALLOWANCES = orig_allow
+        VERIFIER._read_baseline_source = orig_read
+    return code, stdout.getvalue(), stderr.getvalue()
 
 
 def expect_fail(root: Path, allowances=()) -> str:
@@ -405,6 +436,135 @@ def test_inline_path_keyed_literally_including_trailing_segments() -> None:
             raise AssertionError(f"expected literal trailing segment, got: {err!r}")
 
 
+def test_inline_mod_super_super_from_top_level_flagged() -> None:
+    # codex finding: inside an inline `mod tests {}` in a TOP-LEVEL bolt_v3_* file,
+    # `super::super` reaches the crate root, so `super::super::strategies` is a real
+    # back-reference the file-path-only resolver previously missed.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root, "src/bolt_v3_foo.rs",
+            "mod tests {\n"
+            "    use super::super::strategies::registry::FeeProvider;\n"
+            "    type T = super::super::strategies::registry::StrategyBuilder;\n"
+            "}\n",
+        )
+        err = expect_fail(root)
+        if "FeeProvider" not in err or "StrategyBuilder" not in err:
+            raise AssertionError(f"expected both super::super refs flagged, got: {err!r}")
+
+
+def test_inline_mod_single_super_not_flagged() -> None:
+    # A single `super` from `mod tests {}` in a top-level file resolves to the file
+    # module (`bolt_v3_foo`), NOT the crate root — so it is not the strategy layer.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root, "src/bolt_v3_foo.rs",
+            "mod tests {\n    use super::strategies::Thing;\n}\n",
+        )
+        expect_pass(root)
+
+
+def test_inline_mod_super_reaches_crate_in_nested_file() -> None:
+    # In a nested file module (depth 3) inside `mod tests {}` (depth 4), four
+    # `super`s reach the crate root.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root, "src/bolt_v3_providers/polymarket/fees.rs",
+            "mod tests {\n"
+            "    type T = super::super::super::super::strategies::registry::FeeProvider;\n"
+            "}\n",
+        )
+        expect_fail(root)
+        # One fewer `super` stays inside the crate's module tree (not strategies).
+        write_file(
+            root, "src/bolt_v3_providers/polymarket/fees.rs",
+            "mod tests {\n"
+            "    type T = super::super::super::strategies::registry::FeeProvider;\n"
+            "}\n",
+        )
+        expect_pass(root)
+
+
+def test_mod_block_scope_restored_after_close() -> None:
+    # After an inline `mod {}` closes, resolution reverts to the file's own depth:
+    # `super::super` at top-level file scope is unresolvable (not the crate root),
+    # proving the module stack was popped rather than leaking.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root, "src/bolt_v3_foo.rs",
+            "mod tests {\n    pub struct A;\n}\n"
+            "fn f() -> super::super::strategies::registry::FeeProvider { todo!() }\n",
+        )
+        expect_pass(root)
+
+
+def test_inner_attribute_does_not_break_detection() -> None:
+    # glm note: `#![...]` inner attributes are now skipped; a real back-reference
+    # after one is still flagged.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root, "src/bolt_v3_foo.rs",
+            "#![allow(clippy::all)]\nuse crate::strategies::registry::FeeProvider;\n",
+        )
+        expect_fail(root)
+
+
+def test_parse_allowances_matches_real_committed_allowlist() -> None:
+    text = SCRIPT_PATH.read_text(encoding="utf-8")
+    parsed = VERIFIER.parse_allowances_from_source(text)
+    expected = {(a.path, a.strategy_path) for a in VERIFIER.FINDING_ALLOWANCES}
+    if parsed != expected:
+        raise AssertionError(f"AST parse mismatch: {parsed ^ expected}")
+
+
+def test_parse_allowances_roundtrips_synthetic_source() -> None:
+    pairs = {("src/bolt_v3_a.rs", "strategies::x::A"), ("src/bolt_v3_b.rs", "strategies::y::B")}
+    if VERIFIER.parse_allowances_from_source(baseline_source(pairs)) != pairs:
+        raise AssertionError("synthetic baseline did not round-trip")
+
+
+def test_shrink_only_subset_passes() -> None:
+    current = (allowance("src/bolt_v3_a.rs", "strategies::x::A"),)
+    base = baseline_source(
+        {("src/bolt_v3_a.rs", "strategies::x::A"), ("src/bolt_v3_b.rs", "strategies::y::B")}
+    )
+    code, out, _ = run_shrink_only(current, base)
+    if code != 0 or "subset of the mainline baseline" not in out:
+        raise AssertionError(f"expected subset PASS, got {code}: {out!r}")
+
+
+def test_shrink_only_addition_fails() -> None:
+    current = (
+        allowance("src/bolt_v3_a.rs", "strategies::x::A"),
+        allowance("src/bolt_v3_b.rs", "strategies::y::NEW"),
+    )
+    base = baseline_source({("src/bolt_v3_a.rs", "strategies::x::A")})
+    code, _out, err = run_shrink_only(current, base)
+    if code != 1 or "may only shrink" not in err or "strategies::y::NEW" not in err:
+        raise AssertionError(f"expected addition FAIL naming the new entry, got {code}: {err!r}")
+
+
+def test_shrink_only_introducing_pr_passes() -> None:
+    current = (allowance("src/bolt_v3_a.rs", "strategies::x::A"),)
+    code, out, _ = run_shrink_only(current, baseline=None)
+    if code != 0 or "introducing" not in out:
+        raise AssertionError(f"expected introducing-PR PASS, got {code}: {out!r}")
+
+
+def test_shrink_only_unresolved_baseline_fails_closed() -> None:
+    current = (allowance("src/bolt_v3_a.rs", "strategies::x::A"),)
+    code, _out, err = run_shrink_only(
+        current, baseline=VERIFIER.PolicyError("cannot resolve baseline ref origin/main")
+    )
+    if code != 1 or "cannot resolve baseline ref" not in err:
+        raise AssertionError(f"expected fail-closed on missing baseline, got {code}: {err!r}")
+
+
 def test_real_repo_is_green_with_committed_allowlist() -> None:
     # Guard: the committed FINDING_ALLOWANCES must match the actual source tree.
     code, _out, err = run_with(VERIFIER.REPO_ROOT)
@@ -463,6 +623,17 @@ def main() -> int:
         test_nested_block_comment_ignored,
         test_inline_path_allowance_suppresses,
         test_inline_path_keyed_literally_including_trailing_segments,
+        test_inline_mod_super_super_from_top_level_flagged,
+        test_inline_mod_single_super_not_flagged,
+        test_inline_mod_super_reaches_crate_in_nested_file,
+        test_mod_block_scope_restored_after_close,
+        test_inner_attribute_does_not_break_detection,
+        test_parse_allowances_matches_real_committed_allowlist,
+        test_parse_allowances_roundtrips_synthetic_source,
+        test_shrink_only_subset_passes,
+        test_shrink_only_addition_fails,
+        test_shrink_only_introducing_pr_passes,
+        test_shrink_only_unresolved_baseline_fails_closed,
         test_real_repo_is_green_with_committed_allowlist,
         test_file_size_limit_exceeded_fails_cleanly,
     ]

@@ -49,9 +49,10 @@ use rust_decimal::Decimal;
 use crate::bolt_v3_config::{
     AwsBlock, BoltV3RootConfig, BoltV3StrategyConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND,
     ClientBlock, DataClientReadinessProbeQuoteTargetSource, GATE_PROVIDER_CAPABILITIES,
-    GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, LiveCanaryBlock,
-    LiveCanaryProofPolicyBlock, LoadedStrategy, NautilusBlock, PRICE_GATE_VALUE_KIND,
-    PersistenceBlock, RiskBlock, SSM_CREDENTIAL_PARAMETER_FIELD, TEST_DOUBLE_PROVIDER_KIND,
+    GATE_PROVIDER_KINDS, GateProviderBlock, GateProviderFreshnessBlock, KillSwitchConfigBlock,
+    LiveCanaryBlock, LiveCanaryProofPolicyBlock, LoadedStrategy, NautilusBlock,
+    PRICE_GATE_VALUE_KIND, PersistenceBlock, RiskBlock, SSM_CREDENTIAL_PARAMETER_FIELD,
+    TEST_DOUBLE_PROVIDER_KIND,
 };
 use crate::bolt_v3_decision_evidence::validate_decision_evidence_relative_path;
 
@@ -962,6 +963,115 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                     "risk.nautilus.max_notional_per_order[`{instrument_id}`] is not a valid decimal string ({reason}): `{notional}`"
                 ));
             }
+        }
+    }
+    if let Some(kill_switch) = &block.kill_switch {
+        errors.extend(validate_kill_switch_block(kill_switch));
+    }
+    errors
+}
+
+fn validate_kill_switch_block(block: &KillSwitchConfigBlock) -> Vec<String> {
+    if !block.enabled {
+        return Vec::new();
+    }
+
+    let mut errors = Vec::new();
+    let state_path = Path::new(block.state_path.trim());
+    if state_path.as_os_str().is_empty()
+        || state_path.is_absolute()
+        || state_path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        errors.push(
+            "risk.kill_switch.state_path must be a non-empty relative path under the configured root"
+                .to_string(),
+        );
+    }
+    if block.max_state_file_bytes == 0 {
+        errors.push("risk.kill_switch.max_state_file_bytes must be positive".to_string());
+    }
+    if block.action_retry_interval_ms == 0 {
+        errors.push("risk.kill_switch.action_retry_interval_ms must be positive".to_string());
+    }
+    if block.action_retry_timeout_ms == 0 {
+        errors.push("risk.kill_switch.action_retry_timeout_ms must be positive".to_string());
+    }
+    if block.action_retry_interval_ms > block.action_retry_timeout_ms
+        && block.action_retry_timeout_ms > 0
+    {
+        errors.push(
+            "risk.kill_switch.action_retry_interval_ms must be <= action_retry_timeout_ms"
+                .to_string(),
+        );
+    }
+    if block.mandatory_proof_max_age_ms == 0 {
+        errors.push("risk.kill_switch.mandatory_proof_max_age_ms must be positive".to_string());
+    }
+    if block.manual_reset_evidence_max_age_ms == 0 {
+        errors
+            .push("risk.kill_switch.manual_reset_evidence_max_age_ms must be positive".to_string());
+    }
+    if block.forced_reduction_policy_sha256.len() != 64
+        || !block
+            .forced_reduction_policy_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        errors.push(
+            "risk.kill_switch.forced_reduction_policy_sha256 must be a 64-character SHA-256 hex digest"
+                .to_string(),
+        );
+    }
+    if block.forced_reduction_max_live_order_count == 0 {
+        errors.push(
+            "risk.kill_switch.forced_reduction_max_live_order_count must be positive".to_string(),
+        );
+    }
+    match parse_decimal_string(&block.forced_reduction_max_notional_per_order) {
+        Ok(notional) if notional > Decimal::ZERO => {}
+        Ok(_) => errors.push(
+            "risk.kill_switch.forced_reduction_max_notional_per_order must be positive"
+                .to_string(),
+        ),
+        Err(reason) => errors.push(format!(
+            "risk.kill_switch.forced_reduction_max_notional_per_order is not a valid decimal string ({reason}): `{}`",
+            block.forced_reduction_max_notional_per_order
+        )),
+    }
+    if block.authorized_operator_ids.is_empty() {
+        errors.push(
+            "risk.kill_switch.authorized_operator_ids must not be empty when enabled".to_string(),
+        );
+    }
+    if block
+        .authorized_operator_ids
+        .iter()
+        .any(|operator_id| operator_id.trim().is_empty())
+    {
+        errors.push(
+            "risk.kill_switch.authorized_operator_ids must not contain empty values".to_string(),
+        );
+    }
+    if block.account_ids.is_empty() {
+        errors.push("risk.kill_switch.account_ids must not be empty when enabled".to_string());
+    }
+    if block
+        .account_ids
+        .iter()
+        .any(|account_id| account_id.trim().is_empty())
+    {
+        errors.push("risk.kill_switch.account_ids must not contain empty values".to_string());
+    }
+    if block.instrument_ids.is_empty() {
+        errors.push("risk.kill_switch.instrument_ids must not be empty when enabled".to_string());
+    }
+    for instrument_id in &block.instrument_ids {
+        if let Err(error) = InstrumentId::from_str(instrument_id) {
+            errors.push(format!(
+                "risk.kill_switch.instrument_ids[`{instrument_id}`] is not a valid Nautilus instrument ID ({error})"
+            ));
         }
     }
     errors

@@ -29,8 +29,7 @@
 //! The caller owns the `LiveNode`; the build path never opens an
 //! external network connection. Opt-in controlled-connect/no-submit
 //! readiness boundaries may open adapter sockets. The production
-//! trading runner entrypoint is [`run_bolt_v3_live_node`], which rejects a
-//! missing live-canary block before entering NT's runner loop. The no-submit
+//! trading runner entrypoint is [`run_bolt_v3_live_node`]. The no-submit
 //! readiness path builds a strategy-free node before using NT's supported
 //! runner loop with handle-driven stop; its dedicated quote probes call
 //! only NT quote subscribe/unsubscribe APIs for configured strategy
@@ -76,7 +75,10 @@ use ustr::Ustr;
 use zeroize::Zeroizing;
 
 use crate::{
-    bolt_v3_adapters::{BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters},
+    bolt_v3_adapters::{
+        BoltV3AdapterConfigs, BoltV3AdapterMappingError, map_bolt_v3_adapters,
+        map_bolt_v3_adapters_with_runtime_approvals,
+    },
     bolt_v3_canary_proof_executor::register_canary_proof_executor_on_node,
     bolt_v3_client_registration::{
         BoltV3ClientRegistrationError, BoltV3RegistrationSummary, register_bolt_v3_clients,
@@ -90,8 +92,11 @@ use crate::{
         BoltV3AdmissionDecisionEvidence, BoltV3DecisionEvidenceWriter, BoltV3OrderIntentEvidence,
         BoltV3StrategyInputEvidenceSnapshot, JsonlBoltV3DecisionEvidenceWriter,
     },
-    bolt_v3_live_canary_gate::{BoltV3LiveCanaryGateError, current_build_head_sha},
-    bolt_v3_providers,
+    bolt_v3_live_canary_gate::current_build_head_sha,
+    bolt_v3_providers::{
+        self, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
+        ProviderRuntimeApprovals,
+    },
     bolt_v3_secrets::{
         BoltV3SecretError, ForbiddenEnvVarError, ResolvedBoltV3Secrets,
         check_no_forbidden_credential_env_vars, check_no_forbidden_credential_env_vars_with,
@@ -101,7 +106,7 @@ use crate::{
         BoltV3StrategyRegistrationError, BoltV3StrategyRegistrationSummary,
         register_bolt_v3_strategies_on_node_with_bindings,
     },
-    bolt_v3_submit_admission::{BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionState},
+    bolt_v3_submit_admission::{BoltV3LiveSubmitApprovalLimits, BoltV3SubmitAdmissionState},
     bolt_v3_tiny_canary_evidence::{
         Phase8CanaryBlockReason, Phase8CanaryEvidence, Phase8CanaryEvidenceInput,
         Phase8EvidenceRef, Phase8OperatorApprovalEnvelope, Phase8RuntimeCaptureRef,
@@ -116,6 +121,12 @@ pub struct BoltV3LiveNodeRuntime {
     registration_summary: BoltV3RegistrationSummary,
     submit_admission: Arc<BoltV3SubmitAdmissionState>,
     redaction_values: Vec<Zeroizing<String>>,
+}
+
+#[derive(Debug)]
+struct BoltV3LiveNodeAdapterBundle {
+    configs: BoltV3AdapterConfigs,
+    live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1706,13 +1717,10 @@ pub enum BoltV3LiveNodeError {
     ClientRegistration(BoltV3ClientRegistrationError),
     StrategyRegistration(BoltV3StrategyRegistrationError),
     Build(anyhow::Error),
-    /// The live canary gate rejected entry to NT's runner loop before
-    /// `LiveNode::run` was invoked. This variant wraps the specific
-    /// fail-closed reason from [`BoltV3LiveCanaryGateError`].
-    LiveCanaryGate(BoltV3LiveCanaryGateError),
-    /// The live runner entrypoint passed the pre-consumption gate but
-    /// could not atomically create the operator-approval consumption
-    /// proof before arming submit admission.
+    /// Provider-specific live-submit approval loading or consumption failed
+    /// while building the adapter bundle. This is intentionally outside the
+    /// live runner wrapper; production `run_bolt_v3_live_node` still enters NT
+    /// without reintroducing the removed live-canary start gate.
     OperatorApprovalConsumption(anyhow::Error),
     /// The loaded root TOML configured clients beyond the selected
     /// strategy-owned transport path, but the strategy-owned
@@ -1721,11 +1729,7 @@ pub enum BoltV3LiveNodeError {
     LiveTransportScope {
         reason: String,
     },
-    /// The validated live canary gate report could not arm the shared
-    /// submit-admission state before `LiveNode::run` was invoked.
-    SubmitAdmission(BoltV3SubmitAdmissionError),
-    /// NT returned an error from `LiveNode::run` after the live canary
-    /// gate accepted the loaded config and readiness report.
+    /// NT returned an error from `LiveNode::run`.
     Run(anyhow::Error),
     /// NT runtime capture could not be wired from the validated
     /// bolt-v3 `[persistence]` config before the runner loop started.
@@ -1844,28 +1848,16 @@ impl std::fmt::Display for BoltV3LiveNodeError {
                 write!(f, "bolt-v3 strategy registration failed: {error}")
             }
             BoltV3LiveNodeError::Build(error) => write!(f, "LiveNode build failed: {error}"),
-            BoltV3LiveNodeError::LiveCanaryGate(error) => {
-                write!(
-                    f,
-                    "bolt-v3 live canary gate rejected runtime start: {error}"
-                )
-            }
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => {
                 write!(
                     f,
-                    "bolt-v3 live canary approval consumption failed before runtime start: {error}"
+                    "bolt-v3 provider live-submit approval consumption failed: {error}"
                 )
             }
             BoltV3LiveNodeError::LiveTransportScope { reason } => write!(
                 f,
                 "bolt-v3 live transport scope could not be derived from strategy-owned client bindings: {reason}"
             ),
-            BoltV3LiveNodeError::SubmitAdmission(error) => {
-                write!(
-                    f,
-                    "bolt-v3 submit admission rejected runtime start: {error}"
-                )
-            }
             BoltV3LiveNodeError::Run(error) => write!(f, "LiveNode run failed: {error}"),
             BoltV3LiveNodeError::RuntimeCaptureWire(error) => {
                 write!(f, "NT runtime capture wiring failed: {error}")
@@ -1976,9 +1968,7 @@ impl std::error::Error for BoltV3LiveNodeError {
             BoltV3LiveNodeError::ClientRegistration(error) => Some(error),
             BoltV3LiveNodeError::StrategyRegistration(error) => Some(error),
             BoltV3LiveNodeError::Build(error) => error.source(),
-            BoltV3LiveNodeError::LiveCanaryGate(error) => Some(error),
             BoltV3LiveNodeError::OperatorApprovalConsumption(error) => Some(error.as_ref()),
-            BoltV3LiveNodeError::SubmitAdmission(error) => Some(error),
             BoltV3LiveNodeError::Run(error) => error.source(),
             BoltV3LiveNodeError::RuntimeCaptureWire(error)
             | BoltV3LiveNodeError::RuntimeCaptureShutdown(error) => error.source(),
@@ -2012,9 +2002,14 @@ pub fn build_bolt_v3_live_node(
 ) -> Result<BoltV3LiveNodeRuntime, BoltV3LiveNodeError> {
     let transport_loaded = trade_transport_loaded_config(loaded)?;
     let resolved = resolve_bolt_v3_live_node_secrets(&transport_loaded)?;
-    let adapters = map_bolt_v3_adapters(&transport_loaded, &resolved)
-        .map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    let (runtime, _summary) = build_live_node_with_clients(&transport_loaded, &resolved, adapters)?;
+    let bundle =
+        live_node_adapter_bundle_with_provider_live_submit_approvals(&transport_loaded, &resolved)?;
+    let (runtime, _summary) = build_live_node_with_clients_and_submit_approval_limits(
+        &transport_loaded,
+        &resolved,
+        bundle.configs,
+        bundle.live_submit_approval_limits,
+    )?;
     Ok(runtime)
 }
 
@@ -2032,6 +2027,137 @@ fn resolve_bolt_v3_live_node_secrets(
     // path is involved before any path has been read.
     let session = SsmResolverSession::new().map_err(BoltV3LiveNodeError::SecretResolverSetup)?;
     resolve_bolt_v3_secrets(&session, loaded).map_err(BoltV3LiveNodeError::SecretResolution)
+}
+
+fn live_node_adapter_bundle_with_provider_live_submit_approvals(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+) -> Result<BoltV3LiveNodeAdapterBundle, BoltV3LiveNodeError> {
+    if configured_provider_live_submit_client_count(loaded)? == 0 {
+        return Ok(BoltV3LiveNodeAdapterBundle {
+            configs: map_bolt_v3_adapters(loaded, resolved)
+                .map_err(BoltV3LiveNodeError::AdapterMapping)?,
+            live_submit_approval_limits: BTreeMap::new(),
+        });
+    }
+    let build_head_sha = current_build_head_sha().ok_or_else(|| {
+        BoltV3LiveNodeError::OperatorApprovalConsumption(anyhow::anyhow!(
+            "bolt-v3 build head_sha is unavailable or invalid"
+        ))
+    })?;
+    let now_unix_seconds = current_unix_seconds_u64()?;
+    live_node_adapter_bundle_with_provider_approvals_at(
+        loaded,
+        resolved,
+        now_unix_seconds,
+        build_head_sha,
+    )
+}
+
+fn live_node_adapter_bundle_with_provider_approvals_at(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    now_unix_seconds: u64,
+    build_head_sha: &str,
+) -> Result<BoltV3LiveNodeAdapterBundle, BoltV3LiveNodeError> {
+    let approvals = load_provider_live_submit_approvals_for_live_node(
+        loaded,
+        resolved,
+        now_unix_seconds,
+        build_head_sha,
+    )?;
+    if approvals.is_empty() {
+        return Ok(BoltV3LiveNodeAdapterBundle {
+            configs: map_bolt_v3_adapters(loaded, resolved)
+                .map_err(BoltV3LiveNodeError::AdapterMapping)?,
+            live_submit_approval_limits: BTreeMap::new(),
+        });
+    }
+    let configs = map_bolt_v3_adapters_with_runtime_approvals(
+        loaded,
+        resolved,
+        ProviderRuntimeApprovals {
+            live_submit: Some(&approvals),
+        },
+    )
+    .map_err(BoltV3LiveNodeError::AdapterMapping)?;
+    Ok(BoltV3LiveNodeAdapterBundle {
+        configs,
+        live_submit_approval_limits: live_submit_approval_limits_for_submit_admission(&approvals),
+    })
+}
+
+fn live_submit_approval_limits_for_submit_admission(
+    approvals: &ProviderLiveSubmitApprovals,
+) -> BTreeMap<String, BoltV3LiveSubmitApprovalLimits> {
+    approvals
+        .order_limits()
+        .map(|(client_key, order_limits)| {
+            (
+                client_key.clone(),
+                BoltV3LiveSubmitApprovalLimits {
+                    max_order_count: order_limits.max_order_count,
+                    max_order_notional: order_limits.max_order_notional,
+                },
+            )
+        })
+        .collect()
+}
+
+fn configured_provider_live_submit_client_count(
+    loaded: &LoadedBoltV3Config,
+) -> Result<usize, BoltV3LiveNodeError> {
+    let mut count = 0;
+    for client in loaded.root.clients.values() {
+        let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str())
+        else {
+            continue;
+        };
+        if binding.load_live_submit_approval.is_some() && client.execution.is_some() {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+fn load_provider_live_submit_approvals_for_live_node(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    now_unix_seconds: u64,
+    build_head_sha: &str,
+) -> Result<ProviderLiveSubmitApprovals, BoltV3LiveNodeError> {
+    let mut approvals = ProviderLiveSubmitApprovals::empty();
+    for (client_key, client) in &loaded.root.clients {
+        let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str())
+        else {
+            continue;
+        };
+        let Some(load_live_submit_approval) = binding.load_live_submit_approval else {
+            continue;
+        };
+        if let Some(approval) = load_live_submit_approval(ProviderLiveSubmitApprovalContext {
+            loaded,
+            client_key,
+            client,
+            resolved,
+            now_unix_seconds,
+            build_head_sha,
+        })
+        .map_err(BoltV3LiveNodeError::OperatorApprovalConsumption)?
+        {
+            approvals.insert(client_key.clone(), approval);
+        }
+    }
+    Ok(approvals)
+}
+
+fn current_unix_seconds_u64() -> Result<u64, BoltV3LiveNodeError> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|source| {
+            BoltV3LiveNodeError::OperatorApprovalConsumption(anyhow::Error::new(source))
+        })?
+        .as_secs())
 }
 
 pub fn build_bolt_v3_no_submit_live_node(
@@ -2078,11 +2204,12 @@ fn no_submit_transport_adapter_configs(
 fn trade_transport_loaded_config(
     loaded: &LoadedBoltV3Config,
 ) -> Result<LoadedBoltV3Config, BoltV3LiveNodeError> {
-    if loaded.strategies.is_empty() {
-        return Ok(loaded.clone());
-    }
-
     let required_clients = trade_transport_client_keys(loaded);
+    if required_clients.is_empty() {
+        let mut transport_loaded = loaded.clone();
+        transport_loaded.root.clients.clear();
+        return Ok(transport_loaded);
+    }
     let missing_clients = required_clients
         .iter()
         .filter(|client_key| !loaded.root.clients.contains_key(*client_key))
@@ -2174,12 +2301,6 @@ pub async fn run_bolt_v3_live_node(
     runtime: &mut BoltV3LiveNodeRuntime,
     loaded: &LoadedBoltV3Config,
 ) -> Result<(), BoltV3LiveNodeError> {
-    if loaded.root.live_canary.is_none() {
-        return Err(BoltV3LiveNodeError::LiveCanaryGate(
-            BoltV3LiveCanaryGateError::MissingConfig,
-        ));
-    }
-
     let node = &mut runtime.node;
     let node_handle = node.handle();
     let mut capture_guards = wire_bolt_v3_runtime_capture(node, node_handle, loaded)
@@ -3196,9 +3317,14 @@ where
         .map_err(BoltV3LiveNodeError::ForbiddenEnv)?;
     let resolved = resolve_bolt_v3_secrets_with(&transport_loaded, resolver)
         .map_err(BoltV3LiveNodeError::SecretResolution)?;
-    let adapters = map_bolt_v3_adapters(&transport_loaded, &resolved)
-        .map_err(BoltV3LiveNodeError::AdapterMapping)?;
-    build_live_node_with_clients(&transport_loaded, &resolved, adapters)
+    let bundle =
+        live_node_adapter_bundle_with_provider_live_submit_approvals(&transport_loaded, &resolved)?;
+    build_live_node_with_clients_and_submit_approval_limits(
+        &transport_loaded,
+        &resolved,
+        bundle.configs,
+        bundle.live_submit_approval_limits,
+    )
 }
 
 pub fn build_bolt_v3_all_configured_client_mapping_live_node_with_summary<F, R, E>(
@@ -3226,6 +3352,20 @@ fn build_live_node_with_clients(
     resolved: &ResolvedBoltV3Secrets,
     adapters: BoltV3AdapterConfigs,
 ) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
+    build_live_node_with_clients_and_submit_approval_limits(
+        loaded,
+        resolved,
+        adapters,
+        BTreeMap::new(),
+    )
+}
+
+fn build_live_node_with_clients_and_submit_approval_limits(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    adapters: BoltV3AdapterConfigs,
+    live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
+) -> Result<(BoltV3LiveNodeRuntime, BoltV3RegistrationSummary), BoltV3LiveNodeError> {
     let proof_executor_enabled = canary_proof_executor_enabled(loaded);
     let decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter> =
         if loaded.strategies.is_empty() && !proof_executor_enabled {
@@ -3241,9 +3381,12 @@ fn build_live_node_with_clients(
                 })?,
             )
         };
-    let submit_admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(
-        decision_evidence.clone(),
-    ));
+    let submit_admission = Arc::new(
+        BoltV3SubmitAdmissionState::new_unarmed_with_live_submit_limits(
+            decision_evidence.clone(),
+            live_submit_approval_limits,
+        ),
+    );
     let builder =
         make_bolt_v3_live_node_builder(loaded).map_err(BoltV3LiveNodeError::BuilderConstruction)?;
     let (builder, summary) = register_bolt_v3_clients(builder, adapters)
@@ -3643,13 +3786,786 @@ mod tests {
     use crate::bolt_v3_config::{
         BoltV3RootConfig, DataClientReadinessProbeBlock, DataClientReadinessProbeBookType,
         DataClientReadinessProbeMarketDataKind, DataClientReadinessProbeQuoteTargetBlock,
-        DataClientReadinessProbeQuoteTargetSource, LiveCanaryProofPolicyBlock,
+        DataClientReadinessProbeQuoteTargetSource, LiveCanaryBlock, LiveCanaryProofPolicyBlock,
         LiveCanaryProofTimeInForce, ReferenceDataBlock,
+    };
+    use crate::bolt_v3_providers::hyperliquid::{
+        ResolvedBoltV3HyperliquidSecrets, hyperliquid_live_submit_signer_fingerprint,
+    };
+    use crate::bolt_v3_providers::hyperliquid_artifacts::{
+        HyperliquidLiveSubmitApprovalInput, HyperliquidLiveSubmitOrderLimits,
+        HyperliquidProductSubmitProofBinding, write_hyperliquid_live_submit_approval_artifact,
     };
     use nautilus_model::data::{BookOrder, OrderBookDelta, OrderBookDeltas};
     use nautilus_model::enums::{BookAction, OrderSide};
     use nautilus_model::identifiers::TraderId;
     use nautilus_model::types::{Price, Quantity};
+    use rust_decimal::Decimal;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn live_node_adapter_mapping_consumes_hyperliquid_live_submit_approval_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let product_proof_path = temp.path().join("hyperliquid-product-submit-proof.json");
+        let product_proof_sha256 = write_hyperliquid_test_product_submit_proof(&product_proof_path);
+        let private_key = format!("0x{}", "1".repeat(64));
+        let mut loaded = fixture_loaded_config();
+        loaded.config_bundle_checksum = "b".repeat(64);
+        loaded.root.clients.clear();
+        loaded.root.clients.insert(
+            "hyperliquid_perps".to_string(),
+            toml::from_str(&format!(
+                r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit_approval_id = "hl-standard-perps-approval-001"
+live_submit_approval_artifact_path = "{}"
+live_submit_approval_artifact_max_bytes = 16384
+live_submit_max_order_count = 2
+live_submit_max_order_notional = "25.00"
+live_submit_product_proof_artifact_path = "{}"
+live_submit_product_proof_artifact_sha256 = "{}"
+live_submit_product_proof_artifact_max_bytes = 16384
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+                approval_path.display(),
+                product_proof_path.display(),
+                product_proof_sha256
+            ))
+            .expect("Hyperliquid client TOML should parse"),
+        );
+        let build_head_sha = "a".repeat(40);
+        let now = 1_800_000_000;
+        write_hyperliquid_live_submit_approval_artifact(
+            HyperliquidLiveSubmitApprovalInput {
+                approval_id: "hl-standard-perps-approval-001".to_string(),
+                base_sha: build_head_sha.clone(),
+                provider_id: "hyperliquid_perps".to_string(),
+                product_surface:
+                    crate::bolt_v3_providers::hyperliquid::HyperliquidProductSurface::StandardPerps,
+                toml_checksum: loaded.config_bundle_checksum.clone(),
+                signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(&private_key),
+                order_limits: HyperliquidLiveSubmitOrderLimits {
+                    max_order_count: 2,
+                    max_order_notional: "25.00".to_string(),
+                },
+                product_submit_proof: HyperliquidProductSubmitProofBinding {
+                    artifact_path: product_proof_path.display().to_string(),
+                    artifact_sha256: product_proof_sha256,
+                },
+                expires_at: now + 300,
+                used_at: None,
+            },
+            &approval_path,
+        )
+        .expect("approval artifact should write");
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::from([(
+                "hyperliquid_perps".to_string(),
+                Arc::new(ResolvedBoltV3HyperliquidSecrets {
+                    private_key: Zeroizing::new(private_key),
+                    account_address: Zeroizing::new(format!("0x{}", "2".repeat(40))),
+                    vault_address: None,
+                }) as _,
+            )]),
+        };
+
+        let bundle = live_node_adapter_bundle_with_provider_approvals_at(
+            &loaded,
+            &resolved,
+            now,
+            &build_head_sha,
+        )
+        .expect("production live-node mapping should consume approval and map execution");
+
+        assert!(
+            bundle
+                .configs
+                .clients
+                .get("hyperliquid_perps")
+                .and_then(|client| client.execution.as_ref())
+                .is_some(),
+            "consumed approval should reach the execution adapter mapper"
+        );
+        let approval_limits = bundle
+            .live_submit_approval_limits
+            .get("hyperliquid_perps")
+            .expect("consumed Hyperliquid approval should carry submit-admission limits");
+        assert_eq!(approval_limits.max_order_count, 2);
+        assert_eq!(
+            approval_limits.max_order_notional,
+            Decimal::from_str_exact("25.00").expect("expected decimal should parse")
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&approval_path).expect("consumed approval should still read"),
+        )
+        .expect("consumed approval JSON should parse");
+        assert_eq!(persisted["used_at"], now);
+
+        let error = live_node_adapter_bundle_with_provider_approvals_at(
+            &loaded,
+            &resolved,
+            now + 1,
+            &build_head_sha,
+        )
+        .expect_err("persisted consumption must prevent approval reuse");
+        assert!(
+            error.to_string().contains("used_at"),
+            "reuse failure should identify the spent approval field: {error}"
+        );
+    }
+
+    fn hyperliquid_test_product_submit_proof_bytes(order_proof_path: String) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.hyperliquid_product_submit_proof.v1",
+            "provider_key": "HYPERLIQUID",
+            "provider_id": "hyperliquid_perps",
+            "product_surface": "standard_perps",
+            "toml_checksum": "b".repeat(64),
+            "order_proof": {
+                "artifact_path": order_proof_path,
+                "artifact_sha256": "e".repeat(64),
+            },
+            "fill_proof": {
+                "artifact_path": "operator/hyperliquid-fill-proof.json",
+                "artifact_sha256": "f".repeat(64),
+            },
+            "rounding_proof": {
+                "artifact_path": "operator/hyperliquid-rounding-proof.json",
+                "artifact_sha256": "a".repeat(64),
+            },
+            "fee_proof": {
+                "artifact_path": "operator/hyperliquid-fee-proof.json",
+                "artifact_sha256": "c".repeat(64),
+            },
+            "settlement_proof": null,
+        }))
+        .expect("test product proof JSON should encode")
+    }
+
+    fn write_hyperliquid_test_product_submit_proof(path: &std::path::Path) -> String {
+        let bytes = hyperliquid_test_product_submit_proof_bytes(
+            "operator/hyperliquid-order-proof.json".to_string(),
+        );
+        std::fs::write(path, &bytes).expect("product proof should write");
+        hex::encode(Sha256::digest(&bytes))
+    }
+
+    fn write_hyperliquid_semantically_invalid_product_submit_proof(
+        path: &std::path::Path,
+    ) -> String {
+        let bytes = br#"{"provider":"HYPERLIQUID","surface":"standard_perps"}"#;
+        std::fs::write(path, bytes).expect("invalid product proof should write");
+        hex::encode(Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn live_node_invalid_product_submit_proof_schema_does_not_spend_hyperliquid_approval_artifact()
+    {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let product_proof_path = temp.path().join("hyperliquid-product-submit-proof.json");
+        let product_proof_sha256 =
+            write_hyperliquid_semantically_invalid_product_submit_proof(&product_proof_path);
+        let private_key = format!("0x{}", "1".repeat(64));
+        let mut loaded = fixture_loaded_config();
+        loaded.config_bundle_checksum = "b".repeat(64);
+        loaded.root.clients.clear();
+        loaded.root.clients.insert(
+            "hyperliquid_perps".to_string(),
+            toml::from_str(&format!(
+                r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit_approval_id = "hl-standard-perps-approval-001"
+live_submit_approval_artifact_path = "{}"
+live_submit_approval_artifact_max_bytes = 16384
+live_submit_max_order_count = 2
+live_submit_max_order_notional = "25.00"
+live_submit_product_proof_artifact_path = "{}"
+live_submit_product_proof_artifact_sha256 = "{}"
+live_submit_product_proof_artifact_max_bytes = 16384
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+                approval_path.display(),
+                product_proof_path.display(),
+                product_proof_sha256
+            ))
+            .expect("Hyperliquid client TOML should parse"),
+        );
+        let build_head_sha = "a".repeat(40);
+        let now = 1_800_000_000;
+        write_hyperliquid_live_submit_approval_artifact(
+            HyperliquidLiveSubmitApprovalInput {
+                approval_id: "hl-standard-perps-approval-001".to_string(),
+                base_sha: build_head_sha.clone(),
+                provider_id: "hyperliquid_perps".to_string(),
+                product_surface:
+                    crate::bolt_v3_providers::hyperliquid::HyperliquidProductSurface::StandardPerps,
+                toml_checksum: loaded.config_bundle_checksum.clone(),
+                signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(&private_key),
+                order_limits: HyperliquidLiveSubmitOrderLimits {
+                    max_order_count: 2,
+                    max_order_notional: "25.00".to_string(),
+                },
+                product_submit_proof: HyperliquidProductSubmitProofBinding {
+                    artifact_path: product_proof_path.display().to_string(),
+                    artifact_sha256: product_proof_sha256,
+                },
+                expires_at: now + 300,
+                used_at: None,
+            },
+            &approval_path,
+        )
+        .expect("approval artifact should write");
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::from([(
+                "hyperliquid_perps".to_string(),
+                Arc::new(ResolvedBoltV3HyperliquidSecrets {
+                    private_key: Zeroizing::new(private_key),
+                    account_address: Zeroizing::new(format!("0x{}", "2".repeat(40))),
+                    vault_address: None,
+                }) as _,
+            )]),
+        };
+
+        let error = live_node_adapter_bundle_with_provider_approvals_at(
+            &loaded,
+            &resolved,
+            now,
+            &build_head_sha,
+        )
+        .expect_err("matching hash alone must not authorize live-submit approval consumption");
+
+        assert!(
+            error.to_string().contains("product_submit_proof"),
+            "failure should identify the product proof schema: {error}"
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&approval_path).expect("unconsumed approval should still read"),
+        )
+        .expect("unconsumed approval JSON should parse");
+        assert_eq!(
+            persisted["used_at"],
+            serde_json::Value::Null,
+            "invalid product proof semantics must not spend one-time approval artifacts"
+        );
+    }
+
+    fn write_hyperliquid_test_product_submit_proof_with_padding(
+        path: &std::path::Path,
+        padding_len: usize,
+    ) -> String {
+        let bytes = hyperliquid_test_product_submit_proof_bytes(format!(
+            "operator/{}-hyperliquid-order-proof.json",
+            "x".repeat(padding_len)
+        ));
+        std::fs::write(path, &bytes).expect("padded product proof should write");
+        hex::encode(Sha256::digest(&bytes))
+    }
+
+    #[test]
+    fn live_node_product_submit_proof_uses_independent_byte_cap() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let product_proof_path = temp.path().join("hyperliquid-product-submit-proof.json");
+        let product_proof_sha256 =
+            write_hyperliquid_test_product_submit_proof_with_padding(&product_proof_path, 6000);
+        let private_key = format!("0x{}", "1".repeat(64));
+        let mut loaded = fixture_loaded_config();
+        loaded.config_bundle_checksum = "b".repeat(64);
+        loaded.root.clients.clear();
+        loaded.root.clients.insert(
+            "hyperliquid_perps".to_string(),
+            toml::from_str(&format!(
+                r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit_approval_id = "hl-standard-perps-approval-001"
+live_submit_approval_artifact_path = "{}"
+live_submit_approval_artifact_max_bytes = 4096
+live_submit_max_order_count = 2
+live_submit_max_order_notional = "25.00"
+live_submit_product_proof_artifact_path = "{}"
+live_submit_product_proof_artifact_sha256 = "{}"
+live_submit_product_proof_artifact_max_bytes = 8192
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+                approval_path.display(),
+                product_proof_path.display(),
+                product_proof_sha256
+            ))
+            .expect("Hyperliquid client TOML should parse"),
+        );
+        let build_head_sha = "a".repeat(40);
+        let now = 1_800_000_000;
+        write_hyperliquid_live_submit_approval_artifact(
+            HyperliquidLiveSubmitApprovalInput {
+                approval_id: "hl-standard-perps-approval-001".to_string(),
+                base_sha: build_head_sha.clone(),
+                provider_id: "hyperliquid_perps".to_string(),
+                product_surface:
+                    crate::bolt_v3_providers::hyperliquid::HyperliquidProductSurface::StandardPerps,
+                toml_checksum: loaded.config_bundle_checksum.clone(),
+                signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(&private_key),
+                order_limits: HyperliquidLiveSubmitOrderLimits {
+                    max_order_count: 2,
+                    max_order_notional: "25.00".to_string(),
+                },
+                product_submit_proof: HyperliquidProductSubmitProofBinding {
+                    artifact_path: product_proof_path.display().to_string(),
+                    artifact_sha256: product_proof_sha256,
+                },
+                expires_at: now + 300,
+                used_at: None,
+            },
+            &approval_path,
+        )
+        .expect("approval artifact should write");
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::from([(
+                "hyperliquid_perps".to_string(),
+                Arc::new(ResolvedBoltV3HyperliquidSecrets {
+                    private_key: Zeroizing::new(private_key),
+                    account_address: Zeroizing::new(format!("0x{}", "2".repeat(40))),
+                    vault_address: None,
+                }) as _,
+            )]),
+        };
+
+        live_node_adapter_bundle_with_provider_approvals_at(
+            &loaded,
+            &resolved,
+            now,
+            &build_head_sha,
+        )
+        .expect("product proof should use its own byte cap before approval consumption");
+
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&approval_path).expect("consumed approval should still read"),
+        )
+        .expect("consumed approval JSON should parse");
+        assert_eq!(persisted["used_at"], now);
+    }
+
+    #[test]
+    fn live_node_static_target_surface_mismatch_does_not_spend_hyperliquid_approval_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let private_key = format!("0x{}", "1".repeat(64));
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        loaded.config_bundle_checksum = "b".repeat(64);
+        loaded.strategies.truncate(1);
+        let strategy = loaded
+            .strategies
+            .first_mut()
+            .expect("fixture should include one strategy");
+        strategy.config.execution_client_id = ClientId::from("hyperliquid_perps");
+        strategy.config.target = toml::toml! {
+            configured_target_id = "hl-spot-btc-usdc"
+            kind = "static_instrument"
+            rotating_market_family = "hyperliquid_instrument"
+            product_surface = "spot"
+            instrument_id = "BTC/USDC.HYPERLIQUID"
+            quantity_step = "0.001"
+        }
+        .into();
+        loaded.root.clients.clear();
+        loaded.root.clients.insert(
+            "hyperliquid_perps".to_string(),
+            toml::from_str(&format!(
+                r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit_approval_id = "hl-standard-perps-approval-001"
+live_submit_approval_artifact_path = "{}"
+live_submit_approval_artifact_max_bytes = 16384
+live_submit_max_order_count = 2
+live_submit_max_order_notional = "25.00"
+live_submit_product_proof_artifact_path = "operator/hyperliquid-product-submit-proof.json"
+live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+live_submit_product_proof_artifact_max_bytes = 16384
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+                approval_path.display()
+            ))
+            .expect("Hyperliquid client TOML should parse"),
+        );
+        let build_head_sha = "a".repeat(40);
+        let now = 1_800_000_000;
+        write_hyperliquid_live_submit_approval_artifact(
+            HyperliquidLiveSubmitApprovalInput {
+                approval_id: "hl-standard-perps-approval-001".to_string(),
+                base_sha: build_head_sha.clone(),
+                provider_id: "hyperliquid_perps".to_string(),
+                product_surface:
+                    crate::bolt_v3_providers::hyperliquid::HyperliquidProductSurface::StandardPerps,
+                toml_checksum: loaded.config_bundle_checksum.clone(),
+                signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(&private_key),
+                order_limits: HyperliquidLiveSubmitOrderLimits {
+                    max_order_count: 2,
+                    max_order_notional: "25.00".to_string(),
+                },
+                product_submit_proof: HyperliquidProductSubmitProofBinding {
+                    artifact_path: "operator/hyperliquid-product-submit-proof.json".to_string(),
+                    artifact_sha256: "d".repeat(64),
+                },
+                expires_at: now + 300,
+                used_at: None,
+            },
+            &approval_path,
+        )
+        .expect("approval artifact should write");
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::from([(
+                "hyperliquid_perps".to_string(),
+                Arc::new(ResolvedBoltV3HyperliquidSecrets {
+                    private_key: Zeroizing::new(private_key),
+                    account_address: Zeroizing::new(format!("0x{}", "2".repeat(40))),
+                    vault_address: None,
+                }) as _,
+            )]),
+        };
+
+        let error = live_node_adapter_bundle_with_provider_approvals_at(
+            &loaded,
+            &resolved,
+            now,
+            &build_head_sha,
+        )
+        .expect_err("static target surface mismatch must fail before approval consumption");
+
+        assert!(
+            error
+                .to_string()
+                .contains("strategy.target.product_surface"),
+            "failure should identify the target surface mismatch: {error}"
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&approval_path).expect("unconsumed approval should still read"),
+        )
+        .expect("unconsumed approval JSON should parse");
+        assert_eq!(
+            persisted["used_at"],
+            serde_json::Value::Null,
+            "surface mismatches must not spend one-time approval artifacts"
+        );
+    }
+
+    #[test]
+    fn live_node_missing_product_submit_proof_does_not_spend_hyperliquid_approval_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let missing_product_proof_path = temp.path().join("missing-product-submit-proof.json");
+        let private_key = format!("0x{}", "1".repeat(64));
+        let mut loaded = fixture_loaded_config();
+        loaded.config_bundle_checksum = "b".repeat(64);
+        loaded.root.clients.clear();
+        loaded.root.clients.insert(
+            "hyperliquid_perps".to_string(),
+            toml::from_str(&format!(
+                r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit_approval_id = "hl-standard-perps-approval-001"
+live_submit_approval_artifact_path = "{}"
+live_submit_approval_artifact_max_bytes = 16384
+live_submit_max_order_count = 2
+live_submit_max_order_notional = "25.00"
+live_submit_product_proof_artifact_path = "{}"
+live_submit_product_proof_artifact_sha256 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+live_submit_product_proof_artifact_max_bytes = 16384
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+                approval_path.display(),
+                missing_product_proof_path.display()
+            ))
+            .expect("Hyperliquid client TOML should parse"),
+        );
+        let build_head_sha = "a".repeat(40);
+        let now = 1_800_000_000;
+        write_hyperliquid_live_submit_approval_artifact(
+            HyperliquidLiveSubmitApprovalInput {
+                approval_id: "hl-standard-perps-approval-001".to_string(),
+                base_sha: build_head_sha.clone(),
+                provider_id: "hyperliquid_perps".to_string(),
+                product_surface:
+                    crate::bolt_v3_providers::hyperliquid::HyperliquidProductSurface::StandardPerps,
+                toml_checksum: loaded.config_bundle_checksum.clone(),
+                signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(&private_key),
+                order_limits: HyperliquidLiveSubmitOrderLimits {
+                    max_order_count: 2,
+                    max_order_notional: "25.00".to_string(),
+                },
+                product_submit_proof: HyperliquidProductSubmitProofBinding {
+                    artifact_path: missing_product_proof_path.display().to_string(),
+                    artifact_sha256: "d".repeat(64),
+                },
+                expires_at: now + 300,
+                used_at: None,
+            },
+            &approval_path,
+        )
+        .expect("approval artifact should write");
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::from([(
+                "hyperliquid_perps".to_string(),
+                Arc::new(ResolvedBoltV3HyperliquidSecrets {
+                    private_key: Zeroizing::new(private_key),
+                    account_address: Zeroizing::new(format!("0x{}", "2".repeat(40))),
+                    vault_address: None,
+                }) as _,
+            )]),
+        };
+
+        let error = live_node_adapter_bundle_with_provider_approvals_at(
+            &loaded,
+            &resolved,
+            now,
+            &build_head_sha,
+        )
+        .expect_err("missing product submit proof must fail before approval consumption");
+
+        assert!(
+            error.to_string().contains("product_submit_proof"),
+            "failure should identify the missing product proof binding: {error}"
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&approval_path).expect("unconsumed approval should still read"),
+        )
+        .expect("unconsumed approval JSON should parse");
+        assert_eq!(
+            persisted["used_at"],
+            serde_json::Value::Null,
+            "missing product proof must not spend one-time approval artifacts"
+        );
+    }
+
+    #[test]
+    fn live_node_mismatched_product_submit_proof_does_not_spend_hyperliquid_approval_artifact() {
+        let temp = tempfile::tempdir().expect("tempdir should create");
+        let approval_path = temp.path().join("hyperliquid-live-submit-approval.json");
+        let product_proof_path = temp.path().join("hyperliquid-product-submit-proof.json");
+        let _actual_product_proof_sha256 =
+            write_hyperliquid_test_product_submit_proof(&product_proof_path);
+        let mismatched_product_proof_sha256 = "d".repeat(64);
+        let private_key = format!("0x{}", "1".repeat(64));
+        let mut loaded = fixture_loaded_config();
+        loaded.config_bundle_checksum = "b".repeat(64);
+        loaded.root.clients.clear();
+        loaded.root.clients.insert(
+            "hyperliquid_perps".to_string(),
+            toml::from_str(&format!(
+                r#"
+venue = "HYPERLIQUID"
+
+[execution]
+account_id = "HYPERLIQUID-001"
+environment = "testnet"
+execution_mode = "master_account_api_wallet"
+product_surfaces = ["standard_perps"]
+live_submit_approval_id = "hl-standard-perps-approval-001"
+live_submit_approval_artifact_path = "{}"
+live_submit_approval_artifact_max_bytes = 16384
+live_submit_max_order_count = 2
+live_submit_max_order_notional = "25.00"
+live_submit_product_proof_artifact_path = "{}"
+live_submit_product_proof_artifact_sha256 = "{}"
+live_submit_product_proof_artifact_max_bytes = 16384
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+base_url_exchange = "https://api.hyperliquid-testnet.xyz/exchange"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+max_retries = 3
+retry_delay_initial_ms = 250
+retry_delay_max_ms = 2000
+normalize_prices = true
+market_order_slippage_bps = 50
+transport_backend = "sockudo"
+ws_post_timeout_secs = 10
+outcome_settlement_poll_secs = 0
+
+[secrets]
+private_key_ssm_path = "/bolt/hyperliquid/master_api_wallet/private_key"
+account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
+"#,
+                approval_path.display(),
+                product_proof_path.display(),
+                mismatched_product_proof_sha256
+            ))
+            .expect("Hyperliquid client TOML should parse"),
+        );
+        let build_head_sha = "a".repeat(40);
+        let now = 1_800_000_000;
+        write_hyperliquid_live_submit_approval_artifact(
+            HyperliquidLiveSubmitApprovalInput {
+                approval_id: "hl-standard-perps-approval-001".to_string(),
+                base_sha: build_head_sha.clone(),
+                provider_id: "hyperliquid_perps".to_string(),
+                product_surface:
+                    crate::bolt_v3_providers::hyperliquid::HyperliquidProductSurface::StandardPerps,
+                toml_checksum: loaded.config_bundle_checksum.clone(),
+                signer_fingerprint: hyperliquid_live_submit_signer_fingerprint(&private_key),
+                order_limits: HyperliquidLiveSubmitOrderLimits {
+                    max_order_count: 2,
+                    max_order_notional: "25.00".to_string(),
+                },
+                product_submit_proof: HyperliquidProductSubmitProofBinding {
+                    artifact_path: product_proof_path.display().to_string(),
+                    artifact_sha256: mismatched_product_proof_sha256,
+                },
+                expires_at: now + 300,
+                used_at: None,
+            },
+            &approval_path,
+        )
+        .expect("approval artifact should write");
+        let resolved = ResolvedBoltV3Secrets {
+            clients: BTreeMap::from([(
+                "hyperliquid_perps".to_string(),
+                Arc::new(ResolvedBoltV3HyperliquidSecrets {
+                    private_key: Zeroizing::new(private_key),
+                    account_address: Zeroizing::new(format!("0x{}", "2".repeat(40))),
+                    vault_address: None,
+                }) as _,
+            )]),
+        };
+
+        let error = live_node_adapter_bundle_with_provider_approvals_at(
+            &loaded,
+            &resolved,
+            now,
+            &build_head_sha,
+        )
+        .expect_err("mismatched product submit proof must fail before approval consumption");
+
+        assert!(
+            error
+                .to_string()
+                .contains("product_submit_proof.artifact_sha256"),
+            "failure should identify the product proof checksum: {error}"
+        );
+        let persisted: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&approval_path).expect("unconsumed approval should still read"),
+        )
+        .expect("unconsumed approval JSON should parse");
+        assert_eq!(
+            persisted["used_at"],
+            serde_json::Value::Null,
+            "mismatched product proof must not spend one-time approval artifacts"
+        );
+    }
 
     #[test]
     fn chunk_universe_splits_into_consecutive_chunks_of_at_most_n() {
@@ -3802,6 +4718,51 @@ mod tests {
             },
         );
         loaded
+    }
+
+    fn polymarket_main_proof_policy() -> LiveCanaryProofPolicyBlock {
+        LiveCanaryProofPolicyBlock {
+            enabled: true,
+            policy_kind: "least_bad_strategy_candidate".to_string(),
+            proof_claim: "proof_only".to_string(),
+            executor_strategy_id: "canary-proof-executor-proof".to_string(),
+            strategy_instance_id: "configured_updown_main".to_string(),
+            execution_client_id: "polymarket_main".to_string(),
+            book_type: DataClientReadinessProbeBookType::L2Mbp,
+            book_snapshot_interval_millis: 1_000,
+            time_in_force: LiveCanaryProofTimeInForce::Fok,
+            is_post_only: false,
+            is_reduce_only: false,
+            is_quote_quantity: false,
+            notional_mode: "fixed".to_string(),
+            proof_notional: "5.00".to_string(),
+            candidate_score_source: "proof_source".to_string(),
+            allow_negative_expected_ev: true,
+            rotation_observation_enabled: true,
+            rotation_min_distinct_markets: 1,
+            rotation_max_attempts: 1,
+        }
+    }
+
+    fn live_canary_with_polymarket_main_proof_policy() -> LiveCanaryBlock {
+        LiveCanaryBlock {
+            approval_id: "operator-approved-canary-001".to_string(),
+            no_submit_readiness_report_path: "no-submit-readiness.json".to_string(),
+            max_no_submit_readiness_report_bytes: 4096,
+            readiness_report_max_age_seconds: 60,
+            reference_quote_max_age_seconds: 60,
+            reference_quote_wait_timeout_seconds: 5,
+            reference_quote_probe_actor_id: "no-submit-reference-quote-probe".to_string(),
+            reference_quote_probe_log_events: false,
+            reference_quote_probe_log_commands: false,
+            max_live_order_count: 1,
+            max_notional_per_order: "5.00".to_string(),
+            egress_identity_observed_path: None,
+            egress_identity_observed_max_bytes: None,
+            approved_egress_identity_sha256: None,
+            proof_policy: Some(polymarket_main_proof_policy()),
+            operator_evidence: None,
+        }
     }
 
     #[test]
@@ -4355,27 +5316,7 @@ mod tests {
             .live_canary
             .as_mut()
             .expect("fixture should include live canary config");
-        live_canary.proof_policy = Some(LiveCanaryProofPolicyBlock {
-            enabled: true,
-            policy_kind: "least_bad_strategy_candidate".to_string(),
-            proof_claim: "proof_only".to_string(),
-            executor_strategy_id: "canary-proof-executor-proof".to_string(),
-            strategy_instance_id: "configured_updown_main".to_string(),
-            execution_client_id: "polymarket_main".to_string(),
-            book_type: DataClientReadinessProbeBookType::L2Mbp,
-            book_snapshot_interval_millis: 1_000,
-            time_in_force: LiveCanaryProofTimeInForce::Fok,
-            is_post_only: false,
-            is_reduce_only: false,
-            is_quote_quantity: false,
-            notional_mode: "fixed".to_string(),
-            proof_notional: "5.00".to_string(),
-            candidate_score_source: "proof_source".to_string(),
-            allow_negative_expected_ev: true,
-            rotation_observation_enabled: true,
-            rotation_min_distinct_markets: 1,
-            rotation_max_attempts: 1,
-        });
+        live_canary.proof_policy = Some(polymarket_main_proof_policy());
 
         assert!(
             canary_proof_executor_enabled(&loaded),
@@ -4447,6 +5388,64 @@ mod tests {
         assert_eq!(scoped.strategies.len(), loaded.strategies.len());
         assert!(
             loaded.root.clients.contains_key("unrelated_data"),
+            "helper must not mutate the caller's full client bundle"
+        );
+    }
+
+    #[test]
+    fn trade_transport_config_keeps_only_proof_policy_client_without_strategies() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let unrelated_client = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        loaded
+            .root
+            .clients
+            .insert("unrelated_execution".to_string(), unrelated_client);
+        loaded.strategies.clear();
+        loaded.root.live_canary = Some(live_canary_with_polymarket_main_proof_policy());
+
+        let scoped = trade_transport_loaded_config(&loaded)
+            .expect("proof-policy transport scope should be derived from config");
+
+        assert_eq!(scoped.root.clients.len(), 1);
+        assert!(scoped.root.clients.contains_key("polymarket_main"));
+        assert!(
+            !scoped.root.clients.contains_key("unrelated_execution"),
+            "proof-only live transport must not retain unrelated execution clients"
+        );
+        assert!(
+            loaded.root.clients.contains_key("unrelated_execution"),
+            "helper must not mutate the caller's full client bundle"
+        );
+    }
+
+    #[test]
+    fn trade_transport_config_uses_empty_client_scope_without_strategies_or_proof_policy() {
+        let mut loaded = crate::bolt_v3_config::load_bolt_v3_config(std::path::Path::new(
+            "tests/fixtures/bolt_v3/root.toml",
+        ))
+        .expect("fixture config should load");
+        let configured_client_count = loaded.root.clients.len();
+        loaded.strategies.clear();
+        loaded.root.live_canary = None;
+
+        let scoped = trade_transport_loaded_config(&loaded)
+            .expect("empty trade transport scope should be derived from config");
+
+        assert!(
+            scoped.root.clients.is_empty(),
+            "a live run without strategies or a proof policy must not retain execution clients"
+        );
+        assert_eq!(
+            loaded.root.clients.len(),
+            configured_client_count,
             "helper must not mutate the caller's full client bundle"
         );
     }

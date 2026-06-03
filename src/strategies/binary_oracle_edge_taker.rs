@@ -4397,6 +4397,7 @@ impl BinaryOracleEdgeTaker {
 
         Ok(BoltV3SubmitAdmissionRequest {
             strategy_id: intent.strategy_id.clone(),
+            execution_client_id: self.config.client_id.clone(),
             client_order_id,
             instrument_id: order.instrument_id().to_string(),
             notional,
@@ -4406,6 +4407,7 @@ impl BinaryOracleEdgeTaker {
             lifecycle_policy: self.submit_lifecycle_policy(),
             canary_proof_claim: None,
             risk_reducing_exit_proof,
+            kill_switch_forced_reduction: None,
         })
     }
 
@@ -7429,7 +7431,8 @@ fn evaluate_forced_flat_predicates(inputs: &ForcedFlatInputs) -> Vec<ForcedFlatR
 }
 
 #[cfg(test)]
-fn submit_admission_request_from_order(
+fn submit_admission_request_from_order_for_client(
+    execution_client_id: &str,
     intent: &BoltV3OrderIntentEvidence,
     order: &nautilus_model::orders::OrderAny,
 ) -> Result<BoltV3SubmitAdmissionRequest> {
@@ -7470,6 +7473,7 @@ fn submit_admission_request_from_order(
 
     Ok(BoltV3SubmitAdmissionRequest {
         strategy_id: intent.strategy_id.clone(),
+        execution_client_id: execution_client_id.to_string(),
         client_order_id,
         instrument_id: order.instrument_id().to_string(),
         notional,
@@ -7482,6 +7486,7 @@ fn submit_admission_request_from_order(
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         canary_proof_claim: None,
         risk_reducing_exit_proof: None,
+        kill_switch_forced_reduction: None,
     })
 }
 
@@ -9657,6 +9662,7 @@ mod tests {
             .admit(
                 &crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionRequest {
                     strategy_id: "strategy-a".to_string(),
+                    execution_client_id: "polymarket_main".to_string(),
                     client_order_id: "client-order-0".to_string(),
                     instrument_id: "instrument-0".to_string(),
                     notional: Decimal::new(50, 2),
@@ -9667,6 +9673,7 @@ mod tests {
                         crate::bolt_v3_submit_admission::BoltV3SubmitLifecyclePolicy::new(true),
                     canary_proof_claim: None,
                     risk_reducing_exit_proof: None,
+                    kill_switch_forced_reduction: None,
                 },
             )
             .expect("first admission should consume the only slot");
@@ -12254,10 +12261,41 @@ mod tests {
         );
         intent.canary_proof_claim = Some("proof_only".to_string());
 
-        let admission = submit_admission_request_from_order(&intent, &order)
-            .expect("entry intent should map into submit admission");
+        let admission =
+            submit_admission_request_from_order_for_client("polymarket_main", &intent, &order)
+                .expect("entry intent should map into submit admission");
 
         assert_eq!(admission.canary_proof_claim, None);
+    }
+
+    #[test]
+    fn submit_admission_test_helper_uses_explicit_execution_client_id() {
+        let mut strategy = ready_to_trade_strategy_with_live_fees(Decimal::ZERO, Decimal::ZERO);
+        let _cache = register_test_strategy(&mut strategy);
+        let instrument_id = selected_entry_instrument(&strategy);
+        let quantity = Quantity::new(2.0, 2);
+        let price = Price::new(0.50, 2);
+        let order = strategy
+            .build_configured_entry_order(
+                instrument_id,
+                OrderSide::Buy,
+                quantity,
+                price,
+                ClientOrderId::from("O-19700101-000000-001-HL-1"),
+            )
+            .expect("configured entry order should build");
+        let intent = BoltV3OrderIntentEvidence::from_compiled_order(
+            strategy.config.strategy_id.clone(),
+            BoltV3OrderIntentKind::Entry,
+            price.to_string(),
+            &order,
+        );
+
+        let admission =
+            submit_admission_request_from_order_for_client("hyperliquid_perps", &intent, &order)
+                .expect("entry intent should map into submit admission");
+
+        assert_eq!(admission.execution_client_id, "hyperliquid_perps");
     }
 
     #[test]
@@ -12858,7 +12896,8 @@ mod tests {
             )
             .expect("StopLimit order with explicit trigger price should build");
 
-        let admission = submit_admission_request_from_order(
+        let admission = submit_admission_request_from_order_for_client(
+            "polymarket_main",
             &BoltV3OrderIntentEvidence::from_compiled_order(
                 strategy.config.strategy_id.clone(),
                 BoltV3OrderIntentKind::Entry,
@@ -12943,7 +12982,8 @@ mod tests {
             )
             .expect("LimitIfTouched entry order with explicit trigger price should build");
 
-        let admission = submit_admission_request_from_order(
+        let admission = submit_admission_request_from_order_for_client(
+            "polymarket_main",
             &BoltV3OrderIntentEvidence::from_compiled_order(
                 strategy.config.strategy_id.clone(),
                 BoltV3OrderIntentKind::Entry,
@@ -14482,6 +14522,7 @@ mod tests {
         rejecting_submit_admission
             .admit(&BoltV3SubmitAdmissionRequest {
                 strategy_id: strategy.config.strategy_id.clone(),
+                execution_client_id: strategy.config.client_id.clone(),
                 client_order_id: "EXIT-SLOT-ALREADY-USED".to_string(),
                 instrument_id: managed_position.position.instrument_id.to_string(),
                 notional: Decimal::new(1, 0),
@@ -14498,6 +14539,7 @@ mod tests {
                     position_quantity,
                     exit_quantity,
                 }),
+                kill_switch_forced_reduction: None,
             })
             .expect("test setup should consume the only risk-reducing exit slot");
 

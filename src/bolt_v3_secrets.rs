@@ -204,6 +204,22 @@ pub fn resolve_bolt_v3_secrets(
     resolve_bolt_v3_secrets_with(loaded, |region, path| session.resolve(region, path))
 }
 
+/// Resolve only one configured bolt-v3 client `[secrets]` block from SSM.
+///
+/// This is for operator-artifact commands that materialize or preflight one
+/// selected live-submit client. Production live-node startup must continue to
+/// use [`resolve_bolt_v3_secrets`] so full-runtime signer ownership is checked
+/// across every configured secret-bearing client.
+pub fn resolve_bolt_v3_client_secrets(
+    session: &SsmResolverSession,
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+) -> Result<ResolvedBoltV3Secrets, BoltV3SecretError> {
+    resolve_bolt_v3_client_secrets_with(loaded, client_key, |region, path| {
+        session.resolve(region, path)
+    })
+}
+
 /// Test-friendly variant of [`resolve_bolt_v3_secrets`] which lets the caller
 /// inject the SSM resolver. The closure is invoked with `(region, ssm_path)`
 /// pairs derived from `[aws].region` and the per-client secret-config paths.
@@ -217,36 +233,94 @@ where
 {
     let region = loaded.root.aws.region.as_str();
     let mut clients = BTreeMap::new();
+    let mut exclusive_signer_owners: BTreeMap<(&'static str, String), String> = BTreeMap::new();
 
     for (client_key, client) in &loaded.root.clients {
-        match client.secrets.as_ref() {
-            Some(_) => {}
-            None => continue,
-        }
-
-        let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str())
+        let Some(resolved) =
+            resolve_configured_client_secrets(client_key, client, region, &mut resolver)?
         else {
-            return Err(BoltV3SecretError {
-                client_key: client_key.clone(),
-                field: "venue".to_string(),
-                source: format!(
-                    "venue `{}` is not supported by this build",
-                    client.venue.as_str()
-                ),
-            });
+            continue;
         };
-        let resolved = (binding.resolve_secrets)(
-            ProviderSecretResolveContext {
-                client_key,
-                region,
-                client,
-            },
-            &mut resolver,
-        )?;
+        if let Some(owner) = resolved.exclusive_signer_owner() {
+            let owner_key = (owner.provider_key, owner.fingerprint.clone());
+            if let Some(existing_client_key) = exclusive_signer_owners.get(&owner_key) {
+                return Err(BoltV3SecretError {
+                    client_key: client_key.clone(),
+                    field: "signer_owner".to_string(),
+                    source: format!(
+                        "provider `{}` signer/API-wallet owner is already assigned to client `{existing_client_key}`; duplicate execution clients sharing one signer are not allowed",
+                        owner.provider_key
+                    ),
+                });
+            }
+            exclusive_signer_owners.insert(owner_key, client_key.clone());
+        }
         clients.insert(client_key.clone(), resolved);
     }
 
     Ok(ResolvedBoltV3Secrets { clients })
+}
+
+/// Test-friendly variant of [`resolve_bolt_v3_client_secrets`] which lets the
+/// caller inject the SSM resolver. The closure is invoked only for the selected
+/// client's `[secrets]` paths.
+pub fn resolve_bolt_v3_client_secrets_with<F, E>(
+    loaded: &LoadedBoltV3Config,
+    client_key: &str,
+    mut resolver: F,
+) -> Result<ResolvedBoltV3Secrets, BoltV3SecretError>
+where
+    F: FnMut(&str, &str) -> Result<String, E>,
+    E: std::fmt::Display,
+{
+    let region = loaded.root.aws.region.as_str();
+    let client = loaded
+        .root
+        .clients
+        .get(client_key)
+        .ok_or_else(|| BoltV3SecretError {
+            client_key: client_key.to_string(),
+            field: "client".to_string(),
+            source: "client is not configured".to_string(),
+        })?;
+    let mut clients = BTreeMap::new();
+    if let Some(resolved) =
+        resolve_configured_client_secrets(client_key, client, region, &mut resolver)?
+    {
+        clients.insert(client_key.to_string(), resolved);
+    }
+    Ok(ResolvedBoltV3Secrets { clients })
+}
+
+fn resolve_configured_client_secrets(
+    client_key: &str,
+    client: &crate::bolt_v3_config::ClientBlock,
+    region: &str,
+    resolver: &mut dyn SsmSecretResolver,
+) -> Result<Option<ResolvedBoltV3ClientSecrets>, BoltV3SecretError> {
+    if client.secrets.is_none() {
+        return Ok(None);
+    }
+
+    let Some(binding) = bolt_v3_providers::binding_for_provider_key(client.venue.as_str()) else {
+        return Err(BoltV3SecretError {
+            client_key: client_key.to_string(),
+            field: "venue".to_string(),
+            source: format!(
+                "venue `{}` is not supported by this build",
+                client.venue.as_str()
+            ),
+        });
+    };
+    (binding.resolve_secrets)(
+        ProviderSecretResolveContext {
+            client_key,
+            region,
+            client,
+        },
+        resolver,
+    )
+    .map(Some)
 }
 
 pub fn resolve_field(
@@ -499,6 +573,47 @@ transport_backend = "sockudo"
             .expect("binance_reference should resolve to Binance secrets");
         assert_eq!(binance.api_key.as_str(), "binance-api-key");
         assert_eq!(binance.api_secret.as_str(), synthetic_binance_secret());
+    }
+
+    #[test]
+    fn resolves_only_selected_client_secrets_for_operator_artifacts() {
+        let loaded = fixture_loaded_config_with_binance_reference();
+        let mut calls = Vec::new();
+
+        let resolved =
+            resolve_bolt_v3_client_secrets_with(&loaded, "polymarket_main", |region, path| {
+                calls.push((region.to_string(), path.to_string()));
+                Ok::<_, &'static str>(fake_secret_value(path))
+            })
+            .expect("selected client secrets should resolve");
+
+        assert_eq!(resolved.clients.len(), 1);
+        assert!(resolved.clients.contains_key("polymarket_main"));
+        assert!(!resolved.clients.contains_key("binance_reference"));
+        assert!(
+            calls.iter().all(|(region, _)| region == "eu-west-1"),
+            "selected-client SSM calls must use [aws].region: {calls:#?}"
+        );
+        for path in [
+            "/bolt/polymarket_main/private_key",
+            "/bolt/polymarket_main/api_key",
+            "/bolt/polymarket_main/api_secret",
+            "/bolt/polymarket_main/passphrase",
+        ] {
+            assert!(
+                calls.iter().any(|(_, called_path)| called_path == path),
+                "missing selected-client SSM resolution call for {path}: {calls:#?}"
+            );
+        }
+        for path in [
+            "/bolt/binance_reference/api_key",
+            "/bolt/binance_reference/api_secret",
+        ] {
+            assert!(
+                calls.iter().all(|(_, called_path)| called_path != path),
+                "selected-client resolution must not touch unrelated SSM path {path}: {calls:#?}"
+            );
+        }
     }
 
     #[test]

@@ -264,6 +264,7 @@ fn bolt_v3_registration_context_includes_operator_readiness_gate_session() {
 fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
         strategy_id: "strategy-a".to_string(),
+        execution_client_id: "polymarket_main".to_string(),
         client_order_id: "client-order-1".to_string(),
         instrument_id: "instrument-1".to_string(),
         notional,
@@ -273,6 +274,7 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         canary_proof_claim: None,
         risk_reducing_exit_proof: None,
+        kill_switch_forced_reduction: None,
     }
 }
 

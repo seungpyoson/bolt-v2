@@ -166,6 +166,7 @@ pub struct NautilusExecEngineBlock {
 pub struct RiskBlock {
     pub default_max_notional_per_order: String,
     pub nautilus: NautilusRiskBlock,
+    pub kill_switch: Option<KillSwitchConfigBlock>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -178,6 +179,24 @@ pub struct NautilusRiskBlock {
     pub debug: bool,
     pub graceful_shutdown_on_error: bool,
     pub qsize: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct KillSwitchConfigBlock {
+    pub enabled: bool,
+    pub state_path: String,
+    pub max_state_file_bytes: u64,
+    pub action_retry_interval_ms: u64,
+    pub action_retry_timeout_ms: u64,
+    pub mandatory_proof_max_age_ms: u64,
+    pub manual_reset_evidence_max_age_ms: u64,
+    pub forced_reduction_policy_sha256: String,
+    pub forced_reduction_max_live_order_count: u32,
+    pub forced_reduction_max_notional_per_order: String,
+    pub authorized_operator_ids: Vec<String>,
+    pub account_ids: Vec<String>,
+    pub instrument_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

@@ -179,6 +179,12 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         expires_at_unix_seconds: u64,
     },
+    PreflightLiveSubmitArming {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        client_key: String,
+    },
     GenerateProductSubmitProof {
         #[arg(long)]
         provider_key: String,
@@ -888,6 +894,44 @@ fn run_operator_artifacts_command(
                 expires_at_unix_seconds,
             )?;
             print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::PreflightLiveSubmitArming { config, client_key } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            check_no_forbidden_credential_env_vars(&loaded.root)?;
+            let client = loaded.root.clients.get(&client_key).ok_or_else(|| {
+                format!("clients.{client_key} is not configured for live-submit arming preflight")
+            })?;
+            let binding = binding_for_provider_key(client.venue.as_str()).ok_or_else(|| {
+                format!(
+                    "clients.{client_key}.venue `{}` is not supported by this build",
+                    client.venue.as_str()
+                )
+            })?;
+            let preflight = binding.preflight_live_submit_arming.ok_or_else(|| {
+                format!(
+                    "clients.{client_key}.venue `{}` does not support live-submit arming preflight",
+                    client.venue.as_str()
+                )
+            })?;
+            let ssm_resolver_session = SsmResolverSession::new()?;
+            let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
+            let build_head_sha = current_build_head_sha()
+                .ok_or("bolt-v3 build head_sha is unavailable or invalid")?;
+            let now_unix_seconds = current_unix_seconds_for_cli()?;
+            let report = preflight(ProviderLiveSubmitApprovalContext {
+                loaded: &loaded,
+                client_key: &client_key,
+                client,
+                resolved: &resolved,
+                now_unix_seconds,
+                build_head_sha,
+            })?
+            .ok_or_else(|| {
+                format!("clients.{client_key} is not armed for live-submit preflight")
+            })?;
+            let output = serde_json::to_value(report)?;
+            println!("{}", serde_json::to_string_pretty(&output)?);
+            Ok(())
         }
         OperatorArtifactsCommand::GenerateProductSubmitProof {
             provider_key,

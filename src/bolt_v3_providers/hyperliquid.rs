@@ -64,6 +64,7 @@ use crate::{
         consume_hyperliquid_live_submit_approval_artifact,
         persist_consumed_hyperliquid_live_submit_approval_artifact,
         read_hyperliquid_live_submit_approval_artifact,
+        validate_hyperliquid_live_submit_approval_artifact,
         validate_hyperliquid_product_submit_proof_artifact_bytes,
         write_hyperliquid_live_submit_approval_artifact,
         write_hyperliquid_product_submit_proof_artifact,
@@ -71,9 +72,10 @@ use crate::{
     bolt_v3_providers::{
         CanaryProofArtifactsProviderContext, ProviderAdapterMapContext, ProviderCredentialedBlock,
         ProviderLiveSubmitApproval, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
-        ProviderLiveSubmitOrderLimits, ProviderProductSubmitProofArtifactRequest,
-        ProviderSecretRequirement, ProviderSecretResolveContext, ProviderSsmPathReference,
-        ResolvedClientSecrets, SsmSecretResolver,
+        ProviderLiveSubmitArmingPreflight, ProviderLiveSubmitOrderLimits,
+        ProviderProductSubmitProofArtifactRequest, ProviderSecretRequirement,
+        ProviderSecretResolveContext, ProviderSsmPathReference, ResolvedClientSecrets,
+        SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     strategies::registry::FeeProvider,
@@ -899,6 +901,83 @@ pub fn load_live_submit_approval(
             max_order_notional,
         },
     )))
+}
+
+pub fn preflight_live_submit_arming(
+    context: ProviderLiveSubmitApprovalContext<'_>,
+) -> Result<Option<ProviderLiveSubmitArmingPreflight>, anyhow::Error> {
+    let Some(execution) = &context.client.execution else {
+        return Ok(None);
+    };
+    let cfg: HyperliquidExecutionConfig = execution.clone().try_into().map_err(|source| {
+        hyperliquid_adapter_validation_error(
+            context.client_key,
+            "execution",
+            format!("Hyperliquid execution config is invalid: {source}"),
+        )
+    })?;
+    let Some(expected_approval_id) = cfg.live_submit_approval_id.as_deref() else {
+        return Ok(None);
+    };
+    validate_target_surfaces_for_live_submit_approval(&context, &cfg)?;
+    let approval_path = cfg
+        .live_submit_approval_artifact_path
+        .as_deref()
+        .ok_or_else(|| {
+            hyperliquid_adapter_validation_error(
+                context.client_key,
+                "execution.live_submit_approval_artifact_path",
+                "Hyperliquid live submit requires a configured approval artifact path",
+            )
+        })?;
+    let approval_max_bytes = cfg.live_submit_approval_artifact_max_bytes.ok_or_else(|| {
+        hyperliquid_adapter_validation_error(
+            context.client_key,
+            "execution.live_submit_approval_artifact_max_bytes",
+            "Hyperliquid live submit requires a configured approval artifact byte cap",
+        )
+    })?;
+    let product_proof_max_bytes = cfg
+        .live_submit_product_proof_artifact_max_bytes
+        .ok_or_else(|| {
+            hyperliquid_adapter_validation_error(
+                context.client_key,
+                "execution.live_submit_product_proof_artifact_max_bytes",
+                "Hyperliquid live submit requires a configured product proof artifact byte cap",
+            )
+        })?;
+    let resolved_path = resolve_root_relative_path(&context.loaded.root_path, approval_path);
+    let binding = live_submit_approval_binding(&context, &cfg)?;
+    validate_product_submit_proof_artifact(
+        context.client_key,
+        &context.loaded.root_path,
+        &binding,
+        product_proof_max_bytes,
+    )?;
+    let approval =
+        read_hyperliquid_live_submit_approval_artifact(&resolved_path, approval_max_bytes)?;
+    validate_hyperliquid_live_submit_approval_artifact(
+        Some(&approval),
+        &binding,
+        context.now_unix_seconds,
+    )
+    .map_err(anyhow::Error::new)?;
+    if approval.approval_id != expected_approval_id {
+        return Err(hyperliquid_adapter_validation_error(
+            context.client_key,
+            "execution.live_submit_approval_id",
+            "Hyperliquid live-submit approval artifact id does not match configured approval id",
+        ));
+    }
+    Ok(Some(ProviderLiveSubmitArmingPreflight {
+        provider_key: KEY,
+        client_key: context.client_key.to_string(),
+        product_surface: product_surface_name(binding.product_surface).to_string(),
+        approval_artifact_path: approval_path.to_string(),
+        product_submit_proof_artifact_path: binding.product_submit_proof.artifact_path,
+        max_order_count: binding.order_limits.max_order_count,
+        max_order_notional: binding.order_limits.max_order_notional,
+    }))
 }
 
 pub fn write_configured_live_submit_approval_artifact(

@@ -120,6 +120,38 @@ fn bolt_v3_cli_exposes_live_submit_approval_artifact_command_without_raw_secret_
 }
 
 #[test]
+fn bolt_v3_cli_exposes_live_submit_arming_preflight_without_raw_secret_inputs() {
+    let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
+        .args([
+            "operator-artifacts",
+            "preflight-live-submit-arming",
+            "--help",
+        ])
+        .output()
+        .expect("bolt-v3 live-submit arming preflight help should run");
+
+    assert!(
+        output.status.success(),
+        "expected operator-artifacts preflight-live-submit-arming help to pass, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--config"), "{stdout}");
+    assert!(stdout.contains("--client-key"), "{stdout}");
+    assert!(
+        !stdout.contains("--expires-at-unix-seconds"),
+        "preflight must not materialize a new approval artifact: {stdout}"
+    );
+    assert!(
+        !stdout.contains("--private-key")
+            && !stdout.contains("--account-address")
+            && !stdout.contains("--approval-id"),
+        "live-submit arming preflight must derive signer and approval identity from configured SSM/TOML: {stdout}"
+    );
+}
+
+#[test]
 fn bolt_v3_cli_exposes_hyperliquid_product_submit_proof_command_without_raw_secret_inputs() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([

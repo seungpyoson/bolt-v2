@@ -5807,6 +5807,26 @@ fn rejects_loss_governor_market_exit_without_loaded_strategy() {
 }
 
 #[test]
+fn disabled_loss_governor_ignores_leftover_market_exit_strategy_requirement() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_strategies};
+
+    let without_strategy = replace_in_fixture_root("  \"strategies/binary_oracle.toml\",\n", "");
+    let disabled = without_strategy.replace("enabled = true", "enabled = false");
+    let root: BoltV3RootConfig =
+        toml::from_str(&disabled).expect("disabled loss-governor fixture should parse");
+
+    let strategy_messages = validate_strategies(&root, &[]);
+    assert!(
+        !strategy_messages.iter().any(|message| {
+            message.contains("risk.loss_governor")
+                && message.contains("all_registered_strategies")
+                && message.contains("at least one loaded strategy")
+        }),
+        "disabled loss governor must not enforce stale market-exit strategy requirements: {strategy_messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_loss_governor_market_exit_with_halted_trading_state() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 

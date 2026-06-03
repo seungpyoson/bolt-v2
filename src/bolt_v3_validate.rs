@@ -1834,13 +1834,14 @@ pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy
 fn loss_governor_market_exit_enabled(
     loss_governor: &crate::bolt_v3_config::LossGovernorBlock,
 ) -> bool {
-    matches!(
-        loss_governor.on_loss_breach_market_exit,
-        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
-    ) || matches!(
-        loss_governor.on_untrusted_snapshot_market_exit,
-        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
-    )
+    loss_governor.enabled
+        && (matches!(
+            loss_governor.on_loss_breach_market_exit,
+            Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+        ) || matches!(
+            loss_governor.on_untrusted_snapshot_market_exit,
+            Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+        ))
 }
 
 fn validate_loss_governor_market_exit_strategy_accounts(

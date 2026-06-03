@@ -76,8 +76,8 @@ impl LossGovernorMarketExitLatch {
         self.succeeded_strategy_ids.contains(strategy_id)
     }
 
-    pub fn mark_dispatch_succeeded(&mut self, strategy_id: StrategyId) -> bool {
-        self.succeeded_strategy_ids.insert(strategy_id)
+    pub fn mark_dispatch_succeeded(&mut self, strategy_id: &StrategyId) -> bool {
+        self.succeeded_strategy_ids.insert(strategy_id.clone())
     }
 
     pub fn clear(&mut self) {
@@ -545,14 +545,14 @@ mod tests {
         let mut latch = LossGovernorMarketExitLatch::new();
 
         assert!(!latch.has_dispatch_succeeded(&strategy_id));
-        assert!(latch.mark_dispatch_succeeded(strategy_id));
+        assert!(latch.mark_dispatch_succeeded(&strategy_id));
         assert!(latch.has_dispatch_succeeded(&strategy_id));
-        assert!(!latch.mark_dispatch_succeeded(strategy_id));
+        assert!(!latch.mark_dispatch_succeeded(&strategy_id));
 
         latch.clear();
 
         assert!(!latch.has_dispatch_succeeded(&strategy_id));
-        assert!(latch.mark_dispatch_succeeded(strategy_id));
+        assert!(latch.mark_dispatch_succeeded(&strategy_id));
     }
 
     #[test]

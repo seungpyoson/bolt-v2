@@ -3892,7 +3892,7 @@ fn loss_governor_halt_action_handler_from_node(
             }
             market_exit_latch
                 .borrow_mut()
-                .mark_dispatch_succeeded(*strategy_id);
+                .mark_dispatch_succeeded(strategy_id);
         }
     })
 }

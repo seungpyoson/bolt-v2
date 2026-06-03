@@ -32,6 +32,7 @@ ustr = "1.1.0"
 
 nautilus-backtest = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c", features = ["streaming", "examples"] }
 nautilus-core = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
+nautilus-data = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-model = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
 nautilus-persistence = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c", features = ["cloud"] }
 nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }
@@ -39,3 +40,7 @@ nautilus-trading = { git = "https://github.com/nautechsystems/nautilus_trader.gi
 [dev-dependencies]
 arrow = "58.3.0"
 tempfile = "3"
+# The L2 orders>0 proof builds a minimal test-only NautilusTrader strategy
+# (`impl DataActor` + `nautilus_strategy!`); the `DataActor` trait lives in
+# `nautilus-common`, which is otherwise a transitive dependency.
+nautilus-common = { git = "https://github.com/nautechsystems/nautilus_trader.git", rev = "6e059dcbb59ac1e582132fc431a581936c216c3c" }

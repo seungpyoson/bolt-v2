@@ -18,24 +18,31 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::TradeTick,
-    enums::AggressorSide,
+    data::{BookOrder, OrderBookDelta, TradeTick},
+    enums::{AggressorSide, AssetClass, BookAction, OrderSide},
     identifiers::{InstrumentId, Symbol, TradeId},
-    instruments::{CurrencyPair, Instrument, InstrumentAny},
+    instruments::{BinaryOption, CurrencyPair, Instrument, InstrumentAny},
     types::{Currency, Money, Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use ustr::Ustr;
 
 use super::{
+    canonical_book::{
+        BookSide, CanonicalBookEvent, CanonicalBookRow, CanonicalBookTable, LevelChange,
+    },
     canonical_trades::{CanonicalTradesTable, TradeAggressorSide},
     source_proof::SourceProofFidelityClass,
 };
 
-/// NautilusTrader data type written for this projection.
+/// NautilusTrader data type written for the trade projection.
 pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
+
+/// NautilusTrader data type written for the L2 order-book projection.
+pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
 
 /// Accepted Bybit spot instrument metadata needed to build the NautilusTrader
 /// `CurrencyPair`. Built from the accepted instrument-universe payload.
@@ -61,6 +68,46 @@ pub struct SpotInstrumentSpec {
     pub min_notional: String,
     /// Maximum order notional decimal string (quote currency).
     pub max_notional: String,
+}
+
+/// Accepted Polymarket binary-outcome instrument metadata needed to build the
+/// NautilusTrader `BinaryOption` for one outcome token. Built from the accepted
+/// instrument-universe payload; precision is derived from the source tick size,
+/// never hardcoded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinaryOptionInstrumentSpec {
+    /// NautilusTrader instrument id, for example `<asset_id>.POLYMARKET`.
+    pub nt_instrument_id: String,
+    /// Venue-native raw symbol (the outcome token id).
+    pub raw_symbol: String,
+    /// `AssetClass` token (`SCREAMING_SNAKE_CASE`), for example `ALTERNATIVE`.
+    pub asset_class: String,
+    /// Settlement/quote currency code, for example `USDC`.
+    pub quote_currency: String,
+    /// Free-form outcome label, for example `Up` / `Yes`.
+    pub outcome: String,
+    /// Instrument activation timestamp (Unix nanoseconds).
+    pub activation_ns: u64,
+    /// Instrument expiration timestamp (Unix nanoseconds).
+    pub expiration_ns: u64,
+    /// Source price tick size as a decimal string, for example `0.01`.
+    pub price_increment: String,
+    /// Source size increment as a decimal string, for example `0.01`.
+    pub size_increment: String,
+}
+
+/// Result of projecting a canonical L2 book table into a NautilusTrader catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogBookProjection {
+    pub catalog_root: PathBuf,
+    pub nt_instrument_id: String,
+    /// Count of written `OrderBookDelta` records (snapshot expansions + deltas).
+    pub delta_count: usize,
+    /// Count of written `TradeTick` records (trade prints).
+    pub trade_count: usize,
+    /// Deterministic SHA-256 hex over the catalog's written data files.
+    pub catalog_hash: String,
+    pub fidelity_class: SourceProofFidelityClass,
 }
 
 /// Result of projecting canonical trades into a NautilusTrader catalog.
@@ -155,8 +202,13 @@ pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
 
 fn rescaled(value: &str, precision: u8) -> Result<String> {
     let mut decimal = Decimal::from_str(value).with_context(|| format!("decimal {value:?}"))?;
+    // Source decimals carry trailing-zero padding from their storage scale (a
+    // Parquet `Decimal128(9,4)` price renders `0.07` as `"0.0700"`). Tolerate
+    // that padding: only the SIGNIFICANT scale (trailing zeros stripped) must
+    // fit the instrument precision, so `"0.0700"` is admissible at precision 2
+    // while a genuine `"0.071"` is not.
     ensure!(
-        decimal.scale() <= u32::from(precision),
+        decimal.normalize().scale() <= u32::from(precision),
         "value {value:?} has more precision than instrument allows ({precision})"
     );
     decimal.rescale(u32::from(precision));
@@ -289,6 +341,376 @@ pub fn read_back_trade_ticks(
             true,
         )
         .context("query trade ticks from catalog")
+}
+
+/// Build the NautilusTrader `BinaryOption` from accepted instrument metadata.
+///
+/// Price/size precision is derived from the source tick/size increment strings,
+/// never hardcoded (Polymarket's `0.01` tick implies precision 2). The
+/// quote/settlement currency, outcome label, and lifecycle timestamps come from
+/// the accepted instrument-universe payload.
+///
+/// # Errors
+///
+/// Returns an error if any field fails to parse.
+pub fn build_binary_option(spec: &BinaryOptionInstrumentSpec) -> Result<BinaryOption> {
+    let instrument_id = InstrumentId::from_str(&spec.nt_instrument_id)
+        .with_context(|| format!("invalid nt_instrument_id {:?}", spec.nt_instrument_id))?;
+    let asset_class = AssetClass::from_str(&spec.asset_class)
+        .map_err(|error| anyhow::anyhow!("invalid asset_class {:?}: {error}", spec.asset_class))?;
+    let currency = Currency::from_str(&spec.quote_currency)
+        .with_context(|| format!("invalid quote_currency {:?}", spec.quote_currency))?;
+    let price_increment = Price::from_str(&spec.price_increment).map_err(|error| {
+        anyhow::anyhow!(
+            "invalid price_increment {:?}: {error}",
+            spec.price_increment
+        )
+    })?;
+    let size_increment = Quantity::from_str(&spec.size_increment).map_err(|error| {
+        anyhow::anyhow!("invalid size_increment {:?}: {error}", spec.size_increment)
+    })?;
+    Ok(BinaryOption::new(
+        instrument_id,
+        Symbol::from(spec.raw_symbol.as_str()),
+        asset_class,
+        currency,
+        UnixNanos::from(spec.activation_ns),
+        UnixNanos::from(spec.expiration_ns),
+        price_increment.precision,
+        size_increment.precision,
+        price_increment,
+        size_increment,
+        Some(Ustr::from(&spec.outcome)),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        UnixNanos::default(),
+        UnixNanos::default(),
+    ))
+}
+
+/// Rescale and parse a canonical decimal string to a NautilusTrader `Price` at
+/// the instrument's price precision.
+fn book_price(value: &str, precision: u8) -> Result<Price> {
+    let rescaled = rescaled(value, precision)?;
+    Price::from_str(&rescaled)
+        .map_err(|error| anyhow::anyhow!("invalid rescaled price {rescaled:?}: {error}"))
+}
+
+/// Rescale and parse a canonical decimal string to a NautilusTrader `Quantity`
+/// at the instrument's size precision.
+fn book_size(value: &str, precision: u8) -> Result<Quantity> {
+    let rescaled = rescaled(value, precision)?;
+    Quantity::from_str(&rescaled)
+        .map_err(|error| anyhow::anyhow!("invalid rescaled size {rescaled:?}: {error}"))
+}
+
+/// Map a canonical `BookSide` to the NautilusTrader `OrderSide`: a Polymarket
+/// `BUY` is bid-side liquidity, a `SELL` is ask-side liquidity.
+const fn book_order_side(side: BookSide) -> OrderSide {
+    match side {
+        BookSide::Buy => OrderSide::Buy,
+        BookSide::Sell => OrderSide::Sell,
+    }
+}
+
+/// Map a canonical `BookSide` to the NautilusTrader `AggressorSide` for trade
+/// prints: a `BUY` print is a buyer-aggressed trade, a `SELL` a seller-aggressed
+/// one.
+const fn book_aggressor_side(side: BookSide) -> AggressorSide {
+    match side {
+        BookSide::Buy => AggressorSide::Buyer,
+        BookSide::Sell => AggressorSide::Seller,
+    }
+}
+
+/// Build one `OrderBookDelta` for a single-level update from a `price_change`
+/// row: `size == 0` removes the level (`Delete`), any other size updates it
+/// (`Update`). NautilusTrader's `OrderBook` treats `Update` on an unseen level
+/// as an insert, so a single `Update` action faithfully replays both new and
+/// changed levels.
+fn level_change_delta(
+    instrument_id: InstrumentId,
+    change: &LevelChange,
+    price_precision: u8,
+    size_precision: u8,
+    sequence: u64,
+    ts: UnixNanos,
+) -> Result<OrderBookDelta> {
+    let side = book_order_side(change.side);
+    let price = book_price(&change.price, price_precision)?;
+    let size = book_size(&change.size, size_precision)?;
+    let action = if change.is_removal {
+        BookAction::Delete
+    } else {
+        BookAction::Update
+    };
+    // The `order_id` is unused by an L2 (MBP) book — NautilusTrader keys levels
+    // by price on `L2_MBP`. Use the sequence as a deterministic, stable id.
+    let order = BookOrder::new(side, price, size, sequence);
+    Ok(OrderBookDelta::new(
+        instrument_id,
+        action,
+        order,
+        0,
+        sequence,
+        ts,
+        ts,
+    ))
+}
+
+/// Convert one canonical `Snapshot` row into an `OrderBookDelta` sequence: one
+/// `Clear`, then one `Add` per bid level and per ask level. Every expanded delta
+/// carries the snapshot's `event_time` as both `ts_event` and `ts_init`
+/// (NautilusTrader's `write_to_parquet` allows equal `ts_init` within an
+/// expansion); levels are emitted in source order so the expansion is
+/// deterministic. `sequence` advances per emitted delta and is returned for the
+/// next row.
+fn snapshot_deltas(
+    instrument_id: InstrumentId,
+    snapshot: &super::canonical_book::BookSnapshot,
+    price_precision: u8,
+    size_precision: u8,
+    ts: UnixNanos,
+    mut sequence: u64,
+    out: &mut Vec<OrderBookDelta>,
+) -> Result<u64> {
+    out.push(OrderBookDelta::clear(instrument_id, sequence, ts, ts));
+    sequence = sequence.checked_add(1).context("delta sequence overflow")?;
+    for (side, levels) in [
+        (OrderSide::Buy, &snapshot.bids),
+        (OrderSide::Sell, &snapshot.asks),
+    ] {
+        for level in levels {
+            let price = book_price(&level.price, price_precision)?;
+            let size = book_size(&level.size, size_precision)?;
+            let order = BookOrder::new(side, price, size, sequence);
+            out.push(OrderBookDelta::new(
+                instrument_id,
+                BookAction::Add,
+                order,
+                0,
+                sequence,
+                ts,
+                ts,
+            ));
+            sequence = sequence.checked_add(1).context("delta sequence overflow")?;
+        }
+    }
+    Ok(sequence)
+}
+
+/// Convert canonical L2 book rows into NautilusTrader `OrderBookDelta`s.
+///
+/// `Snapshot` rows expand to a `Clear` plus an `Add` per level; `LevelChange`
+/// rows map to one `Update`/`Delete` delta. `Trade` rows are skipped here — they
+/// are routed through the existing `TradeTick` projection. The returned deltas
+/// carry a dense monotonic `sequence` and non-strict ascending `ts_init`,
+/// matching NautilusTrader's catalog write contract.
+///
+/// # Errors
+///
+/// Returns an error if a price/size cannot be represented at the instrument
+/// precision or the delta sequence overflows.
+pub fn canonical_rows_to_order_book_deltas(
+    table: &CanonicalBookTable,
+    instrument: &BinaryOption,
+) -> Result<Vec<OrderBookDelta>> {
+    let instrument_id = instrument.id();
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+    let mut deltas = Vec::new();
+    let mut sequence: u64 = 0;
+    for row in &table.rows {
+        let ts = book_event_ts(row)?;
+        match &row.event {
+            CanonicalBookEvent::Snapshot(snapshot) => {
+                sequence = snapshot_deltas(
+                    instrument_id,
+                    snapshot,
+                    price_precision,
+                    size_precision,
+                    ts,
+                    sequence,
+                    &mut deltas,
+                )?;
+            }
+            CanonicalBookEvent::LevelChange(change) => {
+                deltas.push(level_change_delta(
+                    instrument_id,
+                    change,
+                    price_precision,
+                    size_precision,
+                    sequence,
+                    ts,
+                )?);
+                sequence = sequence.checked_add(1).context("delta sequence overflow")?;
+            }
+            CanonicalBookEvent::Trade(_) => {}
+        }
+    }
+    Ok(deltas)
+}
+
+/// Trade-id prefix for book-table trade prints. The on-chain transaction hash
+/// (66 chars) exceeds NautilusTrader's 36-char `TradeId` limit, so the NT trade
+/// id is the dense canonical `source_sequence` (unique per print within the
+/// run) under this prefix. The transaction hash stays on the canonical book
+/// table for provenance/lineage.
+const BOOK_TRADE_ID_PREFIX: &str = "POLYCLOB-";
+
+/// Convert the `Trade` rows of a canonical L2 book table into NautilusTrader
+/// `TradeTick`s, reusing the same precision/aggressor mapping as the native
+/// trade projection.
+///
+/// The NautilusTrader `TradeId` is derived from the canonical `source_sequence`
+/// (`POLYCLOB-<sequence>`), which is dense, unique per print, and within
+/// NautilusTrader's 36-char `TradeId` limit — the 66-char on-chain transaction
+/// hash does not fit and is retained on the canonical book table for provenance
+/// instead. A non-empty transaction hash is still required so a trade print
+/// without on-chain provenance is rejected.
+///
+/// # Errors
+///
+/// Returns an error if a price/size cannot be represented at the instrument
+/// precision or a trade row is missing its transaction hash.
+pub fn canonical_book_rows_to_trade_ticks(
+    table: &CanonicalBookTable,
+    instrument: &BinaryOption,
+) -> Result<Vec<TradeTick>> {
+    let instrument_id = instrument.id();
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+    let mut ticks = Vec::new();
+    for row in &table.rows {
+        let CanonicalBookEvent::Trade(trade) = &row.event else {
+            continue;
+        };
+        ensure!(
+            !trade.transaction_hash.trim().is_empty(),
+            "trade row {} is missing its transaction hash",
+            row.source_sequence
+        );
+        let ts = book_event_ts(row)?;
+        let trade_id = format!("{BOOK_TRADE_ID_PREFIX}{}", row.source_sequence);
+        ticks.push(TradeTick::new(
+            instrument_id,
+            book_price(&trade.price, price_precision)?,
+            book_size(&trade.size, size_precision)?,
+            book_aggressor_side(trade.side),
+            TradeId::from(trade_id.as_str()),
+            ts,
+            ts,
+        ));
+    }
+    Ok(ticks)
+}
+
+/// Convert a canonical row's `event_time` (Unix nanoseconds) into `UnixNanos`.
+fn book_event_ts(row: &CanonicalBookRow) -> Result<UnixNanos> {
+    let nanos = u64::try_from(row.event_time)
+        .with_context(|| format!("row {}: negative event_time", row.source_sequence))?;
+    Ok(UnixNanos::from(nanos))
+}
+
+/// Project a canonical L2 book table into a NautilusTrader `ParquetDataCatalog`.
+///
+/// Writes the binary-option instrument, the `OrderBookDelta` projection, and the
+/// `TradeTick` projection (trade prints) under `catalog_root`, then returns a
+/// [`CatalogBookProjection`] with a deterministic catalog hash. Both data types
+/// share the one catalog so a single backtest can replay book deltas (driving
+/// quote derivation) and trade prints for the same instrument.
+///
+/// # Errors
+///
+/// Returns an error if instrument construction, conversion, or catalog writes
+/// fail, or if `catalog_root` is a non-empty (dirty) directory.
+pub fn project_canonical_book_to_catalog(
+    table: &CanonicalBookTable,
+    spec: &BinaryOptionInstrumentSpec,
+    catalog_root: &Path,
+) -> Result<CatalogBookProjection> {
+    table.validate()?;
+    let instrument = build_binary_option(spec)?;
+    let instrument_id = instrument.id();
+    ensure!(
+        instrument_id.to_string() == spec.nt_instrument_id,
+        "instrument id {instrument_id} does not match spec {}",
+        spec.nt_instrument_id
+    );
+    let deltas = canonical_rows_to_order_book_deltas(table, &instrument)?;
+    let ticks = canonical_book_rows_to_trade_ticks(table, &instrument)?;
+    let delta_count = deltas.len();
+    let trade_count = ticks.len();
+
+    // Fail closed on a dirty catalog root: NautilusTrader's `write_to_parquet`
+    // appends, so projecting into a non-empty root could silently mix stale data
+    // under this run's source proof and a stale catalog hash. The caller owns the
+    // output lifecycle and must hand us a clean (absent or empty) root.
+    if catalog_root.exists() {
+        let mut entries = fs::read_dir(catalog_root)
+            .with_context(|| format!("read catalog root {}", catalog_root.display()))?;
+        ensure!(
+            entries.next().is_none(),
+            "catalog root {} is not empty; refusing to project into a dirty catalog",
+            catalog_root.display()
+        );
+    }
+    fs::create_dir_all(catalog_root)
+        .with_context(|| format!("create catalog root {}", catalog_root.display()))?;
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_instruments(vec![InstrumentAny::BinaryOption(instrument)])
+        .context("write binary-option instrument to catalog")?;
+    catalog
+        .write_to_parquet(deltas, None, None, None)
+        .context("write order book deltas to catalog")?;
+    if !ticks.is_empty() {
+        catalog
+            .write_to_parquet(ticks, None, None, None)
+            .context("write trade ticks to catalog")?;
+    }
+
+    Ok(CatalogBookProjection {
+        catalog_root: catalog_root.to_path_buf(),
+        nt_instrument_id: instrument_id.to_string(),
+        delta_count,
+        trade_count,
+        catalog_hash: catalog_hash(catalog_root)?,
+        fidelity_class: table.fidelity_class,
+    })
+}
+
+/// Prove the resolved NautilusTrader dependency can read the projected
+/// `OrderBookDelta` data back from `catalog_root`.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_order_book_deltas(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+) -> Result<Vec<OrderBookDelta>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .query_typed_data::<OrderBookDelta>(
+            Some(vec![nt_instrument_id.to_string()]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .context("query order book deltas from catalog")
 }
 
 /// Deterministic SHA-256 hex over every file under `root`, ordered by relative
@@ -450,6 +872,24 @@ mod tests {
         // decimal places, matching the precision `Price::from_str` infers.
         assert_eq!(decimal_places("0.10"), 2);
         assert_eq!(decimal_places("1.00"), 2);
+    }
+
+    #[test]
+    fn rescaled_tolerates_trailing_zero_padding() {
+        // Source Parquet decimals render at their storage scale, so `0.07`
+        // arrives as `"0.0700"`. Rescaling to the instrument precision (2) must
+        // succeed and drop only the padding.
+        assert_eq!(rescaled("0.0700", 2).unwrap(), "0.07");
+        assert_eq!(rescaled("0.5100", 2).unwrap(), "0.51");
+        assert_eq!(rescaled("14926.030000", 2).unwrap(), "14926.03");
+    }
+
+    #[test]
+    fn rescaled_rejects_genuine_subprecision() {
+        // A non-zero digit below the instrument precision is a real precision
+        // loss and must be refused, not silently rounded.
+        let err = rescaled("0.071", 2).expect_err("sub-precision must be refused");
+        assert!(err.to_string().contains("more precision"), "{err}");
     }
 
     #[test]

@@ -19,6 +19,15 @@
 //! backtest input is an [`source_proof::AcceptedDataset`] produced from an
 //! accepted [`source_proof::SourceProofReport`].
 
+pub mod canonical_binance;
+pub mod canonical_book;
+pub mod canonical_bybit;
+pub mod canonical_chainlink;
+pub mod canonical_deribit;
+pub mod canonical_hyperliquid_core;
+pub mod canonical_hyperliquid_hip3;
+pub mod canonical_hyperliquid_hip4;
+pub mod canonical_okx;
 pub mod canonical_trades;
 pub mod catalog_projection;
 pub mod result_contract;

@@ -14,9 +14,11 @@ use std::collections::BTreeMap;
 
 use anyhow::{Result, bail};
 use nautilus_backtest::config::{
-    BacktestDataConfig, BacktestRunConfig, BacktestVenueConfig, NautilusDataType,
+    BacktestDataConfig, BacktestEngineConfig, BacktestRunConfig, BacktestVenueConfig,
+    NautilusDataType,
 };
 use nautilus_core::UnixNanos;
+use nautilus_data::engine::config::DataEngineConfig;
 use nautilus_model::{
     enums::{AccountType, BookType, OmsType},
     identifiers::InstrumentId,
@@ -87,7 +89,8 @@ pub struct ManifestVenueConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestCatalogInput {
     pub catalog_path: String,
-    /// NautilusTrader data type, currently `TradeTick`.
+    /// NautilusTrader data type: `TradeTick` (native trade prints) or
+    /// `OrderBookDelta` (L2 order-book replay).
     pub data_type: String,
     /// NautilusTrader instrument id, for example `BNBUSDC.BYBIT`.
     pub nt_instrument_id: String,
@@ -322,6 +325,7 @@ impl BacktestingRunManifest {
     pub fn to_nt_data_config(&self) -> Result<BacktestDataConfig, ManifestError> {
         let data_type = match self.catalog_input.data_type.as_str() {
             "TradeTick" => NautilusDataType::TradeTick,
+            "OrderBookDelta" => NautilusDataType::OrderBookDelta,
             other => {
                 return Err(ManifestError::UnsupportedDataType {
                     data_type: other.to_string(),
@@ -340,14 +344,45 @@ impl BacktestingRunManifest {
             .build())
     }
 
+    /// Build the NautilusTrader [`BacktestEngineConfig`] for this run.
+    ///
+    /// When the catalog input is an `OrderBookDelta`, the data engine is
+    /// configured to derive quotes from book updates
+    /// ([`DataEngineConfig::emit_quotes_from_book`]) so a quote-driven strategy
+    /// trades off the replayed L2 book. Trade-only inputs leave the engine at
+    /// NautilusTrader's defaults — the lever follows the declared data type, so
+    /// there is one source of truth for whether book-driven quotes are emitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the data type is unsupported.
+    pub fn to_nt_engine_config(&self) -> Result<BacktestEngineConfig, ManifestError> {
+        let emit_quotes_from_book = match self.catalog_input.data_type.as_str() {
+            "OrderBookDelta" => true,
+            "TradeTick" => false,
+            other => {
+                return Err(ManifestError::UnsupportedDataType {
+                    data_type: other.to_string(),
+                });
+            }
+        };
+        let data_engine = DataEngineConfig::builder()
+            .emit_quotes_from_book(emit_quotes_from_book)
+            .build();
+        Ok(BacktestEngineConfig::builder()
+            .data_engine(data_engine)
+            .build())
+    }
+
     /// Map the manifest into a NautilusTrader [`BacktestRunConfig`].
     ///
     /// # Errors
     ///
-    /// Returns an error if venue or data mapping fails.
+    /// Returns an error if venue, data, or engine mapping fails.
     pub fn to_nt_run_config(&self) -> Result<BacktestRunConfig, ManifestError> {
         let venue = self.to_nt_venue_config()?;
         let data = self.to_nt_data_config()?;
+        let engine = self.to_nt_engine_config()?;
         let to_nanos = |field: &'static str, value: i64| -> Result<UnixNanos, ManifestError> {
             u64::try_from(value)
                 .map(UnixNanos::from)
@@ -365,6 +400,7 @@ impl BacktestingRunManifest {
             .id(self.run_id.clone())
             .venues(vec![venue])
             .data(vec![data])
+            .engine(engine)
             .maybe_start(start)
             .maybe_end(end)
             .build())
@@ -659,6 +695,54 @@ mod tests {
         manifest.catalog_input.data_type = "QuoteTick".to_string();
         assert_eq!(
             manifest.to_nt_data_config().unwrap_err(),
+            ManifestError::UnsupportedDataType {
+                data_type: "QuoteTick".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn maps_order_book_delta_data_type() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.data_type = "OrderBookDelta".to_string();
+        // Validation and config mapping both accept the L2 data type.
+        manifest
+            .validate(&accepted_dataset())
+            .expect("L2 manifest valid");
+        manifest
+            .to_nt_data_config()
+            .expect("OrderBookDelta data config");
+        manifest.to_nt_run_config().expect("L2 run config");
+    }
+
+    #[test]
+    fn engine_emits_book_quotes_only_for_order_book_delta() {
+        // A trade-only run leaves the data engine at NautilusTrader defaults
+        // (no book-derived quotes); an L2 book run turns the lever on. The
+        // declared catalog data type is the single source of truth.
+        let mut trade_manifest = valid_manifest();
+        trade_manifest.catalog_input.data_type = "TradeTick".to_string();
+        let trade_engine = trade_manifest
+            .to_nt_engine_config()
+            .expect("trade engine config");
+        let trade_data_engine = trade_engine.data_engine.expect("data engine present");
+        assert!(!trade_data_engine.emit_quotes_from_book);
+
+        let mut book_manifest = valid_manifest();
+        book_manifest.catalog_input.data_type = "OrderBookDelta".to_string();
+        let book_engine = book_manifest
+            .to_nt_engine_config()
+            .expect("book engine config");
+        let book_data_engine = book_engine.data_engine.expect("data engine present");
+        assert!(book_data_engine.emit_quotes_from_book);
+    }
+
+    #[test]
+    fn engine_config_rejects_unsupported_data_type() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.data_type = "QuoteTick".to_string();
+        assert_eq!(
+            manifest.to_nt_engine_config().unwrap_err(),
             ManifestError::UnsupportedDataType {
                 data_type: "QuoteTick".to_string(),
             }

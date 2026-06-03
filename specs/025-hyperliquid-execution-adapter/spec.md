@@ -2,7 +2,7 @@
 
 **Feature Branch**: `codex/025-hyperliquid-execution-adapter`
 **Created**: 2026-06-01
-**Status**: Implementation PR open pending final review/merge
+**Status**: Implementation merged; production live execution remains unarmed
 **Input**: User request: enable Hyperliquid execution adapter for spot, futures/perps, HIP-3, HIP-4 as a production-grade, colocated, fastest-latency adapter.
 
 ## Clarifications
@@ -10,6 +10,8 @@
 - "Fastest latency" is treated as a measurable ops objective, not a guaranteed code property.
 - "Colocated" means TOML-configured infrastructure profile and local info-node support; no region, endpoint, or facility value may be hardcoded.
 - The first accepted implementation slice does not place live orders by itself. It proves NT market-data adapter registration, execution adapter registration, discovery, secrets, signer ownership, fee/rate accounting, and approval-gated live-submit behavior.
+- Post-merge status on 2026-06-03: PR #531 is merged to `main` at `46e81cca94176b01559cf17dda729e1c72eefef6`, with `CI`, `CodeQL`, and `actionlint` green for the merge commit. That proves the approval-gated adapter infrastructure, not a live-production trading claim.
+- Production live execution is still blocked until the operator supplies a Hyperliquid execution client in root TOML, SSM-owned Hyperliquid credential parameter paths visible to the configured AWS region, a product-submit proof, a one-time live-submit approval artifact, current-head no-submit evidence, and renewed explicit live canary approval.
 
 ## User Stories And Tests
 

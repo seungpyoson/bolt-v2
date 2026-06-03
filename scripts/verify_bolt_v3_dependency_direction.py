@@ -5,27 +5,42 @@ The decomposition architecture contract
 (`specs/522-decompose-strategy-monolith/architecture-contract.md` §2) requires a
 one-way dependency: the strategy may use shared (`bolt_v3_*`) and family
 (`bolt_v3_market_families/*`) modules, but those shared/family modules must NEVER
-import the strategy layer (`crate::strategies`). The three existing fences
-(naming, provider-leaks, core-boundary) do not catch a shared module doing
-`use crate::strategies::...`; this fence does.
+reference the strategy layer (`crate::strategies`). The three existing fences
+(naming, provider-leaks, core-boundary) do not catch a shared module reaching
+into `crate::strategies`; this fence does.
 
-To avoid being defeated by idiomatic Rust spellings, the fence parses each `use`
-statement (including multi-line and grouped/nested imports), expands the
-use-tree into individual paths, and resolves `crate::`, `self::`, and `super::`
-roots to absolute module paths before checking whether the path enters
-`crate::strategies`. So all of these are caught:
+A first version scanned only `use` statements with a regex. Three independent
+reviewers showed that is evadable: a shared module can depend on the strategy
+layer through a *fully-qualified inline path* (a type annotation, function call,
+macro argument, attribute, or turbofish) with no `use` at all, e.g.
 
-    use crate::strategies::registry::FeeProvider;
-    use crate::{strategies::registry::FeeProvider, foo::Bar};
-    use crate::{
-        strategies::registry::FeeProvider,
-        foo::Bar,
-    };
-    use super::strategies::registry::FeeProvider;   // from a top-level bolt_v3_* module
+    let p: crate::strategies::registry::FeeProvider = ...;   // no `use`
+    crate::strategies::registry::register(...);
+    foo!(crate::strategies::binary_oracle_edge_taker::KEY);
 
-Each violation is keyed by (file, the absolute strategy path it imports) — NOT by
-the surrounding `use` block — so the allowlist is stable against unrelated edits
-to a grouped import and so a newly-added strategy symbol is caught even inside an
+and that a hand-rolled comment/string stripper mis-handles raw strings, char
+literals, lifetimes, and `#[attr]`-prefixed import segments — producing both
+false negatives (a real reference slips through) and false positives (a literal
+that merely contains the text `crate::strategies`).
+
+So this fence LEXES each file with a small but correct Rust tokenizer that
+discards comments (`//`, nested `/* */`), string/byte/raw-string literals,
+char/byte-char literals, and lifetimes, then detects strategy references over the
+token stream. It catches BOTH spellings in one pass:
+
+  * `use` trees — including grouped/nested/multi-line imports, `as` aliases, glob
+    imports, and `#[cfg(...)]`-prefixed members inside a brace group; and
+  * inline fully-qualified paths anywhere in code.
+
+For every detected path it resolves `crate::`, `self::`, and `super::` roots to
+absolute crate-rooted module paths before checking whether the path enters
+`crate::strategies`. A bare root (`strategies::...`) is an external crate and is
+not flagged; `super::strategies` is flagged only from a top-level `bolt_v3_*`
+module (where `super` == the crate root) and correctly ignored from a nested one.
+
+Each violation is keyed by (file, the absolute strategy path it reaches) — NOT by
+a surrounding `use` block or a line — so the allowlist is stable against
+unrelated edits and a newly-added strategy symbol is caught even inside an
 already-coupled `use` block.
 
 Current code already contains pre-existing back-references (tracked under #446 and
@@ -35,17 +50,19 @@ only SHRINK:
 
 - adding a new allowance is forbidden — a new back-reference is a bug to fix, not
   to allow;
-- a stale allowance (one that no longer matches any import) FAILS, forcing its
+- a stale allowance (one that no longer matches any reference) FAILS, forcing its
   removal once the underlying reference is relocated to a shared module.
 
-The fence checks the import path, which is the mechanism a shared module would use
-to reach the strategy. Like the sibling fences, it does not resolve aliased
-re-exports that launder a strategy type through a third module under a new name.
+KNOWN LIMITATION (documented, not a bug): the fence reads source text, so it
+cannot see a path that only exists *after macro expansion* — i.e. a strategy path
+synthesized from tokens by a macro at compile time. No source-level scanner can.
+The contract requires manual review for macro-generated cross-layer references.
+Like the sibling fences, it also does not resolve aliased re-exports that launder
+a strategy type through a third module under a new name.
 """
 
 from __future__ import annotations
 
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,11 +79,8 @@ SCAN_PREFIX = "src/bolt_v3_"
 # The forbidden destination: the crate-root `strategies` module.
 STRATEGY_ROOT = "strategies"
 
-# A `use ...;` statement (spans newlines; `;` cannot appear inside a use path).
-USE_STATEMENT = re.compile(r"\buse\b[^;]*;", re.DOTALL)
-
 MESSAGE = (
-    "shared/family module imports the strategy layer (crate::strategies); "
+    "shared/family module references the strategy layer (crate::strategies); "
     "violates one-way dependency (contract §2)"
 )
 
@@ -78,7 +92,7 @@ class Finding:
     strategy_path: str
 
     def render(self, prefix: str) -> str:
-        return f"{prefix}: {self.path}:{self.line}: {MESSAGE}: imports {self.strategy_path}"
+        return f"{prefix}: {self.path}:{self.line}: {MESSAGE}: references {self.strategy_path}"
 
 
 @dataclass(frozen=True)
@@ -130,104 +144,231 @@ FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = (
 )
 
 
-def strip_comments(text: str) -> str:
-    """Remove `//` line comments and `/* */` block comments while preserving every
-    newline (so line numbers stay accurate). Comment characters become spaces."""
+# --------------------------------------------------------------------------- #
+# Rust lexer
+#
+# We do not need a full parser — only a tokenizer that reliably DISCARDS the
+# lexical contexts in which the text `crate::strategies` must be ignored
+# (comments and every string/char/lifetime form), and emits identifiers and the
+# handful of punctuation tokens (`::`, `{`, `}`, `,`, `;`, `#`, `[`, `]`, `*`,
+# `as`) that path/use-tree detection needs. Anything else is emitted as a generic
+# single-character punctuation token and ignored by the detectors.
+# --------------------------------------------------------------------------- #
 
-    out: list[str] = []
+
+@dataclass(frozen=True)
+class Token:
+    kind: str  # "IDENT" or "PUNCT"
+    value: str
+    line: int
+    raw: bool = False  # raw identifier (`r#ident`); never treated as a keyword
+
+
+def _is_ident_start(ch: str) -> bool:
+    return ch.isalpha() or ch == "_"
+
+
+def _is_ident_continue(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def tokenize(text: str) -> list[Token]:
+    tokens: list[Token] = []
     i = 0
     n = len(text)
-    in_line = False
-    in_block = False
-    in_string = False
-    string_quote = ""
+    line = 1
     while i < n:
         ch = text[i]
-        two = text[i : i + 2]
-        if in_line:
-            out.append("\n" if ch == "\n" else " ")
-            if ch == "\n":
-                in_line = False
+
+        if ch == "\n":
+            line += 1
             i += 1
-        elif in_block:
-            if two == "*/":
-                in_block = False
-                out.append("  ")
-                i += 2
-            else:
-                out.append("\n" if ch == "\n" else " ")
-                i += 1
-        elif in_string:
-            out.append(ch)
-            if ch == "\\" and i + 1 < n:
-                out.append(text[i + 1])
-                i += 2
-                continue
-            if ch == string_quote:
-                in_string = False
+            continue
+        if ch in " \t\r\f\v":
             i += 1
-        elif two == "//":
-            in_line = True
-            out.append("  ")
+            continue
+
+        # Line comment.
+        if ch == "/" and text[i + 1 : i + 2] == "/":
+            j = i + 2
+            while j < n and text[j] != "\n":
+                j += 1
+            i = j
+            continue
+
+        # Block comment (Rust block comments nest).
+        if ch == "/" and text[i + 1 : i + 2] == "*":
+            depth = 1
+            j = i + 2
+            while j < n and depth > 0:
+                pair = text[j : j + 2]
+                if pair == "/*":
+                    depth += 1
+                    j += 2
+                elif pair == "*/":
+                    depth -= 1
+                    j += 2
+                else:
+                    if text[j] == "\n":
+                        line += 1
+                    j += 1
+            i = j
+            continue
+
+        # Raw string literal, optionally byte-prefixed: r"..", r#"..."#, br#"..."#
+        raw_end = _scan_raw_string(text, i)
+        if raw_end is not None:
+            end, newlines = raw_end
+            line += newlines
+            i = end
+            continue
+
+        # Normal / byte string literal: "..." or b"..."
+        str_end = _scan_string(text, i)
+        if str_end is not None:
+            end, newlines = str_end
+            line += newlines
+            i = end
+            continue
+
+        # Char / byte-char literal, or lifetime.
+        lit = _scan_char_or_lifetime(text, i)
+        if lit is not None:
+            end, newlines = lit
+            line += newlines
+            i = end
+            continue
+
+        # Raw identifier: r#ident (only when not a raw string, handled above).
+        if (
+            ch == "r"
+            and text[i + 1 : i + 2] == "#"
+            and i + 2 < n
+            and _is_ident_start(text[i + 2])
+        ):
+            j = i + 2
+            while j < n and _is_ident_continue(text[j]):
+                j += 1
+            tokens.append(Token("IDENT", text[i + 2 : j], line, raw=True))
+            i = j
+            continue
+
+        # Identifier / keyword.
+        if _is_ident_start(ch):
+            j = i
+            while j < n and _is_ident_continue(text[j]):
+                j += 1
+            tokens.append(Token("IDENT", text[i:j], line))
+            i = j
+            continue
+
+        # Path separator.
+        if ch == ":" and text[i + 1 : i + 2] == ":":
+            tokens.append(Token("PUNCT", "::", line))
             i += 2
-        elif two == "/*":
-            in_block = True
-            out.append("  ")
-            i += 2
-        elif ch in ('"', "'"):
-            in_string = True
-            string_quote = ch
-            out.append(ch)
-            i += 1
-        else:
-            out.append(ch)
-            i += 1
-    return "".join(out)
+            continue
+
+        # Any other single character of punctuation.
+        tokens.append(Token("PUNCT", ch, line))
+        i += 1
+
+    return tokens
 
 
-def _split_top_commas(inner: str) -> list[str]:
-    parts: list[str] = []
-    depth = 0
-    start = 0
-    for i, ch in enumerate(inner):
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-        elif ch == "," and depth == 0:
-            parts.append(inner[start:i])
-            start = i + 1
-    parts.append(inner[start:])
-    return [p for p in (part.strip() for part in parts) if p]
+def _scan_raw_string(text: str, i: int) -> tuple[int, int] | None:
+    """If a raw string literal starts at `i`, return (end_index, newlines)."""
+
+    n = len(text)
+    k = i
+    if k < n and text[k] == "b":  # byte raw string prefix
+        k += 1
+    if k >= n or text[k] != "r":
+        return None
+    k += 1
+    hashes = 0
+    while k < n and text[k] == "#":
+        hashes += 1
+        k += 1
+    if k >= n or text[k] != '"':
+        return None  # e.g. a raw identifier `r#foo` or a bare `r`/`b` ident
+    k += 1
+    closer = '"' + "#" * hashes
+    newlines = 0
+    while k < n:
+        if text[k] == '"' and text[k + 1 : k + 1 + hashes] == "#" * hashes:
+            return k + 1 + hashes, newlines
+        if text[k] == "\n":
+            newlines += 1
+        k += 1
+    return k, newlines  # unterminated; consume to EOF
 
 
-def expand_use_tree(body: str) -> list[str]:
-    """Expand a (whitespace-free) use-tree body into flat `::`-joined paths."""
+def _scan_string(text: str, i: int) -> tuple[int, int] | None:
+    """If a normal/byte string literal starts at `i`, return (end_index, newlines)."""
 
-    brace_start = body.find("{")
-    if brace_start == -1:
-        return [body] if body else []
+    n = len(text)
+    k = i
+    if k < n and text[k] == "b":  # byte string prefix
+        k += 1
+    if k >= n or text[k] != '"':
+        return None
+    k += 1
+    newlines = 0
+    while k < n:
+        c = text[k]
+        if c == "\\":
+            if text[k + 1 : k + 2] == "\n":
+                newlines += 1
+            k += 2
+            continue
+        if c == '"':
+            return k + 1, newlines
+        if c == "\n":
+            newlines += 1
+        k += 1
+    return k, newlines  # unterminated; consume to EOF
 
-    depth = 0
-    brace_end = -1
-    for i in range(brace_start, len(body)):
-        if body[i] == "{":
-            depth += 1
-        elif body[i] == "}":
-            depth -= 1
-            if depth == 0:
-                brace_end = i
-                break
-    if brace_end == -1:
-        return [body]  # malformed; treat literally
 
-    prefix = body[:brace_start]
-    inner = body[brace_start + 1 : brace_end]
-    suffix = body[brace_end + 1 :]
-    results: list[str] = []
-    for member in _split_top_commas(inner):
-        results.extend(expand_use_tree(prefix + member + suffix))
-    return results
+def _scan_char_or_lifetime(text: str, i: int) -> tuple[int, int] | None:
+    """If a char/byte-char literal or a lifetime starts at `i`, return
+    (end_index, newlines). Lifetimes (`'a`, `'static`, `'_`) carry no `::` path,
+    so they are simply consumed and discarded like literals."""
+
+    n = len(text)
+    k = i
+    if k < n and text[k] == "b" and text[k + 1 : k + 2] == "'":  # byte char b'x'
+        k += 1
+    if k >= n or text[k] != "'":
+        return None
+    nxt = text[k + 1 : k + 2]
+    after = text[k + 2 : k + 3]
+    # Lifetime: `'` then an ident char, NOT immediately closed by `'`, and not an
+    # escape. e.g. `'a`, `'static`, `'_` (but `'a'`, `'_'` are char literals).
+    if nxt and _is_ident_start(nxt) and after != "'":
+        k += 1
+        while k < n and _is_ident_continue(text[k]):
+            k += 1
+        return k, 0
+    # Char literal (possibly escaped, possibly multi-char like `'\u{1F600}'`).
+    k += 1  # opening quote
+    newlines = 0
+    while k < n and text[k] != "'":
+        if text[k] == "\\":
+            if text[k + 1 : k + 2] == "\n":
+                newlines += 1
+            k += 2
+            continue
+        if text[k] == "\n":
+            newlines += 1
+        k += 1
+    if k < n:
+        k += 1  # closing quote
+    return k, newlines
+
+
+# --------------------------------------------------------------------------- #
+# Path resolution
+# --------------------------------------------------------------------------- #
 
 
 def module_parts_for(rel: str) -> list[str]:
@@ -241,7 +382,7 @@ def module_parts_for(rel: str) -> list[str]:
 
 
 def resolve_to_absolute(segments: list[str], module_parts: list[str]) -> list[str] | None:
-    """Resolve a use path's segments to absolute crate-rooted components.
+    """Resolve a path's segments to absolute crate-rooted components.
 
     Returns None for external-crate paths (which cannot reach the local strategy
     layer) or unresolvable relative paths.
@@ -266,15 +407,160 @@ def resolve_to_absolute(segments: list[str], module_parts: list[str]) -> list[st
     return None
 
 
-def resolved_strategy_path(path: str, module_parts: list[str]) -> str | None:
-    """If `path` enters the local strategy layer, return its absolute `::`-joined
-    path (e.g. ``strategies::registry::FeeProvider``); otherwise None."""
+def resolved_strategy_path(segments: list[str], module_parts: list[str]) -> str | None:
+    """If the path `segments` enters the local strategy layer, return its absolute
+    `::`-joined path (e.g. ``strategies::registry::FeeProvider``); else None."""
 
-    segments = [seg for seg in path.split("::") if seg and seg != "self"]
-    absolute = resolve_to_absolute(segments, module_parts)
+    cleaned = [seg for seg in segments if seg and seg != "self"]
+    absolute = resolve_to_absolute(cleaned, module_parts)
     if absolute and absolute[0] == STRATEGY_ROOT:
         return "::".join(absolute)
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Detection over the token stream
+# --------------------------------------------------------------------------- #
+
+
+def _skip_attributes(tokens: list[Token], i: int) -> int:
+    """Skip any leading `#[ ... ]` attribute groups, returning the next index."""
+
+    n = len(tokens)
+    while i < n and tokens[i].kind == "PUNCT" and tokens[i].value == "#":
+        if i + 1 < n and tokens[i + 1].kind == "PUNCT" and tokens[i + 1].value == "[":
+            depth = 0
+            j = i + 1
+            while j < n:
+                tok = tokens[j]
+                if tok.kind == "PUNCT" and tok.value == "[":
+                    depth += 1
+                elif tok.kind == "PUNCT" and tok.value == "]":
+                    depth -= 1
+                    if depth == 0:
+                        j += 1
+                        break
+                j += 1
+            i = j
+        else:
+            i += 1
+    return i
+
+
+def _parse_use_tree(tokens: list[Token], i: int) -> tuple[list[list[str]], int]:
+    """Parse one use-tree node at `i`, returning (leaf segment-lists, next index)."""
+
+    n = len(tokens)
+    prefix: list[str] = []
+    while i < n:
+        i = _skip_attributes(tokens, i)
+        if i >= n:
+            break
+        tok = tokens[i]
+        if tok.kind == "PUNCT" and tok.value == "{":
+            i += 1
+            result: list[list[str]] = []
+            while i < n and not (tokens[i].kind == "PUNCT" and tokens[i].value == "}"):
+                i = _skip_attributes(tokens, i)
+                if i >= n:
+                    break
+                if tokens[i].kind == "PUNCT" and tokens[i].value == ",":
+                    i += 1
+                    continue
+                if tokens[i].kind == "PUNCT" and tokens[i].value == "}":
+                    break
+                sub, i = _parse_use_tree(tokens, i)
+                for leaf in sub:
+                    result.append(prefix + leaf)
+                if i < n and tokens[i].kind == "PUNCT" and tokens[i].value == ",":
+                    i += 1
+            if i < n:
+                i += 1  # consume `}`
+            return result, i
+        if tok.kind == "IDENT" or (tok.kind == "PUNCT" and tok.value == "*"):
+            seg = tok.value
+            nxt = tokens[i + 1] if i + 1 < n else None
+            if nxt and nxt.kind == "PUNCT" and nxt.value == "::":
+                prefix.append(seg)
+                i += 2
+                continue
+            i += 1
+            if i < n and tokens[i].kind == "IDENT" and tokens[i].value == "as":
+                i += 2  # skip `as <alias>`
+            return [prefix + [seg]], i
+        # Unexpected token (e.g. `;`); stop.
+        return ([prefix] if prefix else []), i
+    return ([prefix] if prefix else []), i
+
+
+def _scan_use_statement(tokens: list[Token], i: int) -> tuple[list[list[str]], int]:
+    """Parse `use <tree> ;` starting just after the `use` keyword; return the leaf
+    segment-lists and the index just past the terminating `;`."""
+
+    n = len(tokens)
+    paths, i = _parse_use_tree(tokens, i)
+    while i < n and not (tokens[i].kind == "PUNCT" and tokens[i].value == ";"):
+        i += 1
+    if i < n:
+        i += 1  # consume `;`
+    return paths, i
+
+
+def detect_strategy_paths(
+    tokens: list[Token], module_parts: list[str]
+) -> list[tuple[str, int]]:
+    """Return (absolute strategy path, line) for every strategy reference — both
+    `use` imports and inline fully-qualified paths."""
+
+    out: list[tuple[str, int]] = []
+    n = len(tokens)
+    i = 0
+    while i < n:
+        tok = tokens[i]
+
+        # `use` statement (the keyword can never be a normal identifier).
+        if tok.kind == "IDENT" and tok.value == "use" and not tok.raw:
+            line = tok.line
+            paths, i = _scan_use_statement(tokens, i + 1)
+            for segs in paths:
+                strategy_path = resolved_strategy_path(segs, module_parts)
+                if strategy_path is not None:
+                    out.append((strategy_path, line))
+            continue
+
+        # Inline fully-qualified path rooted at crate/self/super.
+        if (
+            tok.kind == "IDENT"
+            and not tok.raw
+            and tok.value in ("crate", "self", "super")
+        ):
+            prev = tokens[i - 1] if i > 0 else None
+            nxt = tokens[i + 1] if i + 1 < n else None
+            prev_is_sep = prev is not None and prev.kind == "PUNCT" and prev.value == "::"
+            nxt_is_sep = nxt is not None and nxt.kind == "PUNCT" and nxt.value == "::"
+            if not prev_is_sep and nxt_is_sep:
+                segs = [tok.value]
+                j = i + 2
+                while j < n and tokens[j].kind == "IDENT":
+                    segs.append(tokens[j].value)
+                    j += 1
+                    if j < n and tokens[j].kind == "PUNCT" and tokens[j].value == "::":
+                        j += 1
+                        continue
+                    break
+                strategy_path = resolved_strategy_path(segs, module_parts)
+                if strategy_path is not None:
+                    out.append((strategy_path, tok.line))
+                i = j
+                continue
+
+        i += 1
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# File walking and policy
+# --------------------------------------------------------------------------- #
 
 
 def scan_files(root: Path) -> tuple[Path, ...]:
@@ -305,27 +591,24 @@ def read_policy_source(path: Path, rel: str) -> str:
 
 
 def find_violations(root: Path) -> list[Finding]:
-    findings: list[Finding] = []
+    # Key by (file, absolute strategy path); keep the earliest line so output is
+    # deterministic and a reference imported AND used inline is reported once.
+    earliest: dict[tuple[str, str], int] = {}
     for path in scan_files(root):
         rel = path.relative_to(root).as_posix()
         module_parts = module_parts_for(rel)
         text = read_policy_source(path, rel)
-        clean = strip_comments(text)
-        for match in USE_STATEMENT.finditer(clean):
-            stmt = match.group(0)
-            line = clean.count("\n", 0, match.start()) + 1
-            body = stmt[len("use") : -1]  # drop the `use` keyword and trailing `;`
-            body = re.sub(r"\s+as\s+\w+", "", body)
-            body = re.sub(r"\s+", "", body)
-            seen: set[str] = set()
-            for flat in expand_use_tree(body):
-                strategy_path = resolved_strategy_path(flat, module_parts)
-                if strategy_path is not None and strategy_path not in seen:
-                    seen.add(strategy_path)
-                    findings.append(
-                        Finding(path=rel, line=line, strategy_path=strategy_path)
-                    )
-    return findings
+        tokens = tokenize(text)
+        for strategy_path, line in detect_strategy_paths(tokens, module_parts):
+            key = (rel, strategy_path)
+            if key not in earliest or line < earliest[key]:
+                earliest[key] = line
+    return [
+        Finding(path=rel, line=line, strategy_path=strategy_path)
+        for (rel, strategy_path), line in sorted(
+            earliest.items(), key=lambda item: (item[0][0], item[1], item[0][1])
+        )
+    ]
 
 
 def is_allowed(finding: Finding) -> bool:
@@ -363,8 +646,8 @@ def main() -> int:
         failed = True
     for allowance in stale:
         print(
-            f"FAIL: {allowance.path}: stale allowance no longer matches any import; "
-            f"remove it (allowlist may only shrink): imports {allowance.strategy_path}",
+            f"FAIL: {allowance.path}: stale allowance no longer matches any reference; "
+            f"remove it (allowlist may only shrink): references {allowance.strategy_path}",
             file=sys.stderr,
         )
         failed = True

@@ -83,6 +83,10 @@ Implementation commits:
 - current slice update: Hyperliquid fee-provider construction resolves through the provider binding and warms from NT `userFees.userCrossRate`
 - current slice update: Hyperliquid live-submit approval artifacts require configured product-submit proof path and sha256 bindings
 - current slice update: Hyperliquid product-submit proof artifacts use a TOML-owned byte cap separate from the live-submit approval artifact byte cap
+- `26bd6ea5` Hyperliquid product-submit proof artifact writer and schema validation
+- `3b543fae` provider-neutral product-proof CLI routed through `ProviderBinding`
+- `7e993673` provider binding test initializer fix after full test compile
+- current slice update: provider-neutral `operator-artifacts generate-product-submit-proof` writes Hyperliquid product-proof artifacts through the provider binding
 
 Verification:
 - `cargo fmt --check` - PASS
@@ -97,7 +101,8 @@ Verification:
 - `cargo test --locked --test hyperliquid_fail_closed user_fees_weight_policy_accounts_official_weight_and_nt_inventory` - PASS, 1 test
 - `cargo test --locked --test bolt_v3_provider_binding provider_binding_writes_hyperliquid_live_submit_approval_from_configured_runtime` - PASS, 1 test
 - `cargo test --locked --test bolt_v3_cli bolt_v3_cli_exposes_live_submit_approval_artifact_command_without_raw_secret_inputs` - PASS, 1 test
-- `cargo test --locked --test hyperliquid_live_submit_artifact` - PASS, 12 tests
+- `cargo test --locked --test bolt_v3_cli product_submit_proof` - PASS, 2 tests
+- `cargo test --locked --test hyperliquid_live_submit_artifact` - PASS, 17 tests
 - `CARGO_TARGET_DIR=/private/tmp/bolt-v2-hyperliquid-target cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_` - PASS, 13 tests
 - `cargo test --locked --lib live_node_invalid_product_submit_proof_schema_does_not_spend_hyperliquid_approval_artifact` - PASS, 1 test
 - `cargo test --locked --test bolt_v3_adapter_mapping hyperliquid_hip4_execution_accepts_updown_market_family_target_after_consumed_approval` - PASS, 1 test
@@ -119,6 +124,7 @@ Current live-submit state:
 - Product-submit proof files and live-submit approval files are read under separate TOML-owned byte caps before one-time approval consumption; the product proof must schema-bind the same provider id, product surface, TOML checksum, and required proof references before `used_at` is written.
 - Static/direct target surface mismatches fail before production approval consumption and leave the approval artifact `used_at` unset.
 - `operator-artifacts generate-live-submit-approval` writes the configured Hyperliquid artifact path from TOML plus resolved SSM secrets, binding base SHA, config checksum, signer fingerprint, product surface, limits, product-submit proof path/hash, and expiry without raw secret CLI inputs.
+- `operator-artifacts generate-product-submit-proof` routes through `ProviderBinding`, accepts only provider/config identity and proof-reference paths/checksums, and writes the Hyperliquid product-proof schema without raw secret inputs.
 - A consumed approval for one surface cannot authorize a different surface.
 - HIP-4 requires positive `outcome_settlement_poll_secs` in TOML before mapper handoff and can pass the shared `updown` market-family execution-client routing gate.
 - Static/direct Hyperliquid instrument targets can pass the shared execution-client routing gate through `hyperliquid_instrument` only when their target product surface matches the execution client's single configured and approved product surface; binary rotating-market selection remains fail-closed for that family, and canary proof sizing constraints are TOML-owned on the target.

@@ -15,7 +15,9 @@ Hyperliquid support enters Bolt only through `ProviderBinding`. No strategy file
 - `configured_secret_paths`
 - `map_adapters`
 - `build_fee_provider`
-- operator artifact export
+- `write_live_submit_approval_artifact`
+- `write_product_submit_proof_artifact`
+- `collect_canary_proof_artifacts`
 
 ## Fail-Closed Requirements
 
@@ -68,5 +70,7 @@ A live-submit approval artifact is valid only when all fields match the current 
 Production live-node construction must call provider live-submit approval hooks before adapter mapping. The Hyperliquid hook reads the product-submit proof artifact from the bound path under the configured artifact byte cap, verifies its sha256, validates `bolt_v3.hyperliquid_product_submit_proof.v1` semantics, then consumes the approval artifact from the TOML path. Product-submit proof semantics bind provider key, provider id, product surface, TOML checksum, and order/fill/rounding/fee proof references; HIP-4 outcomes additionally require a settlement proof reference. Consumption validates the approval against the current build, config checksum, signer fingerprint, product surface, order limits, and product-submit proof binding, persists `used_at`, returns an opaque consumed approval through the provider-neutral runtime-approval bundle, and carries the artifact order limits into shared submit admission for the approved execution client.
 
 Operator approval artifact materialization must use the same provider binding fields as consumption. The CLI command writes the TOML-configured artifact path, derives signer fingerprint from resolved SSM-backed secrets, accepts only config/client/expiry inputs, and rejects providers without a live-submit approval writer hook.
+
+Operator product-submit proof materialization must also route through the provider binding. The CLI command writes the requested product-proof artifact path, accepts provider key, provider id, product surface, TOML checksum, and proof-reference paths/checksums only, and rejects providers without a product-submit proof writer hook. It must not accept signer private keys, account addresses, or alternate secret sources.
 
 After consumption, `used_at` must be recorded and the artifact must not authorize another submit.

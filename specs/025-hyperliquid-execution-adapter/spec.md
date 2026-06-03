@@ -2,7 +2,7 @@
 
 **Feature Branch**: `codex/025-hyperliquid-execution-adapter`
 **Created**: 2026-06-01
-**Status**: Draft pending relay-Claude adversarial review
+**Status**: Implementation PR open pending final review/merge
 **Input**: User request: enable Hyperliquid execution adapter for spot, futures/perps, HIP-3, HIP-4 as a production-grade, colocated, fastest-latency adapter.
 
 ## Clarifications

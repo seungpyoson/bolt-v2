@@ -224,6 +224,8 @@
 - [x] T049AL Add failing live-node tests proving missing and mismatched product proof files do not spend one-time approvals.
 - [x] T049AM Verify the bound product proof artifact sha256 before consuming Hyperliquid live-submit approvals.
 - [x] T049AMa Add a separate TOML-owned product proof artifact byte cap so proof evidence and approval artifacts do not share one read limit.
+- [x] T049AMb Add provider-owned product-submit proof artifact writer tests for proof-reference schema validation and HIP-4 settlement proof requirements.
+- [x] T049AMc Register provider-neutral `operator-artifacts generate-product-submit-proof` through `ProviderBinding`.
 
 ## Phase 8M - Hyperliquid Product Matrix Approval-Gated Status
 

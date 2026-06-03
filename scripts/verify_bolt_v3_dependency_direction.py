@@ -695,12 +695,19 @@ BASELINE_REF = "origin/main"
 
 def parse_allowances_from_source(text: str) -> set[tuple[str, str]]:
     """Extract FINDING_ALLOWANCES (path, strategy_path) pairs from fence source via
-    AST, WITHOUT executing it. Handles both annotated and plain assignment."""
+    AST, WITHOUT executing it. Handles both annotated and plain assignment.
+
+    Only a SINGLE MODULE-LEVEL `FINDING_ALLOWANCES` assignment is accepted. We scan
+    `tree.body` (module scope) rather than `ast.walk` (whole tree) on purpose: at
+    runtime the imported constant follows Python's last-assignment-wins, so unioning
+    every assignment anywhere in the file — a top-level duplicate, or a reassignment
+    nested in a function/class — would make the parsed baseline diverge from the
+    runtime constant and silently INFLATE the shrink-only baseline (fail-open).
+    Zero or more-than-one module-level assignment is therefore an error (fail-closed)."""
 
     tree = ast.parse(text)
-    pairs: set[tuple[str, str]] = set()
-    found = False
-    for node in ast.walk(tree):
+    values: list[ast.expr] = []
+    for node in tree.body:  # module scope only — see docstring
         names: list[str] = []
         value = None
         if isinstance(node, ast.Assign):
@@ -709,27 +716,34 @@ def parse_allowances_from_source(text: str) -> set[tuple[str, str]]:
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             names = [node.target.id]
             value = node.value
-        if "FINDING_ALLOWANCES" not in names or value is None:
+        if "FINDING_ALLOWANCES" in names and value is not None:
+            values.append(value)
+
+    if not values:
+        raise PolicyError("baseline source has no module-level FINDING_ALLOWANCES assignment")
+    if len(values) > 1:
+        raise PolicyError(
+            f"baseline source has {len(values)} module-level FINDING_ALLOWANCES "
+            "assignments; expected exactly 1 (ambiguous baseline — fail closed)"
+        )
+
+    pairs: set[tuple[str, str]] = set()
+    elts = values[0].elts if isinstance(values[0], (ast.Tuple, ast.List)) else []
+    for elt in elts:
+        if not isinstance(elt, ast.Call):
             continue
-        found = True
-        elts = value.elts if isinstance(value, (ast.Tuple, ast.List)) else []
-        for elt in elts:
-            if not isinstance(elt, ast.Call):
-                continue
-            path = strat = None
-            positional = [a.value for a in elt.args if isinstance(a, ast.Constant)]
-            if len(positional) >= 2:
-                path, strat = positional[0], positional[1]
-            for kw in elt.keywords:
-                if isinstance(kw.value, ast.Constant):
-                    if kw.arg == "path":
-                        path = kw.value.value
-                    elif kw.arg == "strategy_path":
-                        strat = kw.value.value
-            if isinstance(path, str) and isinstance(strat, str):
-                pairs.add((path, strat))
-    if not found:
-        raise PolicyError("baseline source has no FINDING_ALLOWANCES assignment")
+        path = strat = None
+        positional = [a.value for a in elt.args if isinstance(a, ast.Constant)]
+        if len(positional) >= 2:
+            path, strat = positional[0], positional[1]
+        for kw in elt.keywords:
+            if isinstance(kw.value, ast.Constant):
+                if kw.arg == "path":
+                    path = kw.value.value
+                elif kw.arg == "strategy_path":
+                    strat = kw.value.value
+        if isinstance(path, str) and isinstance(strat, str):
+            pairs.add((path, strat))
     return pairs
 
 

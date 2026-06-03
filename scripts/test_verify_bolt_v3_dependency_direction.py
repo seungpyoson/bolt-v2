@@ -528,6 +528,57 @@ def test_parse_allowances_roundtrips_synthetic_source() -> None:
         raise AssertionError("synthetic baseline did not round-trip")
 
 
+def test_parse_allowances_rejects_duplicate_module_assignment() -> None:
+    # Two module-level FINDING_ALLOWANCES assignments must fail closed (not union) —
+    # at runtime only the last wins, so unioning would inflate the baseline.
+    src = (
+        baseline_source({("src/bolt_v3_a.rs", "strategies::x::A")})
+        + baseline_source({("src/bolt_v3_b.rs", "strategies::y::BACKDOOR")})
+    )
+    try:
+        VERIFIER.parse_allowances_from_source(src)
+    except VERIFIER.PolicyError as error:
+        if "expected exactly 1" not in str(error):
+            raise AssertionError(f"unexpected PolicyError text: {error}")
+    else:
+        raise AssertionError("expected PolicyError on duplicate FINDING_ALLOWANCES")
+
+
+def test_parse_allowances_ignores_function_scope_reassignment() -> None:
+    # A reassignment nested in a function/class never touches the runtime constant,
+    # so it must NOT contribute to the parsed baseline.
+    src = (
+        baseline_source({("src/bolt_v3_a.rs", "strategies::x::A")})
+        + "\ndef _unused():\n"
+        + "    FINDING_ALLOWANCES = (FindingAllowance('src/bolt_v3_p.rs', 'strategies::p::PHANTOM'),)\n"
+        + "    return FINDING_ALLOWANCES\n"
+    )
+    parsed = VERIFIER.parse_allowances_from_source(src)
+    if parsed != {("src/bolt_v3_a.rs", "strategies::x::A")}:
+        raise AssertionError(f"function-scope reassignment leaked into baseline: {parsed}")
+
+
+def test_parse_allowances_rejects_zero_assignment() -> None:
+    try:
+        VERIFIER.parse_allowances_from_source("X = 1\n")
+    except VERIFIER.PolicyError as error:
+        if "no module-level" not in str(error):
+            raise AssertionError(f"unexpected PolicyError text: {error}")
+    else:
+        raise AssertionError("expected PolicyError when FINDING_ALLOWANCES is absent")
+
+
+def test_shrink_only_duplicate_baseline_fails_closed() -> None:
+    current = (allowance("src/bolt_v3_a.rs", "strategies::x::A"),)
+    dup_baseline = (
+        baseline_source({("src/bolt_v3_a.rs", "strategies::x::A")})
+        + baseline_source({("src/bolt_v3_b.rs", "strategies::y::BACKDOOR")})
+    )
+    code, _out, err = run_shrink_only(current, dup_baseline)
+    if code != 1 or "cannot parse mainline baseline" not in err:
+        raise AssertionError(f"expected fail-closed on ambiguous baseline, got {code}: {err!r}")
+
+
 def test_shrink_only_subset_passes() -> None:
     current = (allowance("src/bolt_v3_a.rs", "strategies::x::A"),)
     base = baseline_source(
@@ -630,6 +681,10 @@ def main() -> int:
         test_inner_attribute_does_not_break_detection,
         test_parse_allowances_matches_real_committed_allowlist,
         test_parse_allowances_roundtrips_synthetic_source,
+        test_parse_allowances_rejects_duplicate_module_assignment,
+        test_parse_allowances_ignores_function_scope_reassignment,
+        test_parse_allowances_rejects_zero_assignment,
+        test_shrink_only_duplicate_baseline_fails_closed,
         test_shrink_only_subset_passes,
         test_shrink_only_addition_fails,
         test_shrink_only_introducing_pr_passes,

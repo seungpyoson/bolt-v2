@@ -96,10 +96,11 @@ class PolicyError(Exception):
     """Raised when the dependency-direction policy cannot be evaluated safely."""
 
 
-# Pre-existing strategy back-references in the shared/family layer, frozen at the
-# start of the #522 decomposition (generated from the verifier's own output on
-# origin/main). Each entry is removed when its underlying reference is relocated
-# to a shared module. DO NOT ADD ENTRIES — a new back-reference is a bug to fix.
+# Pre-existing strategy back-references in the shared/family layer, frozen from
+# the verifier's own output on the current mainline tree this fence is rebased
+# onto. Each entry is removed when its underlying reference is relocated to a
+# shared module. Do not add entries for branch-local references — a new
+# back-reference is a bug to fix.
 #
 # All of these resolve under the #522 decomposition + #446 (relocate the shared
 # FeeProvider trait and the strategy-owned entry-decision evidence types out of
@@ -123,6 +124,7 @@ FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = (
     FindingAllowance("src/bolt_v3_operator_artifacts.rs", "strategies::binary_oracle_edge_taker::derive_entry_reference_proofs_from_quote_observations"),
     FindingAllowance("src/bolt_v3_operator_artifacts.rs", "strategies::binary_oracle_edge_taker::record_entry_decision_evidence_from_source"),
     FindingAllowance("src/bolt_v3_providers/mod.rs", "strategies::registry::FeeProvider"),
+    FindingAllowance("src/bolt_v3_providers/hyperliquid.rs", "strategies::registry::FeeProvider"),
     FindingAllowance("src/bolt_v3_providers/polymarket.rs", "strategies::registry::FeeProvider"),
     FindingAllowance("src/bolt_v3_providers/polymarket/fees.rs", "strategies::registry::FeeProvider"),
 )

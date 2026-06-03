@@ -1,10 +1,12 @@
 mod support;
 
+use std::fs;
+
 use bolt_v2::{
     bolt_v3_config::{KillSwitchConfigBlock, load_bolt_v3_config},
     bolt_v3_kill_switch::{KillSwitchHaltTrigger, KillSwitchState, KillSwitchStateKind},
-    bolt_v3_kill_switch_store::KillSwitchStore,
-    bolt_v3_live_node::build_bolt_v3_live_node_with,
+    bolt_v3_kill_switch_store::{KillSwitchRecoveryReason, KillSwitchStore},
+    bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with},
 };
 use nautilus_model::enums::TradingState;
 
@@ -61,17 +63,93 @@ fn enabled_kill_switch_missing_durable_state_fails_closed_before_live_node_build
 }
 
 #[test]
+fn disabled_kill_switch_does_not_require_durable_state() {
+    let (mut loaded, _temp) = loaded_with_enabled_kill_switch("state/missing-kill-switch.json");
+    loaded
+        .root
+        .risk
+        .kill_switch
+        .as_mut()
+        .expect("test installs kill-switch config")
+        .enabled = false;
+
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+        .expect("disabled kill-switch must not read durable state");
+
+    assert_eq!(runtime.kill_switch_state_kind(), KillSwitchStateKind::Armed);
+}
+
+#[test]
+fn enabled_kill_switch_corrupt_durable_state_fails_closed_before_live_node_build() {
+    let (loaded, _temp) = loaded_with_enabled_kill_switch("state/kill-switch.json");
+    let store = runtime_store(&loaded);
+    fs::create_dir_all(
+        store
+            .path()
+            .parent()
+            .expect("state file should have parent"),
+    )
+    .expect("state parent should create");
+    fs::write(store.path(), "not-json").expect("corrupt state should write");
+
+    let error = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+        .expect_err("corrupt durable state must fail closed before live-node build");
+
+    assert_recovery_error(error, KillSwitchRecoveryReason::CorruptEvidence);
+}
+
+#[test]
+fn enabled_kill_switch_unknown_or_unsupported_durable_state_fails_closed_before_live_node_build() {
+    let cases = [
+        (
+            r#"{"schema_version":1,"state":{"Mystery":{"halt_id":"halt-runtime-1"}}}"#,
+            KillSwitchRecoveryReason::CorruptEvidence,
+        ),
+        (
+            r#"{"schema_version":2,"state":{"Flat":{"halt_id":"halt-runtime-1"}}}"#,
+            KillSwitchRecoveryReason::UnsupportedSchemaVersion,
+        ),
+    ];
+
+    for (contents, expected_reason) in cases {
+        let (loaded, _temp) = loaded_with_enabled_kill_switch("state/kill-switch.json");
+        let store = runtime_store(&loaded);
+        fs::create_dir_all(
+            store
+                .path()
+                .parent()
+                .expect("state file should have parent"),
+        )
+        .expect("state parent should create");
+        fs::write(store.path(), contents).expect("state fixture should write");
+
+        let error =
+            build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+                .expect_err("invalid durable state must fail closed before live-node build");
+
+        assert_recovery_error(error, expected_reason);
+    }
+}
+
+#[test]
+fn recovered_armed_kill_switch_state_keeps_normal_nt_trading_state() {
+    let (loaded, _temp) = loaded_with_enabled_kill_switch("state/kill-switch.json");
+    runtime_store(&loaded)
+        .write_state(&KillSwitchState::Armed)
+        .expect("armed state should persist");
+
+    let runtime = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
+        .expect("armed recovery should allow normal runtime build");
+
+    assert_eq!(runtime.kill_switch_state_kind(), KillSwitchStateKind::Armed);
+    assert_eq!(runtime.nt_trading_state(), TradingState::Active);
+}
+
+#[test]
 fn recovered_kill_switch_state_seeds_submit_admission_latch_before_strategy_registration() {
     for (state, expected_kind) in recovered_runtime_latch_states() {
         let (loaded, _temp) = loaded_with_enabled_kill_switch("state/kill-switch.json");
-        let kill_switch = loaded
-            .root
-            .risk
-            .kill_switch
-            .as_ref()
-            .expect("test enables kill-switch config");
-        let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
-        store
+        runtime_store(&loaded)
             .write_state(&state)
             .expect("recovered state should persist");
 
@@ -91,14 +169,7 @@ fn recovered_kill_switch_state_seeds_submit_admission_latch_before_strategy_regi
 fn recovered_kill_switch_state_syncs_nt_trading_state_without_reactivating() {
     for (state, expected_trading_state) in recovered_runtime_nt_trading_states() {
         let (loaded, _temp) = loaded_with_enabled_kill_switch("state/kill-switch.json");
-        let kill_switch = loaded
-            .root
-            .risk
-            .kill_switch
-            .as_ref()
-            .expect("test enables kill-switch config");
-        let store = KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch);
-        store
+        runtime_store(&loaded)
             .write_state(&state)
             .expect("recovered state should persist");
 
@@ -186,4 +257,24 @@ fn halted_runtime_state() -> KillSwitchState {
             "daily loss cap breached",
         ),
     }
+}
+
+fn runtime_store(loaded: &bolt_v2::bolt_v3_config::LoadedBoltV3Config) -> KillSwitchStore {
+    let kill_switch = loaded
+        .root
+        .risk
+        .kill_switch
+        .as_ref()
+        .expect("test enables kill-switch config");
+    KillSwitchStore::from_root_config_path(&loaded.root_path, kill_switch)
+}
+
+fn assert_recovery_error(error: BoltV3LiveNodeError, expected: KillSwitchRecoveryReason) {
+    assert!(
+        matches!(
+            error,
+            BoltV3LiveNodeError::KillSwitchRecovery { reason } if reason == expected
+        ),
+        "expected kill-switch recovery reason {expected:?}, got {error}"
+    );
 }

@@ -378,3 +378,55 @@ fn reconciliation_requires_fresh_proof_and_no_remaining_risk_before_flat() {
         }
     );
 }
+
+#[test]
+fn phase3_cancel_and_flatten_states_do_not_shortcut_to_flat_or_armed() {
+    let clean_context = KillSwitchTransitionContext {
+        operator_authorized: true,
+        manual_reset_evidence_valid: true,
+        mandatory_proof_streams_fresh: true,
+        no_outstanding_order_risk: true,
+        no_open_positions: true,
+        no_pending_entry_risk: true,
+        ..blocked_context()
+    };
+
+    for (state, kind) in [
+        (
+            KillSwitchState::Cancelling {
+                halt_id: "halt-1".to_string(),
+            },
+            KillSwitchStateKind::Cancelling,
+        ),
+        (
+            KillSwitchState::Flattening {
+                halt_id: "halt-1".to_string(),
+            },
+            KillSwitchStateKind::Flattening,
+        ),
+    ] {
+        assert_eq!(
+            transition_kill_switch_state(
+                state.clone(),
+                KillSwitchEvent::ReconciliationProofReceived,
+                clean_context,
+            ),
+            Err(KillSwitchTransitionError::IllegalTransition {
+                state: kind,
+                event: KillSwitchEventKind::ReconciliationProofReceived,
+            })
+        );
+
+        assert_eq!(
+            transition_kill_switch_state(
+                state,
+                KillSwitchEvent::ManualResetRequested(valid_manual_reset_evidence()),
+                clean_context,
+            ),
+            Err(KillSwitchTransitionError::IllegalTransition {
+                state: kind,
+                event: KillSwitchEventKind::ManualResetRequested,
+            })
+        );
+    }
+}

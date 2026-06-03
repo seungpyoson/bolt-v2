@@ -1488,17 +1488,19 @@ fn ordinary_risk_reducing_exit_while_latched_still_obeys_normal_count_cap() {
         ))
         .expect("valid gate report should arm admission");
     admission
-        .admit(&submit_request_with_kind(
-            Decimal::new(1, 1),
-            BoltV3SubmitIntentKind::Entry,
+        .admit(&submit_request_with_kind_and_exit_proof(
+            Decimal::new(264, 2),
+            BoltV3SubmitIntentKind::RiskReducingExit,
+            Some(valid_risk_reducing_exit_proof()),
         ))
-        .expect("entry submit should consume the only normal count slot");
+        .expect("verified ordinary exit should consume the only normal exit slot");
     admission.replace_kill_switch_state(halted_kill_switch_state());
 
     let exit = admission
-        .admit(&submit_request_with_kind(
-            Decimal::new(1, 1),
+        .admit(&submit_request_with_kind_and_exit_proof(
+            Decimal::new(264, 2),
             BoltV3SubmitIntentKind::RiskReducingExit,
+            Some(valid_risk_reducing_exit_proof()),
         ))
         .expect_err("ordinary exit must not bypass normal count cap");
 

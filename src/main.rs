@@ -622,6 +622,10 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         max_reference_quote_source_bytes: u64,
         #[arg(long)]
+        signal_quote_source: PathBuf,
+        #[arg(long)]
+        max_signal_quote_source_bytes: u64,
+        #[arg(long)]
         realized_volatility_source: PathBuf,
         #[arg(long)]
         max_realized_volatility_source_bytes: u64,
@@ -645,6 +649,10 @@ enum OperatorArtifactsCommand {
         reference_quote_source: PathBuf,
         #[arg(long)]
         max_reference_quote_source_bytes: u64,
+        #[arg(long)]
+        signal_quote_source: PathBuf,
+        #[arg(long)]
+        max_signal_quote_source_bytes: u64,
         #[arg(long)]
         realized_volatility_source: PathBuf,
         #[arg(long)]
@@ -1734,6 +1742,8 @@ fn run_operator_artifacts_command(
             max_price_to_beat_source_bytes,
             reference_quote_source,
             max_reference_quote_source_bytes,
+            signal_quote_source,
+            max_signal_quote_source_bytes,
             realized_volatility_source,
             max_realized_volatility_source_bytes,
             decision_source_output,
@@ -1753,6 +1763,8 @@ fn run_operator_artifacts_command(
                         max_price_to_beat_source_bytes,
                         reference_quote_source_path: &reference_quote_source,
                         max_reference_quote_source_bytes,
+                        signal_quote_source_path: &signal_quote_source,
+                        max_signal_quote_source_bytes,
                         realized_volatility_source_path: &realized_volatility_source,
                         max_realized_volatility_source_bytes,
                         decision_source_output_path: &decision_source_output,
@@ -1778,6 +1790,8 @@ fn run_operator_artifacts_command(
             max_price_to_beat_source_bytes,
             reference_quote_source,
             max_reference_quote_source_bytes,
+            signal_quote_source,
+            max_signal_quote_source_bytes,
             realized_volatility_source,
             max_realized_volatility_source_bytes,
             gate_session_output,
@@ -1797,6 +1811,8 @@ fn run_operator_artifacts_command(
                         max_price_to_beat_source_bytes,
                         reference_quote_source_path: &reference_quote_source,
                         max_reference_quote_source_bytes,
+                        signal_quote_source_path: &signal_quote_source,
+                        max_signal_quote_source_bytes,
                         realized_volatility_source_path: &realized_volatility_source,
                         max_realized_volatility_source_bytes,
                         gate_session_output_path: &gate_session_output,

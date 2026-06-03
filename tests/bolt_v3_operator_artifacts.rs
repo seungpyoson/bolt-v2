@@ -68,6 +68,9 @@ use bolt_v2::{
         Phase8OperatorApprovalEnvelope, Phase8PreRunStateSourceProofs,
         Phase8StrategyInputSafetyAudit,
     },
+    strategies::binary_oracle_edge_taker::{
+        ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND, ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION,
+    },
 };
 use nautilus_core::Params;
 use nautilus_model::{
@@ -78,6 +81,15 @@ use nautilus_model::{
 };
 
 mod support;
+
+#[test]
+fn entry_decision_source_schema_version_tracks_signal_quote_split() {
+    assert_eq!(ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION, 3);
+    assert_eq!(
+        ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND,
+        "bolt_v3.binary_oracle_entry_decision_source.v3"
+    );
+}
 use support::{repo_path, valid_entry_readiness_gate_session_json};
 
 // Test-only updown fixture values mirror tests/fixtures/bolt_v3/strategies/binary_oracle.toml.
@@ -98,6 +110,7 @@ const TEST_DOWN_OUTCOME: &str = "Down";
 const TEST_BINARY_OPTION_SIZE_INCREMENT: &str = "0.01";
 const TEST_EXECUTION_CLIENT_ID: &str = "polymarket_main";
 const TEST_REFERENCE_DATA_CLIENT_ID: &str = "reference_data_client";
+const TEST_SIGNAL_DATA_CLIENT_ID: &str = "signal_data_client";
 const TEST_REFERENCE_INSTRUMENT_ID: &str = "REFERENCE.SOURCE";
 const TEST_DATA_CLIENT_PROBE_TARGET_ID: &str = "configured_quote_probe";
 const TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID: &str = "REFERENCE.POLYMARKET";
@@ -9215,14 +9228,19 @@ fn entry_decision_evidence_source_fixture(
     std::fs::write(
         &decision_source_path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 2,
-            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "schema_version": 3,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v3",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
             "readiness_session": readiness_session,
             "warmup_count": 20,
             "reference_quote": {
                 "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "signal_quote": {
+                "venue": TEST_SIGNAL_DATA_CLIENT_ID,
                 "price": 3300.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
@@ -9320,14 +9338,19 @@ fn entry_decision_evidence_replay_derives_price_from_readiness_session() {
     std::fs::write(
         &fixture.decision_source_path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 2,
-            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "schema_version": 3,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v3",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
             "readiness_session": readiness_session,
             "warmup_count": 20,
             "reference_quote": {
                 "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "signal_quote": {
+                "venue": TEST_SIGNAL_DATA_CLIENT_ID,
                 "price": 3300.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
@@ -9471,14 +9494,19 @@ fn entry_decision_evidence_replay_uses_source_selected_rotated_market() {
     std::fs::write(
         &decision_source_path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 2,
-            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "schema_version": 3,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v3",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
             "readiness_session": readiness_session,
             "warmup_count": 20,
             "reference_quote": {
                 "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "signal_quote": {
+                "venue": TEST_SIGNAL_DATA_CLIENT_ID,
                 "price": 3300.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
@@ -9543,14 +9571,19 @@ fn entry_decision_evidence_source_collector_reports_no_entry_decision() {
     std::fs::write(
         &fixture.decision_source_path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 2,
-            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "schema_version": 3,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v3",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
             "readiness_session": readiness_session,
             "warmup_count": 20,
             "reference_quote": {
                 "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3100.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "signal_quote": {
+                "venue": TEST_SIGNAL_DATA_CLIENT_ID,
                 "price": 3100.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
@@ -9735,6 +9768,19 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
         .expect("reference quote source should serialize"),
     )
     .expect("reference quote source should write");
+    let signal_quote_source_path = temp.path().join("signal-quote.json");
+    std::fs::write(
+        &signal_quote_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.signal_quote_source.v1",
+            "venue": TEST_SIGNAL_DATA_CLIENT_ID,
+            "price": 3301.0,
+            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 30_000
+        }))
+        .expect("signal quote source should serialize"),
+    )
+    .expect("signal quote source should write");
     let realized_volatility_source_path = temp.path().join("realized-volatility.json");
     std::fs::write(
         &realized_volatility_source_path,
@@ -9760,6 +9806,8 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs: EntryDecisionSourceMarketInputs {
@@ -9827,6 +9875,18 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
         decision_source_json["readiness_session"]["satisfied_roles"]["decision_reference"]["evidence"]
             ["normalized_value"]["reference_value"],
         serde_json::json!(3300.0)
+    );
+    assert_eq!(
+        decision_source_json["reference_quote"]["price"],
+        serde_json::json!(3300.0)
+    );
+    assert_eq!(
+        decision_source_json["signal_quote"]["venue"],
+        serde_json::json!(TEST_SIGNAL_DATA_CLIENT_ID)
+    );
+    assert_eq!(
+        decision_source_json["signal_quote"]["price"],
+        serde_json::json!(3301.0)
     );
     assert!(decision_source_json.get("price_to_beat_value").is_none());
     let gate_session_output = temp.path().join("entry-readiness-gate-session.json");
@@ -9945,6 +10005,8 @@ transport_backend = "sockudo"
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &paths.reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &paths.realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 gate_session_output_path: &gate_session_output,
@@ -10012,6 +10074,7 @@ transport_backend = "sockudo"
 struct EntryDecisionSourceInputProofPaths {
     price_source_path: std::path::PathBuf,
     reference_quote_source_path: std::path::PathBuf,
+    signal_quote_source_path: std::path::PathBuf,
     realized_volatility_source_path: std::path::PathBuf,
     decision_source_output: std::path::PathBuf,
     instrument_source_output: std::path::PathBuf,
@@ -10135,6 +10198,19 @@ fn write_entry_decision_source_input_proofs_with_report_provenance(
             .expect("reference quote source should serialize"),
     )
     .expect("reference quote source should write");
+    let signal_quote_source_path = temp.path().join("signal-quote.json");
+    std::fs::write(
+        &signal_quote_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.signal_quote_source.v1",
+            "venue": TEST_SIGNAL_DATA_CLIENT_ID,
+            "price": 3301.0,
+            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+        }))
+        .expect("signal quote source should serialize"),
+    )
+    .expect("signal quote source should write");
     let realized_volatility_source_path = temp.path().join("realized-volatility.json");
     std::fs::write(
         &realized_volatility_source_path,
@@ -10150,6 +10226,7 @@ fn write_entry_decision_source_input_proofs_with_report_provenance(
     EntryDecisionSourceInputProofPaths {
         price_source_path,
         reference_quote_source_path,
+        signal_quote_source_path,
         realized_volatility_source_path,
         decision_source_output: temp.path().join("entry-decision-source.json"),
         instrument_source_output: temp.path().join("instrument-source.json"),
@@ -10725,6 +10802,19 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
     let decision_source_output = temp.path().join("entry-decision-source.json");
     let instrument_source_output = temp.path().join("instrument-source.json");
     let fee_rate_source_output = temp.path().join("entry-decision-fees.json");
+    let signal_quote_source_path = temp.path().join("signal-quote.json");
+    std::fs::write(
+        &signal_quote_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.signal_quote_source.v1",
+            "venue": TEST_SIGNAL_DATA_CLIENT_ID,
+            "price": 3301.0,
+            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+        }))
+        .expect("signal quote source should serialize"),
+    )
+    .expect("signal quote source should write");
     let source_inputs =
         bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
             &loaded,
@@ -10734,6 +10824,8 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &written.reference_quote_source.path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &written.realized_volatility_source.path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs: entry_decision_source_market_inputs(&instruments),
@@ -11316,6 +11408,8 @@ fn entry_decision_source_input_collector_refuses_price_to_beat_without_report_pr
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &paths.reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &paths.realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs: entry_decision_source_market_inputs(&instruments),
@@ -11360,6 +11454,8 @@ fn entry_decision_source_input_collector_refuses_missing_source_bound_price_to_b
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &paths.reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &paths.realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs: entry_decision_source_market_inputs(&instruments),
@@ -11403,6 +11499,8 @@ fn entry_decision_source_input_collector_rejects_unselectable_or_incomplete_inst
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &paths.reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &paths.realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs: entry_decision_source_market_inputs(&instruments),
@@ -11596,6 +11694,8 @@ fn entry_decision_source_input_collector_preserves_provider_selected_rotated_mar
             max_price_to_beat_source_bytes: 100_000,
             reference_quote_source_path: &paths.reference_quote_source_path,
             max_reference_quote_source_bytes: 100_000,
+            signal_quote_source_path: &paths.signal_quote_source_path,
+            max_signal_quote_source_bytes: 100_000,
             realized_volatility_source_path: &paths.realized_volatility_source_path,
             max_realized_volatility_source_bytes: 100_000,
             market_inputs,
@@ -11642,6 +11742,8 @@ fn entry_decision_source_input_collector_rejects_empty_or_one_sided_book() {
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &paths.reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &paths.realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs,
@@ -11687,6 +11789,8 @@ fn entry_decision_source_input_collector_rejects_crossed_book_before_write() {
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &paths.reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &paths.realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs,
@@ -11744,6 +11848,8 @@ fn entry_decision_source_input_collector_uses_selected_market_price_precision() 
             max_price_to_beat_source_bytes: 100_000,
             reference_quote_source_path: &paths.reference_quote_source_path,
             max_reference_quote_source_bytes: 100_000,
+            signal_quote_source_path: &paths.signal_quote_source_path,
+            max_signal_quote_source_bytes: 100_000,
             realized_volatility_source_path: &paths.realized_volatility_source_path,
             max_realized_volatility_source_bytes: 100_000,
             market_inputs: entry_decision_source_market_inputs(&instruments),
@@ -11816,6 +11922,8 @@ fn entry_decision_source_input_collector_rejects_selected_price_precision_mismat
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &paths.reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &paths.realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs: entry_decision_source_market_inputs(&instruments),
@@ -11889,6 +11997,8 @@ fn entry_decision_source_input_provider_validates_local_proofs_before_network() 
                     max_price_to_beat_source_bytes: 100_000,
                     reference_quote_source_path: &paths.reference_quote_source_path,
                     max_reference_quote_source_bytes: 100_000,
+                    signal_quote_source_path: &paths.signal_quote_source_path,
+                    max_signal_quote_source_bytes: 100_000,
                     realized_volatility_source_path: &paths.realized_volatility_source_path,
                     max_realized_volatility_source_bytes: 100_000,
                     decision_source_output_path: &paths.decision_source_output,

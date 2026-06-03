@@ -2239,6 +2239,9 @@ fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> 
         for reference in strategy.config.reference_data.values() {
             client_keys.insert(reference.data_client_id.to_string());
         }
+        for signal in strategy.config.signal_data.values() {
+            client_keys.insert(signal.data_client_id.to_string());
+        }
     }
     if let Some(proof_policy) = loaded
         .root
@@ -5359,6 +5362,18 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             .root
             .clients
             .insert("reference_data".to_string(), reference_client);
+        let mut signal_client = loaded
+            .root
+            .clients
+            .get("polymarket_main")
+            .expect("fixture client should exist")
+            .clone();
+        signal_client.execution = None;
+        signal_client.secrets = None;
+        loaded
+            .root
+            .clients
+            .insert("signal_data".to_string(), signal_client);
         loaded
             .root
             .clients
@@ -5374,13 +5389,21 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
                 instrument_id: InstrumentId::from("REFERENCE.SOURCE"),
             },
         );
+        strategy.config.signal_data.insert(
+            "primary".to_string(),
+            ReferenceDataBlock {
+                data_client_id: ClientId::from("signal_data"),
+                instrument_id: InstrumentId::from("SIGNAL.SOURCE"),
+            },
+        );
 
         let scoped = trade_transport_loaded_config(&loaded)
             .expect("strategy-bound transport scope should be derived from config");
 
-        assert_eq!(scoped.root.clients.len(), 2);
+        assert_eq!(scoped.root.clients.len(), 3);
         assert!(scoped.root.clients.contains_key("polymarket_main"));
         assert!(scoped.root.clients.contains_key("reference_data"));
+        assert!(scoped.root.clients.contains_key("signal_data"));
         assert!(
             !scoped.root.clients.contains_key("unrelated_data"),
             "unrelated configured data clients must not block the selected trade path"

@@ -452,6 +452,22 @@ classification = '''strategy_runtime_schema_field'''
 reason = '''This is the existing taker StrategyConfig field name populated from the configured reference_data data_client_id role.'''
 
 [[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_instrument_id"'''
+context = '''"signal_instrument_id",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the taker StrategyConfig field name populated from the configured bolt-v3 TOML signal_data role instrument_id."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_venue"'''
+context = '''"signal_venue",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the taker StrategyConfig field name populated from the configured signal_data data_client_id role."
+
+[[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"reference_venue"'''
@@ -532,6 +548,62 @@ classification = "strategy_runtime_validation_code"
 reason = "This validation code labels a missing paired reference data field; it is not a runtime value."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_venue"'''
+context = '''Self::validate_optional_string_field(table, field_prefix, "signal_venue", errors);'''
+classification = "strategy_runtime_schema_field"
+reason = "This validates the taker StrategyConfig field name for the configured signal data client id."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_venue"'''
+context = '''table.contains_key("signal_venue"),'''
+classification = "strategy_runtime_schema_field"
+reason = "This enforces paired configured signal data fields in the taker config schema."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_venue"'''
+context = '''| "signal_venue"'''
+classification = "strategy_runtime_schema_field"
+reason = "This whitelists the taker StrategyConfig signal data client field name while rejecting unknown runtime config fields."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_instrument_id"'''
+context = '''Self::validate_optional_string_field(table, field_prefix, "signal_instrument_id", errors);'''
+classification = "strategy_runtime_schema_field"
+reason = "This validates the taker StrategyConfig field name for the configured signal instrument id."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_instrument_id"'''
+context = '''table.contains_key("signal_instrument_id"),'''
+classification = "strategy_runtime_schema_field"
+reason = "This enforces paired configured signal data fields in the taker config schema."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_instrument_id"'''
+context = '''| "signal_instrument_id"'''
+classification = "strategy_runtime_schema_field"
+reason = "This whitelists the taker StrategyConfig signal instrument field name while rejecting unknown runtime config fields."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"missing_signal_data_pair"'''
+context = '''"missing_signal_data_pair",'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a missing paired signal data field; it is not a runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"retry_interval_seconds"'''
@@ -582,10 +654,26 @@ reason = "This diagnostic rejects ambiguous legacy reference_data role wiring be
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"allows at most one [signal_data.<role>] block; got roles [{}]"'''
+context = '''"allows at most one [signal_data.<role>] block; got roles [{}]",'''
+classification = "strategy_archetype_diagnostic_template"
+reason = "This diagnostic rejects ambiguous signal_data role wiring before deriving runtime config; it is not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"'''
 context = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"'''
 classification = "strategy_archetype_diagnostic_template"
 reason = "This validation diagnostic rejects ambiguous legacy reference_data role wiring; it is not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [signal_data.<role>] block"'''
+context = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [signal_data.<role>] block"'''
+classification = "strategy_archetype_diagnostic_template"
+reason = "This validation diagnostic rejects ambiguous signal_data role wiring; it is not a runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -878,24 +966,24 @@ reason = "This is the JSONL line separator for one evidence record per line, not
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "number"
-literal = '''2'''
-context = '''pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 2;'''
+literal = '''3'''
+context = '''pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 3;'''
 classification = "operator_source_schema_version"
 reason = "This pins the local source-owned entry decision evidence source schema consumed by the non-live operator artifact command; trading values remain source/config-owned."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"bolt_v3.binary_oracle_entry_decision_source.v2"'''
-context = '''"bolt_v3.binary_oracle_entry_decision_source.v2";'''
+literal = '''"bolt_v3.binary_oracle_entry_decision_source.v3"'''
+context = '''"bolt_v3.binary_oracle_entry_decision_source.v3";'''
 classification = "operator_source_record_kind"
 reason = "This is the structural record_kind for source-owned entry decision evidence inputs, not a venue, market, quantity, timeout, or trading value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_price_to_beat.rs"
 kind = "string"
 literal = '''"price_to_beat_value"'''
-context = '''const ENTRY_DECISION_PRICE_TO_BEAT_VALUE_FIELD: &str = "price_to_beat_value";'''
+context = '''pub const PRICE_TO_BEAT_VALUE_FIELD: &str = "price_to_beat_value";'''
 classification = "operator_source_field_name"
 reason = "This is the structural field name for the readiness-session normalized price payload consumed by source replay, not a hardcoded trading value."
 
@@ -8886,6 +8974,22 @@ literal = '''"bolt_v3.reference_quote_source.v1"'''
 context = '''const REFERENCE_QUOTE_SOURCE_RECORD_KIND: &str = "bolt_v3.reference_quote_source.v1";'''
 classification = "entry_decision_source_input_record_kind"
 reason = "This is the record-kind discriminator for the reference-quote proof, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "1"
+context = '''const SIGNAL_QUOTE_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "entry_decision_source_input_schema_version"
+reason = "This is the signal-quote proof schema version; quote values remain source-file owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.signal_quote_source.v1"'''
+context = '''const SIGNAL_QUOTE_SOURCE_RECORD_KIND: &str = "bolt_v3.signal_quote_source.v1";'''
+classification = "entry_decision_source_input_record_kind"
+reason = "This is the record-kind discriminator for the signal-quote proof, not a runtime operator value."
 
 [[allowed]]
 path = "src/bolt_v3_operator_artifacts.rs"

@@ -39,7 +39,6 @@ use serde::{Deserialize, Serialize};
 use toml::Value;
 
 use crate::{
-    bolt_v3_config::{PRICE_GATE_VALUE_KIND, RESOLUTION_GATE_ROLE},
     bolt_v3_decision_evidence::{
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT, BoltV3OrderIntentEvidence,
@@ -55,12 +54,13 @@ use crate::{
         BPS_DENOMINATOR, MIDPOINT_DIVISOR_F64, MILLIS_PER_SECOND_U64, UNIT_F64, ZERO_F64,
         clamp_probability, is_non_negative_finite, is_positive_finite, sanitize_probability,
     },
-    bolt_v3_operator_artifacts::{EntryReadinessGateSession, GateSatisfaction},
+    bolt_v3_operator_artifacts::EntryReadinessGateSession,
     bolt_v3_order_intent::{NtOrderBuildInputs, NtOrderTemplate, build_nt_order},
     bolt_v3_position_contract::{
         expected_exit_order_side_for_position, expected_position_side_for_entry_order,
         is_observed_open_side,
     },
+    bolt_v3_price_to_beat::price_to_beat_from_readiness_session,
     bolt_v3_providers::normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind,
@@ -314,6 +314,8 @@ macro_rules! define_config_struct {
             $( $field: $ty, )+
             reference_venue: Option<String>,
             reference_instrument_id: Option<String>,
+            signal_venue: Option<String>,
+            signal_instrument_id: Option<String>,
             entry_order: BinaryOracleEdgeTakerOrderConfig,
             exit_order: BinaryOracleEdgeTakerOrderConfig,
             forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
@@ -1371,7 +1373,15 @@ impl PricingState {
         }
     }
 
-    fn observe_reference_quote(
+    fn observe_reference_quote(&mut self, quote: &FastSpotObservation) {
+        if !is_positive_finite(quote.price) {
+            return;
+        }
+
+        self.last_reference_fair_value = Some(quote.price);
+    }
+
+    fn observe_signal_quote(
         &mut self,
         quote: &FastSpotObservation,
         min_agreement_corr: f64,
@@ -1383,16 +1393,28 @@ impl PricingState {
             return;
         }
 
-        self.detect_reference_spike(quote, spike_return_threshold, spike_cooldown_secs);
+        self.detect_signal_spike(quote, spike_return_threshold, spike_cooldown_secs);
 
-        self.last_reference_fair_value = Some(quote.price);
         self.lead_quality_policy_applied = true;
 
-        let jitter_ms = self.record_reference_quote_timing(&quote.venue_name, quote.observed_ts_ms);
-        let agreement_corr = price_agreement_corr(quote.price, quote.price)
-            .expect("validated reference quote price should self-agree");
-        let lead_gap_probability = price_gap_probability(quote.price, quote.price)
-            .expect("validated reference quote price should yield a gap");
+        let jitter_ms = self.record_signal_quote_timing(&quote.venue_name, quote.observed_ts_ms);
+        let Some(reference_fair_value) = self
+            .last_reference_fair_value
+            .filter(|value| is_positive_finite(*value))
+        else {
+            self.fast_spot = None;
+            self.last_lead_gap_probability = None;
+            self.last_jitter_penalty_probability = None;
+            self.last_lead_agreement_corr = None;
+            self.last_fast_venue_age_ms = Some(INITIAL_COUNTER_U64);
+            self.last_fast_venue_jitter_ms = Some(jitter_ms);
+            self.fast_venue_incoherent = true;
+            return;
+        };
+        let agreement_corr = price_agreement_corr(quote.price, reference_fair_value)
+            .expect("validated signal/reference prices should yield agreement");
+        let lead_gap_probability = price_gap_probability(quote.price, reference_fair_value)
+            .expect("validated signal/reference prices should yield a gap");
         let eligible = agreement_corr >= min_agreement_corr
             && jitter_ms <= max_jitter_ms
             && sanitize_probability(lead_gap_probability).is_some();
@@ -1435,7 +1457,7 @@ impl PricingState {
         }
     }
 
-    /// Arm the spike cooldown when a new reference-spot observation jumps past
+    /// Arm the spike cooldown when a new signal-price observation jumps past
     /// the configured single-step return threshold.
     ///
     /// Reads the still-current `fast_spot` as the previous observation, before
@@ -1447,7 +1469,7 @@ impl PricingState {
     /// active cooldown. With no valid previous observation there is no spike.
     /// This is an additive read of
     /// previous vs new and does not alter `fast_spot` or realized-vol behavior.
-    fn detect_reference_spike(
+    fn detect_signal_spike(
         &mut self,
         quote: &FastSpotObservation,
         spike_return_threshold: f64,
@@ -1474,7 +1496,7 @@ impl PricingState {
         }
     }
 
-    fn record_reference_quote_timing(&mut self, venue_name: &str, observed_ts_ms: u64) -> u64 {
+    fn record_signal_quote_timing(&mut self, venue_name: &str, observed_ts_ms: u64) -> u64 {
         let timing = self
             .venue_timing
             .entry(venue_name.to_string())
@@ -2105,7 +2127,14 @@ impl BinaryOracleEdgeTaker {
 
     fn observe_reference_quote(&mut self, quote: &FastSpotObservation) {
         self.active.observe_reference_quote(quote);
-        self.pricing.observe_reference_quote(
+        self.pricing.observe_reference_quote(quote);
+        self.active.fast_venue_incoherent = self.pricing.fast_venue_incoherent;
+        self.refresh_fee_readiness();
+        self.sync_exposure_context_from_active();
+    }
+
+    fn observe_signal_quote(&mut self, quote: &FastSpotObservation) {
+        self.pricing.observe_signal_quote(
             quote,
             self.config.lead_agreement_min_corr,
             self.config.lead_jitter_max_ms,
@@ -2119,7 +2148,7 @@ impl BinaryOracleEdgeTaker {
             && let Err(error) = self.try_submit_exit_order(quote.observed_ts_ms)
         {
             log::error!(
-                "binary_oracle_edge_taker exit submit failed on reference update: strategy_id={} market_id={:?} ts_ms={} error={:#}",
+                "binary_oracle_edge_taker exit submit failed on signal update: strategy_id={} market_id={:?} ts_ms={} error={:#}",
                 self.config.strategy_id,
                 self.active.market_id,
                 quote.observed_ts_ms,
@@ -2164,6 +2193,25 @@ impl BinaryOracleEdgeTaker {
         }
         let observed_ts_ms = quote.ts_event.as_u64() / NANOS_PER_MILLI_U64;
         let venue_name = self.config.reference_venue.as_ref()?;
+        Some(FastSpotObservation {
+            venue_name: venue_name.clone(),
+            price: midpoint,
+            observed_ts_ms,
+        })
+    }
+
+    fn signal_quote_from_tick(&self, quote: &QuoteTick) -> Option<FastSpotObservation> {
+        let bid = quote.bid_price.as_f64();
+        let ask = quote.ask_price.as_f64();
+        if !is_positive_finite(bid) || !is_positive_finite(ask) {
+            return None;
+        }
+        let midpoint = (bid + ask) / MIDPOINT_DIVISOR_F64;
+        if !is_positive_finite(midpoint) {
+            return None;
+        }
+        let observed_ts_ms = quote.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+        let venue_name = self.config.signal_venue.as_ref()?;
         Some(FastSpotObservation {
             venue_name: venue_name.clone(),
             price: midpoint,
@@ -2289,6 +2337,13 @@ impl BinaryOracleEdgeTaker {
             .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
     }
 
+    fn signal_instrument_id(&self) -> Option<InstrumentId> {
+        self.config
+            .signal_instrument_id
+            .as_deref()
+            .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
+    }
+
     fn subscribe_reference_quotes(&mut self) {
         if let Some(instrument_id) = self.reference_instrument_id() {
             #[cfg(not(test))]
@@ -2298,8 +2353,26 @@ impl BinaryOracleEdgeTaker {
         }
     }
 
+    fn subscribe_signal_quotes(&mut self) {
+        if let Some(instrument_id) = self.signal_instrument_id() {
+            #[cfg(not(test))]
+            self.subscribe_quotes(instrument_id, None, None);
+            #[cfg(test)]
+            let _ = instrument_id;
+        }
+    }
+
     fn unsubscribe_reference_quotes(&mut self) {
         if let Some(instrument_id) = self.reference_instrument_id() {
+            #[cfg(not(test))]
+            self.unsubscribe_quotes(instrument_id, None, None);
+            #[cfg(test)]
+            let _ = instrument_id;
+        }
+    }
+
+    fn unsubscribe_signal_quotes(&mut self) {
+        if let Some(instrument_id) = self.signal_instrument_id() {
             #[cfg(not(test))]
             self.unsubscribe_quotes(instrument_id, None, None);
             #[cfg(test)]
@@ -5280,10 +5353,12 @@ impl DataActor for BinaryOracleEdgeTaker {
         self.refresh_selection_from_cache(now_ms);
         self.register_selection_retry_timer();
         self.subscribe_reference_quotes();
+        self.subscribe_signal_quotes();
         Ok(())
     }
 
     fn on_stop(&mut self) -> Result<()> {
+        self.unsubscribe_signal_quotes();
         self.unsubscribe_reference_quotes();
         self.deregister_selection_retry_timer();
         Ok(())
@@ -5299,12 +5374,17 @@ impl DataActor for BinaryOracleEdgeTaker {
     fn on_quote(&mut self, quote: &QuoteTick) -> anyhow::Result<()> {
         if self
             .reference_instrument_id()
-            .is_none_or(|instrument_id| quote.instrument_id != instrument_id)
+            .is_some_and(|instrument_id| quote.instrument_id == instrument_id)
+            && let Some(reference_quote) = self.reference_quote_from_tick(quote)
         {
-            return Ok(());
-        }
-        if let Some(reference_quote) = self.reference_quote_from_tick(quote) {
             self.observe_reference_quote(&reference_quote);
+        }
+        if self
+            .signal_instrument_id()
+            .is_some_and(|instrument_id| quote.instrument_id == instrument_id)
+            && let Some(signal_quote) = self.signal_quote_from_tick(quote)
+        {
+            self.observe_signal_quote(&signal_quote);
         }
         Ok(())
     }
@@ -5716,6 +5796,8 @@ impl BinaryOracleEdgeTakerBuilder {
                     | FORCED_EXIT_ORDER_FIELD
                     | "reference_venue"
                     | "reference_instrument_id"
+                    | "signal_venue"
+                    | "signal_instrument_id"
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -5734,6 +5816,8 @@ impl BinaryOracleEdgeTakerBuilder {
             "reference_instrument_id",
             errors,
         );
+        Self::validate_optional_string_field(table, field_prefix, "signal_venue", errors);
+        Self::validate_optional_string_field(table, field_prefix, "signal_instrument_id", errors);
         if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {
             let missing = if table.contains_key("reference_venue") {
                 "reference_instrument_id"
@@ -5746,6 +5830,24 @@ impl BinaryOracleEdgeTakerBuilder {
                 "missing_reference_data_pair",
                 BinaryOracleEdgeTakerFieldType::String,
             );
+        }
+        match (
+            table.contains_key("signal_venue"),
+            table.contains_key("signal_instrument_id"),
+        ) {
+            (true, true) => {}
+            (true, false) => Self::push_missing(
+                errors,
+                format!("{field_prefix}.signal_instrument_id"),
+                "missing_signal_data_pair",
+                BinaryOracleEdgeTakerFieldType::String,
+            ),
+            (false, true) | (false, false) => Self::push_missing(
+                errors,
+                format!("{field_prefix}.signal_venue"),
+                "missing_signal_data_pair",
+                BinaryOracleEdgeTakerFieldType::String,
+            ),
         }
         Self::validate_order_table(
             table,
@@ -5994,11 +6096,9 @@ impl StrategyBuilder for BinaryOracleEdgeTakerBuilder {
     }
 }
 
-pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 2;
+pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 3;
 pub const ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND: &str =
-    "bolt_v3.binary_oracle_entry_decision_source.v2";
-const ENTRY_DECISION_PRICE_TO_BEAT_VALUE_FIELD: &str = "price_to_beat_value";
-
+    "bolt_v3.binary_oracle_entry_decision_source.v3";
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryOracleEntryDecisionEvidenceSource {
@@ -6009,6 +6109,7 @@ pub struct BinaryOracleEntryDecisionEvidenceSource {
     pub readiness_session: EntryReadinessGateSession,
     pub warmup_count: u64,
     pub reference_quote: BinaryOracleEntryReferenceQuoteSource,
+    pub signal_quote: BinaryOracleEntrySignalQuoteSource,
     pub realized_volatility: BinaryOracleEntryRealizedVolatilitySource,
     pub fees: BinaryOracleEntryFeeSource,
     pub books: BinaryOracleEntryBooksSource,
@@ -6017,6 +6118,14 @@ pub struct BinaryOracleEntryDecisionEvidenceSource {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BinaryOracleEntryReferenceQuoteSource {
+    pub venue: String,
+    pub price: f64,
+    pub observed_ts_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinaryOracleEntrySignalQuoteSource {
     pub venue: String,
     pub price: f64,
     pub observed_ts_ms: u64,
@@ -6191,8 +6300,7 @@ pub fn record_entry_decision_evidence_from_source(
     let readiness_evidence = BoltV3ReadinessGateEvidenceSnapshot::from_entry_readiness_gate_session(
         &source.readiness_session,
     );
-    let price_to_beat =
-        entry_decision_price_to_beat_from_readiness_session(&source.readiness_session)?;
+    let price_to_beat = price_to_beat_from_readiness_session(&source.readiness_session)?;
     // Execution venue for this replay is the venue of the stored selection's outcome instruments
     // (the strategy only ever trades the venue its selected market is on). This offline evidence
     // path validates against that stored selection and never reads the live cache, so the venue is
@@ -6234,6 +6342,11 @@ pub fn record_entry_decision_evidence_from_source(
         venue_name: source.reference_quote.venue.clone(),
         price: source.reference_quote.price,
         observed_ts_ms: source.reference_quote.observed_ts_ms,
+    });
+    strategy.observe_signal_quote(&FastSpotObservation {
+        venue_name: source.signal_quote.venue.clone(),
+        price: source.signal_quote.price,
+        observed_ts_ms: source.signal_quote.observed_ts_ms,
     });
     strategy.active.warmup_count = source.warmup_count;
     strategy.pricing.realized_vol.last_ready_vol = Some(source.realized_volatility.value);
@@ -6278,59 +6391,20 @@ fn validate_entry_decision_source(source: &BinaryOracleEntryDecisionEvidenceSour
         &source.readiness_session,
     );
     validate_readiness_gate_evidence_snapshot(&readiness_evidence)?;
-    entry_decision_price_to_beat_from_readiness_session(&source.readiness_session)?;
+    price_to_beat_from_readiness_session(&source.readiness_session)?;
     anyhow::ensure!(
         is_positive_finite(source.reference_quote.price),
         "entry decision evidence source reference quote price is invalid"
+    );
+    anyhow::ensure!(
+        is_positive_finite(source.signal_quote.price),
+        "entry decision evidence source signal quote price is invalid"
     );
     anyhow::ensure!(
         is_positive_finite(source.realized_volatility.value),
         "entry decision evidence source realized volatility is invalid"
     );
     Ok(())
-}
-
-fn entry_decision_price_to_beat_from_readiness_session(
-    session: &EntryReadinessGateSession,
-) -> Result<f64> {
-    let satisfaction = session
-        .satisfied_roles
-        .get(RESOLUTION_GATE_ROLE)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "entry decision evidence source readiness_session is missing resolution evidence"
-            )
-        })?;
-    let GateSatisfaction::Evidence { evidence } = satisfaction else {
-        anyhow::bail!(
-            "entry decision evidence source readiness_session resolution evidence is required"
-        );
-    };
-    anyhow::ensure!(
-        evidence.value_kind == PRICE_GATE_VALUE_KIND,
-        "entry decision evidence source readiness_session resolution value_kind is invalid"
-    );
-    let value = evidence
-        .normalized_value
-        .get(ENTRY_DECISION_PRICE_TO_BEAT_VALUE_FIELD)
-        .and_then(json_value_as_f64)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "entry decision evidence source readiness_session price_to_beat_value is invalid"
-            )
-        })?;
-    anyhow::ensure!(
-        is_positive_finite(value),
-        "entry decision evidence source readiness_session price_to_beat_value is invalid"
-    );
-    Ok(value)
-}
-
-fn json_value_as_f64(value: &serde_json::Value) -> Option<f64> {
-    value
-        .as_f64()
-        .or_else(|| value.as_i64().map(|value| value as f64))
-        .or_else(|| value.as_u64().map(|value| value as f64))
 }
 
 fn source_fee_bps_by_instrument_id(
@@ -7551,6 +7625,8 @@ mod tests {
             blocked_after_seconds = 60
             reference_venue = "reference_data_client"
             reference_instrument_id = "REFERENCE.SOURCE"
+            signal_venue = "signal_data_client"
+            signal_instrument_id = "SIGNAL.SOURCE"
             use_uuid_client_order_ids = true
             use_hyphens_in_client_order_ids = false
             external_order_claims = ["AUXILIARY.SOURCE"]
@@ -7974,6 +8050,8 @@ mod tests {
                 blocked_after_seconds: 60,
                 reference_venue: Some("reference_data_client".to_string()),
                 reference_instrument_id: Some("REFERENCE.SOURCE".to_string()),
+                signal_venue: Some("signal_data_client".to_string()),
+                signal_instrument_id: Some("SIGNAL.SOURCE".to_string()),
                 use_uuid_client_order_ids: true,
                 use_hyphens_in_client_order_ids: false,
                 external_order_claims: vec!["AUXILIARY.SOURCE".to_string()],
@@ -8228,6 +8306,27 @@ mod tests {
         assert!(!strategy.core.config.log_rejected_due_post_only_as_warning);
     }
 
+    #[test]
+    fn validate_config_rejects_missing_signal_data_pair() {
+        let mut raw = valid_raw_config();
+        let table = raw
+            .as_table_mut()
+            .expect("valid raw config should be a TOML table");
+        table.remove("signal_venue");
+        table.remove("signal_instrument_id");
+
+        let mut errors = Vec::new();
+        BinaryOracleEdgeTakerBuilder::validate_config(&raw, "strategies[0].config", &mut errors);
+
+        assert!(
+            errors.iter().any(|error| {
+                error.field == "strategies[0].config.signal_venue"
+                    && error.code == "missing_signal_data_pair"
+            }),
+            "missing signal role should fail raw strategy validation: {errors:#?}"
+        );
+    }
+
     fn quote_tick(instrument_id: &str, bid: f64, ask: f64, ts_ms: u64) -> QuoteTick {
         QuoteTick::new_checked(
             InstrumentId::from(instrument_id),
@@ -8271,7 +8370,7 @@ mod tests {
     }
 
     #[test]
-    fn reference_quote_tick_updates_pricing_from_configured_reference_data() {
+    fn reference_quote_tick_updates_fair_value_without_becoming_signal() {
         let mut strategy = test_strategy();
 
         strategy
@@ -8279,9 +8378,48 @@ mod tests {
             .expect("reference quote should process");
 
         assert_eq!(strategy.pricing.last_reference_fair_value, Some(101.0));
+        assert_eq!(strategy.pricing.fast_spot, None);
+        assert!(!strategy.pricing.lead_quality_policy_applied);
+    }
+
+    #[test]
+    fn signal_quote_tick_updates_pricing_from_configured_signal_data() {
+        let mut strategy = test_strategy();
+
+        strategy
+            .on_quote(&quote_tick("REFERENCE.SOURCE", 100.0, 102.0, 1_100))
+            .expect("reference quote should process");
+        strategy
+            .on_quote(&quote_tick("SIGNAL.SOURCE", 100.5, 102.5, 1_200))
+            .expect("signal quote should process");
+
+        assert_eq!(strategy.pricing.last_reference_fair_value, Some(101.0));
         assert_eq!(
             strategy.pricing.fast_spot,
-            Some(fast_spot("reference_data_client", 101.0, 1_200))
+            Some(fast_spot("signal_data_client", 101.5, 1_200))
+        );
+        assert!(strategy.pricing.lead_quality_policy_applied);
+    }
+
+    #[test]
+    fn signal_quote_tick_does_not_warm_active_reference_state() {
+        let mut strategy = test_strategy();
+        let mut market = candidate_market("market-1", 1_000);
+        market.price_to_beat = Some(3_100.0);
+        strategy
+            .apply_selection_snapshot(selection_snapshot(1_000, SelectionState::Active { market }));
+        strategy.pricing.last_reference_fair_value = Some(3_101.0);
+
+        strategy
+            .on_quote(&quote_tick("SIGNAL.SOURCE", 3_102.0, 3_104.0, 1_200))
+            .expect("signal quote should process");
+
+        assert_eq!(strategy.active.interval_open, None);
+        assert_eq!(strategy.active.last_reference_ts_ms, None);
+        assert_eq!(strategy.active.warmup_count, INITIAL_COUNTER_U64);
+        assert_eq!(
+            strategy.pricing.fast_spot,
+            Some(fast_spot("signal_data_client", 3_103.0, 1_200))
         );
     }
 
@@ -8324,10 +8462,7 @@ mod tests {
         assert_eq!(strategy.active.interval_open, Some(3_100.0));
         assert_eq!(strategy.active.last_reference_ts_ms, Some(1_200));
         assert_eq!(strategy.pricing.last_reference_fair_value, Some(3_101.0));
-        assert_eq!(
-            strategy.pricing.fast_spot,
-            Some(fast_spot("reference_data_client", 3_101.0, 1_200))
-        );
+        assert_eq!(strategy.pricing.fast_spot, None);
         assert_eq!(strategy.current_realized_vol_at(1_200), Some(1.5));
     }
 
@@ -16685,7 +16820,7 @@ mod tests {
         strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
 
         // A jump from 100.0 -> 110.0 is a 10% single-step move, >= the 5% threshold.
-        strategy.pricing.observe_reference_quote(
+        strategy.pricing.observe_signal_quote(
             &fast_spot("bybit", 110.0, 2_000),
             strategy.config.lead_agreement_min_corr,
             strategy.config.lead_jitter_max_ms,
@@ -16728,7 +16863,7 @@ mod tests {
         strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
 
         // A 2% move (100.0 -> 102.0) is below the 5% threshold.
-        strategy.pricing.observe_reference_quote(
+        strategy.pricing.observe_signal_quote(
             &fast_spot("bybit", 102.0, 2_000),
             strategy.config.lead_agreement_min_corr,
             strategy.config.lead_jitter_max_ms,
@@ -16755,7 +16890,7 @@ mod tests {
         strategy.pricing.spike_until_ms = None;
 
         // First observation has no baseline; a spike cannot be inferred.
-        strategy.pricing.observe_reference_quote(
+        strategy.pricing.observe_signal_quote(
             &fast_spot("bybit", 110.0, 2_000),
             strategy.config.lead_agreement_min_corr,
             strategy.config.lead_jitter_max_ms,
@@ -16783,7 +16918,7 @@ mod tests {
         // Out-of-order spike: 100 -> 130 (30% >= 5% threshold) at an earlier ts
         // (1_500ms). Its naive deadline 1_500 + 5_000 = 6_500ms is before the
         // active 7_000ms and must not retract it.
-        strategy.pricing.observe_reference_quote(
+        strategy.pricing.observe_signal_quote(
             &fast_spot("bybit", 130.0, 1_500),
             strategy.config.lead_agreement_min_corr,
             strategy.config.lead_jitter_max_ms,
@@ -16799,7 +16934,7 @@ mod tests {
         // A later spike further into the future extends the deadline forward.
         // Reset the baseline so detection is independent of eligibility chaining.
         strategy.pricing.fast_spot = Some(fast_spot("bybit", 100.0, 1_000));
-        strategy.pricing.observe_reference_quote(
+        strategy.pricing.observe_signal_quote(
             &fast_spot("bybit", 130.0, 4_000),
             strategy.config.lead_agreement_min_corr,
             strategy.config.lead_jitter_max_ms,

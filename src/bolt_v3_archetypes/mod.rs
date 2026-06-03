@@ -148,6 +148,8 @@ execution_client_id = "fixture-venue"
 data_client_id = "fixture-reference"
 instrument_id = "FIXTURE.REFERENCE"
 
+[signal_data]
+
 [target]
 configured_target_id = "fixture-target"
 rotating_market_family = "fixture-family"

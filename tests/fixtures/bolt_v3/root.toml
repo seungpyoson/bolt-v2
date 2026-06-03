@@ -171,3 +171,13 @@ private_key_ssm_path = "/bolt/polymarket_main/private_key"
 api_key_ssm_path = "/bolt/polymarket_main/api_key"
 api_secret_ssm_path = "/bolt/polymarket_main/api_secret"
 passphrase_ssm_path = "/bolt/polymarket_main/passphrase"
+
+[clients.okx_data]
+venue = "OKX"
+
+[clients.okx_data.data]
+instrument_types = ["SPOT", "MARGIN", "SWAP", "FUTURES", "EVENTS"]
+contract_types = ["linear", "inverse"]
+load_spreads = false
+environment = "live"
+transport_backend = "sockudo"

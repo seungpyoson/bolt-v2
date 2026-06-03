@@ -52,16 +52,55 @@ Execution adapter mapping remains blocked unless a current approval artifact is 
 
 ## Post-Merge Production Live Arming Gate - 2026-06-03
 
-PR #531 merged this infrastructure slice to `main` at `46e81cca94176b01559cf17dda729e1c72eefef6`, and the merge commit's `CI`, `CodeQL`, and `actionlint` workflows completed successfully. That is the current accepted adapter baseline.
+PR #544 merged the selected-client live-submit artifact secret-resolution slice
+to `main` at `e6c5e5b993bf1a29658ce7685999ce32b5a4dec6`, and that merge
+commit's `CI`, `CodeQL`, and `actionlint` workflows completed successfully.
+This is the current accepted adapter baseline.
+
+At that head, the non-mutating arming preflight remains fail-closed before SSM
+resolution or approval consumption:
+
+```bash
+cargo run --locked --bin bolt-v2 -- \
+  operator-artifacts preflight-live-submit-arming \
+  --config config/root.toml \
+  --client-key hyperliquid_perps
+```
+
+Expected current result:
+
+```text
+clients.hyperliquid_perps is not configured for live-submit arming preflight
+```
 
 Current tracked config is still unarmed for Hyperliquid live production execution:
 
 - `config/root.toml` has no Hyperliquid execution client.
 - `config/strategies/binary_oracle.toml` still routes execution through `polymarket_main`.
-- Metadata-only SSM parameter discovery for `hyperliquid` returned no visible parameter names in the configured region and in the checked `eu-west-1` and `ap-northeast-2` regions.
+- Metadata-only SSM parameter discovery found Bolt-owned Binance, Polymarket,
+  and Chainlink parameter names in `eu-west-1`; it found no Hyperliquid or
+  abbreviated `hl` parameter names in `eu-west-1` or `ap-northeast-2`.
 - No Hyperliquid product-submit proof artifact, live-submit approval artifact, Hyperliquid no-submit report, or live canary approval-consumption proof is tracked.
 
-The next live-arming slice must start from current `main` and provide, in one operator-reviewed packet, a TOML-owned Hyperliquid execution client, SSM parameter names for the signer/account material in the configured AWS region, a product-compatible strategy target, current product-submit proof references, one-time live-submit approval, exact-head final-packet/no-submit evidence, and renewed explicit operator approval for any live canary attempt. Until those exist, the merged code is production-grade execution infrastructure only; it is not production live execution.
+The next live-arming slice must start from current `main` and provide, in one
+operator-reviewed packet:
+
+- a TOML-owned Hyperliquid execution client under `[clients.<id>]`;
+- SSM parameter names, visible in the configured `[aws].region`, for the
+  Hyperliquid signer/account material required by that execution mode;
+- a product-compatible strategy target and `execution_client_id` pointing to
+  the Hyperliquid client;
+- current product-submit proof artifact references for order, fill, rounding,
+  fee, and HIP-4 settlement proof when applicable;
+- the generated Hyperliquid product-submit proof artifact path and sha256;
+- a TOML-bound one-time live-submit approval id, approval artifact path, byte
+  caps, max order count, and max order notional;
+- exact-head final-packet/no-submit evidence; and
+- renewed explicit operator approval before any live canary attempt, approval
+  consumption, or submit-capable live run.
+
+Until those exist, the merged code is production-grade execution
+infrastructure only; it is not production live execution.
 
 ## Implementation Evidence Packet - 2026-06-02
 

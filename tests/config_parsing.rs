@@ -5626,9 +5626,14 @@ fn rejects_invalid_external_client_id_at_parse_time() {
 fn rejects_nt_risk_bypass_key_at_parse_time() {
     use bolt_v2::bolt_v3_config::BoltV3RootConfig;
 
+    // Anchor on the unique `max_order_submit_rate` assignment rather than the
+    // `[risk.nautilus]\n` header so the search pattern never matches a fixture
+    // newline (avoids CRLF-normalization fragility). The injected `bypass = true`
+    // line still lands inside the `[risk.nautilus]` block, immediately above the
+    // rate assignment, producing a byte-identical mutation.
     let mutated = replace_in_fixture_root(
-        "[risk.nautilus]\nmax_order_submit_rate",
-        "[risk.nautilus]\nbypass = true\nmax_order_submit_rate",
+        "max_order_submit_rate = \"40/00:01:00\"",
+        "bypass = true\nmax_order_submit_rate = \"40/00:01:00\"",
     );
     let error = toml::from_str::<BoltV3RootConfig>(&mutated)
         .expect_err("risk.nautilus.bypass must not be part of the TOML schema");
@@ -5648,8 +5653,17 @@ fn shipped_root_configs_do_not_expose_nt_risk_bypass() {
             include_str!("fixtures/bolt_v3/root.toml"),
         ),
     ] {
+        // Scan lines for a key that is exactly `bypass` (trimmed, before `=`)
+        // rather than matching `\nbypass =` substrings. This is platform-agnostic
+        // (independent of CRLF/LF normalization), catches a `bypass =` key on any
+        // line including the first, and does not false-match keys like
+        // `bypass_logging`.
+        let exposes_bypass = source.lines().any(|line| {
+            line.split_once('=')
+                .is_some_and(|(key, _)| key.trim() == "bypass")
+        });
         assert!(
-            !source.contains("\nbypass =") && !source.starts_with("bypass ="),
+            !exposes_bypass,
             "{label} must not expose risk.nautilus.bypass"
         );
     }
@@ -5659,9 +5673,14 @@ fn shipped_root_configs_do_not_expose_nt_risk_bypass() {
 fn rejects_nt_risk_values_unsupported_by_rust_live_runtime() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
+    // Anchor on the unique `max_order_submit_rate` assignment instead of the
+    // `[risk.nautilus]\n` header so the search pattern never matches a fixture
+    // newline (avoids CRLF-normalization fragility). The marker is injected above
+    // the rate assignment to scope the subsequent value flip to the
+    // `[risk.nautilus]` block, then stripped — yielding a byte-identical mutation.
     let mutated = replace_in_fixture_root(
-        "[risk.nautilus]\nmax_order_submit_rate",
-        "[risk.nautilus]\ngraceful_shutdown_on_error_marker_anchor\nmax_order_submit_rate",
+        "max_order_submit_rate = \"40/00:01:00\"",
+        "graceful_shutdown_on_error_marker_anchor\nmax_order_submit_rate = \"40/00:01:00\"",
     )
     .replace(
         "debug = false\ngraceful_shutdown_on_error = false\nqsize = 100000",

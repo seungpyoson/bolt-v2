@@ -206,6 +206,31 @@ fn latest_entry_decision_evidence_chain_rejects_cross_record_field_mismatches() 
 }
 
 #[test]
+fn latest_entry_decision_evidence_chain_rejects_stale_v5_before_admission_payload_parse() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let evidence_path = temp.path().join("decision-evidence.jsonl");
+    let mut lines = sample_entry_decision_evidence_lines();
+    lines[2]["schema_version"] = serde_json::json!(5_u32);
+    lines[2]["decision"]
+        .as_object_mut()
+        .expect("admission decision should be an object")
+        .remove("execution_client_id");
+    write_decision_evidence_lines(&evidence_path, &lines);
+
+    let error = read_latest_entry_decision_evidence_chain(&evidence_path, 100_000)
+        .expect_err("stale v5 decision evidence should fail closed before payload parsing");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("schema_version mismatch"),
+        "stale v5 should fail on envelope schema, got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("execution_client_id"),
+        "stale v5 should not reach v6 admission payload parsing, got: {rendered}"
+    );
+}
+
+#[test]
 fn latest_entry_decision_evidence_chain_rejects_missing_readiness_gate_identity() {
     type DecisionEvidenceMutation = fn(&mut [serde_json::Value; 3]);
     let cases: [(&str, DecisionEvidenceMutation); 6] = [
@@ -329,6 +354,7 @@ fn sample_entry_decision_evidence_lines() -> [serde_json::Value; 3] {
     };
     let admission = BoltV3AdmissionDecisionEvidence {
         strategy_id: snapshot.strategy_id.clone(),
+        execution_client_id: "execution-client-one".to_string(),
         client_order_id: snapshot.client_order_id.clone(),
         instrument_id: snapshot.submission_instrument_id.clone(),
         notional: "0.50".to_string(),

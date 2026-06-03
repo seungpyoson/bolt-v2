@@ -217,6 +217,7 @@ where
 {
     let region = loaded.root.aws.region.as_str();
     let mut clients = BTreeMap::new();
+    let mut exclusive_signer_owners: BTreeMap<(&'static str, String), String> = BTreeMap::new();
 
     for (client_key, client) in &loaded.root.clients {
         match client.secrets.as_ref() {
@@ -243,6 +244,20 @@ where
             },
             &mut resolver,
         )?;
+        if let Some(owner) = resolved.exclusive_signer_owner() {
+            let owner_key = (owner.provider_key, owner.fingerprint.clone());
+            if let Some(existing_client_key) = exclusive_signer_owners.get(&owner_key) {
+                return Err(BoltV3SecretError {
+                    client_key: client_key.clone(),
+                    field: "signer_owner".to_string(),
+                    source: format!(
+                        "provider `{}` signer/API-wallet owner is already assigned to client `{existing_client_key}`; duplicate execution clients sharing one signer are not allowed",
+                        owner.provider_key
+                    ),
+                });
+            }
+            exclusive_signer_owners.insert(owner_key, client_key.clone());
+        }
         clients.insert(client_key.clone(), resolved);
     }
 

@@ -74,7 +74,7 @@ ORDER_TEMPLATE_FIELDS = (
     "trailing_offset_type",
 )
 DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE = (
-    "Decision-evidence JSONL records use `schema_version = 5` for `order_intent`, "
+    "Decision-evidence JSONL records use `schema_version = 6` for `order_intent`, "
     "`admission_decision`, and `strategy_input_snapshot` envelopes."
 )
 STATUS_MAP_FORCED_EXIT_BUILDER_PHRASE = (
@@ -390,7 +390,7 @@ def validate_docs(
             findings.append(f"schema missing current phrase: {phrase}")
 
     if DECISION_EVIDENCE_JSONL_CONTRACT_PHRASE not in schema:
-        findings.append("schema missing decision-evidence JSONL schema v5 contract")
+        findings.append("schema missing decision-evidence JSONL schema v6 contract")
 
     if runtime_contracts:
         for field in ORDER_TEMPLATE_FIELDS:

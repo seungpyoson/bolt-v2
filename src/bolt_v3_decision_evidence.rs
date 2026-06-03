@@ -13,11 +13,14 @@ use serde::{Deserialize, Serialize};
 use crate::bolt_v3_config::LoadedBoltV3Config;
 use crate::bolt_v3_operator_artifacts::PRIVATE_ARTIFACT_FILE_MODE;
 
-pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 5;
+pub const BOLT_V3_DECISION_EVIDENCE_SCHEMA_VERSION: u32 = 6;
 pub const BOLT_V3_DECISION_EVIDENCE_GATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const BOLT_V3_ORDER_INTENT_GATE_ID: &str = "bolt_v3.order_intent";
 pub const BOLT_V3_SUBMIT_ADMISSION_GATE_ID: &str = "bolt_v3.submit_admission";
 pub const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID: &str = "bolt_v3.strategy_input_snapshot";
+const BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND: &str = "strategy_input_snapshot";
+const BOLT_V3_ORDER_INTENT_RECORD_KIND: &str = "order_intent";
+const BOLT_V3_ADMISSION_DECISION_RECORD_KIND: &str = "admission_decision";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT: &str = "current";
 pub const BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT: &str = "next";
 const GATE_SATISFACTION_KIND_EVIDENCE: &str = "evidence";
@@ -315,6 +318,7 @@ pub enum BoltV3AdmissionOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoltV3AdmissionDecisionEvidence {
     pub strategy_id: String,
+    pub execution_client_id: String,
     pub client_order_id: String,
     pub instrument_id: String,
     pub notional: String,
@@ -449,6 +453,11 @@ pub fn read_latest_entry_decision_evidence_chain(
             })?;
         match header.kind.as_str() {
             "strategy_input_snapshot" => {
+                header.validate(
+                    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_RECORD_KIND,
+                    BOLT_V3_STRATEGY_INPUT_SNAPSHOT_GATE_ID,
+                    index,
+                )?;
                 let decoded: StrategyInputSnapshotLineOwned = serde_json::from_slice(line)
                     .with_context(|| {
                         format!(
@@ -463,6 +472,11 @@ pub fn read_latest_entry_decision_evidence_chain(
                 snapshots.insert(decoded.snapshot.client_order_id.clone(), decoded.snapshot);
             }
             "order_intent" => {
+                header.validate(
+                    BOLT_V3_ORDER_INTENT_RECORD_KIND,
+                    BOLT_V3_ORDER_INTENT_GATE_ID,
+                    index,
+                )?;
                 let decoded: OrderIntentLineOwned =
                     serde_json::from_slice(line).with_context(|| {
                         format!("failed to parse bolt-v3 order intent line at index {index}")
@@ -473,6 +487,11 @@ pub fn read_latest_entry_decision_evidence_chain(
                 }
             }
             "admission_decision" => {
+                header.validate(
+                    BOLT_V3_ADMISSION_DECISION_RECORD_KIND,
+                    BOLT_V3_SUBMIT_ADMISSION_GATE_ID,
+                    index,
+                )?;
                 let decoded: AdmissionDecisionLineOwned = serde_json::from_slice(line)
                     .with_context(|| {
                         format!("failed to parse bolt-v3 admission decision line at index {index}")
@@ -1223,6 +1242,7 @@ mod tests {
         ] {
             let decision = BoltV3AdmissionDecisionEvidence {
                 strategy_id: "strategy-one".to_string(),
+                execution_client_id: "execution-client-one".to_string(),
                 client_order_id: "client-order-one".to_string(),
                 instrument_id: "instrument-one".to_string(),
                 notional: "1.0".to_string(),
@@ -1253,6 +1273,10 @@ mod tests {
             );
             let decision_field = &decoded["decision"];
             assert_eq!(decision_field["strategy_id"], "strategy-one");
+            assert_eq!(
+                decision_field["execution_client_id"],
+                "execution-client-one"
+            );
             assert_eq!(decision_field["notional"], "1.0");
             assert_eq!(decision_field["intent_kind"], "entry");
             let expected_outcome = match outcome {

@@ -7,11 +7,12 @@ use bolt_v2::bolt_v3_decision_evidence::{
 };
 use bolt_v2::bolt_v3_live_node::build_bolt_v3_live_node_with;
 use bolt_v2::bolt_v3_submit_admission::{
-    BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput, BoltV3QuoteQuantityOrderSide,
-    BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError, BoltV3SubmitAdmissionRequest,
-    BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind, BoltV3SubmitLifecyclePolicy,
-    conservative_quote_quantity_admission_notional, fee_inclusive_admission_notional,
-    market_style_admission_ceiling_notional, rounded_order_admission_notional,
+    BoltV3LiveSubmitApprovalLimits, BoltV3OrderLifecycleIntent, BoltV3QuoteQuantityAdmissionInput,
+    BoltV3QuoteQuantityOrderSide, BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionError,
+    BoltV3SubmitAdmissionRequest, BoltV3SubmitAdmissionState, BoltV3SubmitIntentKind,
+    BoltV3SubmitLifecyclePolicy, conservative_quote_quantity_admission_notional,
+    fee_inclusive_admission_notional, market_style_admission_ceiling_notional,
+    rounded_order_admission_notional,
 };
 use bolt_v2::strategies::registry::FeeProvider;
 use bolt_v2::strategies::registry::StrategyBuildContext;
@@ -20,6 +21,7 @@ use nautilus_model::enums::{OrderSide, PositionSide};
 use nautilus_model::identifiers::InstrumentId;
 use rust_decimal::Decimal;
 use std::{
+    collections::BTreeMap,
     sync::{Arc, Condvar, Mutex, mpsc},
     thread,
     time::Duration,
@@ -156,6 +158,56 @@ fn armed_admission_allows_first_submit_and_rejects_second_before_nt_submit() {
     ));
     assert_eq!(admission.admitted_order_count(), 1);
     assert_eq!(nt_submit_calls, 1, "second NT submit must not be reached");
+}
+
+#[test]
+fn live_submit_approval_limits_tighten_canary_caps_before_nt_submit() {
+    let admission = BoltV3SubmitAdmissionState::new_unarmed_with_live_submit_limits(
+        Arc::new(support::RecordingDecisionEvidenceWriter::default()),
+        BTreeMap::from([(
+            "hyperliquid_perps".to_string(),
+            BoltV3LiveSubmitApprovalLimits {
+                max_order_count: 1,
+                max_order_notional: Decimal::new(25, 0),
+            },
+        )]),
+    );
+    admission
+        .arm(support::validated_bolt_v3_live_canary_gate_report(
+            3,
+            Decimal::new(100, 0),
+        ))
+        .expect("wider live canary report should arm admission");
+
+    let over_approval_notional = admission.admit(&submit_request_for_execution_client(
+        "hyperliquid_perps",
+        Decimal::new(26, 0),
+    ));
+    let error = over_approval_notional
+        .expect_err("provider approval notional must tighten the live canary cap");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::NotionalCapExceeded
+    ));
+    assert_eq!(admission.admitted_order_count(), 0);
+
+    admission
+        .admit(&submit_request_for_execution_client(
+            "hyperliquid_perps",
+            Decimal::new(25, 0),
+        ))
+        .expect("first order within provider approval limits should admit");
+
+    let exhausted = admission.admit(&submit_request_for_execution_client(
+        "hyperliquid_perps",
+        Decimal::new(1, 0),
+    ));
+    let error = exhausted.expect_err("provider approval count must be consumed by admission");
+    assert!(matches!(
+        error,
+        BoltV3SubmitAdmissionError::CountCapExhausted
+    ));
+    assert_eq!(admission.admitted_order_count(), 1);
 }
 
 #[test]
@@ -693,6 +745,15 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
     submit_request_with_kind(notional, BoltV3SubmitIntentKind::Entry)
 }
 
+fn submit_request_for_execution_client(
+    execution_client_id: &str,
+    notional: Decimal,
+) -> BoltV3SubmitAdmissionRequest {
+    let mut request = submit_request(notional);
+    request.execution_client_id = execution_client_id.to_string();
+    request
+}
+
 fn submit_request_with_kind(
     notional: Decimal,
     intent_kind: BoltV3SubmitIntentKind,
@@ -740,6 +801,7 @@ fn submit_request_with_kind_policy_and_exit_proof(
     };
     BoltV3SubmitAdmissionRequest {
         strategy_id: "strategy-a".to_string(),
+        execution_client_id: "polymarket_main".to_string(),
         client_order_id: "client-order-1".to_string(),
         instrument_id: "instrument-1".to_string(),
         notional,
@@ -893,6 +955,10 @@ fn admit_records_admission_decision_evidence_on_admit_outcome() {
     );
     assert_eq!(decisions[0].outcome, BoltV3AdmissionOutcome::Admitted);
     assert_eq!(decisions[0].strategy_id, request.strategy_id);
+    assert_eq!(
+        decisions[0].execution_client_id,
+        request.execution_client_id
+    );
     assert_eq!(decisions[0].client_order_id, request.client_order_id);
     assert_eq!(decisions[0].instrument_id, request.instrument_id);
     assert_eq!(decisions[0].notional, request.notional.to_string());

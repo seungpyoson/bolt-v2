@@ -26,7 +26,7 @@ use crate::{
     bolt_v3_market_families::{
         MarketIdentityPlan, MarketIdentityPlanError, market_identity_plan_from_config,
     },
-    bolt_v3_providers::{self, ProviderAdapterMapContext},
+    bolt_v3_providers::{self, ProviderAdapterMapContext, ProviderRuntimeApprovals},
     bolt_v3_secrets::ResolvedBoltV3Secrets,
 };
 
@@ -239,9 +239,23 @@ pub fn map_bolt_v3_adapters(
     loaded: &LoadedBoltV3Config,
     resolved: &ResolvedBoltV3Secrets,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
+    map_bolt_v3_adapters_with_runtime_approvals(loaded, resolved, ProviderRuntimeApprovals::none())
+}
+
+pub fn map_bolt_v3_adapters_with_runtime_approvals(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    runtime_approvals: ProviderRuntimeApprovals<'_>,
+) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
     let plan = market_identity_plan_from_config(loaded)
         .map_err(BoltV3AdapterMappingError::MarketIdentity)?;
-    map_bolt_v3_adapters_with_market_identity(loaded, resolved, &plan, nt_market_clock())
+    map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+        loaded,
+        resolved,
+        &plan,
+        nt_market_clock(),
+        runtime_approvals,
+    )
 }
 
 fn nt_market_clock() -> BoltV3MarketClockFn {
@@ -263,11 +277,28 @@ pub fn map_bolt_v3_adapters_with_market_identity(
     plan: &MarketIdentityPlan,
     clock: BoltV3MarketClockFn,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
+    map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+        loaded,
+        resolved,
+        plan,
+        clock,
+        ProviderRuntimeApprovals::none(),
+    )
+}
+
+pub fn map_bolt_v3_adapters_with_market_identity_and_runtime_approvals(
+    loaded: &LoadedBoltV3Config,
+    resolved: &ResolvedBoltV3Secrets,
+    plan: &MarketIdentityPlan,
+    clock: BoltV3MarketClockFn,
+    runtime_approvals: ProviderRuntimeApprovals<'_>,
+) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
     map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
         loaded,
         resolved,
         plan,
         clock,
+        runtime_approvals,
         bolt_v3_providers::binding_for_provider_key,
     )
 }
@@ -277,6 +308,7 @@ fn map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
     resolved: &ResolvedBoltV3Secrets,
     plan: &MarketIdentityPlan,
     clock: BoltV3MarketClockFn,
+    runtime_approvals: ProviderRuntimeApprovals<'_>,
     binding_for_provider_key: impl Fn(&str) -> Option<&'static bolt_v3_providers::ProviderBinding>,
 ) -> Result<BoltV3AdapterConfigs, BoltV3AdapterMappingError> {
     validate_market_identity_target_clients(loaded, plan)?;
@@ -300,6 +332,7 @@ fn map_bolt_v3_adapters_with_market_identity_and_provider_lookup(
             resolved,
             plan,
             clock: clock.clone(),
+            runtime_approvals,
         })?;
         clients.insert(client_key.clone(), mapped);
     }
@@ -464,6 +497,9 @@ mod tests {
         resolve_secrets: resolve_fake_provider_secrets,
         configured_secret_paths: configured_fake_provider_secret_paths,
         map_adapters: map_fake_provider_adapters,
+        load_live_submit_approval: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -480,6 +516,9 @@ mod tests {
         resolve_secrets: resolve_fake_provider_secrets,
         configured_secret_paths: configured_fake_provider_secret_paths,
         map_adapters: map_fake_provider_adapters,
+        load_live_submit_approval: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -496,6 +535,9 @@ mod tests {
         resolve_secrets: resolve_fake_provider_secrets,
         configured_secret_paths: configured_fake_provider_secret_paths,
         map_adapters: map_fake_no_target_provider_adapters,
+        load_live_submit_approval: None,
+        write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -584,6 +626,7 @@ mod tests {
             &resolved,
             &plan,
             clock,
+            ProviderRuntimeApprovals::none(),
             |key| {
                 if key == FAKE_UPDOWN_PROVIDER_KEY {
                     Some(&FAKE_UPDOWN_PROVIDER_BINDING)
@@ -635,6 +678,7 @@ mod tests {
             &resolved,
             &plan,
             clock,
+            ProviderRuntimeApprovals::none(),
             |key| {
                 if key == FAKE_UPDOWN_PROVIDER_KEY {
                     Some(&FAKE_UNSUPPORTED_PROVIDER_BINDING)
@@ -696,6 +740,7 @@ mod tests {
             &resolved,
             &plan,
             clock,
+            ProviderRuntimeApprovals::none(),
             |key| {
                 if key == FAKE_UPDOWN_PROVIDER_KEY {
                     Some(&FAKE_UNSUPPORTED_NO_TARGET_PROVIDER_BINDING)

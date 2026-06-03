@@ -14,29 +14,20 @@ name: Backtester CI
 # SCOPE: clippy + tests only, host-native (ubuntu). The crate's `build` lane targets
 # aarch64-apple-darwin (local/research) and never ships to EC2, so there is no cross-compile /
 # deploy lane here.
+#
+# ALWAYS-PRESENT GATE (no path-filter trap): the workflow has NO `on.*.paths` filter, so it
+# triggers on every pull_request to main and every push to main. That makes `backtester-gate` a
+# context that is ALWAYS reported — safe for the owner to mark required later without the GitHub
+# "frozen PR" problem (a path-filtered required check never reports on PRs that miss the path, so
+# the PR can never satisfy the rule). Crate-change detection moved INSIDE the workflow: the
+# `detect` job computes `bvs_changed`, the fmt/clippy/test lanes SKIP when the crate is untouched,
+# and `backtester-gate` concludes success as an explicit no-op on non-crate PRs.
 
 on:
   pull_request:
     branches: [main]
-    # Runs only when the crate or its shared build inputs change (the crate is a separate
-    # workspace, so root Cargo.lock is intentionally NOT a trigger). Making `backtester-gate`
-    # a required merge check is a repo-ruleset action the owner takes separately.
-    paths:
-      - 'crates/backtesting-vertical-slice/**'
-      - 'scripts/rust_verification.py'
-      - 'scripts/command_understanding.py'
-      - 'rust-toolchain.toml'
-      - '.github/actions/setup-environment/**'
-      - '.github/workflows/backtester-ci.yml'
   push:
     branches: [main]
-    paths:
-      - 'crates/backtesting-vertical-slice/**'
-      - 'scripts/rust_verification.py'
-      - 'scripts/command_understanding.py'
-      - 'rust-toolchain.toml'
-      - '.github/actions/setup-environment/**'
-      - '.github/workflows/backtester-ci.yml'
 
 concurrency:
   group: >-
@@ -56,11 +47,54 @@ permissions:
   contents: read
 
 jobs:
+  # Always-runs detector (no compile, no toolchain). Decides whether the crate or any of its
+  # shared build inputs changed between the PR base and head, so the heavy lanes can skip on
+  # PRs that never touch the crate while `backtester-gate` still reports a verdict.
+  detect:
+    name: bvs-detect
+    runs-on: ubuntu-latest
+    outputs:
+      bvs_changed: ${{ steps.detect.outputs.bvs_changed }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Detect crate-relevant changes
+        id: detect
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            echo "push event; treating crate as changed"
+            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          echo "comparing ${base_sha}...HEAD"
+          changed="$(git diff --name-only "${base_sha}...HEAD" -- \
+            'crates/backtesting-vertical-slice/**' \
+            justfile \
+            scripts/rust_verification.py \
+            scripts/command_understanding.py \
+            rust-toolchain.toml \
+            '.github/actions/setup-environment/**' \
+            .github/workflows/backtester-ci.yml)"
+          if [[ -n "$changed" ]]; then
+            echo "crate-relevant paths changed:"
+            echo "$changed"
+            echo "bvs_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no crate-relevant paths changed"
+            echo "bvs_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Fail-early gate: fmt is a parse-only check (no dependency compile), so a mis-formatted
   # PR fails in seconds. clippy and test gate on it (needs: fmt) so the ~cold NT compile is
-  # never paid for a trivially-broken PR.
+  # never paid for a trivially-broken PR. All three skip when the crate is untouched.
   fmt:
     name: bvs-fmt
+    needs: detect
+    if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -77,7 +111,8 @@ jobs:
 
   clippy:
     name: bvs-clippy
-    needs: fmt
+    needs: [detect, fmt]
+    if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -111,8 +146,8 @@ jobs:
       - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ steps.crate_target.outputs.dir }}
-          # hashFiles points at the CRATE's own inputs (+ shared wrapper/toolchain), NOT root files.
-          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+          # hashFiles points at the CRATE's own inputs (+ shared wrapper/toolchain/just recipes), NOT root files.
+          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-clippy-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
           restore-keys: |
             managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-clippy-
 
@@ -121,7 +156,8 @@ jobs:
 
   test:
     name: bvs-test
-    needs: fmt
+    needs: [detect, fmt]
+    if: ${{ needs.detect.outputs.bvs_changed == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -150,7 +186,7 @@ jobs:
       - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ steps.crate_target.outputs.dir }}
-          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
+          key: managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-test-${{ hashFiles('crates/backtesting-vertical-slice/Cargo.lock', 'crates/backtesting-vertical-slice/Cargo.toml', 'crates/backtesting-vertical-slice/ci/rust-verification.toml', 'crates/backtesting-vertical-slice/justfile', 'justfile', 'rust-toolchain.toml', 'scripts/rust_verification.py', 'scripts/command_understanding.py', '.github/actions/setup-environment/action.yml', '.github/workflows/backtester-ci.yml') }}
           restore-keys: |
             managed-target-bvs-v1-${{ runner.os }}-${{ runner.arch }}-test-
 
@@ -167,13 +203,17 @@ jobs:
 
   gate:
     name: backtester-gate
-    needs: [fmt, clippy, test]
+    needs: [detect, fmt, clippy, test]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - name: Check required lanes
         shell: bash
         run: |
+          if [[ "${{ needs.detect.outputs.bvs_changed }}" != "true" ]]; then
+            echo "no crate changes; gate is a no-op"
+            exit 0
+          fi
           if [[ "${{ needs.fmt.result }}" != "success" ]]; then
             echo "bvs-fmt did not succeed (${{ needs.fmt.result }})"
             exit 1

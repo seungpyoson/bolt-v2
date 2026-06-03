@@ -16696,6 +16696,14 @@ classification = '''kill_switch_trigger_kind_hash_label'''
 reason = '''Stable trigger-kind label included in halt-id derivation for loss-governor breaches; not an operator runtime value.'''
 
 [[allowed]]
+path = '''src/bolt_v3_kill_switch_action_router.rs'''
+kind = '''number'''
+literal = '''64'''
+context = '''const SHA256_HEX_DIGEST_LEN: usize = 64;'''
+classification = '''sha256_hex_digest_length_guard'''
+reason = '''Fixed SHA-256 hex digest length used to validate action-router config and policy proof hashes; not an operator runtime value.'''
+
+[[allowed]]
 path = '''src/bolt_v3_kill_switch_store.rs'''
 kind = '''number'''
 literal = '''1'''

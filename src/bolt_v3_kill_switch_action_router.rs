@@ -3,7 +3,8 @@ use crate::{
     bolt_v3_submit_admission::BoltV3KillSwitchForcedReductionClaim,
 };
 use nautilus_model::enums::TradingState;
-use sha2::{Digest, Sha256};
+
+const SHA256_HEX_DIGEST_LEN: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoltV3KillSwitchActionClass {
@@ -188,16 +189,16 @@ fn validate_action_metadata(
 }
 
 fn is_sha256_hex_digest(value: &str) -> bool {
-    let expected_len = hex::encode(Sha256::digest([])).len();
-    value.len() == expected_len && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    value.len() == SHA256_HEX_DIGEST_LEN && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn cancel_decision(
     request: BoltV3KillSwitchActionRequest,
 ) -> Result<BoltV3KillSwitchActionDecision, BoltV3KillSwitchActionRouterError> {
     require_reducing(request.nt_trading_state)?;
-    let KillSwitchState::Cancelling { halt_id } = request.kill_switch_state.clone() else {
-        return Err(BoltV3KillSwitchActionRouterError::KillSwitchStateNotCancelling);
+    let halt_id = match &request.kill_switch_state {
+        KillSwitchState::Cancelling { halt_id } => halt_id.clone(),
+        _ => return Err(BoltV3KillSwitchActionRouterError::KillSwitchStateNotCancelling),
     };
     Ok(proof_only_decision(request, halt_id, None))
 }
@@ -206,11 +207,13 @@ fn flatten_decision(
     request: BoltV3KillSwitchActionRequest,
 ) -> Result<BoltV3KillSwitchActionDecision, BoltV3KillSwitchActionRouterError> {
     require_reducing(request.nt_trading_state)?;
-    let KillSwitchState::Flattening { halt_id } = request.kill_switch_state.clone() else {
-        return Err(BoltV3KillSwitchActionRouterError::KillSwitchStateNotFlattening);
+    let halt_id = match &request.kill_switch_state {
+        KillSwitchState::Flattening { halt_id } => halt_id.clone(),
+        _ => return Err(BoltV3KillSwitchActionRouterError::KillSwitchStateNotFlattening),
     };
-    let Some(claim) = request.forced_reduction_claim.clone() else {
-        return Err(BoltV3KillSwitchActionRouterError::ForcedReductionProofRequired);
+    let claim = match &request.forced_reduction_claim {
+        Some(claim) => claim.clone(),
+        None => return Err(BoltV3KillSwitchActionRouterError::ForcedReductionProofRequired),
     };
     if claim.halt_id() != halt_id
         || claim.action_id() != request.action_id

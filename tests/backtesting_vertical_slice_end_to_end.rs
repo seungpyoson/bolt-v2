@@ -5,8 +5,10 @@
 //! canonical normalization + Parquet artifact, NautilusTrader catalog projection
 //! + read-back, manifest validation + NautilusTrader config mapping, a
 //! `BacktestNode` run of a compiled Rust strategy, and the objective result
-//! contract. CI-safe (no network); the real accepted Bybit object is exercised
-//! by the `backtesting_vertical_slice` binary.
+//! contract. CI-safe (no network): this test exercises the pipeline with
+//! committed synthetic data only. Real-object verification is operator-run-only
+//! via the `backtesting_vertical_slice` binary (`--run-spec`, `--object-gz`,
+//! `--output-dir`) and is not asserted here.
 
 use std::collections::BTreeMap;
 
@@ -93,8 +95,13 @@ fn accepted_dataset() -> AcceptedDataset {
         retention_ref: "https://public.bybit.com/ (retention reviewed 2026-06-02)".to_string(),
         nt_mapping_status: NtMappingStatus::Accepted,
         fidelity_class: SourceProofFidelityClass::TradeReplay,
+        // Mirrors the committed reference source proof exactly so the fixture
+        // carries the full set of fidelity constraints through to the contract.
         forbidden_claims: vec![
             "No execution-quality, queue-position, or order-book-liquidity claims.".to_string(),
+            "No L2/L3 order-book replay claims from trade prints.".to_string(),
+            "Coverage is limited to BNBUSDC spot 2026-03-01; no multi-day or multi-instrument claims."
+                .to_string(),
         ],
         gap_policy_id: String::new(),
         required_checks: passing_checks(),
@@ -219,6 +226,17 @@ fn accepted_data_flows_through_to_objective_result_contract() {
         output.nt_result.run_config_id.as_deref(),
         Some("backtesting-vertical-slice-end-to-end")
     );
+    // Trade-only TRADE_REPLAY data carries no quotes, so NautilusTrader's
+    // order/fill counters stay at zero; `total_events` counts execution events,
+    // not trade ticks fed, so it is 0 here even though the engine consumed the
+    // accepted trades. The proof that the engine ran over the accepted data is
+    // the gate-3 read-back (3 ticks) bound to the same instrument id the engine
+    // queries — not these counters.
+    assert_eq!(
+        output.nt_result.total_orders, 0,
+        "trade-only TRADE_REPLAY data is quote-free, so the quote-driven strategy places no orders"
+    );
+    assert_eq!(output.nt_result.total_positions, 0);
 
     // Gate 6: objective result contract.
     let contract = &output.contract;
@@ -232,6 +250,14 @@ fn accepted_data_flows_through_to_objective_result_contract() {
         contract.fidelity_class,
         SourceProofFidelityClass::TradeReplay
     );
-    assert!(!contract.claim_limits.is_empty());
+    // The zero-orders warning is emitted with the honest TRADE_REPLAY rationale,
+    // and the claim limits carry the full reference set forward.
+    assert_eq!(contract.warnings.len(), 1);
+    assert!(
+        contract.warnings[0].contains("TRADE_REPLAY"),
+        "warning must explain the trade-only fidelity: {:?}",
+        contract.warnings[0]
+    );
+    assert_eq!(contract.claim_limits.len(), 3);
     assert_eq!(contract.catalog_hash, output.projection.catalog_hash);
 }

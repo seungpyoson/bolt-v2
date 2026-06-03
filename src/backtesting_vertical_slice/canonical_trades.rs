@@ -158,6 +158,9 @@ pub fn transform_hash() -> String {
 /// `csv_text` must be the decompressed text of the accepted object whose hash
 /// already matched the manifest (the caller verified it via gate 1).
 /// `capture_time_nanos` is the ingest capture timestamp recorded for the run.
+/// `ingest_run_id` is the stable identifier of the ingest/run that produced this
+/// normalization (the backtest run id), recorded for lineage; it is not the
+/// source object URL.
 ///
 /// # Errors
 ///
@@ -168,7 +171,12 @@ pub fn normalize_bybit_spot_tick_trades(
     identity: &CanonicalInstrumentIdentity,
     csv_text: &str,
     capture_time_nanos: i64,
+    ingest_run_id: &str,
 ) -> Result<CanonicalTradesTable> {
+    ensure!(
+        !ingest_run_id.trim().is_empty(),
+        "ingest_run_id must not be empty"
+    );
     ensure!(
         accepted.object.schema_columns == BYBIT_SPOT_TICK_TRADES_HEADER,
         "accepted object schema {:?} does not match expected spot tick-trades header {:?}",
@@ -228,7 +236,7 @@ pub fn normalize_bybit_spot_tick_trades(
 
         rows.push(CanonicalTradeRow {
             schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
-            ingest_run_id: accepted.object.source_url.clone(),
+            ingest_run_id: ingest_run_id.to_string(),
             source_binding: accepted.source_binding.clone(),
             venue: accepted.venue.clone(),
             product_family: accepted.product_family.clone(),
@@ -542,15 +550,23 @@ mod tests {
 
     #[test]
     fn normalizes_native_trades_with_provenance() {
-        let table =
-            normalize_bybit_spot_tick_trades(&accepted_dataset(), &identity(), SAMPLE_CSV, 42)
-                .expect("normalize");
+        let table = normalize_bybit_spot_tick_trades(
+            &accepted_dataset(),
+            &identity(),
+            SAMPLE_CSV,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize");
         assert_eq!(table.rows.len(), 3);
         assert_eq!(table.schema_version, NORMALIZED_SCHEMA_VERSION);
         assert_eq!(table.partition.dt, "2026-03-01");
         let first = &table.rows[0];
         assert_eq!(first.event_time, 1_772_323_201_665 * NANOS_PER_MILLISECOND);
         assert_eq!(first.capture_time, 42);
+        // ingest_run_id is the run identifier, not the source object URL.
+        assert_eq!(first.ingest_run_id, "ingest-run-test");
+        assert_ne!(first.ingest_run_id, accepted_dataset().object.source_url);
         assert_eq!(first.aggressor_side, "BUYER");
         assert_eq!(first.price, "617.2");
         assert_eq!(first.size, "0.3");
@@ -566,16 +582,28 @@ mod tests {
     #[test]
     fn rejects_header_mismatch() {
         let bad = "id,ts,price,volume,side,rpi\n1,1,1,1,buy,0\n";
-        let err =
-            normalize_bybit_spot_tick_trades(&accepted_dataset(), &identity(), bad, 0).unwrap_err();
+        let err = normalize_bybit_spot_tick_trades(
+            &accepted_dataset(),
+            &identity(),
+            bad,
+            0,
+            "ingest-run-test",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("header"), "{err}");
     }
 
     #[test]
     fn rejects_unknown_side() {
         let bad = "id,timestamp,price,volume,side,rpi\n1,1772323201665,617.2,0.3,hold,0\n";
-        let err =
-            normalize_bybit_spot_tick_trades(&accepted_dataset(), &identity(), bad, 0).unwrap_err();
+        let err = normalize_bybit_spot_tick_trades(
+            &accepted_dataset(),
+            &identity(),
+            bad,
+            0,
+            "ingest-run-test",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("side"), "{err}");
     }
 
@@ -584,26 +612,56 @@ mod tests {
         let bad = "id,timestamp,price,volume,side,rpi\n\
             1,1772323312219,617.2,0.3,buy,0\n\
             2,1772323201665,617.9,0.1,sell,0\n";
-        let err =
-            normalize_bybit_spot_tick_trades(&accepted_dataset(), &identity(), bad, 0).unwrap_err();
+        let err = normalize_bybit_spot_tick_trades(
+            &accepted_dataset(),
+            &identity(),
+            bad,
+            0,
+            "ingest-run-test",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("precedes previous"), "{err}");
     }
 
     #[test]
     fn rejects_non_positive_price() {
         let bad = "id,timestamp,price,volume,side,rpi\n1,1772323201665,0,0.3,buy,0\n";
-        let err =
-            normalize_bybit_spot_tick_trades(&accepted_dataset(), &identity(), bad, 0).unwrap_err();
+        let err = normalize_bybit_spot_tick_trades(
+            &accepted_dataset(),
+            &identity(),
+            bad,
+            0,
+            "ingest-run-test",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("price"), "{err}");
+    }
+
+    #[test]
+    fn rejects_empty_ingest_run_id() {
+        let err = normalize_bybit_spot_tick_trades(
+            &accepted_dataset(),
+            &identity(),
+            SAMPLE_CSV,
+            42,
+            "  ",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("ingest_run_id"), "{err}");
     }
 
     #[test]
     fn writes_and_reads_back_canonical_parquet() {
         use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
-        let table =
-            normalize_bybit_spot_tick_trades(&accepted_dataset(), &identity(), SAMPLE_CSV, 42)
-                .expect("normalize");
+        let table = normalize_bybit_spot_tick_trades(
+            &accepted_dataset(),
+            &identity(),
+            SAMPLE_CSV,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize");
         let dir = tempfile::TempDir::new().expect("temp dir");
         let path = dir.path().join("trades.parquet");
         table.write_parquet(&path).expect("write parquet");

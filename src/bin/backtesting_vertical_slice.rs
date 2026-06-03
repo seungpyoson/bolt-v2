@@ -107,6 +107,14 @@ fn main() -> Result<()> {
         .with_context(|| format!("create output dir {}", cli.output_dir.display()))?;
     let canonical_path = cli.output_dir.join(CANONICAL_ARTIFACT_FILE);
     let catalog_root = cli.output_dir.join(CATALOG_DIR);
+    // Start every run from a clean catalog. NautilusTrader's `write_to_parquet`
+    // skips writing when a file for the same instrument/interval already exists,
+    // so a leftover projection from a prior run would be silently read back and
+    // stamped with the new accepted source-proof and a stale catalog hash.
+    if catalog_root.exists() {
+        fs::remove_dir_all(&catalog_root)
+            .with_context(|| format!("clean catalog root {}", catalog_root.display()))?;
+    }
     let catalog_path = catalog_root
         .to_str()
         .context("catalog path is not valid UTF-8")?

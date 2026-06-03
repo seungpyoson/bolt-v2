@@ -274,6 +274,15 @@ pub struct SourceProofReport {
 pub enum AcceptanceError {
     /// A required identity/evidence field was empty.
     MissingField(&'static str),
+    /// A version field does not equal the contract/schema version this module
+    /// implements, so the proof was written against a different contract.
+    UnexpectedVersion {
+        field: &'static str,
+        expected: &'static str,
+        actual: String,
+    },
+    /// The proof's NautilusTrader catalog-mapping status is not `Accepted`.
+    NtMappingNotAccepted(NtMappingStatus),
     /// One or more required checks did not pass.
     UnmetChecks(Vec<&'static str>),
     /// The lower-fidelity source cannot carry an execution-quality claim.
@@ -292,6 +301,17 @@ impl std::fmt::Display for AcceptanceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingField(field) => write!(f, "missing required field: {field}"),
+            Self::UnexpectedVersion {
+                field,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "unexpected {field}: expected {expected:?}, got {actual:?}"
+            ),
+            Self::NtMappingNotAccepted(status) => {
+                write!(f, "nt_mapping_status is not accepted (status: {status:?})")
+            }
             Self::UnmetChecks(checks) => write!(f, "unmet required checks: {}", checks.join(", ")),
             Self::ForbiddenClaimMissing => {
                 write!(f, "non-L2 fidelity requires explicit forbidden claims")
@@ -322,7 +342,7 @@ impl std::error::Error for AcceptanceError {}
 
 impl SourceProofReport {
     fn check_required_identity(&self) -> Result<(), AcceptanceError> {
-        let required: [(&'static str, &str); 13] = [
+        let required: [(&'static str, &str); 15] = [
             ("source_proof_id", &self.source_proof_id),
             ("contract_version", &self.contract_version),
             ("schema_version", &self.schema_version),
@@ -335,7 +355,9 @@ impl SourceProofReport {
             ("raw_sample_uri", &self.raw_sample_uri),
             ("raw_sample_hash", &self.raw_sample_hash),
             ("schema_sample_uri", &self.schema_sample_uri),
+            ("schema_sample_hash", &self.schema_sample_hash),
             ("license_ref", &self.license_ref),
+            ("retention_ref", &self.retention_ref),
         ];
         for (name, value) in required {
             if value.trim().is_empty() {
@@ -344,6 +366,22 @@ impl SourceProofReport {
         }
         if self.source_proof_version == 0 {
             return Err(AcceptanceError::MissingField("source_proof_version"));
+        }
+        // Versions must match the contract/schema this module implements, so a
+        // proof written against a different contract cannot be accepted here.
+        if self.contract_version != CONTRACT_VERSION {
+            return Err(AcceptanceError::UnexpectedVersion {
+                field: "contract_version",
+                expected: CONTRACT_VERSION,
+                actual: self.contract_version.clone(),
+            });
+        }
+        if self.schema_version != SOURCE_PROOF_SCHEMA_VERSION {
+            return Err(AcceptanceError::UnexpectedVersion {
+                field: "schema_version",
+                expected: SOURCE_PROOF_SCHEMA_VERSION,
+                actual: self.schema_version.clone(),
+            });
         }
         Ok(())
     }
@@ -360,6 +398,11 @@ impl SourceProofReport {
     /// Returns the first blocking [`AcceptanceError`].
     pub fn evaluate_acceptance(&self) -> Result<(), AcceptanceError> {
         self.check_required_identity()?;
+        if self.nt_mapping_status != NtMappingStatus::Accepted {
+            return Err(AcceptanceError::NtMappingNotAccepted(
+                self.nt_mapping_status,
+            ));
+        }
         let unmet = self.required_checks.unmet();
         if !unmet.is_empty() {
             return Err(AcceptanceError::UnmetChecks(unmet));
@@ -663,6 +706,64 @@ mod tests {
         assert_eq!(
             proof.evaluate_acceptance().unwrap_err(),
             AcceptanceError::ForbiddenClaimMissing
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_contract_version_unexpected() {
+        let mut proof = candidate_proof();
+        proof.contract_version = "some-other-contract.v9".to_string();
+        assert_eq!(
+            proof.evaluate_acceptance().unwrap_err(),
+            AcceptanceError::UnexpectedVersion {
+                field: "contract_version",
+                expected: CONTRACT_VERSION,
+                actual: "some-other-contract.v9".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_schema_version_unexpected() {
+        let mut proof = candidate_proof();
+        proof.schema_version = "backfill-source-proof.v0".to_string();
+        assert_eq!(
+            proof.evaluate_acceptance().unwrap_err(),
+            AcceptanceError::UnexpectedVersion {
+                field: "schema_version",
+                expected: SOURCE_PROOF_SCHEMA_VERSION,
+                actual: "backfill-source-proof.v0".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_nt_mapping_not_accepted() {
+        let mut proof = candidate_proof();
+        proof.nt_mapping_status = NtMappingStatus::Pending;
+        assert_eq!(
+            proof.evaluate_acceptance().unwrap_err(),
+            AcceptanceError::NtMappingNotAccepted(NtMappingStatus::Pending)
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_schema_sample_hash_missing() {
+        let mut proof = candidate_proof();
+        proof.schema_sample_hash = "  ".to_string();
+        assert_eq!(
+            proof.evaluate_acceptance().unwrap_err(),
+            AcceptanceError::MissingField("schema_sample_hash")
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_retention_ref_missing() {
+        let mut proof = candidate_proof();
+        proof.retention_ref = String::new();
+        assert_eq!(
+            proof.evaluate_acceptance().unwrap_err(),
+            AcceptanceError::MissingField("retention_ref")
         );
     }
 

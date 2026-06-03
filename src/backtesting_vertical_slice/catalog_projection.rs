@@ -76,14 +76,16 @@ pub struct CatalogProjection {
 }
 
 /// Decimal places implied by a decimal-string increment (`0.1` -> 1,
-/// `0.0001` -> 4, `1400` -> 0).
+/// `0.0001` -> 4, `0.10` -> 2, `1.00` -> 2, `1400` -> 0).
+///
+/// Trailing zeros are significant: an exchange increment of `0.10` declares two
+/// decimal places, and trimming them would understate the precision and
+/// disagree with the precision NautilusTrader infers from the same increment
+/// string in `Price::from_str`/`Quantity::from_str`.
 #[must_use]
 fn decimal_places(increment: &str) -> u8 {
     match increment.split_once('.') {
-        Some((_, frac)) => {
-            let trimmed = frac.trim_end_matches('0');
-            u8::try_from(trimmed.len()).unwrap_or(u8::MAX)
-        }
+        Some((_, frac)) => u8::try_from(frac.len()).unwrap_or(u8::MAX),
         None => 0,
     }
 }
@@ -98,21 +100,39 @@ pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
         .with_context(|| format!("invalid nt_instrument_id {:?}", spec.nt_instrument_id))?;
     let price_precision = decimal_places(&spec.price_increment);
     let size_precision = decimal_places(&spec.size_increment);
-    let quote_currency = Currency::from(spec.quote_currency.as_str());
+    let base_currency = Currency::from_str(&spec.base_currency)
+        .with_context(|| format!("invalid base_currency {:?}", spec.base_currency))?;
+    let quote_currency = Currency::from_str(&spec.quote_currency)
+        .with_context(|| format!("invalid quote_currency {:?}", spec.quote_currency))?;
+    let price_increment = Price::from_str(&spec.price_increment).map_err(|error| {
+        anyhow::anyhow!(
+            "invalid price_increment {:?}: {error}",
+            spec.price_increment
+        )
+    })?;
+    let size_increment = Quantity::from_str(&spec.size_increment).map_err(|error| {
+        anyhow::anyhow!("invalid size_increment {:?}: {error}", spec.size_increment)
+    })?;
+    let max_quantity = Quantity::from_str(&spec.max_quantity).map_err(|error| {
+        anyhow::anyhow!("invalid max_quantity {:?}: {error}", spec.max_quantity)
+    })?;
+    let min_quantity = Quantity::from_str(&spec.min_quantity).map_err(|error| {
+        anyhow::anyhow!("invalid min_quantity {:?}: {error}", spec.min_quantity)
+    })?;
 
     Ok(CurrencyPair::new(
         instrument_id,
         Symbol::from(spec.raw_symbol.as_str()),
-        Currency::from(spec.base_currency.as_str()),
+        base_currency,
         quote_currency,
         price_precision,
         size_precision,
-        Price::from(spec.price_increment.as_str()),
-        Quantity::from(spec.size_increment.as_str()),
+        price_increment,
+        size_increment,
         None,
         None,
-        Some(Quantity::from(spec.max_quantity.as_str())),
-        Some(Quantity::from(spec.min_quantity.as_str())),
+        Some(max_quantity),
+        Some(min_quantity),
         Some(Money::new(
             spec.max_notional.parse().context("max_notional")?,
             quote_currency,
@@ -161,8 +181,13 @@ pub fn canonical_rows_to_trade_ticks(
         .rows
         .iter()
         .map(|row| {
-            let price = Price::from(rescaled(&row.price, price_precision)?.as_str());
-            let size = Quantity::from(rescaled(&row.size, size_precision)?.as_str());
+            let price_str = rescaled(&row.price, price_precision)?;
+            let price = Price::from_str(&price_str).map_err(|error| {
+                anyhow::anyhow!("invalid rescaled price {price_str:?}: {error}")
+            })?;
+            let size_str = rescaled(&row.size, size_precision)?;
+            let size = Quantity::from_str(&size_str)
+                .map_err(|error| anyhow::anyhow!("invalid rescaled size {size_str:?}: {error}"))?;
             let aggressor = match row.aggressor_side.as_str() {
                 s if s == TradeAggressorSide::Buyer.as_str() => AggressorSide::Buyer,
                 s if s == TradeAggressorSide::Seller.as_str() => AggressorSide::Seller,
@@ -392,7 +417,14 @@ mod tests {
             venue_symbol: "BNBUSDC".to_string(),
             nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
         };
-        normalize_bybit_spot_tick_trades(&accepted_dataset(), &identity, SAMPLE_CSV, 42).unwrap()
+        normalize_bybit_spot_tick_trades(
+            &accepted_dataset(),
+            &identity,
+            SAMPLE_CSV,
+            42,
+            "ingest-run-test",
+        )
+        .unwrap()
     }
 
     #[test]
@@ -400,6 +432,27 @@ mod tests {
         assert_eq!(decimal_places("0.1"), 1);
         assert_eq!(decimal_places("0.0001"), 4);
         assert_eq!(decimal_places("1400"), 0);
+        // Trailing zeros are significant: an exchange tick of `0.10` is two
+        // decimal places, matching the precision `Price::from_str` infers.
+        assert_eq!(decimal_places("0.10"), 2);
+        assert_eq!(decimal_places("1.00"), 2);
+    }
+
+    #[test]
+    fn build_currency_pair_honours_trailing_zero_increment() {
+        let mut spec = spec();
+        spec.price_increment = "0.10".to_string();
+        let instrument = build_currency_pair(&spec).expect("build instrument");
+        // Precision derived from the increment must agree with the increment's
+        // own precision, or `CurrencyPair::new` would carry mismatched scales.
+        assert_eq!(instrument.price_precision(), 2);
+    }
+
+    #[test]
+    fn build_currency_pair_rejects_malformed_decimal() {
+        let mut spec = spec();
+        spec.price_increment = "not-a-number".to_string();
+        assert!(build_currency_pair(&spec).is_err());
     }
 
     #[test]
@@ -429,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_hash_is_deterministic_and_path_sensitive() {
+    fn catalog_hash_is_deterministic_across_roots() {
         let table = canonical_table();
         let dir_a = tempfile::TempDir::new().unwrap();
         let dir_b = tempfile::TempDir::new().unwrap();
@@ -438,6 +491,23 @@ mod tests {
         assert_eq!(
             a.catalog_hash, b.catalog_hash,
             "same data must hash identically regardless of root"
+        );
+    }
+
+    #[test]
+    fn catalog_hash_is_relative_path_sensitive() {
+        // Identical file bytes under different relative paths must hash
+        // differently, proving the path is mixed into the digest.
+        let root_a = tempfile::TempDir::new().unwrap();
+        let root_b = tempfile::TempDir::new().unwrap();
+        fs::create_dir_all(root_a.path().join("data/alpha")).unwrap();
+        fs::write(root_a.path().join("data/alpha/file.parquet"), b"identical").unwrap();
+        fs::create_dir_all(root_b.path().join("data/beta")).unwrap();
+        fs::write(root_b.path().join("data/beta/file.parquet"), b"identical").unwrap();
+        assert_ne!(
+            catalog_hash(root_a.path()).unwrap(),
+            catalog_hash(root_b.path()).unwrap(),
+            "identical bytes under different relative paths must hash differently"
         );
     }
 }

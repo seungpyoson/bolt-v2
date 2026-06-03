@@ -16310,14 +16310,6 @@ reason = "Operator-facing diagnostic/output message or string-interpolation temp
 
 [[allowed]]
 path = "src/backtesting_vertical_slice/source_proof.rs"
-kind = "number"
-literal = "13"
-context = "let required: [(&'static str, &str); 13] = ["
-classification = "backtesting_slice_schema_array_arity"
-reason = "Compile-time cardinality of a fixed typed schema array, kept in lockstep with the field list it sizes."
-
-[[allowed]]
-path = "src/backtesting_vertical_slice/source_proof.rs"
 kind = "string"
 literal = "\"source_proof_id\""
 context = "(\"source_proof_id\", &self.source_proof_id),"
@@ -16707,3 +16699,83 @@ literal = "\"accepted_source_proof = {}\""
 context = "println!(\"accepted_source_proof = {}\", proof_path.display());"
 classification = "backtesting_slice_diagnostic_template"
 reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"start_time\""
+context = ".map(|value| to_nanos(\"start_time\", value))"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/run_manifest.rs"
+kind = "string"
+literal = "\"end_time\""
+context = ".map(|value| to_nanos(\"end_time\", value))"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"start_time\""
+context = "Some(\"start_time\") => bail!("
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"manifest start_time {:?} excludes all accepted data after event_time {last}\""
+context = "\"manifest start_time {:?} excludes all accepted data after event_time {last}\","
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"manifest end_time {:?} excludes all accepted data before event_time {first}\""
+context = "\"manifest end_time {:?} excludes all accepted data before event_time {first}\","
+classification = "backtesting_slice_diagnostic_template"
+reason = "Operator-facing diagnostic/output message or string-interpolation template; presentation only, the values come from the computed run."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"start_time\""
+context = "return Some(\"start_time\");"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/runner.rs"
+kind = "string"
+literal = "\"end_time\""
+context = "return Some(\"end_time\");"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "number"
+literal = "15"
+context = "let required: [(&'static str, &str); 15] = ["
+classification = "backtesting_slice_schema_array_arity"
+reason = "Compile-time cardinality of a fixed typed schema array, kept in lockstep with the field list it sizes."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"schema_sample_hash\""
+context = "(\"schema_sample_hash\", &self.schema_sample_hash),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."
+
+[[allowed]]
+path = "src/backtesting_vertical_slice/source_proof.rs"
+kind = "string"
+literal = "\"retention_ref\""
+context = "(\"retention_ref\", &self.retention_ref),"
+classification = "backtesting_slice_schema_field_name"
+reason = "Canonical schema/field identifier used in validation or serialization; structural, the guarded value is config-driven."

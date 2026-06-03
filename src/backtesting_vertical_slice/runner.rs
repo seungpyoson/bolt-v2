@@ -10,11 +10,11 @@
 //! There is no custom simulation behaviour: NautilusTrader owns the engine,
 //! catalog, fills, and results.
 
-use std::path::Path;
+use std::{path::Path, str::FromStr};
 
 use anyhow::{Context, Result, bail, ensure};
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
-use nautilus_model::{identifiers::InstrumentId, types::Quantity};
+use nautilus_model::{data::TradeTick, identifiers::InstrumentId, types::Quantity};
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
 
 use super::{
@@ -94,11 +94,10 @@ fn add_manifest_strategy(
                 .parameters
                 .get(PARAM_TRADE_SIZE)
                 .with_context(|| format!("strategy parameter {PARAM_TRADE_SIZE} is required"))?;
-            let config = HurstVpinDirectionalConfig::new(
-                instrument_id,
-                bar_type,
-                Quantity::from(trade_size_raw.as_str()),
-            );
+            let trade_size = Quantity::from_str(trade_size_raw).map_err(|error| {
+                anyhow::anyhow!("invalid {PARAM_TRADE_SIZE} {trade_size_raw:?}: {error}")
+            })?;
+            let config = HurstVpinDirectionalConfig::new(instrument_id, bar_type, trade_size);
             engine
                 .add_strategy(HurstVpinDirectional::new(config))
                 .context("add HurstVpinDirectional strategy")
@@ -122,6 +121,7 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         inputs.identity,
         inputs.csv_text,
         inputs.capture_time_nanos,
+        &inputs.manifest.run_id,
     )
     .context("canonical normalization failed")?;
     canonical_table
@@ -150,6 +150,17 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         inputs.catalog_root,
     )
     .context("catalog projection failed")?;
+    // Bind the manifest's catalog instrument id to the projected/read-back id.
+    // The engine queries the catalog under `manifest.catalog_input.nt_instrument_id`
+    // (gate 4 -> BacktestDataConfig); if that diverged from the id the read-back
+    // proof verified, NautilusTrader would query a different (or empty) directory
+    // and the run would silently execute over zero accepted trades.
+    ensure!(
+        inputs.manifest.catalog_input.nt_instrument_id == projection.nt_instrument_id,
+        "manifest catalog_input.nt_instrument_id {:?} does not match projected instrument {:?}",
+        inputs.manifest.catalog_input.nt_instrument_id,
+        projection.nt_instrument_id
+    );
     let read_back = read_back_trade_ticks(inputs.catalog_root, &projection.nt_instrument_id)
         .context("catalog read-back failed")?;
     ensure!(
@@ -158,6 +169,11 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         read_back.len(),
         canonical_table.rows.len()
     );
+    assert_read_back_matches(&read_back, &canonical_table, &projection.nt_instrument_id)?;
+    // An optional manifest time window must overlap the accepted data's event
+    // range, or the engine would filter out every accepted trade and still
+    // "succeed" over zero data while stamping the accepted source/catalog hash.
+    assert_time_window_overlaps_data(inputs.manifest, &canonical_table)?;
 
     // Gate 5: BacktestNode execution.
     let run_config = inputs
@@ -235,4 +251,124 @@ fn market_structure_label(manifest: &BacktestingRunManifest) -> &'static str {
         MarketStructureFixture::BinaryOption => "binary-option",
         MarketStructureFixture::PerpsSpot => "perps-spot",
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::time_window_excludes_all_data;
+
+    #[test]
+    fn time_window_without_bounds_admits_data() {
+        assert_eq!(time_window_excludes_all_data(None, None, 100, 200), None);
+    }
+
+    #[test]
+    fn time_window_overlapping_data_admits_data() {
+        assert_eq!(
+            time_window_excludes_all_data(Some(150), Some(180), 100, 200),
+            None
+        );
+        // A bound exactly at the edge still admits the boundary trade.
+        assert_eq!(
+            time_window_excludes_all_data(Some(200), Some(100), 100, 200),
+            None
+        );
+    }
+
+    #[test]
+    fn time_window_start_after_last_excludes_all() {
+        assert_eq!(
+            time_window_excludes_all_data(Some(201), None, 100, 200),
+            Some("start_time")
+        );
+    }
+
+    #[test]
+    fn time_window_end_before_first_excludes_all() {
+        assert_eq!(
+            time_window_excludes_all_data(None, Some(99), 100, 200),
+            Some("end_time")
+        );
+    }
+}
+
+/// Prove the catalog read-back is value-faithful, not just count-equal: every
+/// read-back tick must carry the projected instrument id, and the set of trade
+/// ids must equal the canonical table's, so a projection that silently dropped,
+/// duplicated, or relabelled ticks cannot pass the gate.
+fn assert_read_back_matches(
+    read_back: &[TradeTick],
+    canonical_table: &CanonicalTradesTable,
+    expected_instrument_id: &str,
+) -> Result<()> {
+    use std::collections::BTreeSet;
+    for tick in read_back {
+        ensure!(
+            tick.instrument_id.to_string() == expected_instrument_id,
+            "catalog read-back tick instrument {} does not match projected {expected_instrument_id}",
+            tick.instrument_id
+        );
+    }
+    let expected_ids: BTreeSet<&str> = canonical_table
+        .rows
+        .iter()
+        .map(|row| row.trade_id.as_str())
+        .collect();
+    let actual_ids: Vec<String> = read_back.iter().map(|t| t.trade_id.to_string()).collect();
+    let actual_set: BTreeSet<&str> = actual_ids.iter().map(String::as_str).collect();
+    ensure!(
+        expected_ids == actual_set,
+        "catalog read-back trade ids do not match the canonical table"
+    );
+    Ok(())
+}
+
+/// Reject a manifest time window that excludes every accepted trade. The
+/// canonical rows are validated monotonic by `event_time`, so the first and last
+/// rows bound the accepted data's event range; a `start_time` after the last
+/// trade (or an `end_time` at/ before the first) would leave the engine with no
+/// data while the run still reports the accepted source/catalog hash.
+fn assert_time_window_overlaps_data(
+    manifest: &BacktestingRunManifest,
+    canonical_table: &CanonicalTradesTable,
+) -> Result<()> {
+    let (Some(first), Some(last)) = (
+        canonical_table.rows.first().map(|row| row.event_time),
+        canonical_table.rows.last().map(|row| row.event_time),
+    ) else {
+        return Ok(());
+    };
+    match time_window_excludes_all_data(manifest.start_time, manifest.end_time, first, last) {
+        None => Ok(()),
+        Some("start_time") => bail!(
+            "manifest start_time {:?} excludes all accepted data after event_time {last}",
+            manifest.start_time
+        ),
+        Some(_) => bail!(
+            "manifest end_time {:?} excludes all accepted data before event_time {first}",
+            manifest.end_time
+        ),
+    }
+}
+
+/// Pure overlap test for a manifest `[start, end]` window against the accepted
+/// data's `[first, last]` event range. Returns the name of the bound that
+/// excludes all data, or `None` when the window admits at least one trade.
+fn time_window_excludes_all_data(
+    start: Option<i64>,
+    end: Option<i64>,
+    first: i64,
+    last: i64,
+) -> Option<&'static str> {
+    if let Some(start) = start
+        && start > last
+    {
+        return Some("start_time");
+    }
+    if let Some(end) = end
+        && end < first
+    {
+        return Some("end_time");
+    }
+    None
 }

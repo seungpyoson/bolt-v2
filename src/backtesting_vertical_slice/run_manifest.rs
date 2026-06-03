@@ -150,6 +150,10 @@ pub enum ManifestError {
         value: String,
     },
     OutputPrefixOutsideArtifactRoot,
+    NegativeTime {
+        field: &'static str,
+        value: i64,
+    },
 }
 
 impl std::fmt::Display for ManifestError {
@@ -198,6 +202,9 @@ impl std::fmt::Display for ManifestError {
             }
             Self::OutputPrefixOutsideArtifactRoot => {
                 write!(f, "output prefix must live under artifact_root/backtests/")
+            }
+            Self::NegativeTime { field, value } => {
+                write!(f, "{field} must not be negative: {value}")
             }
         }
     }
@@ -341,13 +348,25 @@ impl BacktestingRunManifest {
     pub fn to_nt_run_config(&self) -> Result<BacktestRunConfig, ManifestError> {
         let venue = self.to_nt_venue_config()?;
         let data = self.to_nt_data_config()?;
-        let to_nanos = |value: i64| UnixNanos::from(u64::try_from(value).unwrap_or_default());
+        let to_nanos = |field: &'static str, value: i64| -> Result<UnixNanos, ManifestError> {
+            u64::try_from(value)
+                .map(UnixNanos::from)
+                .map_err(|_| ManifestError::NegativeTime { field, value })
+        };
+        let start = self
+            .start_time
+            .map(|value| to_nanos("start_time", value))
+            .transpose()?;
+        let end = self
+            .end_time
+            .map(|value| to_nanos("end_time", value))
+            .transpose()?;
         Ok(BacktestRunConfig::builder()
             .id(self.run_id.clone())
             .venues(vec![venue])
             .data(vec![data])
-            .maybe_start(self.start_time.map(to_nanos))
-            .maybe_end(self.end_time.map(to_nanos))
+            .maybe_start(start)
+            .maybe_end(end)
             .build())
     }
 }
@@ -606,5 +625,61 @@ mod tests {
         let text = toml::to_string(&manifest).expect("serialize");
         let parsed = parse_manifest_toml(&text).expect("parse");
         assert_eq!(parsed, manifest);
+    }
+
+    #[test]
+    fn rejects_negative_start_time() {
+        let mut manifest = valid_manifest();
+        manifest.start_time = Some(-1);
+        assert_eq!(
+            manifest.to_nt_run_config().unwrap_err(),
+            ManifestError::NegativeTime {
+                field: "start_time",
+                value: -1,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_negative_end_time() {
+        let mut manifest = valid_manifest();
+        manifest.end_time = Some(-42);
+        assert_eq!(
+            manifest.to_nt_run_config().unwrap_err(),
+            ManifestError::NegativeTime {
+                field: "end_time",
+                value: -42,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_data_type() {
+        let mut manifest = valid_manifest();
+        manifest.catalog_input.data_type = "QuoteTick".to_string();
+        assert_eq!(
+            manifest.to_nt_data_config().unwrap_err(),
+            ManifestError::UnsupportedDataType {
+                data_type: "QuoteTick".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_oms_type() {
+        let mut manifest = valid_manifest();
+        manifest.venue.oms_type = "INVALID".to_string();
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::UnsupportedEnum {
+                field: "venue.oms_type",
+                value: "INVALID".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_manifest_toml() {
+        assert!(parse_manifest_toml("this is not = valid = toml").is_err());
     }
 }

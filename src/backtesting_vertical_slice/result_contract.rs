@@ -348,6 +348,44 @@ mod tests {
     }
 
     #[test]
+    fn rejects_promotion_language_in_claim_limits_and_blockers() {
+        for phrase in BANNED_PROMOTION_PHRASES {
+            let mut c = contract();
+            c.claim_limits.push(format!("note: {phrase} later"));
+            assert!(
+                matches!(
+                    c.assert_objective(),
+                    Err(ResultContractError::SubjectivePromotionLanguage { ref field, .. })
+                        if field == "claim_limits"
+                ),
+                "claim_limits should reject {phrase:?}"
+            );
+
+            let mut c = contract();
+            c.mechanical_blockers.push(format!("blocked: {phrase}"));
+            assert!(
+                matches!(
+                    c.assert_objective(),
+                    Err(ResultContractError::SubjectivePromotionLanguage { ref field, .. })
+                        if field == "mechanical_blockers"
+                ),
+                "mechanical_blockers should reject {phrase:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn benign_language_passes_objectivity() {
+        let mut c = contract();
+        c.warnings
+            .push("Data is trade-only; coverage is one day.".to_string());
+        c.mechanical_blockers
+            .push("Run halted: catalog read-back count mismatch.".to_string());
+        c.assert_objective()
+            .expect("benign operational language must pass");
+    }
+
+    #[test]
     fn rejects_missing_claim_limits() {
         let mut c = contract();
         c.claim_limits.clear();

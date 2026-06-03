@@ -59,18 +59,21 @@ use crate::{
     },
     bolt_v3_providers::hyperliquid_artifacts::{
         HyperliquidLiveSubmitApprovalBinding, HyperliquidLiveSubmitApprovalInput,
-        HyperliquidLiveSubmitOrderLimits, HyperliquidProductSubmitProofBinding,
+        HyperliquidLiveSubmitOrderLimits, HyperliquidProductSubmitProofArtifactInput,
+        HyperliquidProductSubmitProofBinding, HyperliquidProductSubmitProofEvidenceRef,
         consume_hyperliquid_live_submit_approval_artifact,
         persist_consumed_hyperliquid_live_submit_approval_artifact,
         read_hyperliquid_live_submit_approval_artifact,
         validate_hyperliquid_product_submit_proof_artifact_bytes,
         write_hyperliquid_live_submit_approval_artifact,
+        write_hyperliquid_product_submit_proof_artifact,
     },
     bolt_v3_providers::{
         CanaryProofArtifactsProviderContext, ProviderAdapterMapContext, ProviderCredentialedBlock,
         ProviderLiveSubmitApproval, ProviderLiveSubmitApprovalContext, ProviderLiveSubmitApprovals,
-        ProviderLiveSubmitOrderLimits, ProviderSecretRequirement, ProviderSecretResolveContext,
-        ProviderSsmPathReference, ResolvedClientSecrets, SsmSecretResolver,
+        ProviderLiveSubmitOrderLimits, ProviderProductSubmitProofArtifactRequest,
+        ProviderSecretRequirement, ProviderSecretResolveContext, ProviderSsmPathReference,
+        ResolvedClientSecrets, SsmSecretResolver,
     },
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
     strategies::registry::FeeProvider,
@@ -970,6 +973,39 @@ pub fn write_configured_live_submit_approval_artifact(
     .map_err(anyhow::Error::new)
 }
 
+pub fn write_product_submit_proof_artifact(
+    request: ProviderProductSubmitProofArtifactRequest<'_>,
+) -> Result<WrittenOperatorArtifact, anyhow::Error> {
+    let product_surface = parse_product_surface_name(request.product_surface).ok_or_else(|| {
+        anyhow::anyhow!("unsupported product_surface `{}`", request.product_surface)
+    })?;
+    write_hyperliquid_product_submit_proof_artifact(
+        HyperliquidProductSubmitProofArtifactInput {
+            provider_id: request.provider_id.to_string(),
+            product_surface,
+            toml_checksum: request.toml_checksum.to_string(),
+            order_proof: product_submit_proof_evidence_ref(request.order_proof),
+            fill_proof: product_submit_proof_evidence_ref(request.fill_proof),
+            rounding_proof: product_submit_proof_evidence_ref(request.rounding_proof),
+            fee_proof: product_submit_proof_evidence_ref(request.fee_proof),
+            settlement_proof: request
+                .settlement_proof
+                .map(product_submit_proof_evidence_ref),
+        },
+        request.output_path,
+    )
+    .map_err(anyhow::Error::new)
+}
+
+fn product_submit_proof_evidence_ref(
+    reference: crate::bolt_v3_providers::ProviderArtifactReference<'_>,
+) -> HyperliquidProductSubmitProofEvidenceRef {
+    HyperliquidProductSubmitProofEvidenceRef {
+        artifact_path: reference.artifact_path.to_string(),
+        artifact_sha256: reference.artifact_sha256.to_string(),
+    }
+}
+
 pub fn collect_canary_proof_artifacts(
     context: CanaryProofArtifactsProviderContext<'_>,
 ) -> Pin<
@@ -1720,6 +1756,17 @@ fn product_surface_name(surface: HyperliquidProductSurface) -> &'static str {
         HyperliquidProductSurface::Hip3BuilderPerps => "hip3_builder_perps",
         HyperliquidProductSurface::Hip4Outcomes => "hip4_outcomes",
     }
+}
+
+fn parse_product_surface_name(value: &str) -> Option<HyperliquidProductSurface> {
+    [
+        HyperliquidProductSurface::StandardPerps,
+        HyperliquidProductSurface::Spot,
+        HyperliquidProductSurface::Hip3BuilderPerps,
+        HyperliquidProductSurface::Hip4Outcomes,
+    ]
+    .into_iter()
+    .find(|surface| product_surface_name(*surface) == value)
 }
 
 fn secrets_for<'a>(

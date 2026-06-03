@@ -124,7 +124,7 @@ fn bolt_v3_cli_exposes_hyperliquid_product_submit_proof_command_without_raw_secr
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
             "operator-artifacts",
-            "generate-hyperliquid-product-submit-proof",
+            "generate-product-submit-proof",
             "--help",
         ])
         .output()
@@ -132,11 +132,12 @@ fn bolt_v3_cli_exposes_hyperliquid_product_submit_proof_command_without_raw_secr
 
     assert!(
         output.status.success(),
-        "expected operator-artifacts generate-hyperliquid-product-submit-proof help to pass, stderr: {}",
+        "expected operator-artifacts generate-product-submit-proof help to pass, stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--provider-key"), "{stdout}");
     assert!(stdout.contains("--provider-id"), "{stdout}");
     assert!(stdout.contains("--product-surface"), "{stdout}");
     assert!(stdout.contains("--toml-checksum"), "{stdout}");
@@ -181,7 +182,9 @@ fn bolt_v3_cli_writes_hyperliquid_product_submit_proof_artifact() {
     let output = Command::new(env!("CARGO_BIN_EXE_bolt-v2"))
         .args([
             "operator-artifacts",
-            "generate-hyperliquid-product-submit-proof",
+            "generate-product-submit-proof",
+            "--provider-key",
+            "HYPERLIQUID",
             "--provider-id",
             "hyperliquid-standard-perps-test",
             "--product-surface",

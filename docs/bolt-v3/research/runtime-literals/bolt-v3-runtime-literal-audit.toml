@@ -16562,6 +16562,46 @@ reason = '''This labels a provider-side Hyperliquid operator-artifact validation
 [[allowed]]
 path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
 kind = '''string'''
+literal = '''"provider_id"'''
+context = '''validate_hyperliquid_product_submit_proof_non_empty_field("provider_id", &input.provider_id)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the provider id inside a generated Hyperliquid product-submit proof artifact; the provider id value remains operator/config-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"toml_checksum"'''
+context = '''validate_hyperliquid_product_submit_proof_sha256_field("toml_checksum", &input.toml_checksum)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the TOML checksum inside a generated Hyperliquid product-submit proof artifact; the checksum value remains config/evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"order_proof"'''
+context = '''validate_hyperliquid_product_submit_proof_evidence_ref("order_proof", &input.order_proof)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the order-proof reference supplied to the Hyperliquid product-submit proof artifact writer; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fill_proof"'''
+context = '''validate_hyperliquid_product_submit_proof_evidence_ref("fill_proof", &input.fill_proof)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fill-proof reference supplied to the Hyperliquid product-submit proof artifact writer; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
+literal = '''"fee_proof"'''
+context = '''validate_hyperliquid_product_submit_proof_evidence_ref("fee_proof", &input.fee_proof)?;'''
+classification = '''provider_artifact_validation_field'''
+reason = '''This labels the fee-proof reference supplied to the Hyperliquid product-submit proof artifact writer; the referenced proof remains evidence-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_providers/hyperliquid_artifacts.rs'''
+kind = '''string'''
 literal = '''"used_at"'''
 context = '''"used_at",'''
 classification = '''provider_artifact_validation_field'''

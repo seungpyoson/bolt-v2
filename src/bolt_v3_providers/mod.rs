@@ -21,7 +21,7 @@ pub mod hyperliquid_artifacts;
 pub mod market_data;
 pub mod polymarket;
 
-use std::{any::Any, collections::BTreeMap, fmt, future::Future, pin::Pin, sync::Arc};
+use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, pin::Pin, sync::Arc};
 
 use nautilus_model::identifiers::Venue;
 use rust_decimal::Decimal;
@@ -167,6 +167,25 @@ pub struct ProviderLiveSubmitApprovalContext<'a> {
     pub build_head_sha: &'a str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderArtifactReference<'a> {
+    pub artifact_path: &'a str,
+    pub artifact_sha256: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderProductSubmitProofArtifactRequest<'a> {
+    pub provider_id: &'a str,
+    pub product_surface: &'a str,
+    pub toml_checksum: &'a str,
+    pub order_proof: ProviderArtifactReference<'a>,
+    pub fill_proof: ProviderArtifactReference<'a>,
+    pub rounding_proof: ProviderArtifactReference<'a>,
+    pub fee_proof: ProviderArtifactReference<'a>,
+    pub settlement_proof: Option<ProviderArtifactReference<'a>>,
+    pub output_path: &'a Path,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderLiveSubmitOrderLimits {
     pub max_order_count: u32,
@@ -265,6 +284,11 @@ type LiveSubmitApprovalArtifactWriter =
     for<'a> fn(
         ProviderLiveSubmitApprovalContext<'a>,
         u64,
+    ) -> Result<WrittenOperatorArtifact, anyhow::Error>;
+
+type ProductSubmitProofArtifactWriter =
+    for<'a> fn(
+        ProviderProductSubmitProofArtifactRequest<'a>,
     ) -> Result<WrittenOperatorArtifact, anyhow::Error>;
 
 pub struct EntryDecisionSourceProviderContext<'a> {
@@ -562,6 +586,7 @@ pub struct ProviderBinding {
         -> Result<BoltV3ClientAdapterConfig, BoltV3AdapterMappingError>,
     pub load_live_submit_approval: Option<LiveSubmitApprovalLoader>,
     pub write_live_submit_approval_artifact: Option<LiveSubmitApprovalArtifactWriter>,
+    pub write_product_submit_proof_artifact: Option<ProductSubmitProofArtifactWriter>,
     pub build_fee_provider: Option<FeeProviderBuilder>,
     pub collect_entry_decision_source_inputs: Option<EntryDecisionSourceInputCollector>,
     pub collect_canary_proof_artifacts: Option<CanaryProofArtifactsCollector>,
@@ -581,6 +606,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: polymarket::map_adapters,
         load_live_submit_approval: None,
         write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: Some(polymarket::build_fee_provider),
         collect_entry_decision_source_inputs: Some(
             polymarket::collect_entry_decision_source_inputs,
@@ -600,6 +626,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: binance::map_adapters,
         load_live_submit_approval: None,
         write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -619,6 +646,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: Some(
             hyperliquid::write_configured_live_submit_approval_artifact,
         ),
+        write_product_submit_proof_artifact: Some(hyperliquid::write_product_submit_proof_artifact),
         build_fee_provider: Some(hyperliquid::build_fee_provider),
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: Some(hyperliquid::collect_canary_proof_artifacts),
@@ -636,6 +664,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: market_data::map_bitmex_adapters,
         load_live_submit_approval: None,
         write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -653,6 +682,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: market_data::map_bybit_adapters,
         load_live_submit_approval: None,
         write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -670,6 +700,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: market_data::map_coinbase_adapters,
         load_live_submit_approval: None,
         write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -687,6 +718,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: market_data::map_deribit_adapters,
         load_live_submit_approval: None,
         write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -704,6 +736,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: market_data::map_okx_adapters,
         load_live_submit_approval: None,
         write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
@@ -721,6 +754,7 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         map_adapters: market_data::map_kraken_adapters,
         load_live_submit_approval: None,
         write_live_submit_approval_artifact: None,
+        write_product_submit_proof_artifact: None,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,

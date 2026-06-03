@@ -66,12 +66,8 @@ use bolt_v2::{
     },
     bolt_v3_providers::{
         ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
-        ProviderLiveSubmitApprovalContext, binding_for_provider_key,
-        hyperliquid::HyperliquidProductSurface,
-        hyperliquid_artifacts::{
-            HyperliquidProductSubmitProofArtifactInput, HyperliquidProductSubmitProofEvidenceRef,
-            write_hyperliquid_product_submit_proof_artifact,
-        },
+        ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
+        ProviderProductSubmitProofArtifactRequest, binding_for_provider_key,
         sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
     bolt_v3_secrets::{check_no_forbidden_credential_env_vars, resolve_bolt_v3_secrets},
@@ -183,11 +179,13 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         expires_at_unix_seconds: u64,
     },
-    GenerateHyperliquidProductSubmitProof {
+    GenerateProductSubmitProof {
+        #[arg(long)]
+        provider_key: String,
         #[arg(long)]
         provider_id: String,
         #[arg(long)]
-        product_surface: HyperliquidProductSurfaceArg,
+        product_surface: String,
         #[arg(long)]
         toml_checksum: String,
         #[arg(long)]
@@ -743,34 +741,11 @@ enum FinalVerificationStage {
     PostRun,
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum HyperliquidProductSurfaceArg {
-    #[value(name = "standard_perps")]
-    StandardPerps,
-    #[value(name = "spot")]
-    Spot,
-    #[value(name = "hip3_builder_perps")]
-    Hip3BuilderPerps,
-    #[value(name = "hip4_outcomes")]
-    Hip4Outcomes,
-}
-
 impl From<FinalVerificationStage> for FinalOperatorPacketVerificationScope {
     fn from(stage: FinalVerificationStage) -> Self {
         match stage {
             FinalVerificationStage::PreRun => Self::PreRun,
             FinalVerificationStage::PostRun => Self::PostRun,
-        }
-    }
-}
-
-impl From<HyperliquidProductSurfaceArg> for HyperliquidProductSurface {
-    fn from(surface: HyperliquidProductSurfaceArg) -> Self {
-        match surface {
-            HyperliquidProductSurfaceArg::StandardPerps => Self::StandardPerps,
-            HyperliquidProductSurfaceArg::Spot => Self::Spot,
-            HyperliquidProductSurfaceArg::Hip3BuilderPerps => Self::Hip3BuilderPerps,
-            HyperliquidProductSurfaceArg::Hip4Outcomes => Self::Hip4Outcomes,
         }
     }
 }
@@ -914,7 +889,8 @@ fn run_operator_artifacts_command(
             )?;
             print_written_operator_artifact(&written)
         }
-        OperatorArtifactsCommand::GenerateHyperliquidProductSubmitProof {
+        OperatorArtifactsCommand::GenerateProductSubmitProof {
+            provider_key,
             provider_id,
             product_surface,
             toml_checksum,
@@ -931,15 +907,13 @@ fn run_operator_artifacts_command(
             output,
         } => {
             let settlement_proof = match (
-                settlement_proof_artifact_path,
-                settlement_proof_artifact_sha256,
+                settlement_proof_artifact_path.as_deref(),
+                settlement_proof_artifact_sha256.as_deref(),
             ) {
-                (Some(artifact_path), Some(artifact_sha256)) => {
-                    Some(HyperliquidProductSubmitProofEvidenceRef {
-                        artifact_path,
-                        artifact_sha256,
-                    })
-                }
+                (Some(artifact_path), Some(artifact_sha256)) => Some(ProviderArtifactReference {
+                    artifact_path,
+                    artifact_sha256,
+                }),
                 (None, None) => None,
                 _ => {
                     return Err(
@@ -948,31 +922,37 @@ fn run_operator_artifacts_command(
                     );
                 }
             };
-            let written = write_hyperliquid_product_submit_proof_artifact(
-                HyperliquidProductSubmitProofArtifactInput {
-                    provider_id,
-                    product_surface: product_surface.into(),
-                    toml_checksum,
-                    order_proof: HyperliquidProductSubmitProofEvidenceRef {
-                        artifact_path: order_proof_artifact_path,
-                        artifact_sha256: order_proof_artifact_sha256,
-                    },
-                    fill_proof: HyperliquidProductSubmitProofEvidenceRef {
-                        artifact_path: fill_proof_artifact_path,
-                        artifact_sha256: fill_proof_artifact_sha256,
-                    },
-                    rounding_proof: HyperliquidProductSubmitProofEvidenceRef {
-                        artifact_path: rounding_proof_artifact_path,
-                        artifact_sha256: rounding_proof_artifact_sha256,
-                    },
-                    fee_proof: HyperliquidProductSubmitProofEvidenceRef {
-                        artifact_path: fee_proof_artifact_path,
-                        artifact_sha256: fee_proof_artifact_sha256,
-                    },
-                    settlement_proof,
+            let binding = binding_for_provider_key(&provider_key).ok_or_else(|| {
+                format!("provider_key `{provider_key}` is not supported by this build")
+            })?;
+            let writer = binding.write_product_submit_proof_artifact.ok_or_else(|| {
+                format!(
+                    "provider_key `{provider_key}` does not support product-submit proof materialization"
+                )
+            })?;
+            let written = writer(ProviderProductSubmitProofArtifactRequest {
+                provider_id: &provider_id,
+                product_surface: &product_surface,
+                toml_checksum: &toml_checksum,
+                order_proof: ProviderArtifactReference {
+                    artifact_path: &order_proof_artifact_path,
+                    artifact_sha256: &order_proof_artifact_sha256,
                 },
-                &output,
-            )?;
+                fill_proof: ProviderArtifactReference {
+                    artifact_path: &fill_proof_artifact_path,
+                    artifact_sha256: &fill_proof_artifact_sha256,
+                },
+                rounding_proof: ProviderArtifactReference {
+                    artifact_path: &rounding_proof_artifact_path,
+                    artifact_sha256: &rounding_proof_artifact_sha256,
+                },
+                fee_proof: ProviderArtifactReference {
+                    artifact_path: &fee_proof_artifact_path,
+                    artifact_sha256: &fee_proof_artifact_sha256,
+                },
+                settlement_proof,
+                output_path: &output,
+            })?;
             print_written_operator_artifact(&written)
         }
         OperatorArtifactsCommand::UpdateOperatorEvidenceToml {

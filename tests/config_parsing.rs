@@ -5830,6 +5830,68 @@ fn rejects_loss_governor_market_exit_with_halted_trading_state() {
 }
 
 #[test]
+fn rejects_loss_governor_market_exit_with_halted_cross_reason() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    let mutated = replace_in_fixture_root(
+        "on_untrusted_snapshot_trading_state = \"none\"",
+        "on_untrusted_snapshot_trading_state = \"halted\"",
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("cross-reason market-exit fixture should parse");
+    let messages = validate_root_only(&root);
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("market_exit=all_registered_strategies")
+                && message.contains("on_untrusted_snapshot_trading_state=halted")
+        }),
+        "expected cross-reason halted plus market-exit validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
+fn rejects_loss_governor_market_exit_strategy_account_mismatch() {
+    use bolt_v2::{
+        bolt_v3_config::{BoltV3RootConfig, BoltV3StrategyConfig, LoadedStrategy},
+        bolt_v3_validate::{validate_root_only, validate_strategies},
+    };
+
+    let root: BoltV3RootConfig = toml::from_str(&replace_in_fixture_root(
+        "account_id = \"POLYMARKET-001\"\nsignature_type = \"poly_proxy\"",
+        "account_id = \"POLYMARKET-OTHER\"\nsignature_type = \"poly_proxy\"",
+    ))
+    .expect("account-mismatch fixture should parse");
+    let root_messages = validate_root_only(&root);
+    assert!(
+        root_messages.is_empty(),
+        "root-only validation should not own strategy account checks: {root_messages:#?}"
+    );
+    let strategy_path = support::repo_path("tests/fixtures/bolt_v3/strategies/binary_oracle.toml");
+    let strategy_text = std::fs::read_to_string(&strategy_path).expect("strategy fixture reads");
+    let strategy: BoltV3StrategyConfig =
+        toml::from_str(&strategy_text).expect("strategy fixture parses");
+    let messages = validate_strategies(
+        &root,
+        &[LoadedStrategy {
+            config_path: strategy_path,
+            relative_path: "strategies/binary_oracle.toml".to_string(),
+            config: strategy,
+        }],
+    );
+
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("market_exit=all_registered_strategies")
+                && message.contains("execution_client_id `polymarket_main`")
+                && message.contains("POLYMARKET-OTHER")
+                && message.contains("risk.loss_governor.account_id `POLYMARKET-001`")
+        }),
+        "expected strategy account mismatch validation error, got: {messages:#?}"
+    );
+}
+
+#[test]
 fn bolt_v3_capital_pool_config_uses_explicit_account_product_and_sizing_policy() {
     use bolt_v2::bolt_v3_config::load_bolt_v3_config;
     use nautilus_model::identifiers::AccountId;

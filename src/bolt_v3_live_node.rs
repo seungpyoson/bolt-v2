@@ -3559,8 +3559,13 @@ fn build_live_node_with_clients(
         )
         .map_err(BoltV3LiveNodeError::StrategyRegistration)?
     };
+    let mut market_exit_strategy_ids = strategy_summary
+        .registered
+        .iter()
+        .map(|strategy| StrategyId::from(strategy.registered_strategy_id.as_str()))
+        .collect::<Vec<_>>();
     if proof_executor_enabled {
-        register_canary_proof_executor_on_node(
+        if let Some(proof_executor_strategy_id) = register_canary_proof_executor_on_node(
             &mut node,
             loaded,
             resolved,
@@ -3571,7 +3576,9 @@ fn build_live_node_with_clients(
             BoltV3LiveNodeError::StrategyRegistration(BoltV3StrategyRegistrationError::Evidence {
                 message: error.to_string(),
             })
-        })?;
+        })? {
+            market_exit_strategy_ids.push(proof_executor_strategy_id);
+        }
     }
     for strategy in &strategy_summary.registered {
         log::info!(
@@ -3581,13 +3588,15 @@ fn build_live_node_with_clients(
             strategy.registered_strategy_id
         );
     }
-    let loss_halt_action_handler =
-        match (loss_policy.clone(), loss_halt_action_policy.as_ref()) {
-            (Some(policy), Some(action_policy)) => Some(
-                loss_governor_halt_action_handler_from_node(&node, policy, *action_policy),
-            ),
-            _ => None,
-        };
+    let loss_halt_action_handler = match (loss_policy.clone(), loss_halt_action_policy.as_ref()) {
+        (Some(policy), Some(action_policy)) => Some(loss_governor_halt_action_handler_from_node(
+            &node,
+            policy,
+            *action_policy,
+            market_exit_strategy_ids,
+        )),
+        _ => None,
+    };
     if let Some(handler) = loss_halt_action_handler.as_ref() {
         handler(None, startup_observed_at_ns);
     }
@@ -3845,6 +3854,7 @@ fn loss_governor_halt_action_handler_from_node(
     node: &LiveNode,
     loss_policy: LossGovernorPolicy,
     action_policy: LossGovernorHaltActionPolicy,
+    market_exit_strategy_ids: Vec<StrategyId>,
 ) -> LossGovernorHaltActionHandler {
     let risk_engine = node.kernel().risk_engine().clone();
     let trader = node.kernel().trader().clone();
@@ -3852,9 +3862,11 @@ fn loss_governor_halt_action_handler_from_node(
     Rc::new(move |snapshot, now_ns| {
         let decision = evaluate_loss_admission(&loss_policy, snapshot, now_ns);
         let current_state = risk_engine.borrow().trading_state();
-        if decision.accepted && current_state == TradingState::Active {
+        if current_state == TradingState::Active {
             market_exit_latch.borrow_mut().clear();
-            return;
+            if decision.accepted {
+                return;
+            }
         }
 
         let action = next_loss_governor_halt_action(&action_policy, current_state, &decision);
@@ -3865,19 +3877,22 @@ fn loss_governor_halt_action_handler_from_node(
             return;
         }
 
-        let strategy_ids = trader.borrow().strategy_ids();
-        for strategy_id in strategy_ids {
-            if !market_exit_latch
-                .borrow_mut()
-                .mark_dispatch_attempted(strategy_id)
+        for strategy_id in &market_exit_strategy_ids {
+            if market_exit_latch
+                .borrow()
+                .has_dispatch_succeeded(strategy_id)
             {
                 continue;
             }
-            if let Err(error) = Trader::market_exit_strategy(&trader, &strategy_id) {
+            if let Err(error) = Trader::market_exit_strategy(&trader, strategy_id) {
                 log::error!(
                     "loss-governor NT market exit failed for strategy {strategy_id}: {error}"
                 );
+                continue;
             }
+            market_exit_latch
+                .borrow_mut()
+                .mark_dispatch_succeeded(*strategy_id);
         }
     })
 }

@@ -62,22 +62,26 @@ pub struct LossGovernorHaltActionDecision {
 
 #[derive(Debug)]
 pub struct LossGovernorMarketExitLatch {
-    dispatched_strategy_ids: BTreeSet<StrategyId>,
+    succeeded_strategy_ids: BTreeSet<StrategyId>,
 }
 
 impl LossGovernorMarketExitLatch {
     pub fn new() -> Self {
         Self {
-            dispatched_strategy_ids: BTreeSet::new(),
+            succeeded_strategy_ids: BTreeSet::new(),
         }
     }
 
-    pub fn mark_dispatch_attempted(&mut self, strategy_id: StrategyId) -> bool {
-        self.dispatched_strategy_ids.insert(strategy_id)
+    pub fn has_dispatch_succeeded(&self, strategy_id: &StrategyId) -> bool {
+        self.succeeded_strategy_ids.contains(strategy_id)
+    }
+
+    pub fn mark_dispatch_succeeded(&mut self, strategy_id: StrategyId) -> bool {
+        self.succeeded_strategy_ids.insert(strategy_id)
     }
 
     pub fn clear(&mut self) {
-        self.dispatched_strategy_ids.clear();
+        self.succeeded_strategy_ids.clear();
     }
 }
 
@@ -536,16 +540,19 @@ mod tests {
     }
 
     #[test]
-    fn market_exit_latch_marks_once_and_clears_on_recovery() {
+    fn market_exit_latch_marks_success_once_and_clears_on_recovery() {
         let strategy_id = nautilus_model::identifiers::StrategyId::from("STRATEGY-LATCH-001");
         let mut latch = LossGovernorMarketExitLatch::new();
 
-        assert!(latch.mark_dispatch_attempted(strategy_id));
-        assert!(!latch.mark_dispatch_attempted(strategy_id));
+        assert!(!latch.has_dispatch_succeeded(&strategy_id));
+        assert!(latch.mark_dispatch_succeeded(strategy_id));
+        assert!(latch.has_dispatch_succeeded(&strategy_id));
+        assert!(!latch.mark_dispatch_succeeded(strategy_id));
 
         latch.clear();
 
-        assert!(latch.mark_dispatch_attempted(strategy_id));
+        assert!(!latch.has_dispatch_succeeded(&strategy_id));
+        assert!(latch.mark_dispatch_succeeded(strategy_id));
     }
 
     #[test]

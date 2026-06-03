@@ -42,7 +42,7 @@ use std::{
 
 use nautilus_model::{
     enums::{BarAggregation, BarIntervalType},
-    identifiers::{ClientOrderId, InstrumentId, StrategyId},
+    identifiers::{AccountId, ClientOrderId, InstrumentId, StrategyId},
 };
 use rust_decimal::Decimal;
 
@@ -127,6 +127,7 @@ const TARGET_RESOLUTION_KIND_FIELD: &str = "resolution_kind";
 const TARGET_PROVIDER_ID_FIELD: &str = "provider_id";
 const TARGET_PROVIDER_PREFERENCE_FIELD: &str = "provider_preference";
 const TARGET_ALLOWED_PROVIDER_IDS_FIELD: &str = "allowed_provider_ids";
+const EXECUTION_ACCOUNT_ID_FIELD: &str = stringify!(account_id);
 const LIVE_CANARY_PROOF_POLICY_KIND: &str = "least_bad_strategy_candidate";
 const LIVE_CANARY_PROOF_POLICY_CANDIDATE_SCORE_SOURCE: &str = "proof_source";
 const LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE: &str = "fixed";
@@ -988,6 +989,12 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
                 loss_governor.on_untrusted_snapshot_trading_state,
                 loss_governor.on_untrusted_snapshot_market_exit,
             ));
+            errors.extend(validate_loss_governor_market_exit_combination(
+                loss_governor.on_loss_breach_trading_state,
+                loss_governor.on_untrusted_snapshot_trading_state,
+                loss_governor.on_loss_breach_market_exit,
+                loss_governor.on_untrusted_snapshot_market_exit,
+            ));
         }
         for (label, threshold) in [
             (
@@ -1694,19 +1701,61 @@ fn validate_loss_governor_market_exit_pair(
     )]
 }
 
+fn validate_loss_governor_market_exit_combination(
+    on_loss_breach_trading_state: Option<LossGovernorTradingStateAction>,
+    on_untrusted_snapshot_trading_state: Option<LossGovernorTradingStateAction>,
+    on_loss_breach_market_exit: Option<LossGovernorMarketExitAction>,
+    on_untrusted_snapshot_market_exit: Option<LossGovernorMarketExitAction>,
+) -> Vec<String> {
+    if !matches!(
+        on_loss_breach_market_exit,
+        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+    ) && !matches!(
+        on_untrusted_snapshot_market_exit,
+        Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
+    ) {
+        return Vec::new();
+    }
+
+    let mut errors = Vec::new();
+    if matches!(
+        on_loss_breach_trading_state,
+        Some(LossGovernorTradingStateAction::Halted)
+    ) {
+        errors.push(
+            "risk.loss_governor market_exit=all_registered_strategies cannot be combined with on_loss_breach_trading_state=halted; use reducing or disable market exit"
+                .to_string(),
+        );
+    }
+    if matches!(
+        on_untrusted_snapshot_trading_state,
+        Some(LossGovernorTradingStateAction::Halted)
+    ) {
+        errors.push(
+            "risk.loss_governor market_exit=all_registered_strategies cannot be combined with on_untrusted_snapshot_trading_state=halted; use reducing or disable market exit"
+                .to_string(),
+        );
+    }
+    errors
+}
+
 pub fn validate_strategies(root: &BoltV3RootConfig, strategies: &[LoadedStrategy]) -> Vec<String> {
     let mut errors = Vec::new();
-    if root
+    let loss_governor_market_exit_enabled = root
         .risk
         .loss_governor
         .as_ref()
-        .is_some_and(loss_governor_market_exit_enabled)
-        && strategies.is_empty()
-    {
-        errors.push(
-            "risk.loss_governor market_exit=all_registered_strategies requires at least one loaded strategy"
-                .to_string(),
-        );
+        .is_some_and(loss_governor_market_exit_enabled);
+    if loss_governor_market_exit_enabled {
+        if strategies.is_empty() {
+            errors.push(
+                "risk.loss_governor market_exit=all_registered_strategies requires at least one loaded strategy"
+                    .to_string(),
+            );
+        }
+        errors.extend(validate_loss_governor_market_exit_strategy_accounts(
+            root, strategies,
+        ));
     }
 
     let mut seen_instance_ids: HashSet<&str> = HashSet::new();
@@ -1792,6 +1841,76 @@ fn loss_governor_market_exit_enabled(
         loss_governor.on_untrusted_snapshot_market_exit,
         Some(LossGovernorMarketExitAction::AllRegisteredStrategies)
     )
+}
+
+fn validate_loss_governor_market_exit_strategy_accounts(
+    root: &BoltV3RootConfig,
+    strategies: &[LoadedStrategy],
+) -> Vec<String> {
+    let Some(loss_governor) = root.risk.loss_governor.as_ref() else {
+        return Vec::new();
+    };
+    let mut errors = Vec::new();
+    for loaded in strategies {
+        let strategy = &loaded.config;
+        let context = format!("strategy `{}`", loaded.relative_path);
+        let execution_client_id = strategy.execution_client_id.as_str();
+        let Some(client) = root.clients.get(execution_client_id) else {
+            continue;
+        };
+        let Some(execution) = client.execution.as_ref() else {
+            continue;
+        };
+        match execution_account_id(execution) {
+            Ok(account_id) if account_id == loss_governor.account_id => {}
+            Ok(account_id) => errors.push(format!(
+                "{context}: market_exit=all_registered_strategies requires execution_client_id `{execution_client_id}` account_id `{account_id}` to match risk.loss_governor.account_id `{}`",
+                loss_governor.account_id
+            )),
+            Err(message) => errors.push(format!(
+                "{context}: market_exit=all_registered_strategies requires execution_client_id `{execution_client_id}` [execution].account_id to match risk.loss_governor.account_id `{}` ({message})",
+                loss_governor.account_id
+            )),
+        }
+    }
+
+    if let Some(proof_policy) = root
+        .live_canary
+        .as_ref()
+        .and_then(|live_canary| live_canary.proof_policy.as_ref())
+        .filter(|proof_policy| proof_policy.enabled)
+    {
+        let execution_client_id = proof_policy.execution_client_id.as_str();
+        if let Some(client) = root.clients.get(execution_client_id) {
+            if let Some(execution) = client.execution.as_ref() {
+                match execution_account_id(execution) {
+                    Ok(account_id) if account_id == loss_governor.account_id => {}
+                    Ok(account_id) => errors.push(format!(
+                        "live_canary.proof_policy: market_exit=all_registered_strategies requires execution_client_id `{execution_client_id}` account_id `{account_id}` to match risk.loss_governor.account_id `{}`",
+                        loss_governor.account_id
+                    )),
+                    Err(message) => errors.push(format!(
+                        "live_canary.proof_policy: market_exit=all_registered_strategies requires execution_client_id `{execution_client_id}` [execution].account_id to match risk.loss_governor.account_id `{}` ({message})",
+                        loss_governor.account_id
+                    )),
+                }
+            }
+        }
+    }
+    errors
+}
+
+fn execution_account_id(execution: &toml::Value) -> Result<AccountId, &'static str> {
+    let Some(table) = execution.as_table() else {
+        return Err("execution block must be a TOML table");
+    };
+    let Some(account_id) = table.get(EXECUTION_ACCOUNT_ID_FIELD) else {
+        return Err("missing account_id");
+    };
+    let Some(account_id) = account_id.as_str() else {
+        return Err("account_id must be a string");
+    };
+    AccountId::new_checked(account_id).map_err(|_| "account_id is not a valid NT account id")
 }
 
 fn validate_target_gate_provider_references(

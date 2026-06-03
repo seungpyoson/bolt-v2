@@ -234,6 +234,20 @@ pub fn project_canonical_trades_to_catalog(
     let ticks = canonical_rows_to_trade_ticks(table, &instrument)?;
     let trade_count = ticks.len();
 
+    // Fail closed on a dirty catalog root. NautilusTrader's `write_to_parquet`
+    // skips writing when a file for the same instrument/interval already exists,
+    // so projecting into a non-empty root could silently read back stale data
+    // under this run's source proof and a stale catalog hash. The caller owns
+    // the output lifecycle and must hand us a clean (absent or empty) root.
+    if catalog_root.exists() {
+        let mut entries = fs::read_dir(catalog_root)
+            .with_context(|| format!("read catalog root {}", catalog_root.display()))?;
+        ensure!(
+            entries.next().is_none(),
+            "catalog root {} is not empty; refusing to project into a dirty catalog",
+            catalog_root.display()
+        );
+    }
     fs::create_dir_all(catalog_root)
         .with_context(|| format!("create catalog root {}", catalog_root.display()))?;
     let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
@@ -479,6 +493,17 @@ mod tests {
         assert_eq!(loaded[0].instrument_id.to_string(), "BNBUSDC.BYBIT");
         // 617 rescaled to price precision 1 -> 617.0
         assert_eq!(loaded[2].price, Price::from("617.0"));
+    }
+
+    #[test]
+    fn projection_refuses_dirty_catalog_root() {
+        let table = canonical_table();
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        // Pre-seed the catalog root so it is non-empty.
+        fs::write(dir.path().join("stale.parquet"), b"stale").unwrap();
+        let err = project_canonical_trades_to_catalog(&table, &spec(), dir.path())
+            .expect_err("dirty catalog root must be refused");
+        assert!(err.to_string().contains("not empty"), "{err}");
     }
 
     #[test]

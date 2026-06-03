@@ -3455,11 +3455,21 @@ fn abort_plan_mismatch(field: &'static str) -> anyhow::Error {
 }
 
 fn expected_abort_plan_strategy_source_sha256() -> String {
-    sha256_text(include_str!("strategies/binary_oracle_edge_taker.rs"))
+    // Hash the canonical bytes EMBEDDED IN THE BINARY at compile time
+    // (`build.rs` re-emits them into `$OUT_DIR/strategy.canonical` via the same
+    // walk the runtime digest uses) — layout-independent yet still hashing
+    // compiled-in bytes, so tamper-evidence is preserved.
+    sha256_text(include_str!(concat!(
+        env!("OUT_DIR"),
+        "/strategy.canonical"
+    )))
 }
 
 fn expected_abort_plan_submit_admission_source_sha256() -> String {
-    sha256_text(include_str!("bolt_v3_submit_admission.rs"))
+    sha256_text(include_str!(concat!(
+        env!("OUT_DIR"),
+        "/submit_admission.canonical"
+    )))
 }
 
 fn abort_plan_blocked(field: &'static str) -> anyhow::Error {
@@ -3709,8 +3719,10 @@ pub fn phase8_sha256_text(value: &str) -> String {
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    format!("{digest:x}")
+    // Thin re-export of the ONE consolidated lowercase-hex SHA-256 primitive.
+    // `hex::encode` and the prior `format!("{digest:x}")` are byte-identical for
+    // a 32-byte digest, so this is behavior-preserving.
+    crate::bolt_v3_source_integrity::sha256_hex_lower(bytes)
 }
 
 #[cfg(test)]

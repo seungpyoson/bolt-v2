@@ -70,6 +70,7 @@ use crate::{
         materialize_venue_account_state_source_from_configured_account_queries,
     },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
+    bolt_v3_source_integrity::{canonical_source_bytes, canonical_source_digest},
     bolt_v3_tiny_canary_evidence::{
         Phase8AbortPlanEvidenceFile, Phase8AbortPlanSourceProofs, Phase8CanaryEvidence,
         Phase8CanaryEvidenceInput, Phase8EvidenceRef, Phase8FinancialEnvelopeEvidenceFile,
@@ -6636,23 +6637,24 @@ pub fn write_abort_plan_artifact_from_source_collectors(
         submit_admission_source_path,
         max_source_bytes,
     )?;
-    let strategy_source_bytes =
-        read_file_bounded(strategy_source_path, max_source_bytes).map_err(|source| {
-            BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceRead {
+    // Canonicalize each gated root through the single owner so the producer's
+    // recorded digests can never diverge from the verifier's compile-time embed
+    // post-split (file-or-directory resolved at runtime). In today's single-file
+    // layout the identity branch yields byte-identical bytes → identical digest.
+    let strategy_source_sha256 = canonical_source_digest(strategy_source_path, max_source_bytes)
+        .map_err(
+            |source| BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceRead {
                 path: strategy_source_path.to_path_buf(),
                 source,
-            }
-        })?;
-    let submit_admission_source_bytes =
-        read_file_bounded(submit_admission_source_path, max_source_bytes).map_err(|source| {
-            BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceRead {
+            },
+        )?;
+    let submit_admission_source_sha256 =
+        canonical_source_digest(submit_admission_source_path, max_source_bytes).map_err(
+            |source| BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceRead {
                 path: submit_admission_source_path.to_path_buf(),
                 source,
-            }
-        })?;
-    let strategy_source_sha256 = hex::encode(Sha256::digest(&strategy_source_bytes));
-    let submit_admission_source_sha256 =
-        hex::encode(Sha256::digest(&submit_admission_source_bytes));
+            },
+        )?;
     let proofs = OwnedPhase8AbortPlanSourceProofs {
         cancel_if_open_evidence_hash: cancel_if_open.cancel_if_open_evidence_hash,
         nt_accepted_venue_pending_abort_evidence_hash: venue_pending
@@ -6680,8 +6682,8 @@ pub fn collect_abort_plan_cancel_if_open_source_proof(
     strategy_source_path: &Path,
     max_strategy_source_bytes: u64,
 ) -> Result<Phase8AbortPlanCancelIfOpenSourceProof, BoltV3OperatorArtifactError> {
-    let strategy_source_bytes = read_file_bounded(strategy_source_path, max_strategy_source_bytes)
-        .map_err(
+    let strategy_source_bytes =
+        canonical_source_bytes(strategy_source_path, max_strategy_source_bytes).map_err(
             |source| BoltV3OperatorArtifactError::AbortPlanCancelIfOpenSourceRead {
                 path: strategy_source_path.to_path_buf(),
                 source,
@@ -6712,13 +6714,13 @@ pub fn collect_abort_plan_nt_accepted_venue_pending_source_proof(
     strategy_source_path: &Path,
     max_strategy_source_bytes: u64,
 ) -> Result<Phase8AbortPlanNtAcceptedVenuePendingSourceProof, BoltV3OperatorArtifactError> {
-    let strategy_source_bytes = read_file_bounded(strategy_source_path, max_strategy_source_bytes)
-        .map_err(|source| {
-            BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceRead {
+    let strategy_source_bytes =
+        canonical_source_bytes(strategy_source_path, max_strategy_source_bytes).map_err(
+            |source| BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceRead {
                 path: strategy_source_path.to_path_buf(),
                 source,
-            }
-        })?;
+            },
+        )?;
     let strategy_source_sha256 = hex::encode(Sha256::digest(&strategy_source_bytes));
     let strategy_source = std::str::from_utf8(&strategy_source_bytes).map_err(|_| {
         BoltV3OperatorArtifactError::AbortPlanNtAcceptedVenuePendingSourceInvalid {
@@ -6747,8 +6749,8 @@ pub fn collect_abort_plan_partial_fill_source_proof(
     strategy_source_path: &Path,
     max_strategy_source_bytes: u64,
 ) -> Result<Phase8AbortPlanPartialFillSourceProof, BoltV3OperatorArtifactError> {
-    let strategy_source_bytes = read_file_bounded(strategy_source_path, max_strategy_source_bytes)
-        .map_err(
+    let strategy_source_bytes =
+        canonical_source_bytes(strategy_source_path, max_strategy_source_bytes).map_err(
             |source| BoltV3OperatorArtifactError::AbortPlanPartialFillSourceRead {
                 path: strategy_source_path.to_path_buf(),
                 source,
@@ -6782,8 +6784,8 @@ pub fn collect_abort_plan_network_partition_source_proof(
     strategy_source_path: &Path,
     max_strategy_source_bytes: u64,
 ) -> Result<Phase8AbortPlanNetworkPartitionSourceProof, BoltV3OperatorArtifactError> {
-    let strategy_source_bytes = read_file_bounded(strategy_source_path, max_strategy_source_bytes)
-        .map_err(
+    let strategy_source_bytes =
+        canonical_source_bytes(strategy_source_path, max_strategy_source_bytes).map_err(
             |source| BoltV3OperatorArtifactError::AbortPlanNetworkPartitionSourceRead {
                 path: strategy_source_path.to_path_buf(),
                 source,
@@ -6864,7 +6866,7 @@ fn read_abort_plan_panic_gate_service_policy_source(
     source_path: &Path,
     max_source_bytes: u64,
 ) -> Result<Vec<u8>, BoltV3OperatorArtifactError> {
-    read_file_bounded(source_path, max_source_bytes).map_err(|source| {
+    canonical_source_bytes(source_path, max_source_bytes).map_err(|source| {
         BoltV3OperatorArtifactError::AbortPlanPanicGateServicePolicySourceRead {
             path: source_path.to_path_buf(),
             source,
@@ -17371,7 +17373,7 @@ fn normalize_path_components(path: &Path) -> PathBuf {
 }
 
 fn sha256_text(value: &str) -> String {
-    hex::encode(Sha256::digest(value.as_bytes()))
+    crate::bolt_v3_source_integrity::sha256_hex_lower(value.as_bytes())
 }
 
 fn static_artifact_ref(

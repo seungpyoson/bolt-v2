@@ -90,7 +90,7 @@ fn entry_decision_source_schema_version_tracks_signal_quote_split() {
         "bolt_v3.binary_oracle_entry_decision_source.v3"
     );
 }
-use support::{repo_path, valid_entry_readiness_gate_session_json};
+use support::{registry_root_path, repo_path, valid_entry_readiness_gate_session_json};
 
 // Test-only updown fixture values mirror tests/fixtures/bolt_v3/strategies/binary_oracle.toml.
 const TEST_MARKET_SELECTION_UNDERLYING_ASSET: &str = "CONFIGURED_ASSET";
@@ -4115,8 +4115,9 @@ fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
         .as_str();
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
-    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
-    let submit_admission_source_path = repo_path("src/bolt_v3_submit_admission.rs");
+    let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
+    let submit_admission_source_path =
+        registry_root_path(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY);
 
     let cancel_if_open =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -4328,7 +4329,7 @@ fn abort_plan_writer_rejects_each_undefined_source_path_without_artifact() {
 fn abort_plan_cancel_if_open_source_proof_derives_from_strategy_cancel_sources() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
-    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+    let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
 
     let proof =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_cancel_if_open_source_proof(
@@ -4357,7 +4358,7 @@ fn abort_plan_cancel_if_open_source_proof_derives_from_strategy_cancel_sources()
 fn abort_plan_nt_accepted_venue_pending_source_proof_derives_from_exit_pending_lifecycle() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
-    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+    let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
 
     let proof = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_nt_accepted_venue_pending_source_proof(
         &strategy_source_path,
@@ -4573,7 +4574,7 @@ fn noisy_terminal_call_source(&mut self, event: OrderExpired) {
 fn abort_plan_partial_fill_source_proof_derives_from_exit_fill_lifecycle() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
-    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+    let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
 
     let proof = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_partial_fill_source_proof(
         &strategy_source_path,
@@ -4805,7 +4806,7 @@ fn on_position_closed(&mut self, event: nautilus_model::events::PositionClosed) 
 fn abort_plan_network_partition_source_proof_derives_from_submit_error_restore() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
-    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
+    let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
 
     let proof =
         bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_network_partition_source_proof(
@@ -4871,8 +4872,9 @@ fn try_submit_exit_order(&mut self) -> Result<Option<ClientOrderId>> {
 fn abort_plan_panic_gate_service_policy_source_proof_derives_from_strategy_and_admission_sources() {
     let temp = tempfile::tempdir().expect("tempdir should create");
     let abort_plan_path = temp.path().join("abort-plan.json");
-    let strategy_source_path = repo_path("src/strategies/binary_oracle_edge_taker.rs");
-    let submit_admission_source_path = repo_path("src/bolt_v3_submit_admission.rs");
+    let strategy_source_path = registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY);
+    let submit_admission_source_path =
+        registry_root_path(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY);
 
     let proof = bolt_v2::bolt_v3_operator_artifacts::collect_abort_plan_panic_gate_service_policy_source_proof(
         &strategy_source_path,
@@ -15477,8 +15479,8 @@ fn write_collector_derived_abort_plan_static_artifact_for_test(
         bolt_v2::bolt_v3_operator_artifacts::write_abort_plan_artifact_from_source_collectors(
             loaded,
             strategy_instance_id,
-            &repo_path("src/strategies/binary_oracle_edge_taker.rs"),
-            &repo_path("src/bolt_v3_submit_admission.rs"),
+            &registry_root_path(bolt_v2::bolt_v3_source_integrity::STRATEGY_KEY),
+            &registry_root_path(bolt_v2::bolt_v3_source_integrity::SUBMIT_ADMISSION_KEY),
             1_000_000,
             &abort_plan_path,
         )

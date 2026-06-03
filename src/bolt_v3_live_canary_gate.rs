@@ -20,7 +20,6 @@ use nautilus_model::identifiers::ActorId;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
@@ -2788,7 +2787,7 @@ fn current_unix_seconds() -> Result<u64, BoltV3LiveCanaryGateError> {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
+    crate::bolt_v3_source_integrity::sha256_hex_lower(bytes)
 }
 
 const REQUIRED_NO_SUBMIT_READINESS_STAGES: &[&str] = &[

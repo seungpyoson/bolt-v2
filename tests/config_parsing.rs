@@ -4453,7 +4453,6 @@ manage_own_order_books = false
 default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
-bypass = false
 max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
@@ -4883,7 +4882,6 @@ manage_own_order_books = false
 default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
-bypass = false
 max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
@@ -5625,31 +5623,45 @@ fn rejects_invalid_external_client_id_at_parse_time() {
 }
 
 #[test]
-fn rejects_nt_risk_bypass_true() {
-    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+fn rejects_nt_risk_bypass_key_at_parse_time() {
+    use bolt_v2::bolt_v3_config::BoltV3RootConfig;
 
-    let mutated = replace_in_fixture_root("bypass = false", "bypass = true");
-    let root: BoltV3RootConfig =
-        toml::from_str(&mutated).expect("risk.nautilus.bypass=true fixture should parse");
-    let messages = validate_root_only(&root);
-    assert!(
-        messages
-            .iter()
-            .any(|m| m.contains("risk.nautilus.bypass must be false")),
-        "expected risk.nautilus.bypass=false validation error, got: {messages:#?}"
+    let mutated = replace_in_fixture_root(
+        "[risk.nautilus]\nmax_order_submit_rate",
+        "[risk.nautilus]\nbypass = true\nmax_order_submit_rate",
     );
+    let error = toml::from_str::<BoltV3RootConfig>(&mutated)
+        .expect_err("risk.nautilus.bypass must not be part of the TOML schema");
+    let message = error.to_string();
+    assert!(
+        message.contains("unknown field `bypass`"),
+        "expected unknown-field rejection for risk.nautilus.bypass, got: {message}"
+    );
+}
+
+#[test]
+fn shipped_root_configs_do_not_expose_nt_risk_bypass() {
+    for (label, source) in [
+        ("config/root.toml", include_str!("../config/root.toml")),
+        (
+            "tests/fixtures/bolt_v3/root.toml",
+            include_str!("fixtures/bolt_v3/root.toml"),
+        ),
+    ] {
+        assert!(
+            !source.contains("\nbypass =") && !source.starts_with("bypass ="),
+            "{label} must not expose risk.nautilus.bypass"
+        );
+    }
 }
 
 #[test]
 fn rejects_nt_risk_values_unsupported_by_rust_live_runtime() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    // Anchor on the bypass=false line which is unique to [risk.nautilus]
-    // so neither replace bleeds into the [nautilus.data_engine] /
-    // [nautilus.exec_engine] qsize and graceful_shutdown_on_error fields.
     let mutated = replace_in_fixture_root(
-        "bypass = false\nmax_order_submit_rate",
-        "bypass = false\ngraceful_shutdown_on_error_marker_anchor\nmax_order_submit_rate",
+        "[risk.nautilus]\nmax_order_submit_rate",
+        "[risk.nautilus]\ngraceful_shutdown_on_error_marker_anchor\nmax_order_submit_rate",
     )
     .replace(
         "debug = false\ngraceful_shutdown_on_error = false\nqsize = 100000",

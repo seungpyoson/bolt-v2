@@ -162,7 +162,6 @@ manage_own_order_books = false
 default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
-bypass = false
 max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
@@ -504,12 +503,11 @@ This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTra
 - enforced by bolt-v3 strategy validation: each strategy file's `parameters.order_notional_target` must be `<=` this value
 - not automatically expanded into NautilusTrader per-instrument maps; `risk.nautilus.max_notional_per_order` is the explicit NT map when instrument-level caps are intentionally configured
 
-#### `bypass` (inside `[risk.nautilus]`)
+#### NautilusTrader risk-engine bypass (removed config field)
 
-- type: boolean
-- required: yes
-- maps to Nautilus `LiveRiskEngineConfig.bypass`
-- must remain `false` for production configurations unless a separately reviewed safety exception is approved
+- the previously configurable `bypass` field inside `[risk.nautilus]` has been removed
+- NautilusTrader `LiveRiskEngineConfig.bypass` is now pinned to `false` directly in code (in the live-node config construction); there is no config knob and no "safety exception" path
+- a stray `bypass` key under `[risk.nautilus]` is rejected at parse time via `deny_unknown_fields`
 
 #### `max_order_submit_rate` (inside `[risk.nautilus]`)
 
@@ -1903,7 +1901,6 @@ manage_own_order_books = false
 default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
-bypass = false
 max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}

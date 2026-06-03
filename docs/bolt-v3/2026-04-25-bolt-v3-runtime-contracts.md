@@ -174,7 +174,8 @@ Current implementation behavior:
 - Bolt-v3 maps the complete pinned `LoggerConfig` field set without relying on `LoggerConfig::default()` inheritance; `file_config` stays `None` and `clear_log_file` stays `false` because the pinned Rust live runtime rejects any other value at build-time validation
 - Bolt-v3 maps the remaining top-level `LiveNodeConfig` residuals explicitly and does not rely on top-level `LiveNodeConfig::default()` inheritance
 - `scripts/verify_bolt_v3_runtime_literals.py` scans production root `src/bolt_v3_*.rs` files plus files under `src/bolt_v3_*` module directories and requires candidate runtime-bearing literals to be classified in `docs/bolt-v3/research/runtime-literals/bolt-v3-runtime-literal-audit.toml`
-- the baseline fixture asserts all explicit data-engine values, `risk.nautilus.bypass = false`, `100/00:01:00` submit/modify rate limits (the per-minute submit/modify throttle is reconciled against the Polymarket REST egress cap; see `validate_order_rate_within_venue_egress`), an empty NT per-instrument notional map, `risk.nautilus.debug = false`, current NT-default `risk.nautilus.qsize`, and all explicit exec-engine values
+- the NautilusTrader risk-engine bypass invariant is not a fixture/config field; it is pinned to `false` in code in the live-node config construction (`make_live_node_config`), so no TOML edit can disable pre-trade risk checks
+- the baseline fixture asserts all explicit data-engine values, `100/00:01:00` submit/modify rate limits (the per-minute submit/modify throttle is reconciled against the Polymarket REST egress cap; see `validate_order_rate_within_venue_egress`), an empty NT per-instrument notional map, `risk.nautilus.debug = false`, current NT-default `risk.nautilus.qsize`, and all explicit exec-engine values
 
 Future synchronization behavior:
 

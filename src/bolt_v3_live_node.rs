@@ -3562,7 +3562,10 @@ pub fn make_live_node_config(loaded: &LoadedBoltV3Config) -> LiveNodeConfig {
         manage_own_order_books: exec.manage_own_order_books,
     };
     let risk_engine = nautilus_live::config::LiveRiskEngineConfig {
-        bypass: loaded.root.risk.nautilus.bypass,
+        // Mandated safety invariant: the NT live risk engine must never be
+        // bypassed. This is pinned in code with no config knob so no TOML edit
+        // or operator override can disable pre-trade risk checks.
+        bypass: false,
         max_order_submit_rate: loaded.root.risk.nautilus.max_order_submit_rate.clone(),
         max_order_modify_rate: loaded.root.risk.nautilus.max_order_modify_rate.clone(),
         // Bolt stores this as a BTreeMap for deterministic config/debug output;

@@ -911,9 +911,6 @@ fn validate_risk_block(block: &RiskBlock) -> Vec<String> {
             ));
         }
     }
-    if block.nautilus.bypass {
-        errors.push("risk.nautilus.bypass must be false".to_string());
-    }
     if block.nautilus.graceful_shutdown_on_error {
         errors.push(
             "risk.nautilus.graceful_shutdown_on_error must be false; NT rejects true on the Rust live runtime"

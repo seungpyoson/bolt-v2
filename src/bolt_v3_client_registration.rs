@@ -239,13 +239,13 @@ mod tests {
     }
 
     #[test]
-    fn fixture_clients_register_one_data_and_one_exec_for_polymarket_and_one_data_for_binance() {
+    fn fixture_clients_register_strategy_data_exec_signal_and_probe_clients() {
         let adapters = fixture_adapters_with_binance_reference();
 
         let (_builder, summary) = register_bolt_v3_clients(fresh_builder(), adapters)
             .expect("registration should succeed");
 
-        assert_eq!(summary.clients.len(), 2);
+        assert_eq!(summary.clients.len(), 3);
         let polymarket = summary
             .clients
             .get("polymarket_main")
@@ -269,6 +269,15 @@ mod tests {
         assert!(
             !binance.execution,
             "binance_reference has no [execution] block in the fixture"
+        );
+        let okx = summary
+            .clients
+            .get("okx_data")
+            .expect("okx_data must appear in summary");
+        assert!(okx.data, "okx_data has a [data] block in the fixture");
+        assert!(
+            !okx.execution,
+            "okx_data has no [execution] block in the fixture"
         );
     }
 

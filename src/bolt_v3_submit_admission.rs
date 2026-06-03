@@ -9,6 +9,7 @@ use nautilus_model::{
     types::Price,
 };
 use rust_decimal::Decimal;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +17,52 @@ use crate::bolt_v3_canary_proof_policy::CANARY_PROOF_CLAIM;
 pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
 
 const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct BoltV3ExchangeMutationCounts {
+    pub submit: u64,
+    pub cancel: u64,
+    pub modify: u64,
+    pub transfer: u64,
+    pub account: u64,
+}
+
+impl BoltV3ExchangeMutationCounts {
+    pub const fn none() -> Self {
+        Self {
+            submit: 0,
+            cancel: 0,
+            modify: 0,
+            transfer: 0,
+            account: 0,
+        }
+    }
+
+    pub fn total(self) -> Result<u64, BoltV3SubmitAdmissionError> {
+        self.submit
+            .checked_add(self.cancel)
+            .and_then(|total| total.checked_add(self.modify))
+            .and_then(|total| total.checked_add(self.transfer))
+            .and_then(|total| total.checked_add(self.account))
+            .ok_or(BoltV3SubmitAdmissionError::ExchangeMutationCountOverflow)
+    }
+}
+
+pub fn validate_no_exchange_mutations(
+    counts: BoltV3ExchangeMutationCounts,
+) -> Result<u64, BoltV3SubmitAdmissionError> {
+    let mutation_count = counts.total()?;
+    if mutation_count == 0 {
+        return Ok(mutation_count);
+    }
+    Err(BoltV3SubmitAdmissionError::ExchangeMutationsObserved { mutation_count })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3LiveSubmitApprovalLimits {
+    pub max_order_count: u32,
+    pub max_order_notional: Decimal,
+}
 
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionState {
@@ -26,7 +73,9 @@ pub struct BoltV3SubmitAdmissionState {
 #[derive(Debug)]
 struct BoltV3SubmitAdmissionInner {
     gate_report: Option<BoltV3LiveCanaryGateReport>,
+    live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
     admitted_order_count: u32,
+    admitted_order_count_by_execution_client: BTreeMap<String, u32>,
     admitted_entry_order_count: u32,
     admitted_risk_reducing_exit_order_count: u32,
     admitted_replace_submit_order_count: u32,
@@ -34,10 +83,19 @@ struct BoltV3SubmitAdmissionInner {
 
 impl BoltV3SubmitAdmissionState {
     pub fn new_unarmed(decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>) -> Self {
+        Self::new_unarmed_with_live_submit_limits(decision_evidence, BTreeMap::new())
+    }
+
+    pub fn new_unarmed_with_live_submit_limits(
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
+    ) -> Self {
         Self {
             inner: Mutex::new(BoltV3SubmitAdmissionInner {
                 gate_report: None,
+                live_submit_approval_limits,
                 admitted_order_count: 0,
+                admitted_order_count_by_execution_client: BTreeMap::new(),
                 admitted_entry_order_count: 0,
                 admitted_risk_reducing_exit_order_count: 0,
                 admitted_replace_submit_order_count: 0,
@@ -59,6 +117,7 @@ impl BoltV3SubmitAdmissionState {
         }
         inner.gate_report = Some(report);
         inner.admitted_order_count = 0;
+        inner.admitted_order_count_by_execution_client.clear();
         inner.admitted_entry_order_count = 0;
         inner.admitted_risk_reducing_exit_order_count = 0;
         inner.admitted_replace_submit_order_count = 0;
@@ -76,6 +135,7 @@ impl BoltV3SubmitAdmissionState {
         let outcome = Self::evaluate(&inner, request);
         let evidence = BoltV3AdmissionDecisionEvidence {
             strategy_id: request.strategy_id.clone(),
+            execution_client_id: request.execution_client_id.clone(),
             client_order_id: request.client_order_id.clone(),
             instrument_id: request.instrument_id.clone(),
             notional: request.notional.to_string(),
@@ -90,6 +150,10 @@ impl BoltV3SubmitAdmissionState {
         match outcome {
             BoltV3AdmissionOutcome::Admitted => {
                 inner.admitted_order_count += 1;
+                *inner
+                    .admitted_order_count_by_execution_client
+                    .entry(request.execution_client_id.clone())
+                    .or_insert(0) += 1;
                 match request.intent_kind {
                     BoltV3SubmitIntentKind::Entry => {
                         inner.admitted_entry_order_count += 1;
@@ -136,6 +200,23 @@ impl BoltV3SubmitAdmissionState {
         }
         if request.notional <= Decimal::ZERO {
             return BoltV3AdmissionOutcome::RejectedNonPositiveNotional;
+        }
+        if let Some(limits) = inner
+            .live_submit_approval_limits
+            .get(&request.execution_client_id)
+        {
+            if request.notional > limits.max_order_notional {
+                return BoltV3AdmissionOutcome::RejectedNotionalCapExceeded;
+            }
+            if inner
+                .admitted_order_count_by_execution_client
+                .get(&request.execution_client_id)
+                .copied()
+                .unwrap_or(0)
+                >= limits.max_order_count
+            {
+                return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+            }
         }
         let Some(report) = inner.gate_report.as_ref() else {
             if request.canary_proof_claim.is_some() {
@@ -285,6 +366,7 @@ impl BoltV3SubmitLifecyclePolicy {
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionRequest {
     pub strategy_id: String,
+    pub execution_client_id: String,
     pub client_order_id: String,
     pub instrument_id: String,
     pub notional: Decimal,
@@ -551,6 +633,10 @@ pub enum BoltV3SubmitAdmissionError {
         rounded_base_notional: Decimal,
         intended_notional: Decimal,
     },
+    ExchangeMutationCountOverflow,
+    ExchangeMutationsObserved {
+        mutation_count: u64,
+    },
     InvalidCanaryProofClaim,
     InvalidRiskReducingExitProof,
     EvidenceWriteFailed {
@@ -586,6 +672,13 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             } => write!(
                 f,
                 "bolt-v3 submit admission rejected: rounded order notional {rounded_base_notional} exceeded operator-intended notional {intended_notional}"
+            ),
+            Self::ExchangeMutationCountOverflow => {
+                write!(f, "bolt-v3 no-submit exchange mutation counter overflowed")
+            }
+            Self::ExchangeMutationsObserved { mutation_count } => write!(
+                f,
+                "bolt-v3 no-submit exchange mutation guard observed {mutation_count} mutating request(s)"
             ),
             Self::InvalidCanaryProofClaim => write!(
                 f,

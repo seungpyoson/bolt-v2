@@ -70,7 +70,10 @@ use bolt_v2::{
         ProviderProductSubmitProofArtifactRequest, binding_for_provider_key,
         sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
-    bolt_v3_secrets::{check_no_forbidden_credential_env_vars, resolve_bolt_v3_secrets},
+    bolt_v3_secrets::{
+        check_no_forbidden_credential_env_vars, resolve_bolt_v3_client_secrets,
+        resolve_bolt_v3_secrets,
+    },
     secrets::SsmResolverSession,
 };
 
@@ -878,7 +881,8 @@ fn run_operator_artifacts_command(
                 )
             })?;
             let ssm_resolver_session = SsmResolverSession::new()?;
-            let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
+            let resolved =
+                resolve_bolt_v3_client_secrets(&ssm_resolver_session, &loaded, &client_key)?;
             let build_head_sha = current_build_head_sha()
                 .ok_or("bolt-v3 build head_sha is unavailable or invalid")?;
             let now_unix_seconds = current_unix_seconds_for_cli()?;
@@ -914,7 +918,8 @@ fn run_operator_artifacts_command(
                 )
             })?;
             let ssm_resolver_session = SsmResolverSession::new()?;
-            let resolved = resolve_bolt_v3_secrets(&ssm_resolver_session, &loaded)?;
+            let resolved =
+                resolve_bolt_v3_client_secrets(&ssm_resolver_session, &loaded, &client_key)?;
             let build_head_sha = current_build_head_sha()
                 .ok_or("bolt-v3 build head_sha is unavailable or invalid")?;
             let now_unix_seconds = current_unix_seconds_for_cli()?;

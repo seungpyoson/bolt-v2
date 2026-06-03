@@ -1379,7 +1379,6 @@ impl PricingState {
         }
 
         self.last_reference_fair_value = Some(quote.price);
-        self.lead_quality_policy_applied = true;
     }
 
     fn observe_signal_quote(
@@ -2135,7 +2134,6 @@ impl BinaryOracleEdgeTaker {
     }
 
     fn observe_signal_quote(&mut self, quote: &FastSpotObservation) {
-        self.active.observe_reference_quote(quote);
         self.pricing.observe_signal_quote(
             quote,
             self.config.lead_agreement_min_corr,
@@ -8355,6 +8353,7 @@ mod tests {
 
         assert_eq!(strategy.pricing.last_reference_fair_value, Some(101.0));
         assert_eq!(strategy.pricing.fast_spot, None);
+        assert!(!strategy.pricing.lead_quality_policy_applied);
     }
 
     #[test]
@@ -8372,6 +8371,29 @@ mod tests {
         assert_eq!(
             strategy.pricing.fast_spot,
             Some(fast_spot("signal_data_client", 101.5, 1_200))
+        );
+        assert!(strategy.pricing.lead_quality_policy_applied);
+    }
+
+    #[test]
+    fn signal_quote_tick_does_not_warm_active_reference_state() {
+        let mut strategy = test_strategy();
+        let mut market = candidate_market("market-1", 1_000);
+        market.price_to_beat = Some(3_100.0);
+        strategy
+            .apply_selection_snapshot(selection_snapshot(1_000, SelectionState::Active { market }));
+        strategy.pricing.last_reference_fair_value = Some(3_101.0);
+
+        strategy
+            .on_quote(&quote_tick("SIGNAL.SOURCE", 3_102.0, 3_104.0, 1_200))
+            .expect("signal quote should process");
+
+        assert_eq!(strategy.active.interval_open, None);
+        assert_eq!(strategy.active.last_reference_ts_ms, None);
+        assert_eq!(strategy.active.warmup_count, INITIAL_COUNTER_U64);
+        assert_eq!(
+            strategy.pricing.fast_spot,
+            Some(fast_spot("signal_data_client", 3_103.0, 1_200))
         );
     }
 

@@ -199,6 +199,8 @@ const CHAINLINK_DATA_STREAMS_HMAC_IPAD: u8 = 0x36;
 const CHAINLINK_DATA_STREAMS_HMAC_OPAD: u8 = 0x5c;
 const REFERENCE_QUOTE_SOURCE_SCHEMA_VERSION: u32 = 1;
 const REFERENCE_QUOTE_SOURCE_RECORD_KIND: &str = "bolt_v3.reference_quote_source.v1";
+const SIGNAL_QUOTE_SOURCE_SCHEMA_VERSION: u32 = 1;
+const SIGNAL_QUOTE_SOURCE_RECORD_KIND: &str = "bolt_v3.signal_quote_source.v1";
 const REFERENCE_QUOTE_OBSERVATIONS_SOURCE_SCHEMA_VERSION: u32 = 1;
 const REFERENCE_QUOTE_OBSERVATIONS_SOURCE_RECORD_KIND: &str =
     "bolt_v3.reference_quote_observations_source.v1";
@@ -7005,6 +7007,8 @@ pub struct EntryDecisionSourceInputRequest<'a> {
     pub max_price_to_beat_source_bytes: u64,
     pub reference_quote_source_path: &'a Path,
     pub max_reference_quote_source_bytes: u64,
+    pub signal_quote_source_path: &'a Path,
+    pub max_signal_quote_source_bytes: u64,
     pub realized_volatility_source_path: &'a Path,
     pub max_realized_volatility_source_bytes: u64,
     pub market_inputs: EntryDecisionSourceMarketInputs<'a>,
@@ -7019,6 +7023,8 @@ pub struct EntryDecisionSourceCollectionRequest<'a> {
     pub max_price_to_beat_source_bytes: u64,
     pub reference_quote_source_path: &'a Path,
     pub max_reference_quote_source_bytes: u64,
+    pub signal_quote_source_path: &'a Path,
+    pub max_signal_quote_source_bytes: u64,
     pub realized_volatility_source_path: &'a Path,
     pub max_realized_volatility_source_bytes: u64,
     pub decision_source_output_path: &'a Path,
@@ -7038,6 +7044,8 @@ pub struct CanaryProofArtifactsCollectionRequest<'a> {
     pub max_price_to_beat_source_bytes: u64,
     pub reference_quote_source_path: &'a Path,
     pub max_reference_quote_source_bytes: u64,
+    pub signal_quote_source_path: &'a Path,
+    pub max_signal_quote_source_bytes: u64,
     pub realized_volatility_source_path: &'a Path,
     pub max_realized_volatility_source_bytes: u64,
     pub gate_session_output_path: &'a Path,
@@ -7135,6 +7143,16 @@ struct ReferenceQuoteSource {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+struct SignalQuoteSource {
+    schema_version: u32,
+    record_kind: String,
+    venue: String,
+    price: f64,
+    observed_ts_ms: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct RealizedVolatilitySource {
     schema_version: u32,
     record_kind: String,
@@ -7172,6 +7190,7 @@ struct ReferenceQuoteObservationSource {
 struct EntryDecisionSourceProofs {
     price_source: SourceBoundPriceToBeatSource,
     reference_quote: ReferenceQuoteSource,
+    signal_quote: SignalQuoteSource,
     realized_volatility: RealizedVolatilitySource,
 }
 
@@ -7277,6 +7296,8 @@ pub(crate) struct EntryDecisionSourceProofFileRequest<'a> {
     pub max_price_to_beat_source_bytes: u64,
     pub reference_quote_source_path: &'a Path,
     pub max_reference_quote_source_bytes: u64,
+    pub signal_quote_source_path: &'a Path,
+    pub max_signal_quote_source_bytes: u64,
     pub realized_volatility_source_path: &'a Path,
     pub max_realized_volatility_source_bytes: u64,
 }
@@ -7313,6 +7334,10 @@ pub(crate) fn validate_canary_proof_source_files(
         request.reference_quote_source_path,
         request.max_reference_quote_source_bytes,
     )?;
+    let signal_quote: SignalQuoteSource = read_decision_source_json_file(
+        request.signal_quote_source_path,
+        request.max_signal_quote_source_bytes,
+    )?;
     let realized_volatility: RealizedVolatilitySource = read_decision_source_json_file(
         request.realized_volatility_source_path,
         request.max_realized_volatility_source_bytes,
@@ -7320,6 +7345,11 @@ pub(crate) fn validate_canary_proof_source_files(
     validate_source_bound_price_to_beat_shape(&price_source)?;
     validate_reference_quote_source(
         &reference_quote,
+        price_source.market_selection_timestamp_ms,
+        price_source.decision_timestamp_ms,
+    )?;
+    validate_signal_quote_source(
+        &signal_quote,
         price_source.market_selection_timestamp_ms,
         price_source.decision_timestamp_ms,
     )?;
@@ -7827,6 +7857,8 @@ pub fn write_entry_decision_source_inputs_from_source_files(
             max_price_to_beat_source_bytes: request.max_price_to_beat_source_bytes,
             reference_quote_source_path: request.reference_quote_source_path,
             max_reference_quote_source_bytes: request.max_reference_quote_source_bytes,
+            signal_quote_source_path: request.signal_quote_source_path,
+            max_signal_quote_source_bytes: request.max_signal_quote_source_bytes,
             realized_volatility_source_path: request.realized_volatility_source_path,
             max_realized_volatility_source_bytes: request.max_realized_volatility_source_bytes,
         },
@@ -7860,6 +7892,8 @@ pub fn write_entry_decision_source_inputs_from_selected_source_files(
             max_price_to_beat_source_bytes: request.max_price_to_beat_source_bytes,
             reference_quote_source_path: request.reference_quote_source_path,
             max_reference_quote_source_bytes: request.max_reference_quote_source_bytes,
+            signal_quote_source_path: request.signal_quote_source_path,
+            max_signal_quote_source_bytes: request.max_signal_quote_source_bytes,
             realized_volatility_source_path: request.realized_volatility_source_path,
             max_realized_volatility_source_bytes: request.max_realized_volatility_source_bytes,
         },
@@ -7946,9 +7980,9 @@ fn write_entry_decision_source_inputs_from_selected_source_files_inner(
             observed_ts_ms: proofs.reference_quote.observed_ts_ms,
         },
         signal_quote: BinaryOracleEntrySignalQuoteSource {
-            venue: proofs.reference_quote.venue.clone(),
-            price: proofs.reference_quote.price,
-            observed_ts_ms: proofs.reference_quote.observed_ts_ms,
+            venue: proofs.signal_quote.venue.clone(),
+            price: proofs.signal_quote.price,
+            observed_ts_ms: proofs.signal_quote.observed_ts_ms,
         },
         realized_volatility: BinaryOracleEntryRealizedVolatilitySource {
             value: proofs.realized_volatility.value,
@@ -8091,6 +8125,10 @@ fn read_validated_entry_decision_source_proofs(
         request.reference_quote_source_path,
         request.max_reference_quote_source_bytes,
     )?;
+    let signal_quote: SignalQuoteSource = read_decision_source_json_file(
+        request.signal_quote_source_path,
+        request.max_signal_quote_source_bytes,
+    )?;
     let realized_volatility: RealizedVolatilitySource = read_decision_source_json_file(
         request.realized_volatility_source_path,
         request.max_realized_volatility_source_bytes,
@@ -8098,6 +8136,11 @@ fn read_validated_entry_decision_source_proofs(
     validate_price_to_beat_source(loaded, strategy_instance_id, &price_source)?;
     validate_reference_quote_source(
         &reference_quote,
+        price_source.market_selection_timestamp_ms,
+        price_source.decision_timestamp_ms,
+    )?;
+    validate_signal_quote_source(
+        &signal_quote,
         price_source.market_selection_timestamp_ms,
         price_source.decision_timestamp_ms,
     )?;
@@ -8109,6 +8152,7 @@ fn read_validated_entry_decision_source_proofs(
     Ok(EntryDecisionSourceProofs {
         price_source,
         reference_quote,
+        signal_quote,
         realized_volatility,
     })
 }
@@ -9102,6 +9146,42 @@ fn validate_reference_quote_source(
     {
         return Err(entry_decision_source_invalid(
             "reference quote source timestamp is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_signal_quote_source(
+    source: &SignalQuoteSource,
+    market_selection_timestamp_ms: u64,
+    decision_timestamp_ms: u64,
+) -> Result<(), BoltV3OperatorArtifactError> {
+    if source.schema_version != SIGNAL_QUOTE_SOURCE_SCHEMA_VERSION {
+        return Err(entry_decision_source_invalid(
+            "signal quote source schema_version is invalid",
+        ));
+    }
+    if source.record_kind != SIGNAL_QUOTE_SOURCE_RECORD_KIND {
+        return Err(entry_decision_source_invalid(
+            "signal quote source record_kind is invalid",
+        ));
+    }
+    if source.venue.trim().is_empty() || source.venue.trim() != source.venue {
+        return Err(entry_decision_source_invalid(
+            "signal quote source venue is invalid",
+        ));
+    }
+    if !source.price.is_finite() || source.price <= ENTRY_DECISION_ZERO_THRESHOLD {
+        return Err(entry_decision_source_invalid(
+            "signal quote source price is invalid",
+        ));
+    }
+    if source.observed_ts_ms == ENTRY_DECISION_ZERO_TIMESTAMP_MS
+        || source.observed_ts_ms < market_selection_timestamp_ms
+        || source.observed_ts_ms > decision_timestamp_ms
+    {
+        return Err(entry_decision_source_invalid(
+            "signal quote source timestamp is invalid",
         ));
     }
     Ok(())

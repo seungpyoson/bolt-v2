@@ -1134,6 +1134,8 @@ async fn collect_canary_proof_artifacts_inner(
         max_price_to_beat_source_bytes: context.request.max_price_to_beat_source_bytes,
         reference_quote_source_path: context.request.reference_quote_source_path,
         max_reference_quote_source_bytes: context.request.max_reference_quote_source_bytes,
+        signal_quote_source_path: context.request.signal_quote_source_path,
+        max_signal_quote_source_bytes: context.request.max_signal_quote_source_bytes,
         realized_volatility_source_path: context.request.realized_volatility_source_path,
         max_realized_volatility_source_bytes: context.request.max_realized_volatility_source_bytes,
     };
@@ -1182,6 +1184,10 @@ async fn collect_canary_proof_artifacts_inner(
         bounded_file_artifact_ref(
             context.request.reference_quote_source_path,
             context.request.max_reference_quote_source_bytes,
+        )?,
+        bounded_file_artifact_ref(
+            context.request.signal_quote_source_path,
+            context.request.max_signal_quote_source_bytes,
         )?,
         bounded_file_artifact_ref(
             context.request.realized_volatility_source_path,

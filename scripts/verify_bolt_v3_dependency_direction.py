@@ -52,6 +52,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+MAX_SCAN_FILE_BYTES = 1024 * 1024
 
 # Shared/family layer = everything under `src/bolt_v3_*` (top-level files and
 # their subdirectories, including `bolt_v3_market_families/`). The strategy layer
@@ -89,6 +90,10 @@ class FindingAllowance:
 
     path: str
     strategy_path: str
+
+
+class PolicyError(Exception):
+    """Raised when the dependency-direction policy cannot be evaluated safely."""
 
 
 # Pre-existing strategy back-references in the shared/family layer, frozen at the
@@ -288,12 +293,25 @@ def scan_files(root: Path) -> tuple[Path, ...]:
     )
 
 
+def read_policy_source(path: Path, rel: str) -> str:
+    try:
+        if path.stat().st_size > MAX_SCAN_FILE_BYTES:
+            raise PolicyError(f"{rel} exceeds 1 MiB limit")
+        return path.read_text(encoding="utf-8")
+    except PolicyError:
+        raise
+    except OSError as error:
+        raise PolicyError(f"failed to read {rel}: {error}") from error
+    except UnicodeDecodeError as error:
+        raise PolicyError(f"failed to decode {rel}: {error}") from error
+
+
 def find_violations(root: Path) -> list[Finding]:
     findings: list[Finding] = []
     for path in scan_files(root):
         rel = path.relative_to(root).as_posix()
         module_parts = module_parts_for(rel)
-        text = path.read_text(encoding="utf-8")
+        text = read_policy_source(path, rel)
         clean = strip_comments(text)
         for match in USE_STATEMENT.finditer(clean):
             stmt = match.group(0)
@@ -321,7 +339,11 @@ def is_allowed(finding: Finding) -> bool:
 
 
 def main() -> int:
-    findings = find_violations(REPO_ROOT)
+    try:
+        findings = find_violations(REPO_ROOT)
+    except PolicyError as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 1
 
     matched: set[tuple[str, str]] = set()
     real: list[Finding] = []

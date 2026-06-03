@@ -136,6 +136,20 @@ def test_block_comment_reference_ignored() -> None:
         expect_pass(root)
 
 
+def test_block_comment_stripping_preserves_following_line_numbers() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "src/bolt_v3_foo.rs",
+            "/*\nuse crate::strategies::registry::Ignored;\n*/\n"
+            "use crate::strategies::registry::FeeProvider;\n",
+        )
+        err = expect_fail(root)
+        if "src/bolt_v3_foo.rs:4" not in err:
+            raise AssertionError(f"expected following import on line 4, got: {err!r}")
+
+
 def test_grouped_import_flagged() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -229,6 +243,23 @@ def test_real_repo_is_green_with_committed_allowlist() -> None:
         )
 
 
+def test_file_size_limit_exceeded_fails_cleanly() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "src/bolt_v3_foo.rs",
+            " " * (VERIFIER.MAX_SCAN_FILE_BYTES + 1),
+        )
+        code, _out, err = run_with(root, allowances=())
+    if code != 1:
+        raise AssertionError(f"expected oversized source file to fail, got {code}")
+    if "exceeds 1 MiB limit" not in err:
+        raise AssertionError(f"expected size-limit diagnostic, got: {err!r}")
+    if "Traceback" in err:
+        raise AssertionError(f"expected clean PolicyError handling, got traceback: {err!r}")
+
+
 def main() -> int:
     tests = [
         test_clean_fixture_passes,
@@ -238,6 +269,7 @@ def main() -> int:
         test_strategy_layer_and_non_bolt_v3_not_scanned,
         test_commented_reference_ignored,
         test_block_comment_reference_ignored,
+        test_block_comment_stripping_preserves_following_line_numbers,
         test_grouped_import_flagged,
         test_multiline_grouped_import_flagged_on_opening_line,
         test_nested_grouped_import_flagged,
@@ -247,6 +279,7 @@ def main() -> int:
         test_external_strategies_crate_not_flagged,
         test_market_families_is_in_scope,
         test_real_repo_is_green_with_committed_allowlist,
+        test_file_size_limit_exceeded_fails_cleanly,
     ]
     for test in tests:
         test()

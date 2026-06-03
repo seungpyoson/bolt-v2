@@ -116,6 +116,78 @@ fn reducing_trading_state_alone_cannot_authorize_flatten_output_or_bypass_proof(
 }
 
 #[test]
+fn router_rejects_invalid_metadata_before_dry_run_decision() {
+    let mut missing_action_id = cancel_request(" ", cancelling_state());
+    assert_eq!(
+        BoltV3KillSwitchActionRouter::dry_run_decision(missing_action_id.clone()),
+        Err(BoltV3KillSwitchActionRouterError::MissingActionId)
+    );
+
+    let mut invalid_config_sha = cancel_request("cancel-action-1", cancelling_state());
+    invalid_config_sha.config_sha256 = "not-sha256".to_string();
+    assert_eq!(
+        BoltV3KillSwitchActionRouter::dry_run_decision(invalid_config_sha),
+        Err(BoltV3KillSwitchActionRouterError::InvalidConfigSha256)
+    );
+
+    let mut invalid_policy_sha = cancel_request("cancel-action-1", cancelling_state());
+    invalid_policy_sha.policy_sha256 = "not-sha256".to_string();
+    assert_eq!(
+        BoltV3KillSwitchActionRouter::dry_run_decision(invalid_policy_sha),
+        Err(BoltV3KillSwitchActionRouterError::InvalidPolicySha256)
+    );
+
+    let mut missing_timestamp = cancel_request("cancel-action-1", cancelling_state());
+    missing_timestamp.source_timestamp_unix_nanos = 0;
+    assert_eq!(
+        BoltV3KillSwitchActionRouter::dry_run_decision(missing_timestamp),
+        Err(BoltV3KillSwitchActionRouterError::MissingSourceTimestamp)
+    );
+
+    assert_eq!(
+        BoltV3KillSwitchActionScope::new(Vec::new(), vec!["BTC-USD.BINANCE".to_string()]),
+        Err(BoltV3KillSwitchActionRouterError::InvalidScope)
+    );
+    assert_eq!(
+        BoltV3KillSwitchActionScope::new(vec!["POLYMARKET-001".to_string()], vec![" ".to_string()]),
+        Err(BoltV3KillSwitchActionRouterError::InvalidScope)
+    );
+
+    missing_action_id.action_id = "cancel-action-1".to_string();
+    assert!(
+        BoltV3KillSwitchActionRouter::dry_run_decision(missing_action_id).is_ok(),
+        "control request should remain valid after replacing the missing action id"
+    );
+}
+
+#[test]
+fn cancel_and_flatten_dry_run_actions_require_reducing_nt_state_and_matching_kill_state() {
+    let mut non_reducing_cancel = cancel_request("cancel-action-1", cancelling_state());
+    non_reducing_cancel.nt_trading_state = TradingState::Halted;
+    assert_eq!(
+        BoltV3KillSwitchActionRouter::dry_run_decision(non_reducing_cancel),
+        Err(BoltV3KillSwitchActionRouterError::NtTradingStateNotReducing)
+    );
+
+    let cancel_from_halted = cancel_request("cancel-action-1", halted_state());
+    assert_eq!(
+        BoltV3KillSwitchActionRouter::dry_run_decision(cancel_from_halted),
+        Err(BoltV3KillSwitchActionRouterError::KillSwitchStateNotCancelling)
+    );
+
+    let mut non_reducing_flatten = flatten_request(
+        "flatten-action-1",
+        flattening_state(),
+        Some(forced_reduction_claim("flatten-action-1")),
+    );
+    non_reducing_flatten.nt_trading_state = TradingState::Halted;
+    assert_eq!(
+        BoltV3KillSwitchActionRouter::dry_run_decision(non_reducing_flatten),
+        Err(BoltV3KillSwitchActionRouterError::NtTradingStateNotReducing)
+    );
+}
+
+#[test]
 fn phase3_router_rejects_live_or_venue_action_outputs() {
     for action_class in [
         BoltV3KillSwitchActionClass::EntrySubmit,

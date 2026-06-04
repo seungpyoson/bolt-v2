@@ -476,7 +476,6 @@ pub struct BoltV3StrategyConfig {
     /// a single block rather than a role-keyed map, matching the strategy's
     /// singular `resolution_client_id` / `resolution_instrument_id` runtime
     /// fields. When absent, the live strike simply does not subscribe.
-    #[serde(default)]
     pub resolution_data: Option<ReferenceDataBlock>,
     pub parameters: toml::Value,
 }

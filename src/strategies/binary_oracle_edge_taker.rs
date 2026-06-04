@@ -375,7 +375,6 @@ macro_rules! define_config_struct {
         struct BinaryOracleEdgeTakerConfig {
             $( $field: $ty, )+
             $(
-                #[serde(default)]
                 $extra_field: Option<String>,
             )+
             entry_order: BinaryOracleEdgeTakerOrderConfig,

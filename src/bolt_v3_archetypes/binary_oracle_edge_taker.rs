@@ -1331,13 +1331,8 @@ fn validate_resolution_data_binding(
     }
 
     // (b) instrument asset prefix must match the target's underlying_asset.
-    let instrument_asset = resolution_data
-        .instrument_id
-        .symbol
-        .as_str()
-        .split('-')
-        .next()
-        .unwrap_or_default();
+    let symbol = resolution_data.instrument_id.symbol.as_str();
+    let instrument_asset = symbol.split_once('-').map_or(symbol, |(asset, _)| asset);
     if instrument_asset != underlying_asset {
         return Err(reject(format!(
             "instrument_id `{}` resolves to asset `{instrument_asset}`, which does not match the target underlying_asset `{underlying_asset}`",

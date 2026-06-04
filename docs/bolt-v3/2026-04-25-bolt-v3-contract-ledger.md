@@ -37,7 +37,7 @@ Rule prose lives in the canonical owner doc. Do not restate rules here.
 ## 3. Root risk authority
 
 - invariant:
-  - root risk authority for Bolt-owned strategy sizing is live now; NautilusTrader live risk-engine fields are explicit in TOML and mapped into `LiveRiskEngineConfig`
+  - root risk authority for Bolt-owned strategy sizing is live now; configurable NautilusTrader live risk-engine fields are explicit in TOML and mapped into `LiveRiskEngineConfig`, while the non-configurable `bypass` field is pinned to `false` in code
   - NautilusTrader live data-, risk-, and exec-engine config fields are explicit in TOML for the current pin and mapped into their corresponding `Live*EngineConfig` structs
   - NautilusTrader `LoggerConfig` fields accepted by the Rust live runtime are explicit in TOML and mapped in the Bolt-v3 builder path for the current pin; provider-owned credential-log module filters use the configured safe module level, and unsupported file-writer surfaces remain explicitly disabled
   - remaining top-level NautilusTrader `LiveNodeConfig` disabled/false fields are explicit in TOML; `data_clients` and `exec_clients` are derived from configured venues through provider Adapter registration rather than inherited through `LiveNodeConfig::default()`

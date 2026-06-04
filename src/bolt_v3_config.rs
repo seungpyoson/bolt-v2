@@ -172,7 +172,6 @@ pub struct RiskBlock {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct NautilusRiskBlock {
-    pub bypass: bool,
     pub max_order_submit_rate: String,
     pub max_order_modify_rate: String,
     pub max_notional_per_order: BTreeMap<String, String>,

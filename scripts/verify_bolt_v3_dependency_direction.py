@@ -610,6 +610,55 @@ def detect_strategy_paths(
     return out
 
 
+def reject_forbidden_source_inclusion(tokens: list[Token], rel: str) -> None:
+    for i, tok in enumerate(tokens):
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+        if (
+            tok.kind == "IDENT"
+            and tok.value == "include"
+            and not tok.raw
+            and nxt is not None
+            and nxt.kind == "PUNCT"
+            and nxt.value == "!"
+        ):
+            raise PolicyError(
+                f"{rel}:{tok.line}: include! source inclusion is forbidden "
+                "in shared/family modules"
+            )
+        if tok.kind == "PUNCT" and tok.value == "#":
+            bracket = i + 1
+            if (
+                bracket < len(tokens)
+                and tokens[bracket].kind == "PUNCT"
+                and tokens[bracket].value == "!"
+            ):
+                bracket += 1
+            if not (
+                bracket < len(tokens)
+                and tokens[bracket].kind == "PUNCT"
+                and tokens[bracket].value == "["
+            ):
+                continue
+            depth = 0
+            j = bracket
+            while j < len(tokens):
+                attr_tok = tokens[j]
+                if attr_tok.kind == "PUNCT" and attr_tok.value == "[":
+                    depth += 1
+                elif attr_tok.kind == "PUNCT" and attr_tok.value == "]":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                elif attr_tok.kind == "IDENT" and attr_tok.value == "path" and not attr_tok.raw:
+                    after = tokens[j + 1] if j + 1 < len(tokens) else None
+                    if after is not None and after.kind == "PUNCT" and after.value == "=":
+                        raise PolicyError(
+                            f"{rel}:{tok.line}: #[path] source inclusion is forbidden "
+                            "in shared/family modules"
+                        )
+                j += 1
+
+
 # --------------------------------------------------------------------------- #
 # File walking and policy
 # --------------------------------------------------------------------------- #
@@ -651,6 +700,7 @@ def find_violations(root: Path) -> list[Finding]:
         module_parts = module_parts_for(rel)
         text = read_policy_source(path, rel)
         tokens = tokenize(text)
+        reject_forbidden_source_inclusion(tokens, rel)
         for strategy_path, line in detect_strategy_paths(tokens, module_parts):
             key = (rel, strategy_path)
             if key not in earliest or line < earliest[key]:

@@ -298,6 +298,28 @@ def test_inline_macro_arg_path_flagged() -> None:
         expect_fail(root)
 
 
+def test_include_source_macro_rejected_in_shared_module() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(root, "src/bolt_v3_foo.rs", 'include!("strategies/registry.rs");\n')
+        err = expect_fail(root)
+        if "include!" not in err or "source inclusion" not in err:
+            raise AssertionError(f"expected include! source-inclusion diagnostic, got: {err!r}")
+
+
+def test_path_attribute_source_module_rejected_in_shared_module() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "src/bolt_v3_foo.rs",
+            '#[path = "strategies/registry.rs"]\nmod registry;\n',
+        )
+        err = expect_fail(root)
+        if "#[path]" not in err or "source inclusion" not in err:
+            raise AssertionError(f"expected #[path] source-inclusion diagnostic, got: {err!r}")
+
+
 def test_inline_turbofish_path_flagged() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -616,6 +638,14 @@ def test_shrink_only_unresolved_baseline_fails_closed() -> None:
         raise AssertionError(f"expected fail-closed on missing baseline, got {code}: {err!r}")
 
 
+def test_justfile_dependency_baseline_fetch_fails_closed() -> None:
+    justfile = SCRIPT_PATH.parent.parent / "justfile"
+    text = justfile.read_text(encoding="utf-8")
+    bad = "git fetch -q origin main 2>/dev/null || true"
+    if bad in text:
+        raise AssertionError("dependency-direction baseline fetch must not suppress failure")
+
+
 def test_real_repo_is_green_with_committed_allowlist() -> None:
     # Guard: the committed FINDING_ALLOWANCES must match the actual source tree.
     code, _out, err = run_with(VERIFIER.REPO_ROOT)
@@ -663,6 +693,8 @@ def main() -> int:
         test_inline_type_annotation_path_flagged,
         test_inline_call_path_flagged,
         test_inline_macro_arg_path_flagged,
+        test_include_source_macro_rejected_in_shared_module,
+        test_path_attribute_source_module_rejected_in_shared_module,
         test_inline_turbofish_path_flagged,
         test_inline_super_path_from_top_level_flagged,
         test_attribute_inside_brace_import_flagged,
@@ -689,6 +721,7 @@ def main() -> int:
         test_shrink_only_addition_fails,
         test_shrink_only_introducing_pr_passes,
         test_shrink_only_unresolved_baseline_fails_closed,
+        test_justfile_dependency_baseline_fetch_fails_closed,
         test_real_repo_is_green_with_committed_allowlist,
         test_file_size_limit_exceeded_fails_cleanly,
     ]

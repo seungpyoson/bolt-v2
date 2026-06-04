@@ -16,6 +16,7 @@ rust-version = "1.95.0"
 publish = false
 
 [dependencies]
+ahash = "0.8.12"
 anyhow = "1"
 arrow = "58.3.0"
 chrono = "0.4"

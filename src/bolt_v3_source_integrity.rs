@@ -53,10 +53,10 @@ pub fn registry_source_bytes(key: &str, max_bytes: u64) -> io::Result<Vec<u8>> {
 }
 
 /// A bound large enough to admit either gated root: the submit_admission single
-/// file and the strategy DIRECTORY (`{mod.rs, selection.rs}`, whose framed
-/// canonical stream is the raw content plus per-file path/length frames). Used by
-/// the text accessors (whole module / production text), where there is no
-/// operator-supplied cap.
+/// file and the strategy DIRECTORY (`{config.rs, mod.rs, selection.rs}`, whose
+/// framed canonical stream is the raw content plus per-file path/length frames).
+/// Used by the text accessors (whole module / production text), where there is
+/// no operator-supplied cap.
 ///
 /// Single source for the in-process text-accessor bound; the digest path uses
 /// the operator-configured `max_source_bytes` instead.
@@ -80,12 +80,13 @@ pub fn module_source_text(key: &str) -> String {
 /// byte-for-byte — strips ONLY at the FIRST top-level test-module marker, so the
 /// earlier inline `#[cfg(test)]` markers are retained (value-stability).
 ///
-/// DIRECTORY case (e.g. the strategy `{mod.rs, selection.rs}` after slice A3):
-/// the production half of EACH file — split independently at its own first
-/// top-level marker — concatenated in canonical order. `mod.rs` contributes its
-/// production half (its test module is excluded); `selection.rs` (production-only)
-/// contributes its whole text. This keeps every submodule's production code in
-/// scope rather than dropping every file sorted after the marker-owning file.
+/// DIRECTORY case (e.g. the strategy `{config.rs, mod.rs, selection.rs}` after
+/// slice A8): the production half of EACH file — split independently at its own
+/// first top-level marker — concatenated in canonical order. `mod.rs` contributes
+/// its production half (its test module is excluded); `config.rs` and
+/// `selection.rs` (production-only) contribute their whole text. This keeps every
+/// submodule's production code in scope rather than dropping every file sorted
+/// after the marker-owning file.
 pub fn production_module_source_text(key: &str) -> String {
     canonical_production_module_text(&registry_root_path(key), TEXT_ACCESSOR_MAX_BYTES)
         .unwrap_or_else(|error| {
@@ -105,8 +106,8 @@ mod tests {
     //
     // GOLDEN_STRATEGY_DIGEST was RE-DERIVED again by slice A8 (first by A3): the
     // strategy source is a directory whose `*.rs` membership grows as each slice
-    // extracts a concern. A3 moved it from a single file to `{mod.rs, selection.rs}`;
-    // A8 adds `config.rs`, so the framed DIRECTORY concatenation is now over
+    // extracts a concern. A3 first split it into a directory module; A8 adds
+    // `config.rs`, so the framed DIRECTORY concatenation is now over
     // `{config.rs, mod.rs, selection.rs}` (sorted by relative path). This is a
     // legitimate behavior-preserving source move, not a fixture regeneration — the
     // value is re-derived from the live build-emitted `OUT_DIR/strategy.canonical`
@@ -225,7 +226,10 @@ mod tests {
         // it never writes to the real source tree.)
         let root = registry_root_path(STRATEGY_KEY);
         let files = strategy_dir_files_in_canonical_order();
-        assert!(files.len() >= 2, "expected at least mod.rs + selection.rs");
+        assert!(
+            files.len() >= 3,
+            "expected current strategy directory source files"
+        );
 
         // Build the framed stream and record each file's raw-byte span within it.
         let mut framed: Vec<u8> = Vec::new();
@@ -317,9 +321,10 @@ mod tests {
     #[test]
     fn registry_admits_current_strategy_directory_canonical_size() {
         // The producer cap must admit the current strategy DIRECTORY: the framed
-        // canonical stream over {mod.rs, selection.rs}. Compute its exact length
-        // and assert the digest succeeds with a cap set to exactly that size
-        // (and fails one byte below), proving the bound is tight and meaningful.
+        // canonical stream over {config.rs, mod.rs, selection.rs}. Compute its
+        // exact length and assert the digest succeeds with a cap set to exactly
+        // that size (and fails one byte below), proving the bound is tight and
+        // meaningful.
         let canonical_len = registry_source_bytes(STRATEGY_KEY, TEST_MAX_BYTES)
             .unwrap()
             .len() as u64;
@@ -367,8 +372,8 @@ mod tests {
         //
         // A0's KNOWN-AND-DEFERRED exception (the strategy file's own
         // self-`include_str!("binary_oracle_edge_taker.rs")`) is now RESOLVED by
-        // A3: the single file became the directory `{mod.rs, selection.rs}`, so
-        // that bare self-reference no longer exists. The strategy's in-module
+        // A3/A8: the single file became the strategy directory module, so that
+        // bare self-reference no longer exists. The strategy's in-module
         // outcome-suffix guard now uses `production_module_source_text`, so the
         // source boundary stays layout-independent through the registry. This
         // test therefore asserts NO monolith-root `include_str!` remains

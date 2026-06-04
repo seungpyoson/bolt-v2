@@ -200,6 +200,24 @@ class LegacyDefaultFenceTests(unittest.TestCase):
             finally:
                 source_roots.REPO_ROOT = original_root
 
+    def test_source_root_helper_rejects_backslash_path_component(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "module"
+            module.mkdir()
+            bad = module / "a\\b.rs"
+            if bad.name != "a\\b.rs":
+                self.skipTest("platform does not permit backslash in a file name")
+            bad.write_text("fn bad() {}\n", encoding="utf-8")
+
+            original_root = source_roots.REPO_ROOT
+            source_roots.REPO_ROOT = root
+            try:
+                with self.assertRaisesRegex(ValueError, "contains a backslash"):
+                    source_roots.source_files("module")
+            finally:
+                source_roots.REPO_ROOT = original_root
+
     def test_python_source_roots_match_rust_registry_relative_roots(self) -> None:
         registry = (
             source_roots.REPO_ROOT / "src/source_canonicalization.rs"

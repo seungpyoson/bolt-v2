@@ -257,12 +257,13 @@ pub fn module_source_text(root: &Path, max_bytes: u64) -> io::Result<String> {
 ///   `source.split("\n#[cfg(test)]\nmod tests").next()` output. A file with no
 ///   marker contributes its whole text. The ~37 earlier inline `#[cfg(test)]`
 ///   markers are retained (they are not the top-level test-module marker).
-/// - **DIRECTORY case** (post-split, e.g. `{mod.rs, selection.rs}`): the
-///   production half of EACH `*.rs` file — each split independently at its OWN
-///   first top-level marker — concatenated in canonical (relative-path-byte)
+/// - **DIRECTORY case** (post-split, e.g. `{config.rs, mod.rs, selection.rs}`):
+///   the production half of EACH `*.rs` file — each split independently at its
+///   OWN first top-level marker — concatenated in canonical (relative-path-byte)
 ///   order. A file owning the top-level `#[cfg(test)] mod tests` (e.g. `mod.rs`)
 ///   contributes only its production half; a file with no marker (e.g.
-///   `selection.rs`, a production-only submodule) contributes its whole text.
+///   `config.rs` or `selection.rs`, production-only submodules) contributes its
+///   whole text.
 ///   This is NOT a `split_once` over the joined text — that would drop every
 ///   file sorted after the marker-owning file (`selection.rs` after `mod.rs`)
 ///   and silently shrink the production surface. Splitting per file keeps every

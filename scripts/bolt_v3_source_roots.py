@@ -6,12 +6,13 @@ the canonical `.rs` walk order. It mirrors the Rust registry in
 `src/source_canonicalization.rs` (`GATED_SOURCE_ROOTS`): each gated root may
 resolve to a single `.rs` file OR a directory of `.rs` files, and the canonical
 order is lexicographic by the relative path's raw POSIX bytes (locale/OS
-independent, `\\` normalized to `/`).
+independent, with backslash path components rejected to match the Rust
+canonicalizer).
 
 Python gates that read a gated source must resolve its files through this module
 so they follow file moves (e.g. the A3 strategy split from a single file to the
-directory `{mod.rs, selection.rs}`) without hardcoding a layout. There is exactly
-ONE place each root path lives on the Python side, pointing at the same paths the
+strategy directory module) without hardcoding a layout. There is exactly ONE
+place each root path lives on the Python side, pointing at the same paths the
 Rust registry owns.
 """
 
@@ -51,6 +52,11 @@ def source_files(relative_root: str) -> list[Path]:
         if path.is_symlink():
             raise ValueError(f"source root contains a symlink: {path}")
         if path.is_file() and path.suffix == ".rs":
+            relative_parts = path.relative_to(root).parts
+            if any("\\" in part for part in relative_parts):
+                raise ValueError(
+                    f"source relative path component contains a backslash: {path}"
+                )
             files.append(path)
     files.sort(key=lambda path: path.relative_to(root).as_posix().encode("utf-8"))
     return files

@@ -8,18 +8,24 @@ or economics changes in this phase.
 
 | Layer | Owns | Lives in |
 |---|---|---|
-| **Strategy** | *what* to trade — signals, intent, entry/exit decisions **only** | `strategies/…` |
+| **Strategy** | *what* to trade — signals, intent, entry/exit decisions, strategy-local config/schema, and orchestration glue. Phase-1 may use strategy-local concern modules as an intermediate move, but submit mechanics must still leave the strategy. | `strategies/…` |
 | **Shared execution/admission** | *whether & how* to execute — **order construction, quantity-normalization**, rounding, fee-adjustment, sizing, admission-request construction + valuation, submit-gating, the **submit wrapper** | `bolt_v3_*` modules |
 | **Market-family** | family-specific mechanics — identity, target validation, family pricing, the family registry | `bolt_v3_market_families/…` |
 | **Core/shared util & glue** | family-agnostic numeric/util, shared types, the error enum, constants, JSON I/O | dedicated shared files (e.g. `bolt_v3_numeric.rs`); only *truly common* glue stays in a `mod.rs` (don't let `mod.rs` become a dumping ground) |
 
 **How to read the slice tables (important):** a "Track A target" names a concern to
-**extract OUT OF** the strategy monolith. The **destination layer is given by the target
-module name** — `bolt_v3_*` = shared layer, `bolt_v3_market_families/*` = family layer.
-So "extract `book_sizing` → `bolt_v3_book_sizing.rs`" means it **moves out of the strategy
-into the shared layer** — it does NOT stay strategy-resident. (This resolves the apparent
-"sizing/admission is both shared *and* a Track A target" contradiction: Track A lists
-*what we remove from the strategy*; the layer is *where it lands*.)
+**extract OUT OF** the single strategy file. The destination layer is given by the target
+module name and by the active slice plan:
+
+- `strategies/binary_oracle_edge_taker/*.rs` = strategy-local concern module, used for
+  behavior-preserving monolith shrinkage while keeping the existing strategy surface.
+- `bolt_v3_*` = shared/core/execution layer.
+- `bolt_v3_market_families/*` = market-family layer.
+
+So "extract `book_sizing` -> `bolt_v3_book_sizing.rs`" means it moves out of the
+strategy into the shared execution layer. "Extract `selection` -> `selection.rs`" means
+it moves out of the single strategy file into a strategy-local submodule first; future
+family/shared generalization must be a separate named slice, not hidden inside A3.
 
 Per-target destination + layer (Track A):
 
@@ -27,12 +33,12 @@ Per-target destination + layer (Track A):
 |---|---|
 | `numeric` → `bolt_v3_numeric.rs` | core/shared util |
 | `taker_signal` → `bolt_v3_taker_signal.rs` | shared decision-math (family-agnostic) |
-| `selection` → **split**: **(a)** family-shaped data — identity/target-validation **and the selected-market/candidate structs (e.g. `CandidateMarket`), outcome-pair snapshots, and binary-option adapters** → `bolt_v3_market_families/selection.rs`; **(b)** family-agnostic ranking **over opaque family-owned candidate refs/scores + strategy-neutral transition state** → shared `bolt_v3_selection.rs` | family **and** shared. **The shared half must carry NO binary/up-down shape** — if a struct names outcomes (`up`/`down`) or adapts a concrete binary-option market, it stays in the family module. (Route-by-instrument-identity is the #13 follow-up; until then the binary shape stays family-homed, **not** laundered into shared.) |
+| `selection` -> `strategies/binary_oracle_edge_taker/selection.rs` | strategy-local concern module: candidate/selection snapshot construction and venue-routing predicates move out of the single file. This completes the planned A3 monolith shrink, not a shared/family generalization. Family-owned identity/target validation remains in `bolt_v3_market_families/*`; route-by-instrument-identity and any shared/family split of `CandidateMarket` are separate future work, not hidden in A3. |
 | `book_sizing` → `bolt_v3_book_sizing.rs` | shared execution (book state, VWAP/slippage sizing, **rounding + fee-adjustment**) |
 | `taker_pricing` → `bolt_v3_taker_pricing.rs` | shared pricing-state |
 | `exposure` → `bolt_v3_exposure.rs` | shared **position/exposure accounting**. If the monolith mixes *signal-intent* exposure (a strategy concern) with *position accounting* (shared), **split them** — accounting goes shared, signal-intent stays strategy. |
 | `source_proof` → `bolt_v3_source_proof.rs` | shared evidence/replay |
-| `config` → `bolt_v3_config.rs` | shared/core |
+| `config` -> `strategies/binary_oracle_edge_taker/config.rs` (or an explicitly approved archetype module) | strategy-local config schema + parse/validate. Root/global config machinery stays in `bolt_v3_config.rs`; do not move strategy-specific TOML schema into shared core just to shrink the monolith. |
 | `submit_admission` → `bolt_v3_submit_admission.rs` | shared execution/admission — **owns order construction, quantity-normalization, admission-request construction + valuation, and the submit wrapper. None of these may remain strategy-resident.** |
 
 Track B targets land in `bolt_v3_operator_artifacts/` (see §6).
@@ -47,10 +53,11 @@ Track B targets land in `bolt_v3_operator_artifacts/` (see §6).
 - Litmus test: *"if I deleted the strategy, would the shared modules still compile?"*
   They must.
 - **Enforcement (required — this rule is NOT honor-system):** the three existing fences
-  do **not** catch a shared module doing `use crate::strategies::…`. **Before A3 starts**,
-  land a dependency-direction fence (`scripts/verify_bolt_v3_dependency_direction.py`),
-  wired into the source-fence CI lane, that fails on any `crate::strategies` import or
-  strategy-type reference inside `bolt_v3_*` and `bolt_v3_market_families/*`.
+  do **not** catch a shared module doing `use crate::strategies::…`. Land the
+  dependency-direction fence (`scripts/verify_bolt_v3_dependency_direction.py`, PR #546)
+  before merging the first code slice that relies on this contract. It must be wired into
+  the source-fence CI lane and fail on any `crate::strategies` import or strategy-type
+  reference inside `bolt_v3_*` and `bolt_v3_market_families/*`.
   **Current code already contains pre-existing back-references** (known:
   `crate::strategies::registry::FeeProvider` used by `bolt_v3_providers/polymarket/fees.rs`,
   tracked under #446). So the fence ships with a **frozen allowlist of exactly those
@@ -89,7 +96,7 @@ Track B targets land in `bolt_v3_operator_artifacts/` (see §6).
   preserved AND its line count strictly drops — line count alone is insufficient (no
   moving comments/whitespace to fake a drop).
 - **Dependency check passes:** the §2 dependency-direction fence is green. It lands before
-  A3 (with its frozen pre-existing allowlist); no slice merges without it.
+  A3/A8 merge (with its frozen pre-existing allowlist); no later slice merges without it.
 - **Tests:** carried to the new home (RED→GREEN); CI green at exact head; all fences +
   the runtime-literal allowlist pass.
 - **Bugs found during a move are ticketed and fixed in a separate follow-up PR** — never

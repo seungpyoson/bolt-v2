@@ -15,7 +15,7 @@ use nautilus_core::{Params, UnixNanos};
 #[cfg(not(test))]
 use nautilus_model::enums::BookType;
 use nautilus_model::{
-    data::{QuoteTick, TradeTick},
+    data::{IndexPriceUpdate, QuoteTick, TradeTick},
     enums::PositionSide,
 };
 use nautilus_model::{
@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 use toml::Value;
 
 use crate::{
+    bolt_v3_chainlink::STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
     bolt_v3_decision_evidence::{
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT, BoltV3OrderIntentEvidence,
@@ -316,6 +317,8 @@ macro_rules! define_config_struct {
             reference_instrument_id: Option<String>,
             signal_venue: Option<String>,
             signal_instrument_id: Option<String>,
+            resolution_client_id: Option<String>,
+            resolution_instrument_id: Option<String>,
             entry_order: BinaryOracleEdgeTakerOrderConfig,
             exit_order: BinaryOracleEdgeTakerOrderConfig,
             forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
@@ -799,6 +802,7 @@ struct ActiveMarketState {
     seconds_to_expiry_at_selection: Option<u64>,
     interval_open: Option<f64>,
     last_reference_ts_ms: Option<u64>,
+    last_resolution_ts_ms: Option<u64>,
     warmup_count: u64,
     warmup_target: u64,
     books: OutcomePreparedBooks,
@@ -1798,6 +1802,7 @@ impl ActiveMarketState {
             seconds_to_expiry_at_selection: None,
             interval_open: None,
             last_reference_ts_ms: None,
+            last_resolution_ts_ms: None,
             warmup_count: INITIAL_COUNTER_U64,
             warmup_target: INITIAL_COUNTER_U64,
             books: OutcomePreparedBooks::empty(),
@@ -1844,6 +1849,7 @@ impl ActiveMarketState {
             seconds_to_expiry_at_selection: Some(market.seconds_to_end),
             interval_open: None,
             last_reference_ts_ms: None,
+            last_resolution_ts_ms: None,
             warmup_count: INITIAL_COUNTER_U64,
             warmup_target,
             books: OutcomePreparedBooks::from_market(market),
@@ -1925,6 +1931,30 @@ impl ActiveMarketState {
             self.interval_open = Some(anchor_price);
         }
         self.warmup_count += COUNTER_INCREMENT as u64;
+    }
+
+    /// Binds the live resolution strike (Chainlink `IndexPriceUpdate`) to the
+    /// market's interval-open boundary and sets it as the `price_to_beat`.
+    ///
+    /// Fail-closed: a strike whose `window_open_ms` does not equal this market's
+    /// `interval_start_ms`, or a non-positive/non-finite value, or an idle/
+    /// unbound state, is ignored and leaves `price_to_beat` unchanged. The entry
+    /// gate stays blocked while `price_to_beat` is `None`.
+    fn observe_resolution_strike(&mut self, strike: f64, window_open_ms: u64, observed_ts_ms: u64) {
+        if self.phase == SelectionPhase::Idle {
+            return;
+        }
+        let Some(interval_start_ms) = self.interval_start_ms else {
+            return;
+        };
+        if window_open_ms != interval_start_ms {
+            return;
+        }
+        if !is_positive_finite(strike) {
+            return;
+        }
+        self.price_to_beat = Some(strike);
+        self.last_resolution_ts_ms = Some(observed_ts_ms);
     }
 
     #[cfg(test)]
@@ -2033,6 +2063,14 @@ impl BinaryOracleEdgeTaker {
         self.active.books.down.instrument_id = next_selection_books.down_instrument_id;
         self.active.apply_selection_timing(&snapshot);
         self.apply_source_owned_readiness_seed();
+        // Bind the live strike to a fresh interval-open: subscribe once when this
+        // market's interval-open boundary changes from the previous active state.
+        if self.active.phase != SelectionPhase::Idle
+            && self.active.interval_start_ms.is_some()
+            && self.active.interval_start_ms != previous_active.interval_start_ms
+        {
+            self.subscribe_resolution_strike();
+        }
         let reactivated_into_active =
             previous_phase != SelectionPhase::Active && self.active.phase == SelectionPhase::Active;
         let same_market_interval_rollover =
@@ -2344,6 +2382,20 @@ impl BinaryOracleEdgeTaker {
             .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
     }
 
+    fn resolution_instrument_id(&self) -> Option<InstrumentId> {
+        self.config
+            .resolution_instrument_id
+            .as_deref()
+            .and_then(|instrument_id| InstrumentId::from_str(instrument_id).ok())
+    }
+
+    fn resolution_client_id(&self) -> Option<ClientId> {
+        self.config
+            .resolution_client_id
+            .as_deref()
+            .map(ClientId::from)
+    }
+
     fn subscribe_reference_quotes(&mut self) {
         if let Some(instrument_id) = self.reference_instrument_id() {
             #[cfg(not(test))]
@@ -2378,6 +2430,39 @@ impl BinaryOracleEdgeTaker {
             #[cfg(test)]
             let _ = instrument_id;
         }
+    }
+
+    /// Subscribes to the live resolution strike for the current market interval.
+    ///
+    /// Issues ONE point-in-time index-price subscribe to the explicit Chainlink
+    /// strike client, carrying the interval-open boundary (unix seconds) in the
+    /// NT `params` map under [`STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM`] — the same
+    /// key the strike source reads with `params.get_u64`. Only subscribes when
+    /// the resolution instrument, the explicit strike client, and the market's
+    /// interval-open are all configured/known; otherwise it is a no-op and the
+    /// fail-closed entry gate keeps blocking.
+    fn subscribe_resolution_strike(&mut self) {
+        let (Some(resolution_instrument_id), Some(resolution_client_id), Some(interval_start_ms)) = (
+            self.resolution_instrument_id(),
+            self.resolution_client_id(),
+            self.active.interval_start_ms,
+        ) else {
+            return;
+        };
+        let window_open_unix_seconds = interval_start_ms / MILLIS_PER_SECOND_U64;
+        let mut params = Params::new();
+        params.insert(
+            STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM.to_string(),
+            serde_json::json!(window_open_unix_seconds),
+        );
+        #[cfg(not(test))]
+        self.subscribe_index_prices(
+            resolution_instrument_id,
+            Some(resolution_client_id),
+            Some(params),
+        );
+        #[cfg(test)]
+        let _ = (resolution_instrument_id, resolution_client_id, params);
     }
 
     fn replace_book_subscriptions(&mut self, next: OutcomeBookSubscriptions) {
@@ -5389,6 +5474,20 @@ impl DataActor for BinaryOracleEdgeTaker {
         Ok(())
     }
 
+    fn on_index_price(&mut self, update: &IndexPriceUpdate) -> anyhow::Result<()> {
+        if self
+            .resolution_instrument_id()
+            .is_some_and(|instrument_id| update.instrument_id == instrument_id)
+        {
+            let window_open_ms = update.ts_event.as_u64() / NANOS_PER_MILLI_U64;
+            let now_ms = self.clock().timestamp_ns().as_u64() / NANOS_PER_MILLI_U64;
+            self.active
+                .observe_resolution_strike(update.value.as_f64(), window_open_ms, now_ms);
+            self.sync_exposure_context_from_active();
+        }
+        Ok(())
+    }
+
     fn on_book_deltas(
         &mut self,
         deltas: &nautilus_model::data::OrderBookDeltas,
@@ -8052,6 +8151,8 @@ mod tests {
                 reference_instrument_id: Some("REFERENCE.SOURCE".to_string()),
                 signal_venue: Some("signal_data_client".to_string()),
                 signal_instrument_id: Some("SIGNAL.SOURCE".to_string()),
+                resolution_client_id: Some("CHAINLINK_DATA_STREAMS".to_string()),
+                resolution_instrument_id: Some("RESOLUTION.SOURCE".to_string()),
                 use_uuid_client_order_ids: true,
                 use_hyphens_in_client_order_ids: false,
                 external_order_claims: vec!["AUXILIARY.SOURCE".to_string()],
@@ -17562,6 +17663,40 @@ mod tests {
             MarketSelectionOutcome::Next
         );
         assert_eq!(active.interval_end_ms, Some(301_999));
+    }
+
+    #[test]
+    fn observe_resolution_strike_binds_strike_at_interval_open() {
+        let mut active =
+            ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+        assert_eq!(active.phase, SelectionPhase::Active);
+        assert_eq!(active.interval_start_ms, Some(1_000));
+        assert_eq!(active.price_to_beat, None);
+
+        active.observe_resolution_strike(3_100.5, 1_000, 1_250);
+
+        assert_eq!(
+            active.price_to_beat,
+            Some(3_100.5),
+            "a positive strike bound to the interval-open must set price_to_beat"
+        );
+        assert_eq!(active.last_resolution_ts_ms, Some(1_250));
+    }
+
+    #[test]
+    fn observe_resolution_strike_rejects_mismatched_window_fail_closed() {
+        let mut active =
+            ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+        assert_eq!(active.interval_start_ms, Some(1_000));
+
+        // Window-open boundary does not match the market's interval-open.
+        active.observe_resolution_strike(3_100.5, 2_000, 2_250);
+
+        assert_eq!(
+            active.price_to_beat, None,
+            "a strike whose window-open does not match the interval-open must be ignored (fail-closed)"
+        );
+        assert_eq!(active.last_resolution_ts_ms, None);
     }
 
     #[test]

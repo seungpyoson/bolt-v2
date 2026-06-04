@@ -50,9 +50,10 @@ use nautilus_network::http::{HttpClient, USER_AGENT};
 use zeroize::Zeroizing;
 
 use super::{
-    ChainlinkDataStreamsReportApiResponse, PriceToBeatReportBinding,
-    chainlink_data_streams_auth_headers, chainlink_data_streams_credentials,
-    chainlink_data_streams_report_request_url, decode_price_to_beat_report,
+    CHAINLINK_REPORT_MILLISECONDS_PER_SECOND, ChainlinkDataStreamsReportApiResponse,
+    DecodedPriceToBeatReport, PriceToBeatReportBinding, chainlink_data_streams_auth_headers,
+    chainlink_data_streams_credentials, chainlink_data_streams_report_request_url,
+    decode_price_to_beat_report,
 };
 
 /// NT subscribe-command `params` key carrying the window-open Unix timestamp
@@ -388,26 +389,46 @@ async fn fetch_strike_index_price(
     let ts_init = UnixNanos::from(current_unix_timestamp_ms()? * 1_000_000);
     build_strike_index_price(
         request.instrument_id,
-        decoded.benchmark_price,
+        &decoded,
         request.price_precision,
         request.window_open_unix_seconds,
         ts_init,
     )
 }
 
-/// Maps a decoded strike benchmark price to the NT [`IndexPriceUpdate`] on the
+/// Maps a decoded strike report to the NT [`IndexPriceUpdate`] on the
 /// resolution instrument, with `ts_event` pinned to the window-open boundary
 /// (the strike instant). Pure (no network, no clock read): the caller supplies
 /// `ts_init`. Split out of [`fetch_strike_index_price`] so the value/timestamp
 /// mapping is unit-testable from a decoded fixture without an HTTP round-trip.
+///
+/// Fail-closed interval-open binding (F2): the Chainlink "report at T" REST
+/// endpoint returns the report *active at* T (i.e. `validFrom <= T`), not
+/// necessarily the report whose `validFrom == T`. A strike is the price-to-beat
+/// only if it is the report that opened the interval, so this rejects any
+/// decoded report whose `validFrom` does not equal the requested window-open
+/// boundary. Without this check a stale-instant strike would be silently bound
+/// as the price-to-beat and systematically misprice live entries.
 pub(crate) fn build_strike_index_price(
     instrument_id: InstrumentId,
-    benchmark_price: f64,
+    decoded: &DecodedPriceToBeatReport,
     price_precision: u8,
     window_open_unix_seconds: u64,
     ts_init: UnixNanos,
 ) -> anyhow::Result<IndexPriceUpdate> {
-    let value = Price::new_checked(benchmark_price, price_precision).map_err(|error| {
+    let window_open_unix_millis = window_open_unix_seconds
+        .checked_mul(CHAINLINK_REPORT_MILLISECONDS_PER_SECOND)
+        .ok_or_else(|| {
+            anyhow::anyhow!("Chainlink strike window-open timestamp exceeds milliseconds range")
+        })?;
+    if decoded.valid_from_timestamp_ms != window_open_unix_millis {
+        anyhow::bail!(
+            "Chainlink strike report is not the interval-open report: report validFrom is {} ms but the window-open boundary is {} ms",
+            decoded.valid_from_timestamp_ms,
+            window_open_unix_millis
+        );
+    }
+    let value = Price::new_checked(decoded.benchmark_price, price_precision).map_err(|error| {
         anyhow::anyhow!("Chainlink strike benchmark price is not a valid NT Price: {error}")
     })?;
     // ts_event = window-open boundary (the strike instant). The strike is
@@ -656,7 +677,7 @@ mod tests {
 
         let index_price = build_strike_index_price(
             instrument_id,
-            decoded.benchmark_price,
+            &decoded,
             TEST_PRICE_PRECISION,
             TEST_WINDOW_OPEN_UNIX_SECONDS,
             UnixNanos::from(TEST_TS_INIT_NANOS),
@@ -685,16 +706,61 @@ mod tests {
     }
 
     #[test]
-    fn strike_mapping_rejects_window_open_timestamp_beyond_nanos_range() {
+    fn strike_mapping_rejects_window_open_timestamp_beyond_supported_range() {
         let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
             .expect("test resolution instrument id should parse");
+        // A window-open ts that overflows the timestamp range must fail closed
+        // before any strike is emitted (the milliseconds guard trips first).
+        let decoded = DecodedPriceToBeatReport {
+            feed_id: TEST_FEED_ID.to_string(),
+            valid_from_timestamp_ms: u64::MAX,
+            observations_timestamp_ms: u64::MAX,
+            benchmark_price: TEST_BENCHMARK_PRICE,
+        };
         build_strike_index_price(
             instrument_id,
-            TEST_BENCHMARK_PRICE,
+            &decoded,
             TEST_PRICE_PRECISION,
             u64::MAX,
             UnixNanos::from(TEST_TS_INIT_NANOS),
         )
-        .expect_err("a window-open ts that overflows nanos must fail closed");
+        .expect_err("a window-open ts that overflows the timestamp range must fail closed");
+    }
+
+    #[test]
+    fn strike_mapping_rejects_report_not_bound_to_window_open() {
+        let instrument_id = InstrumentId::from_str(TEST_INSTRUMENT_ID)
+            .expect("test resolution instrument id should parse");
+        // The REST "report at T" endpoint can return a report whose validFrom is
+        // BEFORE the requested window-open (the report active at T). Such a
+        // report is not the interval-open strike and must be rejected (F2).
+        let stale_valid_from_seconds = u32::try_from(TEST_WINDOW_OPEN_UNIX_SECONDS)
+            .expect("window-open ts should fit u32")
+            - 60;
+        let report_bytes = report_source_json(
+            TEST_FEED_ID,
+            stale_valid_from_seconds,
+            TEST_OBSERVATIONS_SECONDS,
+            TEST_BENCHMARK_PRICE,
+            TEST_DECIMAL_SCALE,
+        );
+        let binding = PriceToBeatReportBinding {
+            provider_id: instrument_id.to_string(),
+            resolution_identity: instrument_id.to_string(),
+            feed_id: TEST_FEED_ID.to_string(),
+            schema_version: 3,
+            decimal_scale: TEST_DECIMAL_SCALE,
+        };
+        let decoded = decode_price_to_beat_report(&report_bytes, &binding)
+            .expect("the fixture V3 report should decode");
+
+        build_strike_index_price(
+            instrument_id,
+            &decoded,
+            TEST_PRICE_PRECISION,
+            TEST_WINDOW_OPEN_UNIX_SECONDS,
+            UnixNanos::from(TEST_TS_INIT_NANOS),
+        )
+        .expect_err("a report whose validFrom is not the window-open boundary must fail closed");
     }
 }

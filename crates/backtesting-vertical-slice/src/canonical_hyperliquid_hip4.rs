@@ -442,12 +442,11 @@ pub fn project_hip4_snapshots_to_catalog(
     fs::create_dir_all(catalog_root)
         .with_context(|| format!("create catalog root {}", catalog_root.display()))?;
 
-    // Large batch size so each instrument's photos land in a single chunk, keeping
-    // the encoder's per-chunk precision metadata consistent.
-    let catalog = ParquetDataCatalog::new(catalog_root, None, Some(10_000), None, None);
-
-    let mut instruments = Vec::with_capacity(table.instruments.len());
-    let mut total_delta_count = 0usize;
+    // Build every instrument's deltas first so the catalog batch size is derived
+    // from the data instead of guessed: sizing it to the largest instrument's
+    // delta count keeps each instrument's snapshots in a single chunk (so the
+    // encoder's per-chunk precision metadata stays consistent) for any data size.
+    let mut prepared = Vec::with_capacity(table.instruments.len());
     for instrument in &table.instruments {
         let deltas = snapshots_to_deltas(instrument)?;
         ensure!(
@@ -455,6 +454,18 @@ pub fn project_hip4_snapshots_to_catalog(
             "instrument {} produced no deltas",
             instrument.nt_instrument_id,
         );
+        prepared.push((instrument, deltas));
+    }
+    let batch_size = prepared
+        .iter()
+        .map(|(_, deltas)| deltas.len())
+        .max()
+        .unwrap_or(1);
+    let catalog = ParquetDataCatalog::new(catalog_root, None, Some(batch_size), None, None);
+
+    let mut instruments = Vec::with_capacity(prepared.len());
+    let mut total_delta_count = 0usize;
+    for (instrument, deltas) in prepared {
         let delta_count = deltas.len();
         catalog
             .write_to_parquet(deltas, None, None, None)

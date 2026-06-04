@@ -1,19 +1,16 @@
-use std::{collections::BTreeMap, future::Future, pin::Pin, str::FromStr};
+use std::{future::Future, pin::Pin, str::FromStr};
 
 use nautilus_model::{
-    enums::LiquiditySide,
     instruments::{Instrument, InstrumentAny},
     orderbook::OrderBook,
 };
 use nautilus_network::retry::RetryConfig;
 use nautilus_polymarket::{
     common::consts::LOT_SIZE_SCALE,
-    execution::parse::{compute_commission, instrument_taker_fee},
     http::{clob::PolymarketClobPublicClient, gamma::PolymarketGammaHttpClient},
     providers::PolymarketInstrumentProvider,
 };
-use rust_decimal::{Decimal, prelude::FromPrimitive};
-use serde::Serialize;
+use rust_decimal::Decimal;
 
 use crate::{
     bolt_v3_canary_proof_policy::{
@@ -23,156 +20,18 @@ use crate::{
     },
     bolt_v3_market_families::{self, MarketSelectionTarget},
     bolt_v3_operator_artifacts::{
-        BoltV3OperatorArtifactError, CanaryProofArtifactsWritten, EntryDecisionSourceBookSideInput,
-        EntryDecisionSourceInputRequest, EntryDecisionSourceInputsWritten,
-        EntryDecisionSourceMarketInputs, EntryDecisionSourceProofFileRequest,
+        BoltV3OperatorArtifactError, CanaryProofArtifactsWritten,
+        EntryDecisionSourceProofFileRequest,
         build_entry_readiness_gate_session_from_source_proof_files,
         canary_proof_policy_input_from_loaded, selected_entry_decision_market_attempts,
-        validate_entry_decision_source_proof_files,
-        write_entry_decision_source_inputs_from_selected_source_files,
-        write_json_artifact_create_new,
+        validate_entry_decision_source_proof_files, write_json_artifact_create_new,
     },
-    bolt_v3_providers::{CanaryProofArtifactsProviderContext, EntryDecisionSourceProviderContext},
+    bolt_v3_providers::CanaryProofArtifactsProviderContext,
 };
 
 use super::{PolymarketDataConfig, PolymarketExecutionConfig};
 
-const ENTRY_DECISION_UP_BOOK_LABEL: &str = "up";
-const ENTRY_DECISION_DOWN_BOOK_LABEL: &str = "down";
-const ENTRY_DECISION_FEE_BPS_SCALE: f64 = 10_000.0;
-const ENTRY_DECISION_FEE_PROBE_SIZE: i64 = 1;
 const ENTRY_DECISION_RETRY_INITIAL_ATTEMPT_COUNT: u64 = 1;
-const ENTRY_DECISION_GATE_PROVENANCE_RECORD_KIND: &str =
-    "bolt_v3.polymarket_entry_decision_gate_provenance.v1";
-const ENTRY_DECISION_GATE_PROVENANCE_SCHEMA_VERSION: u32 = 1;
-
-#[derive(Serialize)]
-struct PolymarketEntryDecisionGateProvenancePayload<'a> {
-    schema_version: u32,
-    record_kind: &'static str,
-    provider_id: &'a str,
-    provider_kind: &'a str,
-    selected_market_key: &'a str,
-    decision_source_sha256: &'a str,
-    instrument_source_sha256: &'a str,
-}
-
-pub fn polymarket_entry_decision_gate_provenance_payload(
-    provider_id: &str,
-    provider_kind: &str,
-    selected_market_key: &str,
-    decision_source_sha256: &str,
-    instrument_source_sha256: &str,
-) -> serde_json::Value {
-    serde_json::json!(PolymarketEntryDecisionGateProvenancePayload {
-        schema_version: ENTRY_DECISION_GATE_PROVENANCE_SCHEMA_VERSION,
-        record_kind: ENTRY_DECISION_GATE_PROVENANCE_RECORD_KIND,
-        provider_id,
-        provider_kind,
-        selected_market_key,
-        decision_source_sha256,
-        instrument_source_sha256,
-    })
-}
-
-pub fn collect_entry_decision_source_inputs(
-    context: EntryDecisionSourceProviderContext<'_>,
-) -> Pin<
-    Box<
-        dyn Future<Output = Result<EntryDecisionSourceInputsWritten, BoltV3OperatorArtifactError>>
-            + '_,
-    >,
-> {
-    Box::pin(async move { collect_entry_decision_source_inputs_inner(context).await })
-}
-
-async fn collect_entry_decision_source_inputs_inner(
-    context: EntryDecisionSourceProviderContext<'_>,
-) -> Result<EntryDecisionSourceInputsWritten, BoltV3OperatorArtifactError> {
-    let proof_validation = validate_entry_decision_source_proof_files(
-        context.loaded,
-        context.strategy_instance_id,
-        EntryDecisionSourceProofFileRequest {
-            price_to_beat_source_path: context.request.price_to_beat_source_path,
-            max_price_to_beat_source_bytes: context.request.max_price_to_beat_source_bytes,
-            reference_quote_source_path: context.request.reference_quote_source_path,
-            max_reference_quote_source_bytes: context.request.max_reference_quote_source_bytes,
-            signal_quote_source_path: context.request.signal_quote_source_path,
-            max_signal_quote_source_bytes: context.request.max_signal_quote_source_bytes,
-            realized_volatility_source_path: context.request.realized_volatility_source_path,
-            max_realized_volatility_source_bytes: context
-                .request
-                .max_realized_volatility_source_bytes,
-        },
-    )?;
-    let source_config =
-        polymarket_source_config_for_strategy(context.loaded, context.strategy_instance_id)?;
-    let rotation_max_attempts = entry_decision_source_rotation_max_attempts(context.loaded);
-    let mut instruments = load_polymarket_instruments_for_entry_decision_source(
-        context.loaded,
-        context.strategy_instance_id,
-        &source_config,
-        proof_validation.market_selection_timestamp_ms,
-        rotation_max_attempts,
-    )
-    .await?;
-    instruments.sort_by_key(|instrument| instrument.id().to_string());
-    let selected_attempts = selected_entry_decision_market_attempts(
-        context.loaded,
-        context.strategy_instance_id,
-        &instruments,
-        proof_validation.market_selection_timestamp_ms,
-        rotation_max_attempts,
-    )?;
-    let clob_client = PolymarketClobPublicClient::new(
-        Some(source_config.data.base_url_http.clone()),
-        source_config.data.http_timeout_secs,
-    )
-    .map_err(
-        |source| BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
-            message: format!("failed to create CLOB public client: {source}"),
-        },
-    )?;
-    let selected_books = select_entry_decision_market_with_two_sided_books(
-        &selected_attempts,
-        &instruments,
-        &clob_client,
-    )
-    .await?;
-    let fee_bps_by_instrument_id = entry_decision_fee_bps_by_instrument_id(
-        selected_books.up_instrument,
-        selected_books.down_instrument,
-        selected_books.up_book_input.best_ask,
-        selected_books.down_book_input.best_ask,
-    )?;
-
-    write_entry_decision_source_inputs_from_selected_source_files(
-        context.loaded,
-        context.strategy_instance_id,
-        EntryDecisionSourceInputRequest {
-            price_to_beat_source_path: context.request.price_to_beat_source_path,
-            max_price_to_beat_source_bytes: context.request.max_price_to_beat_source_bytes,
-            reference_quote_source_path: context.request.reference_quote_source_path,
-            max_reference_quote_source_bytes: context.request.max_reference_quote_source_bytes,
-            signal_quote_source_path: context.request.signal_quote_source_path,
-            max_signal_quote_source_bytes: context.request.max_signal_quote_source_bytes,
-            realized_volatility_source_path: context.request.realized_volatility_source_path,
-            max_realized_volatility_source_bytes: context
-                .request
-                .max_realized_volatility_source_bytes,
-            market_inputs: EntryDecisionSourceMarketInputs {
-                instruments: &instruments,
-                up_book: selected_books.up_book_input,
-                down_book: selected_books.down_book_input,
-                fee_bps_by_instrument_id,
-            },
-            decision_source_output_path: context.request.decision_source_output_path,
-            instrument_source_output_path: context.request.instrument_source_output_path,
-            fee_rate_source_output_path: context.request.fee_rate_source_output_path,
-        },
-        &selected_books.selected,
-    )
-}
 
 pub fn collect_canary_proof_artifacts(
     context: CanaryProofArtifactsProviderContext<'_>,
@@ -481,8 +340,6 @@ struct EntryDecisionSelectedMarketBooks<'a> {
     down_instrument: &'a InstrumentAny,
     up_book: OrderBook,
     down_book: OrderBook,
-    up_book_input: EntryDecisionSourceBookSideInput,
-    down_book_input: EntryDecisionSourceBookSideInput,
 }
 
 async fn select_entry_decision_market_with_two_sided_books<'a>(
@@ -540,17 +397,12 @@ async fn fetch_entry_decision_market_books<'a>(
                 message: format!("failed to fetch down book snapshot: {source}"),
             },
         )?;
-    let up_book_input = book_side_input_from_order_book(&up_book, ENTRY_DECISION_UP_BOOK_LABEL)?;
-    let down_book_input =
-        book_side_input_from_order_book(&down_book, ENTRY_DECISION_DOWN_BOOK_LABEL)?;
     Ok(EntryDecisionSelectedMarketBooks {
         selected: selected.clone(),
         up_instrument,
         down_instrument,
         up_book,
         down_book,
-        up_book_input,
-        down_book_input,
     })
 }
 
@@ -711,86 +563,6 @@ fn decimal_from_str(
     })
 }
 
-fn entry_decision_fee_bps_by_instrument_id(
-    up_instrument: &InstrumentAny,
-    down_instrument: &InstrumentAny,
-    up_entry_price: f64,
-    down_entry_price: f64,
-) -> Result<BTreeMap<String, f64>, BoltV3OperatorArtifactError> {
-    Ok(BTreeMap::from([
-        (
-            up_instrument.id().to_string(),
-            effective_taker_fee_bps_from_nt(up_instrument, up_entry_price)?,
-        ),
-        (
-            down_instrument.id().to_string(),
-            effective_taker_fee_bps_from_nt(down_instrument, down_entry_price)?,
-        ),
-    ]))
-}
-
-fn effective_taker_fee_bps_from_nt(
-    instrument: &InstrumentAny,
-    entry_price: f64,
-) -> Result<f64, BoltV3OperatorArtifactError> {
-    let price = Decimal::from_f64(entry_price).ok_or_else(|| {
-        entry_decision_source_invalid("entry decision source fee price is invalid")
-    })?;
-    if price <= Decimal::ZERO || price >= Decimal::ONE {
-        return Err(entry_decision_source_invalid(
-            "entry decision source fee price is invalid",
-        ));
-    }
-    let commission = compute_commission(
-        instrument_taker_fee(instrument),
-        Decimal::from(ENTRY_DECISION_FEE_PROBE_SIZE),
-        price,
-        LiquiditySide::Taker,
-    );
-    let fee_bps = commission / entry_price * ENTRY_DECISION_FEE_BPS_SCALE;
-    if !commission.is_finite() || commission.is_sign_negative() || !fee_bps.is_finite() {
-        return Err(entry_decision_source_invalid(
-            "entry decision source fee bps is invalid",
-        ));
-    }
-    Ok(fee_bps)
-}
-
-fn book_side_input_from_order_book(
-    book: &OrderBook,
-    label: &'static str,
-) -> Result<EntryDecisionSourceBookSideInput, BoltV3OperatorArtifactError> {
-    let best_bid = book.best_bid_price().ok_or_else(|| {
-        BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
-            message: format!("entry decision source {label} book is missing best bid"),
-        }
-    })?;
-    let bid_quantity = book.best_bid_size().ok_or_else(|| {
-        BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
-            message: format!("entry decision source {label} book is missing bid quantity"),
-        }
-    })?;
-    let best_ask = book.best_ask_price().ok_or_else(|| {
-        BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
-            message: format!("entry decision source {label} book is missing best ask"),
-        }
-    })?;
-    let ask_quantity = book.best_ask_size().ok_or_else(|| {
-        BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
-            message: format!("entry decision source {label} book is missing ask quantity"),
-        }
-    })?;
-    let bid_quantity = bid_quantity.as_f64();
-    let ask_quantity = ask_quantity.as_f64();
-    Ok(EntryDecisionSourceBookSideInput {
-        best_bid: best_bid.as_f64(),
-        bid_quantity,
-        best_ask: best_ask.as_f64(),
-        ask_quantity,
-        liquidity_available: bid_quantity + ask_quantity,
-    })
-}
-
 fn entry_decision_source_invalid(message: impl Into<String>) -> BoltV3OperatorArtifactError {
     BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
         message: message.into(),
@@ -799,13 +571,7 @@ fn entry_decision_source_invalid(message: impl Into<String>) -> BoltV3OperatorAr
 
 #[cfg(test)]
 mod tests {
-    use nautilus_model::{
-        data::BookOrder,
-        enums::{BookType, OrderSide},
-        identifiers::{AccountId, InstrumentId},
-        orderbook::OrderBook,
-        types::{Price, Quantity},
-    };
+    use nautilus_model::identifiers::{AccountId, InstrumentId};
     use nautilus_network::websocket::TransportBackend;
 
     use super::*;
@@ -823,38 +589,6 @@ mod tests {
             .expect_err("zero initial retry delay must fail closed");
 
         assert!(format!("{error}").contains("retry_delay_initial_ms"));
-    }
-
-    #[test]
-    fn book_side_input_reports_total_top_of_book_liquidity() {
-        let mut book = OrderBook::new(
-            InstrumentId::from("0xentry-source-book.POLYMARKET"),
-            BookType::L2_MBP,
-        );
-        book.add(
-            BookOrder::new(OrderSide::Buy, Price::from("0.50"), Quantity::from("25"), 1),
-            0,
-            1,
-            1.into(),
-        );
-        book.add(
-            BookOrder::new(
-                OrderSide::Sell,
-                Price::from("0.52"),
-                Quantity::from("100"),
-                2,
-            ),
-            0,
-            2,
-            2.into(),
-        );
-
-        let input = book_side_input_from_order_book(&book, "test")
-            .expect("two-sided top of book should produce source input");
-
-        assert_eq!(input.bid_quantity, 25.0);
-        assert_eq!(input.ask_quantity, 100.0);
-        assert_eq!(input.liquidity_available, 125.0);
     }
 
     #[test]

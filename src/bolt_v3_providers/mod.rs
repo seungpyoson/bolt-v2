@@ -37,8 +37,7 @@ use crate::{
     bolt_v3_market_families::MarketIdentityPlan,
     bolt_v3_operator_artifacts::{
         BoltV3OperatorArtifactError, CanaryProofArtifactsCollectionRequest,
-        CanaryProofArtifactsWritten, EntryDecisionSourceCollectionRequest,
-        EntryDecisionSourceInputsWritten, WrittenOperatorArtifact,
+        CanaryProofArtifactsWritten, WrittenOperatorArtifact,
     },
     bolt_v3_secrets::{BoltV3SecretError, ResolvedBoltV3Secrets},
     strategies::registry::FeeProvider,
@@ -310,26 +309,11 @@ type ProductSubmitProofArtifactWriter =
         ProviderProductSubmitProofArtifactRequest<'a>,
     ) -> Result<WrittenOperatorArtifact, anyhow::Error>;
 
-pub struct EntryDecisionSourceProviderContext<'a> {
-    pub loaded: &'a LoadedBoltV3Config,
-    pub strategy_instance_id: &'a str,
-    pub request: EntryDecisionSourceCollectionRequest<'a>,
-}
-
 pub struct CanaryProofArtifactsProviderContext<'a> {
     pub loaded: &'a LoadedBoltV3Config,
     pub strategy_instance_id: &'a str,
     pub request: CanaryProofArtifactsCollectionRequest<'a>,
 }
-
-pub type EntryDecisionSourceInputCollector = for<'a> fn(
-    EntryDecisionSourceProviderContext<'a>,
-) -> Pin<
-    Box<
-        dyn Future<Output = Result<EntryDecisionSourceInputsWritten, BoltV3OperatorArtifactError>>
-            + 'a,
-    >,
->;
 
 pub type CanaryProofArtifactsCollector = for<'a> fn(
     CanaryProofArtifactsProviderContext<'a>,
@@ -608,7 +592,6 @@ pub struct ProviderBinding {
     pub write_live_submit_approval_artifact: Option<LiveSubmitApprovalArtifactWriter>,
     pub write_product_submit_proof_artifact: Option<ProductSubmitProofArtifactWriter>,
     pub build_fee_provider: Option<FeeProviderBuilder>,
-    pub collect_entry_decision_source_inputs: Option<EntryDecisionSourceInputCollector>,
     pub collect_canary_proof_artifacts: Option<CanaryProofArtifactsCollector>,
 }
 
@@ -629,9 +612,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: Some(polymarket::build_fee_provider),
-        collect_entry_decision_source_inputs: Some(
-            polymarket::collect_entry_decision_source_inputs,
-        ),
         collect_canary_proof_artifacts: Some(polymarket::collect_canary_proof_artifacts),
     },
     ProviderBinding {
@@ -650,7 +630,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
@@ -671,7 +650,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         ),
         write_product_submit_proof_artifact: Some(hyperliquid::write_product_submit_proof_artifact),
         build_fee_provider: Some(hyperliquid::build_fee_provider),
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: Some(hyperliquid::collect_canary_proof_artifacts),
     },
     ProviderBinding {
@@ -690,7 +668,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
@@ -709,7 +686,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
@@ -728,7 +704,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
@@ -747,7 +722,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
@@ -766,7 +740,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
@@ -785,7 +758,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
     ProviderBinding {
@@ -804,7 +776,6 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     },
 ];

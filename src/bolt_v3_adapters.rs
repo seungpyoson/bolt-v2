@@ -502,7 +502,6 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     };
 
@@ -522,7 +521,6 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     };
 
@@ -542,7 +540,6 @@ mod tests {
         write_live_submit_approval_artifact: None,
         write_product_submit_proof_artifact: None,
         build_fee_provider: None,
-        collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,
     };
 

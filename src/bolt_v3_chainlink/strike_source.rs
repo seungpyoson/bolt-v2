@@ -15,9 +15,7 @@
 //! as zeroizing material; this module never logs or prints secret values.
 //!
 //! Protocol logic (HMAC auth, signed request URL, V3 `fullReport` decode) is
-//! reused from the sibling [`super::auth`] / [`super::report`] modules and the
-//! offline timestamped fetch pattern in
-//! `crate::bolt_v3_operator_artifacts::write_chainlink_price_report_source_from_configured_provider`.
+//! reused from the sibling [`super::auth`] / [`super::report`] modules.
 
 use std::{
     any::Any,
@@ -378,7 +376,6 @@ async fn fetch_strike_index_price(
 
     let binding = PriceToBeatReportBinding {
         provider_id: request.instrument_id.to_string(),
-        resolution_identity: request.instrument_id.to_string(),
         feed_id: request.feed_id.clone(),
         schema_version: request.report_schema_version,
         decimal_scale: request.report_decimal_scale,
@@ -667,7 +664,6 @@ mod tests {
         );
         let binding = PriceToBeatReportBinding {
             provider_id: instrument_id.to_string(),
-            resolution_identity: instrument_id.to_string(),
             feed_id: TEST_FEED_ID.to_string(),
             schema_version: 3,
             decimal_scale: TEST_DECIMAL_SCALE,
@@ -746,7 +742,6 @@ mod tests {
         );
         let binding = PriceToBeatReportBinding {
             provider_id: instrument_id.to_string(),
-            resolution_identity: instrument_id.to_string(),
             feed_id: TEST_FEED_ID.to_string(),
             schema_version: 3,
             decimal_scale: TEST_DECIMAL_SCALE,

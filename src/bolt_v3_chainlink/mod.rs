@@ -19,19 +19,11 @@ pub(crate) use auth::{
     chainlink_data_streams_report_request_url,
 };
 pub(crate) use report::{
-    CHAINLINK_REPORT_MILLISECONDS_PER_SECOND, CHAINLINK_REPORT_NANOS_PER_MILLISECOND,
-    ChainlinkDataStreamsReportApiResponse, DecodedPriceToBeatReport, PriceToBeatReportBinding,
-    decode_price_to_beat_report, is_lowercase_chainlink_feed_id,
+    CHAINLINK_REPORT_MILLISECONDS_PER_SECOND, ChainlinkDataStreamsReportApiResponse,
+    DecodedPriceToBeatReport, PriceToBeatReportBinding, decode_price_to_beat_report,
+    is_lowercase_chainlink_feed_id,
 };
 pub(crate) use strike_source::{
     ChainlinkStrikeFeedBinding, ChainlinkStrikeSourceConfig, ChainlinkStrikeSourceFactory,
     STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM, parse_feed_binding,
 };
-
-pub(crate) struct ChainlinkDataStreamsReportCollectionConfig {
-    pub(crate) rest_base_url: String,
-    pub(crate) report_endpoint_path: String,
-    pub(crate) api_key_ssm_parameter: String,
-    pub(crate) api_secret_ssm_parameter: String,
-    pub(crate) http_timeout_secs: u64,
-}

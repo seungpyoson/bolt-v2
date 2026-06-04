@@ -32,7 +32,6 @@ const CHAINLINK_REPORT_V3_VALID_FROM_WORD_INDEX: usize = 1;
 const CHAINLINK_REPORT_V3_OBSERVATIONS_WORD_INDEX: usize = 2;
 const CHAINLINK_REPORT_V3_BENCHMARK_PRICE_WORD_INDEX: usize = 6;
 pub(crate) const CHAINLINK_REPORT_MILLISECONDS_PER_SECOND: u64 = 1_000;
-pub(crate) const CHAINLINK_REPORT_NANOS_PER_MILLISECOND: u64 = 1_000_000;
 const CHAINLINK_REPORT_SIGN_BIT_MASK: u8 = 0x80;
 const CHAINLINK_REPORT_BASE256_RADIX: f64 = 256.0;
 const CHAINLINK_REPORT_DECIMAL_RADIX: f64 = 10.0;
@@ -41,7 +40,6 @@ const CHAINLINK_FEED_ID_HEX_LENGTH: usize = 64;
 
 pub(crate) struct PriceToBeatReportBinding {
     pub(crate) provider_id: String,
-    pub(crate) resolution_identity: String,
     pub(crate) feed_id: String,
     pub(crate) schema_version: u64,
     pub(crate) decimal_scale: u64,
@@ -373,7 +371,6 @@ mod tests {
     fn binding(feed_id: &str, schema_version: u64, decimal_scale: u64) -> PriceToBeatReportBinding {
         PriceToBeatReportBinding {
             provider_id: "test-provider".to_string(),
-            resolution_identity: "test-resolution".to_string(),
             feed_id: feed_id.to_string(),
             schema_version,
             decimal_scale,

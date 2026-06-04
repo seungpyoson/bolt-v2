@@ -14,12 +14,16 @@ use std::{path::Path, str::FromStr};
 
 use anyhow::{Context, Result, bail, ensure};
 use nautilus_backtest::{engine::BacktestEngine, node::BacktestNode, result::BacktestResult};
-use nautilus_model::{data::TradeTick, identifiers::InstrumentId, types::Quantity};
+use nautilus_model::{
+    data::TradeTick, enums::AggressorSide, identifiers::InstrumentId, types::Quantity,
+};
 use nautilus_trading::examples::strategies::{HurstVpinDirectional, HurstVpinDirectionalConfig};
+use rust_decimal::Decimal;
 
 use super::{
     canonical_trades::{
-        CanonicalInstrumentIdentity, CanonicalTradesTable, normalize_bybit_spot_tick_trades,
+        CanonicalInstrumentIdentity, CanonicalTradeRow, CanonicalTradesTable, TradeAggressorSide,
+        normalize_bybit_spot_tick_trades,
     },
     catalog_projection::{
         CatalogProjection, SpotInstrumentSpec, project_canonical_trades_to_catalog,
@@ -169,7 +173,11 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         read_back.len(),
         canonical_table.rows.len()
     );
-    assert_read_back_matches(&read_back, &canonical_table, &projection.nt_instrument_id)?;
+    assert_read_back_matches(
+        &read_back,
+        &canonical_table.rows,
+        &projection.nt_instrument_id,
+    )?;
     // An optional manifest time window must overlap the accepted data's event
     // range, or the engine would filter out every accepted trade and still
     // "succeed" over zero data while stamping the accepted source/catalog hash.
@@ -195,6 +203,16 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
         results.len()
     );
     let nt_result = results.remove(0);
+    // The read-back proof above loads the catalog through one NautilusTrader code
+    // path; the engine consumed it through another. Bind the two by asserting the
+    // engine's own iteration count equals the accepted-trade count: NautilusTrader
+    // increments `iterations` exactly once per data point delivered to the engine
+    // loop, so a run that silently processed zero (or a divergent count of) the
+    // accepted trades — while still stamping the accepted source/catalog hash — is
+    // rejected here rather than producing a contract over data the engine never saw.
+    if let Some(reason) = iterations_mismatch(nt_result.iterations, read_back.len()) {
+        bail!("backtest did not consume the accepted data: {reason}");
+    }
 
     // Gate 6: objective result contract.
     let mut warnings = Vec::new();
@@ -255,7 +273,151 @@ fn market_structure_label(manifest: &BacktestingRunManifest) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::time_window_excludes_all_data;
+    use std::str::FromStr;
+
+    use nautilus_core::UnixNanos;
+    use nautilus_model::{
+        data::TradeTick,
+        enums::AggressorSide,
+        identifiers::{InstrumentId, TradeId},
+        types::{Price, Quantity},
+    };
+
+    use super::{assert_read_back_matches, iterations_mismatch, time_window_excludes_all_data};
+    use crate::canonical_trades::{CanonicalTradeRow, TradeAggressorSide};
+
+    const TEST_INSTRUMENT: &str = "BTCUSDT.BYBIT";
+
+    fn canonical_row(
+        trade_id: &str,
+        price: &str,
+        size: &str,
+        side: TradeAggressorSide,
+        event_time: i64,
+    ) -> CanonicalTradeRow {
+        CanonicalTradeRow {
+            schema_version: String::new(),
+            ingest_run_id: String::new(),
+            source_binding: String::new(),
+            venue: String::new(),
+            product_family: String::new(),
+            product_category: String::new(),
+            instrument_id: String::new(),
+            canonical_instrument_key: String::new(),
+            venue_symbol: String::new(),
+            nt_instrument_id: String::new(),
+            event_time,
+            capture_time: 0,
+            source_sequence: String::new(),
+            raw_payload_id: String::new(),
+            source_proof_id: String::new(),
+            payload_hash: String::new(),
+            transform_hash: String::new(),
+            trade_source_type: String::new(),
+            trade_id: trade_id.to_string(),
+            aggressor_side: side.as_str().to_string(),
+            price: price.to_string(),
+            size: size.to_string(),
+            notional: String::new(),
+        }
+    }
+
+    fn tick(trade_id: &str, price: &str, size: &str, side: AggressorSide, ts: u64) -> TradeTick {
+        TradeTick::new(
+            InstrumentId::from_str(TEST_INSTRUMENT).expect("instrument id"),
+            Price::from_str(price).expect("price"),
+            Quantity::from_str(size).expect("size"),
+            side,
+            TradeId::from(trade_id),
+            UnixNanos::from(ts),
+            UnixNanos::from(ts),
+        )
+    }
+
+    #[test]
+    fn read_back_faithful_values_are_admitted() {
+        let rows = vec![canonical_row(
+            "t1",
+            "100.5",
+            "2.0",
+            TradeAggressorSide::Buyer,
+            1000,
+        )];
+        let ticks = vec![tick("t1", "100.5", "2.0", AggressorSide::Buyer, 1000)];
+        assert_read_back_matches(&ticks, &rows, TEST_INSTRUMENT)
+            .expect("faithful read-back must be admitted");
+    }
+
+    #[test]
+    fn read_back_price_mismatch_is_rejected() {
+        let rows = vec![canonical_row(
+            "t1",
+            "100.5",
+            "2.0",
+            TradeAggressorSide::Buyer,
+            1000,
+        )];
+        let ticks = vec![tick("t1", "999.5", "2.0", AggressorSide::Buyer, 1000)];
+        let err = assert_read_back_matches(&ticks, &rows, TEST_INSTRUMENT).unwrap_err();
+        assert!(err.to_string().contains("price"), "{err}");
+    }
+
+    #[test]
+    fn read_back_size_mismatch_is_rejected() {
+        let rows = vec![canonical_row(
+            "t1",
+            "100.5",
+            "2.0",
+            TradeAggressorSide::Buyer,
+            1000,
+        )];
+        let ticks = vec![tick("t1", "100.5", "9.0", AggressorSide::Buyer, 1000)];
+        let err = assert_read_back_matches(&ticks, &rows, TEST_INSTRUMENT).unwrap_err();
+        assert!(err.to_string().contains("size"), "{err}");
+    }
+
+    #[test]
+    fn read_back_side_mismatch_is_rejected() {
+        let rows = vec![canonical_row(
+            "t1",
+            "100.5",
+            "2.0",
+            TradeAggressorSide::Buyer,
+            1000,
+        )];
+        let ticks = vec![tick("t1", "100.5", "2.0", AggressorSide::Seller, 1000)];
+        let err = assert_read_back_matches(&ticks, &rows, TEST_INSTRUMENT).unwrap_err();
+        assert!(err.to_string().contains("side"), "{err}");
+    }
+
+    #[test]
+    fn read_back_timestamp_mismatch_is_rejected() {
+        let rows = vec![canonical_row(
+            "t1",
+            "100.5",
+            "2.0",
+            TradeAggressorSide::Buyer,
+            1000,
+        )];
+        let ticks = vec![tick("t1", "100.5", "2.0", AggressorSide::Buyer, 2000)];
+        let err = assert_read_back_matches(&ticks, &rows, TEST_INSTRUMENT).unwrap_err();
+        assert!(err.to_string().contains("ts_event"), "{err}");
+    }
+
+    #[test]
+    fn iterations_zero_is_rejected() {
+        assert!(iterations_mismatch(0, 3).is_some());
+    }
+
+    #[test]
+    fn iterations_below_expected_is_rejected() {
+        assert!(iterations_mismatch(2, 3).is_some());
+    }
+
+    #[test]
+    fn iterations_matching_expected_is_admitted() {
+        assert!(iterations_mismatch(3, 3).is_none());
+    }
 
     #[test]
     fn time_window_without_bounds_admits_data() {
@@ -268,9 +430,16 @@ mod tests {
             time_window_excludes_all_data(Some(150), Some(180), 100, 200),
             None
         );
-        // A bound exactly at the edge still admits the boundary trade.
+        // A window covering exactly the data's event range admits all of it.
         assert_eq!(
-            time_window_excludes_all_data(Some(200), Some(100), 100, 200),
+            time_window_excludes_all_data(Some(100), Some(200), 100, 200),
+            None
+        );
+        // A start bound exactly at the last trade still admits that boundary trade.
+        // (An inverted start>end window is rejected upstream by the manifest's
+        // own validation, so it never reaches this pure overlap test.)
+        assert_eq!(
+            time_window_excludes_all_data(Some(200), None, 100, 200),
             None
         );
     }
@@ -298,29 +467,98 @@ mod tests {
 /// duplicated, or relabelled ticks cannot pass the gate.
 fn assert_read_back_matches(
     read_back: &[TradeTick],
-    canonical_table: &CanonicalTradesTable,
+    canonical_rows: &[CanonicalTradeRow],
     expected_instrument_id: &str,
 ) -> Result<()> {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
+    let rows_by_id: BTreeMap<&str, &CanonicalTradeRow> = canonical_rows
+        .iter()
+        .map(|row| (row.trade_id.as_str(), row))
+        .collect();
+    ensure!(
+        rows_by_id.len() == canonical_rows.len(),
+        "canonical rows contain duplicate trade ids"
+    );
+    let expected_ids: BTreeSet<&str> = rows_by_id.keys().copied().collect();
+    let mut actual_ids: BTreeSet<String> = BTreeSet::new();
     for tick in read_back {
         ensure!(
             tick.instrument_id.to_string() == expected_instrument_id,
             "catalog read-back tick instrument {} does not match projected {expected_instrument_id}",
             tick.instrument_id
         );
+        let trade_id = tick.trade_id.to_string();
+        let row = rows_by_id.get(trade_id.as_str()).with_context(|| {
+            format!("catalog read-back trade id {trade_id} is absent from the canonical rows")
+        })?;
+        // Value faithfulness, not just identity: a projection that silently
+        // corrupted a price, size, side, or timestamp must not pass the gate.
+        let expected_price = Decimal::from_str(&row.price)
+            .with_context(|| format!("canonical price {:?}", row.price))?;
+        ensure!(
+            tick.price.as_decimal() == expected_price,
+            "catalog read-back price {} for trade {trade_id} does not match canonical {}",
+            tick.price,
+            row.price
+        );
+        let expected_size = Decimal::from_str(&row.size)
+            .with_context(|| format!("canonical size {:?}", row.size))?;
+        ensure!(
+            tick.size.as_decimal() == expected_size,
+            "catalog read-back size {} for trade {trade_id} does not match canonical {}",
+            tick.size,
+            row.size
+        );
+        ensure!(
+            aggressor_label(tick.aggressor_side) == row.aggressor_side,
+            "catalog read-back side {:?} for trade {trade_id} does not match canonical {}",
+            tick.aggressor_side,
+            row.aggressor_side
+        );
+        let expected_ts = u64::try_from(row.event_time)
+            .with_context(|| format!("canonical event_time {}", row.event_time))?;
+        ensure!(
+            tick.ts_event.as_u64() == expected_ts,
+            "catalog read-back ts_event {} for trade {trade_id} does not match canonical {expected_ts}",
+            tick.ts_event.as_u64()
+        );
+        actual_ids.insert(trade_id);
     }
-    let expected_ids: BTreeSet<&str> = canonical_table
-        .rows
-        .iter()
-        .map(|row| row.trade_id.as_str())
-        .collect();
-    let actual_ids: Vec<String> = read_back.iter().map(|t| t.trade_id.to_string()).collect();
     let actual_set: BTreeSet<&str> = actual_ids.iter().map(String::as_str).collect();
     ensure!(
         expected_ids == actual_set,
-        "catalog read-back trade ids do not match the canonical table"
+        "catalog read-back trade ids do not match the canonical rows"
     );
     Ok(())
+}
+
+/// Canonical aggressor-side label for a NautilusTrader [`AggressorSide`], so a
+/// read-back tick's side can be compared to the canonical row's string.
+fn aggressor_label(side: AggressorSide) -> &'static str {
+    match side {
+        AggressorSide::Buyer => TradeAggressorSide::Buyer.as_str(),
+        AggressorSide::Seller => TradeAggressorSide::Seller.as_str(),
+        AggressorSide::NoAggressor => "NO_AGGRESSOR",
+    }
+}
+
+/// Reason the NautilusTrader engine did not process exactly the accepted data, or
+/// `None` when its iteration count equals the accepted-trade count. NautilusTrader
+/// increments `iterations` once per data point delivered to the engine loop.
+fn iterations_mismatch(iterations: usize, expected: usize) -> Option<String> {
+    if iterations == 0 {
+        return Some(format!(
+            "NautilusTrader engine iterated zero times; it processed none of the {expected} \
+             accepted trades"
+        ));
+    }
+    if iterations != expected {
+        return Some(format!(
+            "NautilusTrader engine processed {iterations} data points, expected {expected} \
+             accepted trades"
+        ));
+    }
+    None
 }
 
 /// Reject a manifest time window that excludes every accepted trade. The

@@ -233,6 +233,9 @@ pub fn normalize_bybit_spot_tick_trades(
         let event_time = timestamp_ms
             .checked_mul(NANOS_PER_MILLISECOND)
             .with_context(|| format!("row {index}: timestamp overflow"))?;
+        let notional = price
+            .checked_mul(size)
+            .with_context(|| format!("row {index}: notional overflow"))?;
 
         rows.push(CanonicalTradeRow {
             schema_version: NORMALIZED_SCHEMA_VERSION.to_string(),
@@ -257,7 +260,7 @@ pub fn normalize_bybit_spot_tick_trades(
             aggressor_side: side.as_str().to_string(),
             price: price_raw.to_string(),
             size: size_raw.to_string(),
-            notional: (price * size).normalize().to_string(),
+            notional: notional.normalize().to_string(),
         });
     }
 
@@ -631,6 +634,23 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("price"), "{err}");
+    }
+
+    #[test]
+    fn rejects_notional_overflow() {
+        // price * size that overflows Decimal must fail loud (error), mirroring
+        // the checked timestamp arithmetic on the same row — never panic.
+        let huge = "79228162514264337593543950335"; // Decimal::MAX
+        let csv = format!("id,timestamp,price,volume,side,rpi\n1,1772323201665,{huge},2,buy,0\n");
+        let err = normalize_bybit_spot_tick_trades(
+            &accepted_dataset(),
+            &identity(),
+            &csv,
+            0,
+            "ingest-run-test",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("notional"), "{err}");
     }
 
     #[test]

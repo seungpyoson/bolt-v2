@@ -237,6 +237,12 @@ fn accepted_data_flows_through_to_objective_result_contract() {
         "trade-only TRADE_REPLAY data is quote-free, so the quote-driven strategy places no orders"
     );
     assert_eq!(output.nt_result.total_positions, 0);
+    // The engine itself — not just the read-back loader — consumed every accepted
+    // trade: NautilusTrader increments `iterations` once per data point delivered.
+    assert_eq!(
+        output.nt_result.iterations, 3,
+        "engine must iterate exactly once per accepted trade"
+    );
 
     // Gate 6: objective result contract.
     let contract = &output.contract;

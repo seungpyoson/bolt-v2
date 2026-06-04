@@ -75,31 +75,21 @@ pub struct CatalogProjection {
     pub fidelity_class: SourceProofFidelityClass,
 }
 
-/// Decimal places implied by a decimal-string increment (`0.1` -> 1,
-/// `0.0001` -> 4, `0.10` -> 2, `1.00` -> 2, `1400` -> 0).
-///
-/// Trailing zeros are significant: an exchange increment of `0.10` declares two
-/// decimal places, and trimming them would understate the precision and
-/// disagree with the precision NautilusTrader infers from the same increment
-/// string in `Price::from_str`/`Quantity::from_str`.
-#[must_use]
-fn decimal_places(increment: &str) -> u8 {
-    match increment.split_once('.') {
-        Some((_, frac)) => u8::try_from(frac.len()).unwrap_or(u8::MAX),
-        None => 0,
-    }
-}
-
 /// Build the NautilusTrader `CurrencyPair` from accepted instrument metadata.
+///
+/// Every NautilusTrader constructor on this path is routed through its checked
+/// (`*_checked`) variant so malformed accepted metadata surfaces as an error,
+/// never a panic.
 ///
 /// # Errors
 ///
-/// Returns an error if any decimal field fails to parse.
+/// Returns an error if any field fails to parse or fails NautilusTrader's
+/// instrument correctness checks.
 pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
     let instrument_id = InstrumentId::from_str(&spec.nt_instrument_id)
         .with_context(|| format!("invalid nt_instrument_id {:?}", spec.nt_instrument_id))?;
-    let price_precision = decimal_places(&spec.price_increment);
-    let size_precision = decimal_places(&spec.size_increment);
+    let raw_symbol = Symbol::new_checked(&spec.raw_symbol)
+        .map_err(|error| anyhow::anyhow!("invalid raw_symbol {:?}: {error}", spec.raw_symbol))?;
     let base_currency = Currency::from_str(&spec.base_currency)
         .with_context(|| format!("invalid base_currency {:?}", spec.base_currency))?;
     let quote_currency = Currency::from_str(&spec.quote_currency)
@@ -113,16 +103,33 @@ pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
     let size_increment = Quantity::from_str(&spec.size_increment).map_err(|error| {
         anyhow::anyhow!("invalid size_increment {:?}: {error}", spec.size_increment)
     })?;
+    // Single source of precision: the parsed increment. Deriving precision any
+    // other way (for example a decimal-string char count) can disagree with the
+    // precision NautilusTrader infers from the same value — `Price::from_str`
+    // even accepts scientific notation — and panic `CurrencyPair::new_checked`'s
+    // precision-equality check.
+    let price_precision = price_increment.precision;
+    let size_precision = size_increment.precision;
     let max_quantity = Quantity::from_str(&spec.max_quantity).map_err(|error| {
         anyhow::anyhow!("invalid max_quantity {:?}: {error}", spec.max_quantity)
     })?;
     let min_quantity = Quantity::from_str(&spec.min_quantity).map_err(|error| {
         anyhow::anyhow!("invalid min_quantity {:?}: {error}", spec.min_quantity)
     })?;
+    let max_notional = Money::new_checked(
+        spec.max_notional.parse().context("max_notional")?,
+        quote_currency,
+    )
+    .map_err(|error| anyhow::anyhow!("invalid max_notional {:?}: {error}", spec.max_notional))?;
+    let min_notional = Money::new_checked(
+        spec.min_notional.parse().context("min_notional")?,
+        quote_currency,
+    )
+    .map_err(|error| anyhow::anyhow!("invalid min_notional {:?}: {error}", spec.min_notional))?;
 
-    Ok(CurrencyPair::new(
+    CurrencyPair::new_checked(
         instrument_id,
-        Symbol::from(spec.raw_symbol.as_str()),
+        raw_symbol,
         base_currency,
         quote_currency,
         price_precision,
@@ -133,14 +140,8 @@ pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
         None,
         Some(max_quantity),
         Some(min_quantity),
-        Some(Money::new(
-            spec.max_notional.parse().context("max_notional")?,
-            quote_currency,
-        )),
-        Some(Money::new(
-            spec.min_notional.parse().context("min_notional")?,
-            quote_currency,
-        )),
+        Some(max_notional),
+        Some(min_notional),
         None,
         None,
         None,
@@ -150,7 +151,13 @@ pub fn build_currency_pair(spec: &SpotInstrumentSpec) -> Result<CurrencyPair> {
         None,
         UnixNanos::default(),
         UnixNanos::default(),
-    ))
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "invalid currency pair for {:?}: {error}",
+            spec.nt_instrument_id
+        )
+    })
 }
 
 fn rescaled(value: &str, precision: u8) -> Result<String> {
@@ -194,12 +201,14 @@ pub fn canonical_rows_to_trade_ticks(
                 other => anyhow::bail!("unknown aggressor side {other:?}"),
             };
             let ts = UnixNanos::from(u64::try_from(row.event_time).context("negative event_time")?);
+            let trade_id = TradeId::new_checked(&row.trade_id)
+                .map_err(|error| anyhow::anyhow!("invalid trade_id {:?}: {error}", row.trade_id))?;
             Ok(TradeTick::new(
                 instrument_id,
                 price,
                 size,
                 aggressor,
-                TradeId::from(row.trade_id.as_str()),
+                trade_id,
                 ts,
                 ts,
             ))
@@ -442,17 +451,6 @@ mod tests {
     }
 
     #[test]
-    fn decimal_places_reads_increment_precision() {
-        assert_eq!(decimal_places("0.1"), 1);
-        assert_eq!(decimal_places("0.0001"), 4);
-        assert_eq!(decimal_places("1400"), 0);
-        // Trailing zeros are significant: an exchange tick of `0.10` is two
-        // decimal places, matching the precision `Price::from_str` infers.
-        assert_eq!(decimal_places("0.10"), 2);
-        assert_eq!(decimal_places("1.00"), 2);
-    }
-
-    #[test]
     fn build_currency_pair_honours_trailing_zero_increment() {
         let mut spec = spec();
         spec.price_increment = "0.10".to_string();
@@ -467,6 +465,60 @@ mod tests {
         let mut spec = spec();
         spec.price_increment = "not-a-number".to_string();
         assert!(build_currency_pair(&spec).is_err());
+    }
+
+    #[test]
+    fn build_currency_pair_rejects_out_of_range_notional() {
+        // A notional that parses as an f64 but exceeds NautilusTrader's Money
+        // range must surface as an error, never a panic, on the accepted-data path.
+        let mut spec = spec();
+        spec.max_notional = "1e40".to_string();
+        assert!(build_currency_pair(&spec).is_err());
+    }
+
+    #[test]
+    fn build_currency_pair_rejects_blank_raw_symbol() {
+        // A blank raw symbol must error via the checked Symbol constructor,
+        // never panic.
+        let mut spec = spec();
+        spec.raw_symbol = String::new();
+        assert!(build_currency_pair(&spec).is_err());
+    }
+
+    #[test]
+    fn build_currency_pair_derives_precision_from_scientific_increment() {
+        // `Price::from_str` accepts scientific notation, so precision must be
+        // derived from the parsed increment (not a decimal-string char count),
+        // or `CurrencyPair::new` would panic on a precision mismatch.
+        let mut spec = spec();
+        spec.price_increment = "1e-2".to_string();
+        let instrument = build_currency_pair(&spec).expect("scientific increment");
+        assert_eq!(instrument.price_precision(), 2);
+    }
+
+    #[test]
+    fn canonical_rows_to_trade_ticks_rejects_invalid_trade_id() {
+        // A trade id longer than NautilusTrader's 36-char id limit must error,
+        // never panic, when projected to a TradeTick.
+        let long_id = "x".repeat(40);
+        let csv = format!(
+            "id,timestamp,price,volume,side,rpi\n{long_id},1772323201665,617.2,0.3,buy,0\n"
+        );
+        let identity = CanonicalInstrumentIdentity {
+            instrument_id: "BNBUSDC".to_string(),
+            venue_symbol: "BNBUSDC".to_string(),
+            nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
+        };
+        let table = normalize_bybit_spot_tick_trades(
+            &accepted_dataset(),
+            &identity,
+            &csv,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize");
+        let instrument = build_currency_pair(&spec()).expect("instrument");
+        assert!(canonical_rows_to_trade_ticks(&table, &instrument).is_err());
     }
 
     #[test]
@@ -516,6 +568,39 @@ mod tests {
         assert_eq!(
             a.catalog_hash, b.catalog_hash,
             "same data must hash identically regardless of root"
+        );
+    }
+
+    #[test]
+    fn catalog_hash_changes_with_data_content() {
+        // Two projections that differ only in one trade's price must hash
+        // differently, proving the catalog hash covers the written data bytes
+        // (not just file paths).
+        let identity = CanonicalInstrumentIdentity {
+            instrument_id: "BNBUSDC".to_string(),
+            venue_symbol: "BNBUSDC".to_string(),
+            nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
+        };
+        let table_a = canonical_table();
+        let csv_b = "id,timestamp,price,volume,side,rpi\n\
+            1,1772323201665,999.9,0.3,buy,0\n\
+            2,1772323312219,617.9,0.1456,sell,0\n\
+            3,1772323312236,617,0.1544,sell,0\n";
+        let table_b = normalize_bybit_spot_tick_trades(
+            &accepted_dataset(),
+            &identity,
+            csv_b,
+            42,
+            "ingest-run-test",
+        )
+        .expect("normalize variant");
+        let dir_a = tempfile::TempDir::new().unwrap();
+        let dir_b = tempfile::TempDir::new().unwrap();
+        let a = project_canonical_trades_to_catalog(&table_a, &spec(), dir_a.path()).unwrap();
+        let b = project_canonical_trades_to_catalog(&table_b, &spec(), dir_b.path()).unwrap();
+        assert_ne!(
+            a.catalog_hash, b.catalog_hash,
+            "different trade data must change the catalog hash"
         );
     }
 

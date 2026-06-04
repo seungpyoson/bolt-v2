@@ -154,6 +154,10 @@ pub enum ManifestError {
         field: &'static str,
         value: i64,
     },
+    InvertedTimeWindow {
+        start: i64,
+        end: i64,
+    },
 }
 
 impl std::fmt::Display for ManifestError {
@@ -205,6 +209,9 @@ impl std::fmt::Display for ManifestError {
             }
             Self::NegativeTime { field, value } => {
                 write!(f, "{field} must not be negative: {value}")
+            }
+            Self::InvertedTimeWindow { start, end } => {
+                write!(f, "start_time {start} must not be after end_time {end}")
             }
         }
     }
@@ -289,6 +296,11 @@ impl BacktestingRunManifest {
         }
         if self.run_purpose == RunPurpose::Normal && self.pins_non_latest_proof {
             return Err(ManifestError::NonLatestProofPinForNormalRun);
+        }
+        if let (Some(start), Some(end)) = (self.start_time, self.end_time)
+            && start > end
+        {
+            return Err(ManifestError::InvertedTimeWindow { start, end });
         }
         if !self.output_prefix.starts_with(&format!(
             "{}/backtests/",
@@ -649,6 +661,20 @@ mod tests {
             ManifestError::NegativeTime {
                 field: "end_time",
                 value: -42,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_start_after_end() {
+        let mut manifest = valid_manifest();
+        manifest.start_time = Some(200);
+        manifest.end_time = Some(100);
+        assert_eq!(
+            manifest.validate(&accepted_dataset()).unwrap_err(),
+            ManifestError::InvertedTimeWindow {
+                start: 200,
+                end: 100,
             }
         );
     }

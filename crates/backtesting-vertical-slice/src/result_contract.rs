@@ -197,7 +197,13 @@ impl BacktestResultContract {
     ///
     /// Returns the first offending field/phrase.
     pub fn assert_objective(&self) -> Result<(), ResultContractError> {
-        let mut texts: Vec<(&'static str, &str)> = Vec::new();
+        let mut texts: Vec<(&'static str, &str)> = vec![
+            ("run_purpose", self.run_purpose.as_str()),
+            (
+                "market_structure_fixture",
+                self.market_structure_fixture.as_str(),
+            ),
+        ];
         for warning in &self.warnings {
             texts.push(("warnings", warning.as_str()));
         }
@@ -385,6 +391,34 @@ mod tests {
             .push("Run halted: catalog read-back count mismatch.".to_string());
         c.assert_objective()
             .expect("benign operational language must pass");
+    }
+
+    #[test]
+    fn rejects_promotion_language_in_run_purpose() {
+        let mut c = contract();
+        c.run_purpose = "promote".to_string();
+        assert!(
+            matches!(
+                c.assert_objective(),
+                Err(ResultContractError::SubjectivePromotionLanguage { ref field, .. })
+                    if field == "run_purpose"
+            ),
+            "run_purpose must be scanned for promotion language"
+        );
+    }
+
+    #[test]
+    fn rejects_promotion_language_in_market_structure_fixture() {
+        let mut c = contract();
+        c.market_structure_fixture = "best strategy".to_string();
+        assert!(
+            matches!(
+                c.assert_objective(),
+                Err(ResultContractError::SubjectivePromotionLanguage { ref field, .. })
+                    if field == "market_structure_fixture"
+            ),
+            "market_structure_fixture must be scanned for promotion language"
+        );
     }
 
     #[test]

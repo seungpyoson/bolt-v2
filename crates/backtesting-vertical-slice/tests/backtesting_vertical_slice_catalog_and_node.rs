@@ -178,4 +178,8 @@ fn catalog_round_trips_trade_ticks_and_node_runs_compiled_strategy() {
         result.elapsed_time_secs >= 0.0,
         "result must carry mechanical run metadata"
     );
+    assert_eq!(
+        result.iterations, TRADE_COUNT,
+        "engine must iterate exactly once per projected trade tick"
+    );
 }

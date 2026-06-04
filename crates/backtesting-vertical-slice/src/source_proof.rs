@@ -20,6 +20,7 @@
 //! No backtest may consume raw staged data directly. The only path to backtest
 //! input is through an [`AcceptedDataset`] produced here.
 
+use chrono::{DateTime, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 /// Governing backfill table contract version for this slice.
@@ -295,6 +296,16 @@ pub enum AcceptanceError {
     ContentHashMismatch { expected: String, actual: String },
     /// The selected object lies outside the proof's proven coverage window.
     OutsideCoverage { object_date: String },
+    /// Acceptance was attempted on a proof whose status is not `Pending`, so an
+    /// already-rejected (or already-accepted) record cannot be silently promoted.
+    NotPending(SourceProofStatus),
+    /// `supersedes_source_proof_id` references the proof's own id.
+    SelfReferentialSupersede,
+    /// A coverage bound (or the object archive date) is not a valid RFC 3339 /
+    /// `YYYY-MM-DD` value, or the coverage window is inverted.
+    MalformedCoverageBound { field: &'static str, value: String },
+    /// The object's source provenance does not reference the proof's venue.
+    SourceVenueMismatch { venue: String, source_url: String },
 }
 
 impl std::fmt::Display for AcceptanceError {
@@ -332,6 +343,27 @@ impl std::fmt::Display for AcceptanceError {
                 write!(
                     f,
                     "object date {object_date} outside proven coverage window"
+                )
+            }
+            Self::NotPending(status) => {
+                write!(
+                    f,
+                    "source proof status is {status:?}, expected pending for acceptance"
+                )
+            }
+            Self::SelfReferentialSupersede => {
+                write!(
+                    f,
+                    "supersedes_source_proof_id must not reference the proof's own id"
+                )
+            }
+            Self::MalformedCoverageBound { field, value } => {
+                write!(f, "malformed coverage bound {field}: {value:?}")
+            }
+            Self::SourceVenueMismatch { venue, source_url } => {
+                write!(
+                    f,
+                    "object source_url {source_url:?} does not reference proof venue {venue:?}"
                 )
             }
         }
@@ -412,6 +444,16 @@ impl SourceProofReport {
         {
             return Err(AcceptanceError::ForbiddenClaimMissing);
         }
+        // When the proof claims to supersede a prior proof, that reference must be
+        // a real, distinct id — not blank and not the proof's own id.
+        if let Some(superseded) = &self.supersedes_source_proof_id {
+            if superseded.trim().is_empty() {
+                return Err(AcceptanceError::MissingField("supersedes_source_proof_id"));
+            }
+            if superseded == &self.source_proof_id {
+                return Err(AcceptanceError::SelfReferentialSupersede);
+            }
+        }
         Ok(())
     }
 
@@ -428,11 +470,26 @@ impl SourceProofReport {
         accepted_by: impl Into<String>,
         accepted_at_utc: impl Into<String>,
     ) -> Result<Self, AcceptanceError> {
+        // Only a pending proof may be promoted: an already-rejected (or
+        // already-accepted) record must not be silently re-promoted.
+        if self.status != SourceProofStatus::Pending {
+            return Err(AcceptanceError::NotPending(self.status));
+        }
         self.evaluate_acceptance()?;
+        // Acceptance provenance is mandatory: an accepted record must record who
+        // accepted it and when, or the acceptance is unattributable.
+        let accepted_by = accepted_by.into();
+        let accepted_at_utc = accepted_at_utc.into();
+        if accepted_by.trim().is_empty() {
+            return Err(AcceptanceError::MissingField("accepted_by"));
+        }
+        if accepted_at_utc.trim().is_empty() {
+            return Err(AcceptanceError::MissingField("accepted_at"));
+        }
         self.status = SourceProofStatus::Accepted;
         self.acceptance_mode = Some(mode);
-        self.accepted_by = Some(accepted_by.into());
-        self.accepted_at = Some(accepted_at_utc.into());
+        self.accepted_by = Some(accepted_by);
+        self.accepted_at = Some(accepted_at_utc);
         Ok(self)
     }
 
@@ -527,11 +584,25 @@ pub fn select_accepted_dataset(
         });
     }
 
-    if !date_within(
+    // Bind the object to the proof's source: the object's own provenance URL must
+    // name the proof's venue, so an object from another venue cannot be admitted
+    // under this proof.
+    if !object
+        .source_url
+        .to_ascii_lowercase()
+        .contains(&proof.venue.to_ascii_lowercase())
+    {
+        return Err(AcceptanceError::SourceVenueMismatch {
+            venue: proof.venue.clone(),
+            source_url: object.source_url.clone(),
+        });
+    }
+
+    if !coverage_contains_date(
         &object.archive_date,
         &proof.coverage_time_range.start_utc,
         &proof.coverage_time_range.end_utc,
-    ) {
+    )? {
         return Err(AcceptanceError::OutsideCoverage {
             object_date: object.archive_date.clone(),
         });
@@ -551,15 +622,42 @@ pub fn select_accepted_dataset(
     })
 }
 
-/// True when `object_date` (YYYY-MM-DD) falls in `[start_utc, end_utc)`.
+/// True when `object_date` (`YYYY-MM-DD`) falls in `[start_utc, end_utc)`.
 ///
-/// The comparison uses the date prefix of each RFC 3339 bound, which is correct
-/// for day-partitioned archive objects: the start date is inclusive and the end
-/// date is exclusive.
-fn date_within(object_date: &str, start_utc: &str, end_utc: &str) -> bool {
-    let start_date = start_utc.get(0..10).unwrap_or(start_utc);
-    let end_date = end_utc.get(0..10).unwrap_or(end_utc);
-    object_date >= start_date && object_date < end_date
+/// The bounds are full RFC 3339 timestamps; the start date is inclusive and the
+/// end date exclusive (correct for day-partitioned archive objects). Errors
+/// loudly on a malformed bound, a malformed object date, or an inverted window
+/// rather than silently comparing partial strings.
+fn coverage_contains_date(
+    object_date: &str,
+    start_utc: &str,
+    end_utc: &str,
+) -> Result<bool, AcceptanceError> {
+    let object = NaiveDate::parse_from_str(object_date, "%Y-%m-%d").map_err(|_| {
+        AcceptanceError::MalformedCoverageBound {
+            field: "object archive_date",
+            value: object_date.to_string(),
+        }
+    })?;
+    let start = coverage_bound_date(start_utc, "coverage start_utc")?;
+    let end = coverage_bound_date(end_utc, "coverage end_utc")?;
+    if start > end {
+        return Err(AcceptanceError::MalformedCoverageBound {
+            field: "coverage window",
+            value: format!("{start_utc}..{end_utc}"),
+        });
+    }
+    Ok(object >= start && object < end)
+}
+
+/// Parse an RFC 3339 coverage bound into its UTC calendar date.
+fn coverage_bound_date(value: &str, field: &'static str) -> Result<NaiveDate, AcceptanceError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.date_naive())
+        .map_err(|_| AcceptanceError::MalformedCoverageBound {
+            field,
+            value: value.to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -679,6 +777,135 @@ mod tests {
         assert_eq!(accepted.status, SourceProofStatus::Accepted);
         assert_eq!(accepted.acceptance_mode, Some(AcceptanceMode::Manual));
         assert!(accepted.is_accepted());
+    }
+
+    #[test]
+    fn accept_rejects_non_pending_proof() {
+        // A rejected proof must not be silently re-promoted to accepted.
+        let mut proof = candidate_proof();
+        proof.status = SourceProofStatus::Rejected;
+        let err = proof
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap_err();
+        assert_eq!(
+            err,
+            AcceptanceError::NotPending(SourceProofStatus::Rejected)
+        );
+    }
+
+    #[test]
+    fn accept_rejects_already_accepted_proof() {
+        let mut proof = candidate_proof();
+        proof.status = SourceProofStatus::Accepted;
+        let err = proof
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap_err();
+        assert_eq!(
+            err,
+            AcceptanceError::NotPending(SourceProofStatus::Accepted)
+        );
+    }
+
+    #[test]
+    fn accept_rejects_blank_accepted_by() {
+        let err = candidate_proof()
+            .accept(AcceptanceMode::Manual, "  ", "2026-06-02T00:00:00Z")
+            .unwrap_err();
+        assert_eq!(err, AcceptanceError::MissingField("accepted_by"));
+    }
+
+    #[test]
+    fn accept_rejects_blank_accepted_at() {
+        let err = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "  ")
+            .unwrap_err();
+        assert_eq!(err, AcceptanceError::MissingField("accepted_at"));
+    }
+
+    #[test]
+    fn acceptance_blocked_when_supersedes_is_self_referential() {
+        let mut proof = candidate_proof();
+        proof.supersedes_source_proof_id = Some(proof.source_proof_id.clone());
+        assert_eq!(
+            proof.evaluate_acceptance().unwrap_err(),
+            AcceptanceError::SelfReferentialSupersede
+        );
+    }
+
+    #[test]
+    fn acceptance_blocked_when_supersedes_is_blank() {
+        let mut proof = candidate_proof();
+        proof.supersedes_source_proof_id = Some("  ".to_string());
+        assert_eq!(
+            proof.evaluate_acceptance().unwrap_err(),
+            AcceptanceError::MissingField("supersedes_source_proof_id")
+        );
+    }
+
+    #[test]
+    fn select_rejects_object_from_other_venue() {
+        // An object whose provenance URL names a different venue than the proof
+        // must not be admitted under that proof.
+        let accepted = candidate_proof()
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut object = manifest_object();
+        object.source_url =
+            "https://public.okx.com/spot/BNBUSDC/BNBUSDC_2026-03-01.csv.gz".to_string();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::SourceVenueMismatch { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_rejects_malformed_coverage_bound() {
+        let mut proof = candidate_proof();
+        proof.coverage_time_range.end_utc = "not-a-timestamp".to_string();
+        let accepted = proof
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let object = manifest_object();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::MalformedCoverageBound { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_rejects_inverted_coverage_window() {
+        let mut proof = candidate_proof();
+        proof.coverage_time_range.start_utc = "2026-03-05T00:00:00Z".to_string();
+        proof.coverage_time_range.end_utc = "2026-03-01T00:00:00Z".to_string();
+        let accepted = proof
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let object = manifest_object();
+        let err = select_accepted_dataset(&accepted, &object, &object.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::MalformedCoverageBound { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn select_excludes_object_on_exclusive_end_bound() {
+        // Coverage end is exclusive: an object dated exactly on end_utc is rejected.
+        let mut proof = candidate_proof();
+        proof.coverage_time_range.start_utc = "2026-03-01T00:00:00Z".to_string();
+        proof.coverage_time_range.end_utc = "2026-03-02T00:00:00Z".to_string();
+        let accepted = proof
+            .accept(AcceptanceMode::Manual, "operator", "2026-06-02T00:00:00Z")
+            .unwrap();
+        let mut on_end = manifest_object();
+        on_end.archive_date = "2026-03-02".to_string();
+        let err = select_accepted_dataset(&accepted, &on_end, &on_end.sha256).unwrap_err();
+        assert!(
+            matches!(err, AcceptanceError::OutsideCoverage { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]

@@ -140,6 +140,7 @@ FINDING_ALLOWANCES: tuple[FindingAllowance, ...] = (
     FindingAllowance("src/bolt_v3_operator_artifacts.rs", "strategies::binary_oracle_edge_taker::BinaryOracleEntryFeeSource"),
     FindingAllowance("src/bolt_v3_operator_artifacts.rs", "strategies::binary_oracle_edge_taker::BinaryOracleEntryRealizedVolatilitySource"),
     FindingAllowance("src/bolt_v3_operator_artifacts.rs", "strategies::binary_oracle_edge_taker::BinaryOracleEntryReferenceQuoteSource"),
+    FindingAllowance("src/bolt_v3_operator_artifacts.rs", "strategies::binary_oracle_edge_taker::BinaryOracleEntrySignalQuoteSource"),
     FindingAllowance("src/bolt_v3_operator_artifacts.rs", "strategies::binary_oracle_edge_taker::BinaryOracleReferenceQuoteObservationSource"),
     FindingAllowance("src/bolt_v3_operator_artifacts.rs", "strategies::binary_oracle_edge_taker::ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND"),
     FindingAllowance("src/bolt_v3_operator_artifacts.rs", "strategies::binary_oracle_edge_taker::ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION"),
@@ -616,7 +617,6 @@ def reject_forbidden_source_inclusion(tokens: list[Token], rel: str) -> None:
         if (
             tok.kind == "IDENT"
             and tok.value == "include"
-            and not tok.raw
             and nxt is not None
             and nxt.kind == "PUNCT"
             and nxt.value == "!"
@@ -649,7 +649,7 @@ def reject_forbidden_source_inclusion(tokens: list[Token], rel: str) -> None:
                     depth -= 1
                     if depth == 0:
                         break
-                elif attr_tok.kind == "IDENT" and attr_tok.value == "path" and not attr_tok.raw:
+                elif attr_tok.kind == "IDENT" and attr_tok.value == "path":
                     after = tokens[j + 1] if j + 1 < len(tokens) else None
                     if after is not None and after.kind == "PUNCT" and after.value == "=":
                         raise PolicyError(
@@ -668,14 +668,20 @@ def scan_files(root: Path) -> tuple[Path, ...]:
     src = root / "src"
     if not src.exists():
         return ()
-    return tuple(
-        sorted(
-            path
-            for path in src.rglob("*.rs")
-            if path.is_file()
-            and path.relative_to(root).as_posix().startswith(SCAN_PREFIX)
-        )
-    )
+    for path in sorted(src.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        if rel.startswith(SCAN_PREFIX) and path.is_symlink():
+            raise PolicyError(
+                f"{rel} is a symlink; scanned source paths must be regular files/directories"
+            )
+    files: list[Path] = []
+    for path in sorted(src.rglob("*.rs")):
+        rel = path.relative_to(root).as_posix()
+        if not rel.startswith(SCAN_PREFIX):
+            continue
+        if path.is_file():
+            files.append(path)
+    return tuple(files)
 
 
 def read_policy_source(path: Path, rel: str) -> str:

@@ -307,6 +307,15 @@ def test_include_source_macro_rejected_in_shared_module() -> None:
             raise AssertionError(f"expected include! source-inclusion diagnostic, got: {err!r}")
 
 
+def test_raw_include_source_macro_rejected_in_shared_module() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(root, "src/bolt_v3_foo.rs", 'r#include!("strategies/registry.rs");\n')
+        err = expect_fail(root)
+        if "include!" not in err or "source inclusion" not in err:
+            raise AssertionError(f"expected raw include! source-inclusion diagnostic, got: {err!r}")
+
+
 def test_path_attribute_source_module_rejected_in_shared_module() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -318,6 +327,41 @@ def test_path_attribute_source_module_rejected_in_shared_module() -> None:
         err = expect_fail(root)
         if "#[path]" not in err or "source inclusion" not in err:
             raise AssertionError(f"expected #[path] source-inclusion diagnostic, got: {err!r}")
+
+
+def test_raw_path_attribute_source_module_rejected_in_shared_module() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "src/bolt_v3_foo.rs",
+            '#[r#path = "strategies/registry.rs"]\nmod registry;\n',
+        )
+        err = expect_fail(root)
+        if "#[path]" not in err or "source inclusion" not in err:
+            raise AssertionError(f"expected raw #[path] source-inclusion diagnostic, got: {err!r}")
+
+
+def test_scanned_source_symlink_rejected() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(root, "src/strategies/registry.rs", "pub struct StrategyLayer;\n")
+        symlink = root / "src/bolt_v3_laundered.rs"
+        symlink.symlink_to("strategies/registry.rs")
+        err = expect_fail(root)
+        if "symlink" not in err:
+            raise AssertionError(f"expected symlink diagnostic, got: {err!r}")
+
+
+def test_scanned_source_directory_symlink_rejected() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(root, "src/strategies/registry.rs", "pub struct StrategyLayer;\n")
+        symlink = root / "src/bolt_v3_laundered"
+        symlink.symlink_to("strategies", target_is_directory=True)
+        err = expect_fail(root)
+        if "symlink" not in err:
+            raise AssertionError(f"expected directory symlink diagnostic, got: {err!r}")
 
 
 def test_inline_turbofish_path_flagged() -> None:
@@ -694,7 +738,11 @@ def main() -> int:
         test_inline_call_path_flagged,
         test_inline_macro_arg_path_flagged,
         test_include_source_macro_rejected_in_shared_module,
+        test_raw_include_source_macro_rejected_in_shared_module,
         test_path_attribute_source_module_rejected_in_shared_module,
+        test_raw_path_attribute_source_module_rejected_in_shared_module,
+        test_scanned_source_symlink_rejected,
+        test_scanned_source_directory_symlink_rejected,
         test_inline_turbofish_path_flagged,
         test_inline_super_path_from_top_level_flagged,
         test_attribute_inside_brace_import_flagged,

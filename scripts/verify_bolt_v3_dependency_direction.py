@@ -32,6 +32,11 @@ token stream. It catches BOTH spellings in one pass:
     imports, and `#[cfg(...)]`-prefixed members inside a brace group; and
   * inline fully-qualified paths anywhere in code.
 
+It also fail-closes on source forms that could hide the dependency from a source
+scanner: `include!`, `#[path]`/`cfg_attr(path = ...)`, crate-root namespace
+aliases such as `use crate as alias`, `super::super as alias` from an inline
+module that reaches the crate root, and `extern crate self as alias`.
+
 For every detected path it resolves `crate::`, `self::`, and `super::` roots to
 absolute crate-rooted module paths before checking whether the path enters
 `crate::strategies`. Resolution uses the LEXICAL module stack — inline
@@ -427,6 +432,12 @@ def resolved_strategy_path(segments: list[str], module_parts: list[str]) -> str 
     return None
 
 
+def resolves_to_crate_root(segments: list[str], module_parts: list[str]) -> bool:
+    """Return True when `segments` names the crate root itself."""
+
+    return resolve_to_absolute(segments, module_parts) == []
+
+
 # --------------------------------------------------------------------------- #
 # Detection over the token stream
 # --------------------------------------------------------------------------- #
@@ -461,8 +472,11 @@ def _skip_attributes(tokens: list[Token], i: int) -> int:
     return i
 
 
-def _parse_use_tree(tokens: list[Token], i: int) -> tuple[list[list[str]], int]:
-    """Parse one use-tree node at `i`, returning (leaf segment-lists, next index)."""
+def _parse_use_tree(
+    tokens: list[Token], i: int
+) -> tuple[list[list[str]], list[list[str]], int]:
+    """Parse one use-tree node at `i`, returning
+    (leaf segment-lists, aliased segment-lists, next index)."""
 
     n = len(tokens)
     prefix: list[str] = []
@@ -474,6 +488,7 @@ def _parse_use_tree(tokens: list[Token], i: int) -> tuple[list[list[str]], int]:
         if tok.kind == "PUNCT" and tok.value == "{":
             i += 1
             result: list[list[str]] = []
+            aliases: list[list[str]] = []
             while i < n and not (tokens[i].kind == "PUNCT" and tokens[i].value == "}"):
                 i = _skip_attributes(tokens, i)
                 if i >= n:
@@ -483,14 +498,16 @@ def _parse_use_tree(tokens: list[Token], i: int) -> tuple[list[list[str]], int]:
                     continue
                 if tokens[i].kind == "PUNCT" and tokens[i].value == "}":
                     break
-                sub, i = _parse_use_tree(tokens, i)
+                sub, sub_aliases, i = _parse_use_tree(tokens, i)
                 for leaf in sub:
                     result.append(prefix + leaf)
+                for alias in sub_aliases:
+                    aliases.append(prefix + alias)
                 if i < n and tokens[i].kind == "PUNCT" and tokens[i].value == ",":
                     i += 1
             if i < n:
                 i += 1  # consume `}`
-            return result, i
+            return result, aliases, i
         if tok.kind == "IDENT" or (tok.kind == "PUNCT" and tok.value == "*"):
             seg = tok.value
             nxt = tokens[i + 1] if i + 1 < n else None
@@ -499,29 +516,87 @@ def _parse_use_tree(tokens: list[Token], i: int) -> tuple[list[list[str]], int]:
                 i += 2
                 continue
             i += 1
-            if i < n and tokens[i].kind == "IDENT" and tokens[i].value == "as":
+            full = prefix + [seg]
+            aliases = []
+            if (
+                i < n
+                and tokens[i].kind == "IDENT"
+                and tokens[i].value == "as"
+                and not tokens[i].raw
+            ):
+                aliases.append(full)
                 i += 2  # skip `as <alias>`
-            return [prefix + [seg]], i
+            return [full], aliases, i
         # Unexpected token (e.g. `;`); stop.
-        return ([prefix] if prefix else []), i
-    return ([prefix] if prefix else []), i
+        return ([prefix] if prefix else []), [], i
+    return ([prefix] if prefix else []), [], i
 
 
-def _scan_use_statement(tokens: list[Token], i: int) -> tuple[list[list[str]], int]:
+def _scan_use_statement(
+    tokens: list[Token], i: int
+) -> tuple[list[list[str]], list[list[str]], int]:
     """Parse `use <tree> ;` starting just after the `use` keyword; return the leaf
-    segment-lists and the index just past the terminating `;`."""
+    segment-lists, aliased segment-lists, and the index just past the terminating
+    `;`."""
 
     n = len(tokens)
-    paths, i = _parse_use_tree(tokens, i)
+    paths, aliases, i = _parse_use_tree(tokens, i)
     while i < n and not (tokens[i].kind == "PUNCT" and tokens[i].value == ";"):
         i += 1
     if i < n:
         i += 1  # consume `;`
-    return paths, i
+    return paths, aliases, i
+
+
+def _skip_turbofish(tokens: list[Token], i: int) -> int:
+    """Return the index after a `::<...>` generic argument group starting at `<`."""
+
+    if i >= len(tokens) or tokens[i].kind != "PUNCT" or tokens[i].value != "<":
+        return i
+    depth = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.kind == "PUNCT" and tok.value == "<":
+            depth += 1
+        elif tok.kind == "PUNCT" and tok.value == ">":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return i
+
+
+def _collect_inline_path_segments(tokens: list[Token], i: int) -> list[str]:
+    """Collect an inline rooted path, skipping turbofish generic arguments while
+    preserving trailing path segments such as `Type::<T>::method`."""
+
+    segs = [tokens[i].value]
+    j = i + 2
+    while j < len(tokens) and tokens[j].kind == "IDENT":
+        segs.append(tokens[j].value)
+        j += 1
+        if not (
+            j < len(tokens)
+            and tokens[j].kind == "PUNCT"
+            and tokens[j].value == "::"
+        ):
+            break
+        j += 1
+        if j < len(tokens) and tokens[j].kind == "PUNCT" and tokens[j].value == "<":
+            j = _skip_turbofish(tokens, j)
+            if (
+                j < len(tokens)
+                and tokens[j].kind == "PUNCT"
+                and tokens[j].value == "::"
+            ):
+                j += 1
+                continue
+            break
+    return segs
 
 
 def detect_strategy_paths(
-    tokens: list[Token], module_parts: list[str]
+    tokens: list[Token], module_parts: list[str], rel: str | None = None
 ) -> list[tuple[str, int]]:
     """Return (absolute strategy path, line) for every strategy reference — both
     `use` imports and inline fully-qualified paths.
@@ -574,7 +649,14 @@ def detect_strategy_paths(
         # they never reach the module-brace counter above.
         if tok.kind == "IDENT" and tok.value == "use" and not tok.raw:
             line = tok.line
-            paths, i = _scan_use_statement(tokens, i + 1)
+            paths, aliases, i = _scan_use_statement(tokens, i + 1)
+            for segs in aliases:
+                if resolves_to_crate_root(segs, effective):
+                    location = f"{rel}:{line}" if rel is not None else f"line {line}"
+                    raise PolicyError(
+                        f"{location}: crate-root alias is forbidden in "
+                        "shared/family modules"
+                    )
             for segs in paths:
                 strategy_path = resolved_strategy_path(segs, effective)
                 if strategy_path is not None:
@@ -592,19 +674,11 @@ def detect_strategy_paths(
             prev_is_sep = prev is not None and prev.kind == "PUNCT" and prev.value == "::"
             nxt_is_sep = nxt is not None and nxt.kind == "PUNCT" and nxt.value == "::"
             if not prev_is_sep and nxt_is_sep:
-                segs = [tok.value]
-                j = i + 2
-                while j < n and tokens[j].kind == "IDENT":
-                    segs.append(tokens[j].value)
-                    j += 1
-                    if j < n and tokens[j].kind == "PUNCT" and tokens[j].value == "::":
-                        j += 1
-                        continue
-                    break
+                segs = _collect_inline_path_segments(tokens, i)
                 strategy_path = resolved_strategy_path(segs, effective)
                 if strategy_path is not None:
                     out.append((strategy_path, tok.line))
-                i = j
+                i += 1
                 continue
 
         i += 1
@@ -614,6 +688,23 @@ def detect_strategy_paths(
 def reject_forbidden_source_inclusion(tokens: list[Token], rel: str) -> None:
     for i, tok in enumerate(tokens):
         nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+        if tok.kind == "IDENT" and tok.value == "extern" and not tok.raw:
+            crate_tok = tokens[i + 1] if i + 1 < len(tokens) else None
+            self_tok = tokens[i + 2] if i + 2 < len(tokens) else None
+            if (
+                crate_tok is not None
+                and crate_tok.kind == "IDENT"
+                and crate_tok.value == "crate"
+                and not crate_tok.raw
+                and self_tok is not None
+                and self_tok.kind == "IDENT"
+                and self_tok.value == "self"
+                and not self_tok.raw
+            ):
+                raise PolicyError(
+                    f"{rel}:{tok.line}: extern crate self is forbidden in "
+                    "shared/family modules"
+                )
         if (
             tok.kind == "IDENT"
             and tok.value == "include"
@@ -707,7 +798,7 @@ def find_violations(root: Path) -> list[Finding]:
         text = read_policy_source(path, rel)
         tokens = tokenize(text)
         reject_forbidden_source_inclusion(tokens, rel)
-        for strategy_path, line in detect_strategy_paths(tokens, module_parts):
+        for strategy_path, line in detect_strategy_paths(tokens, module_parts, rel=rel):
             key = (rel, strategy_path)
             if key not in earliest or line < earliest[key]:
                 earliest[key] = line

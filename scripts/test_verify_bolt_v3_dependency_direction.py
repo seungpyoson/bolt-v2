@@ -342,6 +342,50 @@ def test_raw_path_attribute_source_module_rejected_in_shared_module() -> None:
             raise AssertionError(f"expected raw #[path] source-inclusion diagnostic, got: {err!r}")
 
 
+def test_use_crate_root_alias_rejected_in_shared_module() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "src/bolt_v3_foo.rs",
+            "use crate as renamed_crate;\n"
+            "use renamed_crate::strategies::registry::FeeProvider;\n",
+        )
+        err = expect_fail(root)
+        if "crate-root alias" not in err:
+            raise AssertionError(f"expected crate-root alias diagnostic, got: {err!r}")
+
+
+def test_use_super_crate_root_alias_rejected_in_inline_module() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "src/bolt_v3_foo.rs",
+            "mod tests {\n"
+            "    use super::super as renamed_crate;\n"
+            "    use renamed_crate::strategies::registry::FeeProvider;\n"
+            "}\n",
+        )
+        err = expect_fail(root)
+        if "crate-root alias" not in err:
+            raise AssertionError(f"expected crate-root alias diagnostic, got: {err!r}")
+
+
+def test_extern_crate_self_alias_rejected_in_shared_module() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "src/bolt_v3_foo.rs",
+            "extern crate self as bolt_v2;\n"
+            "use ::bolt_v2::strategies::registry::FeeProvider;\n",
+        )
+        err = expect_fail(root)
+        if "extern crate self" not in err:
+            raise AssertionError(f"expected extern crate self diagnostic, got: {err!r}")
+
+
 def test_scanned_source_symlink_rejected() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -500,6 +544,26 @@ def test_inline_path_keyed_literally_including_trailing_segments() -> None:
         err = expect_fail(root)
         if "strategies::registry::FeeProvider::new" not in err:
             raise AssertionError(f"expected literal trailing segment, got: {err!r}")
+
+
+def test_inline_turbofish_path_key_includes_trailing_segments() -> None:
+    # A turbofish in the middle of an inline path must not truncate the key to an
+    # allowlisted parent type and suppress a new call-site reference.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "src/bolt_v3_foo.rs",
+            "fn f() { crate::strategies::registry::FeeProvider::<Cfg>::new(); }\n",
+        )
+        err = expect_fail(
+            root,
+            allowances=(
+                allowance("src/bolt_v3_foo.rs", "strategies::registry::FeeProvider"),
+            ),
+        )
+        if "strategies::registry::FeeProvider::new" not in err:
+            raise AssertionError(f"expected trailing segment after turbofish, got: {err!r}")
 
 
 def test_inline_mod_super_super_from_top_level_flagged() -> None:
@@ -741,6 +805,9 @@ def main() -> int:
         test_raw_include_source_macro_rejected_in_shared_module,
         test_path_attribute_source_module_rejected_in_shared_module,
         test_raw_path_attribute_source_module_rejected_in_shared_module,
+        test_use_crate_root_alias_rejected_in_shared_module,
+        test_use_super_crate_root_alias_rejected_in_inline_module,
+        test_extern_crate_self_alias_rejected_in_shared_module,
         test_scanned_source_symlink_rejected,
         test_scanned_source_directory_symlink_rejected,
         test_inline_turbofish_path_flagged,
@@ -754,6 +821,7 @@ def main() -> int:
         test_nested_block_comment_ignored,
         test_inline_path_allowance_suppresses,
         test_inline_path_keyed_literally_including_trailing_segments,
+        test_inline_turbofish_path_key_includes_trailing_segments,
         test_inline_mod_super_super_from_top_level_flagged,
         test_inline_mod_single_super_not_flagged,
         test_inline_mod_super_reaches_crate_in_nested_file,

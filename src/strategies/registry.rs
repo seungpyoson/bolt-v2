@@ -121,7 +121,6 @@ impl StrategyBuildContext {
     pub fn readiness_evidence(&self) -> Option<&BoltV3ReadinessGateEvidenceSnapshot> {
         self.readiness_evidence.as_ref()
     }
-
 }
 
 pub trait StrategyBuilder: Send + Sync + 'static {

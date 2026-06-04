@@ -2032,8 +2032,9 @@ impl ActiveMarketState {
             // anomaly — the strike feed is reporting for the wrong window — and
             // must be observable rather than a silent drop. Record it and warn;
             // `price_to_beat` is left untouched so entry stays fail-closed.
-            self.resolution_strike_window_mismatch_count =
-                self.resolution_strike_window_mismatch_count.saturating_add(1);
+            self.resolution_strike_window_mismatch_count = self
+                .resolution_strike_window_mismatch_count
+                .saturating_add(1);
             log::warn!(
                 "binary_oracle_edge_taker resolution-strike window mismatch (fail-closed): market_id={:?} window_open_ms={} interval_start_ms={} strike={} — strike rejected, price_to_beat unchanged",
                 self.market_id,
@@ -2197,9 +2198,8 @@ impl BinaryOracleEdgeTaker {
             let interval_changed =
                 self.active.interval_start_ms != previous_active.interval_start_ms;
             let interval_open = now_ms >= interval_start_ms;
-            let already_subscribed_at_open = self
-                .resolution_strike_subscribed_for_open_interval_ms
-                == Some(interval_start_ms);
+            let already_subscribed_at_open =
+                self.resolution_strike_subscribed_for_open_interval_ms == Some(interval_start_ms);
             if interval_changed || (interval_open && !already_subscribed_at_open) {
                 self.subscribe_resolution_strike();
                 if interval_open {
@@ -4833,19 +4833,27 @@ impl BinaryOracleEdgeTaker {
         let order_side = decision.order_side.ok_or_else(|| {
             anyhow::anyhow!("entry strategy input evidence requires submission order side")
         })?;
-        let readiness_evidence = self.context.readiness_evidence().ok_or_else(|| {
-            anyhow::anyhow!(
-                "entry strategy input evidence requires readiness gate session evidence"
-            )
-        })?;
+        // The operator readiness gate session is an offline-replay artifact; the
+        // live runtime derives its strike from the configured resolution oracle
+        // and carries no operator gate identity. Record an empty gate identity
+        // rather than blocking the live entry path on operator evidence.
+        let (gate_session_hash, selected_market_key, gate_evidence) =
+            match self.context.readiness_evidence() {
+                Some(readiness_evidence) => (
+                    readiness_evidence.gate_session_hash.clone(),
+                    readiness_evidence.selected_market_key.clone(),
+                    readiness_evidence.gate_evidence.clone(),
+                ),
+                None => (String::new(), String::new(), BTreeMap::new()),
+            };
 
         Ok(BoltV3StrategyInputEvidenceSnapshot {
             strategy_id: self.config.strategy_id.clone(),
             configured_target_id: self.config.configured_target_id.clone(),
             market_selection_ruleset_id: self.config.configured_target_id.clone(),
-            gate_session_hash: readiness_evidence.gate_session_hash.clone(),
-            selected_market_key: readiness_evidence.selected_market_key.clone(),
-            gate_evidence: readiness_evidence.gate_evidence.clone(),
+            gate_session_hash,
+            selected_market_key,
+            gate_evidence,
             market_selection_outcome: market_selection_outcome.to_string(),
             market_id: self.active.market_id.clone(),
             polymarket_condition_id: self
@@ -5998,9 +6006,7 @@ impl BinaryOracleEdgeTakerBuilder {
                 ENTRY_ORDER_FIELD
                     | EXIT_ORDER_FIELD
                     | FORCED_EXIT_ORDER_FIELD
-                    | binary_oracle_edge_taker_extra_string_fields!(
-                        match_extra_string_field_names
-                    )
+                    | binary_oracle_edge_taker_extra_string_fields!(match_extra_string_field_names)
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -10213,6 +10219,23 @@ mod tests {
             fixture_execution_venue(),
         )
         .with_readiness_evidence(test_readiness_gate_evidence());
+        strategy.config.edge_threshold_basis_points = 1;
+        strategy.active.price_to_beat = Some(3_100.0);
+        strategy
+    }
+
+    fn ready_to_trade_strategy_with_decision_evidence_and_submit_admission_without_readiness_evidence(
+        decision_evidence: Arc<dyn crate::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter>,
+        submit_admission: Arc<crate::bolt_v3_submit_admission::BoltV3SubmitAdmissionState>,
+    ) -> BinaryOracleEdgeTaker {
+        let (mut strategy, fee_provider) =
+            ready_to_trade_strategy_with_recording_fees(Decimal::ZERO, Decimal::ZERO);
+        strategy.context = StrategyBuildContext::new(
+            fee_provider,
+            decision_evidence,
+            submit_admission,
+            fixture_execution_venue(),
+        );
         strategy.config.edge_threshold_basis_points = 1;
         strategy.active.price_to_beat = Some(3_100.0);
         strategy
@@ -17837,6 +17860,57 @@ mod tests {
         );
         assert!(fields.sized_notional.is_some_and(|value| value > 0.0));
         assert!(!fields.final_fee_amount_known);
+    }
+
+    #[test]
+    fn entry_strategy_input_evidence_records_empty_gate_identity_without_readiness_evidence() {
+        let evidence = Arc::new(RecordingSequencedDecisionEvidenceWriter::default());
+        let submit_admission =
+            submit_admission_armed_with_cap(Decimal::new(1, 2), evidence.clone());
+        let mut strategy =
+            ready_to_trade_strategy_with_decision_evidence_and_submit_admission_without_readiness_evidence(
+                evidence.clone(),
+                submit_admission,
+            );
+        register_test_strategy_with_active_instruments(&mut strategy);
+
+        let error = strategy
+            .try_submit_entry_order(1_200)
+            .expect_err("submit admission should reject after evidence capture");
+        assert!(
+            error.to_string().contains("notional cap is exceeded"),
+            "regular live path must reach submit_admission without operator readiness evidence: {error:#}"
+        );
+
+        let events = evidence.events();
+        let [
+            RecordedDecisionEvidenceEvent::StrategyInput(snapshot),
+            RecordedDecisionEvidenceEvent::OrderIntent(_),
+            RecordedDecisionEvidenceEvent::AdmissionDecision(_),
+        ] = events.as_slice()
+        else {
+            panic!("expected strategy input, order intent, admission sequence; got {events:#?}");
+        };
+
+        assert!(
+            snapshot.gate_session_hash.is_empty(),
+            "regular path carries no operator gate session hash: {:?}",
+            snapshot.gate_session_hash
+        );
+        assert!(
+            snapshot.selected_market_key.is_empty(),
+            "regular path carries no operator selected-market key: {:?}",
+            snapshot.selected_market_key
+        );
+        assert!(
+            snapshot.gate_evidence.is_empty(),
+            "regular path carries no operator gate evidence: {:?}",
+            snapshot.gate_evidence
+        );
+        assert_eq!(
+            snapshot.price_to_beat_value, "3100",
+            "live source-bound entry snapshot is still captured"
+        );
     }
 
     #[test]

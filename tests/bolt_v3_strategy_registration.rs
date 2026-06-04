@@ -154,95 +154,6 @@ fn bolt_v3_registers_configured_strategy_through_runtime_binding_table() {
     );
 }
 
-#[test]
-fn bolt_v3_registration_context_includes_operator_readiness_gate_session() {
-    fn register_stub(
-        node: &mut LiveNode,
-        context: bolt_v2::bolt_v3_strategy_registration::StrategyRegistrationContext<'_>,
-    ) -> Result<StrategyId, bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError>
-    {
-        let readiness = context
-            .readiness_evidence
-            .as_ref()
-            .expect("registration context should include normalized readiness evidence");
-        assert_eq!(readiness.gate_session_hash, "a".repeat(64));
-        assert_eq!(readiness.selected_market_key, "b".repeat(64));
-        let resolution = readiness
-            .gate_evidence
-            .get("resolution")
-            .expect("readiness evidence should include the resolution role");
-        assert_eq!(resolution.satisfaction_kind, "no_resolution");
-        assert_eq!(
-            resolution.resolution_identity.as_deref(),
-            Some("configured-reference-price")
-        );
-        assert!(resolution.provider_kind.is_none());
-
-        let strategy_id = StrategyId::from("BOLT-V3-READINESS-CONTEXT");
-        node.add_strategy(support::stub_runtime_strategy::StubRuntimeStrategy::new(
-            strategy_id.as_str(),
-        ))
-        .map_err(|source| {
-            bolt_v2::bolt_v3_strategy_registration::BoltV3StrategyRegistrationError::Binding {
-                strategy_instance_id: context.strategy.config.strategy_instance_id.clone(),
-                strategy_archetype: context
-                    .strategy
-                    .config
-                    .strategy_archetype
-                    .as_str()
-                    .to_string(),
-                message: source.to_string(),
-            }
-        })?;
-        Ok(strategy_id)
-    }
-
-    fn stub_strategy_kind() -> &'static str {
-        "stub_runtime_strategy"
-    }
-
-    const TEST_BINDINGS: &[bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding] = &[
-        bolt_v2::bolt_v3_strategy_registration::StrategyRuntimeBinding {
-            key: "binary_oracle_edge_taker",
-            strategy_kind: stub_strategy_kind,
-            register: register_stub,
-        },
-    ];
-
-    let loaded = support::loaded_bolt_v3_live_canary_with_satisfied_report(1, Decimal::new(1, 0));
-    let mut empty_loaded = loaded.clone();
-    empty_loaded.strategies.clear();
-    let resolved = resolve_bolt_v3_secrets_with(&loaded, support::fake_bolt_v3_resolver)
-        .expect("fixture secrets should resolve");
-    let decision_evidence: Arc<
-        dyn bolt_v2::bolt_v3_decision_evidence::BoltV3DecisionEvidenceWriter,
-    > = Arc::new(support::RecordingDecisionEvidenceWriter::default());
-    let admission = Arc::new(BoltV3SubmitAdmissionState::new_unarmed(
-        decision_evidence.clone(),
-    ));
-    let mut node = make_bolt_v3_live_node_builder(&empty_loaded)
-        .expect("v3 LiveNodeBuilder should construct before strategy registration")
-        .build()
-        .expect("v3 LiveNode should build before strategy registration");
-
-    let summary =
-        bolt_v2::bolt_v3_strategy_registration::register_bolt_v3_strategies_on_node_with_bindings(
-            &mut node,
-            &loaded,
-            &resolved,
-            TEST_BINDINGS,
-            admission,
-            decision_evidence,
-        )
-        .expect("configured strategy should receive readiness evidence during registration");
-
-    assert_eq!(summary.registered.len(), loaded.strategies.len());
-    assert_eq!(
-        node.kernel().trader().borrow().strategy_ids(),
-        vec![StrategyId::from("BOLT-V3-READINESS-CONTEXT")]
-    );
-}
-
 fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
     BoltV3SubmitAdmissionRequest {
         strategy_id: "strategy-a".to_string(),
@@ -1973,20 +1884,6 @@ fn fee_provider_resolution_does_not_warm_during_registration() {
     assert!(
         !archetype_source.contains(".warm("),
         "runtime registration must not warm fee providers"
-    );
-}
-
-#[test]
-fn binary_oracle_registration_forwards_readiness_gate_session_to_build_context() {
-    let archetype_source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
-
-    assert!(
-        archetype_source.contains("context.readiness_evidence.clone()"),
-        "binary oracle registration should consume readiness evidence from the generic context"
-    );
-    assert!(
-        archetype_source.contains(".with_readiness_evidence(readiness_evidence)"),
-        "binary oracle registration should pass readiness evidence into StrategyBuildContext"
     );
 }
 

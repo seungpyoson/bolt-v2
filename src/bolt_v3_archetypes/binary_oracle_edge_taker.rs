@@ -418,15 +418,12 @@ pub fn register_runtime_strategy(
                 ),
             )
         })?;
-    let mut build_context = StrategyBuildContext::new(
+    let build_context = StrategyBuildContext::new(
         fee_provider,
         context.decision_evidence.clone(),
         context.submit_admission.clone(),
         execution_venue,
     );
-    if let Some(readiness_evidence) = context.readiness_evidence.clone() {
-        build_context = build_context.with_readiness_evidence(readiness_evidence);
-    }
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry

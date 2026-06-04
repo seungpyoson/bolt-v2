@@ -19,9 +19,9 @@ use bolt_v2::{
     bolt_v3_no_submit_readiness::run_bolt_v3_no_submit_readiness,
     bolt_v3_operator_artifacts::{
         CanaryProofArtifactsCollectionRequest,
-        DataClientProductionReadinessMatrixSourceFileRequest,
-        FinalOperatorPacketVerificationScope, LiveCanaryPostRunProofInputs,
-        OperatorEvidenceJsonBuildInputs, PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
+        DataClientProductionReadinessMatrixSourceFileRequest, FinalOperatorPacketVerificationScope,
+        LiveCanaryPostRunProofInputs, OperatorEvidenceJsonBuildInputs,
+        PreRunStateSourceCollectorInputs, WrittenOperatorArtifact,
         assemble_operator_packet_from_static_manifest,
         collect_canary_proof_artifacts_from_configured_provider,
         compute_operator_approval_envelope_sha256,

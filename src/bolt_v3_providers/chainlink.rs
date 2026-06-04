@@ -351,10 +351,8 @@ mod tests {
     // Two distinct valid Chainlink Data Streams feed ids (0x + 64 lowercase hex)
     // and two distinct valid NT instrument ids, so that each fixture varies only
     // the dimension under test (duplicate feed_id XOR duplicate instrument_id).
-    const FEED_ID_A: &str =
-        "0x000362205e10b3a147d02792eccee483dca6c7b44ecce7012cb8c6e0b68b3ae9";
-    const FEED_ID_B: &str =
-        "0x0003111111111111111111111111111111111111111111111111111111111111";
+    const FEED_ID_A: &str = "0x000362205e10b3a147d02792eccee483dca6c7b44ecce7012cb8c6e0b68b3ae9";
+    const FEED_ID_B: &str = "0x0003111111111111111111111111111111111111111111111111111111111111";
     const INSTRUMENT_ID_A: &str = "BTC-USD-UP.BOLT";
     const INSTRUMENT_ID_B: &str = "BTC-USD-DOWN.BOLT";
 
@@ -367,8 +365,7 @@ http_timeout_secs = 5
 {bindings_toml}
 "#
         );
-        toml::from_str::<ChainlinkDataConfig>(&toml_src)
-            .expect("fixture data config must parse")
+        toml::from_str::<ChainlinkDataConfig>(&toml_src).expect("fixture data config must parse")
     }
 
     fn binding_table(feed_id: &str, instrument_id: &str) -> String {

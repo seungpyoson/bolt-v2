@@ -1,0 +1,313 @@
+# Chainlink Data Streams — Testnet Price Feed Guide
+
+> Verified 2026-02-28 against Chainlink testnet with live WebSocket and REST tests.
+
+## Architecture Overview
+
+Chainlink Data Streams is a **pull-based, off-chain** price oracle. Unlike on-chain Chainlink Price Feeds (which read from aggregator contracts on Ethereum/Arbitrum), Data Streams delivers signed price reports directly via **WebSocket** or **REST API** — no blockchain interaction needed for reading prices.
+
+```
+Chainlink DON (16 oracle operators)
+        │
+        ▼
+Data Engine (Chainlink-hosted)
+        │
+    ┌───┴───┐
+    WS API  REST API
+    │       │
+    ▼       ▼
+  Bolt    ad-hoc queries
+```
+
+Each price update is a **V3 report** containing: benchmark price (mid), bid, ask, timestamps, and fees — signed by the oracle network. Reports can optionally be verified on-chain.
+
+## Testnet Endpoints
+
+| Protocol | URL |
+|----------|-----|
+| **WebSocket** | `wss://ws.testnet-dataengine.chain.link` |
+| **REST API** | `https://api.testnet-dataengine.chain.link` |
+
+**Critical**: Testnet feed IDs are completely different from mainnet feed IDs. The root cause of Bolt's dead Chainlink feed was using mainnet BTC feed ID `0x00039d9e...b8` against the testnet endpoint — it silently returned zero data (WS connected fine but sent no messages; REST returned `404 report not found`).
+
+## Feed IDs
+
+### Verified Testnet Feed IDs (2026-02-28)
+
+| Asset | Testnet Feed ID | Update Rate |
+|-------|----------------|-------------|
+| BTC/USD | `0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439` | 1 Hz |
+| ETH/USD | `0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782` | 1 Hz |
+| SOL/USD | `0x0003d338ea2ac3be9e026033b1aa601673c37bab5e13851c59966f9f820754d6` | 1 Hz |
+| XRP/USD | `0x0003ea9ea9bd6d9ce89165185d25d02e606aece110d3897516f4d629433944ff` | 1 Hz |
+
+### How to Discover Testnet Feed IDs for New Assets
+
+There is **no metadata API** that maps feed IDs to human-readable names. Chainlink returns only raw hex IDs. Testnet feed IDs must be discovered empirically:
+
+1. Call `GET /api/v1/feeds` — returns all available feed IDs (510 as of Feb 2026, 211 with `0x0003` crypto prefix)
+2. For each candidate, call `GET /api/v1/reports/latest?feedID={id}` to get its current price
+3. Match prices against known market rates (e.g., BTC ~$66K, ETH ~$1.9K, SOL ~$85, XRP ~$1.40)
+4. Verify via WebSocket stream to confirm 1 Hz updates
+
+Feed ID prefix convention:
+- `0x0003` — Crypto price feeds (BTC, ETH, SOL, XRP, etc.)
+- `0x000b` — Other feeds (forex, commodities, indices)
+- `0x0007` — Additional feed types
+
+## Authentication
+
+All API access requires HMAC-SHA256 authentication with an API key + API secret pair.
+
+### Credential Storage (Bolt)
+
+SSM Parameter Store path: `/bolt/testnet/chainlink/`
+- `api-key` (36 chars, UUID format)
+- `api-secret` (128 chars, hex)
+- Region: `eu-west-1`
+
+### HMAC Signing Process
+
+Three custom headers are required on every request (WebSocket upgrade or REST call):
+
+```
+Authorization: {api_key}
+X-Authorization-Timestamp: {unix_timestamp_ms}
+X-Authorization-Signature-SHA256: {hmac_hex}
+```
+
+The signature is computed as:
+
+```
+signing_string = "{METHOD} {path_with_query} {sha256_of_body} {api_key} {timestamp_ms}"
+signature = HMAC-SHA256(api_secret, signing_string)
+```
+
+For GET requests and WebSocket upgrades, the body hash is the SHA-256 of empty string:
+```
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+A `User-Agent` header is also required — Cloudflare returns error 1010 without one.
+
+### Signing Pitfall
+
+The `ws_url` in config must NOT have a trailing slash. A trailing slash causes the HMAC to sign `/api/v1/ws/?feedIDs=...` (double slash) while the server expects `/api/v1/ws?feedIDs=...` — producing a silent auth failure.
+
+## WebSocket API
+
+### Connection
+
+```
+wss://ws.testnet-dataengine.chain.link/api/v1/ws?feedIDs={id1},{id2},{id3}
+```
+
+Multiple feed IDs can be comma-separated in a single connection. Auth headers are sent during the HTTP upgrade handshake.
+
+### Message Format
+
+Each message is JSON with a `report` field:
+
+```json
+{
+  "report": {
+    "feedID": "0x00037da0...",
+    "validFromTimestamp": 1772203793,
+    "observationsTimestamp": 1772203793,
+    "fullReport": "0x00090d9e..."
+  }
+}
+```
+
+Messages arrive at **1 Hz per feed** (1 update per second). A connection subscribing to 4 feeds receives ~4 messages/second.
+
+### Reconnection
+
+On disconnect, reconnect with exponential backoff. Auth headers must be regenerated (new timestamp + signature) on each reconnect.
+
+## REST API
+
+### List Available Feeds
+
+```
+GET /api/v1/feeds
+-> {"feeds": [{"feedID": "0x..."}, ...]}
+```
+
+Returns all feed IDs available on testnet. No metadata (names, descriptions) included.
+
+### Get Latest Report
+
+```
+GET /api/v1/reports/latest?feedID={feed_id}
+-> {"report": {"feedID": "...", "fullReport": "0x...", ...}}
+```
+
+Returns 404 `{"message": "report not found"}` if the feed ID doesn't exist on testnet.
+
+## Decoding V3 Reports
+
+The `fullReport` hex string is an ABI-encoded structure containing signatures and the price report blob.
+
+### Outer Structure (ABI-encoded)
+
+```
+Offset    Field
+------    -----
+0-96      reportContext (bytes32[3]) — config digest, epoch+round, etc.
+96-128    offset pointer to reportBlob -> typically 224
+128-160   offset pointer to rawRs
+160-192   offset pointer to rawSs
+192-224   rawVs (bytes32)
+224-256   reportBlob length (e.g., 288)
+256+      reportBlob data
+```
+
+### Report Blob (V3 Schema, 288 bytes)
+
+```
+Offset    Type      Field
+------    ----      -----
+0-32      bytes32   feedId
+32-64     uint32    validFromTimestamp (right-padded)
+64-96     uint32    observationsTimestamp
+96-128    uint192   nativeFee
+128-160   uint192   linkFee
+160-192   uint32    expiresAt (~30 days from now)
+192-224   int192    benchmarkPrice (mid) — 18 decimal places
+224-256   int192    bid — 18 decimal places
+256-288   int192    ask — 18 decimal places
+```
+
+### Price Extraction
+
+```
+benchmarkPrice (raw int) / 10^18 = USD price
+```
+
+Example: raw `65785240335769465000000` -> `$65,785.24`
+
+### Decode Steps (pseudocode)
+
+```
+raw = hex_decode(fullReport[2:])        # strip "0x" prefix
+blob_offset = uint256(raw[96:128])      # read offset pointer
+blob_length = uint256(raw[blob_offset:blob_offset+32])
+blob = raw[blob_offset+32 : blob_offset+32+blob_length]
+price = int192(blob[192:224]) / 1e18    # benchmark (mid)
+bid   = int192(blob[224:256]) / 1e18
+ask   = int192(blob[256:288]) / 1e18
+```
+
+**Pitfall**: Do NOT use `lstrip("0x")` to strip the hex prefix — Python's `lstrip` strips all matching characters, not just the prefix. Use `[2:]` slicing instead. `"0x0003...".lstrip("0x")` strips leading `0`, `x`, `0`, `0` and corrupts the data.
+
+## Common Failure Modes
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| WS connects, zero messages | Wrong feed ID (e.g., mainnet ID on testnet) | Use the testnet feed IDs listed above |
+| REST returns 404 `report not found` | Feed ID doesn't exist on testnet | Same as above |
+| WS connection rejected (401) | Bad API key/secret or wrong HMAC signature | Check credentials; verify signing string format |
+| WS connection rejected (403) | Key not authorized for this feed | Contact Chainlink for feed access |
+| Cloudflare error 1010 | Missing User-Agent header | Add `User-Agent: bolt-data-collector/1.0` or similar |
+| Price decodes to $0.00 | Wrong ABI offset in decode logic | Use `blob_offset = uint256(raw[96:128])` without adding 96 |
+| Hex decode error at position ~1469 | Used `lstrip("0x")` instead of `[2:]` | Use slice `fullReport[2:]` to strip `0x` prefix |
+| HMAC signature mismatch | Trailing slash in ws_url | Normalize: `ws_url.trim_end_matches('/')` |
+
+## Bolt Integration (bolt-v2 / bolt-v3)
+
+> The original guide described the bolt-v1 layout (`[feeds.chainlink]` TOML,
+> `src/feeds/chainlink.rs`). bolt-v2 does **not** use that shape. In bolt-v2 the
+> strike feeds the binary-oracle `price_to_beat` through a NautilusTrader
+> provider binding, and the strike source is a **point-in-time REST
+> boundary-fetch** `DataClient` (it fetches the report AT the market's
+> interval-open second and emits one NT `IndexPriceUpdate`) — not a continuous
+> WebSocket stream. The WebSocket section above is protocol reference; the live
+> strike path uses the REST `reports` endpoint.
+
+### TOML Config (bolt-v2 shape)
+
+The Chainlink strike client is a normal NT data client under `[clients.<id>]`,
+with one `feed_bindings` entry per supported asset mapping `feed_id` to the NT
+resolution instrument. Secrets are SSM parameter names only (resolved at
+runtime, never stored in TOML). The authoritative schema is owned by the code
+(`parse_feed_binding` / `ChainlinkDataConfig` in
+`src/bolt_v3_providers/chainlink.rs` + `src/bolt_v3_chainlink/strike_source.rs`)
+and the shipped values live in `config/root.toml` — this guide does not restate
+them so they cannot drift. Shape:
+
+```toml
+[clients.<id>.data]
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = <n>
+
+[[clients.<id>.data.feed_bindings]]
+feed_id = "<0x + 64 lowercase hex testnet feed id from the table above>"
+instrument_id = "<NT resolution instrument>"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = <u8>
+
+[clients.<id>.secrets]
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+```
+
+The strategy selects its feed per its own `target.underlying_asset` (one
+strategy instance = one asset), so the binding follows whichever market that
+instance trades.
+
+### Adding a New Asset
+
+1. Probe all `0x0003`-prefix feeds via REST: list `GET /api/v1/feeds`, then `GET /api/v1/reports/latest?feedID={id}` for each and decode the mid price
+2. Match the returned price against the asset's known market price
+3. Verify 1 Hz WebSocket stream before deploying
+4. Add a `[[clients.<id>.data.feed_bindings]]` entry (feed_id + resolution instrument) in `config/root.toml`, and add the feed id to the verified-testnet table above
+
+### Source Code (bolt-v2)
+
+- Strike source (REST boundary fetch + emit `IndexPriceUpdate`): `src/bolt_v3_chainlink/strike_source.rs`
+- HMAC auth (signed request URL + headers): `src/bolt_v3_chainlink/auth.rs`
+- V3 `fullReport` decode: `src/bolt_v3_chainlink/report.rs`
+- Provider binding + config schema (`ChainlinkDataConfig`, `parse_feed_binding`): `src/bolt_v3_providers/chainlink.rs`
+- SSM secret loading: `src/secrets.rs`
+
+---
+
+## Future: Migration to Production (NOT ACTIVE — we only have testnet credentials)
+
+When production credentials are obtained, three things change simultaneously — all must be updated together:
+
+1. **Endpoints** change:
+   - WS: `wss://ws.testnet-dataengine.chain.link` -> `wss://ws.dataengine.chain.link`
+   - REST: `https://api.testnet-dataengine.chain.link` -> `https://api.dataengine.chain.link`
+
+2. **Credentials** change:
+   - New SSM path: `/bolt/prod/chainlink` (with production API key/secret)
+   - TOML: `ssm_prefix = "/bolt/prod/chainlink"`
+
+3. **Feed IDs** change — production uses completely different IDs:
+
+   | Asset | Production Feed ID |
+   |-------|--------------------|
+   | BTC/USD | `0x00039d9e45394f473ab1f050a1b963e6b05351e52d71e507509ada0c95ed75b8` |
+   | ETH/USD | `0x000362205e10b3a147d02792eccee483dca6c7b44ecce7012cb8c6e0b68b3ae9` |
+   | SOL/USD | `0x0003b778d3f6b2ac4991302b89cb313f99a42467d6c9c5f96f57c29c0d2bc24f` |
+   | XRP/USD | `0x0003c16c6aed42294f5cb4741f6e59ba2d728f0eae2eb9e6d3f555808c59fc45` |
+
+   Production feed IDs can be looked up at: `https://data.chain.link/streams/{asset}-usd-cexprice-streams`
+
+Mixing any of these (e.g., testnet feed IDs on production endpoint) will silently fail — the same way our testnet setup was broken when it had mainnet feed IDs.
+
+---
+
+## References
+
+- Chainlink Data Streams overview: https://docs.chain.link/data-streams
+- WebSocket API reference: https://docs.chain.link/data-streams/reference/data-streams-api/interface-ws
+- REST API reference: https://docs.chain.link/data-streams/reference/data-streams-api/interface-api
+- Authentication: https://docs.chain.link/data-streams/reference/data-streams-api/authentication
+- Rust SDK tutorial: https://docs.chain.link/data-streams/tutorials/rust-sdk-stream
+- Bolt-v2 strike source: `src/bolt_v3_chainlink/` (auth.rs, report.rs, strike_source.rs)
+- Bolt-v2 provider binding + config schema: `src/bolt_v3_providers/chainlink.rs`

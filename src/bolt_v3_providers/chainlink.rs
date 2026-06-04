@@ -152,9 +152,25 @@ fn validate_data_bounds(key: &str, data: &ChainlinkDataConfig) -> Vec<String> {
             "clients.{key}.data.feed_bindings must declare at least one feed-to-instrument binding"
         ));
     }
+    let mut seen_feed_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_instrument_ids: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     for (index, binding) in data.feed_bindings.iter().enumerate() {
-        if let Err(message) = parse_feed_binding(key, index, binding) {
-            errors.push(message);
+        match parse_feed_binding(key, index, binding) {
+            Ok(parsed) => {
+                if !seen_feed_ids.insert(parsed.feed_id.clone()) {
+                    errors.push(format!(
+                        "clients.{key}.data.feed_bindings[{index}].feed_id duplicates an earlier binding; each feed_id must map to exactly one instrument_id"
+                    ));
+                }
+                let instrument_id = parsed.instrument_id.to_string();
+                if !seen_instrument_ids.insert(instrument_id) {
+                    errors.push(format!(
+                        "clients.{key}.data.feed_bindings[{index}].instrument_id duplicates an earlier binding; each instrument_id must map to exactly one feed_id"
+                    ));
+                }
+            }
+            Err(message) => errors.push(message),
         }
     }
     errors
@@ -315,5 +331,102 @@ fn secrets_for<'a>(
             client_key: client_key.to_string(),
             expected_provider_key: KEY,
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Feed-binding uniqueness validation.
+    //!
+    //! The `[clients.<id>.data].feed_bindings` table maps each Chainlink Data
+    //! Streams `feed_id` to exactly one NT resolution `instrument_id`. The live
+    //! strike lookup in `bolt_v3_chainlink::strike_source` resolves a binding by
+    //! `.find(|b| b.instrument_id == instrument_id)` (first match wins), so a
+    //! duplicate `feed_id` or `instrument_id` silently shadows the second entry
+    //! — a misconfiguration that must fail closed at config validation rather
+    //! than mapping live money onto the wrong feed.
+
+    use super::*;
+
+    // Two distinct valid Chainlink Data Streams feed ids (0x + 64 lowercase hex)
+    // and two distinct valid NT instrument ids, so that each fixture varies only
+    // the dimension under test (duplicate feed_id XOR duplicate instrument_id).
+    const FEED_ID_A: &str =
+        "0x000362205e10b3a147d02792eccee483dca6c7b44ecce7012cb8c6e0b68b3ae9";
+    const FEED_ID_B: &str =
+        "0x0003111111111111111111111111111111111111111111111111111111111111";
+    const INSTRUMENT_ID_A: &str = "BTC-USD-UP.BOLT";
+    const INSTRUMENT_ID_B: &str = "BTC-USD-DOWN.BOLT";
+
+    fn data_config_from_bindings(bindings_toml: &str) -> ChainlinkDataConfig {
+        let toml_src = format!(
+            r#"
+rest_base_url = "https://example.invalid"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 5
+{bindings_toml}
+"#
+        );
+        toml::from_str::<ChainlinkDataConfig>(&toml_src)
+            .expect("fixture data config must parse")
+    }
+
+    fn binding_table(feed_id: &str, instrument_id: &str) -> String {
+        format!(
+            r#"
+[[feed_bindings]]
+feed_id = "{feed_id}"
+instrument_id = "{instrument_id}"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 2
+"#
+        )
+    }
+
+    #[test]
+    fn rejects_duplicate_feed_id_in_feed_bindings() {
+        // Same feed_id on two bindings (distinct instrument_ids): ambiguous which
+        // instrument a single feed's strike resolves onto.
+        let bindings = format!(
+            "{}{}",
+            binding_table(FEED_ID_A, INSTRUMENT_ID_A),
+            binding_table(FEED_ID_A, INSTRUMENT_ID_B),
+        );
+        let data = data_config_from_bindings(&bindings);
+
+        let errors = validate_data_bounds("chainlink_strike", &data);
+
+        assert!(
+            !errors.is_empty(),
+            "duplicate feed_id across feed_bindings must be rejected at validation; got no errors"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("feed_id")),
+            "expected a duplicate-feed_id error mentioning `feed_id`, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_instrument_id_in_feed_bindings() {
+        // Same instrument_id on two bindings (distinct feed_ids): the
+        // first-match-wins lookup silently ignores the second feed.
+        let bindings = format!(
+            "{}{}",
+            binding_table(FEED_ID_A, INSTRUMENT_ID_A),
+            binding_table(FEED_ID_B, INSTRUMENT_ID_A),
+        );
+        let data = data_config_from_bindings(&bindings);
+
+        let errors = validate_data_bounds("chainlink_strike", &data);
+
+        assert!(
+            !errors.is_empty(),
+            "duplicate instrument_id across feed_bindings must be rejected at validation; got no errors"
+        );
+        assert!(
+            errors.iter().any(|e| e.contains("instrument_id")),
+            "expected a duplicate-instrument_id error mentioning `instrument_id`, got: {errors:?}"
+        );
     }
 }

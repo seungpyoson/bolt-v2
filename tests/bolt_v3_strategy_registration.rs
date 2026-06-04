@@ -1490,6 +1490,18 @@ fn binary_oracle_runtime_mapping_emits_resolution_data_when_present() {
         .iter()
         .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
         .expect("fixture should include initial binary oracle strategy");
+    // Align the target's underlying_asset with the BTC-USD.CHAINLINK feed_binding
+    // so the load-time resolution_data binding validation (asset prefix + feed
+    // binding) passes for this happy-path emit test.
+    loaded.strategies[strategy_index]
+        .config
+        .target
+        .as_table_mut()
+        .expect("fixture target should be a table")
+        .insert(
+            "underlying_asset".to_string(),
+            toml::Value::String("BTC".to_string()),
+        );
     loaded.strategies[strategy_index].config.resolution_data = Some(ReferenceDataBlock {
         data_client_id: ClientId::from("chainlink_strike"),
         instrument_id: InstrumentId::from("BTC-USD.CHAINLINK"),
@@ -1595,6 +1607,130 @@ fn binary_oracle_runtime_mapping_rejects_resolution_data_with_unknown_client() {
             && rendered.contains("not_a_configured_client")
             && rendered.contains("not present in loaded clients"),
         "unknown resolution data client should fail with a clear message, got: {rendered}"
+    );
+}
+
+// DF-load-validate (#553): load-time validation of the `[resolution_data]`
+// binding. A live-money strategy must NOT load if its resolution-strike binding
+// is wrong; the existing runtime asset/subscribe guards only fire much later (at
+// the first interval subscribe), which silently leaves `price_to_beat = None`
+// instead of failing the operator's deploy. These three tests assert the
+// archetype bridge `raw_taker_config` rejects, at load time, a `[resolution_data]`
+// block whose:
+//   (a) data_client_id resolves to a client whose venue is NOT the Chainlink
+//       strike provider (CHAINLINK_DATA_STREAMS),
+//   (b) instrument_id asset prefix does not match the target's underlying_asset,
+//   (c) instrument_id has no matching feed_binding in that client.
+// Today only client-existence is checked in `raw_taker_config`, so all three
+// MUST fail until the load-time binding validation is added.
+
+/// (a) The resolution_data client exists, but its venue is not the Chainlink
+/// strike provider. Binding the strike source to a non-Chainlink venue must fail
+/// closed at load time (the strike index-price subscribe only flows through the
+/// Chainlink strike client).
+#[test]
+fn binary_oracle_runtime_mapping_rejects_resolution_data_with_non_chainlink_client_venue() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    // `okx_data` is a loaded client (venue = OKX), so the existence check passes,
+    // but OKX is not the Chainlink strike provider.
+    loaded.strategies[strategy_index].config.resolution_data = Some(ReferenceDataBlock {
+        data_client_id: ClientId::from("okx_data"),
+        instrument_id: InstrumentId::from("BTC-USD.CHAINLINK"),
+    });
+
+    let strategy = &loaded.strategies[strategy_index];
+    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded).expect_err(
+        "resolution_data bound to a non-Chainlink client venue must fail closed at load time",
+    );
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("resolution_data")
+            && rendered.contains("okx_data")
+            && rendered.contains("CHAINLINK_DATA_STREAMS"),
+        "non-Chainlink resolution client venue should fail with a clear message naming the client and the required Chainlink venue, got: {rendered}"
+    );
+}
+
+/// (b) The resolution_data client is the Chainlink strike client and the
+/// instrument exists as a feed_binding, but its asset prefix (`BTC`) does not
+/// match the target's `underlying_asset` (`CONFIGURED_ASSET`). A wrong-asset
+/// strike feed must fail closed at load time, not silently at subscribe time.
+#[test]
+fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_asset_mismatch() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    // The fixture target's underlying_asset is "CONFIGURED_ASSET"; the Chainlink
+    // strike feed_binding instrument is "BTC-USD.CHAINLINK" (asset prefix "BTC").
+    loaded.strategies[strategy_index].config.resolution_data = Some(ReferenceDataBlock {
+        data_client_id: ClientId::from("chainlink_strike"),
+        instrument_id: InstrumentId::from("BTC-USD.CHAINLINK"),
+    });
+
+    let strategy = &loaded.strategies[strategy_index];
+    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded).expect_err(
+        "resolution_data instrument whose asset prefix does not match underlying_asset must fail closed at load time",
+    );
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("resolution_data")
+            && rendered.contains("BTC-USD.CHAINLINK")
+            && rendered.contains("CONFIGURED_ASSET"),
+        "asset-mismatched resolution instrument should fail with a clear message naming the instrument and the underlying_asset, got: {rendered}"
+    );
+}
+
+/// (c) The resolution_data client is the Chainlink strike client and the
+/// underlying_asset matches the instrument's asset prefix, but the instrument has
+/// no matching feed_binding in that client. A strike instrument with no feed_id
+/// binding can never produce a report, so it must fail closed at load time.
+#[test]
+fn binary_oracle_runtime_mapping_rejects_resolution_data_instrument_without_feed_binding() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    // Make the target's underlying_asset match the instrument asset prefix (ETH)
+    // so the asset-prefix check (b) passes and this test isolates the missing
+    // feed_binding gap (c). The chainlink_strike client only binds
+    // "BTC-USD.CHAINLINK", so "ETH-USD.CHAINLINK" has no feed_binding.
+    loaded.strategies[strategy_index]
+        .config
+        .target
+        .as_table_mut()
+        .expect("fixture target should be a table")
+        .insert(
+            "underlying_asset".to_string(),
+            toml::Value::String("ETH".to_string()),
+        );
+    loaded.strategies[strategy_index].config.resolution_data = Some(ReferenceDataBlock {
+        data_client_id: ClientId::from("chainlink_strike"),
+        instrument_id: InstrumentId::from("ETH-USD.CHAINLINK"),
+    });
+
+    let strategy = &loaded.strategies[strategy_index];
+    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded).expect_err(
+        "resolution_data instrument with no matching feed_binding in the client must fail closed at load time",
+    );
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("resolution_data")
+            && rendered.contains("ETH-USD.CHAINLINK")
+            && rendered.contains("feed_binding"),
+        "resolution instrument with no feed_binding should fail with a clear message naming the instrument and feed_binding, got: {rendered}"
     );
 }
 

@@ -94,7 +94,16 @@ impl TomlValueExt for Value {
 
 macro_rules! binary_oracle_edge_taker_config_fields {
     ($macro:ident) => {
+        binary_oracle_edge_taker_config_fields! { @emit $macro {} }
+    };
+    (forward_to_extra: $extra_macro:ident, callback: $macro:ident) => {
+        binary_oracle_edge_taker_config_fields! {
+            @emit $extra_macro { callback: $macro, suffix: }
+        }
+    };
+    (@emit $macro:ident { $($wrap:tt)* }) => {
         $macro! {
+            $($wrap)*
             strategy_id: String => String;
             order_id_tag: String => String;
             oms_type: String => String;
@@ -307,22 +316,86 @@ impl BinaryOracleEdgeTakerFieldType {
     }
 }
 
+/// Single source of truth for the optional-string top-level config fields that
+/// live outside the typed `binary_oracle_edge_taker_config_fields!` set (which
+/// carries required/typed fields) and outside the three order tables. The list
+/// is consumed both by the `BinaryOracleEdgeTakerConfig` struct tail and by the
+/// `validate_table` allowlist, so adding a field here cannot desync the validator
+/// from serde (G-field-ssot).
+///
+/// The macro forwards the field list to a callback (`$macro`) along with any
+/// trailing tokens, so it can compose with `define_config_struct!` (which also
+/// needs the typed field list) without a macro call in struct-field position.
+///
+/// Because the list is macro-expanded into both consumers, adding or removing a
+/// field here propagates to the struct and the allowlist together — they cannot
+/// drift. The `validate_table_allowlist_is_single_sourced_from_config_struct`
+/// test locks that equivalence.
+macro_rules! binary_oracle_edge_taker_extra_string_fields {
+    ($macro:ident) => {
+        $macro! {
+            extra_string_fields: [
+                reference_venue,
+                reference_instrument_id,
+                signal_venue,
+                signal_instrument_id,
+                resolution_client_id,
+                resolution_instrument_id,
+            ],
+        }
+    };
+    (callback: $macro:ident, suffix: $($suffix:tt)*) => {
+        $macro! {
+            extra_string_fields: [
+                reference_venue,
+                reference_instrument_id,
+                signal_venue,
+                signal_instrument_id,
+                resolution_client_id,
+                resolution_instrument_id,
+            ],
+            $($suffix)*
+        }
+    };
+}
+
+macro_rules! match_extra_string_field_names {
+    (extra_string_fields: [ $( $field:ident ),+ $(,)? ], ) => {
+        $( stringify!($field) )|+
+    };
+}
+
 macro_rules! define_config_struct {
-    ($( $field:ident : $ty:ty => $field_type:ident; )+) => {
+    (
+        extra_string_fields: [ $( $extra_field:ident ),+ $(,)? ],
+        $( $field:ident : $ty:ty => $field_type:ident; )+
+    ) => {
         #[derive(Debug, Clone, PartialEq, Deserialize)]
         #[serde(deny_unknown_fields)]
         struct BinaryOracleEdgeTakerConfig {
             $( $field: $ty, )+
-            reference_venue: Option<String>,
-            reference_instrument_id: Option<String>,
-            signal_venue: Option<String>,
-            signal_instrument_id: Option<String>,
-            resolution_client_id: Option<String>,
-            resolution_instrument_id: Option<String>,
+            $(
+                #[serde(default)]
+                $extra_field: Option<String>,
+            )+
             entry_order: BinaryOracleEdgeTakerOrderConfig,
             exit_order: BinaryOracleEdgeTakerOrderConfig,
             forced_exit_order: BinaryOracleEdgeTakerOrderConfig,
         }
+    };
+}
+
+/// Composes the two single-source field lists into one `define_config_struct!`
+/// invocation: the typed fields (`binary_oracle_edge_taker_config_fields!`)
+/// are forwarded as the prefix, and the optional-string tail
+/// (`binary_oracle_edge_taker_extra_string_fields!`) is appended. This is the
+/// only place both lists meet, so the struct cannot drift from either source.
+macro_rules! define_binary_oracle_edge_taker_config_struct {
+    () => {
+        binary_oracle_edge_taker_config_fields!(
+            forward_to_extra: binary_oracle_edge_taker_extra_string_fields,
+            callback: define_config_struct
+        );
     };
 }
 
@@ -407,7 +480,7 @@ macro_rules! validate_order_fields_impl {
     };
 }
 
-binary_oracle_edge_taker_config_fields!(define_config_struct);
+define_binary_oracle_edge_taker_config_struct!();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SelectionPhase {
@@ -803,6 +876,11 @@ struct ActiveMarketState {
     interval_open: Option<f64>,
     last_reference_ts_ms: Option<u64>,
     last_resolution_ts_ms: Option<u64>,
+    /// Observable count of resolution-strike updates rejected because their
+    /// `window_open_ms` did not match this market's interval-open while the
+    /// market was configured (non-Idle). A configured mismatch is a fail-closed
+    /// anomaly distinct from an Idle drop; this counter makes it observable.
+    resolution_strike_window_mismatch_count: u64,
     warmup_count: u64,
     warmup_target: u64,
     books: OutcomePreparedBooks,
@@ -1803,6 +1881,7 @@ impl ActiveMarketState {
             interval_open: None,
             last_reference_ts_ms: None,
             last_resolution_ts_ms: None,
+            resolution_strike_window_mismatch_count: INITIAL_COUNTER_U64,
             warmup_count: INITIAL_COUNTER_U64,
             warmup_target: INITIAL_COUNTER_U64,
             books: OutcomePreparedBooks::empty(),
@@ -1850,6 +1929,7 @@ impl ActiveMarketState {
             interval_open: None,
             last_reference_ts_ms: None,
             last_resolution_ts_ms: None,
+            resolution_strike_window_mismatch_count: INITIAL_COUNTER_U64,
             warmup_count: INITIAL_COUNTER_U64,
             warmup_target,
             books: OutcomePreparedBooks::from_market(market),
@@ -1948,6 +2028,20 @@ impl ActiveMarketState {
             return;
         };
         if window_open_ms != interval_start_ms {
+            // Configured (non-Idle, interval-bound) market whose strike report
+            // disagrees with the selected interval-open. This is a fail-closed
+            // anomaly — the strike feed is reporting for the wrong window — and
+            // must be observable rather than a silent drop. Record it and warn;
+            // `price_to_beat` is left untouched so entry stays fail-closed.
+            self.resolution_strike_window_mismatch_count =
+                self.resolution_strike_window_mismatch_count.saturating_add(1);
+            log::warn!(
+                "binary_oracle_edge_taker resolution-strike window mismatch (fail-closed): market_id={:?} window_open_ms={} interval_start_ms={} strike={} — strike rejected, price_to_beat unchanged",
+                self.market_id,
+                window_open_ms,
+                interval_start_ms,
+                strike,
+            );
             return;
         }
         if !is_positive_finite(strike) {
@@ -2000,8 +2094,27 @@ pub struct BinaryOracleEdgeTaker {
     last_reported_exposure_occupancy: Cell<Option<ExposureOccupancy>>,
     pricing: PricingState,
     selection_missing_since_ms: Option<u64>,
+    /// Interval-open boundary (`interval_start_ms`) for which an at/after-open
+    /// live-strike subscribe has already been issued. With
+    /// `market_selection_rule = "active_or_next"` the configured target can
+    /// select a FUTURE "Next" interval whose Chainlink report does not exist
+    /// yet; a subscribe issued before that interval opens strands the strike.
+    /// The at-open subscribe is gated on `now_ms >= interval_start_ms` and keyed
+    /// here so it fires exactly once per interval — deferring before open and
+    /// (re)issuing once at open — without re-subscribing on every selection
+    /// refresh. Naturally resets when a new interval is selected (the key no
+    /// longer matches).
+    resolution_strike_subscribed_for_open_interval_ms: Option<u64>,
     #[cfg(test)]
     book_subscription_events: Vec<BookSubscriptionEvent>,
+    /// Test-only observability for live-strike fetch attempts. Incremented once
+    /// each time `subscribe_resolution_strike` clears its asset-binding guard and
+    /// would issue the index-price subscribe in production. Lets a test assert
+    /// that the strategy (re)issues the strike fetch at interval open rather than
+    /// firing a single one-shot subscribe that strands a future-selected (Next)
+    /// interval.
+    #[cfg(test)]
+    resolution_strike_subscribe_count: u32,
 }
 
 impl BinaryOracleEdgeTaker {
@@ -2043,8 +2156,11 @@ impl BinaryOracleEdgeTaker {
             last_reported_exposure_occupancy: Cell::new(None),
             pricing,
             selection_missing_since_ms: None,
+            resolution_strike_subscribed_for_open_interval_ms: None,
             #[cfg(test)]
             book_subscription_events: Vec::new(),
+            #[cfg(test)]
+            resolution_strike_subscribe_count: 0,
         }
     }
 
@@ -2063,13 +2179,36 @@ impl BinaryOracleEdgeTaker {
         self.active.books.down.instrument_id = next_selection_books.down_instrument_id;
         self.active.apply_selection_timing(&snapshot);
         self.apply_source_owned_readiness_seed();
-        // Bind the live strike to a fresh interval-open: subscribe once when this
-        // market's interval-open boundary changes from the previous active state.
+        // Bind the live strike to the market's interval-open boundary.
+        //
+        // Two triggers, mutually exclusive per call, both gated on an unresolved
+        // strike (`price_to_beat` is `None`):
+        //   1. Interval change — issue one subscribe the moment a new interval is
+        //      selected. For a future "Next" selection (`now < interval_open`)
+        //      the Chainlink report does not exist yet, so this attempt cannot
+        //      bind and the at-open trigger below is what ultimately resolves it.
+        //   2. At/after open — once wall-clock reaches the interval-open boundary
+        //      (`now_ms >= interval_start_ms`), (re)issue the subscribe so a
+        //      future-selected interval is not permanently stranded by its
+        //      pre-open one-shot. Keyed by `interval_start_ms` so it fires exactly
+        //      once per interval rather than on every selection refresh.
         if self.active.phase != SelectionPhase::Idle
-            && self.active.interval_start_ms.is_some()
-            && self.active.interval_start_ms != previous_active.interval_start_ms
+            && let Some(interval_start_ms) = self.active.interval_start_ms
+            && self.active.price_to_beat.is_none()
         {
-            self.subscribe_resolution_strike();
+            let interval_changed =
+                self.active.interval_start_ms != previous_active.interval_start_ms;
+            let interval_open = now_ms >= interval_start_ms;
+            let already_subscribed_at_open = self
+                .resolution_strike_subscribed_for_open_interval_ms
+                == Some(interval_start_ms);
+            if interval_changed || (interval_open && !already_subscribed_at_open) {
+                self.subscribe_resolution_strike();
+                if interval_open {
+                    self.resolution_strike_subscribed_for_open_interval_ms =
+                        Some(interval_start_ms);
+                }
+            }
         }
         let reactivated_into_active =
             previous_phase != SelectionPhase::Active && self.active.phase == SelectionPhase::Active;
@@ -2490,7 +2629,11 @@ impl BinaryOracleEdgeTaker {
             Some(params),
         );
         #[cfg(test)]
-        let _ = (resolution_instrument_id, resolution_client_id, params);
+        {
+            let _ = (resolution_instrument_id, resolution_client_id, params);
+            self.resolution_strike_subscribe_count =
+                self.resolution_strike_subscribe_count.saturating_add(1);
+        }
     }
 
     fn replace_book_subscriptions(&mut self, next: OutcomeBookSubscriptions) {
@@ -5921,12 +6064,9 @@ impl BinaryOracleEdgeTakerBuilder {
                 ENTRY_ORDER_FIELD
                     | EXIT_ORDER_FIELD
                     | FORCED_EXIT_ORDER_FIELD
-                    | "reference_venue"
-                    | "reference_instrument_id"
-                    | "signal_venue"
-                    | "signal_instrument_id"
-                    | "resolution_client_id"
-                    | "resolution_instrument_id"
+                    | binary_oracle_edge_taker_extra_string_fields!(
+                        match_extra_string_field_names
+                    )
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -10989,6 +11129,117 @@ mod tests {
 
         let error = find_error(&errors, "strategies[0].config.stray_flag", "unknown_field");
         assert!(error.message.contains("unknown field `stray_flag`"));
+    }
+
+    /// Single source of truth for the binary-oracle-taker top-level config field
+    /// set: the serde-derived `deny_unknown_fields` deserializer for
+    /// `BinaryOracleEdgeTakerConfig`. When an unknown key is fed, serde's error
+    /// enumerates every field the struct accepts (`expected one of `a`, `b`,
+    /// ...`). This is the ONLY authoritative list of valid field names, generated
+    /// directly from the struct definition.
+    fn serde_known_top_level_config_fields() -> std::collections::BTreeSet<String> {
+        let mut raw = valid_raw_config();
+        let sentinel = "definitely_not_a_real_field_sentinel";
+        raw.as_table_mut()
+            .expect("valid config must be a table")
+            .insert(sentinel.to_string(), Value::Boolean(true));
+
+        let err = BinaryOracleEdgeTakerBuilder::parse_config(&raw)
+            .expect_err("config with an unknown key must fail serde deny_unknown_fields");
+        let message = format!("{err:#}");
+
+        let marker = "expected one of ";
+        let list_start = message.find(marker).unwrap_or_else(|| {
+            panic!("serde error must enumerate the expected field list, got: {message}")
+        }) + marker.len();
+        let list = &message[list_start..];
+
+        let fields: std::collections::BTreeSet<String> = list
+            .split('`')
+            .filter(|segment| {
+                // The backtick-delimited segments alternate between field names and
+                // separators (", "); keep only the identifier-shaped segments.
+                !segment.is_empty()
+                    && segment
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+            .map(|segment| segment.to_string())
+            .collect();
+
+        assert!(
+            !fields.is_empty(),
+            "serde SSOT field extraction produced no fields from: {message}"
+        );
+        fields
+    }
+
+    /// Returns the set of top-level field names the runtime `validate_table`
+    /// allowlist accepts, probed behaviorally: a name is accepted iff inserting it
+    /// into an otherwise-valid config does not produce an `unknown_field` error.
+    fn validate_table_accepted_top_level_fields(
+        candidates: &std::collections::BTreeSet<String>,
+    ) -> std::collections::BTreeSet<String> {
+        let mut accepted = std::collections::BTreeSet::new();
+        for name in candidates {
+            let mut raw = valid_raw_config();
+            let table = raw.as_table_mut().expect("valid config must be a table");
+            if !table.contains_key(name.as_str()) {
+                // Use a string value: order-table fields are validated separately,
+                // but for the allowlist gate only the key presence matters.
+                table.insert(name.clone(), Value::String("probe".to_string()));
+            }
+            let mut errors = Vec::new();
+            BinaryOracleEdgeTakerBuilder::validate_config(
+                &raw,
+                "strategies[0].config",
+                &mut errors,
+            );
+            let flagged_unknown = errors.iter().any(|e| {
+                e.field == format!("strategies[0].config.{name}") && e.code == "unknown_field"
+            });
+            if !flagged_unknown {
+                accepted.insert(name.clone());
+            }
+        }
+        accepted
+    }
+
+    /// G-field-ssot: the runtime `validate_table` allowlist must be single-sourced
+    /// from the `BinaryOracleEdgeTakerConfig` serde struct — it cannot drift.
+    ///
+    /// The optional-string field set is emitted once by the
+    /// `binary_oracle_edge_taker_extra_string_fields!` macro and expanded into
+    /// both the struct tail and the `validate_table` allowlist, so the two cannot
+    /// diverge. This test is the regression lock: it fails if any future change
+    /// reintroduces a hand-maintained allowlist that drifts from the struct.
+    #[test]
+    fn validate_table_allowlist_is_single_sourced_from_config_struct() {
+        let serde_ssot = serde_known_top_level_config_fields();
+
+        // Sanity: a known optional-string field is part of the serde SSOT set.
+        assert!(
+            serde_ssot.contains("resolution_instrument_id"),
+            "a known optional field must be part of the serde SSOT field set: {serde_ssot:?}"
+        );
+
+        let validate_accepted = validate_table_accepted_top_level_fields(&serde_ssot);
+
+        // The allowlist must accept EXACTLY the serde-known field set: no field the
+        // struct accepts may be rejected, and no field outside the struct may be
+        // silently allowed. Both directions prove single-sourcing.
+        let serde_only: Vec<&String> = serde_ssot.difference(&validate_accepted).collect();
+        let validate_only: Vec<&String> = validate_accepted.difference(&serde_ssot).collect();
+
+        assert!(
+            serde_only.is_empty(),
+            "validate_table rejects serde-known config fields (allowlist drifted from \
+             struct SSOT): {serde_only:?}"
+        );
+        assert!(
+            validate_only.is_empty(),
+            "validate_table accepts fields the struct SSOT does not define: {validate_only:?}"
+        );
     }
 
     #[test]
@@ -16519,6 +16770,127 @@ mod tests {
     }
 
     #[test]
+    fn strike_fetch_reissues_at_interval_open_for_future_next_selection() {
+        // B-fetch-at-open regression lock. With `market_selection_rule =
+        // "active_or_next"`, the configured target can select a FUTURE "Next"
+        // interval whose open boundary is still ahead of wall-clock. The live
+        // Chainlink strike report for that interval does not exist yet, so a
+        // strike fetch issued before the interval opens cannot bind
+        // `price_to_beat`. The strategy must (re)issue the strike fetch once
+        // wall-clock reaches the interval open. Today `apply_selection_snapshot`
+        // fires `subscribe_resolution_strike` exactly once — when
+        // `interval_start_ms` first changes — and never again while the same
+        // interval stays selected, so the one-shot fetch fired before open is the
+        // only attempt and the strike is permanently stranded. This test drives
+        // the production selection path across an interval-open boundary and
+        // asserts a SECOND fetch attempt at/after open. It MUST fail until the
+        // strategy re-issues the strike fetch at interval open.
+        let mut strategy = test_strategy();
+        assert_eq!(
+            strategy.context.execution_venue(),
+            fixture_execution_venue(),
+            "harness precondition: production execution venue must be the POLYMARKET fixture",
+        );
+        // Bind the resolution (strike) instrument to this instance's underlying
+        // asset so it clears the fail-closed asset-binding guard inside
+        // `subscribe_resolution_strike`; the symbol's leading `-`-segment must
+        // equal `underlying_asset`. Without this the live-strike subscribe is a
+        // no-op for an unrelated reason (asset mismatch), masking the boundary
+        // bug under test.
+        strategy.config.resolution_instrument_id = Some(format!(
+            "{}-USD.CHAINLINK",
+            strategy.config.underlying_asset
+        ));
+        let cache = register_test_strategy(&mut strategy);
+
+        // Only the FUTURE "Next" interval's instruments exist in the cache. With
+        // 300s cadence and a period-aligned base, `next_start` is one full cadence
+        // period ahead of the period containing `now_before_open`.
+        let cadence_seconds = strategy.config.cadence_seconds as i64;
+        let current_period_start = 1_746_000_000_i64;
+        let next_period_start = current_period_start + cadence_seconds;
+        let next_start_ms = next_period_start as u64 * MILLIS_PER_SECOND_U64;
+        let next_end_ms = next_start_ms + strategy.config.cadence_seconds * MILLIS_PER_SECOND_U64;
+        let market_slug = crate::bolt_v3_market_families::updown::updown_market_slug(
+            &strategy.config.underlying_asset,
+            &strategy.config.cadence_slug_token,
+            next_period_start,
+        );
+        let instruments = [
+            updown_binary_option(
+                "token-up.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Up",
+                next_start_ms,
+                next_end_ms,
+            ),
+            updown_binary_option(
+                "token-down.POLYMARKET",
+                &market_slug,
+                "market-next",
+                "Down",
+                next_start_ms,
+                next_end_ms,
+            ),
+        ];
+        {
+            let mut cache_mut = cache.borrow_mut();
+            for instrument in &instruments {
+                cache_mut
+                    .add_instrument(instrument.clone())
+                    .expect("test cache should accept the seeded instrument");
+            }
+        }
+
+        // 1) Refresh BEFORE the interval opens. `now_before_open` sits in the
+        //    period preceding `next_start`, so the configured target selects the
+        //    future "Next" interval. The strategy issues its single one-shot
+        //    strike fetch here — but the live report for `next_start` does not
+        //    exist yet, so this attempt cannot bind the strike.
+        let now_before_open_ms = current_period_start as u64 * MILLIS_PER_SECOND_U64 + 1;
+        strategy.refresh_selection_from_cache(now_before_open_ms);
+        assert_eq!(
+            strategy.active.interval_start_ms,
+            Some(next_start_ms),
+            "precondition: a future Next interval must be selected before its open",
+        );
+        assert_eq!(
+            strategy.active.market_selection_outcome,
+            MarketSelectionOutcome::Next,
+            "precondition: the selected interval must be the future Next interval",
+        );
+        assert!(
+            strategy.active.price_to_beat.is_none(),
+            "precondition: no live strike can exist before the interval opens",
+        );
+        let fetches_before_open = strategy.resolution_strike_subscribe_count;
+        assert_eq!(
+            fetches_before_open, 1,
+            "the one-shot fetch must fire once when the future interval is first selected",
+        );
+
+        // 2) Wall-clock reaches the interval open. The retry-timer path re-runs
+        //    selection with `now >= next_start`; the SAME market is now the
+        //    Current interval and its live strike report exists. The strategy must
+        //    (re)issue the strike fetch for this now-open interval.
+        let now_at_open_ms = next_start_ms + 1;
+        strategy.refresh_selection_from_cache(now_at_open_ms);
+        assert_eq!(
+            strategy.active.interval_start_ms,
+            Some(next_start_ms),
+            "the same interval must still be selected once it opens",
+        );
+
+        let fetches_after_open = strategy.resolution_strike_subscribe_count;
+        assert!(
+            fetches_after_open > fetches_before_open,
+            "strike fetch must be re-issued once wall-clock reaches interval open for a future-selected interval that has no strike yet \
+             (before-open fetches={fetches_before_open}, after-open fetches={fetches_after_open})",
+        );
+    }
+
+    #[test]
     fn bootstrap_recovery_from_cache_ignores_foreign_venue_position() {
         // P5-5 / Codex P5 — RECOVERY-PATH regression lock. The entry path scopes selection to the
         // execution venue; the recovery path must do the same. A foreign-venue cached position with
@@ -17752,6 +18124,61 @@ mod tests {
             "a strike whose window-open does not match the interval-open must be ignored (fail-closed)"
         );
         assert_eq!(active.last_resolution_ts_ms, None);
+    }
+
+    /// H-observe-log: a window-mismatch rejection in a *configured* (non-Idle,
+    /// interval-bound) market is an actionable fail-closed anomaly — the strike
+    /// feed disagrees with the selected interval. It must be observable, and it
+    /// must be observably distinct from an Idle drop (where nothing is running,
+    /// so a mismatched update is simply not relevant).
+    ///
+    /// Behavioral contract under both cases: `price_to_beat` stays `None`. The
+    /// distinguishing observable: a non-Idle mismatch records an observable
+    /// rejection, while an Idle drop does not.
+    #[test]
+    fn observe_resolution_strike_window_mismatch_is_observable_and_distinct_from_idle() {
+        // Configured (non-Idle) market whose interval-open is 1_000.
+        let mut active =
+            ActiveMarketState::from_snapshot(&active_snapshot_with_start("MKT-1", 1_000), 0);
+        assert_eq!(active.phase, SelectionPhase::Active);
+        assert_eq!(active.interval_start_ms, Some(1_000));
+        assert_eq!(active.price_to_beat, None);
+        assert_eq!(active.resolution_strike_window_mismatch_count, 0);
+
+        // A strike whose window-open (2_000) does not match the interval-open.
+        active.observe_resolution_strike(3_100.5, 2_000, 2_250);
+
+        // Behavioral contract: fail-closed, price_to_beat untouched.
+        assert_eq!(
+            active.price_to_beat, None,
+            "configured window mismatch must leave price_to_beat None (fail-closed)"
+        );
+        assert_eq!(active.last_resolution_ts_ms, None);
+
+        // Observable rejection: a configured mismatch must be recorded so the
+        // anomaly is visible, not silently dropped.
+        assert_eq!(
+            active.resolution_strike_window_mismatch_count, 1,
+            "a configured (non-Idle) window mismatch must record an observable rejection"
+        );
+
+        // An Idle drop is NOT the same event: nothing is configured, so a
+        // mismatched update is irrelevant and must not be recorded as an anomaly.
+        let mut idle = ActiveMarketState::idle();
+        assert_eq!(idle.phase, SelectionPhase::Idle);
+        assert_eq!(idle.resolution_strike_window_mismatch_count, 0);
+
+        idle.observe_resolution_strike(3_100.5, 2_000, 2_250);
+
+        assert_eq!(
+            idle.price_to_beat, None,
+            "Idle drop must leave price_to_beat None"
+        );
+        assert_eq!(
+            idle.resolution_strike_window_mismatch_count, 0,
+            "an Idle drop must be handled distinctly from a configured mismatch \
+             (no observable rejection recorded)"
+        );
     }
 
     #[test]

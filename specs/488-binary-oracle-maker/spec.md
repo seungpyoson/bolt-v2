@@ -1,9 +1,9 @@
 # Feature Specification: Binary Oracle Market-Maker (robustness-gated, venue/instrument-agnostic)
 
-**Feature Branch**: `docs/488-mm-multi-venue-survey`
+**Feature Branch**: `feat/488-w3-pricing`
 **Created**: 2026-05-31
-**Status**: Draft — ROBUSTNESS-GATED. Edge existence is assumed (the maker market is mature and competitive, so a capturable edge demonstrably exists); the open question is whether our *implementation* captures it without being adversely selected. The gate is robustness: every workstream fails closed, and the built maker must clear a **pre-live backtest** on real historical full-depth L2 (net of fees / adverse-selection / settlement) before any live capital.
-**Input**: Add a two-sided resting market-maker for Polymarket binary (YES/NO up/down) markets first, then fan out to perps/CEX behind a shared agnostic framework. NT-first, no-hardcode, no-dual-paths, pure-Rust. Tracking issue: #488. Supersedes the original #488 "port MM apparatus from market-maker-rs / A-S-GLFT" framing (overturned by an actual-code audit + an internal 5-lens adversarial review + a Codex adversarial review).
+**Status**: Draft — W0 ARCHITECTURE-GATED and ROBUSTNESS-GATED. Edge existence is assumed (the maker market is mature and competitive, so a capturable edge demonstrably exists); the open question is whether our *implementation* captures it without being adversely selected. The gate is robustness: every workstream fails closed, and the built maker must clear a **pre-live backtest** on real historical full-depth L2 (net of fees / adverse-selection / settlement) before any live capital.
+**Input**: Add a two-sided resting market-maker for crypto binary-option markets first, without hardcoding the shared architecture to crypto, Polymarket, binary, or up/down markets. Future market families must enter through the market-family seam and W0 anti-hardcode checks, not through shared-engine rewrites. NT-first, no-hardcode, no-dual-paths, pure-Rust. Tracking issue: #488. Supersedes the original #488 "port MM apparatus from market-maker-rs / A-S-GLFT" framing (overturned by an actual-code audit + an internal 5-lens adversarial review + a Codex adversarial review).
 
 ## Overview
 
@@ -13,6 +13,7 @@ Two principles govern this spec:
 
 1. **Robustness-first.** The edge is not in question — the maker market is mature and competitive, so a capturable edge demonstrably exists. What is unproven is whether *our* implementation captures it without being picked off (adverse selection is the dominant cost). So the gate is robustness, not edge-existence: build proceeds workstream by workstream, each failing closed, and before any live capital the built maker must clear a backtest on real historical full-depth L2 — net of fees, adverse-selection, and settlement — against thresholds registered **before** the run.
 2. **Verify-everywhere.** Every workstream carries its own fail-closed proof gate; no advancement on assertion.
+3. **Architecture-gated.** `architecture.md` is W0. It must pass adversarial review before child implementation issues are opened. Shared code must be venue-neutral and family-neutral now; the first real family is crypto binary options, but tests/static checks must prove the shared engine is not Polymarket-only, binary-only, or up/down-only.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -149,13 +150,14 @@ As the maintainer, the maker must price from one fair-value path so there is no 
 - **FR-070 (W8)**: Fair value MUST resolve through one path; the hand-rolled digital MUST be removed once NT greeks/IV is authoritative.
 - **FR-080 (agnostic)**: Venue-specific facts (modify support, request budget, maintenance window, depth availability, fee schedule, settlement kind) MUST be variables in the venue capability contract, read by the controller — the controller MUST NOT branch on a venue name.
 - **FR-081 (agnostic)**: Instrument-type math (pricing/settlement/inventory) MUST plug in behind the `MarketFamily` seam; only the Polymarket-binary path is implemented first.
+- **FR-082 (W0 anti-hardcode)**: Before downstream workstreams claim the architecture is agnostic, the repo MUST carry checks proving shared modules are not Polymarket-only, binary-only, or up/down-only. At minimum this includes no venue-name branching in shared code, no new binary-only shared API names, compile proof families for bounded-scalar and continuous-mark markets, and an N-outcome settlement proof.
 
 ### Key Entities
 
 - **BacktestCorpus**: the unbiased full-candidate replay set (markets × ticks × full-depth book states × fair-value decisions × no-entry reasons × resolutions). Source of the pre-live backtest verdict.
 - **SettlementAccount**: shared primitive that books the 0/1 terminal payout for held inventory; used by both the backtest and live.
 - **VenueCapabilityContract**: extended `contracts/<venue>.toml` — adds typed execution / rate-limit / maintenance / fee / settlement sections to the current data-stream-only schema.
-- **MarketFamily**: instrument-type seam (`MarketIdentityTarget`/`family_key()`) carrying pricing + settlement + inventory math; binary first.
+- **MarketFamily**: instrument-type seam (`MarketIdentityTarget`/`family_key()` plus maker quote-target family adapters) carrying fair-value interpretation, quote layout, settlement, and inventory math; crypto binary first, future families admitted only through W0 checks.
 - **QuoteSet**: the controller's model of all live resting quotes (per leg, per market) with accept/cancel/in-flight state.
 - **MakerModel**: GM/CG half-spread + inventory skew + time-widening + clamp/precedence, anchored to the hoisted fair value + a book-imbalance term.
 
@@ -170,6 +172,7 @@ As the maintainer, the maker must price from one fair-value path so there is no 
 - **SC-005**: Settlement P&L for held inventory matches the 0/1 payout (not mark-to-mid) in both the backtest and live, via one module.
 - **SC-006**: No dual paths — single fill-truth (NT ExecutionModel), single settlement module, single fair-value path; verified by review.
 - **SC-007**: No venue-name branch in maker logic; all venue facts resolve from the capability contract; verified by review/grep.
+- **SC-008**: A second bounded-scalar proof family and a continuous-mark proof family compile through the same quote-target seam without edits to quote lifecycle, requote budget, admission, execution, or strategy core.
 
 ## Assumptions
 
@@ -179,7 +182,7 @@ As the maintainer, the maker must price from one fair-value path so there is no 
 - Two backtest substrates exist: bolt's own S3 lake (~3 weeks, **mid/top-only**, no L2 queue) and — verified 2026-05-31 by downloading + inspecting a real file — the **free pmxt archive** (`r2v2.pmxt.dev`, hourly Parquet, ~Apr 20–May 25 2026) which carries genuine **tick-level full-depth L2 + trades-with-aggressor** for the up/down markets (BTC/ETH/SPX confirmed present). The pmxt feed **lifts the no-L2-queue limitation** and is the better backtest substrate; ingest it via BTE's `bte_ingest.rs` (raw→catalog). Underlying spot is in neither — backfill externally. Fill/queue realism, not data volume, is the binding constraint.
 - NT owns execution, position/PnL, pre-trade limits, backtest engine + returns analytics, and VPIN; per the accepted BTE spec, **no Bolt-owned fill simulator** unless NT is source-proven unable.
 - `binary_oracle_edge_taker` already provides composite-spot fair value, naive windowed RV, the `updown` YES/NO pair model, the forced-flat governor, decision-evidence/submit-admission gating, and the order-intent post-only limit build — reused, not rebuilt.
-- This is a planning/research artifact — no strategy code in the binary yet. Build proceeds robustness-first, workstream by workstream (each fail-closed); **live capital** is gated on the pre-live backtest of the built maker (US1), not on the build itself. Work lives on `docs/488-mm-multi-venue-survey`, not the disk-retention branch.
+- `architecture.md` controls the #488 architecture direction until a newer reviewed architecture gate supersedes it. Build proceeds robustness-first, workstream by workstream (each fail-closed); **live capital** is gated on the pre-live backtest of the built maker (US1), not on the build itself. Work for this slice lives on `feat/488-w3-pricing`.
 
 ## References
 
@@ -187,6 +190,7 @@ As the maintainer, the maker must price from one fair-value path so there is no 
 - Authoritative actual-code audit: `docs/research/mm-code-audit-2026-05-30.md`.
 - Data-provider survey (binary L2 + underlying + perps/CEX; the free-substrate decision): `docs/research/mm-data-providers-2026-05-31.md`.
 - Reward research: `docs/bolt-v3/research/polymarket-rewards-2026-05-13.md`.
+- Architecture gate and work process: `specs/488-binary-oracle-maker/architecture.md`.
 - Implementation approach: `specs/488-binary-oracle-maker/plan.md`.
 - Precursors (execution plumbing only — they stop at NT OrderFactory construction): `specs/022-nt-maker-order-scope`, `specs/023-nt-order-intent-layer`, `specs/023-nt-research-analytics-platform/1-backtesting-engine`.
 - Related issues: #451 (order admission/submission wrapper — NOT fair-value), #41 (multi-market substrate), #409 (PortfolioSnapshot equity stream), #446/#447 (fee/reward-data provider decoupling), #135/#133 (sibling strategy lines).

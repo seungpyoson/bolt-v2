@@ -1,11 +1,11 @@
 # Implementation Plan: Binary Oracle Market-Maker (robustness-gated, venue/instrument-agnostic)
 
-**Branch**: `docs/488-mm-multi-venue-survey` | **Date**: 2026-05-31 | **Spec**: `specs/488-binary-oracle-maker/spec.md`
+**Branch**: `feat/488-w3-pricing` | **Date**: 2026-06-04 | **Spec**: `specs/488-binary-oracle-maker/spec.md`
 **Input**: Feature specification from `specs/488-binary-oracle-maker/spec.md`. Tracking: #488.
 
 ## Summary
 
-A two-sided resting market-maker for Polymarket binary (YES/NO) markets, anchored to bolt's existing oracle fair value. The economic edge is the oracle mid priced against informed flow — so the **primary spread is a Glosten-Milgrom/Copeland-Galai adverse-selection half-spread**, with inventory skew secondary. The edge's *existence* is assumed (the maker market is mature and competitive); the open question is implementation **robustness** — capturing it without being adversely selected. So build proceeds **robustness-first** (each workstream fails closed), and **live capital is gated on a pre-live backtest of the built maker** scored with production-equivalent accounting on real full-depth L2. The design is **agnostic via three layers** (NT execution adapters / an extended venue capability contract / a per-instrument `MarketFamily` math seam); only the Polymarket-binary path is implemented first. This plan supersedes the original #488 framing ("port the market-maker-rs apparatus; grid→GLFT; anchor an A-S reservation price"), which an actual-code audit + an internal 5-lens review + a Codex review overturned: A-S/GLFT are a units category error for a bounded (0,1) martingale whose variance blows up ~1/√τ into expiry.
+A two-sided resting market-maker for crypto binary-option markets, anchored to bolt's existing oracle fair value. The economic edge is the oracle mid priced against informed flow — so the **primary spread is a Glosten-Milgrom/Copeland-Galai adverse-selection half-spread**, with inventory skew secondary. The edge's *existence* is assumed (the maker market is mature and competitive); the open question is implementation **robustness** — capturing it without being adversely selected. So build proceeds **robustness-first** (each workstream fails closed), and **live capital is gated on a pre-live backtest of the built maker** scored with production-equivalent accounting on real full-depth L2. The design is **agnostic through existing seams** (NT execution adapters / an extended venue capability contract / a market-family quote-target seam); the first real implementation is crypto binary options, while future families are protected by W0 checks in `architecture.md`. This plan supersedes the original #488 framing ("port the market-maker-rs apparatus; grid→GLFT; anchor an A-S reservation price"), which an actual-code audit + an internal 5-lens review + a Codex review overturned: A-S/GLFT are a units category error for a bounded (0,1) martingale whose variance blows up ~1/√τ into expiry.
 
 ## Technical Context
 
@@ -13,7 +13,7 @@ A two-sided resting market-maker for Polymarket binary (YES/NO) markets, anchore
 **Primary Dependencies**: NautilusTrader Rust crates, at the rev **pinned in `Cargo.toml`** (the single source of truth — this plan does not restate the SHA, so it cannot drift). NT owns execution, position/PnL, pre-trade limits, backtest engine + returns analytics (Sharpe/Sortino/Calmar), VPIN, greeks/implied-vol. Source-proofs MUST read the NT checkout at the rev `Cargo.toml` currently pins. A separate hygiene issue tracks ~20 specs/docs that hard-code a now-stale rev.
 **Storage**: Two backtest substrates. (1) bolt's own historical S3 parquet lake — full-population but **mid/top-level book only, no L2 queue depth**, ~3 weeks, no underlying spot. (2) the **free pmxt archive** (`r2v2.pmxt.dev`, hourly Parquet, ~Apr 20–May 25 2026) — verified 2026-05-31 to carry genuine **tick-level full-depth L2 + trades-with-aggressor** for the up/down markets (BTC/ETH/SPX present); this is the **preferred** substrate (lifts the no-L2-queue limit). Neither holds underlying spot (backfill externally). Distinct from the in-repo decision-evidence JSONL writer, which is entry-gated/selection-biased **and not deployed** — the backtest does not use it. NT `ParquetDataCatalog` reads S3 **only with the `cloud` feature** (off in bolt today) and ships **no generic external-parquet loader** — a one-time raw→catalog conversion is required (E-037 investigated 2026-05-31; see "Backtest Substrate — Investigation Findings").
 **Testing**: `cargo test` (unit + property), NT backtest; `cargo fmt`/`clippy`/`deny` clean (CI on main).
-**Target Platform**: Linux (EC2 LiveNode); Polymarket binary first, perps/CEX later.
+**Target Platform**: Linux (EC2 LiveNode); crypto binary first, future market families through reviewed adapters.
 **Project Type**: Single Rust project (NT `LiveNode` strategy archetype + offline replay tooling).
 **Constraints**: NO HARDCODES (TOML), PURE RUST (no C/FFI/Python in the binary; offline data-prep scripts exempt), NO DUAL PATHS, SSM-only secrets, GROUP BY CHANGE.
 **Scale/Scope**: Many concurrent thin binary markets; per-market caps rolling up to a portfolio budget.
@@ -26,16 +26,18 @@ A two-sided resting market-maker for Polymarket binary (YES/NO) markets, anchore
 - **NO DUAL PATHS** → single fill truth (NT ExecutionModel; custom fill only if NT source-proven insufficient), single settlement module (shared backtest↔live), single fair-value path (W8 kills the hand-rolled digital). ✅ (FR-003, FR-004, FR-070).
 - **PURE RUST BINARY** → strategy + controller are Rust on NT; offline backtest-scoring tooling may be a script but produces no runtime dependency. ✅.
 - **SSM single secret source** → unchanged; reuse existing credential resolution. ✅.
-- **GROUP BY CHANGE** → swapping venue touches one contract file + config; instrument type touches one `MarketFamily` impl. ✅ once the contract schema is extended (W1).
-- **ONE BRANCH / ONE SCOPE** → all work on `docs/488-mm-multi-venue-survey`; **robustness-first** means build advances workstream by workstream (each fail-closed) and live capital is gated on the pre-live backtest.
+- **GROUP BY CHANGE** → swapping venue touches one contract file + config; instrument type touches one market-family adapter and one config section. ✅ once W0/W1 checks are in place.
+- **ONE BRANCH / ONE SCOPE** → this architecture slice is on `feat/488-w3-pricing`; **robustness-first** means build advances workstream by workstream (each fail-closed) and live capital is gated on the pre-live backtest.
 
-## Architecture — agnostic in three layers
+## Architecture — W0 Gate
+
+`specs/488-binary-oracle-maker/architecture.md` is the W0 architecture gate and work-process handoff. It chooses Option B: reuse existing seams, do not add a speculative generic valuation platform, and do not hardcode the first crypto binary path into shared code.
 
 The agnostic design is grounded in seams that already exist (verified), but two need work:
 
 1. **Execution plumbing — NT adapters (already uniform).** The strategy submits/cancels through NT's generic order interface; per-venue adapters (Polymarket/Binance/Bybit/Deribit/…) handle venue specifics. The maker MUST NOT branch on a venue name for order plumbing.
 2. **Venue facts — the capability contract (seam exists; schema must be EXTENDED).** `src/venue_contract.rs` loads `contracts/<venue>.toml`, but `VenueContract` today carries only `schema_version/venue/adapter_version/streams` (data-stream completeness). **W1 extends it** with typed sections: `supports_modify`, request/rate budget, maintenance window, depth availability, fee schedule, settlement kind — plus fail-closed startup validation when a required maker capability is absent. The quote controller reads these variables; it never hardcodes a venue fact.
-3. **Instrument-type math — the `MarketFamily` seam (exists; binary only).** `MarketIdentityTarget`/`family_key()` in `src/bolt_v3_market_families/` is the trait seam. Pricing + settlement + inventory math plug in here per instrument type. Binary (digital fair value, 0/1 settlement, bounded-martingale spread) is implemented first; perps/spot are added behind the same seam when a second venue/instrument actually arrives — **no speculative universal framework**.
+3. **Instrument-type math — the market-family seam (exists; binary first).** `MarketIdentityTarget`/`family_key()` in `src/bolt_v3_market_families/` and the maker quote-target family seam are the adapters. Fair-value interpretation, quote layout, settlement, and inventory math plug in here per instrument type. Crypto binary is implemented first; future families are admitted only through W0 anti-hardcode checks — **no speculative universal framework**.
 
 **The corrected model.** PRIMARY = Glosten-Milgrom/Copeland-Galai adverse-selection half-spread (oracle pickoff is the dominant P&L term). SECONDARY = small inventory skew. Anchor = the hoisted oracle fair value (composite spot + naive windowed RV + N(d2) digital) **plus a book-imbalance/micro-price term** (a maker, unlike a taker, must read the venue book). Time-to-expiry **widens** the spread (binary variance ~1/√τ). A-S/GLFT/SVI/Breeden-Litzenberger/realized-kernel are CUT for sub-daily binaries and deferred to perps/longer tenors behind the W3-validation gate.
 
@@ -45,8 +47,9 @@ The agnostic design is grounded in seams that already exist (verified), but two 
 
 ```text
 specs/488-binary-oracle-maker/
-├── spec.md     # WHAT — requirements, robustness-gated user stories, acceptance
-├── plan.md     # THIS FILE — architecture + workstream sequencing
+├── architecture.md # W0 — architecture gate, anti-hardcode checks, work process
+├── spec.md         # WHAT — requirements, robustness-gated user stories, acceptance
+├── plan.md         # THIS FILE — implementation sequencing
 └── (tasks.md)  # later, via /speckit.tasks — NOT created here
 ```
 
@@ -55,7 +58,8 @@ specs/488-binary-oracle-maker/
 ```text
 contracts/<venue>.toml                 # EXTENDED schema (W1): execution/rate/maintenance/fee/settlement
 src/venue_contract.rs                  # EXTENDED struct + fail-closed validation (W1)
-src/bolt_v3_market_families/           # binary pricing+settlement+inventory behind the seam
+src/bolt_v3_market_families/           # target/family validation and fair-value family seam
+src/strategies/maker_quote.rs          # maker quote-target family seam and proof families
 src/<shared>/settlement_accounting.rs  # shared primitive used by the backtest AND live (FR-004)
 src/strategies/binary_oracle_maker.rs  # the maker archetype (W2/W3) — built workstream-by-workstream; live-gated on the backtest
 var/mm-research/ (offline)             # backtest-scoring tooling (unbiased replay; diagnostic scripts)
@@ -67,27 +71,13 @@ var/mm-research/ (offline)             # backtest-scoring tooling (unbiased repl
 
 **BT — Pre-live backtest (the go-live gate; runs on the *built* maker after W2/W3/W4, before live capital).** Not an upfront edge-existence proof — the mature maker market already establishes the edge exists; BT validates *our implementation's* robustness (net-positive after pickoff + settlement). It **rides on the BTE epic (#437/#438)**, which owns and has landed the engine substrate — it does NOT rebuild any of it (see "Backtest ↔ BTE boundary"). Sub-steps: (a) ingest the full-depth L2 corpus (**preferred: the free pmxt archive**; fallback: bolt's mid/top lake) via BTE's **`src/bte_ingest.rs`** loader behind the **`bte-gate-proof`** feature (`+ nautilus-persistence/cloud` already wired) — no new conversion code; (b) the **shared settlement/accounting** for 0/1 payout (FR-004), one module shared with live — coordinate with BTE's binary-option analytics, no fork; (c) backfill underlying spot externally, aligned by the causal join rule (spot@T → decisions@≥T, key on reference `ts_event`) (FR-005); (d) replay the **built maker** over the full-population corpus (FR-002 — every market, so deployment selection bias does not apply) with NT passive fills (FR-003) — with full-depth L2, fill realism now includes queue position. **Score in the Python research workspace** reading the Rust-written catalog (sanctioned research lane): net = captured-spread − fees − adverse-selection − settlement-loss vs **pre-registered thresholds**. **Gate: no net edge → do not go live.**
 
-**W1 — Foundation & agnostic seams.** Extend the venue capability contract schema + validation (architecture layer 2). Hoist fair value behind the `MarketFamily` seam (file the correct tracking issue — #451 is the order-submission wrapper, not this). Add the **signed trade-flow subscription** (FR-021; GM + VPIN both need it). Taker hardening: crossed-book + spike guards.
+**W0 — Architecture gate and work-process lock.** Land `architecture.md`, link it from this spec/plan, and get adversarial approval. This is not implementation. It defines the no-hardcode checks, issue order, PR rules, and handoff instructions future agents must read when conversation context is gone.
+
+**W1 — Foundation & agnostic seams.** Extend the venue capability contract schema + validation (architecture layer 2). Hoist fair value behind the market-family seam (file the correct tracking issue — #451 is the order-submission wrapper, not this). Add the **signed trade-flow subscription** (FR-021; GM + VPIN both need it). Taker hardening: crossed-book + spike guards.
 
 **W2 — Quote Lifecycle / Execution Control (the missing core).** Multi-resting-quote state; requote loop using `supports_modify` (cancel+resubmit) and the rate-budget variable; order-accepted reconciliation + deferred-cancel handling; post-only-reject requote; two-leg cancel-scope; reconnect resync + cancel-all-on-kill. Carries its own no-submit/canary proof against a simulated venue at the real budget. *(Built as pure NT-free modules `src/strategies/quote_lifecycle.rs` + `requote_budget.rs`, slices 1–4 landed: single-leg lifecycle, `supports_modify` modify-in-place branch, two-leg `MarketQuote` + cancel scope, sliding-window requote throttle.)*
 
-**WG — Instrument-type generalization (2nd family: linear perpetual futures).** *Direction change (user, 2026-06-01): override the "design the seams now, implement ONLY the Polymarket-binary path first, generalize when a 2nd venue actually arrives" discipline — enable a 2nd instrument type **now** to prove the agnostic design end-to-end. The binary maker (W2/W3/W4) is unaffected ("MM for binary is okay").* The `MarketFamily` seam today is binary-shaped (`select_binary_option_market`, `market_selection_candidate_windows`, `fair_probability_up`/`FairProbabilityInputs` → P(up)); generalize its *making* surface to an instrument-agnostic **quote-target** contract (fair value + each leg's instrument/side/price + settlement rule), re-express the binary family through it unchanged, then add a **lean** linear-perp family. The agnostic engine (`quote_lifecycle` + `RequoteBudget`) is reused untouched; `Leg::Yes/No` naming stays (binary-first) and generalizes when the leg vocabulary actually needs it.
-
-  **Lean (this pass) vs production-grade — explicit gap. The lean perp family is NOT live-tradeable; it proves the architecture only.**
-
-  | Dimension | Lean (now) | Production-grade (deferred) |
-  |---|---|---|
-  | Pricing | micro/mid-price + **fixed** half-spread + **linear** inventory skew (TOML knobs) | A-S/GLFT optimal spread, queue-imbalance micro-price, vol-scaled spread, VPIN/toxicity skew |
-  | Funding | ignored | priced into fair value + carry PnL + funding-aware skew |
-  | Margin/leverage | none (plain position) | margin accounting, leverage caps, liquidation-distance risk, cross/isolated |
-  | Mark/index price | order-book mid | exchange mark/index feed + basis (mark−index) for PnL/liquidation |
-  | Settlement/PnL | stub (continuous mark, no expiry) | real perp mark-to-market + funding wired into NT PnL (perp arm of W4) |
-  | Venue contract + adapter | minimal/placeholder contract, **no live adapter** | populated real contract (tick/lot, fees+maker rebate, max leverage, funding interval) + live NT execution/data adapter + SSM creds |
-  | Instrument math | linear only, simple units | contract multiplier, tick/lot/min-notional, linear **vs inverse** |
-  | Risk/governor | reuse the binary governor | perp risk (position/leverage caps, funding-aware kill) |
-  | Calibration + BT gate | placeholder params, **not** backtest-gated | calibrated params, must pass the pre-live perp backtest |
-
-  Net: lean = the seam genuinely drives a non-binary instrument and the engine is reused unchanged; production-grade perp trading needs the entire right column (notably the A-S/GLFT model the plan had cut for binaries, funding, margin/liquidation, a real adapter, and the BT gate).
+**W1B — Market-family seam hardening and proof families.** Replace the former WG product-shaped "lean perp" wording with architecture checks. The seam must expose family-neutral quote targets; binary/updown naming must be quarantined or mechanically renamed out of new shared surfaces; bounded-scalar and continuous-mark proof families must compile through the same seam without changing `quote_lifecycle`, `RequoteBudget`, admission, execution, or strategy core. These proof families are not live-tradeable products and carry no venue adapter, funding, margin, liquidation, or backtest gate.
 
 **W3 — Maker model.** GM/CG half-spread with a defined parameter source + calibration (from the historical full-depth corpus); two-sided YES/NO joint quote + inventory; book-imbalance term; inventory→skew functional form; new kill predicates (σ-floor/basis-cap/τ-floor) as TOML thresholds, fail-closed; graduated governor states (cancel-only/reduce-only/hard-flat/reward-preserving soft-hold); offset-composition precedence + (ε,1−ε) clamp/prune.
 
@@ -101,7 +91,7 @@ var/mm-research/ (offline)             # backtest-scoring tooling (unbiased repl
 
 **W8 — Dual-path kill.** Remove the hand-rolled N(d2) digital once NT greeks/IV is the single fair-value source.
 
-**Sequence**: W1 + W2 → **WG (lean perp family — proves the agnostic seam; binary path unchanged)** → W3 → W4 (incl. shared settlement) → **BT (pre-live backtest gate)** → W5/W6 → W7/W8. Production-grade perp pricing (A-S/GLFT), funding, margin/liquidation, a real perp adapter, and the perp BT gate remain deferred per the WG gap table. A later validation gate decides whether the cut math (A-S/GLFT/SVI) returns for longer-tenor instruments — for perps it is the correct model and returns at WG-production.
+**Sequence**: W0 → W1 → W1B → W2 → RV helper → IV helper → FV helper/adapters → W3 → W4 (incl. shared settlement) → **BT (pre-live backtest gate)** → W5/W6 → W7/W8. Production-grade perps, listed options, sports/politics/weather binaries, and sportsbook-style multi-outcome markets are future family adapters, not part of this first implementation slice. If any future family needs shared-engine changes, it gets a new architecture gate first.
 
 ## Implementation Rules
 

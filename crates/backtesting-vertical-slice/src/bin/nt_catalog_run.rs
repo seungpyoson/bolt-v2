@@ -61,6 +61,9 @@ use backtesting_vertical_slice::canonical_okx::{
     append_okx_book_archive, append_okx_candlesticks_archive, append_okx_trades_archive,
     extract_csv_from_zip,
 };
+use backtesting_vertical_slice::convert_driver::{
+    ConvertReport, ObjectOutcome, ObjectStats, run_objects,
+};
 
 /// Default region for the `bolt-parquet` data lake (a bucket with no location
 /// constraint resolves to `us-east-1`).
@@ -462,6 +465,10 @@ fn convert(
     let mut total_records = 0usize;
     let mut total_instruments = 0usize;
     let mut matched_bindings = 0usize;
+    // The single source of truth for the run's exit status: every object's
+    // outcome, so one bad object isolates to a recorded failure instead of
+    // aborting the whole run.
+    let mut report = ConvertReport::new();
 
     for binding in FAMILY_BINDINGS {
         if venue.is_some_and(|v| v != binding.venue) {
@@ -480,14 +487,26 @@ fn convert(
             format!("{}/{}", base, resolved.trim_matches('/'))
         };
         let prefix = ObjectPath::from(joined);
-        let keys = runtime
-            .block_on(list_objects(
-                store.clone(),
-                prefix.clone(),
-                binding.extension,
-                binding.key_filters,
-            ))
-            .with_context(|| format!("list {prefix}"))?;
+        let binding_label = format!("{}/{}", binding.venue, binding.family);
+        let keys = match runtime.block_on(list_objects(
+            store.clone(),
+            prefix.clone(),
+            binding.extension,
+            binding.key_filters,
+        )) {
+            Ok(keys) => keys,
+            Err(err) => {
+                // A listing failure is per-binding: record it and move on to the
+                // next binding rather than aborting every binding ordered after.
+                eprintln!("convert-error [{binding_label}] list {prefix}: {err:#}");
+                report.record(ObjectOutcome {
+                    binding: binding_label.clone(),
+                    object_key: format!("list {prefix}"),
+                    outcome: Err(format!("{err:#}")),
+                });
+                continue;
+            }
+        };
 
         let mut objects = 0usize;
         let mut records = 0usize;
@@ -497,33 +516,96 @@ fn convert(
             // Bybit mark-price REST pages overlap in time per instrument, so they
             // must be deduplicated across objects before writing — one disjoint
             // catalog write per instrument, not one (conflicting) file per page.
-            // Collect the whole binding, then batch-convert.
-            let mut batch = Vec::with_capacity(keys.len());
-            for key in &keys {
-                let bytes = runtime
-                    .block_on(get_bytes(store.clone(), key.clone()))
-                    .with_context(|| format!("read {key}"))?;
-                batch.push((key.to_string(), bytes));
-            }
-            objects = batch.len();
-            let converted = append_bybit_mark_price_kline_1m_batch(&batch, &mut catalog)
-                .with_context(|| format!("convert bybit mark-price batch ({objects} objects)"))?;
-            for instrument in converted {
-                records += instrument.record_count;
-                instruments.insert(instrument.nt_instrument_id);
-            }
-        } else {
-            for key in &keys {
-                let bytes = runtime
-                    .block_on(get_bytes(store.clone(), key.clone()))
-                    .with_context(|| format!("read {key}"))?;
-                let converted =
-                    convert_object(binding, key.as_ref(), &bytes, ingest_run_id, &mut catalog)
-                        .with_context(|| format!("convert {key}"))?;
-                objects += 1;
+            // The cross-page dedup makes the batch one indivisible unit, so it is
+            // a single report outcome (isolated from other bindings, not split
+            // per object).
+            let batch_result = (|| -> Result<ObjectStats> {
+                let mut batch = Vec::with_capacity(keys.len());
+                for key in &keys {
+                    let bytes = runtime
+                        .block_on(get_bytes(store.clone(), key.clone()))
+                        .with_context(|| format!("read {key}"))?;
+                    batch.push((key.to_string(), bytes));
+                }
+                let converted = append_bybit_mark_price_kline_1m_batch(&batch, &mut catalog)
+                    .with_context(|| {
+                        format!("convert bybit mark-price batch ({} objects)", batch.len())
+                    })?;
+                let mut records = 0usize;
+                let mut instruments = Vec::new();
                 for instrument in converted {
                     records += instrument.record_count;
-                    instruments.insert(instrument.nt_instrument_id);
+                    instruments.push(instrument.nt_instrument_id);
+                }
+                Ok(ObjectStats {
+                    records,
+                    instruments,
+                })
+            })();
+            let object_key = format!("{binding_label} batch ({} objects)", keys.len());
+            match batch_result {
+                Ok(stats) => {
+                    objects = keys.len();
+                    records = stats.records;
+                    for inst in &stats.instruments {
+                        instruments.insert(inst.clone());
+                    }
+                    report.record(ObjectOutcome {
+                        binding: binding_label.clone(),
+                        object_key,
+                        outcome: Ok(stats),
+                    });
+                }
+                Err(err) => {
+                    eprintln!("convert-error [{binding_label}] {object_key}: {err:#}");
+                    report.record(ObjectOutcome {
+                        binding: binding_label.clone(),
+                        object_key,
+                        outcome: Err(format!("{err:#}")),
+                    });
+                }
+            }
+        } else {
+            let binding_start = report.outcomes().len();
+            let key_strings: Vec<String> = keys.iter().map(|key| key.to_string()).collect();
+            run_objects(
+                &mut report,
+                &binding_label,
+                &key_strings,
+                |key| {
+                    let bytes = runtime
+                        .block_on(get_bytes(store.clone(), ObjectPath::from(key.to_string())))
+                        .with_context(|| format!("read {key}"))?;
+                    let converted =
+                        convert_object(binding, key, &bytes, ingest_run_id, &mut catalog)
+                            .with_context(|| format!("convert {key}"))?;
+                    let mut records = 0usize;
+                    let mut instruments = Vec::new();
+                    for instrument in converted {
+                        records += instrument.record_count;
+                        instruments.push(instrument.nt_instrument_id);
+                    }
+                    Ok(ObjectStats {
+                        records,
+                        instruments,
+                    })
+                },
+                |outcome: &ObjectOutcome| {
+                    if let Err(err) = &outcome.outcome {
+                        eprintln!(
+                            "convert-error [{}] {}: {}",
+                            outcome.binding, outcome.object_key, err
+                        );
+                    }
+                },
+            );
+            for outcome in &report.outcomes()[binding_start..] {
+                if let Ok(stats) = &outcome.outcome {
+                    objects += 1;
+                    records += stats.records;
+                    for inst in &stats.instruments {
+                        instruments.insert(inst.clone());
+                    }
                 }
             }
         }
@@ -549,8 +631,20 @@ fn convert(
     );
 
     println!(
-        "CONVERT DONE: bindings={matched_bindings} objects={total_objects} instruments={total_instruments} records={total_records} -> {catalog_uri}"
+        "CONVERT SUMMARY: bindings={matched_bindings} objects_converted={total_objects} objects_failed={} instruments={total_instruments} records={total_records} -> {catalog_uri}",
+        report.failed(),
     );
+    if report.is_failure() {
+        // Every good object was still written; surface the failures loudly and
+        // exit non-zero so the operator (and the per-venue run wrapper) must look.
+        print!("{}", report.failure_report());
+        bail!(
+            "conversion completed with {} failed object(s); every good object was \
+             still written — see the FAILED lines above",
+            report.failed(),
+        );
+    }
+    println!("CONVERT DONE");
     Ok(())
 }
 

@@ -102,6 +102,7 @@ def test_scan_universe() -> None:
         "src/raw_types.rs",
         "src/secrets.rs",
         "src/source_canonicalization.rs",
+        "src/strategies/binary_oracle_edge_taker/config.rs",
         "src/strategies/binary_oracle_edge_taker/mod.rs",
         "src/strategies/binary_oracle_edge_taker/selection.rs",
         "src/strategies/mod.rs",

@@ -178,6 +178,46 @@ class LegacyDefaultFenceTests(unittest.TestCase):
             finally:
                 source_roots.REPO_ROOT = original_root
 
+    def test_source_root_helper_rejects_symlink_directory_inside_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "module"
+            module.mkdir()
+            target = root / "outside"
+            target.mkdir()
+            (target / "evil.rs").write_text("fn evil() {}\n", encoding="utf-8")
+            link = module / "linked_dir"
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+
+            original_root = source_roots.REPO_ROOT
+            source_roots.REPO_ROOT = root
+            try:
+                with self.assertRaisesRegex(ValueError, "source root contains a symlink"):
+                    source_roots.source_files("module")
+            finally:
+                source_roots.REPO_ROOT = original_root
+
+    def test_python_source_roots_match_rust_registry_relative_roots(self) -> None:
+        registry = (
+            source_roots.REPO_ROOT / "src/source_canonicalization.rs"
+        ).read_text(encoding="utf-8")
+        rust_roots = {
+            line.split('"')[1]
+            for line in registry.splitlines()
+            if line.strip().startswith("relative_root:")
+        }
+
+        self.assertEqual(
+            rust_roots,
+            {
+                source_roots.STRATEGY_SOURCE_ROOT,
+                source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,
+            },
+        )
+
     def test_source_root_helper_rejects_oversized_module_text_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

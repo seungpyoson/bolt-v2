@@ -270,7 +270,7 @@ mod tests {
         let expected: String = strategy_dir_files_in_canonical_order()
             .iter()
             .map(|path| {
-                let text = std::fs::read_to_string(path).unwrap();
+                let text = std::fs::read_to_string(path).unwrap().replace("\r\n", "\n");
                 text.split(TEST_MODULE_SPLIT_MARKER)
                     .next()
                     .unwrap()
@@ -369,12 +369,11 @@ mod tests {
         // self-`include_str!("binary_oracle_edge_taker.rs")`) is now RESOLVED by
         // A3: the single file became the directory `{mod.rs, selection.rs}`, so
         // that bare self-reference no longer exists. The strategy's in-module
-        // outcome-suffix guard now does `include_str!("mod.rs")` +
-        // `include_str!("selection.rs")` — submodule-FILE includes (sibling files
-        // within the strategy directory), which are NOT monolith-root paths and
-        // do not appear in the needle list below. This test therefore asserts NO
-        // monolith-root `include_str!` remains anywhere — nothing scattered
-        // re-creeps back, and the deferred self-reference is gone.
+        // outcome-suffix guard now uses `production_module_source_text`, so the
+        // source boundary stays layout-independent through the registry. This
+        // test therefore asserts NO monolith-root `include_str!` remains
+        // anywhere — nothing scattered re-creeps back, and the deferred
+        // self-reference is gone.
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let needles = [
             "include_str!(\"strategies/binary_oracle_edge_taker.rs\")",

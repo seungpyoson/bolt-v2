@@ -16979,7 +16979,7 @@ reason = '''Fixed framing/bound arithmetic constant in the canonical source walk
 path = '''src/source_canonicalization.rs'''
 kind = '''string'''
 literal = '''"/"'''
-context = '''Ok(relative_str.replace('\\', "/").into_bytes())'''
+context = '''Ok(components.join("/").into_bytes())'''
 classification = '''source_canonicalization_path_separator'''
 reason = '''Canonical forward-slash path separator normalizing relative paths for OS-independent framing/ordering; a fixed structural constant, not an operator runtime value.'''
 

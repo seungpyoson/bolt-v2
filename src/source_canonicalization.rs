@@ -15,7 +15,7 @@
 //! as `[dependencies]`. It must NOT import anything from the rest of the crate.
 
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
@@ -51,8 +51,10 @@ fn read_file_bounded(path: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
 }
 
 /// Recursively collect every `*.rs` file under `dir`, sorted lexicographically
-/// by relative-path raw UTF-8 bytes (locale/OS-independent), with `\` normalized
-/// to `/` in the relative path used for ordering and framing. Returns
+/// by relative-path raw UTF-8 bytes (locale/OS-independent), with path
+/// components joined by `/` in the relative path used for ordering and framing.
+/// Backslash bytes inside a component are rejected so Unix filenames like
+/// `a\b.rs` cannot collide with `a/b.rs`. Returns
 /// `(relative_path_bytes, absolute_path)` pairs in canonical order.
 fn collect_rs_files_sorted(dir: &Path) -> io::Result<Vec<(Vec<u8>, PathBuf)>> {
     let mut out: Vec<(Vec<u8>, PathBuf)> = Vec::new();
@@ -96,8 +98,9 @@ fn collect_rs_files_recursive(
     Ok(())
 }
 
-/// Compute the relative path of `path` under `root`, as raw UTF-8 bytes with
-/// `\` normalized to `/`. Errors if `path` is not under `root` or is not UTF-8.
+/// Compute the relative path of `path` under `root`, as UTF-8 path components
+/// joined by `/`. Errors if `path` is not under `root`, has non-UTF-8
+/// components, or contains a backslash byte in any component.
 fn relative_path_bytes(root: &Path, path: &Path) -> io::Result<Vec<u8>> {
     let relative = path.strip_prefix(root).map_err(|_| {
         io::Error::new(
@@ -109,16 +112,38 @@ fn relative_path_bytes(root: &Path, path: &Path) -> io::Result<Vec<u8>> {
             ),
         )
     })?;
-    let relative_str = relative.to_str().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "source relative path is not valid UTF-8: {}",
-                relative.display()
-            ),
-        )
-    })?;
-    Ok(relative_str.replace('\\', "/").into_bytes())
+    let mut components = Vec::new();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "source relative path has unsupported component: {}",
+                    relative.display()
+                ),
+            ));
+        };
+        let name = name.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "source relative path is not valid UTF-8: {}",
+                    relative.display()
+                ),
+            )
+        })?;
+        if name.contains('\\') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "source relative path component contains a backslash: {}",
+                    relative.display()
+                ),
+            ));
+        }
+        components.push(name);
+    }
+    Ok(components.join("/").into_bytes())
 }
 
 /// Canonical byte stream for a source `root`.
@@ -444,6 +469,20 @@ mod tests {
             expected.extend_from_slice(content);
         }
         assert_eq!(digest, sha256_hex_lower(&expected));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn directory_branch_rejects_backslash_path_component() {
+        let dir = temp_dir("backslash");
+        fs::write(dir.join("a\\b.rs"), b"same").unwrap();
+
+        let error = canonical_source_bytes(&dir, 1_000_000).unwrap_err();
+
+        assert!(
+            error.to_string().contains("backslash"),
+            "backslash path components must fail loudly, got: {error}"
+        );
     }
 
     #[test]

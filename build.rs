@@ -64,7 +64,7 @@ fn emit_git_head_rerun_paths(manifest_dir: &Path) {
 
 /// Re-emit the canonical bytes of every gated source root into
 /// `$OUT_DIR/<key>.canonical`, using the SAME walk/framing the runtime digest
-/// uses. The verifier embeds these via `include_str!(concat!(env!("OUT_DIR"),
+/// uses. The verifier embeds these via `include_bytes!(concat!(env!("OUT_DIR"),
 /// "/<key>.canonical"))` and hashes them at runtime — compile-time
 /// tamper-evidence preserved, layout-independent. Emits `rerun-if-changed` per
 /// root so a modify/add/remove (including nested subdirs after a split)

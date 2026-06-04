@@ -101,6 +101,7 @@ def test_real_scan_covers_provider_neutral_source_files() -> None:
         "src/lib.rs",
         "src/main.rs",
         "src/secrets.rs",
+        "src/strategies/binary_oracle_edge_taker/config.rs",
         "src/strategies/binary_oracle_edge_taker/mod.rs",
         "src/strategies/binary_oracle_edge_taker/selection.rs",
     ):

@@ -47,10 +47,10 @@ def source_files(relative_root: str) -> list[Path]:
             f"gated source root is neither a regular file nor a directory: {root}"
         )
     files = []
-    for path in root.rglob("*.rs"):
+    for path in root.rglob("*"):
         if path.is_symlink():
             raise ValueError(f"source root contains a symlink: {path}")
-        if path.is_file():
+        if path.is_file() and path.suffix == ".rs":
             files.append(path)
     files.sort(key=lambda path: path.relative_to(root).as_posix().encode("utf-8"))
     return files

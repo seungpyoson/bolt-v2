@@ -659,21 +659,87 @@ fn zip64_sizes(
     bail!("ZIP64 extra field (id 0x0001) not found despite a 0xFFFFFFFF size sentinel")
 }
 
-/// Extract the single CSV member of an OKX `trades`/`candlesticks` ZIP archive
-/// and return its decompressed UTF-8 text.
+/// A streaming reader over the single member of an OKX/Binance ZIP archive.
+///
+/// Inflates DEFLATE (or passes through STORED) on the fly while accumulating the
+/// CRC-32 and inflated byte count, so a multi-GiB member is consumed in bounded
+/// chunks (the Binance aggTrades / markPriceKlines bulk paths stream through
+/// this) and a corrupt or truncated member fails loud at end-of-stream — without
+/// ever holding the whole inflated body in memory. [`extract_csv_from_zip`]
+/// reads it whole for the small-object families.
+///
+/// [`verify`](ZipMemberReader::verify) MUST be called once the stream is fully
+/// drained; it checks the inflated length and CRC-32 against the archive's
+/// declared values.
+pub struct ZipMemberReader<'a> {
+    source: ZipMemberSource<'a>,
+    hasher: Crc,
+    inflated_len: u64,
+    declared_uncompressed_len: u64,
+    declared_crc: u32,
+}
+
+enum ZipMemberSource<'a> {
+    Deflate(DeflateDecoder<&'a [u8]>),
+    Stored(&'a [u8]),
+}
+
+impl ZipMemberReader<'_> {
+    /// The member's declared uncompressed length, for sizing a whole-buffer read
+    /// (`Vec::with_capacity`).
+    pub fn declared_len(&self) -> usize {
+        usize::try_from(self.declared_uncompressed_len).unwrap_or(usize::MAX)
+    }
+
+    /// Verify the fully drained member against its declared length and CRC-32.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the inflated byte count or CRC-32 does not match the
+    /// archive's declared values (a truncated or corrupt member).
+    pub fn verify(&self) -> Result<()> {
+        ensure!(
+            self.inflated_len == self.declared_uncompressed_len,
+            "ZIP member inflated to {} bytes, header declared {}",
+            self.inflated_len,
+            self.declared_uncompressed_len
+        );
+        let computed = self.hasher.sum();
+        ensure!(
+            computed == self.declared_crc,
+            "ZIP member CRC-32 mismatch (computed {computed:#010x}, declared {:#010x})",
+            self.declared_crc
+        );
+        Ok(())
+    }
+}
+
+impl Read for ZipMemberReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = match &mut self.source {
+            ZipMemberSource::Deflate(decoder) => decoder.read(buf)?,
+            ZipMemberSource::Stored(rest) => rest.read(buf)?,
+        };
+        self.hasher.update(&buf[..read]);
+        self.inflated_len += read as u64;
+        Ok(read)
+    }
+}
+
+/// Open a streaming [`ZipMemberReader`] over the single member of a ZIP archive.
 ///
 /// The archive is a standard ZIP carrying exactly one regular file compressed
 /// with DEFLATE (or STORED). The local file header is parsed directly; when the
 /// header advertises streamed sizes (general-purpose flag bit 3), the member's
-/// sizes and CRC are recovered from the central directory. The inflated bytes
-/// are verified against the recorded CRC-32 so a corrupt object fails loud.
+/// sizes and CRC are recovered from the central directory; 64-bit sizes are read
+/// from the ZIP64 extra field. The returned reader is positioned at the member's
+/// compressed data and verifies CRC-32 + length on [`ZipMemberReader::verify`].
 ///
 /// # Errors
 ///
-/// Returns an error if the signature is wrong, the compression method is
-/// unsupported, the member extends past the archive, inflation fails, the CRC
-/// mismatches, or the bytes are not valid UTF-8.
-pub fn extract_csv_from_zip(zip_bytes: &[u8]) -> Result<String> {
+/// Returns an error if the signature is wrong, the member extends past the
+/// archive, or the compression method is unsupported.
+pub fn zip_member_reader(zip_bytes: &[u8]) -> Result<ZipMemberReader<'_>> {
     ensure!(
         zip_bytes.len() >= ZIP_LOCAL_HEADER_LEN,
         "ZIP archive is shorter than a local file header"
@@ -740,32 +806,40 @@ pub fn extract_csv_from_zip(zip_bytes: &[u8]) -> Result<String> {
     );
     let compressed = &zip_bytes[data_start..data_end];
 
-    let mut inflated = Vec::with_capacity(uncompressed_size);
-    match method {
-        ZIP_METHOD_DEFLATE => {
-            DeflateDecoder::new(compressed)
-                .read_to_end(&mut inflated)
-                .context("inflate ZIP member")?;
-        }
-        ZIP_METHOD_STORED => {
-            inflated.extend_from_slice(compressed);
-        }
+    let source = match method {
+        ZIP_METHOD_DEFLATE => ZipMemberSource::Deflate(DeflateDecoder::new(compressed)),
+        ZIP_METHOD_STORED => ZipMemberSource::Stored(compressed),
         other => bail!("unsupported ZIP compression method {other}"),
-    }
+    };
 
-    ensure!(
-        inflated.len() == uncompressed_size,
-        "ZIP member inflated to {} bytes, header declared {uncompressed_size}",
-        inflated.len()
-    );
-    let mut hasher = Crc::new();
-    hasher.update(&inflated);
-    ensure!(
-        hasher.sum() == crc,
-        "ZIP member CRC-32 mismatch (computed {:#010x}, declared {crc:#010x})",
-        hasher.sum()
-    );
+    Ok(ZipMemberReader {
+        source,
+        hasher: Crc::new(),
+        inflated_len: 0,
+        declared_uncompressed_len: uncompressed_size as u64,
+        declared_crc: crc,
+    })
+}
 
+/// Extract the single CSV member of an OKX `trades`/`candlesticks` ZIP archive
+/// and return its decompressed UTF-8 text.
+///
+/// Reads the whole member through [`zip_member_reader`], verifying CRC-32 and
+/// length — the small-object path. Large members (Binance) stream through the
+/// reader directly instead of materialising the whole text.
+///
+/// # Errors
+///
+/// Returns an error if the archive is malformed, the member extends past the
+/// archive, inflation fails, the CRC or length mismatches, or the bytes are not
+/// valid UTF-8.
+pub fn extract_csv_from_zip(zip_bytes: &[u8]) -> Result<String> {
+    let mut reader = zip_member_reader(zip_bytes)?;
+    let mut inflated = Vec::with_capacity(reader.declared_len());
+    reader
+        .read_to_end(&mut inflated)
+        .context("inflate ZIP member")?;
+    reader.verify()?;
     String::from_utf8(inflated).context("ZIP CSV member is not valid UTF-8")
 }
 

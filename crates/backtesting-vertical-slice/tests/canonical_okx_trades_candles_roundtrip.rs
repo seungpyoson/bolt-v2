@@ -13,6 +13,7 @@
 //! without touching S3.
 
 use std::fs;
+use std::io::Read;
 
 use backtesting_vertical_slice::canonical_okx::{
     NT_DATA_TYPE_BAR, NT_DATA_TYPE_TRADE_TICK, OkxBarSpec, OkxInstrumentSpec,
@@ -22,7 +23,7 @@ use backtesting_vertical_slice::canonical_okx::{
     okx_candlesticks_to_bars, okx_trade_instruments, okx_trades_spec_from_rows,
     okx_trades_to_trade_ticks, parse_okx_candlesticks, parse_okx_trades,
     project_okx_candlesticks_archive_to_catalog, project_okx_trades_archive_to_catalog,
-    read_back_bars, read_back_trade_ticks,
+    read_back_bars, read_back_trade_ticks, zip_member_reader,
 };
 use nautilus_model::enums::{AggregationSource, BarAggregation, PriceType};
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
@@ -454,5 +455,53 @@ fn okx_object_with_only_one_distinct_open_across_all_instruments_still_fails_lou
         err.to_string()
             .contains("fewer than two distinct bar-open times"),
         "{err}"
+    );
+}
+
+// ===========================================================================
+// Streaming ZIP-member reader (foundation for the binance OOM fix: a multi-GiB
+// member is inflated + converted in bounded chunks instead of materialized
+// whole). The whole-buffer extract_csv_from_zip is now a thin reader of this,
+// so these guard that streaming yields identical bytes and still fails loud on
+// a corrupt/truncated member.
+// ===========================================================================
+
+#[test]
+fn zip_member_reader_streams_member_and_verifies() {
+    let zip = read(TRADES_FIXTURE);
+    let expected = extract_csv_from_zip(&zip).expect("whole-buffer extract");
+
+    let mut reader = zip_member_reader(&zip).expect("open member reader");
+    let mut streamed = String::new();
+    reader.read_to_string(&mut streamed).expect("stream member");
+    reader
+        .verify()
+        .expect("CRC + length verify after full drain");
+
+    assert_eq!(
+        streamed, expected,
+        "streamed member bytes must match the whole-buffer extract"
+    );
+}
+
+#[test]
+fn zip_member_reader_fails_loud_on_truncated_member() {
+    // Cutting the archive to a quarter removes the bulk of the member's
+    // compressed data, so it must fail loud — either the member extends past the
+    // truncated archive (refused at open) or the drained stream fails CRC/length
+    // verify. Never a silent partial success.
+    let zip = read(TRADES_FIXTURE);
+    let truncated = &zip[..zip.len() / 4];
+
+    let verified_ok = match zip_member_reader(truncated) {
+        Ok(mut reader) => {
+            let mut sink = Vec::new();
+            reader.read_to_end(&mut sink).is_ok() && reader.verify().is_ok()
+        }
+        Err(_) => false,
+    };
+    assert!(
+        !verified_ok,
+        "a truncated member must not read-and-verify as success"
     );
 }

@@ -154,7 +154,7 @@ Current contract:
 
 - `default_max_notional_per_order` is explicit
 - every `LiveDataEngineConfig` field is explicit under `[nautilus.data_engine]` in TOML and mapped into NautilusTrader live data config
-- every `LiveRiskEngineConfig` field is explicit under `[risk]` in TOML and mapped into NautilusTrader live risk config
+- every configurable `LiveRiskEngineConfig` field is explicit under `[risk]` in TOML and mapped into NautilusTrader live risk config; the `bypass` field is not configurable and is pinned to `false` in code (see the risk-engine bypass invariant below)
 - every `LiveExecEngineConfig` field is explicit under `[nautilus.exec_engine]` in TOML and mapped into NautilusTrader live exec config
 - `[logging]` owns `stdout_level` and `fileout_level`; bolt-v3 owns the credential-log module filters and explicitly fixes the remaining pinned `LoggerConfig` fields to current accepted defaults or disabled settings before `LiveNodeBuilder::from_config`
 - unsupported or intentionally unowned top-level `LiveNodeConfig` surfaces (`instance_id`, `cache`, `msgbus`, `portfolio`, `emulator`, `streaming`, `loop_debug`, `data_clients`, and `exec_clients`) are set explicitly to `None`, `false`, or empty maps before `LiveNodeBuilder::from_config`
@@ -169,7 +169,7 @@ Current implementation behavior:
 
 - `default_max_notional_per_order` is enforced by Bolt-v3 config validation against each strategy's `parameters.order_notional_target`
 - Bolt-v3 maps the complete live data-engine block into NautilusTrader `LiveDataEngineConfig`
-- Bolt-v3 maps the complete live risk-engine block into NautilusTrader `LiveRiskEngineConfig`
+- Bolt-v3 maps the complete configurable live risk-engine block into NautilusTrader `LiveRiskEngineConfig` and pins the non-configurable `bypass` invariant to `false` in code (see below)
 - Bolt-v3 maps the complete live exec-engine block into NautilusTrader `LiveExecEngineConfig`
 - Bolt-v3 maps the complete pinned `LoggerConfig` field set without relying on `LoggerConfig::default()` inheritance; `file_config` stays `None` and `clear_log_file` stays `false` because the pinned Rust live runtime rejects any other value at build-time validation
 - Bolt-v3 maps the remaining top-level `LiveNodeConfig` residuals explicitly and does not rely on top-level `LiveNodeConfig::default()` inheritance

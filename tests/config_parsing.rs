@@ -5673,20 +5673,15 @@ fn shipped_root_configs_do_not_expose_nt_risk_bypass() {
 fn rejects_nt_risk_values_unsupported_by_rust_live_runtime() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    // Anchor on the unique `max_order_submit_rate` assignment instead of the
-    // `[risk.nautilus]\n` header so the search pattern never matches a fixture
-    // newline (avoids CRLF-normalization fragility). The marker is injected above
-    // the rate assignment to scope the subsequent value flip to the
-    // `[risk.nautilus]` block, then stripped — yielding a byte-identical mutation.
+    // The `debug = false` / `graceful_shutdown_on_error = false` / `qsize = 100000`
+    // triple appears verbatim in both `[nautilus.data_engine]` and `[risk.nautilus]`,
+    // so a bare replace of that triple would mutate both blocks. Anchor the flip on
+    // the preceding `max_notional_per_order = {}` line, which exists only in
+    // `[risk.nautilus]`, so the mutation is scoped to the risk block alone.
     let mutated = replace_in_fixture_root(
-        "max_order_submit_rate = \"40/00:01:00\"",
-        "graceful_shutdown_on_error_marker_anchor\nmax_order_submit_rate = \"40/00:01:00\"",
-    )
-    .replace(
-        "debug = false\ngraceful_shutdown_on_error = false\nqsize = 100000",
-        "debug = false\ngraceful_shutdown_on_error = true\nqsize = 1000",
-    )
-    .replace("\ngraceful_shutdown_on_error_marker_anchor", "");
+        "max_notional_per_order = {}\ndebug = false\ngraceful_shutdown_on_error = false\nqsize = 100000",
+        "max_notional_per_order = {}\ndebug = false\ngraceful_shutdown_on_error = true\nqsize = 1000",
+    );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("unsupported NT risk values fixture should parse");
     let messages = validate_root_only(&root);

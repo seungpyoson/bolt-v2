@@ -493,7 +493,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 
 ### `[risk]`
 
-This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTrader live risk-engine fields. All `nt_*` fields are required in TOML and mapped into `LiveRiskEngineConfig`; `default_max_notional_per_order` is the Bolt-v3-owned strategy-sizing cap. Fields under `[nautilus]` do not use the prefix because the section name already carries the NT context.
+This section owns both Bolt-v3 strategy-sizing limits and the configurable pinned NautilusTrader live risk-engine fields. All configurable `nt_*` fields are required in TOML and mapped into `LiveRiskEngineConfig`, except `bypass`, which is not a config field and is pinned to `false` directly in code (see below); `default_max_notional_per_order` is the Bolt-v3-owned strategy-sizing cap. Fields under `[nautilus]` do not use the prefix because the section name already carries the NT context.
 
 #### `default_max_notional_per_order`
 

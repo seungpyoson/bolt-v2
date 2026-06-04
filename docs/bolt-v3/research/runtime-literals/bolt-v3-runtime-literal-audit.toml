@@ -468,7 +468,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the taker StrategyConfig field name populated from the configured signal_data data_client_id role."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_venue"'''
 context = '''"reference_venue"'''
@@ -476,7 +476,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the existing taker StrategyConfig field name for the configured reference data client id."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_venue"'''
 context = '''Self::validate_optional_string_field(table, field_prefix, "reference_venue", errors);'''
@@ -484,7 +484,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This validates the existing taker StrategyConfig field name for the configured reference data client id."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_venue"'''
 context = '''if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {'''
@@ -492,7 +492,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This enforces paired configured reference data fields in the existing taker config schema."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_venue"'''
 context = '''let missing = if table.contains_key("reference_venue") {'''
@@ -500,7 +500,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This builds a diagnostic for the paired configured reference data fields in the existing taker config schema."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_venue"'''
 context = '''| "reference_venue"'''
@@ -508,7 +508,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This whitelists the existing taker StrategyConfig field name while rejecting unknown runtime config fields."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_instrument_id"'''
 context = '''"reference_instrument_id"'''
@@ -516,7 +516,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the existing taker StrategyConfig field name for the configured reference instrument id."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_instrument_id"'''
 context = '''"reference_instrument_id",'''
@@ -524,7 +524,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This is the existing taker StrategyConfig field name for the configured reference instrument id."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_instrument_id"'''
 context = '''if table.contains_key("reference_venue") != table.contains_key("reference_instrument_id") {'''
@@ -532,7 +532,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This enforces paired configured reference data fields in the existing taker config schema."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"reference_instrument_id"'''
 context = '''| "reference_instrument_id"'''
@@ -540,7 +540,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This whitelists the existing taker StrategyConfig field name while rejecting unknown runtime config fields."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"missing_reference_data_pair"'''
 context = '''"missing_reference_data_pair",'''
@@ -548,7 +548,7 @@ classification = "strategy_runtime_validation_code"
 reason = "This validation code labels a missing paired reference data field; it is not a runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"signal_venue"'''
 context = '''Self::validate_optional_string_field(table, field_prefix, "signal_venue", errors);'''
@@ -556,7 +556,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This validates the taker StrategyConfig field name for the configured signal data client id."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"signal_venue"'''
 context = '''table.contains_key("signal_venue"),'''
@@ -564,7 +564,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This enforces paired configured signal data fields in the taker config schema."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"signal_venue"'''
 context = '''| "signal_venue"'''
@@ -572,7 +572,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This whitelists the taker StrategyConfig signal data client field name while rejecting unknown runtime config fields."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"signal_instrument_id"'''
 context = '''Self::validate_optional_string_field(table, field_prefix, "signal_instrument_id", errors);'''
@@ -580,7 +580,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This validates the taker StrategyConfig field name for the configured signal instrument id."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"signal_instrument_id"'''
 context = '''table.contains_key("signal_instrument_id"),'''
@@ -588,7 +588,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This enforces paired configured signal data fields in the taker config schema."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"signal_instrument_id"'''
 context = '''| "signal_instrument_id"'''
@@ -596,7 +596,7 @@ classification = "strategy_runtime_schema_field"
 reason = "This whitelists the taker StrategyConfig signal instrument field name while rejecting unknown runtime config fields."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"missing_signal_data_pair"'''
 context = '''"missing_signal_data_pair",'''
@@ -4384,7 +4384,7 @@ classification = "strategy_state_invariant"
 reason = "This is a named initial counter invariant for strategy state, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "number"
 literal = '''0'''
 context = '''config.trade_flow_max_samples > 0,'''
@@ -4880,7 +4880,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable config field label used in validation diagnostics, not an operator runtime value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"expire_time_unix_nanos"'''
 context = '''const ORDER_EXPIRE_TIME_UNIX_NANOS_FIELD: &str = "expire_time_unix_nanos";'''
@@ -4888,7 +4888,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable NT order expiry field label used in validation diagnostics; the timestamp value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"trigger_price"'''
 context = '''const ORDER_TRIGGER_PRICE_FIELD: &str = "trigger_price";'''
@@ -4896,7 +4896,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable NT stop-order trigger price field label used in validation diagnostics; the price value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"activation_price"'''
 context = '''const ORDER_ACTIVATION_PRICE_FIELD: &str = "activation_price";'''
@@ -4904,7 +4904,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable NT trailing-stop activation price field label used in validation diagnostics; the price value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"trigger_type"'''
 context = '''const ORDER_TRIGGER_TYPE_FIELD: &str = "trigger_type";'''
@@ -4912,7 +4912,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable NT triggered-order trigger type field label used in validation diagnostics; the trigger type value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"trigger_instrument_id"'''
 context = '''const ORDER_TRIGGER_INSTRUMENT_ID_FIELD: &str = "trigger_instrument_id";'''
@@ -4920,7 +4920,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable NT triggered-order trigger instrument field label used in validation diagnostics; the instrument id value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"trailing_offset"'''
 context = '''const ORDER_TRAILING_OFFSET_FIELD: &str = "trailing_offset";'''
@@ -4928,7 +4928,7 @@ classification = "strategy_config_field_name"
 reason = "This is the stable NT trailing-stop offset field label used in validation diagnostics; the offset value is TOML-owned."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker/mod.rs"
+path = "src/strategies/binary_oracle_edge_taker/config.rs"
 kind = "string"
 literal = '''"trailing_offset_type"'''
 context = '''const ORDER_TRAILING_OFFSET_TYPE_FIELD: &str = "trailing_offset_type";'''

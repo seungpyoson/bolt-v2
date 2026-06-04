@@ -103,15 +103,17 @@ mod tests {
     // identity digest captured live from `origin/main` raw bytes
     // (`git show origin/main:<path> | shasum -a 256`); that root did not move.
     //
-    // GOLDEN_STRATEGY_DIGEST was RE-DERIVED by slice A3: the strategy source
-    // genuinely moved from a single file to the directory `{mod.rs, selection.rs}`,
-    // so the canonical stream is now the framed DIRECTORY concatenation rather
-    // than the verbatim file. This is a legitimate source move, not a fixture
-    // regeneration — the value is re-derived from the live build-emitted
-    // `OUT_DIR/strategy.canonical` and independently confirmed
+    // GOLDEN_STRATEGY_DIGEST was RE-DERIVED again by slice A8 (first by A3): the
+    // strategy source is a directory whose `*.rs` membership grows as each slice
+    // extracts a concern. A3 moved it from a single file to `{mod.rs, selection.rs}`;
+    // A8 adds `config.rs`, so the framed DIRECTORY concatenation is now over
+    // `{config.rs, mod.rs, selection.rs}` (sorted by relative path). This is a
+    // legitimate behavior-preserving source move, not a fixture regeneration — the
+    // value is re-derived from the live build-emitted `OUT_DIR/strategy.canonical`
+    // and independently confirmed by hand-framing the live source files
     // (`shasum -a256 OUT_DIR/strategy.canonical` == this constant).
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "174ebf2b65941e0ab3ec06be565de43780e40fedcda87c410615ca7b1b78aaff";
+        "f1e77dcc5728182cde4a4404cf6c1b8d7a9016224f2709156477b0d6dc683401";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 
@@ -137,13 +139,38 @@ mod tests {
         );
     }
 
-    /// The two `*.rs` files the strategy directory root resolves to after slice
-    /// A3, in canonical (relative-path-byte) order: `mod.rs` sorts before
-    /// `selection.rs`. The digest/text accessors walk the directory in exactly
-    /// this order.
+    /// The `*.rs` files the strategy directory root resolves to, in canonical
+    /// (relative-path-byte) order. Enumerated DYNAMICALLY by walking the
+    /// directory exactly like the production `canonical_source_bytes`, so the
+    /// invariant tracks the module as each slice adds a file (A3 `selection.rs`,
+    /// A8 `config.rs`, …) — no slice should ever edit this list. Current order:
+    /// `config.rs` < `mod.rs` < `selection.rs` (by relative-path bytes).
     fn strategy_dir_files_in_canonical_order() -> Vec<std::path::PathBuf> {
         let root = registry_root_path(STRATEGY_KEY);
-        vec![root.join("mod.rs"), root.join("selection.rs")]
+        fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    collect(&path, out);
+                } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        collect(&root, &mut files);
+        files.sort_by(|a, b| {
+            let rel = |p: &std::path::Path| {
+                p.strip_prefix(&root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .replace('\\', "/")
+                    .into_bytes()
+            };
+            rel(a).cmp(&rel(b))
+        });
+        files
     }
 
     #[test]

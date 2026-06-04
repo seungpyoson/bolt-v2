@@ -1185,7 +1185,8 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
         loaded.config_bundle_checksum
     );
     assert_eq!(manifest.aws_region, loaded.root.aws.region);
-    assert_eq!(manifest.entries.len(), 4);
+    // 4 polymarket_main secret paths + 2 chainlink_strike secret paths.
+    assert_eq!(manifest.entries.len(), 6);
 
     let manifest_json =
         serde_json::to_string(&manifest).expect("manifest should serialize for redaction check");
@@ -1194,6 +1195,8 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
         "/bolt/polymarket_main/api_key",
         "/bolt/polymarket_main/api_secret",
         "/bolt/polymarket_main/passphrase",
+        "/bolt/testnet/chainlink/api-key",
+        "/bolt/testnet/chainlink/api-secret",
     ] {
         assert!(
             !manifest_json.contains(raw_path),
@@ -1233,6 +1236,18 @@ fn redacted_ssm_manifest_omits_raw_paths_and_dictionary_hashes() {
         "polymarket_main",
         "POLYMARKET",
         "passphrase_ssm_path",
+    );
+    assert_manifest_entry(
+        &manifest,
+        "chainlink_strike",
+        "CHAINLINK_DATA_STREAMS",
+        "api_key_ssm_parameter",
+    );
+    assert_manifest_entry(
+        &manifest,
+        "chainlink_strike",
+        "CHAINLINK_DATA_STREAMS",
+        "api_secret_ssm_parameter",
     );
 }
 

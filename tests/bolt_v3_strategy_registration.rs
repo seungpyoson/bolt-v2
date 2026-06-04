@@ -1479,6 +1479,126 @@ fn binary_oracle_runtime_mapping_allows_signal_data_with_decision_reference() {
 }
 
 #[test]
+fn binary_oracle_runtime_mapping_emits_resolution_data_when_present() {
+    // With a `[resolution_data]` block bound to the shipped `chainlink_strike`
+    // client, the archetype emits `resolution_client_id` + `resolution_instrument_id`
+    // into the runtime config, and the strategy builder validates them.
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    loaded.strategies[strategy_index].config.resolution_data = Some(ReferenceDataBlock {
+        data_client_id: ClientId::from("chainlink_strike"),
+        instrument_id: InstrumentId::from("BTC-USD.CHAINLINK"),
+    });
+
+    let strategy = &loaded.strategies[strategy_index];
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect("binary oracle strategy with resolution_data should map into runtime config");
+
+    let mut errors: Vec<ValidationError> = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(
+        &raw,
+        "strategies.configured_updown_main.parameters.runtime",
+        &mut errors,
+    );
+    assert!(
+        errors.is_empty(),
+        "runtime config with resolution_data should validate: {errors:?}"
+    );
+
+    let table = raw
+        .as_table()
+        .expect("mapped raw taker config should be a table");
+    assert_eq!(
+        table
+            .get("resolution_client_id")
+            .and_then(|value| value.as_str()),
+        Some("chainlink_strike")
+    );
+    assert_eq!(
+        table
+            .get("resolution_instrument_id")
+            .and_then(|value| value.as_str()),
+        Some("BTC-USD.CHAINLINK")
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_mapping_omits_resolution_data_when_absent() {
+    // The shipped fixture strategy declares no `[resolution_data]`, so the
+    // archetype emits neither resolution key and the strategy still validates.
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy = loaded
+        .strategies
+        .iter()
+        .find(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    assert!(
+        strategy.config.resolution_data.is_none(),
+        "fixture strategy should not declare resolution_data"
+    );
+
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect("binary oracle strategy without resolution_data should map into runtime config");
+
+    let mut errors: Vec<ValidationError> = Vec::new();
+    BinaryOracleEdgeTakerBuilder::validate_config(
+        &raw,
+        "strategies.configured_updown_main.parameters.runtime",
+        &mut errors,
+    );
+    assert!(
+        errors.is_empty(),
+        "runtime config without resolution_data should validate: {errors:?}"
+    );
+
+    let table = raw
+        .as_table()
+        .expect("mapped raw taker config should be a table");
+    assert!(
+        !table.contains_key("resolution_client_id"),
+        "resolution_client_id must be absent when [resolution_data] is omitted"
+    );
+    assert!(
+        !table.contains_key("resolution_instrument_id"),
+        "resolution_instrument_id must be absent when [resolution_data] is omitted"
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_mapping_rejects_resolution_data_with_unknown_client() {
+    // A `[resolution_data]` block whose data_client_id is not a loaded client
+    // fails closed during runtime mapping (mirrors the signal_data existence check).
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    loaded.strategies[strategy_index].config.resolution_data = Some(ReferenceDataBlock {
+        data_client_id: ClientId::from("not_a_configured_client"),
+        instrument_id: InstrumentId::from("BTC-USD.CHAINLINK"),
+    });
+
+    let strategy = &loaded.strategies[strategy_index];
+    let error = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect_err("resolution_data with an unknown data client must fail closed");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("resolution_data")
+            && rendered.contains("not_a_configured_client")
+            && rendered.contains("not present in loaded clients"),
+        "unknown resolution data client should fail with a clear message, got: {rendered}"
+    );
+}
+
+#[test]
 fn binary_oracle_runtime_mapping_uses_market_family_target_projection() {
     let source = include_str!("../src/bolt_v3_archetypes/binary_oracle_edge_taker.rs");
 

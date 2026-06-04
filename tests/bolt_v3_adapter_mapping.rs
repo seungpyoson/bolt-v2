@@ -23,6 +23,7 @@ use bolt_v2::{
     bolt_v3_providers::{
         ProviderRuntimeApprovals,
         binance::ResolvedBoltV3BinanceSecrets,
+        chainlink::ResolvedBoltV3ChainlinkSecrets,
         hyperliquid::{HyperliquidProductSurface, ResolvedBoltV3HyperliquidSecrets},
         polymarket::{self, ResolvedBoltV3PolymarketSecrets},
     },
@@ -73,6 +74,13 @@ fn fixture_hyperliquid_secrets() -> ResolvedBoltV3HyperliquidSecrets {
     }
 }
 
+fn fixture_chainlink_secrets() -> ResolvedBoltV3ChainlinkSecrets {
+    ResolvedBoltV3ChainlinkSecrets {
+        api_key: zeroize::Zeroizing::new("regression-chainlink-api-key".to_string()),
+        api_secret: zeroize::Zeroizing::new("regression-chainlink-api-secret".to_string()),
+    }
+}
+
 fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     let mut clients: BTreeMap<String, ResolvedBoltV3ClientSecrets> = BTreeMap::new();
     clients.insert(
@@ -82,6 +90,10 @@ fn fixture_resolved_secrets() -> ResolvedBoltV3Secrets {
     clients.insert(
         "binance_reference".to_string(),
         Arc::new(fixture_binance_secrets()),
+    );
+    clients.insert(
+        "chainlink_strike".to_string(),
+        Arc::new(fixture_chainlink_secrets()),
     );
     ResolvedBoltV3Secrets { clients }
 }

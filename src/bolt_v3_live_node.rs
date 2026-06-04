@@ -2242,6 +2242,9 @@ fn trade_transport_client_keys(loaded: &LoadedBoltV3Config) -> BTreeSet<String> 
         for signal in strategy.config.signal_data.values() {
             client_keys.insert(signal.data_client_id.to_string());
         }
+        if let Some(resolution) = strategy.config.resolution_data.as_ref() {
+            client_keys.insert(resolution.data_client_id.to_string());
+        }
     }
     if let Some(proof_policy) = loaded
         .root
@@ -5577,7 +5580,8 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
     fn no_submit_adapter_mapping_preserves_strategy_derived_market_filters() {
         use crate::{
             bolt_v3_providers::{
-                binance::ResolvedBoltV3BinanceSecrets, polymarket::ResolvedBoltV3PolymarketSecrets,
+                binance::ResolvedBoltV3BinanceSecrets, chainlink::ResolvedBoltV3ChainlinkSecrets,
+                polymarket::ResolvedBoltV3PolymarketSecrets,
             },
             bolt_v3_secrets::{ResolvedBoltV3ClientSecrets, ResolvedBoltV3Secrets},
         };
@@ -5603,6 +5607,13 @@ account_address_ssm_path = "/bolt/hyperliquid/master_api_wallet/account_address"
             Arc::new(ResolvedBoltV3BinanceSecrets {
                 api_key: zeroize::Zeroizing::new("fixture-binance-api-key".to_string()),
                 api_secret: zeroize::Zeroizing::new("fixture-binance-api-secret".to_string()),
+            }),
+        );
+        clients.insert(
+            "chainlink_strike".to_string(),
+            Arc::new(ResolvedBoltV3ChainlinkSecrets {
+                api_key: zeroize::Zeroizing::new("fixture-chainlink-api-key".to_string()),
+                api_secret: zeroize::Zeroizing::new("fixture-chainlink-api-secret".to_string()),
             }),
         );
         let resolved = ResolvedBoltV3Secrets { clients };

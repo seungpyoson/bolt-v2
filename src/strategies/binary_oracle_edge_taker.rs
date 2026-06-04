@@ -5925,6 +5925,8 @@ impl BinaryOracleEdgeTakerBuilder {
                     | "reference_instrument_id"
                     | "signal_venue"
                     | "signal_instrument_id"
+                    | "resolution_client_id"
+                    | "resolution_instrument_id"
                     | binary_oracle_edge_taker_config_fields!(match_config_field_names)
             ) {
                 Self::push_unknown_field(errors, format!("{field_prefix}.{key}"), key);
@@ -5975,6 +5977,31 @@ impl BinaryOracleEdgeTakerBuilder {
                 "missing_signal_data_pair",
                 BinaryOracleEdgeTakerFieldType::String,
             ),
+        }
+        Self::validate_optional_string_field(table, field_prefix, "resolution_client_id", errors);
+        Self::validate_optional_string_field(
+            table,
+            field_prefix,
+            "resolution_instrument_id",
+            errors,
+        );
+        // resolution_data is optional, but the live-strike pair is all-or-nothing:
+        // both `resolution_client_id` and `resolution_instrument_id` must be
+        // present together or both absent.
+        if table.contains_key("resolution_client_id")
+            != table.contains_key("resolution_instrument_id")
+        {
+            let missing = if table.contains_key("resolution_client_id") {
+                "resolution_instrument_id"
+            } else {
+                "resolution_client_id"
+            };
+            Self::push_missing(
+                errors,
+                format!("{field_prefix}.{missing}"),
+                "missing_resolution_data_pair",
+                BinaryOracleEdgeTakerFieldType::String,
+            );
         }
         Self::validate_order_table(
             table,

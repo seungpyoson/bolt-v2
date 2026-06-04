@@ -1305,6 +1305,8 @@ fn bolt_v3_cli_collects_clob_v2_collateral_accounting_source_from_ssm_backed_bal
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
+        ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
@@ -1708,6 +1710,8 @@ fn bolt_v3_cli_collects_venue_account_state_source_from_configured_account_queri
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
+        ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
@@ -2032,6 +2036,8 @@ fn run_venue_account_state_source_fixture_with_responses(
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
+        ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
@@ -2114,6 +2120,8 @@ fn bolt_v3_cli_collects_funding_margin_source_from_ssm_backed_balance_allowance(
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
+        ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
@@ -2266,6 +2274,8 @@ fn bolt_v3_cli_syncs_clob_v2_balance_allowance_cache_from_configured_account() {
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
+        ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
@@ -2517,6 +2527,8 @@ fn run_clob_v2_collateral_accounting_source_fixture(
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
+        ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(
@@ -2583,6 +2595,8 @@ fn run_funding_margin_source_fixture(
         ("/bolt/polymarket_main/api_key", "poly-api-key"),
         ("/bolt/polymarket_main/api_secret", "YWJj"),
         ("/bolt/polymarket_main/passphrase", "poly-passphrase"),
+        ("/bolt/testnet/chainlink/api-key", "chainlink-api-key"),
+        ("/bolt/testnet/chainlink/api-secret", "chainlink-api-secret"),
     ]));
     let config_path = write_bolt_v3_fixture_root(|root| {
         format!(

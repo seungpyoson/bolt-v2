@@ -471,6 +471,13 @@ pub struct BoltV3StrategyConfig {
     pub target: toml::Value,
     pub reference_data: BTreeMap<String, ReferenceDataBlock>,
     pub signal_data: BTreeMap<String, ReferenceDataBlock>,
+    /// Optional live resolution-strike (price-to-beat) data source. Mirrors the
+    /// `[reference_data]` block shape (`data_client_id` + `instrument_id`) but is
+    /// a single block rather than a role-keyed map, matching the strategy's
+    /// singular `resolution_client_id` / `resolution_instrument_id` runtime
+    /// fields. When absent, the live strike simply does not subscribe.
+    #[serde(default)]
+    pub resolution_data: Option<ReferenceDataBlock>,
     pub parameters: toml::Value,
 }
 

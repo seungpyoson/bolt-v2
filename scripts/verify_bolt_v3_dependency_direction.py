@@ -435,7 +435,8 @@ def resolved_strategy_path(segments: list[str], module_parts: list[str]) -> str 
 def resolves_to_crate_root(segments: list[str], module_parts: list[str]) -> bool:
     """Return True when `segments` names the crate root itself."""
 
-    return resolve_to_absolute(segments, module_parts) == []
+    cleaned = [seg for seg in segments if seg and seg != "self"]
+    return resolve_to_absolute(cleaned, module_parts) == []
 
 
 # --------------------------------------------------------------------------- #

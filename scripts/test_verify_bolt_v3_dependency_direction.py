@@ -356,16 +356,35 @@ def test_use_crate_root_alias_rejected_in_shared_module() -> None:
             raise AssertionError(f"expected crate-root alias diagnostic, got: {err!r}")
 
 
-def test_use_super_crate_root_alias_rejected_in_inline_module() -> None:
+def test_use_crate_group_self_alias_rejected_in_shared_module() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         write_file(
             root,
             "src/bolt_v3_foo.rs",
-            "mod tests {\n"
-            "    use super::super as renamed_crate;\n"
-            "    use renamed_crate::strategies::registry::FeeProvider;\n"
-            "}\n",
+            "use crate::{self as renamed_crate};\n"
+            "use renamed_crate::strategies::registry::FeeProvider;\n",
+        )
+        err = expect_fail(root)
+        if "crate-root alias" not in err:
+            raise AssertionError(f"expected crate-root alias diagnostic, got: {err!r}")
+
+
+def test_non_root_group_self_alias_allowed_in_shared_module() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(root, "src/bolt_v3_foo.rs", "use crate::foo::{self as renamed_foo};\n")
+        expect_pass(root)
+
+
+def test_use_super_crate_root_alias_rejected_in_shared_module() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_file(
+            root,
+            "src/bolt_v3_foo.rs",
+            "use super as renamed_crate;\n"
+            "fn f() -> renamed_crate::strategies::registry::FeeProvider { todo!() }\n",
         )
         err = expect_fail(root)
         if "crate-root alias" not in err:
@@ -806,7 +825,9 @@ def main() -> int:
         test_path_attribute_source_module_rejected_in_shared_module,
         test_raw_path_attribute_source_module_rejected_in_shared_module,
         test_use_crate_root_alias_rejected_in_shared_module,
-        test_use_super_crate_root_alias_rejected_in_inline_module,
+        test_use_crate_group_self_alias_rejected_in_shared_module,
+        test_non_root_group_self_alias_allowed_in_shared_module,
+        test_use_super_crate_root_alias_rejected_in_shared_module,
         test_extern_crate_self_alias_rejected_in_shared_module,
         test_scanned_source_symlink_rejected,
         test_scanned_source_directory_symlink_rejected,

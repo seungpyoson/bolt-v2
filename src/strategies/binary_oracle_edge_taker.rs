@@ -2396,6 +2396,21 @@ impl BinaryOracleEdgeTaker {
             .map(ClientId::from)
     }
 
+    /// True when the configured resolution instrument resolves THIS instance's
+    /// `underlying_asset`: its leading symbol segment (before the `-USD` quote)
+    /// must equal `underlying_asset` (e.g. `BTC-USD.CHAINLINK` for a `BTC`
+    /// instance). One strategy instance trades exactly one asset, so this is the
+    /// fail-closed binding that stops a wrong-asset feed (or a wrapped-asset
+    /// variant) from ever supplying the strike.
+    fn resolution_instrument_resolves_underlying_asset(&self, instrument_id: InstrumentId) -> bool {
+        instrument_id
+            .symbol
+            .as_str()
+            .split('-')
+            .next()
+            .is_some_and(|asset| asset.eq_ignore_ascii_case(self.config.underlying_asset.as_str()))
+    }
+
     fn subscribe_reference_quotes(&mut self) {
         if let Some(instrument_id) = self.reference_instrument_id() {
             #[cfg(not(test))]
@@ -2449,6 +2464,19 @@ impl BinaryOracleEdgeTaker {
         ) else {
             return;
         };
+        // Fail-closed asset binding: refuse to subscribe a resolution instrument
+        // that does not resolve this instance's underlying asset, so a
+        // misconfigured (wrong-asset or wrapped-variant) feed can never bind the
+        // strike. The entry gate stays blocked while price_to_beat is None.
+        if !self.resolution_instrument_resolves_underlying_asset(resolution_instrument_id) {
+            log::error!(
+                "binary_oracle_edge_taker resolution instrument {} does not resolve underlying asset {}; refusing live strike subscribe (fail-closed): strategy_id={}",
+                resolution_instrument_id,
+                self.config.underlying_asset,
+                self.config.strategy_id,
+            );
+            return;
+        }
         let window_open_unix_seconds = interval_start_ms / MILLIS_PER_SECOND_U64;
         let mut params = Params::new();
         params.insert(

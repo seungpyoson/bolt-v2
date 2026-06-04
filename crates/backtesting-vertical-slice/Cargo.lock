@@ -438,6 +438,7 @@ dependencies = [
  "chrono",
  "clap",
  "flate2",
+ "futures",
  "hex",
  "lz4_flex",
  "nautilus-backtest",
@@ -447,13 +448,16 @@ dependencies = [
  "nautilus-model",
  "nautilus-persistence",
  "nautilus-trading",
+ "object_store",
  "parquet",
  "rust_decimal",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "tokio",
  "toml 1.1.2+spec-1.1.0",
+ "url",
  "ustr",
 ]
 
@@ -4968,9 +4972,9 @@ dependencies = [
 
 [[package]]
 name = "yoke"
-version = "0.8.2"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abe8c5fda708d9ca3df187cae8bfb9ceda00dd96231bed36e445a1a48e66f9ca"
+checksum = "709fe23a0424b6a435d82152b1bd3fdfb0833487d5fa90d05d42762a9891fef5"
 dependencies = [
  "stable_deref_trait",
  "yoke-derive",

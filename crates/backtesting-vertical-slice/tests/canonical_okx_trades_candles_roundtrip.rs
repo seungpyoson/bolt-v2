@@ -15,12 +15,14 @@
 use std::fs;
 
 use backtesting_vertical_slice::canonical_okx::{
-    NT_DATA_TYPE_BAR, NT_DATA_TYPE_TRADE_TICK, OkxBarSpec, OkxInstrumentSpec, extract_csv_from_zip,
-    okx_bar_type_string, okx_candlesticks_to_bars, okx_trades_to_trade_ticks,
+    NT_DATA_TYPE_BAR, NT_DATA_TYPE_TRADE_TICK, OkxBarSpec, OkxInstrumentSpec,
+    append_okx_trades_archive, extract_csv_from_zip, okx_bar_type_string, okx_candlesticks_to_bars,
+    okx_trade_instruments, okx_trades_spec_from_rows, okx_trades_to_trade_ticks,
     parse_okx_candlesticks, parse_okx_trades, project_okx_candlesticks_archive_to_catalog,
     project_okx_trades_archive_to_catalog, read_back_bars, read_back_trade_ticks,
 };
 use nautilus_model::enums::{AggregationSource, BarAggregation, PriceType};
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
 const TRADES_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -193,6 +195,51 @@ fn okx_candlesticks_round_trip_through_nautilus_catalog() {
                 && p.extension().map(|e| e == "parquet").unwrap_or(false)
         }),
         "catalog must contain a native bar parquet file"
+    );
+}
+
+#[test]
+fn okx_trades_data_derived_append_round_trips() {
+    // The bulk path: derive precision from the object's own rows (OKX stages no
+    // instrument universe), append into a shared catalog with no clean-root
+    // guard, and prove the NautilusTrader round-trip is lossless.
+    let zip = read(TRADES_FIXTURE);
+    let dir = tempfile::TempDir::new().expect("temp catalog root");
+
+    // Independent expectation from the same source, via the data-derived spec.
+    let csv = extract_csv_from_zip(&zip).expect("extract trades CSV");
+    assert_eq!(
+        okx_trade_instruments(&csv).expect("enumerate instruments"),
+        vec![TRADES_VENUE_INST.to_string()],
+        "fixture carries exactly one venue instrument"
+    );
+    let rows = parse_okx_trades(&csv, TRADES_VENUE_INST).expect("parse trades");
+    let derived = okx_trades_spec_from_rows(&rows, TRADES_VENUE_INST).expect("derive spec");
+    assert_eq!(derived.nt_instrument_id, TRADES_NT_INST);
+    let expected = okx_trades_to_trade_ticks(&rows, &derived).expect("map to ticks");
+
+    // Append into a freshly-opened (empty) catalog — no dirty-root refusal.
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let summaries = append_okx_trades_archive(&zip, &mut catalog).expect("append trades");
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].nt_instrument_id, TRADES_NT_INST);
+    assert_eq!(summaries[0].record_count, rows.len());
+    // DOGE perp prints at a 5-dp price tick; precision is read from the data.
+    assert_eq!(summaries[0].price_precision, 5);
+    // Size precision is whatever the source rendered (self-consistent with the
+    // ticks built from the same derived spec), not a hardcoded assumption.
+    assert_eq!(summaries[0].price_precision, expected[0].price.precision);
+    assert_eq!(summaries[0].size_precision, expected[0].size.precision);
+
+    let loaded = read_back_trade_ticks(dir.path(), TRADES_NT_INST).expect("read back ticks");
+    assert_eq!(loaded.len(), expected.len(), "round-tripped tick count");
+    assert!(
+        loaded.windows(2).all(|w| w[0].ts_init <= w[1].ts_init),
+        "loaded ticks must be ascending"
+    );
+    assert_eq!(
+        loaded, expected,
+        "data-derived append must round-trip identically (count, ordering, payload, precision)"
     );
 }
 

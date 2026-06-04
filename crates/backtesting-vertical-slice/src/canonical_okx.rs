@@ -85,6 +85,11 @@ pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
 /// NautilusTrader data type written for the OKX `candlesticks` family.
 pub const NT_DATA_TYPE_BAR: &str = "Bar";
 
+/// NautilusTrader venue code for OKX, appended to a venue-native instrument id
+/// to form the catalog instrument id (`<venue_inst_id>.OKX`). The data-derived
+/// bulk path needs this because OKX stages no instrument universe to carry it.
+pub const OKX_VENUE: &str = "OKX";
+
 /// Exchange timestamps in the OKX `trades`/`candlesticks` CSVs are integer
 /// milliseconds.
 const TRADES_NANOS_PER_MILLISECOND: i64 = 1_000_000;
@@ -1018,6 +1023,147 @@ pub fn read_back_trade_ticks(
             true,
         )
         .context("query OKX trade ticks from catalog")
+}
+
+// ===========================================================================
+// trades bulk-append path (data-derived precision, no clean-root guard)
+// ===========================================================================
+
+/// The decimal-string increment whose fractional length is exactly `precision`
+/// (`0 -> "1"`, `1 -> "0.1"`, `5 -> "0.00001"`) — the inverse of
+/// [`increment_decimal_places`]. Lets a data-derived precision be expressed as
+/// the [`OkxInstrumentSpec`] increment the converter consumes.
+#[must_use]
+fn increment_for(precision: u8) -> String {
+    match precision {
+        0 => "1".to_string(),
+        n => format!("0.{}1", "0".repeat(usize::from(n) - 1)),
+    }
+}
+
+/// Distinct venue-native instrument ids appearing in an OKX `trades` CSV, in
+/// first-seen order.
+///
+/// A staged object is per-selector but can carry more than one dated contract
+/// (`...-310404`, `...-310523`) across a roll, so the bulk converter writes one
+/// catalog stream per distinct instrument rather than assuming a single one.
+///
+/// # Errors
+///
+/// Returns an error if the header does not match [`OKX_TRADES_HEADER`].
+pub fn okx_trade_instruments(csv_text: &str) -> Result<Vec<String>> {
+    let mut lines = csv_text.lines();
+    let header = lines
+        .next()
+        .context("empty OKX trades csv: missing header")?;
+    let columns: Vec<&str> = header.split(',').map(str::trim).collect();
+    ensure!(
+        columns == OKX_TRADES_HEADER,
+        "OKX trades header {columns:?} does not match expected {OKX_TRADES_HEADER:?}"
+    );
+
+    let mut seen: Vec<String> = Vec::new();
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let inst = line.split(',').next().unwrap_or("").trim();
+        if !inst.is_empty() && !seen.iter().any(|s| s == inst) {
+            seen.push(inst.to_string());
+        }
+    }
+    Ok(seen)
+}
+
+/// Build an [`OkxInstrumentSpec`] whose price/size precision is derived from the
+/// rows themselves — the maximum decimal places the exchange rendered for this
+/// instrument in this object.
+///
+/// OKX renders every row of a column at the instrument's native tick/lot scale
+/// (a price at a `0.1` tick prints `660.0`, not `660`), so the maximum observed
+/// scale is stable across objects of the same instrument and is the precision
+/// NautilusTrader pins per catalog file — no external instrument universe is
+/// needed, and OKX stages none.
+///
+/// # Errors
+///
+/// Returns an error if `rows` is empty or a price/size string is not decimal.
+pub fn okx_trades_spec_from_rows(
+    rows: &[OkxTradeRow],
+    venue_inst_id: &str,
+) -> Result<OkxInstrumentSpec> {
+    ensure!(
+        !rows.is_empty(),
+        "cannot derive OKX precision from zero rows"
+    );
+    let mut price_precision = 0u8;
+    let mut size_precision = 0u8;
+    for row in rows {
+        price_precision = price_precision.max(decimal_places(&row.price)?);
+        size_precision = size_precision.max(decimal_places(&row.size)?);
+    }
+    Ok(OkxInstrumentSpec {
+        nt_instrument_id: format!("{venue_inst_id}.{OKX_VENUE}"),
+        venue_inst_id: venue_inst_id.to_string(),
+        price_increment: increment_for(price_precision),
+        size_increment: increment_for(size_precision),
+    })
+}
+
+/// One instrument's write summary produced by [`append_okx_trades_archive`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OkxAppendSummary {
+    pub nt_instrument_id: String,
+    pub record_count: usize,
+    pub price_precision: u8,
+    pub size_precision: u8,
+}
+
+/// Append every instrument's trades from one OKX `trades` ZIP object into an
+/// already-open [`ParquetDataCatalog`] — the bulk-conversion path.
+///
+/// Unlike [`project_okx_trades_archive_to_catalog`] (the hermetic single-object
+/// proof harness, which refuses a dirty root), this appends into a shared,
+/// possibly-S3 catalog: it relies on NautilusTrader's own per-instrument,
+/// per-time-range file naming and skip-on-existing so many objects flow into one
+/// catalog. Precision is derived from each instrument's own rows
+/// ([`okx_trades_spec_from_rows`]). Returns one summary per distinct instrument
+/// written.
+///
+/// # Errors
+///
+/// Returns an error if extraction, parsing, tick construction, or the catalog
+/// write fails, or if the object yields no instruments.
+pub fn append_okx_trades_archive(
+    zip_bytes: &[u8],
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<OkxAppendSummary>> {
+    let csv = extract_csv_from_zip(zip_bytes)?;
+    let instruments = okx_trade_instruments(&csv)?;
+    let mut summaries = Vec::new();
+    for venue_inst_id in instruments {
+        let rows = parse_okx_trades(&csv, &venue_inst_id)?;
+        if rows.is_empty() {
+            continue;
+        }
+        let spec = okx_trades_spec_from_rows(&rows, &venue_inst_id)?;
+        let ticks = okx_trades_to_trade_ticks(&rows, &spec)?;
+        let summary = OkxAppendSummary {
+            nt_instrument_id: spec.nt_instrument_id.clone(),
+            record_count: ticks.len(),
+            price_precision: spec.price_precision(),
+            size_precision: spec.size_precision(),
+        };
+        catalog
+            .write_to_parquet(ticks, None, None, None)
+            .with_context(|| format!("append OKX trade ticks for {venue_inst_id}"))?;
+        summaries.push(summary);
+    }
+    ensure!(
+        !summaries.is_empty(),
+        "OKX trades object yielded no instruments"
+    );
+    Ok(summaries)
 }
 
 // ===========================================================================

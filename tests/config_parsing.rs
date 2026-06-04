@@ -3491,6 +3491,77 @@ report_decimal_scale = 8
     );
 }
 
+/// A live `CHAINLINK_DATA_STREAMS` client whose connection config matches the
+/// fixture's `resolution_oracle_primary` gate provider exactly. Injected before
+/// `[clients.polymarket_main]` (re-appended at the end so the fixture stays
+/// well-formed).
+const CHAINLINK_STRIKE_CLIENT_MATCHING_GATE_PROVIDER: &str = r#"[clients.chainlink_strike]
+venue = "CHAINLINK_DATA_STREAMS"
+
+[clients.chainlink_strike.data]
+rest_base_url = "https://api.testnet-dataengine.chain.link"
+report_endpoint_path = "/api/v1/reports"
+http_timeout_secs = 10
+
+[[clients.chainlink_strike.data.feed_bindings]]
+feed_id = "0x0000000000000000000000000000000000000000000000000000000000000000"
+instrument_id = "BTC-USD-UP.BOLT"
+report_schema_version = 3
+report_decimal_scale = 18
+price_precision = 2
+
+[clients.chainlink_strike.secrets]
+api_key_ssm_parameter = "/bolt/testnet/chainlink/api-key"
+api_secret_ssm_parameter = "/bolt/testnet/chainlink/api-secret"
+
+[clients.polymarket_main]"#;
+
+#[test]
+fn chainlink_client_matching_gate_provider_connection_passes_single_source_guard() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // The fixture already defines the chainlink resolution-oracle gate provider;
+    // a live strike client whose endpoint + SSM paths match it must NOT raise the
+    // single-source drift guard.
+    let mutated = replace_in_fixture_root(
+        "[clients.polymarket_main]",
+        CHAINLINK_STRIKE_CLIENT_MATCHING_GATE_PROVIDER,
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("matching chainlink client fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        !messages
+            .iter()
+            .any(|message| message.contains("must match gate_providers")),
+        "a chainlink client matching the gate provider must not raise a single-source drift error: {messages:#?}"
+    );
+}
+
+#[test]
+fn chainlink_client_diverging_from_gate_provider_fails_single_source_guard() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // Same client, but its REST endpoint diverges from the gate provider's. The
+    // live strike path and the resolution-oracle definition must reference one
+    // source, so this fails closed at config load.
+    let diverging_client = CHAINLINK_STRIKE_CLIENT_MATCHING_GATE_PROVIDER.replace(
+        "rest_base_url = \"https://api.testnet-dataengine.chain.link\"",
+        "rest_base_url = \"https://api.divergent-dataengine.chain.link\"",
+    );
+    let mutated = replace_in_fixture_root("[clients.polymarket_main]", &diverging_client);
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("diverging chainlink client fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.chainlink_strike.data.rest_base_url")
+                && message.contains("must match gate_providers")
+        }),
+        "a chainlink client whose rest_base_url diverges from the gate provider must fail closed: {messages:#?}"
+    );
+}
+
 #[test]
 fn rejects_gate_provider_client_id_without_configured_client() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};

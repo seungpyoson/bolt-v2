@@ -172,6 +172,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
+    errors.extend(validate_chainlink_client_gate_provider_consistency(root));
     if let Some(live_canary) = root.live_canary.as_ref() {
         // Validate the live-money-gating base fields unconditionally. The
         // previous code only ran when `proof_policy` was present, so a
@@ -188,6 +189,123 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
             errors.extend(validate_live_canary_proof_policy(
                 proof_policy,
                 &live_canary.max_notional_per_order,
+            ));
+        }
+    }
+
+    errors
+}
+
+/// F3 single-source guard: when both a live `CHAINLINK_DATA_STREAMS` data
+/// client and a `chainlink_data_streams` gate provider are configured, their
+/// shared connection config (REST endpoint + SSM credential paths) must match
+/// exactly, so the offline-evidence path and the live strike path cannot
+/// silently drift onto different endpoints/testnets/credentials. Fails closed
+/// on any divergence.
+///
+/// Feed bindings are intentionally NOT compared here: the live client maps
+/// `feed_id -> instrument_id` while the gate provider maps
+/// `feed_id -> resolution_identity`, so their shapes differ. Full single-source
+/// dedup (deriving the live client from the gate provider and removing the
+/// duplicate block) is tracked with the #551 gate-provider/seed removal.
+fn validate_chainlink_client_gate_provider_consistency(root: &BoltV3RootConfig) -> Vec<String> {
+    use crate::bolt_v3_providers::chainlink::{
+        ChainlinkDataConfig, ChainlinkSecretsConfig, KEY as CHAINLINK_CLIENT_VENUE_KEY,
+    };
+
+    let mut errors = Vec::new();
+
+    let chainlink_gate_providers: Vec<(&String, &toml::Value)> = match &root.gate_providers {
+        Some(providers) => providers
+            .iter()
+            .filter(|(_, provider)| {
+                provider.provider_kind.as_deref() == Some(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
+            })
+            .filter_map(|(id, provider)| {
+                provider
+                    .provider_config
+                    .get(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
+                    .map(|table| (id, table))
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+
+    for (client_id, client) in &root.clients {
+        if client.venue.as_str() != CHAINLINK_CLIENT_VENUE_KEY {
+            continue;
+        }
+        let Some(data_value) = client.data.as_ref() else {
+            continue;
+        };
+        // Per-client shape errors are reported by the provider validator; only
+        // run the cross-check when the client config parses cleanly.
+        let Ok(data) = data_value.clone().try_into::<ChainlinkDataConfig>() else {
+            continue;
+        };
+
+        if chainlink_gate_providers.is_empty() {
+            // No gate provider to drift against (e.g. the post-#551 end state).
+            continue;
+        }
+        if chainlink_gate_providers.len() > 1 {
+            errors.push(format!(
+                "clients.{client_id} (CHAINLINK_DATA_STREAMS) cannot be consistency-checked against the resolution oracle: {} `chainlink_data_streams` gate providers are configured, expected exactly one",
+                chainlink_gate_providers.len()
+            ));
+            continue;
+        }
+
+        let (gate_provider_id, gate_table_value) = chainlink_gate_providers[0];
+        let Some(gate_table) = gate_table_value.as_table() else {
+            // A malformed gate-provider table is reported by validate_gate_providers.
+            continue;
+        };
+
+        let check_str = |field: &str, client_value: &str| -> Option<String> {
+            let gate_value = gate_table.get(field).and_then(toml::Value::as_str);
+            if gate_value == Some(client_value) {
+                None
+            } else {
+                Some(format!(
+                    "clients.{client_id}.data.{field} (`{client_value}`) must match gate_providers.{gate_provider_id}.chainlink_data_streams.{field} (`{}`); the live strike client and the resolution-oracle gate provider must reference one source",
+                    gate_value.unwrap_or("<missing>")
+                ))
+            }
+        };
+
+        errors.extend(check_str(
+            CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD,
+            &data.rest_base_url,
+        ));
+        errors.extend(check_str(
+            CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD,
+            &data.report_endpoint_path,
+        ));
+
+        let gate_timeout = gate_table
+            .get(CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD)
+            .and_then(toml::Value::as_integer);
+        if gate_timeout != Some(data.http_timeout_secs as i64) {
+            errors.push(format!(
+                "clients.{client_id}.data.http_timeout_secs ({}) must match gate_providers.{gate_provider_id}.chainlink_data_streams.http_timeout_secs ({}); the live strike client and the resolution-oracle gate provider must reference one source",
+                data.http_timeout_secs,
+                gate_timeout
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "<missing>".to_string())
+            ));
+        }
+
+        if let Some(secrets_value) = client.secrets.as_ref()
+            && let Ok(secrets) = secrets_value.clone().try_into::<ChainlinkSecretsConfig>()
+        {
+            errors.extend(check_str(
+                CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD,
+                &secrets.api_key_ssm_parameter,
+            ));
+            errors.extend(check_str(
+                CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD,
+                &secrets.api_secret_ssm_parameter,
             ));
         }
     }

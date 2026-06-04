@@ -225,6 +225,7 @@ impl CanaryProofExecutor {
             .submit_admission
             .admit(&BoltV3SubmitAdmissionRequest {
                 strategy_id: self.config.executor_strategy_id.clone(),
+                execution_client_id: self.config.execution_client_id.clone(),
                 client_order_id: order.client_order_id().to_string(),
                 instrument_id: order.instrument_id().to_string(),
                 notional: admission_notional,
@@ -234,6 +235,7 @@ impl CanaryProofExecutor {
                 lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(false),
                 canary_proof_claim: Some(CANARY_PROOF_CLAIM.to_string()),
                 risk_reducing_exit_proof: None,
+                kill_switch_forced_reduction: None,
             })?;
         self.submit_order(
             order,

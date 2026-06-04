@@ -305,6 +305,10 @@ pub enum BinaryOracleEdgeTakerRuntimeConfigError {
         strategy_instance_id: String,
         message: String,
     },
+    SignalData {
+        strategy_instance_id: String,
+        message: String,
+    },
     Numeric {
         strategy_instance_id: String,
         field: &'static str,
@@ -346,6 +350,13 @@ impl std::fmt::Display for BinaryOracleEdgeTakerRuntimeConfigError {
             } => write!(
                 f,
                 "strategies.{strategy_instance_id} reference_data is invalid: {message}"
+            ),
+            Self::SignalData {
+                strategy_instance_id,
+                message,
+            } => write!(
+                f,
+                "strategies.{strategy_instance_id} signal_data is invalid: {message}"
             ),
             Self::Numeric {
                 strategy_instance_id,
@@ -451,6 +462,7 @@ pub fn raw_taker_config(
         })?;
     let strategy_instance_id = strategy.config.strategy_instance_id.as_str();
     let reference_data = configured_reference_data(strategy)?;
+    let signal_data = configured_signal_data(strategy)?;
     let decision_reference =
         configured_decision_reference(strategy_instance_id, &strategy.config.target)?;
     if reference_data.is_some() && decision_reference.is_some() {
@@ -474,6 +486,17 @@ pub fn raw_taker_config(
                 ),
             })?;
     }
+    loaded
+        .root
+        .clients
+        .get(signal_data.data_client_id.as_str())
+        .ok_or_else(|| BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: format!(
+                "signal_data data_client_id `{}` is not present in loaded clients",
+                signal_data.data_client_id
+            ),
+        })?;
 
     let order_notional_target = decimal_string_to_f64(
         &strategy.config.strategy_instance_id,
@@ -623,6 +646,16 @@ pub fn raw_taker_config(
         (None, None) => {}
         (Some(_), Some(_)) => unreachable!("dual reference paths are rejected above"),
     }
+    insert_string(
+        &mut table,
+        "signal_venue",
+        signal_data.data_client_id.to_string(),
+    );
+    insert_string(
+        &mut table,
+        "signal_instrument_id",
+        signal_data.instrument_id.to_string(),
+    );
     insert_order_config(
         &mut table,
         strategy_instance_id,
@@ -1201,6 +1234,26 @@ fn configured_reference_data(
     }
 }
 
+fn configured_signal_data(
+    strategy: &LoadedStrategy,
+) -> Result<&crate::bolt_v3_config::ReferenceDataBlock, BinaryOracleEdgeTakerRuntimeConfigError> {
+    let mut entries = strategy.config.signal_data.iter();
+    match (entries.next(), entries.next()) {
+        (Some((_role, block)), None) => Ok(block),
+        (None, _) => Err(BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: "requires exactly one [signal_data.<role>] block".to_string(),
+        }),
+        (Some(_), Some(_)) => Err(BinaryOracleEdgeTakerRuntimeConfigError::SignalData {
+            strategy_instance_id: strategy.config.strategy_instance_id.clone(),
+            message: format!(
+                "allows at most one [signal_data.<role>] block; got roles [{}]",
+                signal_data_role_names(&strategy.config)
+            ),
+        }),
+    }
+}
+
 fn reference_data_role_names(strategy: &BoltV3StrategyConfig) -> String {
     strategy
         .reference_data
@@ -1210,14 +1263,33 @@ fn reference_data_role_names(strategy: &BoltV3StrategyConfig) -> String {
         .join(", ")
 }
 
+fn signal_data_role_names(strategy: &BoltV3StrategyConfig) -> String {
+    strategy
+        .signal_data
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn validate_required_reference_data(context: &str, strategy: &BoltV3StrategyConfig) -> Vec<String> {
+    let mut errors = Vec::new();
     if strategy.reference_data.len() > 1 {
-        vec![format!(
+        errors.push(format!(
             "{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"
-        )]
-    } else {
-        Vec::new()
+        ));
     }
+    if strategy.signal_data.len() > 1 {
+        errors.push(format!(
+            "{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [signal_data.<role>] block"
+        ));
+    }
+    if strategy.signal_data.is_empty() {
+        errors.push(format!(
+            "{context}: strategy_archetype `binary_oracle_edge_taker` requires exactly one [signal_data.<role>] block"
+        ));
+    }
+    errors
 }
 
 fn validate_order_parameters(

@@ -1,6 +1,7 @@
 use crate::bolt_v3_decision_evidence::{
     BoltV3AdmissionDecisionEvidence, BoltV3AdmissionOutcome, BoltV3DecisionEvidenceWriter,
 };
+use crate::bolt_v3_kill_switch::{KillSwitchState, KillSwitchStateKind};
 use crate::bolt_v3_live_canary_gate::BoltV3LiveCanaryGateReport;
 use nautilus_model::{
     enums::{OrderSide, PositionSide},
@@ -9,6 +10,7 @@ use nautilus_model::{
     types::Price,
 };
 use rust_decimal::Decimal;
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +18,52 @@ use crate::bolt_v3_canary_proof_policy::CANARY_PROOF_CLAIM;
 pub use crate::bolt_v3_decision_evidence::BoltV3SubmitIntentKind;
 
 const SUBMIT_ADMISSION_BPS_DENOMINATOR: u32 = 10_000;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct BoltV3ExchangeMutationCounts {
+    pub submit: u64,
+    pub cancel: u64,
+    pub modify: u64,
+    pub transfer: u64,
+    pub account: u64,
+}
+
+impl BoltV3ExchangeMutationCounts {
+    pub const fn none() -> Self {
+        Self {
+            submit: 0,
+            cancel: 0,
+            modify: 0,
+            transfer: 0,
+            account: 0,
+        }
+    }
+
+    pub fn total(self) -> Result<u64, BoltV3SubmitAdmissionError> {
+        self.submit
+            .checked_add(self.cancel)
+            .and_then(|total| total.checked_add(self.modify))
+            .and_then(|total| total.checked_add(self.transfer))
+            .and_then(|total| total.checked_add(self.account))
+            .ok_or(BoltV3SubmitAdmissionError::ExchangeMutationCountOverflow)
+    }
+}
+
+pub fn validate_no_exchange_mutations(
+    counts: BoltV3ExchangeMutationCounts,
+) -> Result<u64, BoltV3SubmitAdmissionError> {
+    let mutation_count = counts.total()?;
+    if mutation_count == 0 {
+        return Ok(mutation_count);
+    }
+    Err(BoltV3SubmitAdmissionError::ExchangeMutationsObserved { mutation_count })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3LiveSubmitApprovalLimits {
+    pub max_order_count: u32,
+    pub max_order_notional: Decimal,
+}
 
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionState {
@@ -26,21 +74,38 @@ pub struct BoltV3SubmitAdmissionState {
 #[derive(Debug)]
 struct BoltV3SubmitAdmissionInner {
     gate_report: Option<BoltV3LiveCanaryGateReport>,
+    kill_switch_state: KillSwitchState,
+    kill_switch_forced_reduction_policy: Option<BoltV3KillSwitchForcedReductionPolicy>,
+    live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
     admitted_order_count: u32,
+    admitted_order_count_by_execution_client: BTreeMap<String, u32>,
     admitted_entry_order_count: u32,
     admitted_risk_reducing_exit_order_count: u32,
     admitted_replace_submit_order_count: u32,
+    live_kill_switch_forced_reduction_order_count: u32,
 }
 
 impl BoltV3SubmitAdmissionState {
     pub fn new_unarmed(decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>) -> Self {
+        Self::new_unarmed_with_live_submit_limits(decision_evidence, BTreeMap::new())
+    }
+
+    pub fn new_unarmed_with_live_submit_limits(
+        decision_evidence: Arc<dyn BoltV3DecisionEvidenceWriter>,
+        live_submit_approval_limits: BTreeMap<String, BoltV3LiveSubmitApprovalLimits>,
+    ) -> Self {
         Self {
             inner: Mutex::new(BoltV3SubmitAdmissionInner {
                 gate_report: None,
+                kill_switch_state: KillSwitchState::Armed,
+                kill_switch_forced_reduction_policy: None,
+                live_submit_approval_limits,
                 admitted_order_count: 0,
+                admitted_order_count_by_execution_client: BTreeMap::new(),
                 admitted_entry_order_count: 0,
                 admitted_risk_reducing_exit_order_count: 0,
                 admitted_replace_submit_order_count: 0,
+                live_kill_switch_forced_reduction_order_count: 0,
             }),
             decision_evidence,
         }
@@ -59,10 +124,41 @@ impl BoltV3SubmitAdmissionState {
         }
         inner.gate_report = Some(report);
         inner.admitted_order_count = 0;
+        inner.admitted_order_count_by_execution_client.clear();
         inner.admitted_entry_order_count = 0;
         inner.admitted_risk_reducing_exit_order_count = 0;
         inner.admitted_replace_submit_order_count = 0;
+        inner.live_kill_switch_forced_reduction_order_count = 0;
         Ok(())
+    }
+
+    pub fn record_kill_switch_forced_reduction_terminal(&self) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        inner.live_kill_switch_forced_reduction_order_count = inner
+            .live_kill_switch_forced_reduction_order_count
+            .saturating_sub(1);
+    }
+
+    pub fn replace_kill_switch_state(&self, state: KillSwitchState) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        inner.kill_switch_state = state;
+    }
+
+    pub fn configure_kill_switch_forced_reduction_policy(
+        &self,
+        policy: BoltV3KillSwitchForcedReductionPolicy,
+    ) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("submit admission state mutex should not be poisoned");
+        inner.kill_switch_forced_reduction_policy = Some(policy);
     }
 
     pub fn admit(
@@ -76,6 +172,7 @@ impl BoltV3SubmitAdmissionState {
         let outcome = Self::evaluate(&inner, request);
         let evidence = BoltV3AdmissionDecisionEvidence {
             strategy_id: request.strategy_id.clone(),
+            execution_client_id: request.execution_client_id.clone(),
             client_order_id: request.client_order_id.clone(),
             instrument_id: request.instrument_id.clone(),
             notional: request.notional.to_string(),
@@ -90,6 +187,10 @@ impl BoltV3SubmitAdmissionState {
         match outcome {
             BoltV3AdmissionOutcome::Admitted => {
                 inner.admitted_order_count += 1;
+                *inner
+                    .admitted_order_count_by_execution_client
+                    .entry(request.execution_client_id.clone())
+                    .or_insert(0) += 1;
                 match request.intent_kind {
                     BoltV3SubmitIntentKind::Entry => {
                         inner.admitted_entry_order_count += 1;
@@ -100,10 +201,18 @@ impl BoltV3SubmitAdmissionState {
                     BoltV3SubmitIntentKind::ReplaceSubmit => {
                         inner.admitted_replace_submit_order_count += 1;
                     }
+                    BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
+                        inner.live_kill_switch_forced_reduction_order_count += 1;
+                    }
                 }
                 Ok(BoltV3SubmitAdmissionPermit(()))
             }
             BoltV3AdmissionOutcome::RejectedNotArmed => Err(BoltV3SubmitAdmissionError::NotArmed),
+            BoltV3AdmissionOutcome::RejectedKillSwitchLatched => {
+                Err(BoltV3SubmitAdmissionError::KillSwitchLatched {
+                    state: inner.kill_switch_state.kind(),
+                })
+            }
             BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed => {
                 Err(BoltV3SubmitAdmissionError::SubmitLifecycleDisallowed {
                     intent: request.intent_kind,
@@ -124,6 +233,12 @@ impl BoltV3SubmitAdmissionState {
             BoltV3AdmissionOutcome::RejectedCountCapExhausted => {
                 Err(BoltV3SubmitAdmissionError::CountCapExhausted)
             }
+            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
+                Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionProofInvalid)
+            }
+            BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
+                Err(BoltV3SubmitAdmissionError::KillSwitchForcedReductionCapExceeded)
+            }
         }
     }
 
@@ -131,11 +246,38 @@ impl BoltV3SubmitAdmissionState {
         inner: &BoltV3SubmitAdmissionInner,
         request: &BoltV3SubmitAdmissionRequest,
     ) -> BoltV3AdmissionOutcome {
+        if request.intent_kind == BoltV3SubmitIntentKind::KillSwitchForcedReduction {
+            return Self::evaluate_kill_switch_forced_reduction(inner, request);
+        }
+        if matches!(
+            request.intent_kind,
+            BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::ReplaceSubmit
+        ) && inner.kill_switch_state.kind() != KillSwitchStateKind::Armed
+        {
+            return BoltV3AdmissionOutcome::RejectedKillSwitchLatched;
+        }
         if !request.lifecycle_policy.allows(request.intent_kind) {
             return BoltV3AdmissionOutcome::RejectedSubmitLifecycleDisallowed;
         }
         if request.notional <= Decimal::ZERO {
             return BoltV3AdmissionOutcome::RejectedNonPositiveNotional;
+        }
+        if let Some(limits) = inner
+            .live_submit_approval_limits
+            .get(&request.execution_client_id)
+        {
+            if request.notional > limits.max_order_notional {
+                return BoltV3AdmissionOutcome::RejectedNotionalCapExceeded;
+            }
+            if inner
+                .admitted_order_count_by_execution_client
+                .get(&request.execution_client_id)
+                .copied()
+                .unwrap_or(0)
+                >= limits.max_order_count
+            {
+                return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
+            }
         }
         let Some(report) = inner.gate_report.as_ref() else {
             if request.canary_proof_claim.is_some() {
@@ -184,6 +326,37 @@ impl BoltV3SubmitAdmissionState {
                     return BoltV3AdmissionOutcome::RejectedCountCapExhausted;
                 }
             }
+            BoltV3SubmitIntentKind::KillSwitchForcedReduction => {
+                unreachable!("kill-switch forced reduction is evaluated before normal admission")
+            }
+        }
+        BoltV3AdmissionOutcome::Admitted
+    }
+
+    fn evaluate_kill_switch_forced_reduction(
+        inner: &BoltV3SubmitAdmissionInner,
+        request: &BoltV3SubmitAdmissionRequest,
+    ) -> BoltV3AdmissionOutcome {
+        let Some(policy) = inner.kill_switch_forced_reduction_policy.as_ref() else {
+            return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid;
+        };
+        let Some(claim) = request.kill_switch_forced_reduction.as_ref() else {
+            return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid;
+        };
+        let Some(halt_id) = forced_reduction_admissible_halt_id(&inner.kill_switch_state) else {
+            return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid;
+        };
+        if claim.halt_id() != halt_id || claim.policy_sha256() != policy.policy_sha256() {
+            return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid;
+        }
+        if request.notional <= Decimal::ZERO {
+            return BoltV3AdmissionOutcome::RejectedNonPositiveNotional;
+        }
+        if request.notional > policy.max_notional_per_order() {
+            return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded;
+        }
+        if inner.live_kill_switch_forced_reduction_order_count >= policy.max_live_order_count() {
+            return BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded;
         }
         BoltV3AdmissionOutcome::Admitted
     }
@@ -213,6 +386,105 @@ impl BoltV3SubmitAdmissionState {
 
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionPermit(());
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3KillSwitchForcedReductionPolicy {
+    policy_sha256: String,
+    max_live_order_count: u32,
+    max_notional_per_order: Decimal,
+}
+
+impl BoltV3KillSwitchForcedReductionPolicy {
+    pub fn new(
+        policy_sha256: impl Into<String>,
+        max_live_order_count: u32,
+        max_notional_per_order: Decimal,
+    ) -> Result<Self, BoltV3KillSwitchForcedReductionError> {
+        let policy_sha256 = policy_sha256.into();
+        if policy_sha256.len() != 64 || !policy_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(BoltV3KillSwitchForcedReductionError::InvalidPolicySha256);
+        }
+        if max_live_order_count == 0 {
+            return Err(BoltV3KillSwitchForcedReductionError::NonPositiveMaxLiveOrderCount);
+        }
+        if max_notional_per_order <= Decimal::ZERO {
+            return Err(BoltV3KillSwitchForcedReductionError::NonPositiveMaxNotional);
+        }
+        Ok(Self {
+            policy_sha256,
+            max_live_order_count,
+            max_notional_per_order,
+        })
+    }
+
+    pub fn policy_sha256(&self) -> &str {
+        &self.policy_sha256
+    }
+
+    pub fn max_live_order_count(&self) -> u32 {
+        self.max_live_order_count
+    }
+
+    pub fn max_notional_per_order(&self) -> Decimal {
+        self.max_notional_per_order
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoltV3KillSwitchForcedReductionClaim {
+    halt_id: String,
+    action_id: String,
+    policy_sha256: String,
+}
+
+impl BoltV3KillSwitchForcedReductionClaim {
+    pub fn new(
+        halt_id: impl Into<String>,
+        action_id: impl Into<String>,
+        policy_sha256: impl Into<String>,
+    ) -> Result<Self, BoltV3KillSwitchForcedReductionError> {
+        let halt_id = halt_id.into();
+        let action_id = action_id.into();
+        let policy_sha256 = policy_sha256.into();
+        if halt_id.trim().is_empty() {
+            return Err(BoltV3KillSwitchForcedReductionError::MissingHaltId);
+        }
+        if action_id.trim().is_empty() {
+            return Err(BoltV3KillSwitchForcedReductionError::MissingActionId);
+        }
+        if policy_sha256.len() != 64 || !policy_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(BoltV3KillSwitchForcedReductionError::InvalidPolicySha256);
+        }
+        Ok(Self {
+            halt_id,
+            action_id,
+            policy_sha256,
+        })
+    }
+
+    pub fn halt_id(&self) -> &str {
+        &self.halt_id
+    }
+
+    pub fn action_id(&self) -> &str {
+        &self.action_id
+    }
+
+    pub fn policy_sha256(&self) -> &str {
+        &self.policy_sha256
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoltV3KillSwitchForcedReductionError {
+    MissingHaltId,
+    MissingActionId,
+    InvalidPolicySha256,
+    NonPositiveMaxLiveOrderCount,
+    NonPositiveMaxNotional,
+}
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum BoltV3OrderLifecycleIntent {
@@ -278,6 +550,7 @@ impl BoltV3SubmitLifecyclePolicy {
         match intent {
             BoltV3SubmitIntentKind::Entry | BoltV3SubmitIntentKind::RiskReducingExit => true,
             BoltV3SubmitIntentKind::ReplaceSubmit => self.replace_submit,
+            BoltV3SubmitIntentKind::KillSwitchForcedReduction => true,
         }
     }
 }
@@ -285,6 +558,7 @@ impl BoltV3SubmitLifecyclePolicy {
 #[derive(Debug)]
 pub struct BoltV3SubmitAdmissionRequest {
     pub strategy_id: String,
+    pub execution_client_id: String,
     pub client_order_id: String,
     pub instrument_id: String,
     pub notional: Decimal,
@@ -294,6 +568,7 @@ pub struct BoltV3SubmitAdmissionRequest {
     pub lifecycle_policy: BoltV3SubmitLifecyclePolicy,
     pub canary_proof_claim: Option<String>,
     pub risk_reducing_exit_proof: Option<BoltV3RiskReducingExitProof>,
+    pub kill_switch_forced_reduction: Option<BoltV3KillSwitchForcedReductionClaim>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -536,10 +811,24 @@ pub fn market_style_admission_ceiling_notional(
     Ok(base_quantity_admission_notional(ceiling, order_quantity))
 }
 
+fn forced_reduction_admissible_halt_id(state: &KillSwitchState) -> Option<&str> {
+    match state {
+        KillSwitchState::Halting { halt_id, .. } | KillSwitchState::Halted { halt_id, .. } => {
+            Some(halt_id)
+        }
+        KillSwitchState::Armed
+        | KillSwitchState::Flat { .. }
+        | KillSwitchState::FailedManualIntervention { .. } => None,
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum BoltV3SubmitAdmissionError {
     NotArmed,
     AlreadyArmed,
+    KillSwitchLatched {
+        state: KillSwitchStateKind,
+    },
     SubmitLifecycleDisallowed {
         intent: BoltV3SubmitIntentKind,
     },
@@ -551,8 +840,14 @@ pub enum BoltV3SubmitAdmissionError {
         rounded_base_notional: Decimal,
         intended_notional: Decimal,
     },
+    ExchangeMutationCountOverflow,
+    ExchangeMutationsObserved {
+        mutation_count: u64,
+    },
     InvalidCanaryProofClaim,
     InvalidRiskReducingExitProof,
+    KillSwitchForcedReductionProofInvalid,
+    KillSwitchForcedReductionCapExceeded,
     EvidenceWriteFailed {
         reason: String,
     },
@@ -563,6 +858,10 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
         match self {
             Self::NotArmed => write!(f, "bolt-v3 submit admission is not armed"),
             Self::AlreadyArmed => write!(f, "bolt-v3 submit admission is already armed"),
+            Self::KillSwitchLatched { state } => write!(
+                f,
+                "bolt-v3 submit admission is blocked by kill-switch state {state:?}"
+            ),
             Self::SubmitLifecycleDisallowed { intent } => write!(
                 f,
                 "bolt-v3 submit admission lifecycle policy disallows {intent:?} submit"
@@ -587,6 +886,13 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
                 f,
                 "bolt-v3 submit admission rejected: rounded order notional {rounded_base_notional} exceeded operator-intended notional {intended_notional}"
             ),
+            Self::ExchangeMutationCountOverflow => {
+                write!(f, "bolt-v3 no-submit exchange mutation counter overflowed")
+            }
+            Self::ExchangeMutationsObserved { mutation_count } => write!(
+                f,
+                "bolt-v3 no-submit exchange mutation guard observed {mutation_count} mutating request(s)"
+            ),
             Self::InvalidCanaryProofClaim => write!(
                 f,
                 "bolt-v3 submit admission canary proof claim must be proof_only"
@@ -594,6 +900,14 @@ impl std::fmt::Display for BoltV3SubmitAdmissionError {
             Self::InvalidRiskReducingExitProof => write!(
                 f,
                 "bolt-v3 submit admission risk-reducing exit proof is invalid"
+            ),
+            Self::KillSwitchForcedReductionProofInvalid => write!(
+                f,
+                "bolt-v3 submit admission kill-switch forced reduction proof is invalid"
+            ),
+            Self::KillSwitchForcedReductionCapExceeded => write!(
+                f,
+                "bolt-v3 submit admission kill-switch forced reduction cap is exceeded"
             ),
             Self::EvidenceWriteFailed { reason } => {
                 write!(

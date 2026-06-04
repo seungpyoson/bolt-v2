@@ -7,6 +7,9 @@ use bolt_v2::{
     bolt_v3_archetypes::{
         ArchetypeGateRequirement, GateRole, GateValueKind, binary_oracle_edge_taker,
     },
+    bolt_v3_canary_proof_policy::{
+        CanaryProofCandidateSourceArtifact, CanaryProofOrderIntentArtifact, CanaryProofOrderSide,
+    },
     bolt_v3_client_registration::{BoltV3RegisteredClient, BoltV3RegistrationSummary},
     bolt_v3_config::{
         BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
@@ -31,15 +34,16 @@ use bolt_v2::{
     },
     bolt_v3_market_families::{SelectedMarketRequirement, updown::updown_market_slug},
     bolt_v3_operator_artifacts::{
-        ChainlinkReferencePriceReportSourceFile,
+        CanaryProofArtifactsCollectionRequest, ChainlinkReferencePriceReportSourceFile,
         ChainlinkReferenceQuoteObservationsSourceMaterializationRequest,
         DataClientProductionReadinessMatrixSourceFileRequest,
         EntryDecisionProofSourceMaterializationRequest, EntryDecisionSourceBookSideInput,
         EntryDecisionSourceCollectionRequest, EntryDecisionSourceInputRequest,
         EntryDecisionSourceMarketInputs, EntryReadinessGateEvidenceSourceFileRequest,
-        EntryReadinessGateSessionRequest, GateArtifactRef, GateEvidenceCollectionStatus,
-        GateEvidenceInput, GateSatisfaction, WrittenOperatorArtifact,
+        EntryReadinessGateSession, EntryReadinessGateSessionRequest, GateArtifactRef,
+        GateEvidenceCollectionStatus, GateEvidenceInput, GateSatisfaction, WrittenOperatorArtifact,
         build_entry_readiness_gate_session, build_redacted_ssm_manifest,
+        collect_canary_proof_artifacts_from_configured_provider,
         collect_entry_decision_source_inputs_from_configured_provider,
         collect_entry_readiness_gate_evidence_from_source_file, normalize_gate_evidence,
         selected_entry_decision_market_attempts,
@@ -64,6 +68,9 @@ use bolt_v2::{
         Phase8OperatorApprovalEnvelope, Phase8PreRunStateSourceProofs,
         Phase8StrategyInputSafetyAudit,
     },
+    strategies::binary_oracle_edge_taker::{
+        ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND, ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION,
+    },
 };
 use nautilus_core::Params;
 use nautilus_model::{
@@ -74,6 +81,15 @@ use nautilus_model::{
 };
 
 mod support;
+
+#[test]
+fn entry_decision_source_schema_version_tracks_signal_quote_split() {
+    assert_eq!(ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION, 3);
+    assert_eq!(
+        ENTRY_DECISION_EVIDENCE_SOURCE_RECORD_KIND,
+        "bolt_v3.binary_oracle_entry_decision_source.v3"
+    );
+}
 use support::{repo_path, valid_entry_readiness_gate_session_json};
 
 // Test-only updown fixture values mirror tests/fixtures/bolt_v3/strategies/binary_oracle.toml.
@@ -94,6 +110,7 @@ const TEST_DOWN_OUTCOME: &str = "Down";
 const TEST_BINARY_OPTION_SIZE_INCREMENT: &str = "0.01";
 const TEST_EXECUTION_CLIENT_ID: &str = "polymarket_main";
 const TEST_REFERENCE_DATA_CLIENT_ID: &str = "reference_data_client";
+const TEST_SIGNAL_DATA_CLIENT_ID: &str = "signal_data_client";
 const TEST_REFERENCE_INSTRUMENT_ID: &str = "REFERENCE.SOURCE";
 const TEST_DATA_CLIENT_PROBE_TARGET_ID: &str = "configured_quote_probe";
 const TEST_DATA_CLIENT_PROBE_INSTRUMENT_ID: &str = "REFERENCE.POLYMARKET";
@@ -9211,14 +9228,19 @@ fn entry_decision_evidence_source_fixture(
     std::fs::write(
         &decision_source_path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 2,
-            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "schema_version": 3,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v3",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
             "readiness_session": readiness_session,
             "warmup_count": 20,
             "reference_quote": {
                 "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "signal_quote": {
+                "venue": TEST_SIGNAL_DATA_CLIENT_ID,
                 "price": 3300.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
@@ -9316,14 +9338,19 @@ fn entry_decision_evidence_replay_derives_price_from_readiness_session() {
     std::fs::write(
         &fixture.decision_source_path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 2,
-            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "schema_version": 3,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v3",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
             "readiness_session": readiness_session,
             "warmup_count": 20,
             "reference_quote": {
                 "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "signal_quote": {
+                "venue": TEST_SIGNAL_DATA_CLIENT_ID,
                 "price": 3300.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
@@ -9467,14 +9494,19 @@ fn entry_decision_evidence_replay_uses_source_selected_rotated_market() {
     std::fs::write(
         &decision_source_path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 2,
-            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "schema_version": 3,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v3",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
             "readiness_session": readiness_session,
             "warmup_count": 20,
             "reference_quote": {
                 "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3300.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "signal_quote": {
+                "venue": TEST_SIGNAL_DATA_CLIENT_ID,
                 "price": 3300.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
@@ -9539,14 +9571,19 @@ fn entry_decision_evidence_source_collector_reports_no_entry_decision() {
     std::fs::write(
         &fixture.decision_source_path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 2,
-            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v2",
+            "schema_version": 3,
+            "record_kind": "bolt_v3.binary_oracle_entry_decision_source.v3",
             "market_selection_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS,
             "decision_timestamp_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200,
             "readiness_session": readiness_session,
             "warmup_count": 20,
             "reference_quote": {
                 "venue": TEST_REFERENCE_DATA_CLIENT_ID,
+                "price": 3100.0,
+                "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+            },
+            "signal_quote": {
+                "venue": TEST_SIGNAL_DATA_CLIENT_ID,
                 "price": 3100.0,
                 "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
             },
@@ -9731,6 +9768,19 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
         .expect("reference quote source should serialize"),
     )
     .expect("reference quote source should write");
+    let signal_quote_source_path = temp.path().join("signal-quote.json");
+    std::fs::write(
+        &signal_quote_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.signal_quote_source.v1",
+            "venue": TEST_SIGNAL_DATA_CLIENT_ID,
+            "price": 3301.0,
+            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 30_000
+        }))
+        .expect("signal quote source should serialize"),
+    )
+    .expect("signal quote source should write");
     let realized_volatility_source_path = temp.path().join("realized-volatility.json");
     std::fs::write(
         &realized_volatility_source_path,
@@ -9756,6 +9806,8 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs: EntryDecisionSourceMarketInputs {
@@ -9824,6 +9876,18 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
             ["normalized_value"]["reference_value"],
         serde_json::json!(3300.0)
     );
+    assert_eq!(
+        decision_source_json["reference_quote"]["price"],
+        serde_json::json!(3300.0)
+    );
+    assert_eq!(
+        decision_source_json["signal_quote"]["venue"],
+        serde_json::json!(TEST_SIGNAL_DATA_CLIENT_ID)
+    );
+    assert_eq!(
+        decision_source_json["signal_quote"]["price"],
+        serde_json::json!(3301.0)
+    );
     assert!(decision_source_json.get("price_to_beat_value").is_none());
     let gate_session_output = temp.path().join("entry-readiness-gate-session.json");
     let gate_session_written =
@@ -9864,9 +9928,153 @@ fn entry_decision_source_input_collector_writes_replayable_real_source_files() {
     assert_eq!(chain.admission.outcome, BoltV3AdmissionOutcome::Admitted);
 }
 
+#[test]
+fn hyperliquid_static_instrument_canary_proof_collector_writes_order_intent() {
+    let temp = tempfile::tempdir().expect("tempdir should create");
+    let mut loaded = load_fixture_with_live_canary();
+    loaded.root.persistence.catalog_directory =
+        temp.path().join("catalog").to_string_lossy().to_string();
+    loaded.root.clients.clear();
+    loaded.root.clients.insert(
+        "hyperliquid_perps".to_string(),
+        toml::from_str(
+            r#"
+venue = "HYPERLIQUID"
+
+[data]
+environment = "testnet"
+base_url_ws = "wss://api.hyperliquid-testnet.xyz/ws"
+base_url_http = "https://api.hyperliquid-testnet.xyz/info"
+proxy_url = "http://127.0.0.1:8080"
+http_timeout_secs = 60
+ws_timeout_secs = 30
+update_instruments_interval_mins = 5
+transport_backend = "sockudo"
+"#,
+        )
+        .expect("Hyperliquid data client should parse"),
+    );
+    let strategy = loaded
+        .strategies
+        .first_mut()
+        .expect("fixture should load a strategy");
+    strategy.config.execution_client_id = ClientId::from("hyperliquid_perps");
+    strategy.config.target = toml::toml! {
+        configured_target_id = "configured_hyperliquid_btc_perp"
+        kind = "static_instrument"
+        rotating_market_family = "hyperliquid_instrument"
+        product_surface = "standard_perps"
+        instrument_id = "BTC-PERP.HYPERLIQUID"
+        quantity_step = "0.001"
+        min_quantity = "0.001"
+        min_notional = "1.00"
+
+        [gate_subscriptions.resolution]
+        required = true
+        allowed_value_kinds = ["none"]
+        allow_no_resolution = true
+    }
+    .into();
+    let strategy_instance_id = strategy.config.strategy_instance_id.clone();
+    loaded
+        .root
+        .live_canary
+        .as_mut()
+        .expect("live canary should be configured")
+        .proof_policy = Some(LiveCanaryProofPolicyBlock {
+        strategy_instance_id: strategy_instance_id.clone(),
+        execution_client_id: "hyperliquid_perps".to_string(),
+        proof_notional: "3.30".to_string(),
+        ..test_live_canary_proof_policy()
+    });
+    let paths = write_entry_decision_source_input_proofs(&temp, 3100.0);
+    let gate_session_output = temp.path().join("hl-gate-session.json");
+    let candidate_source_output = temp.path().join("hl-candidate-source.json");
+    let order_intent_output = temp.path().join("hl-order-intent.json");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime should build");
+
+    let written = runtime
+        .block_on(collect_canary_proof_artifacts_from_configured_provider(
+            &loaded,
+            &strategy_instance_id,
+            CanaryProofArtifactsCollectionRequest {
+                price_to_beat_source_path: &paths.price_source_path,
+                max_price_to_beat_source_bytes: 100_000,
+                reference_quote_source_path: &paths.reference_quote_source_path,
+                max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
+                realized_volatility_source_path: &paths.realized_volatility_source_path,
+                max_realized_volatility_source_bytes: 100_000,
+                gate_session_output_path: &gate_session_output,
+                candidate_source_output_path: &candidate_source_output,
+                order_intent_output_path: &order_intent_output,
+            },
+        ))
+        .expect("Hyperliquid canary proof collector should write artifacts");
+
+    let gate_session: EntryReadinessGateSession = serde_json::from_slice(
+        &std::fs::read(&written.gate_session.path).expect("gate session should read"),
+    )
+    .expect("gate session should parse");
+    assert_eq!(gate_session.selected_market.venue, "HYPERLIQUID");
+    assert_eq!(
+        gate_session.selected_market.family_key,
+        "hyperliquid_instrument"
+    );
+    assert_eq!(
+        gate_session.selected_market.instrument_ids,
+        vec!["BTC-PERP.HYPERLIQUID"]
+    );
+    assert!(matches!(
+        gate_session
+            .satisfied_roles
+            .get(RESOLUTION_GATE_ROLE)
+            .expect("resolution role should be satisfied"),
+        GateSatisfaction::NoResolution { .. }
+    ));
+
+    let candidate_source: CanaryProofCandidateSourceArtifact = serde_json::from_slice(
+        &std::fs::read(&written.candidate_source.path).expect("candidate source should read"),
+    )
+    .expect("candidate source should parse");
+    assert_eq!(
+        candidate_source.current_source_ref,
+        gate_session.session_hash
+    );
+    assert_eq!(candidate_source.candidate_count, 1);
+    let candidate = candidate_source
+        .candidates
+        .first()
+        .expect("one Hyperliquid candidate should be written");
+    assert_eq!(candidate.execution_client_id, "hyperliquid_perps");
+    assert_eq!(candidate.instrument_id, "BTC-PERP.HYPERLIQUID");
+    assert_eq!(candidate.order_side, CanaryProofOrderSide::Buy);
+    assert_eq!(candidate.sizing_price, Decimal::new(3300, 0));
+    assert_eq!(candidate.constraints.quantity_step, Decimal::new(1, 3));
+    assert_eq!(candidate.constraints.min_quantity, Some(Decimal::new(1, 3)));
+    assert_eq!(
+        candidate.constraints.min_notional,
+        Some(Decimal::new(100, 2))
+    );
+
+    let order_intent: CanaryProofOrderIntentArtifact = serde_json::from_slice(
+        &std::fs::read(&written.order_intent.path).expect("order intent should read"),
+    )
+    .expect("order intent should parse");
+    assert_eq!(order_intent.execution_client_id, "hyperliquid_perps");
+    assert_eq!(order_intent.instrument_id, "BTC-PERP.HYPERLIQUID");
+    assert_eq!(order_intent.notional, Decimal::new(330, 2));
+    assert_eq!(order_intent.quantity, Decimal::new(1, 3));
+}
+
 struct EntryDecisionSourceInputProofPaths {
     price_source_path: std::path::PathBuf,
     reference_quote_source_path: std::path::PathBuf,
+    signal_quote_source_path: std::path::PathBuf,
     realized_volatility_source_path: std::path::PathBuf,
     decision_source_output: std::path::PathBuf,
     instrument_source_output: std::path::PathBuf,
@@ -9990,6 +10198,19 @@ fn write_entry_decision_source_input_proofs_with_report_provenance(
             .expect("reference quote source should serialize"),
     )
     .expect("reference quote source should write");
+    let signal_quote_source_path = temp.path().join("signal-quote.json");
+    std::fs::write(
+        &signal_quote_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.signal_quote_source.v1",
+            "venue": TEST_SIGNAL_DATA_CLIENT_ID,
+            "price": 3301.0,
+            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+        }))
+        .expect("signal quote source should serialize"),
+    )
+    .expect("signal quote source should write");
     let realized_volatility_source_path = temp.path().join("realized-volatility.json");
     std::fs::write(
         &realized_volatility_source_path,
@@ -10005,6 +10226,7 @@ fn write_entry_decision_source_input_proofs_with_report_provenance(
     EntryDecisionSourceInputProofPaths {
         price_source_path,
         reference_quote_source_path,
+        signal_quote_source_path,
         realized_volatility_source_path,
         decision_source_output: temp.path().join("entry-decision-source.json"),
         instrument_source_output: temp.path().join("instrument-source.json"),
@@ -10580,6 +10802,19 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
     let decision_source_output = temp.path().join("entry-decision-source.json");
     let instrument_source_output = temp.path().join("instrument-source.json");
     let fee_rate_source_output = temp.path().join("entry-decision-fees.json");
+    let signal_quote_source_path = temp.path().join("signal-quote.json");
+    std::fs::write(
+        &signal_quote_source_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "record_kind": "bolt_v3.signal_quote_source.v1",
+            "venue": TEST_SIGNAL_DATA_CLIENT_ID,
+            "price": 3301.0,
+            "observed_ts_ms": TEST_MARKET_SELECTION_NOW_MS + 1_200
+        }))
+        .expect("signal quote source should serialize"),
+    )
+    .expect("signal quote source should write");
     let source_inputs =
         bolt_v2::bolt_v3_operator_artifacts::write_entry_decision_source_inputs_from_source_files(
             &loaded,
@@ -10589,6 +10824,8 @@ fn entry_decision_proof_source_materializer_writes_consumable_proofs() {
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &written.reference_quote_source.path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &written.realized_volatility_source.path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs: entry_decision_source_market_inputs(&instruments),
@@ -11171,6 +11408,8 @@ fn entry_decision_source_input_collector_refuses_price_to_beat_without_report_pr
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &paths.reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &paths.realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs: entry_decision_source_market_inputs(&instruments),
@@ -11215,6 +11454,8 @@ fn entry_decision_source_input_collector_refuses_missing_source_bound_price_to_b
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &paths.reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &paths.realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs: entry_decision_source_market_inputs(&instruments),
@@ -11258,6 +11499,8 @@ fn entry_decision_source_input_collector_rejects_unselectable_or_incomplete_inst
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &paths.reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &paths.realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs: entry_decision_source_market_inputs(&instruments),
@@ -11451,6 +11694,8 @@ fn entry_decision_source_input_collector_preserves_provider_selected_rotated_mar
             max_price_to_beat_source_bytes: 100_000,
             reference_quote_source_path: &paths.reference_quote_source_path,
             max_reference_quote_source_bytes: 100_000,
+            signal_quote_source_path: &paths.signal_quote_source_path,
+            max_signal_quote_source_bytes: 100_000,
             realized_volatility_source_path: &paths.realized_volatility_source_path,
             max_realized_volatility_source_bytes: 100_000,
             market_inputs,
@@ -11497,6 +11742,8 @@ fn entry_decision_source_input_collector_rejects_empty_or_one_sided_book() {
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &paths.reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &paths.realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs,
@@ -11542,6 +11789,8 @@ fn entry_decision_source_input_collector_rejects_crossed_book_before_write() {
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &paths.reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &paths.realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs,
@@ -11599,6 +11848,8 @@ fn entry_decision_source_input_collector_uses_selected_market_price_precision() 
             max_price_to_beat_source_bytes: 100_000,
             reference_quote_source_path: &paths.reference_quote_source_path,
             max_reference_quote_source_bytes: 100_000,
+            signal_quote_source_path: &paths.signal_quote_source_path,
+            max_signal_quote_source_bytes: 100_000,
             realized_volatility_source_path: &paths.realized_volatility_source_path,
             max_realized_volatility_source_bytes: 100_000,
             market_inputs: entry_decision_source_market_inputs(&instruments),
@@ -11671,6 +11922,8 @@ fn entry_decision_source_input_collector_rejects_selected_price_precision_mismat
                 max_price_to_beat_source_bytes: 100_000,
                 reference_quote_source_path: &paths.reference_quote_source_path,
                 max_reference_quote_source_bytes: 100_000,
+                signal_quote_source_path: &paths.signal_quote_source_path,
+                max_signal_quote_source_bytes: 100_000,
                 realized_volatility_source_path: &paths.realized_volatility_source_path,
                 max_realized_volatility_source_bytes: 100_000,
                 market_inputs: entry_decision_source_market_inputs(&instruments),
@@ -11744,6 +11997,8 @@ fn entry_decision_source_input_provider_validates_local_proofs_before_network() 
                     max_price_to_beat_source_bytes: 100_000,
                     reference_quote_source_path: &paths.reference_quote_source_path,
                     max_reference_quote_source_bytes: 100_000,
+                    signal_quote_source_path: &paths.signal_quote_source_path,
+                    max_signal_quote_source_bytes: 100_000,
                     realized_volatility_source_path: &paths.realized_volatility_source_path,
                     max_realized_volatility_source_bytes: 100_000,
                     decision_source_output_path: &paths.decision_source_output,
@@ -12141,6 +12396,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
     };
     let admission = BoltV3AdmissionDecisionEvidence {
         strategy_id: snapshot.strategy_id.clone(),
+        execution_client_id: TEST_EXECUTION_CLIENT_ID.to_string(),
         client_order_id: snapshot.client_order_id.clone(),
         instrument_id: snapshot.submission_instrument_id.clone(),
         notional: "0.50".to_string(),
@@ -12151,7 +12407,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
     let mut decision_evidence = String::new();
     for line in [
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -12159,7 +12415,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "snapshot": snapshot.clone(),
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -12167,7 +12423,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "intent": intent.clone(),
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",
@@ -12231,7 +12487,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
     let mut wrong_decision_evidence = String::new();
     for line in [
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -12239,7 +12495,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "snapshot": wrong_snapshot,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -12247,7 +12503,7 @@ fn strategy_input_writer_emits_phase8_artifact_from_runtime_snapshot_and_market_
             "intent": wrong_intent,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",
@@ -14598,6 +14854,7 @@ fn write_entry_decision_evidence_chain_at(
     };
     let admission = BoltV3AdmissionDecisionEvidence {
         strategy_id: snapshot.strategy_id.clone(),
+        execution_client_id: TEST_EXECUTION_CLIENT_ID.to_string(),
         client_order_id: snapshot.client_order_id.clone(),
         instrument_id: snapshot.submission_instrument_id.clone(),
         notional: "0.50".to_string(),
@@ -14607,7 +14864,7 @@ fn write_entry_decision_evidence_chain_at(
     let mut decision_evidence = String::new();
     for line in [
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 1_i64,
             "gate_id": "bolt_v3.strategy_input_snapshot",
             "gate_version": "0.1.0",
@@ -14615,7 +14872,7 @@ fn write_entry_decision_evidence_chain_at(
             "snapshot": snapshot,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 2_i64,
             "gate_id": "bolt_v3.order_intent",
             "gate_version": "0.1.0",
@@ -14623,7 +14880,7 @@ fn write_entry_decision_evidence_chain_at(
             "intent": intent,
         }),
         serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "recorded_at_utc_ns": 3_i64,
             "gate_id": "bolt_v3.submit_admission",
             "gate_version": "0.1.0",

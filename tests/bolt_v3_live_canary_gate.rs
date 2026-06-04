@@ -11,7 +11,6 @@ use bolt_v2::{
         check_bolt_v3_live_canary_gate, check_bolt_v3_live_canary_pre_consumption_gate,
         pre_consumption_operator_evidence_bounded_read_paths,
     },
-    bolt_v3_live_node::{BoltV3LiveNodeError, build_bolt_v3_live_node_with, run_bolt_v3_live_node},
     bolt_v3_no_submit_readiness_schema::{
         APPROVAL_CONSUMPTION_RECORD_KIND, APPROVAL_CONSUMPTION_SCHEMA_VERSION,
         APPROVAL_ID_HASH_KEY, CONFIG_BUNDLE_CHECKSUM_KEY, CONTROLLED_CONNECT_STAGE,
@@ -22,39 +21,145 @@ use bolt_v2::{
     },
 };
 use sha2::{Digest, Sha256};
-use tokio::task::LocalSet;
 
 const TEST_READINESS_REPORT_MAX_AGE_SECONDS: u64 = 60;
 
 #[test]
-fn run_bolt_v3_live_node_rejects_missing_live_canary_before_nt_run() {
-    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
-    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
-    let temp = support::TempCaseDir::new("bolt-v3-live-canary-build");
-    loaded.root.persistence.catalog_directory = temp.path().to_string_lossy().to_string();
-    let loaded = loaded_without_live_canary(loaded);
-    let mut node = build_bolt_v3_live_node_with(&loaded, |_| false, support::fake_bolt_v3_resolver)
-        .expect("fixture v3 LiveNode should build");
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime should build");
-    let local = LocalSet::new();
-
-    let error = runtime.block_on(local.run_until(async {
-        run_bolt_v3_live_node(&mut node, &loaded)
-            .await
-            .expect_err("missing live_canary block must fail before NT run")
-    }));
+fn run_bolt_v3_live_node_does_not_require_live_canary_before_nt_run() {
+    let source = support::repo_text("src/bolt_v3_live_node.rs");
+    let start = source
+        .find("pub async fn run_bolt_v3_live_node")
+        .expect("live runner entrypoint should exist");
+    let end = source[start..]
+        .find("fn run_blocked_before_submit")
+        .map(|offset| start + offset)
+        .expect("next helper should bound live runner source");
+    let runner = strip_rust_comments(&source[start..end]);
 
     assert!(
-        matches!(
-            error,
-            BoltV3LiveNodeError::LiveCanaryGate(BoltV3LiveCanaryGateError::MissingConfig)
-        ),
-        "expected missing live canary gate error, got {error:?}"
+        runner.contains("let run_future = node.run();"),
+        "live runner should enter NT through the wrapper"
     );
+    for pattern in [
+        "loaded.root.live_canary.is_none()",
+        "BoltV3LiveNodeError::LiveCanaryGate",
+        "check_bolt_v3_live_canary_gate",
+        "build_bolt_v3_live_submit_admission_report_from_config",
+        ".arm(",
+    ] {
+        assert!(
+            !runner.contains(pattern),
+            "production live run must not require the live-canary/no-submit submit-admission gate; found forbidden pattern `{pattern}`"
+        );
+    }
+}
+
+fn strip_rust_comments(source: &str) -> String {
+    enum State {
+        Code,
+        LineComment,
+        BlockComment,
+        String { escaped: bool },
+        RawString { hashes: usize },
+    }
+
+    fn raw_string_hashes_at(chars: &[char], index: usize) -> Option<usize> {
+        if chars.get(index) != Some(&'r') {
+            return None;
+        }
+        let mut cursor = index + 1;
+        let mut hashes = 0;
+        while chars.get(cursor) == Some(&'#') {
+            hashes += 1;
+            cursor += 1;
+        }
+        (chars.get(cursor) == Some(&'"')).then_some(hashes)
+    }
+
+    let chars = source.chars().collect::<Vec<_>>();
+    let mut output = String::with_capacity(source.len());
+    let mut state = State::Code;
+    let mut index = 0;
+    while let Some(&current) = chars.get(index) {
+        match state {
+            State::Code => {
+                if chars.get(index) == Some(&'/') && chars.get(index + 1) == Some(&'/') {
+                    state = State::LineComment;
+                    index += 2;
+                } else if chars.get(index) == Some(&'/') && chars.get(index + 1) == Some(&'*') {
+                    state = State::BlockComment;
+                    index += 2;
+                } else if let Some(hashes) = raw_string_hashes_at(&chars, index) {
+                    output.push('r');
+                    index += 1;
+                    for _ in 0..hashes {
+                        output.push('#');
+                        index += 1;
+                    }
+                    output.push('"');
+                    index += 1;
+                    state = State::RawString { hashes };
+                } else if current == '"' {
+                    output.push(current);
+                    state = State::String { escaped: false };
+                    index += 1;
+                } else {
+                    output.push(current);
+                    index += 1;
+                }
+            }
+            State::LineComment => {
+                if current == '\n' {
+                    output.push(current);
+                    state = State::Code;
+                }
+                index += 1;
+            }
+            State::BlockComment => {
+                if current == '\n' {
+                    output.push(current);
+                    index += 1;
+                } else if current == '*' && chars.get(index + 1) == Some(&'/') {
+                    state = State::Code;
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+            }
+            State::String { escaped } => {
+                output.push(current);
+                state = if escaped {
+                    State::String { escaped: false }
+                } else if current == '\\' {
+                    State::String { escaped: true }
+                } else if current == '"' {
+                    State::Code
+                } else {
+                    State::String { escaped: false }
+                };
+                index += 1;
+            }
+            State::RawString { hashes } => {
+                output.push(current);
+                if current == '"' {
+                    let closes_raw_string =
+                        (1..=hashes).all(|offset| chars.get(index + offset) == Some(&'#'));
+                    if closes_raw_string {
+                        for offset in 1..=hashes {
+                            output.push(chars[index + offset]);
+                        }
+                        index += hashes + 1;
+                        state = State::Code;
+                    } else {
+                        index += 1;
+                    }
+                } else {
+                    index += 1;
+                }
+            }
+        }
+    }
+    output
 }
 
 #[test]
@@ -4052,12 +4157,6 @@ fn loaded_with_live_canary(
 ) -> LoadedBoltV3Config {
     let mut root = loaded.root;
     root.live_canary = Some(live_canary);
-    LoadedBoltV3Config { root, ..loaded }
-}
-
-fn loaded_without_live_canary(loaded: LoadedBoltV3Config) -> LoadedBoltV3Config {
-    let mut root = loaded.root;
-    root.live_canary = None;
     LoadedBoltV3Config { root, ..loaded }
 }
 

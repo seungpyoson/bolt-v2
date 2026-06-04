@@ -1,8 +1,12 @@
 use clap::Parser;
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use bolt_v2::{
     bolt_v3_config::load_bolt_v3_config,
+    bolt_v3_live_canary_gate::current_build_head_sha,
     bolt_v3_live_node::{
         BoltV3NoSubmitBookDeltasEvidence, BoltV3NoSubmitDataClientReadinessEvidence,
         BoltV3NoSubmitReferenceQuoteEvidence, BoltV3NoSubmitTradeEvidence,
@@ -62,9 +66,14 @@ use bolt_v2::{
     },
     bolt_v3_providers::{
         ClobV2BalanceAllowanceCacheSync, ClobV2BalanceAllowanceCacheSyncRequest,
-        binding_for_provider_key, sync_clob_v2_balance_allowance_cache_from_configured_account,
+        ProviderArtifactReference, ProviderLiveSubmitApprovalContext,
+        ProviderProductSubmitProofArtifactRequest, binding_for_provider_key,
+        sync_clob_v2_balance_allowance_cache_from_configured_account,
     },
-    bolt_v3_secrets::{check_no_forbidden_credential_env_vars, resolve_bolt_v3_secrets},
+    bolt_v3_secrets::{
+        check_no_forbidden_credential_env_vars, resolve_bolt_v3_client_secrets,
+        resolve_bolt_v3_secrets,
+    },
     secrets::SsmResolverSession,
 };
 
@@ -164,6 +173,52 @@ enum OperatorArtifactsCommand {
     ComputeApprovalEnvelopeSha256 {
         #[arg(short, long)]
         config: PathBuf,
+    },
+    GenerateLiveSubmitApproval {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        client_key: String,
+        #[arg(long)]
+        expires_at_unix_seconds: u64,
+    },
+    PreflightLiveSubmitArming {
+        #[arg(short, long)]
+        config: PathBuf,
+        #[arg(long)]
+        client_key: String,
+    },
+    GenerateProductSubmitProof {
+        #[arg(long)]
+        provider_key: String,
+        #[arg(long)]
+        provider_id: String,
+        #[arg(long)]
+        product_surface: String,
+        #[arg(long)]
+        toml_checksum: String,
+        #[arg(long)]
+        order_proof_artifact_path: String,
+        #[arg(long)]
+        order_proof_artifact_sha256: String,
+        #[arg(long)]
+        fill_proof_artifact_path: String,
+        #[arg(long)]
+        fill_proof_artifact_sha256: String,
+        #[arg(long)]
+        rounding_proof_artifact_path: String,
+        #[arg(long)]
+        rounding_proof_artifact_sha256: String,
+        #[arg(long)]
+        fee_proof_artifact_path: String,
+        #[arg(long)]
+        fee_proof_artifact_sha256: String,
+        #[arg(long)]
+        settlement_proof_artifact_path: Option<String>,
+        #[arg(long)]
+        settlement_proof_artifact_sha256: Option<String>,
+        #[arg(long)]
+        output: PathBuf,
     },
     UpdateOperatorEvidenceToml {
         #[arg(short, long)]
@@ -567,6 +622,10 @@ enum OperatorArtifactsCommand {
         #[arg(long)]
         max_reference_quote_source_bytes: u64,
         #[arg(long)]
+        signal_quote_source: PathBuf,
+        #[arg(long)]
+        max_signal_quote_source_bytes: u64,
+        #[arg(long)]
         realized_volatility_source: PathBuf,
         #[arg(long)]
         max_realized_volatility_source_bytes: u64,
@@ -590,6 +649,10 @@ enum OperatorArtifactsCommand {
         reference_quote_source: PathBuf,
         #[arg(long)]
         max_reference_quote_source_bytes: u64,
+        #[arg(long)]
+        signal_quote_source: PathBuf,
+        #[arg(long)]
+        max_signal_quote_source_bytes: u64,
         #[arg(long)]
         realized_volatility_source: PathBuf,
         #[arg(long)]
@@ -802,6 +865,152 @@ fn run_operator_artifacts_command(
                 serde_json::to_string_pretty(&serde_json::json!({ "sha256": sha256 }))?
             );
             Ok(())
+        }
+        OperatorArtifactsCommand::GenerateLiveSubmitApproval {
+            config,
+            client_key,
+            expires_at_unix_seconds,
+        } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            check_no_forbidden_credential_env_vars(&loaded.root)?;
+            let client = loaded.root.clients.get(&client_key).ok_or_else(|| {
+                format!("clients.{client_key} is not configured for live-submit approval")
+            })?;
+            let binding = binding_for_provider_key(client.venue.as_str()).ok_or_else(|| {
+                format!(
+                    "clients.{client_key}.venue `{}` is not supported by this build",
+                    client.venue.as_str()
+                )
+            })?;
+            let writer = binding.write_live_submit_approval_artifact.ok_or_else(|| {
+                format!(
+                    "clients.{client_key}.venue `{}` does not support live-submit approval materialization",
+                    client.venue.as_str()
+                )
+            })?;
+            let ssm_resolver_session = SsmResolverSession::new()?;
+            let resolved =
+                resolve_bolt_v3_client_secrets(&ssm_resolver_session, &loaded, &client_key)?;
+            let build_head_sha = current_build_head_sha()
+                .ok_or("bolt-v3 build head_sha is unavailable or invalid")?;
+            let now_unix_seconds = current_unix_seconds_for_cli()?;
+            let written = writer(
+                ProviderLiveSubmitApprovalContext {
+                    loaded: &loaded,
+                    client_key: &client_key,
+                    client,
+                    resolved: &resolved,
+                    now_unix_seconds,
+                    build_head_sha,
+                },
+                expires_at_unix_seconds,
+            )?;
+            print_written_operator_artifact(&written)
+        }
+        OperatorArtifactsCommand::PreflightLiveSubmitArming { config, client_key } => {
+            let loaded = load_bolt_v3_config(&config)?;
+            check_no_forbidden_credential_env_vars(&loaded.root)?;
+            let client = loaded.root.clients.get(&client_key).ok_or_else(|| {
+                format!("clients.{client_key} is not configured for live-submit arming preflight")
+            })?;
+            let binding = binding_for_provider_key(client.venue.as_str()).ok_or_else(|| {
+                format!(
+                    "clients.{client_key}.venue `{}` is not supported by this build",
+                    client.venue.as_str()
+                )
+            })?;
+            let preflight = binding.preflight_live_submit_arming.ok_or_else(|| {
+                format!(
+                    "clients.{client_key}.venue `{}` does not support live-submit arming preflight",
+                    client.venue.as_str()
+                )
+            })?;
+            let ssm_resolver_session = SsmResolverSession::new()?;
+            let resolved =
+                resolve_bolt_v3_client_secrets(&ssm_resolver_session, &loaded, &client_key)?;
+            let build_head_sha = current_build_head_sha()
+                .ok_or("bolt-v3 build head_sha is unavailable or invalid")?;
+            let now_unix_seconds = current_unix_seconds_for_cli()?;
+            let report = preflight(ProviderLiveSubmitApprovalContext {
+                loaded: &loaded,
+                client_key: &client_key,
+                client,
+                resolved: &resolved,
+                now_unix_seconds,
+                build_head_sha,
+            })?
+            .ok_or_else(|| {
+                format!("clients.{client_key} is not armed for live-submit preflight")
+            })?;
+            let output = serde_json::to_value(report)?;
+            println!("{}", serde_json::to_string_pretty(&output)?);
+            Ok(())
+        }
+        OperatorArtifactsCommand::GenerateProductSubmitProof {
+            provider_key,
+            provider_id,
+            product_surface,
+            toml_checksum,
+            order_proof_artifact_path,
+            order_proof_artifact_sha256,
+            fill_proof_artifact_path,
+            fill_proof_artifact_sha256,
+            rounding_proof_artifact_path,
+            rounding_proof_artifact_sha256,
+            fee_proof_artifact_path,
+            fee_proof_artifact_sha256,
+            settlement_proof_artifact_path,
+            settlement_proof_artifact_sha256,
+            output,
+        } => {
+            let settlement_proof = match (
+                settlement_proof_artifact_path.as_deref(),
+                settlement_proof_artifact_sha256.as_deref(),
+            ) {
+                (Some(artifact_path), Some(artifact_sha256)) => Some(ProviderArtifactReference {
+                    artifact_path,
+                    artifact_sha256,
+                }),
+                (None, None) => None,
+                _ => {
+                    return Err(
+                        "settlement proof artifact path and sha256 must be supplied together"
+                            .into(),
+                    );
+                }
+            };
+            let binding = binding_for_provider_key(&provider_key).ok_or_else(|| {
+                format!("provider_key `{provider_key}` is not supported by this build")
+            })?;
+            let writer = binding.write_product_submit_proof_artifact.ok_or_else(|| {
+                format!(
+                    "provider_key `{provider_key}` does not support product-submit proof materialization"
+                )
+            })?;
+            let written = writer(ProviderProductSubmitProofArtifactRequest {
+                provider_id: &provider_id,
+                product_surface: &product_surface,
+                toml_checksum: &toml_checksum,
+                order_proof: ProviderArtifactReference {
+                    artifact_path: &order_proof_artifact_path,
+                    artifact_sha256: &order_proof_artifact_sha256,
+                },
+                fill_proof: ProviderArtifactReference {
+                    artifact_path: &fill_proof_artifact_path,
+                    artifact_sha256: &fill_proof_artifact_sha256,
+                },
+                rounding_proof: ProviderArtifactReference {
+                    artifact_path: &rounding_proof_artifact_path,
+                    artifact_sha256: &rounding_proof_artifact_sha256,
+                },
+                fee_proof: ProviderArtifactReference {
+                    artifact_path: &fee_proof_artifact_path,
+                    artifact_sha256: &fee_proof_artifact_sha256,
+                },
+                settlement_proof,
+                output_path: &output,
+            })?;
+            print_written_operator_artifact(&written)
         }
         OperatorArtifactsCommand::UpdateOperatorEvidenceToml {
             config,
@@ -1533,6 +1742,8 @@ fn run_operator_artifacts_command(
             max_price_to_beat_source_bytes,
             reference_quote_source,
             max_reference_quote_source_bytes,
+            signal_quote_source,
+            max_signal_quote_source_bytes,
             realized_volatility_source,
             max_realized_volatility_source_bytes,
             decision_source_output,
@@ -1552,6 +1763,8 @@ fn run_operator_artifacts_command(
                         max_price_to_beat_source_bytes,
                         reference_quote_source_path: &reference_quote_source,
                         max_reference_quote_source_bytes,
+                        signal_quote_source_path: &signal_quote_source,
+                        max_signal_quote_source_bytes,
                         realized_volatility_source_path: &realized_volatility_source,
                         max_realized_volatility_source_bytes,
                         decision_source_output_path: &decision_source_output,
@@ -1577,6 +1790,8 @@ fn run_operator_artifacts_command(
             max_price_to_beat_source_bytes,
             reference_quote_source,
             max_reference_quote_source_bytes,
+            signal_quote_source,
+            max_signal_quote_source_bytes,
             realized_volatility_source,
             max_realized_volatility_source_bytes,
             gate_session_output,
@@ -1596,6 +1811,8 @@ fn run_operator_artifacts_command(
                         max_price_to_beat_source_bytes,
                         reference_quote_source_path: &reference_quote_source,
                         max_reference_quote_source_bytes,
+                        signal_quote_source_path: &signal_quote_source,
+                        max_signal_quote_source_bytes,
                         realized_volatility_source_path: &realized_volatility_source,
                         max_realized_volatility_source_bytes,
                         gate_session_output_path: &gate_session_output,
@@ -1779,6 +1996,10 @@ fn written_operator_artifact_json(written: &WrittenOperatorArtifact) -> serde_js
         "path": &written.path,
         "sha256": &written.sha256,
     })
+}
+
+fn current_unix_seconds_for_cli() -> Result<u64, Box<dyn std::error::Error>> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
 
 fn run_secrets_command(command: SecretsCommand) -> Result<(), Box<dyn std::error::Error>> {

@@ -162,7 +162,6 @@ manage_own_order_books = false
 default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
-bypass = false
 max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}
@@ -494,7 +493,7 @@ Fields rejected by NautilusTrader's current Rust live runtime are still required
 
 ### `[risk]`
 
-This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTrader live risk-engine fields. All `nt_*` fields are required in TOML and mapped into `LiveRiskEngineConfig`; `default_max_notional_per_order` is the Bolt-v3-owned strategy-sizing cap. Fields under `[nautilus]` do not use the prefix because the section name already carries the NT context.
+This section owns both Bolt-v3 strategy-sizing limits and the configurable pinned NautilusTrader live risk-engine fields. All configurable `nt_*` fields are required in TOML and mapped into `LiveRiskEngineConfig`, except `bypass`, which is not a config field and is pinned to `false` directly in code (see below); `default_max_notional_per_order` is the Bolt-v3-owned strategy-sizing cap. Fields under `[nautilus]` do not use the prefix because the section name already carries the NT context.
 
 #### `default_max_notional_per_order`
 
@@ -504,12 +503,11 @@ This section owns both Bolt-v3 strategy-sizing limits and all pinned NautilusTra
 - enforced by bolt-v3 strategy validation: each strategy file's `parameters.order_notional_target` must be `<=` this value
 - not automatically expanded into NautilusTrader per-instrument maps; `risk.nautilus.max_notional_per_order` is the explicit NT map when instrument-level caps are intentionally configured
 
-#### `bypass` (inside `[risk.nautilus]`)
+#### NautilusTrader risk-engine bypass (removed config field)
 
-- type: boolean
-- required: yes
-- maps to Nautilus `LiveRiskEngineConfig.bypass`
-- must remain `false` for production configurations unless a separately reviewed safety exception is approved
+- the previously configurable `bypass` field inside `[risk.nautilus]` has been removed
+- NautilusTrader `LiveRiskEngineConfig.bypass` is now pinned to `false` directly in code (in the live-node config construction); there is no config knob and no "safety exception" path
+- a stray `bypass` key under `[risk.nautilus]` is rejected at parse time via `deny_unknown_fields`
 
 #### `max_order_submit_rate` (inside `[risk.nautilus]`)
 
@@ -609,11 +607,11 @@ There is no separate `log_directory` knob in the current bolt-v3 scope. Bolt-v3 
 - local decision-evidence JSONL path under `catalog_directory`
 - must remain relative so a root catalog move changes only one config location
 
-Decision-evidence JSONL records use `schema_version = 5` for `order_intent`, `admission_decision`, and `strategy_input_snapshot` envelopes.
+Decision-evidence JSONL records use `schema_version = 6` for `order_intent`, `admission_decision`, and `strategy_input_snapshot` envelopes.
 Each line is a single JSON object with `schema_version`, `recorded_at_utc_ns`, `gate_version`, `gate_id`, `kind`, and either `intent`, `decision`, or `snapshot`.
 The `kind` field is `order_intent` for `intent` payloads and `admission_decision` for `decision` payloads.
 `order_intent` payloads carry the configured strategy/order identity plus compiled NT order semantics under `order_fields`.
-`admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id`.
+`admission_decision` payloads carry the submit-admission gate decision for the same `client_order_id` and the `execution_client_id` whose submit-admission limits were evaluated.
 `strategy_input_snapshot` payloads carry source-bound entry decision inputs captured before order-intent recording.
 
 `order_intent.order_fields` fields:
@@ -1903,7 +1901,6 @@ manage_own_order_books = false
 default_max_notional_per_order = "10.00"
 
 [risk.nautilus]
-bypass = false
 max_order_submit_rate = "40/00:01:00"
 max_order_modify_rate = "40/00:01:00"
 max_notional_per_order = {}

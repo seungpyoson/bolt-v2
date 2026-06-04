@@ -27,7 +27,8 @@ use crate::{
         EntryDecisionSourceInputRequest, EntryDecisionSourceInputsWritten,
         EntryDecisionSourceMarketInputs, EntryDecisionSourceProofFileRequest,
         build_entry_readiness_gate_session_from_source_proof_files,
-        selected_entry_decision_market_attempts, validate_entry_decision_source_proof_files,
+        canary_proof_policy_input_from_loaded, selected_entry_decision_market_attempts,
+        validate_entry_decision_source_proof_files,
         write_entry_decision_source_inputs_from_selected_source_files,
         write_json_artifact_create_new,
     },
@@ -96,6 +97,8 @@ async fn collect_entry_decision_source_inputs_inner(
             max_price_to_beat_source_bytes: context.request.max_price_to_beat_source_bytes,
             reference_quote_source_path: context.request.reference_quote_source_path,
             max_reference_quote_source_bytes: context.request.max_reference_quote_source_bytes,
+            signal_quote_source_path: context.request.signal_quote_source_path,
+            max_signal_quote_source_bytes: context.request.max_signal_quote_source_bytes,
             realized_volatility_source_path: context.request.realized_volatility_source_path,
             max_realized_volatility_source_bytes: context
                 .request
@@ -151,6 +154,8 @@ async fn collect_entry_decision_source_inputs_inner(
             max_price_to_beat_source_bytes: context.request.max_price_to_beat_source_bytes,
             reference_quote_source_path: context.request.reference_quote_source_path,
             max_reference_quote_source_bytes: context.request.max_reference_quote_source_bytes,
+            signal_quote_source_path: context.request.signal_quote_source_path,
+            max_signal_quote_source_bytes: context.request.max_signal_quote_source_bytes,
             realized_volatility_source_path: context.request.realized_volatility_source_path,
             max_realized_volatility_source_bytes: context
                 .request
@@ -185,6 +190,8 @@ async fn collect_canary_proof_artifacts_inner(
         max_price_to_beat_source_bytes: context.request.max_price_to_beat_source_bytes,
         reference_quote_source_path: context.request.reference_quote_source_path,
         max_reference_quote_source_bytes: context.request.max_reference_quote_source_bytes,
+        signal_quote_source_path: context.request.signal_quote_source_path,
+        max_signal_quote_source_bytes: context.request.max_signal_quote_source_bytes,
         realized_volatility_source_path: context.request.realized_volatility_source_path,
         max_realized_volatility_source_bytes: context.request.max_realized_volatility_source_bytes,
     };
@@ -240,7 +247,7 @@ async fn collect_canary_proof_artifacts_inner(
     )?;
     let gate_session_written =
         write_json_artifact_create_new(context.request.gate_session_output_path, &gate_session)?;
-    let proof_policy = live_canary_proof_policy_input(
+    let proof_policy = canary_proof_policy_input_from_loaded(
         context.loaded,
         context.strategy_instance_id,
         gate_session.session_hash.as_str(),
@@ -678,43 +685,6 @@ fn retain_canary_proof_markets_with_source_runway(
 ) {
     let minimum_expiration_ms = source_timestamp_ms.saturating_add(source_window_ms);
     attempts.retain(|selected| selected.expiration_timestamp_milliseconds >= minimum_expiration_ms);
-}
-
-fn live_canary_proof_policy_input(
-    loaded: &crate::bolt_v3_config::LoadedBoltV3Config,
-    strategy_instance_id: &str,
-    current_source_ref: &str,
-) -> Result<CanaryProofPolicyInput, BoltV3OperatorArtifactError> {
-    let live_canary = live_canary_for_canary_proof_artifacts(loaded)?;
-    let policy = live_canary.proof_policy.as_ref().ok_or_else(|| {
-        entry_decision_source_invalid(
-            "live_canary.proof_policy block is required for canary proof artifacts",
-        )
-    })?;
-    if !policy.enabled {
-        return Err(entry_decision_source_invalid(
-            "live_canary.proof_policy must be enabled for canary proof artifacts",
-        ));
-    }
-    if policy.strategy_instance_id != strategy_instance_id {
-        return Err(entry_decision_source_invalid(
-            "live_canary.proof_policy.strategy_instance_id does not match requested strategy",
-        ));
-    }
-    Ok(CanaryProofPolicyInput {
-        strategy_instance_id: policy.strategy_instance_id.clone(),
-        execution_client_id: policy.execution_client_id.clone(),
-        proof_claim: policy.proof_claim.clone(),
-        proof_notional: decimal_from_str(policy.proof_notional.as_str(), "canary proof notional")?,
-        max_notional_per_order: decimal_from_str(
-            live_canary.max_notional_per_order.as_str(),
-            "canary proof max notional per order",
-        )?,
-        allow_negative_expected_ev: policy.allow_negative_expected_ev,
-        source_ready: true,
-        current_source_ref: current_source_ref.to_string(),
-        candidates: Vec::new(),
-    })
 }
 
 fn live_canary_for_canary_proof_artifacts(

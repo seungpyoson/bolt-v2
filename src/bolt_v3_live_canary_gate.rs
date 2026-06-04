@@ -2613,7 +2613,7 @@ fn is_sha256_hex(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-pub(crate) fn current_build_head_sha() -> Option<&'static str> {
+pub fn current_build_head_sha() -> Option<&'static str> {
     option_env!("BOLT_V3_BUILD_HEAD_SHA").filter(|value| is_git_head_sha(value))
 }
 
@@ -3471,6 +3471,7 @@ mod tests {
             .checked_add(1)
             .expect("test admission timestamp should fit in i64");
         let strategy_id = "operator-canary-strategy".to_string();
+        let execution_client_id = "operator-canary-execution-client".to_string();
         let client_order_id = "operator-canary-entry-001".to_string();
         let instrument_id = "operator-canary-instrument".to_string();
         let selected_market_key = "operator-canary-market-key".to_string();
@@ -3560,6 +3561,7 @@ mod tests {
         };
         let admission = BoltV3AdmissionDecisionEvidence {
             strategy_id,
+            execution_client_id,
             client_order_id,
             instrument_id,
             notional: "0.50".to_string(),

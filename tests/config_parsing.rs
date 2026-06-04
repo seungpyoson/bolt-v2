@@ -5147,7 +5147,10 @@ fn replace_in_fixture_section(section_header: &str, replacements: &[(&str, &str)
                 for (idx, (needle, replacement)) in replacements.iter().enumerate() {
                     if trimmed == *needle {
                         hits[idx] += 1;
-                        return (*replacement).to_string();
+                        // Preserve the matched line's leading indentation so the
+                        // mutated fixture keeps its original TOML formatting.
+                        let indent = &line[..line.len() - line.trim_start().len()];
+                        return format!("{indent}{replacement}");
                     }
                 }
             }

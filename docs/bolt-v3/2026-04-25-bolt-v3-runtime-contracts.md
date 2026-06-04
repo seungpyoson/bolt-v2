@@ -145,7 +145,7 @@ Rules:
 - strategy-local notional limits are not sufficient by themselves
 - current root-level risk settings must be explicit in TOML
 - NautilusTrader live data-engine defaults must be explicit in TOML and mapped into `LiveDataEngineConfig`; the builder path must not inherit `LiveDataEngineConfig::default()` silently
-- NautilusTrader live risk-engine defaults must be explicit in TOML and mapped into `LiveRiskEngineConfig`; the builder path must not inherit `LiveRiskEngineConfig::default()` silently
+- every configurable NautilusTrader live risk-engine default must be explicit in TOML and mapped into `LiveRiskEngineConfig`; the `bypass` field is not configurable and is pinned to `false` in code (see the risk-engine bypass invariant below); the builder path must not inherit `LiveRiskEngineConfig::default()` silently
 - NautilusTrader live exec-engine defaults are explicit in TOML and mapped into `LiveExecEngineConfig`; the builder path must not inherit `LiveExecEngineConfig::default()` silently
 - NautilusTrader logger fields not represented in TOML must be explicit accepted defaults or disabled settings in the bolt-v3 builder path; the builder path must not inherit `LoggerConfig::default()` silently
 - remaining top-level `LiveNodeConfig` fields not represented in TOML must be explicit disabled/empty settings in the bolt-v3 builder path; the builder path must not inherit top-level `LiveNodeConfig::default()` silently

@@ -2,12 +2,12 @@
 """Verify binary-oracle strategy policy stays config-owned.
 
 This gate covers Phase 9 hardcode-policy regressions in the production strategy
-source. The strategy root may be a single file or a directory of `.rs` files
-(after the A3 split, the directory `{mod.rs, selection.rs}`); it is resolved
-layout-independently through the shared gated-source-root registry so the gate
-follows file moves. Each file's production text — comments and `#[cfg(test)]`
-code excluded via the shared production-text helper — is scanned individually so
-violations are reported against the file that actually contains them.
+source. The strategy root may be a single file or a directory of `.rs` files;
+it is resolved layout-independently through the shared gated-source-root
+registry so the gate follows file moves. Each file's production text — comments
+and `#[cfg(test)]` code excluded via the shared production-text helper — is
+scanned individually so violations are reported against the file that actually
+contains them.
 """
 
 from __future__ import annotations

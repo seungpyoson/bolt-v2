@@ -249,7 +249,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
             original_root = source_roots.REPO_ROOT
             source_roots.REPO_ROOT = root
             try:
-                with self.assertRaisesRegex(ValueError, "source file exceeds 1 MiB limit"):
+                with self.assertRaisesRegex(ValueError, "source file exceeds 8 MiB limit"):
                     source_roots.module_text("module")
             finally:
                 source_roots.REPO_ROOT = original_root

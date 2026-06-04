@@ -146,6 +146,18 @@ fn relative_path_bytes(root: &Path, path: &Path) -> io::Result<Vec<u8>> {
     Ok(components.join("/").into_bytes())
 }
 
+fn source_root_file_type(root: &Path) -> io::Result<std::fs::FileType> {
+    let metadata = std::fs::symlink_metadata(root)?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("source root is a symlink: {}", root.display()),
+        ));
+    }
+    Ok(file_type)
+}
+
 /// Canonical byte stream for a source `root`.
 ///
 /// - **IDENTITY case** (`root` is a regular file): the file's raw bytes verbatim
@@ -159,14 +171,7 @@ fn relative_path_bytes(root: &Path, path: &Path) -> io::Result<Vec<u8>> {
 ///   reads obey `max_bytes`, and a running total-bytes ceiling (also `max_bytes`)
 ///   bounds the whole directory so it can never silently exceed today's cap.
 pub fn canonical_source_bytes(root: &Path, max_bytes: u64) -> io::Result<Vec<u8>> {
-    let metadata = std::fs::symlink_metadata(root)?;
-    let file_type = metadata.file_type();
-    if file_type.is_symlink() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("source root is a symlink: {}", root.display()),
-        ));
-    }
+    let file_type = source_root_file_type(root)?;
     if file_type.is_file() {
         // IDENTITY: verbatim raw bytes.
         return read_file_bounded(root, max_bytes);
@@ -221,8 +226,7 @@ pub fn canonical_source_digest(root: &Path, max_bytes: u64) -> io::Result<String
 /// canonical order. There is exactly ONE order across the digest and the text
 /// accessors.
 pub fn module_source_text(root: &Path, max_bytes: u64) -> io::Result<String> {
-    let metadata = std::fs::symlink_metadata(root)?;
-    let file_type = metadata.file_type();
+    let file_type = source_root_file_type(root)?;
     if file_type.is_file() {
         let bytes = read_file_bounded(root, max_bytes)?;
         return utf8_string(bytes, root);
@@ -272,8 +276,7 @@ pub fn module_source_text(root: &Path, max_bytes: u64) -> io::Result<String> {
 ///   test module) would be a separate concern; today no gated directory contains
 ///   one, and any such file would be split at its own marker like the rest.
 pub fn production_module_source_text(root: &Path, max_bytes: u64) -> io::Result<String> {
-    let metadata = std::fs::symlink_metadata(root)?;
-    let file_type = metadata.file_type();
+    let file_type = source_root_file_type(root)?;
     if file_type.is_file() {
         let bytes = read_file_bounded(root, max_bytes)?;
         let text = utf8_string(bytes, root)?;
@@ -484,6 +487,28 @@ mod tests {
             error.to_string().contains("backslash"),
             "backslash path components must fail loudly, got: {error}"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn text_accessors_reject_symlink_root_explicitly() {
+        let dir = temp_dir("symlink_root");
+        let real = dir.join("real");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("a.rs"), b"fn a() {}").unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        for error in [
+            canonical_source_bytes(&link, 1_000_000).unwrap_err(),
+            module_source_text(&link, 1_000_000).unwrap_err(),
+            production_module_source_text(&link, 1_000_000).unwrap_err(),
+        ] {
+            assert!(
+                error.to_string().contains("source root is a symlink"),
+                "root symlink rejection should be explicit, got: {error}"
+            );
+        }
     }
 
     #[test]

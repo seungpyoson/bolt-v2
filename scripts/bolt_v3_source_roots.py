@@ -27,7 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # walk below resolves whichever it is at runtime.
 STRATEGY_SOURCE_ROOT = "src/strategies/binary_oracle_edge_taker"
 SUBMIT_ADMISSION_SOURCE_ROOT = "src/bolt_v3_submit_admission.rs"
-MAX_SOURCE_FILE_BYTES = 1024 * 1024
+MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024
 
 
 def source_files(relative_root: str) -> list[Path]:
@@ -72,6 +72,6 @@ def module_text(relative_root: str) -> str:
     texts = []
     for path in source_files(relative_root):
         if path.stat().st_size > MAX_SOURCE_FILE_BYTES:
-            raise ValueError(f"source file exceeds 1 MiB limit: {path}")
+            raise ValueError(f"source file exceeds 8 MiB limit: {path}")
         texts.append(path.read_text(encoding="utf-8"))
     return "".join(texts)

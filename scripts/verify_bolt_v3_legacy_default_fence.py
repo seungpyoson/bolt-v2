@@ -23,8 +23,8 @@ def _runtime_source_paths() -> tuple[str, ...]:
         "src/venue_contract.rs",
         *(
             # rglob (not glob) so the strategy module's submodule files are
-            # scanned after the A3 split moved them into the directory
-            # `src/strategies/binary_oracle_edge_taker/{mod.rs, selection.rs}`.
+            # scanned after the A3/A8 split moved them into the strategy
+            # directory module.
             # A non-recursive glob would silently drop the strategy production
             # source and weaken this fence.
             path.relative_to(REPO_ROOT).as_posix()

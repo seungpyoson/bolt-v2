@@ -4167,9 +4167,9 @@ fn abort_plan_writer_emits_artifact_from_source_owned_collectors() {
     let json: serde_json::Value =
         serde_json::from_slice(&artifact_bytes).expect("abort plan should be JSON");
     assert_eq!(json["source_collector_derived"], true);
-    // The strategy root is now a DIRECTORY ({mod.rs, selection.rs}); read it as a
-    // single file (sha256_file) would panic with IsADirectory and would not match
-    // the producer. Compute the expected digest the SAME way the producer does at
+    // The strategy root is now a directory module; reading it as a single file
+    // (sha256_file) would panic with IsADirectory and would not match the
+    // producer. Compute the expected digest the SAME way the producer does at
     // src/bolt_v3_operator_artifacts.rs:6644 — canonical_source_digest over the
     // root with the identical cap passed to the writer above (1_000_000).
     assert_eq!(

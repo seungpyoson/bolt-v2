@@ -2,6 +2,7 @@ pub mod bolt_v3_adapters;
 pub mod bolt_v3_archetypes;
 pub mod bolt_v3_canary_proof_executor;
 pub mod bolt_v3_canary_proof_policy;
+pub(crate) mod bolt_v3_chainlink;
 pub mod bolt_v3_client_registration;
 pub mod bolt_v3_config;
 pub mod bolt_v3_decision_evidence;

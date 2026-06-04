@@ -32,6 +32,13 @@ use crate::{
         CANARY_PROOF_CANDIDATE_SOURCE_RECORD_KIND, CANARY_PROOF_CLAIM,
         CANARY_PROOF_ORDER_INTENT_RECORD_KIND,
     },
+    bolt_v3_chainlink::{
+        CHAINLINK_REPORT_NANOS_PER_MILLISECOND, ChainlinkDataStreamsReportApiResponse,
+        ChainlinkDataStreamsReportCollectionConfig, PriceToBeatReportBinding,
+        chainlink_data_streams_auth_headers, chainlink_data_streams_credentials,
+        chainlink_data_streams_report_request_url, decode_price_to_beat_report,
+        is_lowercase_chainlink_feed_id,
+    },
     bolt_v3_client_registration::BoltV3RegistrationSummary,
     bolt_v3_config::{
         BoltV3RootConfig, CHAINLINK_DATA_STREAMS_PROVIDER_KIND, DECISION_REFERENCE_GATE_ROLE,
@@ -152,30 +159,6 @@ const ABORT_PLAN_SOURCE_PROOF_BUNDLE_RECORD_KIND: &str =
     "bolt_v3.abort_plan_source_proof_bundle.v1";
 const SOURCE_BOUND_PRICE_TO_BEAT_SOURCE_SCHEMA_VERSION: u32 = 1;
 const SOURCE_BOUND_PRICE_TO_BEAT_SOURCE_RECORD_KIND: &str = "bolt_v3.source_bound_price_to_beat.v1";
-const CHAINLINK_PRICE_REPORT_SCHEMA_VERSION_V3: u64 = 3;
-const CHAINLINK_REPORT_ABI_WORD_BYTES: usize = 32;
-const CHAINLINK_REPORT_ABI_U64_VALUE_BYTES: usize = std::mem::size_of::<u64>();
-const CHAINLINK_REPORT_ABI_U32_VALUE_BYTES: usize = std::mem::size_of::<u32>();
-const CHAINLINK_REPORT_ABI_I192_VALUE_BYTES: usize =
-    CHAINLINK_REPORT_ABI_WORD_BYTES - CHAINLINK_REPORT_ABI_U64_VALUE_BYTES;
-const CHAINLINK_REPORT_ABI_U64_PREFIX_BYTES: usize =
-    CHAINLINK_REPORT_ABI_WORD_BYTES - CHAINLINK_REPORT_ABI_U64_VALUE_BYTES;
-const CHAINLINK_REPORT_ABI_U32_PREFIX_BYTES: usize =
-    CHAINLINK_REPORT_ABI_WORD_BYTES - CHAINLINK_REPORT_ABI_U32_VALUE_BYTES;
-const CHAINLINK_REPORT_ABI_I192_PREFIX_BYTES: usize =
-    CHAINLINK_REPORT_ABI_WORD_BYTES - CHAINLINK_REPORT_ABI_I192_VALUE_BYTES;
-const CHAINLINK_REPORT_BLOB_OFFSET_WORD_INDEX: usize = 3;
-const CHAINLINK_REPORT_CALLBACK_MIN_BYTES: usize = 4 * CHAINLINK_REPORT_ABI_WORD_BYTES;
-const CHAINLINK_REPORT_V3_WORD_COUNT: usize = 9;
-const CHAINLINK_REPORT_V3_FEED_ID_WORD_INDEX: usize = 0;
-const CHAINLINK_REPORT_V3_VALID_FROM_WORD_INDEX: usize = 1;
-const CHAINLINK_REPORT_V3_OBSERVATIONS_WORD_INDEX: usize = 2;
-const CHAINLINK_REPORT_V3_BENCHMARK_PRICE_WORD_INDEX: usize = 6;
-const CHAINLINK_REPORT_MILLISECONDS_PER_SECOND: u64 = 1_000;
-const CHAINLINK_REPORT_NANOS_PER_MILLISECOND: u64 = 1_000_000;
-const CHAINLINK_REPORT_SIGN_BIT_MASK: u8 = 0x80;
-const CHAINLINK_REPORT_BASE256_RADIX: f64 = 256.0;
-const CHAINLINK_REPORT_DECIMAL_RADIX: f64 = 10.0;
 const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";
 const CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD: &str = "report_endpoint_path";
 const CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD: &str = "http_timeout_secs";
@@ -187,16 +170,6 @@ const CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD: &str = "value_kind";
 const CHAINLINK_DATA_STREAMS_FEED_ID_FIELD: &str = "feed_id";
 const CHAINLINK_DATA_STREAMS_REPORT_SCHEMA_VERSION_FIELD: &str = "report_schema_version";
 const CHAINLINK_DATA_STREAMS_REPORT_DECIMAL_SCALE_FIELD: &str = "report_decimal_scale";
-const CHAINLINK_DATA_STREAMS_REPORT_FEED_ID_QUERY_FIELD: &str = "feedID";
-const CHAINLINK_DATA_STREAMS_REPORT_TIMESTAMP_QUERY_FIELD: &str = "timestamp";
-const CHAINLINK_DATA_STREAMS_AUTHORIZATION_HEADER: &str = "Authorization";
-const CHAINLINK_DATA_STREAMS_AUTHORIZATION_TIMESTAMP_HEADER: &str = "X-Authorization-Timestamp";
-const CHAINLINK_DATA_STREAMS_AUTHORIZATION_SIGNATURE_HEADER: &str =
-    "X-Authorization-Signature-SHA256";
-const CHAINLINK_DATA_STREAMS_GET_METHOD: &str = "GET";
-const CHAINLINK_DATA_STREAMS_HMAC_BLOCK_BYTES: usize = 64;
-const CHAINLINK_DATA_STREAMS_HMAC_IPAD: u8 = 0x36;
-const CHAINLINK_DATA_STREAMS_HMAC_OPAD: u8 = 0x5c;
 const REFERENCE_QUOTE_SOURCE_SCHEMA_VERSION: u32 = 1;
 const REFERENCE_QUOTE_SOURCE_RECORD_KIND: &str = "bolt_v3.reference_quote_source.v1";
 const REFERENCE_QUOTE_OBSERVATIONS_SOURCE_SCHEMA_VERSION: u32 = 1;
@@ -212,9 +185,7 @@ const ENTRY_DECISION_WARMUP_COUNT_FIELD: &str = "warmup_tick_count";
 const ENTRY_DECISION_UP_BOOK_LABEL: &str = "up";
 const ENTRY_DECISION_DOWN_BOOK_LABEL: &str = "down";
 const ENTRY_DECISION_ZERO_THRESHOLD: f64 = 0.0;
-const ENTRY_DECISION_ZERO_TIMESTAMP_MS: u64 = 0;
-const CHAINLINK_FEED_ID_PREFIX: &str = "0x";
-const CHAINLINK_FEED_ID_HEX_LENGTH: usize = 64;
+pub(crate) const ENTRY_DECISION_ZERO_TIMESTAMP_MS: u64 = 0;
 const SSM_MANIFEST_ARTIFACT_NAME: &str = "ssm-manifest";
 const FINANCIAL_ENVELOPE_ARTIFACT_NAME: &str = "financial-envelope";
 const STRATEGY_INPUT_ARTIFACT_NAME: &str = "strategy-input";
@@ -7175,64 +7146,10 @@ pub(crate) struct EntryDecisionFeeRateSourceArtifact {
     pub(crate) fee_bps_by_instrument_id: BTreeMap<String, f64>,
 }
 
-struct PriceToBeatReportBinding {
-    provider_id: String,
-    resolution_identity: String,
-    feed_id: String,
-    schema_version: u64,
-    decimal_scale: u64,
-}
-
 struct PriceToBeatProviderSelection {
     provider_id: String,
     resolution_identity: String,
     value_kind: String,
-}
-
-struct DecodedPriceToBeatReport {
-    feed_id: String,
-    valid_from_timestamp_ms: u64,
-    observations_timestamp_ms: u64,
-    benchmark_price: f64,
-}
-
-struct ChainlinkDataStreamsReportCollectionConfig {
-    rest_base_url: String,
-    report_endpoint_path: String,
-    api_key_ssm_parameter: String,
-    api_secret_ssm_parameter: String,
-    http_timeout_secs: u64,
-}
-
-struct ChainlinkDataStreamsCredentials {
-    api_key: String,
-    api_secret: String,
-}
-
-impl Drop for ChainlinkDataStreamsCredentials {
-    fn drop(&mut self) {
-        self.api_key.zeroize();
-        self.api_secret.zeroize();
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ChainlinkDataStreamsReportApiResponse {
-    report: ChainlinkDataStreamsReportSource,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ChainlinkDataStreamsReportSource {
-    #[serde(rename = "feedID")]
-    feed_id: String,
-    #[serde(rename = "validFromTimestamp")]
-    valid_from_timestamp: u64,
-    #[serde(rename = "observationsTimestamp")]
-    observations_timestamp: u64,
-    #[serde(rename = "fullReport")]
-    full_report: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -8546,7 +8463,7 @@ fn strategy_has_decision_reference_subscription(
         .is_some_and(|subscriptions| subscriptions.contains_key(DECISION_REFERENCE_GATE_ROLE))
 }
 
-fn price_to_beat_report_provenance_invalid() -> BoltV3OperatorArtifactError {
+pub(crate) fn price_to_beat_report_provenance_invalid() -> BoltV3OperatorArtifactError {
     entry_decision_source_invalid("source-bound price_to_beat report provenance is invalid")
 }
 
@@ -8554,7 +8471,7 @@ fn decision_reference_report_provenance_invalid() -> BoltV3OperatorArtifactError
     entry_decision_source_invalid("source-bound decision_reference report provenance is invalid")
 }
 
-fn price_to_beat_report_provenance_config_invalid() -> BoltV3OperatorArtifactError {
+pub(crate) fn price_to_beat_report_provenance_config_invalid() -> BoltV3OperatorArtifactError {
     entry_decision_source_invalid("source-bound price_to_beat report provenance config is invalid")
 }
 
@@ -8584,115 +8501,6 @@ fn string_provider_field(
         .ok_or_else(error)
 }
 
-fn chainlink_data_streams_credentials(
-    api_key: &str,
-    api_secret: &str,
-) -> Result<ChainlinkDataStreamsCredentials, BoltV3OperatorArtifactError> {
-    Ok(ChainlinkDataStreamsCredentials {
-        api_key: chainlink_credential_field(api_key.to_string(), "api_key")?,
-        api_secret: chainlink_credential_field(api_secret.to_string(), "api_secret")?,
-    })
-}
-
-fn chainlink_credential_field(
-    value: String,
-    field: &'static str,
-) -> Result<String, BoltV3OperatorArtifactError> {
-    if value.trim().is_empty() || value.trim() != value || value.chars().any(char::is_whitespace) {
-        return Err(entry_decision_source_invalid(format!(
-            "Chainlink Data Streams credential field `{field}` is invalid"
-        )));
-    }
-    Ok(value)
-}
-
-fn chainlink_data_streams_report_request_url(
-    rest_base_url: &str,
-    report_endpoint_path: &str,
-    feed_id: &str,
-    report_timestamp_unix_seconds: u64,
-) -> Result<(String, String), BoltV3OperatorArtifactError> {
-    let base_url = url::Url::parse(rest_base_url)
-        .map_err(|_| price_to_beat_report_provenance_config_invalid())?;
-    let mut url = base_url
-        .join(report_endpoint_path)
-        .map_err(|_| price_to_beat_report_provenance_config_invalid())?;
-    url.query_pairs_mut()
-        .append_pair(CHAINLINK_DATA_STREAMS_REPORT_FEED_ID_QUERY_FIELD, feed_id)
-        .append_pair(
-            CHAINLINK_DATA_STREAMS_REPORT_TIMESTAMP_QUERY_FIELD,
-            &report_timestamp_unix_seconds.to_string(),
-        );
-    let mut path_with_query = url.path().to_string();
-    if let Some(query) = url.query() {
-        path_with_query.push('?');
-        path_with_query.push_str(query);
-    }
-    Ok((url.to_string(), path_with_query))
-}
-
-fn chainlink_data_streams_auth_headers(
-    credentials: &ChainlinkDataStreamsCredentials,
-    path_with_query: &str,
-    authorization_timestamp_ms: u64,
-) -> HashMap<String, String> {
-    let body_hash = hex::encode(Sha256::digest(b""));
-    let mut signing_string = format!(
-        "{} {} {} {} {}",
-        CHAINLINK_DATA_STREAMS_GET_METHOD,
-        path_with_query,
-        body_hash,
-        credentials.api_key,
-        authorization_timestamp_ms
-    );
-    let signature =
-        chainlink_hmac_sha256_hex(credentials.api_secret.as_bytes(), signing_string.as_bytes());
-    signing_string.zeroize();
-    HashMap::from([
-        (
-            CHAINLINK_DATA_STREAMS_AUTHORIZATION_HEADER.to_string(),
-            credentials.api_key.clone(),
-        ),
-        (
-            CHAINLINK_DATA_STREAMS_AUTHORIZATION_TIMESTAMP_HEADER.to_string(),
-            authorization_timestamp_ms.to_string(),
-        ),
-        (
-            CHAINLINK_DATA_STREAMS_AUTHORIZATION_SIGNATURE_HEADER.to_string(),
-            signature,
-        ),
-    ])
-}
-
-fn chainlink_hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
-    let mut key_block = if key.len() > CHAINLINK_DATA_STREAMS_HMAC_BLOCK_BYTES {
-        Sha256::digest(key).to_vec()
-    } else {
-        key.to_vec()
-    };
-    key_block.resize(CHAINLINK_DATA_STREAMS_HMAC_BLOCK_BYTES, 0);
-    let mut inner_key = key_block.clone();
-    let mut outer_key = key_block.clone();
-    for byte in &mut inner_key {
-        *byte ^= CHAINLINK_DATA_STREAMS_HMAC_IPAD;
-    }
-    for byte in &mut outer_key {
-        *byte ^= CHAINLINK_DATA_STREAMS_HMAC_OPAD;
-    }
-    let mut inner = Sha256::new();
-    inner.update(&inner_key);
-    inner.update(message);
-    let inner_hash = inner.finalize();
-    let mut outer = Sha256::new();
-    outer.update(&outer_key);
-    outer.update(inner_hash);
-    let signature = hex::encode(outer.finalize());
-    key_block.zeroize();
-    inner_key.zeroize();
-    outer_key.zeroize();
-    signature
-}
-
 fn current_unix_timestamp_ms() -> Result<u64, BoltV3OperatorArtifactError> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -8701,273 +8509,6 @@ fn current_unix_timestamp_ms() -> Result<u64, BoltV3OperatorArtifactError> {
     u64::try_from(millis).map_err(|_| {
         entry_decision_source_invalid("system clock timestamp exceeds supported range")
     })
-}
-
-fn decode_price_to_beat_report(
-    report_bytes: &[u8],
-    binding: &PriceToBeatReportBinding,
-) -> Result<DecodedPriceToBeatReport, BoltV3OperatorArtifactError> {
-    if binding.schema_version != CHAINLINK_PRICE_REPORT_SCHEMA_VERSION_V3 {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    let source: ChainlinkDataStreamsReportSource = serde_json::from_slice(report_bytes)
-        .map_err(|_| price_to_beat_report_provenance_invalid())?;
-    if !is_lowercase_chainlink_feed_id(&source.feed_id)
-        || source.feed_id != binding.feed_id
-        || source.valid_from_timestamp == ENTRY_DECISION_ZERO_TIMESTAMP_MS
-        || source.observations_timestamp == ENTRY_DECISION_ZERO_TIMESTAMP_MS
-        || source.valid_from_timestamp > source.observations_timestamp
-        || source.full_report.trim() != source.full_report
-        || source.full_report.is_empty()
-    {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    let full_report_hex = source
-        .full_report
-        .strip_prefix(CHAINLINK_FEED_ID_PREFIX)
-        .unwrap_or(source.full_report.as_str());
-    let full_report =
-        hex::decode(full_report_hex).map_err(|_| price_to_beat_report_provenance_invalid())?;
-    let report_blob = decode_chainlink_full_report_blob(&full_report)?;
-    let decoded = decode_chainlink_v3_report_blob(&report_blob, binding)?;
-    if decoded.feed_id != source.feed_id
-        || decoded.valid_from_timestamp_ms
-            != source
-                .valid_from_timestamp
-                .checked_mul(CHAINLINK_REPORT_MILLISECONDS_PER_SECOND)
-                .ok_or_else(price_to_beat_report_provenance_invalid)?
-        || decoded.observations_timestamp_ms
-            != source
-                .observations_timestamp
-                .checked_mul(CHAINLINK_REPORT_MILLISECONDS_PER_SECOND)
-                .ok_or_else(price_to_beat_report_provenance_invalid)?
-    {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    Ok(decoded)
-}
-
-fn decode_chainlink_full_report_blob(
-    full_report: &[u8],
-) -> Result<Vec<u8>, BoltV3OperatorArtifactError> {
-    if full_report.len() < CHAINLINK_REPORT_CALLBACK_MIN_BYTES {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    let offset =
-        read_chainlink_abi_usize_word(full_report, CHAINLINK_REPORT_BLOB_OFFSET_WORD_INDEX)?;
-    if offset < CHAINLINK_REPORT_CALLBACK_MIN_BYTES
-        || offset
-            .checked_add(CHAINLINK_REPORT_ABI_WORD_BYTES)
-            .is_none_or(|end| end > full_report.len())
-    {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    let length = read_chainlink_abi_usize_at(full_report, offset)?;
-    let start = offset
-        .checked_add(CHAINLINK_REPORT_ABI_WORD_BYTES)
-        .ok_or_else(price_to_beat_report_provenance_invalid)?;
-    let end = start
-        .checked_add(length)
-        .ok_or_else(price_to_beat_report_provenance_invalid)?;
-    if end > full_report.len() {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    Ok(full_report[start..end].to_vec())
-}
-
-fn decode_chainlink_v3_report_blob(
-    report_blob: &[u8],
-    binding: &PriceToBeatReportBinding,
-) -> Result<DecodedPriceToBeatReport, BoltV3OperatorArtifactError> {
-    if report_blob.len() < CHAINLINK_REPORT_V3_WORD_COUNT * CHAINLINK_REPORT_ABI_WORD_BYTES {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    let mut feed_id = String::from(CHAINLINK_FEED_ID_PREFIX);
-    feed_id.push_str(&hex::encode(read_chainlink_abi_word(
-        report_blob,
-        CHAINLINK_REPORT_V3_FEED_ID_WORD_INDEX,
-    )?));
-    let valid_from_timestamp_ms = u64::from(read_chainlink_abi_u32_word(
-        report_blob,
-        CHAINLINK_REPORT_V3_VALID_FROM_WORD_INDEX,
-    )?)
-    .checked_mul(CHAINLINK_REPORT_MILLISECONDS_PER_SECOND)
-    .ok_or_else(price_to_beat_report_provenance_invalid)?;
-    let observations_timestamp_ms = u64::from(read_chainlink_abi_u32_word(
-        report_blob,
-        CHAINLINK_REPORT_V3_OBSERVATIONS_WORD_INDEX,
-    )?)
-    .checked_mul(CHAINLINK_REPORT_MILLISECONDS_PER_SECOND)
-    .ok_or_else(price_to_beat_report_provenance_invalid)?;
-    let benchmark_price_raw =
-        read_chainlink_abi_i192_word(report_blob, CHAINLINK_REPORT_V3_BENCHMARK_PRICE_WORD_INDEX)?;
-    let benchmark_price =
-        scale_chainlink_report_price(&benchmark_price_raw, binding.decimal_scale)?;
-    Ok(DecodedPriceToBeatReport {
-        feed_id,
-        valid_from_timestamp_ms,
-        observations_timestamp_ms,
-        benchmark_price,
-    })
-}
-
-fn read_chainlink_abi_word(
-    bytes: &[u8],
-    word_index: usize,
-) -> Result<&[u8], BoltV3OperatorArtifactError> {
-    let start = word_index
-        .checked_mul(CHAINLINK_REPORT_ABI_WORD_BYTES)
-        .ok_or_else(price_to_beat_report_provenance_invalid)?;
-    let end = start
-        .checked_add(CHAINLINK_REPORT_ABI_WORD_BYTES)
-        .ok_or_else(price_to_beat_report_provenance_invalid)?;
-    bytes
-        .get(start..end)
-        .ok_or_else(price_to_beat_report_provenance_invalid)
-}
-
-fn read_chainlink_abi_word_at(
-    bytes: &[u8],
-    start: usize,
-) -> Result<&[u8], BoltV3OperatorArtifactError> {
-    let end = start
-        .checked_add(CHAINLINK_REPORT_ABI_WORD_BYTES)
-        .ok_or_else(price_to_beat_report_provenance_invalid)?;
-    bytes
-        .get(start..end)
-        .ok_or_else(price_to_beat_report_provenance_invalid)
-}
-
-fn read_chainlink_abi_usize_word(
-    bytes: &[u8],
-    word_index: usize,
-) -> Result<usize, BoltV3OperatorArtifactError> {
-    let word = read_chainlink_abi_word(bytes, word_index)?;
-    read_chainlink_abi_usize_from_word(word)
-}
-
-fn read_chainlink_abi_usize_at(
-    bytes: &[u8],
-    start: usize,
-) -> Result<usize, BoltV3OperatorArtifactError> {
-    let word = read_chainlink_abi_word_at(bytes, start)?;
-    read_chainlink_abi_usize_from_word(word)
-}
-
-fn read_chainlink_abi_usize_from_word(word: &[u8]) -> Result<usize, BoltV3OperatorArtifactError> {
-    if word.len() != CHAINLINK_REPORT_ABI_WORD_BYTES
-        || word[..CHAINLINK_REPORT_ABI_U64_PREFIX_BYTES]
-            .iter()
-            .any(|byte| *byte != u8::MIN)
-    {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    let mut value = [u8::MIN; CHAINLINK_REPORT_ABI_U64_VALUE_BYTES];
-    value.copy_from_slice(
-        &word[CHAINLINK_REPORT_ABI_U64_PREFIX_BYTES..CHAINLINK_REPORT_ABI_WORD_BYTES],
-    );
-    usize::try_from(u64::from_be_bytes(value))
-        .map_err(|_| price_to_beat_report_provenance_invalid())
-}
-
-fn read_chainlink_abi_u32_word(
-    bytes: &[u8],
-    word_index: usize,
-) -> Result<u32, BoltV3OperatorArtifactError> {
-    let word = read_chainlink_abi_word(bytes, word_index)?;
-    if word[..CHAINLINK_REPORT_ABI_U32_PREFIX_BYTES]
-        .iter()
-        .any(|byte| *byte != u8::MIN)
-    {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    let mut value = [u8::MIN; CHAINLINK_REPORT_ABI_U32_VALUE_BYTES];
-    value.copy_from_slice(
-        &word[CHAINLINK_REPORT_ABI_U32_PREFIX_BYTES..CHAINLINK_REPORT_ABI_WORD_BYTES],
-    );
-    Ok(u32::from_be_bytes(value))
-}
-
-fn read_chainlink_abi_i192_word(
-    bytes: &[u8],
-    word_index: usize,
-) -> Result<[u8; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES], BoltV3OperatorArtifactError> {
-    let word = read_chainlink_abi_word(bytes, word_index)?;
-    let negative =
-        (word[CHAINLINK_REPORT_ABI_I192_PREFIX_BYTES] & CHAINLINK_REPORT_SIGN_BIT_MASK) != u8::MIN;
-    let expected = if negative { u8::MAX } else { u8::MIN };
-    if word[..CHAINLINK_REPORT_ABI_I192_PREFIX_BYTES]
-        .iter()
-        .any(|byte| *byte != expected)
-    {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    let mut value = [u8::MIN; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES];
-    value.copy_from_slice(
-        &word[CHAINLINK_REPORT_ABI_I192_PREFIX_BYTES..CHAINLINK_REPORT_ABI_WORD_BYTES],
-    );
-    Ok(value)
-}
-
-fn scale_chainlink_report_price(
-    value: &[u8; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES],
-    decimal_scale: u64,
-) -> Result<f64, BoltV3OperatorArtifactError> {
-    let scale =
-        i32::try_from(decimal_scale).map_err(|_| price_to_beat_report_provenance_invalid())?;
-    let scale_factor = CHAINLINK_REPORT_DECIMAL_RADIX.powi(-scale);
-    if !scale_factor.is_finite() || scale_factor <= f64::from(u8::MIN) {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    let magnitude = chainlink_i192_magnitude_to_f64(value);
-    if !magnitude.is_finite() {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    let price = if chainlink_i192_word_is_negative(value) {
-        -magnitude * scale_factor
-    } else {
-        magnitude * scale_factor
-    };
-    if !price.is_finite() {
-        return Err(price_to_beat_report_provenance_invalid());
-    }
-    Ok(price)
-}
-
-fn chainlink_i192_word_is_negative(value: &[u8; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES]) -> bool {
-    value
-        .first()
-        .is_some_and(|byte| (*byte & CHAINLINK_REPORT_SIGN_BIT_MASK) != u8::MIN)
-}
-
-fn chainlink_i192_magnitude_to_f64(value: &[u8; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES]) -> f64 {
-    let magnitude = if chainlink_i192_word_is_negative(value) {
-        chainlink_i192_twos_complement_abs(value)
-    } else {
-        *value
-    };
-    magnitude.iter().fold(f64::from(u8::MIN), |acc, byte| {
-        acc.mul_add(CHAINLINK_REPORT_BASE256_RADIX, f64::from(*byte))
-    })
-}
-
-fn chainlink_i192_twos_complement_abs(
-    value: &[u8; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES],
-) -> [u8; CHAINLINK_REPORT_ABI_I192_VALUE_BYTES] {
-    let mut magnitude = *value;
-    for byte in &mut magnitude {
-        *byte = !*byte;
-    }
-    let mut carry = u8::from(true);
-    for byte in magnitude.iter_mut().rev() {
-        let (next, overflow) = byte.overflowing_add(carry);
-        *byte = next;
-        carry = u8::from(overflow);
-        if carry == u8::MIN {
-            break;
-        }
-    }
-    magnitude
 }
 
 fn validate_reference_quote_source(
@@ -9308,7 +8849,9 @@ fn book_side_source_from_input(
     }
 }
 
-fn entry_decision_source_invalid(message: impl Into<String>) -> BoltV3OperatorArtifactError {
+pub(crate) fn entry_decision_source_invalid(
+    message: impl Into<String>,
+) -> BoltV3OperatorArtifactError {
     BoltV3OperatorArtifactError::DecisionEvidenceSourceInvalid {
         message: message.into(),
     }
@@ -17022,16 +16565,6 @@ fn validate_operator_evidence_toml_path(
 fn is_lowercase_sha256(value: &str) -> bool {
     value.len() == 64
         && value
-            .chars()
-            .all(|char| matches!(char, '0'..='9' | 'a'..='f'))
-}
-
-fn is_lowercase_chainlink_feed_id(value: &str) -> bool {
-    let Some(hex) = value.strip_prefix(CHAINLINK_FEED_ID_PREFIX) else {
-        return false;
-    };
-    hex.len() == CHAINLINK_FEED_ID_HEX_LENGTH
-        && hex
             .chars()
             .all(|char| matches!(char, '0'..='9' | 'a'..='f'))
 }

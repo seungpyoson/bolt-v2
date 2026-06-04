@@ -16,6 +16,7 @@
 //! stay in core and are called from the per-provider modules.
 
 pub mod binance;
+pub mod chainlink;
 pub mod market_data;
 pub mod polymarket;
 
@@ -568,6 +569,21 @@ const PROVIDER_BINDINGS: &[ProviderBinding] = &[
         resolve_secrets: market_data::resolve_unsupported_secrets,
         configured_secret_paths: market_data::configured_secret_paths,
         map_adapters: market_data::map_kraken_adapters,
+        build_fee_provider: None,
+        collect_entry_decision_source_inputs: None,
+        collect_canary_proof_artifacts: None,
+    },
+    ProviderBinding {
+        key: chainlink::KEY,
+        validate_client: chainlink::validate_client,
+        supported_market_families: chainlink::SUPPORTED_MARKET_FAMILIES,
+        required_secret_blocks: chainlink::REQUIRED_SECRET_BLOCKS,
+        secret_field_names: chainlink::SECRET_FIELD_NAMES,
+        credential_log_modules: chainlink::CREDENTIAL_LOG_MODULES,
+        forbidden_env_vars: chainlink::FORBIDDEN_ENV_VARS,
+        resolve_secrets: chainlink::resolve_secrets,
+        configured_secret_paths: chainlink::configured_secret_paths,
+        map_adapters: chainlink::map_adapters,
         build_fee_provider: None,
         collect_entry_decision_source_inputs: None,
         collect_canary_proof_artifacts: None,

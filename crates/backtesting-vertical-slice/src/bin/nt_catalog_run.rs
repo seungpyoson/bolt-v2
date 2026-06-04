@@ -45,6 +45,7 @@ use backtesting_vertical_slice::canonical_book::{
 };
 use backtesting_vertical_slice::canonical_bybit::{
     append_bybit_deriv_tick_trades_archive, append_bybit_mark_price_kline_1m_archive,
+    append_bybit_mark_price_kline_1m_batch,
 };
 use backtesting_vertical_slice::canonical_chainlink::append_chainlink_index_prices_archive;
 use backtesting_vertical_slice::canonical_deribit::{
@@ -236,17 +237,25 @@ const FAMILY_BINDINGS: &[FamilyBinding] = &[
         key_filters: &[],
         extension: ".jsonl",
     },
+    // Polymarket CLOB: one unified `order_book_snapshots_fixed_depth` stream per
+    // staged prefix (book snapshots + price_change deltas + last_trade_price
+    // prints, discriminated by `event_type`). The accepted backfill spans two
+    // prefixes (`-streaming` and `-page1`); both share this schema. The book
+    // converter emits BOTH OrderBookDelta and TradeTick from the unified stream,
+    // so no separate `trades` binding is wired (no separate trades archive
+    // exists). `{date}` is the staging snapshot date; each object's own `dt=`
+    // partition is listed recursively under the family prefix.
     FamilyBinding {
         venue: "polymarket",
         family: "book",
-        root_template: "polymarket_parquet/polymarket_book/",
+        root_template: "backfill-staging/{date}/polymarket-pmxt-v2-streaming/raw/v1/source_binding=polymarket-parquet-archive-index/fixture=prediction-market/family=order_book_snapshots_fixed_depth/",
         key_filters: &[],
         extension: ".parquet",
     },
     FamilyBinding {
         venue: "polymarket",
-        family: "trades",
-        root_template: "polymarket_parquet/polymarket_trades/",
+        family: "book",
+        root_template: "backfill-staging/{date}/polymarket-pmxt-v2-page1/raw/v1/source_binding=polymarket-parquet-archive-index/fixture=prediction-market/family=order_book_snapshots_fixed_depth/",
         key_filters: &[],
         extension: ".parquet",
     },
@@ -484,17 +493,38 @@ fn convert(
         let mut records = 0usize;
         let mut instruments: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
-        for key in &keys {
-            let bytes = runtime
-                .block_on(get_bytes(store.clone(), key.clone()))
-                .with_context(|| format!("read {key}"))?;
-            let converted =
-                convert_object(binding, key.as_ref(), &bytes, ingest_run_id, &mut catalog)
-                    .with_context(|| format!("convert {key}"))?;
-            objects += 1;
+        if binding.venue == "bybit" && binding.family == "mark_price_kline_1m" {
+            // Bybit mark-price REST pages overlap in time per instrument, so they
+            // must be deduplicated across objects before writing — one disjoint
+            // catalog write per instrument, not one (conflicting) file per page.
+            // Collect the whole binding, then batch-convert.
+            let mut batch = Vec::with_capacity(keys.len());
+            for key in &keys {
+                let bytes = runtime
+                    .block_on(get_bytes(store.clone(), key.clone()))
+                    .with_context(|| format!("read {key}"))?;
+                batch.push((key.to_string(), bytes));
+            }
+            objects = batch.len();
+            let converted = append_bybit_mark_price_kline_1m_batch(&batch, &mut catalog)
+                .with_context(|| format!("convert bybit mark-price batch ({objects} objects)"))?;
             for instrument in converted {
                 records += instrument.record_count;
                 instruments.insert(instrument.nt_instrument_id);
+            }
+        } else {
+            for key in &keys {
+                let bytes = runtime
+                    .block_on(get_bytes(store.clone(), key.clone()))
+                    .with_context(|| format!("read {key}"))?;
+                let converted =
+                    convert_object(binding, key.as_ref(), &bytes, ingest_run_id, &mut catalog)
+                        .with_context(|| format!("convert {key}"))?;
+                objects += 1;
+                for instrument in converted {
+                    records += instrument.record_count;
+                    instruments.insert(instrument.nt_instrument_id);
+                }
             }
         }
 
@@ -534,10 +564,16 @@ struct TempObject {
 
 impl TempObject {
     fn new(object_key: &str, bytes: &[u8]) -> Result<Self> {
-        // Catalog object names collide on basename (`data.parquet`), so the full
-        // key with path separators flattened gives a unique, deterministic name.
-        let stem = object_key.replace(['/', '='], "_");
-        let path = std::env::temp_dir().join(format!("nt-convert-{stem}"));
+        // Hash the full object key into a short, deterministic, collision-free
+        // local name. Flattening the key (replacing separators) can exceed the
+        // 255-byte single-component filesystem limit for deep accepted-archive
+        // keys (ENAMETOOLONG); the Arrow reader opens by file handle, so no real
+        // extension is required.
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        object_key.hash(&mut hasher);
+        let path =
+            std::env::temp_dir().join(format!("nt-convert-{:016x}.parquet", hasher.finish()));
         fs::write(&path, bytes)
             .with_context(|| format!("stage object to temp file {}", path.display()))?;
         Ok(Self { path })

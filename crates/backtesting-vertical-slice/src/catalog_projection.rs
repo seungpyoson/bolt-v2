@@ -19,7 +19,7 @@ use anyhow::{Context, Result, ensure};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{BookOrder, OrderBookDelta, TradeTick},
-    enums::{AggressorSide, AssetClass, BookAction, OrderSide},
+    enums::{AggressorSide, AssetClass, BookAction, OrderSide, RecordFlag},
     identifiers::{InstrumentId, Symbol, TradeId},
     instruments::{BinaryOption, CurrencyPair, Instrument, InstrumentAny},
     types::{Currency, Money, Price, Quantity},
@@ -455,13 +455,15 @@ fn level_change_delta(
         BookAction::Update
     };
     // The `order_id` is unused by an L2 (MBP) book — NautilusTrader keys levels
-    // by price on `L2_MBP`. Use the sequence as a deterministic, stable id.
-    let order = BookOrder::new(side, price, size, sequence);
+    // by price on `L2_MBP` and the delta carries F_MBP — so it is fixed at 0.
+    let order = BookOrder::new(side, price, size, 0);
+    // A single-level update is a standalone, aggregated price-level (MBP) event;
+    // it both opens and closes its own event, so F_MBP and F_LAST are set.
     Ok(OrderBookDelta::new(
         instrument_id,
         action,
         order,
-        0,
+        RecordFlag::F_MBP as u8 | RecordFlag::F_LAST as u8,
         sequence,
         ts,
         ts,
@@ -484,7 +486,13 @@ fn snapshot_deltas(
     mut sequence: u64,
     out: &mut Vec<OrderBookDelta>,
 ) -> Result<u64> {
-    out.push(OrderBookDelta::clear(instrument_id, sequence, ts, ts));
+    // Every delta in a snapshot expansion is replayed-snapshot (F_SNAPSHOT) and
+    // aggregated price-level (F_MBP) data. NautilusTrader's `clear()` only sets
+    // F_SNAPSHOT, so OR in F_MBP to mark the whole expansion as MBP.
+    let snapshot_flags = RecordFlag::F_SNAPSHOT as u8 | RecordFlag::F_MBP as u8;
+    let mut clear = OrderBookDelta::clear(instrument_id, sequence, ts, ts);
+    clear.flags |= RecordFlag::F_MBP as u8;
+    out.push(clear);
     sequence = sequence.checked_add(1).context("delta sequence overflow")?;
     for (side, levels) in [
         (OrderSide::Buy, &snapshot.bids),
@@ -493,18 +501,23 @@ fn snapshot_deltas(
         for level in levels {
             let price = book_price(&level.price, price_precision)?;
             let size = book_size(&level.size, size_precision)?;
-            let order = BookOrder::new(side, price, size, sequence);
+            // order_id is 0 for L2/MBP — levels are price-keyed (F_MBP set).
+            let order = BookOrder::new(side, price, size, 0);
             out.push(OrderBookDelta::new(
                 instrument_id,
                 BookAction::Add,
                 order,
-                0,
+                snapshot_flags,
                 sequence,
                 ts,
                 ts,
             ));
             sequence = sequence.checked_add(1).context("delta sequence overflow")?;
         }
+    }
+    // Close the snapshot event: the final expanded delta carries F_LAST.
+    if let Some(last) = out.last_mut() {
+        last.flags |= RecordFlag::F_LAST as u8;
     }
     Ok(sequence)
 }
@@ -561,28 +574,32 @@ pub fn canonical_rows_to_order_book_deltas(
     Ok(deltas)
 }
 
-/// Trade-id prefix for book-table trade prints. The on-chain transaction hash
-/// (66 chars) exceeds NautilusTrader's 36-char `TradeId` limit, so the NT trade
-/// id is the dense canonical `source_sequence` (unique per print within the
-/// run) under this prefix. The transaction hash stays on the canonical book
-/// table for provenance/lineage.
+/// Trade-id prefix for book-table trade prints whose source `transaction_hash`
+/// is absent or too long for NautilusTrader's `TradeId`. The dense canonical
+/// `source_sequence` (unique per print within the run) follows this prefix.
 const BOOK_TRADE_ID_PREFIX: &str = "POLYCLOB-";
+
+/// NautilusTrader's `TradeId` maximum length (see `model::identifiers::TradeId`).
+/// A source `transaction_hash` is used verbatim as the trade id only when it
+/// fits; a full 66-char on-chain hash exceeds this and falls back to the
+/// `source_sequence`-derived id.
+const NT_TRADE_ID_MAX_LEN: usize = 36;
 
 /// Convert the `Trade` rows of a canonical L2 book table into NautilusTrader
 /// `TradeTick`s, reusing the same precision/aggressor mapping as the native
 /// trade projection.
 ///
-/// The NautilusTrader `TradeId` is derived from the canonical `source_sequence`
-/// (`POLYCLOB-<sequence>`), which is dense, unique per print, and within
-/// NautilusTrader's 36-char `TradeId` limit — the 66-char on-chain transaction
-/// hash does not fit and is retained on the canonical book table for provenance
-/// instead. A non-empty transaction hash is still required so a trade print
-/// without on-chain provenance is rejected.
+/// The NautilusTrader `TradeId` is the source `transaction_hash` when it is
+/// present and within NautilusTrader's 36-char `TradeId` limit; otherwise it is
+/// the dense canonical `source_sequence` (`POLYCLOB-<sequence>`). Polymarket's
+/// CLOB archive leaves `transaction_hash` null on most trade prints and full
+/// 66-char on-chain hashes exceed the limit, so the `source_sequence`-derived id
+/// is the common case; a missing hash is never an error.
 ///
 /// # Errors
 ///
 /// Returns an error if a price/size cannot be represented at the instrument
-/// precision or a trade row is missing its transaction hash.
+/// precision.
 pub fn canonical_book_rows_to_trade_ticks(
     table: &CanonicalBookTable,
     instrument: &BinaryOption,
@@ -595,13 +612,13 @@ pub fn canonical_book_rows_to_trade_ticks(
         let CanonicalBookEvent::Trade(trade) = &row.event else {
             continue;
         };
-        ensure!(
-            !trade.transaction_hash.trim().is_empty(),
-            "trade row {} is missing its transaction hash",
-            row.source_sequence
-        );
         let ts = book_event_ts(row)?;
-        let trade_id = format!("{BOOK_TRADE_ID_PREFIX}{}", row.source_sequence);
+        let hash = trade.transaction_hash.trim();
+        let trade_id = if !hash.is_empty() && hash.len() <= NT_TRADE_ID_MAX_LEN {
+            hash.to_string()
+        } else {
+            format!("{BOOK_TRADE_ID_PREFIX}{}", row.source_sequence)
+        };
         ticks.push(TradeTick::new(
             instrument_id,
             book_price(&trade.price, price_precision)?,

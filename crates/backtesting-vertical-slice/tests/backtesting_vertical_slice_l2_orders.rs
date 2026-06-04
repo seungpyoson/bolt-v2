@@ -18,12 +18,12 @@
 //! enters after Hurst/VPIN warm-up, which would confound the proof that L2 data
 //! alone drives execution.
 
-use std::{cell::Cell, fmt::Debug, fs::File, path::PathBuf, rc::Rc};
+use std::{cell::Cell, fmt::Debug, path::PathBuf, rc::Rc};
 
-use arrow::array::{Array, Decimal128Array, StringArray, TimestampMicrosecondArray};
 use backtesting_vertical_slice::{
     canonical_book::{
-        CanonicalBookEvent, CanonicalBookTable, RawClobEventRow, normalize_polymarket_clob_book,
+        CanonicalBookEvent, CanonicalBookTable, RawClobEventRow, decode_polymarket_clob_parquet,
+        normalize_polymarket_clob_book,
     },
     catalog_projection::{
         BinaryOptionInstrumentSpec, build_binary_option, canonical_rows_to_order_book_deltas,
@@ -56,8 +56,6 @@ use nautilus_trading::{
     nautilus_strategy,
     strategy::{Strategy, StrategyConfig, StrategyCore},
 };
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use rust_decimal::Decimal;
 use tempfile::TempDir;
 use ustr::Ustr;
 
@@ -65,9 +63,9 @@ use ustr::Ustr;
 const FIXTURE_ASSET_ID: &str =
     "20419872418925958113466469406112781259698061446101840345505990534096167263888";
 
-/// SHA-256 of the real archive object the fixture was downsampled from.
+/// SHA-256 of the committed accepted-schema fixture.
 const FIXTURE_OBJECT_SHA256: &str =
-    "b32d8dc1944c550191f62a79fc0a9bec25fa0c498705801998a4fd3adf279f19";
+    "852a6dabc415e0b73e5361db8b39d979291ee814ffa72fa8c287792979329ddc";
 
 /// NautilusTrader instrument id for the fixture outcome on the Polymarket venue.
 const FIXTURE_NT_INSTRUMENT_ID: &str =
@@ -78,8 +76,6 @@ const FIXTURE_VENUE: &str = "POLYMARKET";
 
 /// The run id used for both the manifest mapping and the configured engine.
 const RUN_IDENTIFIER: &str = "backtesting-vertical-slice-l2-orders";
-
-const NANOS_PER_MICROSECOND: i64 = 1_000;
 
 /// Best bid/ask of the fixture's `book` snapshot, verified with duckdb at build
 /// time: the snapshot's highest bid price is `0.50` and lowest ask price `0.51`.
@@ -117,8 +113,10 @@ fn accepted_dataset() -> AcceptedDataset {
     let checks = RequiredChecks {
         source_access: RequiredCheck::passed("manifest://polymarket-clob-2026-05-22"),
         license: RequiredCheck::passed("attestation://polymarket-archive"),
-        schema: RequiredCheck::passed("schema://timestamp,event_type,asset_id,bids,asks"),
-        time_semantics: RequiredCheck::passed("utc_micros_to_unix_nanos"),
+        schema: RequiredCheck::passed(
+            "schema://timestamp_received,timestamp,event_type,asset_id,bids,asks",
+        ),
+        time_semantics: RequiredCheck::passed("timestamp_received_ms_to_unix_nanos"),
         instrument_universe: RequiredCheck::passed("universe://polymarket-outcomes"),
         coverage: RequiredCheck::passed("manifest://polymarket-clob-2026-05-22"),
         granularity: RequiredCheck::passed("full_depth_snapshot_plus_deltas"),
@@ -132,10 +130,12 @@ fn accepted_dataset() -> AcceptedDataset {
                 .to_string(),
         source_url: "https://polymarket-archive.example/clob/2026-05-22.parquet".to_string(),
         sha256: FIXTURE_OBJECT_SHA256.to_string(),
-        bytes: 9113,
+        bytes: 5379,
         archive_date: "2026-05-22".to_string(),
         schema_columns: vec![
+            "timestamp_received".to_string(),
             "timestamp".to_string(),
+            "market".to_string(),
             "event_type".to_string(),
             "asset_id".to_string(),
             "bids".to_string(),
@@ -143,6 +143,12 @@ fn accepted_dataset() -> AcceptedDataset {
             "price".to_string(),
             "size".to_string(),
             "side".to_string(),
+            "best_bid".to_string(),
+            "best_ask".to_string(),
+            "fee_rate_bps".to_string(),
+            "transaction_hash".to_string(),
+            "old_tick_size".to_string(),
+            "new_tick_size".to_string(),
         ],
     };
     let proof = SourceProofReport {
@@ -189,102 +195,23 @@ fn accepted_dataset() -> AcceptedDataset {
         .expect("select accepted dataset")
 }
 
-/// Format a `Decimal128` cell to a decimal string at the column's scale, or an
-/// empty string when the cell is null (the column is null for `book` rows).
-fn decimal_cell(array: &Decimal128Array, index: usize, scale: i8) -> String {
-    if array.is_null(index) {
-        return String::new();
-    }
-    let raw = array.value(index);
-    Decimal::from_i128_with_scale(raw, u32::try_from(scale).expect("non-negative scale"))
-        .to_string()
-}
-
-/// Read a UTF8 cell, mapping null to an empty string.
-fn string_cell(array: &StringArray, index: usize) -> String {
-    if array.is_null(index) {
-        String::new()
-    } else {
-        array.value(index).to_string()
-    }
-}
-
 /// Decode the committed fixture Parquet into raw CLOB event rows, exactly as the
-/// runner must (handoff decision: the runner decodes the accepted Parquet object
-/// into `RawClobEventRow` identically to this helper).
+/// runner must.
 fn read_fixture_rows() -> Vec<RawClobEventRow> {
-    let file = File::open(fixture_path()).expect("open fixture parquet");
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
-        .expect("parquet reader builder")
-        .build()
-        .expect("parquet reader");
-
-    let mut rows = Vec::new();
-    for batch in reader {
-        let batch = batch.expect("read record batch");
-        let col = |name: &str| batch.column_by_name(name).expect("column present");
-
-        let timestamp = col("timestamp")
-            .as_any()
-            .downcast_ref::<TimestampMicrosecondArray>()
-            .expect("timestamp is micros");
-        let asset_id = col("asset_id")
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("asset_id utf8");
-        let event_type = col("event_type")
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("event_type utf8");
-        let bids = col("bids")
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("bids utf8");
-        let asks = col("asks")
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("asks utf8");
-        let side = col("side")
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("side utf8");
-        let transaction_hash = col("transaction_hash")
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("transaction_hash utf8");
-        let price = col("price")
-            .as_any()
-            .downcast_ref::<Decimal128Array>()
-            .expect("price decimal");
-        let size = col("size")
-            .as_any()
-            .downcast_ref::<Decimal128Array>()
-            .expect("size decimal");
-        let price_scale = price.scale();
-        let size_scale = size.scale();
-
-        for i in 0..batch.num_rows() {
-            rows.push(RawClobEventRow {
-                asset_id: string_cell(asset_id, i),
-                event_type: string_cell(event_type, i),
-                event_time: timestamp.value(i) * NANOS_PER_MICROSECOND,
-                bids: string_cell(bids, i),
-                asks: string_cell(asks, i),
-                price: decimal_cell(price, i, price_scale),
-                size: decimal_cell(size, i, size_scale),
-                side: string_cell(side, i),
-                transaction_hash: string_cell(transaction_hash, i),
-            });
-        }
-    }
-    rows
+    decode_polymarket_clob_parquet(&fixture_path()).expect("decode accepted-schema fixture")
 }
 
 fn normalized_fixture() -> CanonicalBookTable {
     let accepted = accepted_dataset();
     let rows = read_fixture_rows();
-    normalize_polymarket_clob_book(&accepted, FIXTURE_ASSET_ID, &rows, 7, "ingest-run-fixture")
-        .expect("normalize fixture")
+    normalize_polymarket_clob_book(
+        &accepted,
+        FIXTURE_ASSET_ID,
+        &rows,
+        rows[0].timestamp_received,
+        "ingest-run-fixture",
+    )
+    .expect("normalize fixture")
 }
 
 /// Shared one-shot order count, written by the strategy and read by the test.

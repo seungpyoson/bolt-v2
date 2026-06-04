@@ -1425,6 +1425,90 @@ pub fn append_bybit_mark_price_kline_1m_archive(
     Ok(vec![summary])
 }
 
+/// Bulk-append every Bybit `mark_price_kline_1m` REST object for a binding in a
+/// single pass, deduplicating bars by open time per instrument.
+///
+/// Bybit's REST mark-price pages overlap in time — the backfill over-fetches
+/// adjacent/redundant windows — so writing each page as its own catalog file
+/// produces non-disjoint intervals for the same instrument and NautilusTrader's
+/// `write_to_parquet` rejects it. This collects every page's 1-minute bars keyed
+/// by `(symbol, open_time)` so duplicate minutes collapse, derives one uniform
+/// precision per instrument across all pages, then writes one ascending `Bar`
+/// stream per instrument — the single disjoint write the catalog contract
+/// expects.
+///
+/// # Errors
+///
+/// Returns an error if any object is malformed, a price cannot be represented at
+/// the derived precision, or a catalog write fails.
+pub fn append_bybit_mark_price_kline_1m_batch(
+    objects: &[(String, Vec<u8>)],
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<BybitAppendSummary>> {
+    // symbol -> (open_time -> row); BTreeMap keys keep minutes unique + ascending.
+    let mut rows_by_symbol: std::collections::BTreeMap<
+        String,
+        std::collections::BTreeMap<i64, BybitMarkBarRow>,
+    > = std::collections::BTreeMap::new();
+    // First validated table per symbol, reused as the metadata template.
+    let mut table_by_symbol: std::collections::BTreeMap<String, BybitMarkBarsTable> =
+        std::collections::BTreeMap::new();
+
+    for (object_key, bytes) in objects {
+        let json_text = std::str::from_utf8(bytes)
+            .with_context(|| format!("bybit mark-price kline object {object_key} is not UTF-8"))?;
+        let (accepted, symbol) = accepted_from_object_key(
+            object_key,
+            bytes,
+            "mark_price_kline_1m",
+            ["start", "open", "high", "low", "close"]
+                .iter()
+                .map(|column| (*column).to_string())
+                .collect(),
+        )?;
+        let probe = probe_spec(&symbol);
+        let table = normalize_bybit_mark_price_kline_1m(&accepted, &probe, json_text)?;
+        let dedup = rows_by_symbol.entry(symbol.clone()).or_default();
+        for row in &table.rows {
+            dedup.insert(row.open_time, row.clone());
+        }
+        table_by_symbol.entry(symbol).or_insert(table);
+    }
+
+    let mut summaries = Vec::new();
+    for (symbol, rows_map) in rows_by_symbol {
+        let rows: Vec<BybitMarkBarRow> = rows_map.into_values().collect();
+        let derived = spec_from_value_columns(
+            &symbol,
+            rows.iter().flat_map(|row| {
+                [
+                    row.open.as_str(),
+                    row.high.as_str(),
+                    row.low.as_str(),
+                    row.close.as_str(),
+                ]
+            }),
+            std::iter::empty::<&str>(),
+        )?;
+        let mut table = table_by_symbol
+            .remove(&symbol)
+            .expect("symbol has a metadata template");
+        table.rows = rows;
+        let bars = table.to_bars(&derived)?;
+        let summary = BybitAppendSummary {
+            nt_instrument_id: derived.nt_instrument_id.clone(),
+            record_count: bars.len(),
+            price_precision: derived.price_precision(),
+            size_precision: derived.size_precision(),
+        };
+        catalog
+            .write_to_parquet(bars, None, None, None)
+            .with_context(|| format!("append deduplicated bybit mark-price bars for {symbol}"))?;
+        summaries.push(summary);
+    }
+    Ok(summaries)
+}
+
 /// Decompress a gzip object body to UTF-8 text.
 ///
 /// # Errors

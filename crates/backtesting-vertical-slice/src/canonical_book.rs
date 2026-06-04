@@ -34,7 +34,13 @@
 use std::{fs::File, path::Path};
 
 use anyhow::{Context, Result, bail, ensure};
-use arrow::array::{Array, Decimal128Array, StringArray, TimestampMicrosecondArray};
+use arrow::{
+    array::{
+        Array, Decimal128Array, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
+        TimestampNanosecondArray, TimestampSecondArray,
+    },
+    datatypes::{DataType, TimeUnit},
+};
 use nautilus_model::{
     data::{OrderBookDelta, TradeTick},
     instruments::InstrumentAny,
@@ -65,6 +71,8 @@ pub const EVENT_TYPE_BOOK: &str = "book";
 pub const EVENT_TYPE_PRICE_CHANGE: &str = "price_change";
 /// Raw Polymarket CLOB `event_type` value for a trade print.
 pub const EVENT_TYPE_LAST_TRADE_PRICE: &str = "last_trade_price";
+/// Raw Polymarket CLOB `event_type` value for a tick-size change.
+pub const EVENT_TYPE_TICK_SIZE_CHANGE: &str = "tick_size_change";
 
 /// Which side of the book a CLOB update or trade applies to.
 ///
@@ -134,6 +142,7 @@ pub struct LevelChange {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookTrade {
     pub side: BookSide,
+    pub aggressor_side: Option<BookSide>,
     /// Exact source price string.
     pub price: String,
     /// Exact source size string.
@@ -169,15 +178,22 @@ impl CanonicalBookEvent {
 ///
 /// The caller decodes the storage layer (Parquet columns) into this struct so
 /// the normalizer stays storage-agnostic and exercises identical logic in tests
-/// and in the runner. `event_time` is the `timestamp` column converted to Unix
-/// nanoseconds (UTC); `bids`/`asks`/`price`/`size`/`side`/`transaction_hash`
-/// carry the exact source strings (empty when the column was null for the row).
+/// and in the runner. `timestamp_received` is the monotonic ingest/capture clock
+/// converted to Unix nanoseconds (UTC) and is the replay ordering clock.
+/// `event_time` is the source `timestamp` column converted to Unix nanoseconds
+/// (UTC). `source_row_index` preserves physical object order for stable ties.
+/// `bids`/`asks`/`price`/`size`/`side`/`transaction_hash` carry the exact source
+/// strings (empty when the column was null for the row).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawClobEventRow {
     pub asset_id: String,
     pub event_type: String,
+    /// Ingest/capture instant in Unix nanoseconds (UTC).
+    pub timestamp_received: i64,
     /// Event instant in Unix nanoseconds (UTC).
     pub event_time: i64,
+    /// Physical row index within the decoded object.
+    pub source_row_index: u64,
     /// Raw `bids` JSON string (`book` rows only; empty otherwise).
     pub bids: String,
     /// Raw `asks` JSON string (`book` rows only; empty otherwise).
@@ -204,7 +220,8 @@ pub struct CanonicalBookRow {
     /// Outcome token id (the instrument), unique within `(venue, product_family)`.
     pub instrument_id: String,
     pub canonical_instrument_key: String,
-    /// Source event timestamp in Unix nanoseconds (UTC).
+    /// Replay ordering timestamp in Unix nanoseconds (UTC), sourced from the
+    /// monotonic `timestamp_received` capture clock.
     pub event_time: i64,
     /// Worker receipt/capture timestamp in Unix nanoseconds.
     pub capture_time: i64,
@@ -326,9 +343,10 @@ fn parse_price_size(price: &str, size: &str, ctx: &str) -> Result<(String, Strin
 ///
 /// # Errors
 ///
-/// Returns an error if the `event_type` is unknown, a required field for the
-/// event type is missing/empty, or a numeric field fails to parse.
-fn decode_event(row: &RawClobEventRow) -> Result<CanonicalBookEvent> {
+/// Returns `Ok(None)` for accepted non-book-mutating rows that produce no NT
+/// record. Returns an error if the `event_type` is unknown, a required field for
+/// the event type is missing/empty, or a numeric field fails to parse.
+fn decode_event(row: &RawClobEventRow) -> Result<Option<CanonicalBookEvent>> {
     match row.event_type.as_str() {
         EVENT_TYPE_BOOK => {
             ensure!(!row.bids.trim().is_empty(), "book row: empty bids");
@@ -339,20 +357,28 @@ fn decode_event(row: &RawClobEventRow) -> Result<CanonicalBookEvent> {
                 !bids.is_empty() || !asks.is_empty(),
                 "book row: snapshot has no levels"
             );
-            Ok(CanonicalBookEvent::Snapshot(BookSnapshot { bids, asks }))
+            Ok(Some(CanonicalBookEvent::Snapshot(BookSnapshot {
+                bids,
+                asks,
+            })))
         }
         EVENT_TYPE_PRICE_CHANGE => {
             let side = BookSide::parse_clob(&row.side)?;
             let (price, size, size_dec) = parse_price_size(&row.price, &row.size, "price_change")?;
-            Ok(CanonicalBookEvent::LevelChange(LevelChange {
+            Ok(Some(CanonicalBookEvent::LevelChange(LevelChange {
                 side,
                 price,
                 size,
                 is_removal: size_dec == Decimal::ZERO,
-            }))
+            })))
         }
         EVENT_TYPE_LAST_TRADE_PRICE => {
-            let side = BookSide::parse_clob(&row.side)?;
+            let aggressor_side = if row.side.trim().is_empty() {
+                None
+            } else {
+                Some(BookSide::parse_clob(&row.side)?)
+            };
+            let side = aggressor_side.unwrap_or(BookSide::Buy);
             let (price, size, size_dec) =
                 parse_price_size(&row.price, &row.size, "last_trade_price")?;
             ensure!(
@@ -360,13 +386,15 @@ fn decode_event(row: &RawClobEventRow) -> Result<CanonicalBookEvent> {
                 "last_trade_price: non-positive size {:?}",
                 row.size
             );
-            Ok(CanonicalBookEvent::Trade(BookTrade {
+            Ok(Some(CanonicalBookEvent::Trade(BookTrade {
                 side,
+                aggressor_side,
                 price,
                 size,
                 transaction_hash: row.transaction_hash.trim().to_string(),
-            }))
+            })))
         }
+        EVENT_TYPE_TICK_SIZE_CHANGE => Ok(None),
         other => bail!("unknown CLOB event_type: {other:?}"),
     }
 }
@@ -388,7 +416,7 @@ pub fn normalize_polymarket_clob_book(
     accepted: &AcceptedDataset,
     asset_id: &str,
     rows: &[RawClobEventRow],
-    capture_time_nanos: i64,
+    _capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<CanonicalBookTable> {
     ensure!(
@@ -405,9 +433,15 @@ pub fn normalize_polymarket_clob_book(
 
     let mut canonical_rows = Vec::new();
     let mut sequence: u64 = 0;
-    for raw in rows.iter().filter(|r| r.asset_id == asset_id) {
+    let mut asset_rows: Vec<&RawClobEventRow> =
+        rows.iter().filter(|r| r.asset_id == asset_id).collect();
+    asset_rows.sort_by_key(|row| (row.timestamp_received, row.source_row_index));
+    for raw in asset_rows {
         let event = decode_event(raw)
             .with_context(|| format!("sequence {sequence}: failed to decode CLOB event"))?;
+        let Some(event) = event else {
+            continue;
+        };
         canonical_rows.push(CanonicalBookRow {
             schema_version: NORMALIZED_BOOK_SCHEMA_VERSION.to_string(),
             ingest_run_id: ingest_run_id.to_string(),
@@ -417,8 +451,8 @@ pub fn normalize_polymarket_clob_book(
             product_category: accepted.product_category.clone(),
             instrument_id: asset_id.to_string(),
             canonical_instrument_key: canonical_instrument_key.clone(),
-            event_time: raw.event_time,
-            capture_time: capture_time_nanos,
+            event_time: raw.timestamp_received,
+            capture_time: raw.timestamp_received,
             source_sequence: sequence,
             raw_payload_id: accepted.object.sha256.clone(),
             source_proof_id: accepted.source_proof_id.clone(),
@@ -653,7 +687,8 @@ const POLYMARKET_FORBIDDEN_CLAIM: &str = "No fill claims beyond replayed top-of-
 /// The CLOB Parquet column layout this converter decodes. Recorded as the
 /// accepted object's `schema_columns` so the provenance describes the real
 /// object shape (the `transaction_hash` column is present in trade-print rows).
-const POLYMARKET_CLOB_COLUMNS: [&str; 9] = [
+const POLYMARKET_CLOB_COLUMNS: [&str; 10] = [
+    "timestamp_received",
     "timestamp",
     "event_type",
     "asset_id",
@@ -664,9 +699,6 @@ const POLYMARKET_CLOB_COLUMNS: [&str; 9] = [
     "side",
     "transaction_hash",
 ];
-
-/// Parquet `timestamp` column is UTC microseconds; convert to Unix nanoseconds.
-const NANOS_PER_MICROSECOND: i64 = 1_000;
 
 /// The decimal-string increment whose fractional length is exactly `precision`
 /// (`0 -> "1"`, `1 -> "0.1"`, `2 -> "0.01"`). Lets a data-derived precision be
@@ -786,6 +818,7 @@ pub fn decode_polymarket_clob_parquet(object_path: &Path) -> Result<Vec<RawClobE
         .with_context(|| format!("build Polymarket parquet reader {}", object_path.display()))?;
 
     let mut rows = Vec::new();
+    let mut source_row_index: u64 = 0;
     for batch in reader {
         let batch = batch.context("read Polymarket CLOB record batch")?;
         let column = |name: &str| {
@@ -793,10 +826,11 @@ pub fn decode_polymarket_clob_parquet(object_path: &Path) -> Result<Vec<RawClobE
                 .column_by_name(name)
                 .with_context(|| format!("Polymarket CLOB column {name:?} missing"))
         };
-        let timestamp = column("timestamp")?
-            .as_any()
-            .downcast_ref::<TimestampMicrosecondArray>()
-            .context("timestamp column is not micros")?;
+        // The accepted archive stores both clocks as TIMESTAMP_MILLIS, but the
+        // unit is read from the column type rather than assumed so the decoder
+        // cannot silently misscale a producer that differs.
+        let timestamp_received = timestamp_column_to_nanos(&batch, "timestamp_received")?;
+        let event_time = timestamp_column_to_nanos(&batch, "timestamp")?;
         let asset_id = string_column(&batch, "asset_id")?;
         let event_type = string_column(&batch, "event_type")?;
         let bids = string_column(&batch, "bids")?;
@@ -815,14 +849,12 @@ pub fn decode_polymarket_clob_parquet(object_path: &Path) -> Result<Vec<RawClobE
         let size_scale = size.scale();
 
         for index in 0..batch.num_rows() {
-            let event_time = timestamp
-                .value(index)
-                .checked_mul(NANOS_PER_MICROSECOND)
-                .context("timestamp micros overflow scaling to nanos")?;
             rows.push(RawClobEventRow {
                 asset_id: string_cell(asset_id, index),
                 event_type: string_cell(event_type, index),
-                event_time,
+                timestamp_received: timestamp_received[index],
+                event_time: event_time[index],
+                source_row_index,
                 bids: string_cell(bids, index),
                 asks: string_cell(asks, index),
                 price: decimal_cell(price, index, price_scale)?,
@@ -830,9 +862,63 @@ pub fn decode_polymarket_clob_parquet(object_path: &Path) -> Result<Vec<RawClobE
                 side: string_cell(side, index),
                 transaction_hash: string_cell(transaction_hash, index),
             });
+            source_row_index += 1;
         }
     }
     Ok(rows)
+}
+
+/// Read a Parquet timestamp column to Unix nanoseconds regardless of its stored
+/// time unit. The accepted Polymarket archive stores `timestamp` and
+/// `timestamp_received` as `TIMESTAMP_MILLIS`, but the unit is taken from the
+/// column's Arrow type rather than assumed.
+fn timestamp_column_to_nanos(
+    batch: &arrow::record_batch::RecordBatch,
+    name: &str,
+) -> Result<Vec<i64>> {
+    let column = batch
+        .column_by_name(name)
+        .with_context(|| format!("Polymarket CLOB column {name:?} missing"))?;
+    let row_count = batch.num_rows();
+    let mut out = Vec::with_capacity(row_count);
+    macro_rules! scale_to_nanos {
+        ($arr:ty, $factor:expr, $unit:literal) => {{
+            let array = column
+                .as_any()
+                .downcast_ref::<$arr>()
+                .with_context(|| format!("column {name:?} is not {} timestamps", $unit))?;
+            for index in 0..row_count {
+                out.push(
+                    array
+                        .value(index)
+                        .checked_mul($factor)
+                        .with_context(|| format!("{name:?} {} overflow scaling to nanos", $unit))?,
+                );
+            }
+        }};
+    }
+    match column.data_type() {
+        DataType::Timestamp(TimeUnit::Second, _) => {
+            scale_to_nanos!(TimestampSecondArray, 1_000_000_000, "second")
+        }
+        DataType::Timestamp(TimeUnit::Millisecond, _) => {
+            scale_to_nanos!(TimestampMillisecondArray, 1_000_000, "millisecond")
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            scale_to_nanos!(TimestampMicrosecondArray, 1_000, "microsecond")
+        }
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => {
+            let array = column
+                .as_any()
+                .downcast_ref::<TimestampNanosecondArray>()
+                .with_context(|| format!("column {name:?} is not nanosecond timestamps"))?;
+            for index in 0..row_count {
+                out.push(array.value(index));
+            }
+        }
+        other => bail!("Polymarket CLOB column {name:?} is not a timestamp: {other:?}"),
+    }
+    Ok(out)
 }
 
 /// Borrow a UTF-8 column by name from a record batch.

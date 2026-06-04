@@ -253,10 +253,21 @@ pub fn parse_okx_book_messages(jsonl: &str, venue_inst_id: &str) -> Result<Vec<O
     Ok(messages)
 }
 
-/// Maximum decimal places of a decimal string (`"643.3"` -> 1, `"5995"` -> 0).
+/// NautilusTrader standard `FIXED_PRECISION`. Source decimals are rounded to this
+/// many places before precision is derived or a `Price`/`Quantity` is built: OKX
+/// renders some values as f64 round-trip artifacts (`"0.09655999999999999"` for a
+/// true `0.09656`, `"0.09382000000000000"` for `0.09382`) whose spurious 15-17th
+/// place digits would otherwise blow past the cap. Rounding recovers the intended
+/// tick value and bounds precision to what the catalog can store.
+const NT_FIXED_PRECISION: u32 = 9;
+
+/// Significant decimal places of a decimal string after rounding to
+/// [`NT_FIXED_PRECISION`] and stripping trailing zeros (`"643.3"` -> 1,
+/// `"5995"` -> 0, `"0.09655999999999999"` -> 5).
 fn decimal_places(value: &str) -> Result<u8> {
     let decimal = Decimal::from_str(value).with_context(|| format!("decimal {value:?}"))?;
-    u8::try_from(decimal.scale()).context("decimal scale exceeds u8")
+    u8::try_from(decimal.round_dp(NT_FIXED_PRECISION).normalize().scale())
+        .context("decimal scale exceeds u8")
 }
 
 /// Scan all levels of all messages to determine the uniform price/size precision
@@ -277,9 +288,11 @@ fn resolve_precisions(messages: &[OkxBookMessage]) -> Result<(u8, u8)> {
 /// Rescale a decimal string to exactly `precision` decimal places so the parsed
 /// [`Price`]/[`Quantity`] carries the uniform venue precision.
 fn rescaled(value: &str, precision: u8) -> Result<String> {
-    let mut decimal = Decimal::from_str(value).with_context(|| format!("decimal {value:?}"))?;
+    let mut decimal = Decimal::from_str(value)
+        .with_context(|| format!("decimal {value:?}"))?
+        .round_dp(NT_FIXED_PRECISION);
     ensure!(
-        decimal.scale() <= u32::from(precision),
+        decimal.normalize().scale() <= u32::from(precision),
         "value {value:?} has more precision than venue allows ({precision})"
     );
     decimal.rescale(u32::from(precision));
@@ -545,6 +558,11 @@ const ZIP_METHOD_STORED: u16 = 0;
 /// General-purpose flag bit 3: sizes/CRC are zero in the local header and a
 /// data descriptor follows the compressed data instead.
 const ZIP_FLAG_DATA_DESCRIPTOR: u16 = 0x0008;
+/// ZIP64 extended-information extra-field header id.
+const ZIP64_EXTRA_ID: u16 = 0x0001;
+/// Sentinel a 32-bit ZIP size field carries when the real 64-bit value lives in
+/// the ZIP64 extended-information extra field (member exceeds the 4 GiB u32 cap).
+const ZIP32_SIZE_SENTINEL: u32 = 0xFFFF_FFFF;
 
 fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
@@ -578,6 +596,67 @@ fn central_directory_member(zip: &[u8]) -> Result<(usize, usize, u32)> {
         offset += 1;
     }
     bail!("ZIP central directory header not found while resolving streamed member sizes")
+}
+
+/// Resolve the real 64-bit `(uncompressed, compressed)` sizes from a local
+/// header's ZIP64 extended-information extra field. Per APPNOTE the block
+/// (id `0x0001`) stores the original (uncompressed) size first, then the
+/// compressed size, each present only when the corresponding 32-bit field held
+/// the `0xFFFFFFFF` sentinel, in that fixed order. Returns `None` for a size
+/// whose 32-bit field was not a sentinel.
+fn zip64_sizes(
+    extra: &[u8],
+    uncompressed_is_sentinel: bool,
+    compressed_is_sentinel: bool,
+) -> Result<(Option<usize>, Option<usize>)> {
+    let mut offset = 0usize;
+    while offset + 4 <= extra.len() {
+        let id = read_u16_le(extra, offset);
+        let block_len = read_u16_le(extra, offset + 2) as usize;
+        let body = offset + 4;
+        let body_end = body
+            .checked_add(block_len)
+            .context("ZIP64 extra block length overflow")?;
+        ensure!(
+            body_end <= extra.len(),
+            "ZIP64 extra block extends past the extra field"
+        );
+        if id == ZIP64_EXTRA_ID {
+            let mut cursor = body;
+            let mut uncompressed = None;
+            if uncompressed_is_sentinel {
+                ensure!(
+                    cursor + 8 <= body_end,
+                    "ZIP64 extra block too short for the uncompressed size"
+                );
+                let value = u64::from_le_bytes(
+                    extra[cursor..cursor + 8]
+                        .try_into()
+                        .expect("8-byte little-endian slice"),
+                );
+                uncompressed =
+                    Some(usize::try_from(value).context("ZIP64 uncompressed size exceeds usize")?);
+                cursor += 8;
+            }
+            let mut compressed = None;
+            if compressed_is_sentinel {
+                ensure!(
+                    cursor + 8 <= body_end,
+                    "ZIP64 extra block too short for the compressed size"
+                );
+                let value = u64::from_le_bytes(
+                    extra[cursor..cursor + 8]
+                        .try_into()
+                        .expect("8-byte little-endian slice"),
+                );
+                compressed =
+                    Some(usize::try_from(value).context("ZIP64 compressed size exceeds usize")?);
+            }
+            return Ok((uncompressed, compressed));
+        }
+        offset = body_end;
+    }
+    bail!("ZIP64 extra field (id 0x0001) not found despite a 0xFFFFFFFF size sentinel")
 }
 
 /// Extract the single CSV member of an OKX `trades`/`candlesticks` ZIP archive
@@ -618,6 +697,33 @@ pub fn extract_csv_from_zip(zip_bytes: &[u8]) -> Result<String> {
         compressed_size = csize;
         uncompressed_size = usize_field;
         crc = central_crc;
+    } else if compressed_size == ZIP32_SIZE_SENTINEL as usize
+        || uncompressed_size == ZIP32_SIZE_SENTINEL as usize
+    {
+        // ZIP64 member: the 32-bit size fields hold the 0xFFFFFFFF sentinel and
+        // the real 64-bit sizes live in the local header's ZIP64 extra field
+        // (data.binance.vision monthly archives exceed 4 GiB uncompressed).
+        let extra_start = ZIP_LOCAL_HEADER_LEN
+            .checked_add(name_len)
+            .context("ZIP local header name length overflow")?;
+        let extra_end = extra_start
+            .checked_add(extra_len)
+            .context("ZIP local header extra length overflow")?;
+        ensure!(
+            extra_end <= zip_bytes.len(),
+            "ZIP local header extra field extends past archive end"
+        );
+        let (uncompressed64, compressed64) = zip64_sizes(
+            &zip_bytes[extra_start..extra_end],
+            uncompressed_size == ZIP32_SIZE_SENTINEL as usize,
+            compressed_size == ZIP32_SIZE_SENTINEL as usize,
+        )?;
+        if let Some(value) = uncompressed64 {
+            uncompressed_size = value;
+        }
+        if let Some(value) = compressed64 {
+            compressed_size = value;
+        }
     }
 
     let data_start = ZIP_LOCAL_HEADER_LEN
@@ -742,7 +848,9 @@ fn increment_decimal_places(increment: &str) -> u8 {
 /// while a genuine `"1.05"` is refused at precision 0. This mirrors the shared
 /// `catalog_projection::rescaled` convention.
 fn rescaled_to(value: &str, precision: u8) -> Result<String> {
-    let mut decimal = Decimal::from_str(value).with_context(|| format!("decimal {value:?}"))?;
+    let mut decimal = Decimal::from_str(value)
+        .with_context(|| format!("decimal {value:?}"))?
+        .round_dp(NT_FIXED_PRECISION);
     ensure!(
         decimal.normalize().scale() <= u32::from(precision),
         "value {value:?} has more precision than instrument allows ({precision})"
@@ -2007,5 +2115,57 @@ mod tests {
     fn zip_extractor_rejects_bad_signature() {
         let err = extract_csv_from_zip(b"not a zip archive at all............").unwrap_err();
         assert!(err.to_string().contains("signature"), "{err}");
+    }
+
+    #[test]
+    fn zip_extractor_resolves_zip64_sentinel_sizes() {
+        // A STORED member whose local-header 32-bit size fields hold the
+        // 0xFFFFFFFF sentinel, with the real sizes in a ZIP64 extra field — the
+        // shape data.binance.vision monthly archives take once their member
+        // exceeds 4 GiB uncompressed. Tiny payload exercises the ZIP64 path
+        // without a 4 GiB fixture.
+        let content = b"a,b,c\n1,2,3\n";
+        let mut hasher = Crc::new();
+        hasher.update(content);
+        let crc = hasher.sum();
+        let name = b"x";
+
+        let mut zip = Vec::new();
+        zip.extend_from_slice(&ZIP_LOCAL_HEADER_SIG);
+        zip.extend_from_slice(&20u16.to_le_bytes()); // version needed
+        zip.extend_from_slice(&0u16.to_le_bytes()); // flags
+        zip.extend_from_slice(&ZIP_METHOD_STORED.to_le_bytes());
+        zip.extend_from_slice(&0u16.to_le_bytes()); // mod time
+        zip.extend_from_slice(&0u16.to_le_bytes()); // mod date
+        zip.extend_from_slice(&crc.to_le_bytes());
+        zip.extend_from_slice(&ZIP32_SIZE_SENTINEL.to_le_bytes()); // compressed sentinel
+        zip.extend_from_slice(&ZIP32_SIZE_SENTINEL.to_le_bytes()); // uncompressed sentinel
+        zip.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        zip.extend_from_slice(&20u16.to_le_bytes()); // extra_len: 4 header + 16 data
+        zip.extend_from_slice(name);
+        // ZIP64 extra: id, block length, then uncompressed size, compressed size.
+        zip.extend_from_slice(&ZIP64_EXTRA_ID.to_le_bytes());
+        zip.extend_from_slice(&16u16.to_le_bytes());
+        zip.extend_from_slice(&(content.len() as u64).to_le_bytes());
+        zip.extend_from_slice(&(content.len() as u64).to_le_bytes());
+        zip.extend_from_slice(content);
+
+        let csv = extract_csv_from_zip(&zip).expect("ZIP64 member extracts");
+        assert_eq!(csv, "a,b,c\n1,2,3\n");
+    }
+
+    #[test]
+    fn decimal_places_rounds_f64_round_trip_artifacts() {
+        // OKX renders some prices as f64 round-trip noise (a true 0.09656 as
+        // "0.09655999999999999"); rounding to NT_FIXED_PRECISION recovers the
+        // intended tick and keeps the derived precision within NautilusTrader's
+        // 9-place cap rather than blowing past it at the 17th decimal.
+        assert_eq!(decimal_places("0.09655999999999999").unwrap(), 5);
+        assert_eq!(decimal_places("0.09382000000000000").unwrap(), 5);
+        assert_eq!(decimal_places("0.09382").unwrap(), 5);
+        assert_eq!(decimal_places("5995").unwrap(), 0);
+        // Rescaling the artifact to its derived precision yields the clean tick.
+        assert_eq!(rescaled("0.09655999999999999", 5).unwrap(), "0.09656");
+        assert_eq!(rescaled_to("0.09655999999999999", 5).unwrap(), "0.09656");
     }
 }

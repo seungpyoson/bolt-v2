@@ -267,3 +267,93 @@ fn accepted_data_flows_through_to_objective_result_contract() {
     assert_eq!(contract.claim_limits.len(), 3);
     assert_eq!(contract.catalog_hash, output.projection.catalog_hash);
 }
+
+#[test]
+fn partial_time_window_gate_admits_only_in_window_trades() {
+    // The manifest's optional `[start_time, end_time]` window maps into
+    // NautilusTrader's `BacktestRunConfig` start/end. NautilusTrader only delivers
+    // (and counts in `iterations`) trades whose `ts_init` falls inside that window,
+    // so the iterations gate must compare the engine's count to the *in-window*
+    // accepted trades — not the full projected set. A window that legitimately
+    // trims the data must still run, not spuriously fail the gate.
+    let accepted = accepted_dataset();
+    let identity = CanonicalInstrumentIdentity {
+        instrument_id: "BNBUSDC".to_string(),
+        venue_symbol: "BNBUSDC".to_string(),
+        nt_instrument_id: "BNBUSDC.BYBIT".to_string(),
+    };
+
+    // A full-window run first, only to learn the real normalized event times of the
+    // accepted trades (so the windowed run below carries no hardcoded nanosecond
+    // literal and stays faithful to the canonical normalizer).
+    let full_temp = tempfile::TempDir::new().expect("temp dir");
+    let full_canonical = full_temp.path().join("canonical-trades.parquet");
+    let full_catalog = full_temp.path().join("nt-catalog");
+    let full_catalog_path = full_catalog.to_str().unwrap().to_string();
+    let full = run_backtest(BacktestRunInputs {
+        accepted: &accepted,
+        identity: &identity,
+        instrument_spec: &instrument_spec(),
+        csv_text: SAMPLE_CSV,
+        capture_time_nanos: 1_772_512_022_000_000_000,
+        manifest: &manifest(&full_catalog_path),
+        canonical_artifact_path: &full_canonical,
+        catalog_root: &full_catalog,
+        created_at: "2026-06-02T00:00:00Z",
+        artifact_uris: ResultArtifactUris {
+            source_proof_uri: "s3://bolt-parquet/nt-research-analytics/source-proofs/p.json"
+                .to_string(),
+            canonical_table_uri: full_canonical.to_string_lossy().to_string(),
+            nt_catalog_uri: full_catalog_path.clone(),
+            result_contract_uri: "s3://bolt-parquet/nt-research-analytics/backtests/win/r.json"
+                .to_string(),
+        },
+    })
+    .expect("full-window run");
+    assert_eq!(full.canonical_table.rows.len(), 3);
+    let first_event = full.canonical_table.rows[0].event_time;
+    let last_event = full.canonical_table.rows[2].event_time;
+    assert!(
+        first_event < last_event,
+        "fixture must span more than one event timestamp"
+    );
+
+    // Second run: an `end_time` at the first trade's event time admits exactly one
+    // trade (NautilusTrader's end bound is inclusive). The gate must accept the run
+    // with `iterations == 1`; under a full-dataset gate it would spuriously bail.
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let canonical_path = temp.path().join("canonical-trades.parquet");
+    let catalog_root = temp.path().join("nt-catalog");
+    let catalog_path = catalog_root.to_str().unwrap().to_string();
+    let mut windowed_manifest = manifest(&catalog_path);
+    windowed_manifest.end_time = Some(first_event);
+
+    let windowed = run_backtest(BacktestRunInputs {
+        accepted: &accepted,
+        identity: &identity,
+        instrument_spec: &instrument_spec(),
+        csv_text: SAMPLE_CSV,
+        capture_time_nanos: 1_772_512_022_000_000_000,
+        manifest: &windowed_manifest,
+        canonical_artifact_path: &canonical_path,
+        catalog_root: &catalog_root,
+        created_at: "2026-06-02T00:00:00Z",
+        artifact_uris: ResultArtifactUris {
+            source_proof_uri: "s3://bolt-parquet/nt-research-analytics/source-proofs/p.json"
+                .to_string(),
+            canonical_table_uri: canonical_path.to_string_lossy().to_string(),
+            nt_catalog_uri: catalog_path.clone(),
+            result_contract_uri: "s3://bolt-parquet/nt-research-analytics/backtests/win/r2.json"
+                .to_string(),
+        },
+    })
+    .expect("partial-window run must pass the iterations gate");
+
+    // The catalog still projects all three accepted trades; only the engine run is
+    // windowed, so the read-back proof is unchanged while the engine iterates once.
+    assert_eq!(windowed.read_back_count, 3);
+    assert_eq!(
+        windowed.nt_result.iterations, 1,
+        "engine must iterate once per in-window trade (end bound inclusive)"
+    );
+}

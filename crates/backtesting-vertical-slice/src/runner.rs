@@ -205,12 +205,20 @@ pub fn run_backtest(inputs: BacktestRunInputs<'_>) -> Result<BacktestRunOutput> 
     let nt_result = results.remove(0);
     // The read-back proof above loads the catalog through one NautilusTrader code
     // path; the engine consumed it through another. Bind the two by asserting the
-    // engine's own iteration count equals the accepted-trade count: NautilusTrader
-    // increments `iterations` exactly once per data point delivered to the engine
-    // loop, so a run that silently processed zero (or a divergent count of) the
+    // engine's own iteration count equals the number of accepted trades inside the
+    // manifest's `[start_time, end_time]` window: NautilusTrader increments
+    // `iterations` exactly once per data point delivered to the engine loop and
+    // does not count data trimmed outside that window, so the expectation is the
+    // windowed accepted-trade count (the whole accepted set when no window is set).
+    // A run that silently processed zero (or a divergent count of) the in-window
     // accepted trades — while still stamping the accepted source/catalog hash — is
     // rejected here rather than producing a contract over data the engine never saw.
-    if let Some(reason) = iterations_mismatch(nt_result.iterations, read_back.len()) {
+    let expected = expected_iterations(
+        &canonical_table.rows,
+        inputs.manifest.start_time,
+        inputs.manifest.end_time,
+    );
+    if let Some(reason) = iterations_mismatch(nt_result.iterations, expected) {
         bail!("backtest did not consume the accepted data: {reason}");
     }
 
@@ -283,7 +291,10 @@ mod tests {
         types::{Price, Quantity},
     };
 
-    use super::{assert_read_back_matches, iterations_mismatch, time_window_excludes_all_data};
+    use super::{
+        assert_read_back_matches, expected_iterations, iterations_mismatch,
+        time_window_excludes_all_data,
+    };
     use crate::canonical_trades::{CanonicalTradeRow, TradeAggressorSide};
 
     const TEST_INSTRUMENT: &str = "BTCUSDT.BYBIT";
@@ -417,6 +428,45 @@ mod tests {
     #[test]
     fn iterations_matching_expected_is_admitted() {
         assert!(iterations_mismatch(3, 3).is_none());
+    }
+
+    fn windowed_rows() -> Vec<CanonicalTradeRow> {
+        vec![
+            canonical_row("t1", "1", "1", TradeAggressorSide::Buyer, 100),
+            canonical_row("t2", "1", "1", TradeAggressorSide::Buyer, 200),
+            canonical_row("t3", "1", "1", TradeAggressorSide::Buyer, 300),
+        ]
+    }
+
+    #[test]
+    fn expected_iterations_counts_all_rows_without_window() {
+        assert_eq!(expected_iterations(&windowed_rows(), None, None), 3);
+    }
+
+    #[test]
+    fn expected_iterations_excludes_trades_before_start() {
+        // start is inclusive: the trades at 200 and 300 remain.
+        assert_eq!(expected_iterations(&windowed_rows(), Some(200), None), 2);
+    }
+
+    #[test]
+    fn expected_iterations_excludes_trades_after_end() {
+        // end is inclusive: only the trade at 100 remains.
+        assert_eq!(expected_iterations(&windowed_rows(), None, Some(100)), 1);
+    }
+
+    #[test]
+    fn expected_iterations_counts_inclusive_boundary_and_interior_windows() {
+        // Both bounds inclusive and exactly on the data's edges -> all three.
+        assert_eq!(
+            expected_iterations(&windowed_rows(), Some(100), Some(300)),
+            3
+        );
+        // A window strictly inside the edges keeps only the middle trade.
+        assert_eq!(
+            expected_iterations(&windowed_rows(), Some(150), Some(250)),
+            1
+        );
     }
 
     #[test]
@@ -559,6 +609,21 @@ fn iterations_mismatch(iterations: usize, expected: usize) -> Option<String> {
         ));
     }
     None
+}
+
+/// Number of accepted trades the NautilusTrader engine will deliver under the
+/// manifest's optional `[start, end]` window. NautilusTrader includes a data
+/// point when `ts_init >= start_ns` (the skip-before-start loop breaks at the
+/// first such point) and `ts_init <= end_ns` (the run loop breaks only once
+/// `ts_init > end_ns`), so both bounds are inclusive. Each projected tick's
+/// `ts_init` equals its canonical `event_time`, so the windowed row count is
+/// exactly the engine's expected iteration count; with no bounds it is the whole
+/// accepted set, matching the read-back proof.
+fn expected_iterations(rows: &[CanonicalTradeRow], start: Option<i64>, end: Option<i64>) -> usize {
+    rows.iter()
+        .filter(|row| start.is_none_or(|start| row.event_time >= start))
+        .filter(|row| end.is_none_or(|end| row.event_time <= end))
+        .count()
 }
 
 /// Reject a manifest time window that excludes every accepted trade. The

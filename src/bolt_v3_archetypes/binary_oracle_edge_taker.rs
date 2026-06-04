@@ -427,9 +427,6 @@ pub fn register_runtime_strategy(
     if let Some(readiness_evidence) = context.readiness_evidence.clone() {
         build_context = build_context.with_readiness_evidence(readiness_evidence);
     }
-    if let Some(runtime_readiness_seed) = context.runtime_readiness_seed.clone() {
-        build_context = build_context.with_runtime_readiness_seed(runtime_readiness_seed);
-    }
     let registry = production_strategy_registry()
         .map_err(|error| binding_message(&context, error.to_string()))?;
     registry

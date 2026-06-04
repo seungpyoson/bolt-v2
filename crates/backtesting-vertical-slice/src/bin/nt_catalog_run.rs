@@ -15,6 +15,8 @@
 //!   go through `object_store` (the same backend NautilusTrader uses), so a
 //!   `file://` staging tree and an `s3://` lake share one code path.
 
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -34,7 +36,30 @@ use nautilus_model::{
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
-use backtesting_vertical_slice::canonical_okx::append_okx_trades_archive;
+use backtesting_vertical_slice::canonical_binance::{
+    append_binance_futures_agg_trades_archive, append_binance_futures_mark_price_klines_archive,
+    kline_bar_spec_from_object_key,
+};
+use backtesting_vertical_slice::canonical_book::{
+    append_polymarket_book_archive, append_polymarket_trades_archive,
+};
+use backtesting_vertical_slice::canonical_bybit::{
+    append_bybit_deriv_tick_trades_archive, append_bybit_mark_price_kline_1m_archive,
+};
+use backtesting_vertical_slice::canonical_chainlink::append_chainlink_index_prices_archive;
+use backtesting_vertical_slice::canonical_deribit::{
+    append_deribit_bars_archive, append_deribit_trades_archive,
+};
+use backtesting_vertical_slice::canonical_hyperliquid_core::append_hyperliquid_core_fills_archive;
+use backtesting_vertical_slice::canonical_hyperliquid_hip3::append_hyperliquid_hip3_bars_archive;
+use backtesting_vertical_slice::canonical_hyperliquid_hip4::{
+    append_hip4_bars_archive, append_hip4_snapshots_archive, append_hip4_trades_archive,
+    hip4_canonical_naming,
+};
+use backtesting_vertical_slice::canonical_okx::{
+    append_okx_book_archive, append_okx_candlesticks_archive, append_okx_trades_archive,
+    extract_csv_from_zip,
+};
 
 /// Default region for the `bolt-parquet` data lake (a bucket with no location
 /// constraint resolves to `us-east-1`).
@@ -43,24 +68,189 @@ const DEFAULT_REGION: &str = "us-east-1";
 /// Synthetic instrument id used only by the `smoke` connectivity probe.
 const SMOKE_INSTRUMENT_ID: &str = "SMOKE.TEST";
 
-/// A `(venue, family)` the bulk converter knows how to project, and the staging
-/// sub-prefix (relative to the source root) its objects live under.
+/// A `(venue, family)` the bulk converter knows how to project, and how its
+/// objects are found under the bucket root.
 struct FamilyBinding {
+    /// Dispatch venue key — the `--venue` filter value, e.g. `okx`.
     venue: &'static str,
+    /// Dispatch family key — the `--family` filter value, e.g. `trades`.
     family: &'static str,
-    /// Path under the staging root, for example
-    /// `okx/raw/v1/family=trades/`. Objects below it are the family's archives.
-    sub_prefix: &'static str,
+    /// Key prefix under the bucket root to list recursively. A `{date}`
+    /// placeholder is filled from `--staging-date` (Polymarket's prefix carries
+    /// no date and is left untouched).
+    root_template: &'static str,
+    /// Required key segments — an object converts only if its key contains
+    /// every entry (empty = no filter). Used where one root holds several
+    /// families or product types: Deribit interleaves `trades` and `bars_1m`
+    /// across many `run=` partitions that cannot be enumerated statically, and
+    /// mixes option / future / perpetual products the option-only converter must
+    /// not be fed.
+    key_filters: &'static [&'static str],
+    /// Suffix the family's archive objects carry, e.g. `.zip`; everything else
+    /// under the prefix (manifests, checksums, sidecars) is skipped.
+    extension: &'static str,
 }
 
-/// The wired conversion bindings. New venues/families are added here as their
-/// append paths land; the dispatch in [`convert_object`] must gain a matching
-/// arm.
-const FAMILY_BINDINGS: &[FamilyBinding] = &[FamilyBinding {
-    venue: "okx",
-    family: "trades",
-    sub_prefix: "okx/raw/v1/family=trades/",
-}];
+/// The wired conversion bindings, resolved against the live `bolt-parquet`
+/// layout. New venues/families are added here as their append paths land; the
+/// dispatch in [`convert_object`] must gain a matching arm. Deribit
+/// `tardis_options_chain` (NautilusTrader Tardis loader) and the second targeted
+/// HL-core fills folder are intentionally not wired here.
+const FAMILY_BINDINGS: &[FamilyBinding] = &[
+    FamilyBinding {
+        venue: "okx",
+        family: "trades",
+        root_template: "backfill-staging/{date}/okx/raw/v1/family=trades/",
+        key_filters: &[],
+        extension: ".zip",
+    },
+    FamilyBinding {
+        venue: "okx",
+        family: "candlesticks",
+        root_template: "backfill-staging/{date}/okx/raw/v1/family=candlesticks/",
+        key_filters: &[],
+        extension: ".zip",
+    },
+    FamilyBinding {
+        venue: "okx",
+        family: "order_book_400",
+        root_template: "backfill-staging/{date}/okx/raw/v1/family=order_book_400/",
+        key_filters: &[],
+        extension: ".gz",
+    },
+    FamilyBinding {
+        venue: "binance",
+        family: "aggTrades",
+        root_template: "backfill-staging/{date}/binance/raw/v1/source=data.binance.vision/product=futures_um/",
+        key_filters: &["/family=aggTrades/"],
+        extension: ".zip",
+    },
+    FamilyBinding {
+        venue: "binance",
+        family: "markPriceKlines",
+        root_template: "backfill-staging/{date}/binance/raw/v1/source=data.binance.vision/product=futures_um/",
+        key_filters: &["/family=markPriceKlines/"],
+        extension: ".zip",
+    },
+    // Bybit tick trades: the converter parses the derivatives archive header
+    // (linear + inverse share it); spot uses a different header and is not wired.
+    // One binding per derivative category keeps the prefix the scope.
+    FamilyBinding {
+        venue: "bybit",
+        family: "tick_trades",
+        root_template: "backfill-staging/{date}/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/",
+        key_filters: &[],
+        extension: ".csv.gz",
+    },
+    FamilyBinding {
+        venue: "bybit",
+        family: "tick_trades",
+        root_template: "backfill-staging/{date}/bybit/raw/v1/source=public_archive/family=tick_trades/category=inverse/",
+        key_filters: &[],
+        extension: ".csv.gz",
+    },
+    FamilyBinding {
+        venue: "bybit",
+        family: "mark_price_kline_1m",
+        root_template: "backfill-staging/{date}/bybit/raw/v1/source=rest/family=mark_price_kline_1m/",
+        key_filters: &[],
+        extension: ".json",
+    },
+    FamilyBinding {
+        venue: "deribit",
+        family: "trades",
+        root_template: "backfill-staging/{date}/deribit/raw/v1/",
+        // Options only: the converter parses <UNDERLYING>-<EXPIRY>-<STRIKE>-<KIND>
+        // and rejects futures/perpetuals, which share the bars/trades families.
+        key_filters: &["/family=trades/", "/product_family=option/"],
+        extension: ".json",
+    },
+    FamilyBinding {
+        venue: "deribit",
+        family: "bars_1m",
+        root_template: "backfill-staging/{date}/deribit/raw/v1/",
+        // Options only (see the trades binding): futures/perpetuals are excluded.
+        key_filters: &["/family=bars_1m/", "/product_family=option/"],
+        extension: ".json",
+    },
+    FamilyBinding {
+        venue: "chainlink",
+        family: "btc",
+        root_template: "backfill-staging/{date}/chainlink/btc-5m-cycles/",
+        key_filters: &[],
+        extension: ".parquet",
+    },
+    FamilyBinding {
+        venue: "chainlink",
+        family: "eth",
+        root_template: "backfill-staging/{date}/chainlink/eth-5m-cycles/",
+        key_filters: &[],
+        extension: ".parquet",
+    },
+    FamilyBinding {
+        venue: "chainlink",
+        family: "sol",
+        root_template: "backfill-staging/{date}/chainlink/sol-5m-cycles/",
+        key_filters: &[],
+        extension: ".parquet",
+    },
+    FamilyBinding {
+        venue: "chainlink",
+        family: "xrp",
+        root_template: "backfill-staging/{date}/chainlink/xrp-5m-cycles/",
+        key_filters: &[],
+        extension: ".parquet",
+    },
+    FamilyBinding {
+        venue: "hyperliquid-core",
+        family: "node_fills_by_block",
+        root_template: "backfill-staging/{date}/hyperliquid-core/raw/v1/source_family=node_fills_by_block/",
+        key_filters: &[],
+        extension: ".lz4",
+    },
+    FamilyBinding {
+        venue: "hyperliquid-hip3",
+        family: "bars",
+        root_template: "backfill-staging/{date}/hyperliquid-hip3/staged/v1/table=bars/",
+        key_filters: &[],
+        extension: ".jsonl",
+    },
+    FamilyBinding {
+        venue: "hyperliquid-hip4",
+        family: "trades_recent",
+        root_template: "backfill-staging/{date}/hyperliquid-hip4/staged/v1/table=trades_recent/",
+        key_filters: &[],
+        extension: ".jsonl",
+    },
+    FamilyBinding {
+        venue: "hyperliquid-hip4",
+        family: "bars",
+        root_template: "backfill-staging/{date}/hyperliquid-hip4/staged/v1/table=bars/",
+        key_filters: &[],
+        extension: ".jsonl",
+    },
+    FamilyBinding {
+        venue: "hyperliquid-hip4",
+        family: "order_book_snapshots_fixed_depth",
+        root_template: "backfill-staging/{date}/hyperliquid-hip4/staged/v1/table=order_book_snapshots_fixed_depth/",
+        key_filters: &[],
+        extension: ".jsonl",
+    },
+    FamilyBinding {
+        venue: "polymarket",
+        family: "book",
+        root_template: "polymarket_parquet/polymarket_book/",
+        key_filters: &[],
+        extension: ".parquet",
+    },
+    FamilyBinding {
+        venue: "polymarket",
+        family: "trades",
+        root_template: "polymarket_parquet/polymarket_trades/",
+        key_filters: &[],
+        extension: ".parquet",
+    },
+];
 
 /// One instrument's write outcome, venue-agnostic so the coverage report does
 /// not depend on any single venue's summary type.
@@ -90,9 +280,18 @@ enum Command {
     Smoke,
     /// Convert staged objects under a source URI into the catalog.
     Convert {
-        /// Staging root URI: `s3://bucket/prefix/` or `file:///abs/path/`.
+        /// Staging root URI: the bucket root `s3://bucket/` (or a `file:///abs/`
+        /// mirror root). Family prefixes are resolved relative to it.
         #[arg(long)]
         staging_uri: String,
+        /// Backfill snapshot date that fills the `{date}` segment of the staging
+        /// layout (for example `2026-06-01`). A runtime value, never hardcoded.
+        #[arg(long)]
+        staging_date: String,
+        /// Identifier stamped as this conversion run's provenance on venues that
+        /// record it (for example Binance). One value per convert invocation.
+        #[arg(long)]
+        ingest_run_id: String,
         /// Optional venue filter (for example `okx`); absent converts all wired
         /// venues found under the staging root.
         #[arg(long)]
@@ -146,12 +345,16 @@ fn main() -> Result<()> {
         Command::Smoke => smoke(&cli.catalog_uri, opts),
         Command::Convert {
             staging_uri,
+            staging_date,
+            ingest_run_id,
             venue,
             family,
         } => convert(
             &cli.catalog_uri,
             opts,
             &staging_uri,
+            &staging_date,
+            &ingest_run_id,
             venue.as_deref(),
             family.as_deref(),
         ),
@@ -215,10 +418,13 @@ fn smoke(catalog_uri: &str, opts: AHashMap<String, String>) -> Result<()> {
 /// converter. Async IO (list/get) is driven on a runtime and completes before
 /// each synchronous catalog write, so NautilusTrader's own blocking write never
 /// nests inside the runtime.
+#[allow(clippy::too_many_arguments)]
 fn convert(
     catalog_uri: &str,
     opts: AHashMap<String, String>,
     staging_uri: &str,
+    staging_date: &str,
+    ingest_run_id: &str,
     venue: Option<&str>,
     family: Option<&str>,
 ) -> Result<()> {
@@ -257,13 +463,21 @@ fn convert(
         }
         matched_bindings += 1;
 
-        let prefix = ObjectPath::from(format!(
-            "{}/{}",
-            base_path.as_ref().trim_end_matches('/'),
-            binding.sub_prefix.trim_matches('/')
-        ));
+        let resolved = binding.root_template.replace("{date}", staging_date);
+        let base = base_path.as_ref().trim_end_matches('/');
+        let joined = if base.is_empty() {
+            resolved.trim_start_matches('/').to_string()
+        } else {
+            format!("{}/{}", base, resolved.trim_matches('/'))
+        };
+        let prefix = ObjectPath::from(joined);
         let keys = runtime
-            .block_on(list_zip_keys(store.clone(), prefix.clone()))
+            .block_on(list_objects(
+                store.clone(),
+                prefix.clone(),
+                binding.extension,
+                binding.key_filters,
+            ))
             .with_context(|| format!("list {prefix}"))?;
 
         let mut objects = 0usize;
@@ -274,8 +488,9 @@ fn convert(
             let bytes = runtime
                 .block_on(get_bytes(store.clone(), key.clone()))
                 .with_context(|| format!("read {key}"))?;
-            let converted = convert_object(binding, &bytes, &mut catalog)
-                .with_context(|| format!("convert {key}"))?;
+            let converted =
+                convert_object(binding, key.as_ref(), &bytes, ingest_run_id, &mut catalog)
+                    .with_context(|| format!("convert {key}"))?;
             objects += 1;
             for instrument in converted {
                 records += instrument.record_count;
@@ -309,35 +524,200 @@ fn convert(
     Ok(())
 }
 
-/// Dispatch one staged object to its venue/family converter, appending into the
-/// shared catalog. New `(venue, family)` arms are added as their append paths
-/// land.
-fn convert_object(
-    binding: &FamilyBinding,
-    bytes: &[u8],
-    catalog: &mut ParquetDataCatalog,
-) -> Result<Vec<ConvertedInstrument>> {
-    match (binding.venue, binding.family) {
-        ("okx", "trades") => Ok(append_okx_trades_archive(bytes, catalog)?
-            .into_iter()
-            .map(|summary| ConvertedInstrument {
-                nt_instrument_id: summary.nt_instrument_id,
-                record_count: summary.record_count,
-            })
-            .collect()),
-        (venue, family) => bail!("no converter wired for venue={venue} family={family}"),
+/// A staged object's bytes materialised to a temporary local file, removed when
+/// dropped. Polymarket's converters read Parquet through the synchronous Arrow
+/// file reader (a filesystem path), so an `s3://` object is staged locally for
+/// the duration of one append.
+struct TempObject {
+    path: PathBuf,
+}
+
+impl TempObject {
+    fn new(object_key: &str, bytes: &[u8]) -> Result<Self> {
+        // Catalog object names collide on basename (`data.parquet`), so the full
+        // key with path separators flattened gives a unique, deterministic name.
+        let stem = object_key.replace(['/', '='], "_");
+        let path = std::env::temp_dir().join(format!("nt-convert-{stem}"));
+        fs::write(&path, bytes)
+            .with_context(|| format!("stage object to temp file {}", path.display()))?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
     }
 }
 
-/// List every `.zip` object under `prefix`, in deterministic key order.
-async fn list_zip_keys(store: Arc<dyn ObjectStore>, prefix: ObjectPath) -> Result<Vec<ObjectPath>> {
+impl Drop for TempObject {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Decode an object's bytes as UTF-8 text for the converters that take `&str`.
+fn as_text(bytes: &[u8], object_key: &str) -> Result<String> {
+    std::str::from_utf8(bytes)
+        .map(str::to_string)
+        .with_context(|| format!("object {object_key} is not valid UTF-8"))
+}
+
+/// Build the venue-agnostic coverage row from a summary's id + record count.
+fn instrument(nt_instrument_id: String, record_count: usize) -> ConvertedInstrument {
+    ConvertedInstrument {
+        nt_instrument_id,
+        record_count,
+    }
+}
+
+/// Dispatch one staged object to its venue/family converter, appending into the
+/// shared catalog. Each arm adapts the object bytes to the converter's input
+/// form (raw bytes, decompressed CSV text, UTF-8 JSONL, or a temp file) and maps
+/// the venue summary onto the agnostic coverage row. New `(venue, family)` arms
+/// are added as their append paths land.
+fn convert_object(
+    binding: &FamilyBinding,
+    object_key: &str,
+    bytes: &[u8],
+    ingest_run_id: &str,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<ConvertedInstrument>> {
+    let rows = match (binding.venue, binding.family) {
+        ("okx", "trades") => append_okx_trades_archive(bytes, catalog)?
+            .into_iter()
+            .map(|s| instrument(s.nt_instrument_id, s.record_count))
+            .collect(),
+        ("okx", "candlesticks") => append_okx_candlesticks_archive(bytes, catalog)?
+            .into_iter()
+            .map(|s| instrument(s.nt_instrument_id, s.record_count))
+            .collect(),
+        ("okx", "order_book_400") => append_okx_book_archive(bytes, catalog)?
+            .into_iter()
+            .map(|s| instrument(s.nt_instrument_id, s.record_count))
+            .collect(),
+        ("binance", "aggTrades") => {
+            let csv = extract_csv_from_zip(bytes)?;
+            let s = append_binance_futures_agg_trades_archive(
+                &csv,
+                object_key,
+                ingest_run_id,
+                catalog,
+            )?;
+            vec![instrument(s.nt_instrument_id, s.record_count)]
+        }
+        ("binance", "markPriceKlines") => {
+            let csv = extract_csv_from_zip(bytes)?;
+            let bar_spec = kline_bar_spec_from_object_key(object_key)?;
+            let s = append_binance_futures_mark_price_klines_archive(
+                &csv,
+                object_key,
+                ingest_run_id,
+                bar_spec,
+                catalog,
+            )?;
+            vec![instrument(s.nt_instrument_id, s.record_count)]
+        }
+        ("bybit", "tick_trades") => {
+            append_bybit_deriv_tick_trades_archive(bytes, object_key, catalog)?
+                .into_iter()
+                .map(|s| instrument(s.nt_instrument_id, s.record_count))
+                .collect()
+        }
+        ("bybit", "mark_price_kline_1m") => {
+            append_bybit_mark_price_kline_1m_archive(bytes, object_key, catalog)?
+                .into_iter()
+                .map(|s| instrument(s.nt_instrument_id, s.record_count))
+                .collect()
+        }
+        ("deribit", "trades") => append_deribit_trades_archive(bytes, catalog)?
+            .into_iter()
+            .map(|s| instrument(s.nt_instrument_id, s.record_count))
+            .collect(),
+        ("deribit", "bars_1m") => {
+            let s = append_deribit_bars_archive(bytes, object_key, catalog)?;
+            vec![instrument(s.nt_instrument_id, s.record_count)]
+        }
+        ("chainlink", _) => {
+            let s = append_chainlink_index_prices_archive(bytes, catalog)?;
+            vec![instrument(s.nt_instrument_id, s.record_count)]
+        }
+        ("hyperliquid-core", "node_fills_by_block") => {
+            append_hyperliquid_core_fills_archive(bytes, catalog)?
+                .into_iter()
+                .map(|s| instrument(s.nt_instrument_id, s.record_count))
+                .collect()
+        }
+        ("hyperliquid-hip3", "bars") => {
+            append_hyperliquid_hip3_bars_archive(bytes, object_key, catalog)?
+                .into_iter()
+                .map(|s| instrument(s.nt_instrument_id, s.record_count))
+                .collect()
+        }
+        ("hyperliquid-hip4", "trades_recent") => append_hip4_trades_archive(
+            &as_text(bytes, object_key)?,
+            &hip4_canonical_naming(),
+            catalog,
+        )?
+        .into_iter()
+        .map(|s| instrument(s.nt_identifier, s.record_count))
+        .collect(),
+        ("hyperliquid-hip4", "bars") => append_hip4_bars_archive(
+            &as_text(bytes, object_key)?,
+            &hip4_canonical_naming(),
+            catalog,
+        )?
+        .into_iter()
+        .map(|s| instrument(s.nt_identifier, s.record_count))
+        .collect(),
+        ("hyperliquid-hip4", "order_book_snapshots_fixed_depth") => append_hip4_snapshots_archive(
+            &as_text(bytes, object_key)?,
+            &hip4_canonical_naming(),
+            catalog,
+        )?
+        .into_iter()
+        .map(|s| instrument(s.nt_identifier, s.record_count))
+        .collect(),
+        ("polymarket", "book") => {
+            let tmp = TempObject::new(object_key, bytes)?;
+            append_polymarket_book_archive(tmp.path(), object_key, catalog)?
+                .into_iter()
+                .map(|s| instrument(s.nt_instrument_id, s.delta_count + s.trade_count))
+                .collect()
+        }
+        ("polymarket", "trades") => {
+            let tmp = TempObject::new(object_key, bytes)?;
+            append_polymarket_trades_archive(tmp.path(), object_key, catalog)?
+                .into_iter()
+                .map(|s| instrument(s.nt_instrument_id, s.delta_count + s.trade_count))
+                .collect()
+        }
+        (venue, family) => bail!("no converter wired for venue={venue} family={family}"),
+    };
+    Ok(rows)
+}
+
+/// List every object under `prefix` whose key ends with `extension` and contains
+/// every entry in `key_filters` (empty = no segment filter), in deterministic
+/// key order. Manifests, checksums, and other sidecars under the same prefix are
+/// skipped by the extension test.
+async fn list_objects(
+    store: Arc<dyn ObjectStore>,
+    prefix: ObjectPath,
+    extension: &str,
+    key_filters: &[&str],
+) -> Result<Vec<ObjectPath>> {
     let mut stream = store.list(Some(&prefix));
     let mut keys = Vec::new();
     while let Some(meta) = stream.next().await {
         let meta = meta.context("list object metadata")?;
-        if meta.location.as_ref().ends_with(".zip") {
-            keys.push(meta.location);
+        let location = meta.location;
+        let key = location.as_ref();
+        if !key.ends_with(extension) {
+            continue;
         }
+        if !key_filters.iter().all(|seg| key.contains(seg)) {
+            continue;
+        }
+        keys.push(location);
     }
     keys.sort();
     Ok(keys)

@@ -109,9 +109,12 @@ pub struct Hip4SnapshotRecord {
 
 /// How the venue-native identifiers map onto a NautilusTrader `instrument_id`.
 ///
-/// Built by the caller (from accepted instrument-universe metadata in the real
-/// pipeline), so the venue code suffix and outcome-symbol prefix are never
-/// hardcoded in this module.
+/// In the live pipeline the caller builds this from accepted instrument-universe
+/// metadata. The bulk historical conversion has no staged HIP-4 instrument
+/// universe to read from, so it single-sources the venue's mapping facts via
+/// [`hip4_canonical_naming`] (the same way the OKX path owns its `OKX_VENUE`
+/// code) — these are fixed HYPERLIQUID->NautilusTrader format facts, not
+/// per-run runtime values.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hip4InstrumentNaming {
     /// NautilusTrader venue code appended after the dot, e.g. `HYPERLIQUID`.
@@ -120,6 +123,21 @@ pub struct Hip4InstrumentNaming {
     pub outcome_symbol_prefix: String,
     /// Expected source venue token; records with a different venue are rejected.
     pub expected_venue: String,
+}
+
+/// The canonical HIP-4 instrument naming the bulk historical converter uses.
+///
+/// HIP-4 stages no instrument universe, so the HYPERLIQUID->NautilusTrader
+/// mapping facts (venue code, outcome-symbol prefix, source-venue token) live
+/// here as the single source of truth, consumed by both the bulk append paths
+/// and their round-trip tests.
+#[must_use]
+pub fn hip4_canonical_naming() -> Hip4InstrumentNaming {
+    Hip4InstrumentNaming {
+        nt_venue_code: "HYPERLIQUID".to_string(),
+        outcome_symbol_prefix: "OUTCOME-".to_string(),
+        expected_venue: "hyperliquid".to_string(),
+    }
 }
 
 /// A parsed, validated set of HIP-4 snapshots grouped by outcome instrument.

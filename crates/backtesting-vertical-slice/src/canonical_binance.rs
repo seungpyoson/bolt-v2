@@ -241,6 +241,45 @@ impl KlineBarSpec {
     }
 }
 
+/// Parse the kline [`KlineBarSpec`] from a staged object key's `interval=`
+/// partition segment (for example `.../interval=1m/...` -> step 1,
+/// [`BarAggregation::Minute`]).
+///
+/// Binance renders the unit as a trailing letter on the partition value: `m`
+/// minute, `h` hour, `d` day, `w` week, `M` month (capitalised to disambiguate
+/// from minutes); the leading digits are the step. The interval is a property of
+/// the archive layout, not the row payload, so the bulk dispatch reads it here
+/// rather than inventing it.
+///
+/// # Errors
+///
+/// Returns an error if the key has no `interval=` segment, the step is not a
+/// positive integer, or the unit letter is not one Binance emits.
+pub fn kline_bar_spec_from_object_key(object_key: &str) -> Result<KlineBarSpec> {
+    let raw = object_key
+        .split('/')
+        .find_map(|seg| seg.strip_prefix("interval="))
+        .with_context(|| format!("object key {object_key:?} has no interval= segment"))?;
+    ensure!(
+        !raw.is_empty(),
+        "empty interval= value in object key {object_key:?}"
+    );
+    let (digits, unit) = raw.split_at(raw.len() - 1);
+    let step: usize = digits
+        .parse()
+        .with_context(|| format!("interval step {digits:?} is not a positive integer"))?;
+    ensure!(step > 0, "interval step must be positive, got {step}");
+    let aggregation = match unit {
+        "m" => BarAggregation::Minute,
+        "h" => BarAggregation::Hour,
+        "d" => BarAggregation::Day,
+        "w" => BarAggregation::Week,
+        "M" => BarAggregation::Month,
+        other => bail!("unknown Binance interval unit {other:?} in {object_key:?}"),
+    };
+    Ok(KlineBarSpec { step, aggregation })
+}
+
 // ---------------------------------------------------------------------------
 // Aggressor side (Binance `is_buyer_maker` convention)
 // ---------------------------------------------------------------------------

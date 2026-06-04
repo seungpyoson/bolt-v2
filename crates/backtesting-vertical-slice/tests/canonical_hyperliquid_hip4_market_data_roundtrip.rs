@@ -22,8 +22,8 @@ use std::{fs, path::PathBuf};
 use backtesting_vertical_slice::canonical_hyperliquid_hip4::{
     Hip4BarAggregation, Hip4InstrumentNaming, Hip4MarketDataSpec, NT_DATA_TYPE_BAR,
     NT_DATA_TYPE_ORDER_BOOK_DELTA, NT_DATA_TYPE_TRADE_TICK, append_hip4_bars_archive,
-    append_hip4_snapshots_archive, append_hip4_trades_archive, normalize_hip4_bars,
-    normalize_hip4_trades, parse_hip4_snapshots, project_hip4_bars_to_catalog,
+    append_hip4_snapshots_archive, append_hip4_trades_archive, hip4_canonical_naming,
+    normalize_hip4_bars, normalize_hip4_trades, parse_hip4_snapshots, project_hip4_bars_to_catalog,
     project_hip4_trades_to_catalog, read_back_bars, read_back_order_book_deltas,
     read_back_trade_ticks, snapshots_to_deltas,
 };
@@ -183,13 +183,10 @@ fn hip4_bars_fixture_round_trips_through_nt_catalog() {
 
 /// Per-venue naming format constant (NT venue code + outcome-symbol prefix +
 /// expected source venue) the L2 bulk append consumes; the numeric outcome ids
-/// come from the object's own records.
+/// come from the object's own records. Single-sourced from the production
+/// [`hip4_canonical_naming`] so the test and the bulk dispatch cannot drift.
 fn bulk_naming() -> Hip4InstrumentNaming {
-    Hip4InstrumentNaming {
-        nt_venue_code: "HYPERLIQUID".to_string(),
-        outcome_symbol_prefix: "OUTCOME-".to_string(),
-        expected_venue: "hyperliquid".to_string(),
-    }
+    hip4_canonical_naming()
 }
 
 #[test]

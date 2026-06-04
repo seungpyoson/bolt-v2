@@ -63,15 +63,15 @@ As the maker, I quote around the oracle fair value with a spread that prices the
 
 ### User Story 4 - Inventory settles correctly at resolution (Priority: P1)
 
-As the operator, when a market resolves I need held inventory to settle to its 0/1 payout in our accounting, because settlement is the dominant P&L term for a binary maker and the platform does not auto-settle it for us.
+As the operator, when a market resolves I need held inventory to settle through the shared payout primitive, because settlement is the dominant P&L term for a binary maker and the platform does not auto-settle it for us. The first crypto binary case is a length-2 payout vector representing 0/1 resolution.
 
 **Why this priority**: A resting maker is structurally left holding inventory into expiry; without settlement accounting, both live P&L and the backtest are systematically wrong.
 
-**Independent Test**: Feed a resolution event to the settlement module; assert the 0/1 payout is booked, the position closes, and the realized P&L matches the payout (not mark-to-mid). The **same** module is exercised by the pre-live backtest.
+**Independent Test**: Feed a resolution event to the settlement module; assert the N=2 0/1 payout vector is booked, the position closes, and the realized P&L matches the payout (not mark-to-mid). The **same** module is exercised by the pre-live backtest.
 
 **Acceptance Scenarios**:
 
-1. **Given** a market-resolution event (`InstrumentStatus::Close`), **When** the maker holds inventory, **Then** the shared settlement primitive books the terminal 0/1 payout and closes the position.
+1. **Given** a market-resolution event (`InstrumentStatus::Close`), **When** the maker holds inventory, **Then** the shared settlement primitive books the terminal N=2 0/1 payout vector and closes the position.
 2. **Given** the backtest and live both compute settlement, **When** either runs, **Then** they use the **same** settlement/accounting module (no dual settlement path).
 
 ### User Story 5 - Safe under capital, then across many markets (Priority: P2)
@@ -142,20 +142,20 @@ As the maintainer, the maker must price from one fair-value path so there is no 
 - **FR-021 (W3)**: GM/CG and any toxicity signal (VPIN) require signed order flow; the maker MUST subscribe to trades and classify aggressor side (no reliance on a test fixture).
 - **FR-022 (W3)**: Quotes MUST always land in (ε, 1−ε); the YES/NO pair MUST stay jointly consistent and non-self-crossing; offset composition (spread, skew, time-widening, reward-shaping) MUST have a defined precedence + clamp/prune rule.
 - **FR-023 (W3)**: Inventory→skew MUST be a defined functional form; kill predicates (σ-floor, basis-cap, τ-floor, plus the existing stale/thin/incoherent) MUST be TOML thresholds that fail closed. The governor MUST express graduated states (cancel-only / reduce-only / hard-flat / reward-preserving soft-hold), not a single boolean.
-- **FR-030 (W4)**: On resolution (`InstrumentStatus::Close`), the system MUST book the terminal 0/1 payout, close the position, and feed settlement P&L; the platform does not auto-settle.
+- **FR-030 (W4)**: On resolution (`InstrumentStatus::Close`), the system MUST book settlement through a shared N-outcome payout primitive, close the position, and feed settlement P&L; the first crypto binary case is the N=2 0/1 payout. The platform does not auto-settle.
 - **FR-040 (W5)**: A per-market reserved-collateral gate MUST verify worst-case simultaneous-fill liability across resting quotes + in-flight cancel/resubmit + inventory and fail closed; this MUST NOT wait for the multi-market layer.
 - **FR-041 (W5)**: A portfolio layer MUST split capital, select markets, and isolate per-market state/health/kill.
 - **FR-050 (W6)**: The system MUST provide heartbeat, stale-quote alarm, real-time equity/PnL, a maintenance-window pull schedule, and a venue geo/compliance precondition.
 - **FR-060 (W7)**: Reward capture MUST be additive and gated on a core-edge PASS; a reward-eligibility-aware pull policy MUST reconcile reward continuity with the safety kill (safety wins).
 - **FR-070 (W8)**: Fair value MUST resolve through one path; the hand-rolled digital MUST be removed once NT greeks/IV is authoritative.
 - **FR-080 (agnostic)**: Venue-specific facts (modify support, request budget, maintenance window, depth availability, fee schedule, settlement kind) MUST be variables in the venue capability contract, read by the controller — the controller MUST NOT branch on a venue name.
-- **FR-081 (agnostic)**: Instrument-type math (pricing/settlement/inventory) MUST plug in behind the `MarketFamily` seam; only the Polymarket-binary path is implemented first.
-- **FR-082 (W0 anti-hardcode)**: Before downstream workstreams claim the architecture is agnostic, the repo MUST carry checks proving shared modules are not Polymarket-only, binary-only, or up/down-only. At minimum this includes no venue-name branching in shared code, no new binary-only shared API names, compile proof families for bounded-scalar and continuous-mark markets, and an N-outcome settlement proof.
+- **FR-081 (agnostic)**: Instrument-type math (pricing/settlement/inventory) MUST plug in behind the `MarketFamily` seam; only the crypto binary-option path is implemented first.
+- **FR-082 (W0 anti-hardcode)**: Before downstream workstreams claim the architecture is agnostic, the repo MUST carry checks proving shared modules are not Polymarket-only, binary-only, or up/down-only. At minimum this includes no venue-name branching in shared code, no new binary-only shared API names, proof families for bounded-scalar, continuous-mark, and finite multi-outcome markets, and an N>=3 settlement proof through the same primitive used by the N=2 crypto binary case.
 
 ### Key Entities
 
 - **BacktestCorpus**: the unbiased full-candidate replay set (markets × ticks × full-depth book states × fair-value decisions × no-entry reasons × resolutions). Source of the pre-live backtest verdict.
-- **SettlementAccount**: shared primitive that books the 0/1 terminal payout for held inventory; used by both the backtest and live.
+- **SettlementAccount**: shared primitive that books terminal payout vectors or maps for held inventory; used by both the backtest and live. Crypto binary settlement is the first N=2 0/1 case.
 - **VenueCapabilityContract**: extended `contracts/<venue>.toml` — adds typed execution / rate-limit / maintenance / fee / settlement sections to the current data-stream-only schema.
 - **MarketFamily**: instrument-type seam (`MarketIdentityTarget`/`family_key()` plus maker quote-target family adapters) carrying fair-value interpretation, quote layout, settlement, and inventory math; crypto binary first, future families admitted only through W0 checks.
 - **QuoteSet**: the controller's model of all live resting quotes (per leg, per market) with accept/cancel/in-flight state.
@@ -169,10 +169,10 @@ As the maintainer, the maker must price from one fair-value path so there is no 
 - **SC-002**: 100% of generated quotes land in (ε, 1−ε), proven by a property test; zero self-crossing joint YES/NO quotes.
 - **SC-003**: Under a simulated venue at the real request budget, the controller breaches neither the rate budget nor leaves orphaned/duplicate quotes across reprice, kill, and reconnect.
 - **SC-004**: Kill predicates and the per-market reserved-collateral gate fire (fail closed) on synthetic adverse inputs in an NT backtest.
-- **SC-005**: Settlement P&L for held inventory matches the 0/1 payout (not mark-to-mid) in both the backtest and live, via one module.
+- **SC-005**: Settlement P&L for held inventory matches the shared N-outcome payout primitive in both the backtest and live, via one module; the first crypto binary case verifies the 0/1 payout rather than mark-to-mid.
 - **SC-006**: No dual paths — single fill-truth (NT ExecutionModel), single settlement module, single fair-value path; verified by review.
 - **SC-007**: No venue-name branch in maker logic; all venue facts resolve from the capability contract; verified by review/grep.
-- **SC-008**: A second bounded-scalar proof family and a continuous-mark proof family compile through the same quote-target seam without edits to quote lifecycle, requote budget, admission, execution, or strategy core.
+- **SC-008**: Bounded-scalar, continuous-mark, and finite multi-outcome proof families compile through the same quote-target seam without edits to quote lifecycle, requote budget, admission, execution, strategy core, or shared settlement orchestration; the finite multi-outcome proof exercises N>=3 settlement through the same primitive.
 
 ## Assumptions
 

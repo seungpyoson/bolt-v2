@@ -26,11 +26,12 @@
 
 use std::{
     fs::{self, File},
+    io::Write,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use arrow::array::{Array, Float64Array, Int64Array, StringArray};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
@@ -51,6 +52,20 @@ pub const CHAINLINK_RESOLUTION_PER_SECOND: &str = "1s";
 
 /// Source token identifying the per-second Chainlink Data Streams feed.
 pub const CHAINLINK_SOURCE_PER_SECOND: &str = "chainlink_datastreams_persecond";
+
+/// NautilusTrader venue code for the Chainlink price feed, appended to the
+/// data-derived underlying-asset symbol to form the catalog instrument id
+/// (`<ASSET>.CHAINLINK`). The data-derived bulk path needs this because the
+/// staged objects carry no NautilusTrader instrument id and no instrument
+/// universe is staged. This is a per-venue format constant, not a runtime value.
+pub const CHAINLINK_VENUE: &str = "CHAINLINK";
+
+/// Slug infix every up/down 5-minute-cycle market slug carries between its
+/// underlying-asset token and the cycle-start epoch
+/// (`<asset>-updown-5m-<cycle_start>`). The bulk path splits the slug on this
+/// infix to recover the stable underlying-asset symbol (the per-cycle suffix is
+/// not a stable instrument identity).
+pub const CHAINLINK_UPDOWN_5M_INFIX: &str = "-updown-5m-";
 
 /// Required raw Parquet columns, by name, that the per-second feed must expose.
 pub const CHAINLINK_REQUIRED_COLUMNS: [&str; 8] = [
@@ -423,4 +438,226 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> 
         }
     }
     Ok(())
+}
+
+// ===========================================================================
+// index-prices bulk-append path (data-derived precision/identity, no
+// clean-root guard)
+// ===========================================================================
+//
+// The single-object [`project_chainlink_to_catalog`] above is the hermetic TEST
+// harness: it refuses a dirty root and takes a caller-supplied spec. The bulk
+// path below instead derives the instrument identity and price precision from
+// the staged object's own rows (no instrument universe is staged) and appends
+// into an already-open, possibly-S3 [`ParquetDataCatalog`] without a clean-root
+// guard, mirroring the OKX `trades` bulk path. Many cycle objects of one asset
+// flow into one catalog via NautilusTrader's per-instrument file naming.
+
+/// Maximum number of fractional decimal digits across every price in the table,
+/// counted from each f64's shortest round-trip decimal rendering.
+///
+/// The staged `price` column is an f64 (Parquet `double`); Rust's `{}` Display
+/// emits the shortest decimal string that round-trips the value, so the digit
+/// count is the genuine source scale (`27123.4` -> 1, `0.00012345` -> 8) rather
+/// than a fixed-point artifact. The result is clamped at NautilusTrader's
+/// [`FIXED_PRECISION`] so the derived precision is always representable; this is
+/// a lossless clamp on real feed data, where the scale is far below the cap.
+///
+/// # Errors
+///
+/// Returns an error if any price is non-finite (already rejected by
+/// [`CanonicalIndexPriceTable::validate`], but re-checked here so the helper is
+/// safe in isolation).
+fn derive_price_precision(table: &CanonicalIndexPriceTable) -> Result<u8> {
+    let mut precision = 0u8;
+    for (index, row) in table.rows.iter().enumerate() {
+        ensure!(
+            row.price.is_finite(),
+            "row {index} price {} is not finite",
+            row.price
+        );
+        // The shortest round-trip rendering; integer-valued prices print without
+        // a fractional part and contribute zero decimal places.
+        let rendered = format!("{}", row.price);
+        // Fail loud if the value rendered in scientific notation (e.g. a tiny or
+        // huge magnitude): the fractional-digit count would be meaningless, so a
+        // genuine such price is a contract surprise to surface, not silently
+        // miscount. Real underlying-asset feed prices render in plain decimal.
+        ensure!(
+            !rendered.contains(['e', 'E']),
+            "row {index} price {} rendered in scientific notation {rendered:?}; \
+             cannot derive a decimal precision",
+            row.price
+        );
+        let places = match rendered.split_once('.') {
+            Some((_, frac)) => u8::try_from(frac.len()).unwrap_or(u8::MAX),
+            None => 0,
+        };
+        precision = precision.max(places);
+    }
+    Ok(precision.min(FIXED_PRECISION))
+}
+
+/// Recover the stable underlying-asset symbol from an up/down 5-minute-cycle
+/// market slug (`btc-updown-5m-1778380800` -> `btc`).
+///
+/// The slug's cycle-start suffix is per-cycle, not a stable instrument identity,
+/// so the asset token preceding [`CHAINLINK_UPDOWN_5M_INFIX`] is the natural
+/// instrument grouping (one asset per staging sub-prefix). Returned lowercase,
+/// exactly as it appears in the slug; the caller uppercases it for the NT id.
+///
+/// # Errors
+///
+/// Returns an error if the slug does not contain the expected up/down infix or
+/// the asset token is empty.
+fn asset_symbol_from_slug(market_slug: &str) -> Result<String> {
+    let Some((asset, _cycle)) = market_slug.split_once(CHAINLINK_UPDOWN_5M_INFIX) else {
+        bail!(
+            "market slug {market_slug:?} does not carry the up/down 5m infix \
+             {CHAINLINK_UPDOWN_5M_INFIX:?}; cannot derive a stable asset symbol"
+        );
+    };
+    ensure!(
+        !asset.is_empty(),
+        "market slug {market_slug:?} has an empty asset token before {CHAINLINK_UPDOWN_5M_INFIX:?}"
+    );
+    Ok(asset.to_string())
+}
+
+/// Build a [`ChainlinkIndexSpec`] whose identity and precision are derived from
+/// the canonical table itself — no instrument universe, no caller spec.
+///
+/// * `market_slug` is taken from the table (the provenance guard the projection
+///   already enforces row-by-row).
+/// * `nt_instrument_id` is `<ASSET>.CHAINLINK`, where `<ASSET>` is the uppercased
+///   underlying-asset token recovered from the slug (the cycle suffix is dropped
+///   because it is per-cycle, not a stable instrument). Only the venue suffix is
+///   a constant; the asset is data-derived. No quote currency is invented — the
+///   slug carries none, so none is fabricated into the id.
+/// * `price_precision` is the maximum decimal scale observed across the table's
+///   prices ([`derive_price_precision`]).
+///
+/// # Errors
+///
+/// Returns an error if the slug lacks the up/down infix or precision derivation
+/// fails.
+pub fn chainlink_index_spec_from_table(
+    table: &CanonicalIndexPriceTable,
+) -> Result<ChainlinkIndexSpec> {
+    let asset = asset_symbol_from_slug(&table.market_slug)?;
+    let price_precision = derive_price_precision(table)?;
+    Ok(ChainlinkIndexSpec {
+        nt_instrument_id: format!("{}.{CHAINLINK_VENUE}", asset.to_ascii_uppercase()),
+        price_precision,
+        market_slug: table.market_slug.clone(),
+    })
+}
+
+/// One asset's write summary produced by [`append_chainlink_index_prices_archive`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainlinkAppendSummary {
+    pub nt_instrument_id: String,
+    pub record_count: usize,
+    pub price_precision: u8,
+    /// Lowercase SHA-256 hex over the source object bytes (provenance).
+    pub source_object_hash: String,
+}
+
+/// A temporary file that deletes itself on drop, named uniquely by the SHA-256
+/// of its contents so two concurrent appends of distinct objects never collide.
+///
+/// `src/` cannot depend on the `tempfile` crate (it is a dev-dependency only),
+/// and the crate is deliberately self-contained, so this is a minimal std-only
+/// scratch file under [`std::env::temp_dir`]. The Chainlink reader is
+/// path-based; this bridges the in-memory bulk-path bytes to that path API.
+struct SelfDeletingTempFile {
+    path: PathBuf,
+}
+
+impl SelfDeletingTempFile {
+    /// Write `bytes` to a uniquely-named scratch file whose name embeds the
+    /// content hash (also returned for provenance) plus the process id, and
+    /// return the guard.
+    fn write(bytes: &[u8], content_hash: &str) -> Result<Self> {
+        let name = format!(
+            "chainlink-index-object-{}-{content_hash}.parquet",
+            std::process::id()
+        );
+        let path = std::env::temp_dir().join(name);
+        let mut file =
+            File::create(&path).with_context(|| format!("create temp file {}", path.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("write temp file {}", path.display()))?;
+        file.flush()
+            .with_context(|| format!("flush temp file {}", path.display()))?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for SelfDeletingTempFile {
+    fn drop(&mut self) {
+        // Best-effort cleanup; a leaked scratch file is not worth a panic.
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Append one staged Chainlink 5-minute-cycle Parquet object into an
+/// already-open [`ParquetDataCatalog`] as `IndexPriceUpdate` data — the
+/// bulk-conversion path.
+///
+/// Unlike [`project_chainlink_to_catalog`] (the hermetic single-object proof
+/// harness, which refuses a dirty root and takes a caller spec), this derives
+/// the instrument identity and price precision from the object's own rows
+/// ([`chainlink_index_spec_from_table`]) and appends into a shared,
+/// possibly-S3 catalog with no clean-root guard, relying on NautilusTrader's own
+/// per-instrument, per-time-range file naming so many cycle objects flow into
+/// one catalog.
+///
+/// The Chainlink reader takes a [`Path`], so the in-memory object bytes are
+/// materialized to a temporary file (deleted on drop) before reading. The
+/// source object hash carried in the returned summary is computed by the reader
+/// over the exact bytes read, giving honest per-object provenance without an
+/// `object_key` parameter (the slug — the only other provenance field — comes
+/// from the data).
+///
+/// Each staged object is a single asset's single cycle, so exactly one summary
+/// is returned. A genuinely empty or malformed object fails loud.
+///
+/// # Errors
+///
+/// Returns an error if the temp file cannot be written, the object cannot be
+/// read into a canonical table, the spec cannot be derived, or the catalog
+/// write fails.
+pub fn append_chainlink_index_prices_archive(
+    object_bytes: &[u8],
+    catalog: &mut ParquetDataCatalog,
+) -> Result<ChainlinkAppendSummary> {
+    // The reader is path-based; materialize the bytes to a self-deleting scratch
+    // file named by the content hash (which is exactly the provenance hash the
+    // reader recomputes over the same bytes).
+    let content_hash = hex::encode(Sha256::digest(object_bytes));
+    let temp = SelfDeletingTempFile::write(object_bytes, &content_hash)?;
+
+    let table = read_chainlink_per_second_object(temp.path())?;
+    let spec = chainlink_index_spec_from_table(&table)?;
+    let updates = canonical_rows_to_index_prices(&table, &spec)?;
+    let summary = ChainlinkAppendSummary {
+        nt_instrument_id: spec.nt_instrument_id.clone(),
+        record_count: updates.len(),
+        price_precision: spec.price_precision,
+        source_object_hash: table.source_object_hash.clone(),
+    };
+    catalog
+        .write_to_parquet(updates, None, None, None)
+        .with_context(|| {
+            format!(
+                "append Chainlink index prices for {}",
+                spec.nt_instrument_id
+            )
+        })?;
+    Ok(summary)
 }

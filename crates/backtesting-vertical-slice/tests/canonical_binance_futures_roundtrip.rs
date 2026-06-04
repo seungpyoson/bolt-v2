@@ -23,14 +23,16 @@ use std::{fs, path::PathBuf, str::FromStr};
 
 use backtesting_vertical_slice::canonical_binance::{
     BinanceInstrumentIdentity, BinanceInstrumentSpec, BinanceProvenance, KlineBarSpec,
-    NT_DATA_TYPE_BAR, NT_DATA_TYPE_TRADE_TICK, normalize_binance_agg_trades,
-    normalize_binance_price_feed_klines, project_klines_to_catalog, project_trades_to_catalog,
-    read_back_bars, read_back_trade_ticks,
+    NT_DATA_TYPE_BAR, NT_DATA_TYPE_TRADE_TICK, append_binance_futures_agg_trades_archive,
+    append_binance_futures_mark_price_klines_archive, binance_bar_type_string,
+    normalize_binance_agg_trades, normalize_binance_price_feed_klines, project_klines_to_catalog,
+    project_trades_to_catalog, read_back_bars, read_back_trade_ticks,
 };
 use nautilus_model::{
-    enums::{AggressorSide, BarAggregation},
+    enums::{AggregationSource, AggressorSide, BarAggregation, PriceType},
     types::{Price, Quantity},
 };
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
 fn fixture(name: &str) -> String {
     let path: PathBuf = [
@@ -233,4 +235,195 @@ fn mark_price_klines_fixture_round_trips_through_nt_catalog() {
         "USDT",
         "markPriceKlines",
     );
+}
+
+// ---------------------------------------------------------------------------
+// Bulk-append path (data-derived precision + key-derived identity/provenance)
+// ---------------------------------------------------------------------------
+
+const BULK_SYMBOL: &str = "ETHUSDT_260925";
+const BULK_NT_INST: &str = "ETHUSDT_260925.BINANCE";
+const BULK_RUN: &str = "binance-bulk-roundtrip-test";
+
+/// A staged S3 object key in the real Binance staging layout (see
+/// `scripts/backfill_binance_to_s3.py::s3_uri_for_payload`). The bulk path reads
+/// the instrument symbol and provenance from this key, since the CSV rows carry
+/// no instrument column. `<hash>` stands in for the object payload hash; only the
+/// `symbol=`, `product=`, and `dt=` segments are load-bearing for identity and
+/// provenance.
+fn agg_trades_object_key() -> String {
+    format!(
+        "raw/v1/source=data.binance.vision/product=futures_um/frequency=monthly/\
+         family=aggTrades/symbol={BULK_SYMBOL}/dt=2026-03/object=fixturehash.zip"
+    )
+}
+
+fn mark_klines_object_key() -> String {
+    format!(
+        "raw/v1/source=data.binance.vision/product=futures_um/frequency=monthly/\
+         family=markPriceKlines/symbol={BULK_SYMBOL}/interval=1m/dt=2026-03/object=fixturehash.zip"
+    )
+}
+
+#[test]
+fn agg_trades_data_derived_append_round_trips() {
+    // The bulk path: identity from the object key (the CSV has no instrument
+    // column), precision derived from the object's own rows, appended into a
+    // shared catalog with no clean-root guard. Prove the NautilusTrader round
+    // trip is lossless.
+    let csv = fixture("ETHUSDT_260925-aggTrades-2026-03.csv");
+    let key = agg_trades_object_key();
+    let dir = tempfile::TempDir::new().expect("temp catalog root");
+
+    // Independent expectation from the same source, via the same normalize fn
+    // and the same data-derived precision the append path uses (price: 2 dp,
+    // qty: 3 dp in this fixture — read from the data, never assumed).
+    let table =
+        normalize_binance_agg_trades(&provenance("aggTrades"), &identity(BULK_SYMBOL), &csv)
+            .expect("normalize aggTrades");
+    assert!(!table.rows.is_empty(), "fixture must carry rows");
+
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let summary = append_binance_futures_agg_trades_archive(&csv, &key, BULK_RUN, &mut catalog)
+        .expect("append aggTrades");
+    assert_eq!(summary.nt_instrument_id, BULK_NT_INST);
+    assert_eq!(summary.data_type, NT_DATA_TYPE_TRADE_TICK);
+    assert_eq!(summary.record_count, table.rows.len());
+
+    let loaded = read_back_trade_ticks(dir.path(), BULK_NT_INST).expect("read back ticks");
+    assert_eq!(loaded.len(), table.rows.len(), "round-tripped tick count");
+    assert!(
+        loaded.windows(2).all(|w| w[0].ts_init <= w[1].ts_init),
+        "loaded ticks must be ascending"
+    );
+    // Precision is whatever the source rendered, self-consistent with the loaded
+    // ticks — not a hardcoded assumption.
+    assert!(
+        loaded
+            .iter()
+            .all(|t| t.price.precision == summary.price_precision)
+    );
+    assert!(
+        loaded
+            .iter()
+            .all(|t| t.size.precision == summary.size_precision)
+    );
+
+    // Per-record payload equality against the canonical source rows.
+    for (i, tick) in loaded.iter().enumerate() {
+        let row = &table.rows[i];
+        assert_eq!(tick.instrument_id.to_string(), BULK_NT_INST);
+        assert_eq!(tick.trade_id.to_string(), row.trade_id, "trade id at {i}");
+        let expected_aggressor = match row.aggressor_side.as_str() {
+            "BUYER" => AggressorSide::Buyer,
+            "SELLER" => AggressorSide::Seller,
+            other => panic!("unexpected aggressor {other}"),
+        };
+        assert_eq!(tick.aggressor_side, expected_aggressor, "aggressor at {i}");
+        assert_eq!(
+            tick.price,
+            Price::from_str(&row.price).expect("parse price"),
+            "price at {i}"
+        );
+        assert_eq!(
+            tick.size,
+            Quantity::from_str(&row.size).expect("parse size"),
+            "size at {i}"
+        );
+        assert_eq!(
+            tick.ts_event.as_u64(),
+            u64::try_from(row.event_time).unwrap(),
+            "event_time at {i}"
+        );
+    }
+}
+
+#[test]
+fn mark_price_klines_data_derived_append_round_trips() {
+    // The bulk path for the mark-price kline family: identity + bar interval from
+    // the object key, precision from the rows, no clean-root guard.
+    let csv = fixture("ETHUSDT_260925-markPriceKlines-1m-2026-03.csv");
+    let key = mark_klines_object_key();
+    let bar_spec = KlineBarSpec {
+        step: 1,
+        aggregation: BarAggregation::Minute,
+    };
+    let dir = tempfile::TempDir::new().expect("temp catalog root");
+
+    let table = normalize_binance_price_feed_klines(
+        &provenance("markPriceKlines"),
+        &identity(BULK_SYMBOL),
+        bar_spec,
+        &csv,
+    )
+    .expect("normalize markPriceKlines");
+    assert!(!table.rows.is_empty(), "fixture must carry rows");
+
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let summary = append_binance_futures_mark_price_klines_archive(
+        &csv,
+        &key,
+        BULK_RUN,
+        bar_spec,
+        &mut catalog,
+    )
+    .expect("append markPriceKlines");
+    assert_eq!(summary.nt_instrument_id, BULK_NT_INST);
+    assert_eq!(summary.data_type, NT_DATA_TYPE_BAR);
+    assert_eq!(summary.record_count, table.rows.len());
+
+    let bar_type = binance_bar_type_string(BULK_NT_INST, bar_spec).expect("bar type string");
+    let loaded = read_back_bars(dir.path(), &bar_type).expect("read back bars");
+    assert_eq!(loaded.len(), table.rows.len(), "round-tripped bar count");
+    assert!(
+        loaded.windows(2).all(|w| w[0].ts_init <= w[1].ts_init),
+        "loaded bars must be ascending"
+    );
+    assert!(
+        loaded
+            .iter()
+            .all(|b| b.open.precision == summary.price_precision)
+    );
+
+    // Bar type is EXTERNAL-sourced LAST-price at the key-supplied step/unit.
+    let bt = loaded[0].bar_type;
+    assert_eq!(bt.instrument_id().to_string(), BULK_NT_INST);
+    assert_eq!(bt.aggregation_source(), AggregationSource::External);
+    assert_eq!(bt.spec().price_type, PriceType::Last);
+    assert_eq!(bt.spec().aggregation, BarAggregation::Minute);
+
+    // Per-record OHLCV payload equality against the canonical source rows.
+    for (i, bar) in loaded.iter().enumerate() {
+        let row = &table.rows[i];
+        assert_eq!(
+            bar.open,
+            Price::from_str(&row.open).expect("parse open"),
+            "open at {i}"
+        );
+        assert_eq!(
+            bar.high,
+            Price::from_str(&row.high).expect("parse high"),
+            "high at {i}"
+        );
+        assert_eq!(
+            bar.low,
+            Price::from_str(&row.low).expect("parse low"),
+            "low at {i}"
+        );
+        assert_eq!(
+            bar.close,
+            Price::from_str(&row.close).expect("parse close"),
+            "close at {i}"
+        );
+        assert_eq!(
+            bar.volume,
+            Quantity::from_str(&row.volume).expect("parse volume"),
+            "volume at {i}"
+        );
+        assert_eq!(
+            bar.ts_event.as_u64(),
+            u64::try_from(row.close_time).unwrap(),
+            "close_time at {i}"
+        );
+    }
 }

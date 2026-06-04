@@ -48,6 +48,7 @@ use nautilus_model::{
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::source_proof::SourceProofFidelityClass;
 
@@ -610,6 +611,158 @@ pub fn read_back_hip3_bars(catalog_root: &Path, nt_bar_type: &str) -> Result<Vec
             true,
         )
         .context("query bars from catalog")
+}
+
+// ===========================================================================
+// Bulk-conversion append path (data-derived, no clean-root guard)
+// ===========================================================================
+
+/// Fixed forbidden-claims list every HIP-3 bar-replay dataset carries: an OHLCV
+/// candle stream cannot support execution-quality, queue-position, or
+/// order-book-liquidity statements. This is the same contract the per-object
+/// proof harness records; it is a dataset-class invariant, not a tunable value.
+const HIP3_BARS_FORBIDDEN_CLAIM: &str =
+    "No execution-quality, queue-position, or order-book-liquidity claims.";
+
+/// Source-proof id under which HIP-3 bar objects are accepted. Format constant
+/// of this venue/family, not a runtime instrument/price value.
+const HIP3_BARS_SOURCE_PROOF_ID: &str = "source-proof-hyperliquid-hip3-bars";
+
+/// Source-proof schema version for the HIP-3 bars family.
+const HIP3_BARS_SOURCE_PROOF_VERSION: u32 = 1;
+
+/// Fidelity class of an exchange-aggregated OHLCV candle replay.
+const HIP3_BARS_FIDELITY_CLASS: SourceProofFidelityClass = SourceProofFidelityClass::TradeBarReplay;
+
+/// Distinct `(instrument_name, interval)` series appearing in a staged HIP-3
+/// bars JSONL document, in first-seen order.
+///
+/// A staged bars object mixes several instruments and several intervals
+/// (`hyna:BTC` 1h, `hyna:ETH` 1h, …). A single NautilusTrader `BarType` is one
+/// instrument at one specification, so the bulk converter writes one catalog
+/// stream per distinct series rather than assuming a single one — mirroring how
+/// the OKX trades path enumerates distinct instruments before writing.
+///
+/// # Errors
+///
+/// Returns an error if a non-empty line is not valid staged-bar JSON.
+pub fn hip3_bar_series(jsonl_text: &str) -> Result<Vec<Hip3BarSelector>> {
+    let mut seen: Vec<Hip3BarSelector> = Vec::new();
+    for (index, line) in jsonl_text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let row: StagedHip3BarRow = serde_json::from_str(line)
+            .with_context(|| format!("line {index}: invalid staged bar json"))?;
+        let selector = Hip3BarSelector {
+            instrument_name: row.instrument_name,
+            interval: row.interval,
+        };
+        if !seen.contains(&selector) {
+            seen.push(selector);
+        }
+    }
+    Ok(seen)
+}
+
+/// Build honest run/lineage provenance for one staged HIP-3 bars object from the
+/// object's own bytes and S3 key.
+///
+/// Every field describes *this* conversion, none is fabricated:
+/// * `payload_hash` is the lowercase SHA-256 hex of the exact object bytes.
+/// * `source_proof_id` / `source_proof_version` / `fidelity_class` /
+///   `forbidden_claims` are this venue/family's fixed dataset-class contract.
+/// * `ingest_run_id` is the staged object's own S3 key, so the canonical rows
+///   trace back to the precise object they were normalized from.
+///
+/// The staged HIP-3 layout partitions by `run={run_id}`, **not** by a `dt=`
+/// date segment (see the backfill script's S3 layout), so there is no honest
+/// archive-date to extract from the key; the full key is therefore recorded as
+/// the run identity rather than inventing a date. See the module-level
+/// open-questions note carried in the handoff.
+fn hip3_bars_provenance_from_object(object_key: &str, object_bytes: &[u8]) -> Hip3BarProvenance {
+    let payload_hash = {
+        let mut hasher = Sha256::new();
+        hasher.update(object_bytes);
+        hex::encode(hasher.finalize())
+    };
+    Hip3BarProvenance {
+        ingest_run_id: object_key.to_string(),
+        source_proof_id: HIP3_BARS_SOURCE_PROOF_ID.to_string(),
+        source_proof_version: HIP3_BARS_SOURCE_PROOF_VERSION,
+        payload_hash,
+        fidelity_class: HIP3_BARS_FIDELITY_CLASS,
+        forbidden_claims: vec![HIP3_BARS_FORBIDDEN_CLAIM.to_string()],
+    }
+}
+
+/// One series' write summary produced by [`append_hyperliquid_hip3_bars_archive`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hip3BarsAppendSummary {
+    pub nt_instrument_id: String,
+    pub nt_bar_type: String,
+    pub record_count: usize,
+    pub price_precision: u8,
+    pub size_precision: u8,
+}
+
+/// Append every `(instrument, interval)` series from one staged HIP-3 bars JSONL
+/// object into an already-open [`ParquetDataCatalog`] — the bulk-conversion path.
+///
+/// Unlike [`project_hip3_bars_to_catalog`] (the hermetic single-object proof
+/// harness, which refuses a dirty root), this appends into a shared, possibly-S3
+/// catalog: it relies on NautilusTrader's own per-bar-type, per-time-range file
+/// naming and skip-on-existing so many objects flow into one catalog. Precision
+/// is derived from each series' own rows inside [`normalize_hip3_bars`] (HIP-3
+/// stages no instrument universe), and provenance is honestly built from the
+/// object bytes + key. Returns one summary per distinct series written.
+///
+/// `object_key` is the S3 key (or equivalent stable locator) of the staged
+/// object; it is recorded as the canonical rows' `ingest_run_id` so the data
+/// traces back to its source object.
+///
+/// # Errors
+///
+/// Returns an error if a line is malformed, a series fails OHLCV/precision
+/// validation, bar construction or the catalog write fails, or the object yields
+/// no series.
+pub fn append_hyperliquid_hip3_bars_archive(
+    jsonl_bytes: &[u8],
+    object_key: &str,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<Hip3BarsAppendSummary>> {
+    ensure!(
+        !object_key.trim().is_empty(),
+        "object_key must not be empty"
+    );
+    let jsonl_text =
+        std::str::from_utf8(jsonl_bytes).context("staged HIP-3 bars object is not valid UTF-8")?;
+    let provenance = hip3_bars_provenance_from_object(object_key, jsonl_bytes);
+    let series = hip3_bar_series(jsonl_text)?;
+
+    let mut summaries = Vec::new();
+    for selector in series {
+        let table = normalize_hip3_bars(jsonl_text, &selector, &provenance)?;
+        let bars = table.to_nt_bars()?;
+        let summary = Hip3BarsAppendSummary {
+            nt_instrument_id: table.nt_instrument_id.clone(),
+            nt_bar_type: table.nt_bar_type.clone(),
+            record_count: bars.len(),
+            price_precision: table.price_precision,
+            size_precision: table.size_precision,
+        };
+        catalog
+            .write_to_parquet(bars, None, None, None)
+            .with_context(|| {
+                format!(
+                    "append HIP-3 bars for {} {}",
+                    selector.instrument_name, selector.interval
+                )
+            })?;
+        summaries.push(summary);
+    }
+    ensure!(!summaries.is_empty(), "HIP-3 bars object yielded no series");
+    Ok(summaries)
 }
 
 #[cfg(test)]

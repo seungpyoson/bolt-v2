@@ -1437,6 +1437,313 @@ pub fn read_back_bars(catalog_root: &Path, bar_type: &str) -> Result<Vec<Bar>> {
         .context("query OKX bars from catalog")
 }
 
+// ===========================================================================
+// candlesticks bulk-append path (data-derived precision + bar interval,
+// no clean-root guard)
+// ===========================================================================
+
+/// Fixed-duration NautilusTrader bar units, longest first, paired with their
+/// millisecond length. Used to express an observed candle interval as the
+/// largest unit that divides it evenly. Calendar-variable units
+/// ([`BarAggregation::Month`]/[`BarAggregation::Year`]) are deliberately
+/// excluded: their millisecond length is not constant, so a uniform ms gap
+/// cannot honestly prove one — such an interval fails loud instead.
+const OKX_BAR_UNITS_MS: [(BarAggregation, u64); 5] = [
+    (BarAggregation::Week, 7 * 24 * 60 * 60 * 1_000),
+    (BarAggregation::Day, 24 * 60 * 60 * 1_000),
+    (BarAggregation::Hour, 60 * 60 * 1_000),
+    (BarAggregation::Minute, 60 * 1_000),
+    (BarAggregation::Second, 1_000),
+];
+
+/// Distinct venue-native instrument ids appearing in an OKX `candlesticks` CSV,
+/// in first-seen order.
+///
+/// Like [`okx_trade_instruments`], a staged candlesticks object is per-selector
+/// but can carry more than one dated contract across a roll, so the bulk
+/// converter writes one catalog bar stream per distinct instrument.
+///
+/// # Errors
+///
+/// Returns an error if the header does not match [`OKX_CANDLES_HEADER`].
+pub fn okx_candle_instruments(csv_text: &str) -> Result<Vec<String>> {
+    let mut lines = csv_text.lines();
+    let header = lines
+        .next()
+        .context("empty OKX candlesticks csv: missing header")?;
+    let columns: Vec<&str> = header.split(',').map(str::trim).collect();
+    ensure!(
+        columns == OKX_CANDLES_HEADER,
+        "OKX candlesticks header {columns:?} does not match expected {OKX_CANDLES_HEADER:?}"
+    );
+
+    let mut seen: Vec<String> = Vec::new();
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let inst = line.split(',').next().unwrap_or("").trim();
+        if !inst.is_empty() && !seen.iter().any(|s| s == inst) {
+            seen.push(inst.to_string());
+        }
+    }
+    Ok(seen)
+}
+
+/// Build an [`OkxInstrumentSpec`] for a candle stream whose price/size precision
+/// is derived from the rows themselves — the maximum decimal places the exchange
+/// rendered across the OHLC prices and the contract volume.
+///
+/// As with [`okx_trades_spec_from_rows`], OKX renders every candle field at the
+/// instrument's native tick/lot scale, so the maximum observed scale is stable
+/// across objects of the same instrument and is the precision NautilusTrader
+/// pins per catalog file. No external instrument universe is needed (OKX stages
+/// none).
+///
+/// # Errors
+///
+/// Returns an error if `rows` is empty or an OHLCV string is not decimal.
+pub fn okx_candles_spec_from_rows(
+    rows: &[OkxCandleRow],
+    venue_inst_id: &str,
+) -> Result<OkxInstrumentSpec> {
+    ensure!(
+        !rows.is_empty(),
+        "cannot derive OKX candle precision from zero rows"
+    );
+    let mut price_precision = 0u8;
+    let mut size_precision = 0u8;
+    for row in rows {
+        for price in [&row.open, &row.high, &row.low, &row.close] {
+            price_precision = price_precision.max(decimal_places(price)?);
+        }
+        size_precision = size_precision.max(decimal_places(&row.volume)?);
+    }
+    Ok(OkxInstrumentSpec {
+        nt_instrument_id: format!("{venue_inst_id}.{OKX_VENUE}"),
+        venue_inst_id: venue_inst_id.to_string(),
+        price_increment: increment_for(price_precision),
+        size_increment: increment_for(size_precision),
+    })
+}
+
+/// Express a fixed millisecond interval as the NautilusTrader `(step, unit)` pair
+/// using the largest fixed-duration unit that divides it evenly (60_000 ms ->
+/// step 1 [`BarAggregation::Minute`]; 300_000 ms -> step 5 minute; 3_600_000 ms
+/// -> step 1 [`BarAggregation::Hour`]).
+///
+/// # Errors
+///
+/// Returns an error if `interval_ms` is zero or is not an exact multiple of any
+/// fixed-duration unit down to one second (sub-second or calendar-variable
+/// candle intervals are not honestly representable from a uniform ms gap).
+fn bar_spec_from_interval_ms(interval_ms: u64) -> Result<OkxBarSpec> {
+    ensure!(interval_ms > 0, "candle interval is zero");
+    for (aggregation, unit_ms) in OKX_BAR_UNITS_MS {
+        if interval_ms.is_multiple_of(unit_ms) {
+            let step = usize::try_from(interval_ms / unit_ms).context("candle step overflow")?;
+            return Ok(OkxBarSpec { step, aggregation });
+        }
+    }
+    bail!(
+        "OKX candle interval {interval_ms} ms is not a whole number of seconds; \
+         cannot derive a bar unit"
+    )
+}
+
+/// Derive the [`OkxBarSpec`] (step + time unit) from the candle rows' own
+/// `open_time` spacing.
+///
+/// OKX stages no interval in the object key or filename, so the bar period is
+/// recovered from the data: the interval is the smallest positive gap between
+/// consecutive distinct bar-open timestamps, and every gap must be an exact
+/// positive multiple of it (a larger gap is a missing bar, never a different
+/// period). A single-bar object cannot prove a period and fails loud.
+///
+/// # Errors
+///
+/// Returns an error if fewer than two distinct bar-open times are present, a gap
+/// is not a multiple of the base interval, or the interval is not representable
+/// as a fixed-duration NautilusTrader bar unit.
+pub fn okx_bar_spec_from_rows(rows: &[OkxCandleRow]) -> Result<OkxBarSpec> {
+    // `parse_okx_candlesticks` already sorted rows ascending by open_time.
+    let mut times: Vec<i64> = rows.iter().map(|row| row.open_time).collect();
+    times.dedup();
+    ensure!(
+        times.len() >= 2,
+        "cannot derive OKX candle interval from fewer than two distinct bar-open times"
+    );
+
+    let mut gaps: Vec<u64> = Vec::with_capacity(times.len() - 1);
+    for window in times.windows(2) {
+        let delta = window[1]
+            .checked_sub(window[0])
+            .context("bar-open time underflow")?;
+        let delta = u64::try_from(delta).context("negative bar-open gap")?;
+        ensure!(delta > 0, "duplicate bar-open time survived dedup");
+        gaps.push(delta);
+    }
+
+    let base = *gaps.iter().min().expect("at least one gap");
+    // The base nanosecond interval scaled to milliseconds for unit selection.
+    let base_ms = base
+        .checked_div(NANOS_PER_MILLISECOND)
+        .filter(|_| base.is_multiple_of(NANOS_PER_MILLISECOND))
+        .context("candle interval is not a whole number of milliseconds")?;
+    for gap in &gaps {
+        ensure!(
+            gap.is_multiple_of(base),
+            "OKX candle gaps are not multiples of the base interval \
+             ({gap} ns is not a multiple of {base} ns)"
+        );
+    }
+    bar_spec_from_interval_ms(base_ms)
+}
+
+/// Append every instrument's candles from one OKX `candlesticks` ZIP object into
+/// an already-open [`ParquetDataCatalog`] — the bulk-conversion path.
+///
+/// Mirrors [`append_okx_trades_archive`]: enumerates the object's distinct
+/// instruments, derives each one's price/size precision from its own rows
+/// ([`okx_candles_spec_from_rows`]) and its bar period from its own `open_time`
+/// spacing ([`okx_bar_spec_from_rows`]), builds [`Bar`]s, and appends them with
+/// NautilusTrader's own per-bar-type, per-time-range file naming. Refuses no
+/// dirty root — many objects flow into one shared catalog. Returns one summary
+/// per distinct instrument written.
+///
+/// # Errors
+///
+/// Returns an error if extraction, parsing, interval/precision derivation, bar
+/// construction, or the catalog write fails, or if the object yields no
+/// instruments.
+pub fn append_okx_candlesticks_archive(
+    zip_bytes: &[u8],
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<OkxAppendSummary>> {
+    let csv = extract_csv_from_zip(zip_bytes)?;
+    let instruments = okx_candle_instruments(&csv)?;
+    let mut summaries = Vec::new();
+    for venue_inst_id in instruments {
+        let rows = parse_okx_candlesticks(&csv, &venue_inst_id)?;
+        if rows.is_empty() {
+            continue;
+        }
+        let spec = okx_candles_spec_from_rows(&rows, &venue_inst_id)?;
+        let bar_spec = okx_bar_spec_from_rows(&rows)?;
+        let bars = okx_candlesticks_to_bars(&rows, &spec, bar_spec)?;
+        let summary = OkxAppendSummary {
+            nt_instrument_id: spec.nt_instrument_id.clone(),
+            record_count: bars.len(),
+            price_precision: spec.price_precision(),
+            size_precision: spec.size_precision(),
+        };
+        catalog
+            .write_to_parquet(bars, None, None, None)
+            .with_context(|| format!("append OKX bars for {venue_inst_id}"))?;
+        summaries.push(summary);
+    }
+    ensure!(
+        !summaries.is_empty(),
+        "OKX candlesticks object yielded no instruments"
+    );
+    Ok(summaries)
+}
+
+// ===========================================================================
+// order_book_400 bulk-append path (data-derived precision via
+// resolve_precisions, no clean-root guard)
+// ===========================================================================
+
+/// Distinct venue-native instrument ids (`instId`) appearing in an OKX
+/// `order_book_400` JSONL stream, in first-seen order.
+///
+/// A staged order-book object is per-selector but can carry more than one dated
+/// contract across a roll, so the bulk converter writes one catalog
+/// `OrderBookDelta` stream per distinct instrument.
+///
+/// # Errors
+///
+/// Returns an error if any non-blank line is not a valid OKX book message.
+pub fn okx_book_instruments(jsonl: &str) -> Result<Vec<String>> {
+    let mut seen: Vec<String> = Vec::new();
+    for (index, line) in jsonl.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let message: OkxBookMessage = serde_json::from_str(line)
+            .with_context(|| format!("parse OKX book message on line {}", index + 1))?;
+        if !seen.iter().any(|s| s == &message.inst_id) {
+            seen.push(message.inst_id);
+        }
+    }
+    Ok(seen)
+}
+
+/// Build an [`OkxBookSpec`] for a book stream from its venue-native instrument
+/// id; the NautilusTrader catalog id is the venue id with the [`OKX_VENUE`]
+/// suffix.
+///
+/// Book precision is not carried here: [`okx_book_messages_to_deltas`] already
+/// data-derives it via [`resolve_precisions`] (the maximum decimal places across
+/// every level), so the spec only needs the identity binding — no instrument
+/// universe is read.
+#[must_use]
+pub fn okx_book_spec_for_instrument(venue_inst_id: &str) -> OkxBookSpec {
+    OkxBookSpec {
+        nt_instrument_id: format!("{venue_inst_id}.{OKX_VENUE}"),
+        venue_inst_id: venue_inst_id.to_string(),
+    }
+}
+
+/// Append every instrument's order-book deltas from one OKX `order_book_400`
+/// archive into an already-open [`ParquetDataCatalog`] — the bulk-conversion
+/// path.
+///
+/// Mirrors [`append_okx_trades_archive`]: enumerates the archive's distinct
+/// instruments, builds each one's [`OrderBookDelta`]s with precision derived
+/// from its own levels (via [`okx_book_messages_to_deltas`]/[`resolve_precisions`]),
+/// and appends them with NautilusTrader's own per-instrument, per-time-range
+/// file naming. Refuses no dirty root — many objects flow into one shared
+/// catalog. Returns one summary per distinct instrument written.
+///
+/// # Errors
+///
+/// Returns an error if extraction, parsing, delta construction, or the catalog
+/// write fails, or if the archive yields no instruments.
+pub fn append_okx_book_archive(
+    gz_bytes: &[u8],
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<OkxAppendSummary>> {
+    let jsonl = extract_jsonl_from_archive(gz_bytes)?;
+    let instruments = okx_book_instruments(&jsonl)?;
+    let mut summaries = Vec::new();
+    for venue_inst_id in instruments {
+        let messages = parse_okx_book_messages(&jsonl, &venue_inst_id)?;
+        if messages.is_empty() {
+            continue;
+        }
+        let (price_precision, size_precision) = resolve_precisions(&messages)?;
+        let spec = okx_book_spec_for_instrument(&venue_inst_id);
+        let deltas = okx_book_messages_to_deltas(&messages, &spec)?;
+        let summary = OkxAppendSummary {
+            nt_instrument_id: spec.nt_instrument_id.clone(),
+            record_count: deltas.len(),
+            price_precision,
+            size_precision,
+        };
+        catalog
+            .write_to_parquet(deltas, None, None, None)
+            .with_context(|| format!("append OKX order book deltas for {venue_inst_id}"))?;
+        summaries.push(summary);
+    }
+    ensure!(
+        !summaries.is_empty(),
+        "OKX order_book_400 object yielded no instruments"
+    );
+    Ok(summaries)
+}
+
 /// Fail closed on a dirty catalog root. NautilusTrader's `write_to_parquet`
 /// skips writing when a file for the same identifier/interval already exists, so
 /// projecting into a non-empty root could silently read back stale data.

@@ -970,6 +970,423 @@ pub fn read_back_trade_ticks(
 }
 
 // ===========================================================================
+// Bulk-conversion path (data-derived precision, identity parsed from the
+// Deribit symbol, no clean-root guard) — mirrors `canonical_okx`'s
+// `append_okx_trades_archive`/`OkxAppendSummary`.
+// ===========================================================================
+
+/// NautilusTrader venue code appended to a Deribit venue-native instrument id to
+/// form the catalog `nt_instrument_id` (for example
+/// `BTC_USDC-29MAY26-66000-C.DERIBIT`). A per-venue format constant — the only
+/// literal the bulk path injects, never a runtime value.
+pub const DERIBIT_VENUE: &str = "DERIBIT";
+
+/// Deribit renders a fractional strike with `d`/`D` standing in for the decimal
+/// point (`1d45` -> `1.45`, `8D6` -> `8.6`); whole strikes carry no separator
+/// (`66000`). A property of the Deribit instrument-name grammar, not config.
+const DERIBIT_STRIKE_DECIMAL_SEPARATORS: [char; 2] = ['d', 'D'];
+
+/// The `bars_1m` staging family is, by its name, a 1-minute candle partition:
+/// step 1, `MINUTE` aggregation. These are facts of the source partition (the
+/// `family=bars_1m` segment of the S3 key), not runtime config — exactly like
+/// the column-name and millis->nanos constants above.
+pub const DERIBIT_BARS_1M_STEP: usize = 1;
+pub const DERIBIT_BARS_1M_AGGREGATION: BarAggregation = BarAggregation::Minute;
+
+/// The decimal-string increment whose fractional length is exactly `precision`
+/// (`0 -> "1"`, `1 -> "0.1"`, `4 -> "0.0001"`) — the inverse of
+/// [`decimal_places`]. Lets a data-derived precision be expressed as the
+/// increment string the instrument builder consumes. Mirrors
+/// `canonical_okx::increment_for`.
+#[must_use]
+fn increment_for(precision: u8) -> String {
+    match precision {
+        0 => "1".to_string(),
+        n => format!("0.{}1", "0".repeat(usize::from(n) - 1)),
+    }
+}
+
+/// Decimal places actually rendered by a source `f64` value, via the exact
+/// shortest decimal that round-trips the float (`660.0 -> 0`, `1.45 -> 2`,
+/// `0.0001 -> 4`). This is the per-value scale; the spec builders take the
+/// maximum across an instrument's rows, which is the precision NautilusTrader
+/// pins per catalog file. Data-derived — never a hardcoded literal, never read
+/// from an instrument universe (Deribit stages none for these families).
+///
+/// # Errors
+///
+/// Returns an error if the value is not finite (cannot have a decimal scale).
+fn observed_decimal_places(value: f64) -> Result<u8> {
+    use rust_decimal::prelude::FromPrimitive;
+
+    ensure!(
+        value.is_finite(),
+        "non-finite value {value} has no decimal scale"
+    );
+    // `from_f64` (the `FromPrimitive` impl) removes excess IEEE-754 bits so the
+    // result is the value's guaranteed shortest decimal (`0.1_f64 -> 0.1`, not
+    // `0.10000000000000000555…`); `normalize` then strips trailing zeros so the
+    // scale is exactly the decimal places the exchange rendered. Using the
+    // bit-retaining `from_f64_retain` here would inflate precision to ~28 and is
+    // deliberately avoided.
+    let decimal = Decimal::from_f64(value)
+        .with_context(|| format!("value {value} is not representable as a decimal"))?
+        .normalize();
+    Ok(u8::try_from(decimal.scale()).unwrap_or(u8::MAX))
+}
+
+/// Identity of a Deribit option, derived entirely from its venue-native
+/// instrument name (the symbol carried in every trade row and in the bars S3
+/// object key). Nothing here is invented: every field is read out of the symbol
+/// the exchange itself assigned.
+///
+/// Linear (USDC-quoted) options name themselves `<BASE>_<QUOTE>-<EXPIRY>-
+/// <STRIKE>-<C|P>` (for example `XRP_USDC-29MAY26-1d45-P`); classic
+/// coin-margined options drop the `_<QUOTE>` and settle in the coin
+/// (`BTC-29MAY26-66000-C`). Both forms are honoured.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeribitOptionIdentity {
+    underlying: String,
+    quote_currency: String,
+    settlement_currency: String,
+    is_inverse: bool,
+    option_kind: String,
+    strike_price: String,
+    expiration_ns: u64,
+}
+
+/// Parse a Deribit option [`DeribitOptionIdentity`] out of its venue-native
+/// instrument name. Fail loud on anything that is not a 4-part option symbol —
+/// the bulk path must never fabricate identity for a foreign instrument.
+fn parse_deribit_option_symbol(raw_symbol: &str) -> Result<DeribitOptionIdentity> {
+    let symbol = raw_symbol.trim();
+    ensure!(!symbol.is_empty(), "empty deribit symbol");
+    let parts: Vec<&str> = symbol.split('-').collect();
+    ensure!(
+        parts.len() == 4,
+        "deribit option symbol {symbol:?} is not <UNDERLYING>-<EXPIRY>-<STRIKE>-<KIND>"
+    );
+    let underlying_part = parts[0];
+    let expiry = parts[1];
+    let strike_raw = parts[2];
+    let kind_raw = parts[3];
+
+    // `<BASE>_<QUOTE>` (linear, quote-settled) or bare `<BASE>` (coin-margined,
+    // inverse, coin-settled). The settlement currency is the quote for linear
+    // options and the underlying coin for inverse ones — a property of the
+    // Deribit naming convention, read straight off the symbol.
+    let (underlying, quote_currency, settlement_currency, is_inverse) =
+        match underlying_part.split_once('_') {
+            Some((base, quote)) => {
+                ensure!(
+                    !base.is_empty() && !quote.is_empty(),
+                    "deribit symbol {symbol:?} has an empty base or quote currency"
+                );
+                (
+                    base.to_string(),
+                    quote.to_string(),
+                    quote.to_string(),
+                    false,
+                )
+            }
+            None => {
+                ensure!(
+                    !underlying_part.is_empty(),
+                    "deribit symbol {symbol:?} has an empty underlying"
+                );
+                (
+                    underlying_part.to_string(),
+                    underlying_part.to_string(),
+                    underlying_part.to_string(),
+                    true,
+                )
+            }
+        };
+
+    let option_kind = match kind_raw.trim().to_ascii_uppercase().as_str() {
+        "C" | "CALL" => "CALL".to_string(),
+        "P" | "PUT" => "PUT".to_string(),
+        other => bail!("deribit symbol {symbol:?} has non-option kind token {other:?}"),
+    };
+
+    // `d`/`D` is Deribit's in-symbol decimal point for fractional strikes.
+    let strike_price = strike_raw.replacen(DERIBIT_STRIKE_DECIMAL_SEPARATORS, ".", 1);
+    Decimal::from_str(&strike_price).with_context(|| {
+        format!("deribit symbol {symbol:?} has non-decimal strike {strike_raw:?}")
+    })?;
+
+    let expiration_ns = parse_deribit_expiry_ns(expiry)
+        .with_context(|| format!("deribit symbol {symbol:?} has unparseable expiry {expiry:?}"))?;
+
+    Ok(DeribitOptionIdentity {
+        underlying,
+        quote_currency,
+        settlement_currency,
+        is_inverse,
+        option_kind,
+        strike_price,
+        expiration_ns,
+    })
+}
+
+/// Deribit expiry tokens are `<DAY><MON><YY>` in UTC (for example `29MAY26`).
+/// The option expires at 08:00 UTC, the Deribit settlement hour — a fixed
+/// property of every Deribit option, not runtime config. Returns the expiry as
+/// Unix nanoseconds. The expiry never flows into the written `TradeTick`/`Bar`
+/// payload (only the instrument id and precision do); it exists so the
+/// transient `CryptoOption` scaffold carries an honest, symbol-derived
+/// expiration rather than a fabricated one.
+fn parse_deribit_expiry_ns(token: &str) -> Result<u64> {
+    let token = token.trim().to_ascii_uppercase();
+    ensure!(token.len() >= 6, "expiry token {token:?} too short");
+    let (day_str, rest) = token.split_at(token.len() - 5);
+    let (mon_str, yy_str) = rest.split_at(3);
+    let day: u32 = day_str
+        .parse()
+        .with_context(|| format!("bad day in {token:?}"))?;
+    let year: i64 = yy_str
+        .parse::<i64>()
+        .map(|yy| 2000 + yy)
+        .with_context(|| format!("bad year in {token:?}"))?;
+    let month = match mon_str {
+        "JAN" => 1,
+        "FEB" => 2,
+        "MAR" => 3,
+        "APR" => 4,
+        "MAY" => 5,
+        "JUN" => 6,
+        "JUL" => 7,
+        "AUG" => 8,
+        "SEP" => 9,
+        "OCT" => 10,
+        "NOV" => 11,
+        "DEC" => 12,
+        other => bail!("unknown month {other:?} in expiry {token:?}"),
+    };
+    // Days since the Unix epoch for a UTC calendar date, via a civil-date
+    // algorithm (Howard Hinnant's `days_from_civil`). Deribit settles at 08:00
+    // UTC on the expiry date.
+    let days = days_from_civil(year, month, day);
+    let secs = days
+        .checked_mul(86_400)
+        .and_then(|d| d.checked_add(8 * 3_600))
+        .context("expiry seconds overflow")?;
+    ensure!(secs > 0, "expiry {token:?} resolves before the Unix epoch");
+    u64::try_from(secs)
+        .ok()
+        .and_then(|s| s.checked_mul(1_000_000_000))
+        .context("expiry nanoseconds overflow")
+}
+
+/// Days from the Unix epoch (1970-01-01) for a proleptic-Gregorian UTC date.
+/// Howard Hinnant's `days_from_civil`, valid for all years in range.
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let m = i64::from(month);
+    let d = i64::from(day);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Build a [`DeribitTradesInstrumentSpec`] whose price/size precision is derived
+/// from the rows themselves (the maximum decimal places the exchange rendered)
+/// and whose instrument identity is parsed from the Deribit symbol. Mirrors
+/// `canonical_okx::okx_trades_spec_from_rows`.
+///
+/// # Errors
+///
+/// Returns an error if `rows` is empty, a price/size is non-finite, or the
+/// symbol is not a parseable Deribit option name.
+pub fn deribit_trades_spec_from_rows(
+    rows: &[DeribitTradeRow],
+    raw_symbol: &str,
+) -> Result<DeribitTradesInstrumentSpec> {
+    ensure!(
+        !rows.is_empty(),
+        "cannot derive Deribit trades precision from zero rows"
+    );
+    let identity = parse_deribit_option_symbol(raw_symbol)?;
+    let mut price_precision = 0u8;
+    let mut size_precision = 0u8;
+    for row in rows {
+        price_precision = price_precision.max(observed_decimal_places(row.price)?);
+        size_precision = size_precision.max(observed_decimal_places(row.size)?);
+    }
+    Ok(DeribitTradesInstrumentSpec {
+        nt_instrument_id: format!("{raw_symbol}.{DERIBIT_VENUE}"),
+        raw_symbol: raw_symbol.to_string(),
+        underlying: identity.underlying,
+        quote_currency: identity.quote_currency,
+        settlement_currency: identity.settlement_currency,
+        is_inverse: identity.is_inverse,
+        option_kind: identity.option_kind,
+        strike_price: identity.strike_price,
+        // Activation is not encoded in the Deribit symbol; the epoch is the
+        // honest "unknown" floor and never flows into the written tick payload.
+        activation_ns: 0,
+        expiration_ns: identity.expiration_ns,
+        price_increment: increment_for(price_precision),
+        size_increment: increment_for(size_precision),
+    })
+}
+
+/// One instrument's write summary produced by the bulk-append fns. Mirrors
+/// `canonical_okx::OkxAppendSummary`: the written NautilusTrader `TradeTick`/
+/// `Bar` records carry no provenance field, so neither does the summary — the
+/// catalog's own per-instrument/per-time-range file layout is the record of
+/// what was written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeribitAppendSummary {
+    pub nt_instrument_id: String,
+    pub record_count: usize,
+    pub price_precision: u8,
+    pub size_precision: u8,
+}
+
+/// Distinct venue-native instrument names appearing in a RiveChen merged-trades
+/// Parquet object, in first-seen order. The source object interleaves many
+/// instruments, so the bulk converter writes one catalog stream per distinct
+/// instrument rather than assuming a single one. Mirrors
+/// `canonical_okx::okx_trade_instruments`.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read, the required `instrument_name`
+/// column is missing or of the wrong Arrow type, or a value is null.
+pub fn deribit_trade_instruments(path: &Path) -> Result<Vec<String>> {
+    let file = File::open(path).with_context(|| format!("open parquet {}", path.display()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("open parquet reader {}", path.display()))?;
+    ensure!(
+        builder
+            .schema()
+            .column_with_name("instrument_name")
+            .is_some(),
+        "staged object {} is missing required column \"instrument_name\"",
+        path.display()
+    );
+    let reader = builder
+        .build()
+        .with_context(|| format!("build parquet reader {}", path.display()))?;
+    let mut seen: Vec<String> = Vec::new();
+    for batch in reader {
+        let batch = batch.context("read parquet record batch")?;
+        let instrument_name = typed_column::<StringArray>(&batch, "instrument_name")?;
+        for index in 0..batch.num_rows() {
+            ensure!(
+                !instrument_name.is_null(index),
+                "null instrument_name in row {index} of {}",
+                path.display()
+            );
+            let inst = instrument_name.value(index);
+            if !inst.is_empty() && !seen.iter().any(|s| s == inst) {
+                seen.push(inst.to_string());
+            }
+        }
+    }
+    Ok(seen)
+}
+
+/// Materialize an in-memory object to a temporary file so a `&Path`-taking
+/// parser can read it, run `f`, then remove the file. The RiveChen merged-trades
+/// parser takes a `&Path`; the bulk dispatch hands this fn the object bytes.
+///
+/// Uses a content-addressed name under the system temp dir (no external temp
+/// crate is a runtime dependency of this crate) and removes it on every exit
+/// path, failing loud if the temp write fails.
+fn with_object_tempfile<T>(object_bytes: &[u8], f: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
+    use std::io::Write;
+
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(object_bytes);
+    let digest = hex::encode(hasher.finalize());
+    let path = std::env::temp_dir().join(format!("bolt-deribit-bulk-{digest}.bin"));
+    {
+        let mut file = File::create(&path)
+            .with_context(|| format!("create temp object {}", path.display()))?;
+        file.write_all(object_bytes)
+            .with_context(|| format!("write temp object {}", path.display()))?;
+        file.flush()
+            .with_context(|| format!("flush temp object {}", path.display()))?;
+    }
+    let result = f(&path);
+    // Best-effort cleanup; the result (Ok or Err) is what the caller cares about.
+    let _ = fs::remove_file(&path);
+    result
+}
+
+/// Append every instrument's trades from one RiveChen merged-trades Parquet
+/// object into an already-open [`ParquetDataCatalog`] — the bulk-conversion
+/// path. Mirrors `canonical_okx::append_okx_trades_archive`.
+///
+/// Unlike [`project_trades_to_catalog`] (the hermetic single-object proof
+/// harness, which refuses a dirty root), this appends into a shared,
+/// possibly-S3 catalog with NO clean-root guard, relying on NautilusTrader's own
+/// per-instrument/per-time-range file naming and skip-on-existing. Precision is
+/// derived from each instrument's own rows; identity is parsed from each
+/// instrument's symbol. The trade `instrument_name` lives in the data, so no
+/// object key is needed. Returns one summary per distinct instrument written.
+///
+/// # Errors
+///
+/// Returns an error if the temp materialization, parsing, tick construction, or
+/// the catalog write fails, or if the object yields no instruments.
+pub fn append_deribit_trades_archive(
+    object_bytes: &[u8],
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<DeribitAppendSummary>> {
+    with_object_tempfile(object_bytes, |path| {
+        let instruments = deribit_trade_instruments(path)?;
+        let mut summaries = Vec::new();
+        for raw_symbol in instruments {
+            let spec_id = DeribitTradesInstrumentSpec {
+                nt_instrument_id: String::new(),
+                raw_symbol: raw_symbol.clone(),
+                underlying: String::new(),
+                quote_currency: String::new(),
+                settlement_currency: String::new(),
+                is_inverse: false,
+                option_kind: "CALL".to_string(),
+                strike_price: "1".to_string(),
+                activation_ns: 0,
+                expiration_ns: 0,
+                price_increment: "1".to_string(),
+                size_increment: "1".to_string(),
+            };
+            // Re-parse this instrument's rows to derive precision + identity.
+            // `normalize_deribit_merged_trades` only uses `raw_symbol` to fence,
+            // so the placeholder fields above never reach the data.
+            let series = normalize_deribit_merged_trades(path, &spec_id)?;
+            if series.rows.is_empty() {
+                continue;
+            }
+            let spec = deribit_trades_spec_from_rows(&series.rows, &raw_symbol)?;
+            let instrument = spec.build_instrument()?;
+            let ticks = trades_to_trade_ticks(&series, &instrument)?;
+            let summary = DeribitAppendSummary {
+                nt_instrument_id: spec.nt_instrument_id.clone(),
+                record_count: ticks.len(),
+                price_precision: instrument.price_precision(),
+                size_precision: instrument.size_precision(),
+            };
+            catalog
+                .write_to_parquet(ticks, None, None, None)
+                .with_context(|| format!("append Deribit trade ticks for {raw_symbol}"))?;
+            summaries.push(summary);
+        }
+        ensure!(
+            !summaries.is_empty(),
+            "Deribit merged-trades object yielded no instruments"
+        );
+        Ok(summaries)
+    })
+}
+
+// ===========================================================================
 // Family 3: 1m OHLC bars (Deribit TradingView chart JSON) -> NautilusTrader `Bar`
 // ===========================================================================
 
@@ -1312,6 +1729,142 @@ pub fn read_back_bars(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec
             true,
         )
         .context("query bars from catalog")
+}
+
+// ===========================================================================
+// bars bulk-append path (data-derived precision, identity from the object key)
+// ===========================================================================
+
+/// S3-key attribute segment carrying the instrument name in the Deribit
+/// `bars_1m` staging layout: `.../family=bars_1m/instrument=<SYMBOL>/...`. The
+/// `bars_1m` JSON payload itself carries no `instrument_name` (only parallel
+/// OHLCV arrays), so the bulk path reads identity from the staged key. A
+/// property of the staging layout (`backfill_deribit_to_s3.py`), not config.
+const DERIBIT_KEY_INSTRUMENT_ATTR: &str = "instrument=";
+
+/// Extract the venue-native instrument name from a Deribit `bars_1m` S3 object
+/// key by reading its `instrument=<SYMBOL>` path segment. Deribit symbols use
+/// only `[A-Za-z0-9._=-]`, which the staging key-sanitizer preserves verbatim,
+/// so the symbol survives the round-trip into the key.
+///
+/// # Errors
+///
+/// Returns an error if the key has no `instrument=` segment.
+fn raw_symbol_from_bars_key(object_key: &str) -> Result<String> {
+    object_key
+        .split('/')
+        .find_map(|segment| segment.strip_prefix(DERIBIT_KEY_INSTRUMENT_ATTR))
+        .filter(|symbol| !symbol.is_empty())
+        .map(str::to_string)
+        .with_context(|| {
+            format!(
+                "object key {object_key:?} has no non-empty {DERIBIT_KEY_INSTRUMENT_ATTR:?} segment"
+            )
+        })
+}
+
+/// Build a [`DeribitBarsInstrumentSpec`] whose price/size precision is derived
+/// from the OHLCV rows themselves and whose instrument identity is parsed from
+/// the Deribit symbol. The bar step/unit is the `bars_1m` partition contract
+/// ([`DERIBIT_BARS_1M_STEP`]/[`DERIBIT_BARS_1M_AGGREGATION`]). Mirrors the
+/// trades spec builder; the OKX analogue is `okx_trades_spec_from_rows` plus the
+/// caller-supplied `OkxBarSpec`.
+///
+/// # Errors
+///
+/// Returns an error if `rows` is empty, an OHLCV value is non-finite, or the
+/// symbol is not a parseable Deribit option name.
+pub fn deribit_bars_spec_from_rows(
+    rows: &[DeribitBarRow],
+    raw_symbol: &str,
+) -> Result<DeribitBarsInstrumentSpec> {
+    ensure!(
+        !rows.is_empty(),
+        "cannot derive Deribit bars precision from zero rows"
+    );
+    let identity = parse_deribit_option_symbol(raw_symbol)?;
+    let mut price_precision = 0u8;
+    let mut size_precision = 0u8;
+    for row in rows {
+        for value in [row.open, row.high, row.low, row.close] {
+            price_precision = price_precision.max(observed_decimal_places(value)?);
+        }
+        size_precision = size_precision.max(observed_decimal_places(row.volume)?);
+    }
+    Ok(DeribitBarsInstrumentSpec {
+        nt_instrument_id: format!("{raw_symbol}.{DERIBIT_VENUE}"),
+        raw_symbol: raw_symbol.to_string(),
+        underlying: identity.underlying,
+        quote_currency: identity.quote_currency,
+        settlement_currency: identity.settlement_currency,
+        is_inverse: identity.is_inverse,
+        option_kind: identity.option_kind,
+        strike_price: identity.strike_price,
+        activation_ns: 0,
+        expiration_ns: identity.expiration_ns,
+        price_increment: increment_for(price_precision),
+        size_increment: increment_for(size_precision),
+        bar_step: DERIBIT_BARS_1M_STEP,
+        bar_aggregation: DERIBIT_BARS_1M_AGGREGATION,
+    })
+}
+
+/// Append one Deribit `bars_1m` TradingView-chart JSON object into an
+/// already-open [`ParquetDataCatalog`] — the bulk-conversion path. Mirrors
+/// `canonical_okx::append_okx_trades_archive`.
+///
+/// Unlike [`project_bars_to_catalog`] (the hermetic single-object proof harness,
+/// which refuses a dirty root), this appends with NO clean-root guard. The
+/// `bars_1m` payload carries one instrument's candles and no `instrument_name`,
+/// so identity is read from `object_key`'s `instrument=` segment; precision is
+/// derived from the OHLCV rows. Returns one summary (one instrument per object).
+///
+/// # Errors
+///
+/// Returns an error if the key has no instrument segment, the JSON cannot be
+/// parsed/normalized, bar construction fails, or the catalog write fails.
+pub fn append_deribit_bars_archive(
+    object_bytes: &[u8],
+    object_key: &str,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<DeribitAppendSummary> {
+    let raw_symbol = raw_symbol_from_bars_key(object_key)?;
+    let json_text = std::str::from_utf8(object_bytes)
+        .with_context(|| format!("bars object {object_key:?} is not valid UTF-8"))?;
+
+    // Derive the full spec by first normalizing the candles with a minimal
+    // raw-symbol-only spec (normalization reads only `raw_symbol`), then
+    // deriving precision + identity from the resulting rows.
+    let probe_spec = DeribitBarsInstrumentSpec {
+        nt_instrument_id: String::new(),
+        raw_symbol: raw_symbol.clone(),
+        underlying: String::new(),
+        quote_currency: String::new(),
+        settlement_currency: String::new(),
+        is_inverse: false,
+        option_kind: "CALL".to_string(),
+        strike_price: "1".to_string(),
+        activation_ns: 0,
+        expiration_ns: 0,
+        price_increment: "1".to_string(),
+        size_increment: "1".to_string(),
+        bar_step: DERIBIT_BARS_1M_STEP,
+        bar_aggregation: DERIBIT_BARS_1M_AGGREGATION,
+    };
+    let series = normalize_deribit_bars(json_text, &probe_spec)?;
+    let spec = deribit_bars_spec_from_rows(&series.rows, &raw_symbol)?;
+    let instrument = spec.build_instrument()?;
+    let bars = bars_to_bars(&series, &spec, &instrument)?;
+    let summary = DeribitAppendSummary {
+        nt_instrument_id: spec.nt_instrument_id.clone(),
+        record_count: bars.len(),
+        price_precision: instrument.price_precision(),
+        size_precision: instrument.size_precision(),
+    };
+    catalog
+        .write_to_parquet(bars, None, None, None)
+        .with_context(|| format!("append Deribit bars for {raw_symbol}"))?;
+    Ok(summary)
 }
 
 /// Fail closed on a dirty (non-empty) catalog root, then ensure it exists.

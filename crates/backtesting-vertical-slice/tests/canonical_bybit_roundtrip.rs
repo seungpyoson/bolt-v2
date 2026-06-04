@@ -8,13 +8,19 @@
 //!
 //! Hermetic: the tests read the committed fixtures, never S3.
 
-use std::path::PathBuf;
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 use backtesting_vertical_slice::{
     canonical_bybit::{
         BybitInstrumentSpec, NT_DATA_TYPE_BAR, NT_DATA_TYPE_TRADE_TICK,
-        normalize_bybit_deriv_tick_trades, normalize_bybit_kline_1m, project_bybit_bars_to_catalog,
-        project_bybit_trades_to_catalog, read_back_bars, read_back_trade_ticks,
+        append_bybit_deriv_tick_trades_archive, append_bybit_mark_price_kline_1m_archive,
+        normalize_bybit_deriv_tick_trades, normalize_bybit_kline_1m,
+        normalize_bybit_mark_price_kline_1m, project_bybit_bars_to_catalog,
+        project_bybit_trades_to_catalog, read_back_bars, read_back_mark_bars,
+        read_back_trade_ticks,
     },
     source_proof::{
         AcceptanceMode, AcceptedDataset, EvidenceState, FixtureType, IngestManifestObjectRecord,
@@ -22,6 +28,8 @@ use backtesting_vertical_slice::{
         SourceProofReport, SourceProofStatus, TimeRange, select_accepted_dataset,
     },
 };
+use flate2::{Compression, write::GzEncoder};
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -305,4 +313,195 @@ fn deriv_trades_reject_symbol_mismatch() {
     let err = normalize_bybit_deriv_tick_trades(&accepted, &wrong_spec, &csv_text)
         .expect_err("symbol mismatch must be rejected");
     assert!(err.to_string().contains("symbol"), "{err}");
+}
+
+/// Gzip a byte slice the way the staged `.csv.gz` archive object is encoded, so
+/// the bulk-append test exercises the real decompress path on the EXISTING
+/// committed (plain-text) fixture without adding a redundant gz fixture.
+fn gzip_bytes(plain: &[u8]) -> Vec<u8> {
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(plain).expect("gzip write");
+    encoder.finish().expect("gzip finish")
+}
+
+/// Recursively collect every file under `root`.
+fn walk(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    out
+}
+
+/// Bulk path (derivatives trades): derive precision from the object's own rows
+/// (Bybit stages no instrument universe), build identity/provenance from the S3
+/// object key, append into a shared catalog with NO clean-root guard, and prove
+/// the NautilusTrader round-trip is lossless.
+#[test]
+fn deriv_trades_data_derived_append_round_trips() {
+    let csv_text =
+        std::fs::read_to_string(fixture_path("tick_trades_linear.csv")).expect("read csv");
+    let gz = gzip_bytes(csv_text.as_bytes());
+    // The real staged trade-archive S3 object key (category=linear, dt=2026-05-21,
+    // DOGEUSDT-05JUN26); symbol/category/date + provenance are read from it.
+    let object_key = "backfill-staging/2026-06-01/bybit/raw/v1/source=public_archive/family=tick_trades/category=linear/symbol=DOGEUSDT-05JUN26/dt=2026-05-21/object=69081e42e095ac886bf656a731082d7644382423eb92b77b8d12d3688a524503.csv.gz";
+    let nt_inst = "DOGEUSDT-05JUN26.BYBIT";
+
+    // Independent expectation from the same source, via the data-derived spec.
+    let accepted = accepted_dataset(
+        "bybit-linear-tick-trades",
+        "linear",
+        "linear",
+        "trades",
+        object_key,
+        "69081e42e095ac886bf656a731082d7644382423eb92b77b8d12d3688a524503",
+        1550,
+        "2026-05-21",
+        "2026-05-01T00:00:00Z",
+        "2026-06-01T00:00:00Z",
+        vec![
+            "timestamp".to_string(),
+            "symbol".to_string(),
+            "side".to_string(),
+            "size".to_string(),
+            "price".to_string(),
+            "tickDirection".to_string(),
+            "trdMatchID".to_string(),
+        ],
+    );
+    // DOGE perp prints a 5-dp price tick and integer contract size; precision is
+    // read from the data, not assumed.
+    let derived = BybitInstrumentSpec {
+        instrument_id: "DOGEUSDT-05JUN26".to_string(),
+        venue_symbol: "DOGEUSDT-05JUN26".to_string(),
+        nt_instrument_id: nt_inst.to_string(),
+        price_increment: "0.00001".to_string(),
+        size_increment: "1".to_string(),
+    };
+    let table =
+        normalize_bybit_deriv_tick_trades(&accepted, &derived, &csv_text).expect("normalize");
+    let expected = table.to_trade_ticks(&derived).expect("expected ticks");
+    assert!(!expected.is_empty(), "fixture must carry trades");
+
+    // Append into a freshly-opened (empty) catalog — no dirty-root refusal.
+    let dir = tempfile::TempDir::new().expect("temp catalog root");
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let summaries = append_bybit_deriv_tick_trades_archive(&gz, object_key, &mut catalog)
+        .expect("append trades");
+    assert_eq!(summaries.len(), 1, "a trade archive object is one symbol");
+    assert_eq!(summaries[0].nt_instrument_id, nt_inst);
+    assert_eq!(summaries[0].record_count, expected.len());
+    // Precision is read from the data and self-consistent with the ticks.
+    assert_eq!(summaries[0].price_precision, 5);
+    assert_eq!(summaries[0].size_precision, 0);
+    assert_eq!(summaries[0].price_precision, expected[0].price.precision);
+    assert_eq!(summaries[0].size_precision, expected[0].size.precision);
+
+    let loaded = read_back_trade_ticks(dir.path(), nt_inst).expect("read back ticks");
+    assert_eq!(loaded.len(), expected.len(), "round-tripped tick count");
+    assert!(
+        loaded.windows(2).all(|w| w[0].ts_init <= w[1].ts_init),
+        "loaded ticks must be ascending"
+    );
+    assert_eq!(
+        loaded, expected,
+        "data-derived append must round-trip identically (count, ordering, payload, precision)"
+    );
+    assert!(
+        walk(dir.path()).iter().any(|p| {
+            p.to_string_lossy().contains("trade")
+                && p.extension().map(|e| e == "parquet").unwrap_or(false)
+        }),
+        "catalog must contain a native trade-tick parquet file"
+    );
+}
+
+/// Bulk path (mark-price klines): derive price precision from the object's own
+/// OHLC columns, build identity/provenance from the S3 object key, append into a
+/// shared catalog with NO clean-root guard, and prove the NautilusTrader
+/// round-trip is lossless with the distinct `…-MARK-…` bar-type id.
+#[test]
+fn mark_price_kline_data_derived_append_round_trips() {
+    let json_text =
+        std::fs::read_to_string(fixture_path("mark_price_kline_1m.json")).expect("read json");
+    let json_bytes = json_text.as_bytes();
+    // The real staged mark-price-kline S3 object key (category=linear, BNBUSDT);
+    // symbol/category/date + provenance are read from it.
+    let object_key = "backfill-staging/2026-06-01/bybit/raw/v1/source=rest/family=mark_price_kline_1m/category=linear/page_end=2026-03-13T23_59_59Z/page_start=2026-03-13T12_00_00Z/symbol=BNBUSDT/window_end=2026-03-13T23_59_59Z/window_start=2026-03-01T00_00_00Z/object=d154952ffa87bc3cc3d6ee0cea053ef78d46465cb99c584a5e61dbd86509fe21.json";
+
+    let accepted = accepted_dataset(
+        "bybit-mark-price-kline-1m",
+        "linear",
+        "linear",
+        "bars",
+        object_key,
+        "d154952ffa87bc3cc3d6ee0cea053ef78d46465cb99c584a5e61dbd86509fe21",
+        37626,
+        "2026-03-13",
+        "2026-03-01T00:00:00Z",
+        "2026-03-14T00:00:00Z",
+        vec![
+            "start".to_string(),
+            "open".to_string(),
+            "high".to_string(),
+            "low".to_string(),
+            "close".to_string(),
+        ],
+    );
+    // BNBUSDT mark candles render a 2-dp price; a mark candle has no traded size,
+    // so size precision is data-derived as 0.
+    let derived = BybitInstrumentSpec {
+        instrument_id: "BNBUSDT".to_string(),
+        venue_symbol: "BNBUSDT".to_string(),
+        nt_instrument_id: "BNBUSDT.BYBIT".to_string(),
+        price_increment: "0.01".to_string(),
+        size_increment: "1".to_string(),
+    };
+    let table = normalize_bybit_mark_price_kline_1m(&accepted, &derived, &json_text)
+        .expect("normalize mark");
+    let expected = table.to_bars(&derived).expect("expected bars");
+    assert!(!expected.is_empty(), "fixture must carry candles");
+    let bar_type = table.bar_type_string().expect("bar type string");
+    assert!(bar_type.contains("MARK"), "mark bar type {bar_type:?}");
+
+    let dir = tempfile::TempDir::new().expect("temp catalog root");
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let summaries = append_bybit_mark_price_kline_1m_archive(json_bytes, object_key, &mut catalog)
+        .expect("append mark bars");
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].nt_instrument_id, "BNBUSDT.BYBIT");
+    assert_eq!(summaries[0].record_count, expected.len());
+    assert_eq!(summaries[0].price_precision, 2);
+    assert_eq!(summaries[0].size_precision, 0);
+    assert_eq!(summaries[0].price_precision, expected[0].open.precision);
+
+    let loaded = read_back_mark_bars(dir.path(), &bar_type).expect("read back mark bars");
+    assert_eq!(loaded.len(), expected.len(), "round-tripped bar count");
+    assert!(
+        loaded.windows(2).all(|w| w[0].ts_init <= w[1].ts_init),
+        "loaded bars must be ascending"
+    );
+    assert_eq!(
+        loaded, expected,
+        "data-derived append must round-trip identically (count, ordering, payload, precision)"
+    );
+    for bar in &loaded {
+        assert_eq!(bar.bar_type.to_string(), bar_type);
+        assert!(bar.volume.is_zero(), "mark bar volume must be zero");
+    }
+    assert!(
+        walk(dir.path()).iter().any(|p| {
+            p.to_string_lossy().contains("bar")
+                && p.extension().map(|e| e == "parquet").unwrap_or(false)
+        }),
+        "catalog must contain a native bar parquet file"
+    );
 }

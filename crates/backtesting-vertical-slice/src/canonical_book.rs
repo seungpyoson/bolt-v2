@@ -31,12 +31,27 @@
 //! Input is only ever an [`AcceptedDataset`] from gate 1 — raw staged data never
 //! reaches this module without first passing source-proof acceptance.
 
+use std::{fs::File, path::Path};
+
 use anyhow::{Context, Result, bail, ensure};
+use arrow::array::{Array, Decimal128Array, StringArray, TimestampMicrosecondArray};
+use nautilus_model::{
+    data::{OrderBookDelta, TradeTick},
+    instruments::InstrumentAny,
+};
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::source_proof::{AcceptedDataset, SourceProofFidelityClass};
+use super::{
+    catalog_projection::{
+        BinaryOptionInstrumentSpec, build_binary_option, canonical_book_rows_to_trade_ticks,
+        canonical_rows_to_order_book_deltas,
+    },
+    source_proof::{AcceptedDataset, IngestManifestObjectRecord, SourceProofFidelityClass},
+};
 
 /// Contracted semantic schema version for canonical L2 order-book event rows.
 pub const NORMALIZED_BOOK_SCHEMA_VERSION: &str = "order_book.v1";
@@ -569,4 +584,526 @@ fn validate_event(event: &CanonicalBookEvent, index: usize) -> Result<()> {
         }
     }
     Ok(())
+}
+
+// ===========================================================================
+// Polymarket CLOB bulk-append path (data-derived precision, no clean-root guard)
+// ===========================================================================
+//
+// The runner converts every staged Polymarket CLOB Parquet object into the one
+// NautilusTrader catalog. Two staged families share the CLOB row schema and this
+// code path:
+//
+// * `polymarket_book/`   — the full CLOB event stream (`book` snapshots,
+//   `price_change` deltas, and `last_trade_price` prints). Projects to
+//   [`OrderBookDelta`] (snapshot expansion + level deltas) AND [`TradeTick`]
+//   (the prints), via [`append_polymarket_book_archive`].
+// * `polymarket_trades/` — the trade-print stream only (`last_trade_price`
+//   rows). Projects to [`TradeTick`] only, via
+//   [`append_polymarket_trades_archive`].
+//
+// Both decode the same Parquet column layout into [`RawClobEventRow`]s, normalize
+// per `asset_id` with the existing [`normalize_polymarket_clob_book`], derive the
+// instrument precision from the object's own rows (Polymarket stages no
+// instrument universe), and append into a passed-in [`ParquetDataCatalog`]
+// WITHOUT the dirty-root guard — many objects flow into one shared (possibly-S3)
+// catalog, relying on NautilusTrader's own per-instrument/per-time-range file
+// naming. The hermetic single-object proof path stays in
+// [`super::catalog_projection::project_canonical_book_to_catalog`].
+
+/// NautilusTrader venue code for Polymarket, appended to a venue-native outcome
+/// token id to form the catalog instrument id (`<asset_id>.POLYMARKET`). The
+/// data-derived bulk path needs this because Polymarket stages no instrument
+/// universe to carry it. This is the per-venue NT id format constant.
+pub const POLYMARKET_VENUE: &str = "POLYMARKET";
+
+/// Settlement/quote currency for every Polymarket binary-outcome market. A venue
+/// fact (Polymarket settles outcome shares in USDC), not an instrument-specific
+/// claim, so it is the same for every object and carries no false origin.
+pub const POLYMARKET_QUOTE_CURRENCY: &str = "USDC";
+
+/// `AssetClass` token for Polymarket prediction-market outcome shares. A
+/// structural classification of the venue's product, not a per-object claim.
+pub const POLYMARKET_ASSET_CLASS: &str = "ALTERNATIVE";
+
+/// Venue token recorded in the canonical rows' provenance for this conversion.
+pub const POLYMARKET_VENUE_TOKEN: &str = "polymarket";
+
+/// Product-family token recorded in the canonical rows' provenance, matching the
+/// `polymarket-parquet-archive-index` source binding's `product_family`.
+pub const POLYMARKET_PRODUCT_FAMILY: &str = "prediction_market_outcome";
+
+/// Product-category token recorded in the canonical rows' provenance.
+pub const POLYMARKET_PRODUCT_CATEGORY: &str = "binary-outcome";
+
+/// Source-binding key recorded in the canonical rows' provenance, matching the
+/// `polymarket-parquet-archive-index` source binding.
+pub const POLYMARKET_SOURCE_BINDING: &str = "polymarket-parquet-archive-index";
+
+/// Stable label of THIS bulk conversion, recorded in the canonical rows'
+/// `source_proof_id` provenance slot. It honestly names the converter run rather
+/// than asserting a passed source-proof acceptance (the bulk path stages no
+/// accepted `SourceProofReport`).
+pub const POLYMARKET_INGEST_RUN_ID: &str = "polymarket-clob-bulk-convert.v1";
+
+/// Forbidden-claim attached to every bulk-converted Polymarket book/trades table,
+/// matching the L2-replay claim limit the table validator requires.
+const POLYMARKET_FORBIDDEN_CLAIM: &str = "No fill claims beyond replayed top-of-book liquidity.";
+
+/// The CLOB Parquet column layout this converter decodes. Recorded as the
+/// accepted object's `schema_columns` so the provenance describes the real
+/// object shape (the `transaction_hash` column is present in trade-print rows).
+const POLYMARKET_CLOB_COLUMNS: [&str; 9] = [
+    "timestamp",
+    "event_type",
+    "asset_id",
+    "bids",
+    "asks",
+    "price",
+    "size",
+    "side",
+    "transaction_hash",
+];
+
+/// Parquet `timestamp` column is UTC microseconds; convert to Unix nanoseconds.
+const NANOS_PER_MICROSECOND: i64 = 1_000;
+
+/// The decimal-string increment whose fractional length is exactly `precision`
+/// (`0 -> "1"`, `1 -> "0.1"`, `2 -> "0.01"`). Lets a data-derived precision be
+/// expressed as the increment string [`BinaryOptionInstrumentSpec`] consumes.
+#[must_use]
+fn increment_for(precision: u8) -> String {
+    match precision {
+        0 => "1".to_string(),
+        n => format!("0.{}1", "0".repeat(usize::from(n) - 1)),
+    }
+}
+
+/// Maximum decimal places of a decimal string (`"0.51"` -> 2, `"14926.03"` -> 2,
+/// `"5"` -> 0).
+fn decimal_places(value: &str) -> Result<u8> {
+    let decimal: Decimal = value
+        .parse()
+        .with_context(|| format!("decimal {value:?}"))?;
+    u8::try_from(decimal.scale()).context("decimal scale exceeds u8")
+}
+
+/// One instrument's write summary produced by the bulk-append path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolymarketAppendSummary {
+    pub nt_instrument_id: String,
+    /// Count of written `OrderBookDelta` records (0 for the trades-only family).
+    pub delta_count: usize,
+    /// Count of written `TradeTick` records (the trade prints).
+    pub trade_count: usize,
+    pub price_precision: u8,
+    pub size_precision: u8,
+}
+
+/// Extract the archive partition date (`YYYY-MM-DD`) from a staged object key's
+/// `dt=<date>/` segment.
+///
+/// # Errors
+///
+/// Returns an error if the key carries no `dt=YYYY-MM-DD` segment.
+fn archive_date_from_key(object_key: &str) -> Result<String> {
+    for segment in object_key.split('/') {
+        if let Some(date) = segment.strip_prefix("dt=") {
+            let date = date.trim();
+            ensure!(
+                date.len() == 10 && date.as_bytes()[4] == b'-' && date.as_bytes()[7] == b'-',
+                "object key dt segment {date:?} is not YYYY-MM-DD"
+            );
+            return Ok(date.to_string());
+        }
+    }
+    bail!("object key {object_key:?} carries no dt=YYYY-MM-DD segment")
+}
+
+/// Build an honest [`AcceptedDataset`] describing THIS bulk conversion of one
+/// staged Polymarket CLOB object.
+///
+/// The bulk path stages no accepted `SourceProofReport`, so this constructs the
+/// provenance the existing [`normalize_polymarket_clob_book`] requires directly
+/// from values that honestly describe the conversion: the `payload_hash` /
+/// `raw_payload_id` is the SHA-256 of the real on-disk object bytes, the
+/// `archive_date` is parsed from the object key's `dt=` segment, and the venue /
+/// product / source-binding / fidelity / forbidden-claims are the fixed venue
+/// facts of the `polymarket-parquet-archive-index` source binding. No field
+/// asserts a passed source-proof acceptance or a false origin.
+///
+/// # Errors
+///
+/// Returns an error if the object cannot be read or the key carries no `dt=`
+/// segment.
+fn polymarket_accepted_dataset(object_path: &Path, object_key: &str) -> Result<AcceptedDataset> {
+    let bytes = std::fs::read(object_path)
+        .with_context(|| format!("read Polymarket object {}", object_path.display()))?;
+    let payload_hash = hex::encode(Sha256::digest(&bytes));
+    let archive_date = archive_date_from_key(object_key)?;
+    Ok(AcceptedDataset {
+        source_proof_id: POLYMARKET_INGEST_RUN_ID.to_string(),
+        source_proof_version: 1,
+        source_binding: POLYMARKET_SOURCE_BINDING.to_string(),
+        venue: POLYMARKET_VENUE_TOKEN.to_string(),
+        product_family: POLYMARKET_PRODUCT_FAMILY.to_string(),
+        product_category: POLYMARKET_PRODUCT_CATEGORY.to_string(),
+        instrument_universe_id: POLYMARKET_INGEST_RUN_ID.to_string(),
+        fidelity_class: SourceProofFidelityClass::L2Replay,
+        forbidden_claims: vec![POLYMARKET_FORBIDDEN_CLAIM.to_string()],
+        object: IngestManifestObjectRecord {
+            s3_uri: object_key.to_string(),
+            source_url: object_key.to_string(),
+            sha256: payload_hash,
+            bytes: bytes.len() as u64,
+            archive_date,
+            schema_columns: POLYMARKET_CLOB_COLUMNS
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        },
+    })
+}
+
+/// Decode a staged Polymarket CLOB Parquet object into [`RawClobEventRow`]s.
+///
+/// Mirrors the column decode the converter's proof tests exercise: `timestamp` is
+/// UTC microseconds (scaled to Unix nanoseconds), the string columns map null to
+/// the empty string, and `price`/`size` `Decimal128` cells render at their
+/// column scale (empty for `book` rows). This is the single shared decode the
+/// runner uses, so the bulk path and the proofs cannot drift apart.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened/read as Parquet, a required
+/// column is missing, or a column has an unexpected Arrow type.
+pub fn decode_polymarket_clob_parquet(object_path: &Path) -> Result<Vec<RawClobEventRow>> {
+    let file = File::open(object_path)
+        .with_context(|| format!("open Polymarket parquet {}", object_path.display()))?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("open Polymarket parquet reader {}", object_path.display()))?
+        .build()
+        .with_context(|| format!("build Polymarket parquet reader {}", object_path.display()))?;
+
+    let mut rows = Vec::new();
+    for batch in reader {
+        let batch = batch.context("read Polymarket CLOB record batch")?;
+        let column = |name: &str| {
+            batch
+                .column_by_name(name)
+                .with_context(|| format!("Polymarket CLOB column {name:?} missing"))
+        };
+        let timestamp = column("timestamp")?
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .context("timestamp column is not micros")?;
+        let asset_id = string_column(&batch, "asset_id")?;
+        let event_type = string_column(&batch, "event_type")?;
+        let bids = string_column(&batch, "bids")?;
+        let asks = string_column(&batch, "asks")?;
+        let side = string_column(&batch, "side")?;
+        let transaction_hash = string_column(&batch, "transaction_hash")?;
+        let price = column("price")?
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .context("price column is not decimal")?;
+        let size = column("size")?
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .context("size column is not decimal")?;
+        let price_scale = price.scale();
+        let size_scale = size.scale();
+
+        for index in 0..batch.num_rows() {
+            let event_time = timestamp
+                .value(index)
+                .checked_mul(NANOS_PER_MICROSECOND)
+                .context("timestamp micros overflow scaling to nanos")?;
+            rows.push(RawClobEventRow {
+                asset_id: string_cell(asset_id, index),
+                event_type: string_cell(event_type, index),
+                event_time,
+                bids: string_cell(bids, index),
+                asks: string_cell(asks, index),
+                price: decimal_cell(price, index, price_scale)?,
+                size: decimal_cell(size, index, size_scale)?,
+                side: string_cell(side, index),
+                transaction_hash: string_cell(transaction_hash, index),
+            });
+        }
+    }
+    Ok(rows)
+}
+
+/// Borrow a UTF-8 column by name from a record batch.
+fn string_column<'a>(
+    batch: &'a arrow::record_batch::RecordBatch,
+    name: &str,
+) -> Result<&'a StringArray> {
+    batch
+        .column_by_name(name)
+        .with_context(|| format!("Polymarket CLOB column {name:?} missing"))?
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .with_context(|| format!("Polymarket CLOB column {name:?} is not utf8"))
+}
+
+/// Read a UTF-8 cell, mapping null to the empty string.
+fn string_cell(array: &StringArray, index: usize) -> String {
+    if array.is_null(index) {
+        String::new()
+    } else {
+        array.value(index).to_string()
+    }
+}
+
+/// Render a `Decimal128` cell at the column scale, or the empty string when null
+/// (the `price`/`size` columns are null for `book` snapshot rows).
+fn decimal_cell(array: &Decimal128Array, index: usize, scale: i8) -> Result<String> {
+    if array.is_null(index) {
+        return Ok(String::new());
+    }
+    let scale = u32::try_from(scale).context("negative decimal scale")?;
+    Ok(Decimal::from_i128_with_scale(array.value(index), scale).to_string())
+}
+
+/// Distinct outcome-token `asset_id`s appearing in decoded CLOB rows, in
+/// first-seen order.
+///
+/// A staged object can interleave more than one outcome token, so the bulk
+/// converter writes one catalog stream per distinct `asset_id` rather than
+/// assuming a single one.
+#[must_use]
+pub fn polymarket_clob_assets(rows: &[RawClobEventRow]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for row in rows {
+        let asset = row.asset_id.trim();
+        if !asset.is_empty() && !seen.iter().any(|s| s == asset) {
+            seen.push(asset.to_string());
+        }
+    }
+    seen
+}
+
+/// Build a [`BinaryOptionInstrumentSpec`] whose price/size precision is derived
+/// from the normalized table's own rows — the maximum decimal places observed
+/// across every snapshot level, level change, and trade print.
+///
+/// Polymarket renders CLOB prices at the market's tick and share sizes at the
+/// source's own scale, so the maximum observed scale is the precision
+/// NautilusTrader pins per catalog file. No external instrument universe is
+/// needed, and Polymarket stages none. The outcome label is the `asset_id`
+/// itself (the only honest per-object outcome identity); lifecycle timestamps
+/// are set open (`activation_ns = 1`, `expiration_ns = u64::MAX`) because the
+/// bulk object carries no settlement metadata — these are instrument-definition
+/// fields that do not affect the replayed `OrderBookDelta`/`TradeTick` payload.
+///
+/// # Errors
+///
+/// Returns an error if the table has no rows or a price/size string is not a
+/// decimal.
+pub fn polymarket_book_spec_from_table(
+    table: &CanonicalBookTable,
+) -> Result<BinaryOptionInstrumentSpec> {
+    ensure!(
+        !table.rows.is_empty(),
+        "cannot derive Polymarket precision from an empty table"
+    );
+    let mut price_precision = 0u8;
+    let mut size_precision = 0u8;
+    for row in &table.rows {
+        // (price, size) string pairs for every event variant.
+        let pairs: Vec<(&str, &str)> = match &row.event {
+            CanonicalBookEvent::Snapshot(snapshot) => snapshot
+                .bids
+                .iter()
+                .chain(snapshot.asks.iter())
+                .map(|level| (level.price.as_str(), level.size.as_str()))
+                .collect(),
+            CanonicalBookEvent::LevelChange(change) => {
+                vec![(change.price.as_str(), change.size.as_str())]
+            }
+            CanonicalBookEvent::Trade(trade) => {
+                vec![(trade.price.as_str(), trade.size.as_str())]
+            }
+        };
+        for (price, size) in pairs {
+            price_precision = price_precision.max(decimal_places(price)?);
+            size_precision = size_precision.max(decimal_places(size)?);
+        }
+    }
+    Ok(BinaryOptionInstrumentSpec {
+        nt_instrument_id: format!("{}.{}", table.instrument_id, POLYMARKET_VENUE),
+        raw_symbol: table.instrument_id.clone(),
+        asset_class: POLYMARKET_ASSET_CLASS.to_string(),
+        quote_currency: POLYMARKET_QUOTE_CURRENCY.to_string(),
+        outcome: table.instrument_id.clone(),
+        activation_ns: 1,
+        expiration_ns: u64::MAX,
+        price_increment: increment_for(price_precision),
+        size_increment: increment_for(size_precision),
+    })
+}
+
+/// Normalize one staged Polymarket CLOB object's decoded rows into per-instrument
+/// `(table, data-derived spec)` pairs, fenced and sequenced by the existing
+/// [`normalize_polymarket_clob_book`].
+fn polymarket_tables(
+    rows: &[RawClobEventRow],
+    accepted: &AcceptedDataset,
+) -> Result<Vec<(CanonicalBookTable, BinaryOptionInstrumentSpec)>> {
+    let mut out = Vec::new();
+    for asset_id in polymarket_clob_assets(rows) {
+        let table = normalize_polymarket_clob_book(
+            accepted,
+            &asset_id,
+            rows,
+            // No separate capture clock in the bulk path: the event timestamps are
+            // the only honest time source, so capture == first event time.
+            rows.iter()
+                .find(|r| r.asset_id == asset_id)
+                .map_or(0, |r| r.event_time),
+            POLYMARKET_INGEST_RUN_ID,
+        )?;
+        let spec = polymarket_book_spec_from_table(&table)?;
+        out.push((table, spec));
+    }
+    Ok(out)
+}
+
+/// Append every outcome token's CLOB book stream from one staged Polymarket
+/// `polymarket_book/` Parquet object into an already-open
+/// [`ParquetDataCatalog`] — the bulk-conversion path for the full book family.
+///
+/// Decodes the Parquet, normalizes per `asset_id`, derives precision from each
+/// instrument's own rows, then writes the binary-option instrument, the
+/// [`OrderBookDelta`] projection (snapshot expansion + level deltas), and the
+/// [`TradeTick`] projection (trade prints) for each instrument with
+/// NautilusTrader's own `write_to_parquet`. Unlike
+/// [`super::catalog_projection::project_canonical_book_to_catalog`] (the hermetic
+/// single-object proof harness, which refuses a dirty root), this appends into a
+/// shared, possibly-S3 catalog with no clean-root guard. Returns one summary per
+/// distinct instrument written.
+///
+/// `object_path` is the locally-readable staged object; `object_key` is its
+/// staged key (for example
+/// `polymarket_parquet/polymarket_book/dt=YYYY-MM-DD/object=<hash>.parquet`),
+/// whose `dt=` segment supplies the honest archive date for provenance.
+///
+/// # Errors
+///
+/// Returns an error if decoding, provenance construction, normalization,
+/// projection, or the catalog write fails, or if the object yields no instruments.
+pub fn append_polymarket_book_archive(
+    object_path: &Path,
+    object_key: &str,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<PolymarketAppendSummary>> {
+    let accepted = polymarket_accepted_dataset(object_path, object_key)?;
+    let rows = decode_polymarket_clob_parquet(object_path)?;
+    let tables = polymarket_tables(&rows, &accepted)?;
+
+    let mut summaries = Vec::new();
+    for (table, spec) in tables {
+        let instrument = build_binary_option(&spec)?;
+        let deltas: Vec<OrderBookDelta> = canonical_rows_to_order_book_deltas(&table, &instrument)?;
+        let ticks: Vec<TradeTick> = canonical_book_rows_to_trade_ticks(&table, &instrument)?;
+        let summary = PolymarketAppendSummary {
+            nt_instrument_id: spec.nt_instrument_id.clone(),
+            delta_count: deltas.len(),
+            trade_count: ticks.len(),
+            price_precision: instrument.price_precision,
+            size_precision: instrument.size_precision,
+        };
+        catalog
+            .write_instruments(vec![InstrumentAny::BinaryOption(instrument)])
+            .with_context(|| {
+                format!("append Polymarket instrument for {}", spec.nt_instrument_id)
+            })?;
+        catalog
+            .write_to_parquet(deltas, None, None, None)
+            .with_context(|| {
+                format!(
+                    "append Polymarket book deltas for {}",
+                    spec.nt_instrument_id
+                )
+            })?;
+        if !ticks.is_empty() {
+            catalog
+                .write_to_parquet(ticks, None, None, None)
+                .with_context(|| {
+                    format!(
+                        "append Polymarket book trades for {}",
+                        spec.nt_instrument_id
+                    )
+                })?;
+        }
+        summaries.push(summary);
+    }
+    ensure!(
+        !summaries.is_empty(),
+        "Polymarket book object {object_key:?} yielded no instruments"
+    );
+    Ok(summaries)
+}
+
+/// Append every outcome token's trade prints from one staged Polymarket
+/// `polymarket_trades/` Parquet object into an already-open
+/// [`ParquetDataCatalog`] — the bulk-conversion path for the trades family.
+///
+/// Identical decode/normalize/precision pipeline as
+/// [`append_polymarket_book_archive`], but writes ONLY the [`TradeTick`]
+/// projection (the `polymarket_trades/` objects carry trade prints), with no
+/// clean-root guard. An object that yields a trade-free instrument is fenced out
+/// (no instrument written) rather than writing an empty stream. Returns one
+/// summary per distinct instrument with at least one trade print.
+///
+/// # Errors
+///
+/// Returns an error if decoding, provenance construction, normalization,
+/// projection, or the catalog write fails, or if the object yields no trade
+/// prints for any instrument.
+pub fn append_polymarket_trades_archive(
+    object_path: &Path,
+    object_key: &str,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<PolymarketAppendSummary>> {
+    let accepted = polymarket_accepted_dataset(object_path, object_key)?;
+    let rows = decode_polymarket_clob_parquet(object_path)?;
+    let tables = polymarket_tables(&rows, &accepted)?;
+
+    let mut summaries = Vec::new();
+    for (table, spec) in tables {
+        let instrument = build_binary_option(&spec)?;
+        let ticks: Vec<TradeTick> = canonical_book_rows_to_trade_ticks(&table, &instrument)?;
+        if ticks.is_empty() {
+            continue;
+        }
+        let summary = PolymarketAppendSummary {
+            nt_instrument_id: spec.nt_instrument_id.clone(),
+            delta_count: 0,
+            trade_count: ticks.len(),
+            price_precision: instrument.price_precision,
+            size_precision: instrument.size_precision,
+        };
+        catalog
+            .write_instruments(vec![InstrumentAny::BinaryOption(instrument)])
+            .with_context(|| {
+                format!("append Polymarket instrument for {}", spec.nt_instrument_id)
+            })?;
+        catalog
+            .write_to_parquet(ticks, None, None, None)
+            .with_context(|| {
+                format!(
+                    "append Polymarket trade prints for {}",
+                    spec.nt_instrument_id
+                )
+            })?;
+        summaries.push(summary);
+    }
+    ensure!(
+        !summaries.is_empty(),
+        "Polymarket trades object {object_key:?} yielded no trade prints"
+    );
+    Ok(summaries)
 }

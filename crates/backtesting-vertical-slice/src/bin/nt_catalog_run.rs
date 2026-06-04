@@ -226,8 +226,9 @@ fn convert(
     let mut catalog = ParquetDataCatalog::from_uri(catalog_uri, catalog_opts, None, None, None)
         .context("open catalog from uri")?;
 
-    let base_url = Url::parse(staging_uri)
-        .with_context(|| format!("parse staging uri {staging_uri:?} (need a file:// or s3:// URI)"))?;
+    let base_url = Url::parse(staging_uri).with_context(|| {
+        format!("parse staging uri {staging_uri:?} (need a file:// or s3:// URI)")
+    })?;
     let source_opts = if is_remote(staging_uri) {
         opts
     } else {

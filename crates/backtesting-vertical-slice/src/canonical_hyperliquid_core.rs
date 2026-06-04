@@ -464,6 +464,30 @@ const HL_SIDE_BUY: &str = "B";
 /// Hyperliquid taker `side` token for a sell (the aggressor hit the bid).
 const HL_SIDE_SELL: &str = "A";
 
+/// NautilusTrader venue code appended to a coin to form the `nt_instrument_id`
+/// (`BTC` -> `BTC.HYPERLIQUID`). The per-venue format constant, mirroring OKX's
+/// `OKX` suffix — not a runtime instrument id.
+pub const HYPERLIQUID_VENUE: &str = "HYPERLIQUID";
+
+/// Quote and settlement currency for Hyperliquid core perpetuals. These markets
+/// are USDC-settled linear perps (the same fact `build_instrument` encodes with
+/// `is_inverse = false`); it is a venue-shape constant, not a per-instrument
+/// runtime value, so the bulk path derives the spec's currencies from it without
+/// an instrument universe (Hyperliquid stages none).
+const HYPERLIQUID_CORE_QUOTE_CCY: &str = "USDC";
+
+/// Namespace separator the venue uses for builder-deployed (HIP-3) DEX markets:
+/// a coin token of the form `<dex>:<local>` (for example `xyz:SILVER`). These are
+/// NOT top-level Hyperliquid core perps — they belong to the HIP-3 family (whose
+/// own converter/backfill owns them, splitting on this exact separator) — so the
+/// core converter fences them out of the shared `node_fills_by_block` object.
+const HYPERLIQUID_HIP3_NAMESPACE_SEP: char = ':';
+
+/// Prefix the venue uses for spot pair index tokens (for example `@107`). Spot
+/// markets are not USDC-settled core perps, so the core converter fences any
+/// `@`-prefixed token out of the shared object.
+const HYPERLIQUID_SPOT_INDEX_PREFIX: char = '@';
+
 /// One fill record as it appears inside an `events` pair's second element.
 ///
 /// Only the fields this projection needs are deserialized; the rest of the rich
@@ -783,6 +807,198 @@ pub fn read_back_trade_ticks(
             true,
         )
         .context("query trade ticks from catalog")
+}
+
+// ===========================================================================
+// Bulk convert path: node_fills_by_block archive object -> TradeTick streams
+// ===========================================================================
+//
+// A single staged `node_fills_by_block` object (one chain hour) carries fills
+// for MANY coins. The bulk path therefore enumerates the distinct coins present
+// in the object, builds a data-derived spec per coin, and reuses the committed
+// `reconstruct_trades` (dedup-by-tid, keep-taker, derive precision, sort) once
+// per coin, appending each coin's `TradeTick` stream into a shared, already-open
+// catalog with NO clean-root guard. This mirrors `append_okx_trades_archive`:
+// the `project_*_to_catalog` fns remain the hermetic single-object test harness.
+
+/// Decompress an LZ4-frame object already held in memory into JSONL text.
+///
+/// The bulk path receives the raw object bytes (mirroring
+/// [`append_okx_trades_archive`]'s `zip_bytes: &[u8]`), so this is the in-memory
+/// twin of [`read_lz4_jsonl`] (which decompresses from a path). Both enforce the
+/// LZ4 frame magic and fail loud on a non-LZ4 / non-UTF-8 payload.
+///
+/// # Errors
+///
+/// Returns an error if the bytes lack the LZ4 frame magic or are not valid
+/// LZ4 / UTF-8.
+pub fn decompress_lz4_frame(bytes: &[u8]) -> Result<String> {
+    ensure!(
+        bytes.len() >= 4 && bytes[..4] == LZ4_FRAME_MAGIC,
+        "object is not an LZ4 frame (bad magic)"
+    );
+    let mut decoder = lz4_flex::frame::FrameDecoder::new(bytes);
+    let mut text = String::new();
+    decoder
+        .read_to_string(&mut text)
+        .context("decompress lz4 object")?;
+    Ok(text)
+}
+
+/// Whether a venue coin token belongs to the Hyperliquid **core perp** family.
+///
+/// A single `node_fills_by_block` object multiplexes fills for every market that
+/// traded that hour — top-level core perps (`BTC`, `ETH`, newly-listed alts like
+/// `PUMP`) AND markets that are NOT core perps: builder-deployed HIP-3 DEX
+/// instruments (`<dex>:<local>`, for example `xyz:SILVER`) and spot pair indices
+/// (`@107`). The latter are owned by their own venue families and would carry
+/// false provenance if written as USDC-settled core perps, so the core converter
+/// fences them out of the shared object (the rule's allowed "genuinely-foreign
+/// instrument fenced out of a multi-instrument object").
+///
+/// The classification is the venue's OWN naming convention, not an invented
+/// allowlist: a HIP-3 token always contains [`HYPERLIQUID_HIP3_NAMESPACE_SEP`]
+/// (the same split the HIP-3 backfill uses) and a spot index always starts with
+/// [`HYPERLIQUID_SPOT_INDEX_PREFIX`]. Anything else is a top-level core perp.
+#[must_use]
+pub fn is_core_perp_coin(coin: &str) -> bool {
+    let coin = coin.trim();
+    !coin.is_empty()
+        && !coin.contains(HYPERLIQUID_HIP3_NAMESPACE_SEP)
+        && !coin.starts_with(HYPERLIQUID_SPOT_INDEX_PREFIX)
+}
+
+/// Distinct Hyperliquid **core perp** coins that appear as a **taker**
+/// (`crossed:true`) leg in a `node_fills_by_block` object, in first-seen order.
+///
+/// One object spans every market that traded in the hour, so the bulk converter
+/// writes one catalog stream per distinct core-perp coin rather than assuming a
+/// single instrument — the analogue of [`okx_trade_instruments`]. Two filters
+/// apply: (1) only coins with a taker leg are returned, because the taker leg is
+/// the canonical print `reconstruct_trades` keeps (a maker-only coin yields no
+/// trade); (2) non-core-perp markets (HIP-3 DEX tokens, spot indices) are fenced
+/// out via [`is_core_perp_coin`] because they belong to other venue families.
+///
+/// # Errors
+///
+/// Returns an error if a line is not valid `node_fills_by_block` JSON.
+pub fn hyperliquid_core_fill_coins(jsonl: &str) -> Result<Vec<String>> {
+    let mut seen: Vec<String> = Vec::new();
+    for (line_index, line) in jsonl.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let block: WireBlock = serde_json::from_str(line)
+            .with_context(|| format!("line {line_index}: malformed node_fills_by_block JSON"))?;
+        for (_user, fill) in &block.events {
+            if !fill.crossed {
+                continue;
+            }
+            if is_core_perp_coin(&fill.coin) && !seen.iter().any(|c| c == &fill.coin) {
+                seen.push(fill.coin.clone());
+            }
+        }
+    }
+    Ok(seen)
+}
+
+/// Build the [`HyperliquidCoreInstrumentSpec`] for one coin in a
+/// `node_fills_by_block` object.
+///
+/// Identity is derived entirely from the data + venue-shape constants: the
+/// `nt_instrument_id` is `{coin}.{HYPERLIQUID_VENUE}`, the base currency is the
+/// coin, and the quote/settlement currency is USDC (Hyperliquid core perps are
+/// USDC-settled linear perps — [`HYPERLIQUID_CORE_QUOTE_CCY`]). No instrument
+/// universe is consulted (Hyperliquid stages none); price/size precision is
+/// derived from the data inside [`reconstruct_trades`], never here and never a
+/// literal.
+///
+/// # Errors
+///
+/// Returns an error if `coin` is empty.
+pub fn hyperliquid_core_fills_spec_for_coin(coin: &str) -> Result<HyperliquidCoreInstrumentSpec> {
+    let coin = coin.trim();
+    ensure!(!coin.is_empty(), "cannot build a spec for an empty coin");
+    Ok(HyperliquidCoreInstrumentSpec {
+        nt_instrument_id: format!("{coin}.{HYPERLIQUID_VENUE}"),
+        raw_symbol: coin.to_string(),
+        base_currency: coin.to_string(),
+        quote_currency: HYPERLIQUID_CORE_QUOTE_CCY.to_string(),
+        settlement_currency: HYPERLIQUID_CORE_QUOTE_CCY.to_string(),
+    })
+}
+
+/// One coin's write summary produced by [`append_hyperliquid_core_fills_archive`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HyperliquidCoreAppendSummary {
+    pub nt_instrument_id: String,
+    pub record_count: usize,
+    pub price_precision: u8,
+    pub size_precision: u8,
+}
+
+/// Append every coin's `TradeTick`s from one Hyperliquid `node_fills_by_block`
+/// LZ4 object into an already-open [`ParquetDataCatalog`] — the bulk-conversion
+/// path.
+///
+/// Unlike [`project_trades_to_catalog`] (the hermetic single-coin proof harness,
+/// which refuses a dirty root), this appends into a shared, possibly-S3 catalog:
+/// it relies on NautilusTrader's own per-instrument, per-time-range file naming
+/// and skip-on-existing so many objects flow into one catalog. The object's
+/// core-perp coins are enumerated ([`hyperliquid_core_fill_coins`], which fences
+/// out HIP-3 DEX tokens and spot indices); for each, a data-derived spec is built
+/// ([`hyperliquid_core_fills_spec_for_coin`]) and the committed
+/// [`reconstruct_trades`] does the dedup/precision/sort, after which the coin's
+/// ticks are written. Returns one summary per coin written.
+///
+/// Newly-listed coins are not in NautilusTrader's static currency map, so before
+/// reconstruction each coin (and the USDC quote) is registered as a crypto
+/// currency via NautilusTrader's own adapter path
+/// [`Currency::get_or_create_crypto`] — the sanctioned way to admit exchange
+/// assets the static map predates. This does not fabricate identity: on a DEX the
+/// coin token IS its own currency code. Without it, `build_instrument`'s
+/// `Currency::from_str` would reject an unlisted coin and drop a real core perp.
+///
+/// # Errors
+///
+/// Returns an error if decompression, JSON parsing, trade reconstruction, or the
+/// catalog write fails, or if the object yields no core-perp taker fills.
+pub fn append_hyperliquid_core_fills_archive(
+    lz4_bytes: &[u8],
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<HyperliquidCoreAppendSummary>> {
+    let jsonl = decompress_lz4_frame(lz4_bytes)?;
+    let coins = hyperliquid_core_fill_coins(&jsonl)?;
+    // USDC is the shared quote/settlement currency; register it once up front.
+    let _ = Currency::get_or_create_crypto(HYPERLIQUID_CORE_QUOTE_CCY);
+    let mut summaries = Vec::new();
+    for coin in coins {
+        // Admit the coin into NautilusTrader's currency map (no-op if already
+        // registered) so the committed `build_instrument` -> `Currency::from_str`
+        // resolves an unlisted DEX asset instead of failing.
+        let _ = Currency::get_or_create_crypto(&coin);
+        let spec = hyperliquid_core_fills_spec_for_coin(&coin)?;
+        let reconstructed = reconstruct_trades(&jsonl, &spec)
+            .with_context(|| format!("reconstruct Hyperliquid core trades for {coin}"))?;
+        if reconstructed.trades.is_empty() {
+            continue;
+        }
+        let summary = HyperliquidCoreAppendSummary {
+            nt_instrument_id: spec.nt_instrument_id.clone(),
+            record_count: reconstructed.trades.len(),
+            price_precision: reconstructed.price_precision,
+            size_precision: reconstructed.size_precision,
+        };
+        catalog
+            .write_to_parquet(reconstructed.trades, None, None, None)
+            .with_context(|| format!("append Hyperliquid core trade ticks for {coin}"))?;
+        summaries.push(summary);
+    }
+    ensure!(
+        !summaries.is_empty(),
+        "Hyperliquid core node_fills_by_block object yielded no taker fills"
+    );
+    Ok(summaries)
 }
 
 #[cfg(test)]

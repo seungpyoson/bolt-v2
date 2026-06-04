@@ -33,12 +33,14 @@
 //! timestamp literal is hardcoded in this module.
 
 use std::{
+    io::Read,
     num::NonZeroUsize,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use flate2::read::GzDecoder;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
     data::{Bar, BarSpecification, BarType, TradeTick},
@@ -49,14 +51,30 @@ use nautilus_model::{
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use super::source_proof::{AcceptedDataset, SourceProofFidelityClass};
+use super::source_proof::{AcceptedDataset, IngestManifestObjectRecord, SourceProofFidelityClass};
 
 /// NautilusTrader data type written for the derivatives trade projection.
 pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
 
 /// NautilusTrader data type written for the kline projection.
 pub const NT_DATA_TYPE_BAR: &str = "Bar";
+
+/// NautilusTrader venue code for Bybit, appended to a venue-native symbol to form
+/// the catalog instrument id (`<venue_symbol>.BYBIT`). The data-derived bulk path
+/// needs this because Bybit stages no per-object instrument universe to carry it.
+pub const BYBIT_VENUE: &str = "BYBIT";
+
+/// Fixed label identifying THIS bulk NT-catalog conversion as the provenance
+/// origin of a data-derived append. It is not a claim about the upstream source;
+/// it records which ingest run materialised the catalog rows.
+const BYBIT_BULK_INGEST_RUN: &str = "bybit-nt-catalog-bulk-append";
+
+/// Honest forbidden-claims note carried by a trade/bar-replay table: these
+/// families reconstruct prints/candles, never the order book, so they cannot back
+/// execution-quality or queue-position claims.
+const BYBIT_REPLAY_FORBIDDEN_CLAIM: &str = "No execution-quality or queue-position claims.";
 
 /// Expected Bybit derivatives (linear/inverse) tick-trades header, in order.
 ///
@@ -1079,6 +1097,346 @@ pub fn read_back_mark_bars(catalog_root: &Path, bar_type: &str) -> Result<Vec<Ba
             true,
         )
         .context("query mark-price bars from catalog")
+}
+
+// ===========================================================================
+// Bulk-append path (data-derived precision, honest object-key provenance,
+// no clean-root guard)
+// ===========================================================================
+//
+// Mirrors `super::canonical_okx::append_okx_trades_archive`: the hermetic
+// `project_*_to_catalog` functions above stay as the single-object TEST harness
+// (they refuse a dirty root); this section is the bulk-conversion path that
+// appends many staged objects into one shared, possibly-S3 catalog with NO
+// clean-root guard, relying on NautilusTrader's own per-instrument file naming.
+//
+// Precision is derived from each object's own rows (Bybit stages no per-object
+// instrument universe), and the provenance/identity the canonical `*Table`
+// requires is constructed from HONEST sources: the SHA-256 of the object bytes,
+// the venue/family/category/symbol/date read from the S3 object key, and a fixed
+// label naming this conversion run. No origin is fabricated.
+
+/// Maximum decimal places of a decimal value string (`"643.3"` -> 1,
+/// `"5995"` -> 0, `"0.10"` -> 1). This reads the precision the exchange rendered
+/// for a *value*, distinct from [`decimal_places`] which reads the fractional
+/// length of an *increment* string.
+///
+/// # Errors
+///
+/// Returns an error if `value` is not a decimal string or its scale exceeds
+/// [`u8`].
+fn value_decimal_places(value: &str) -> Result<u8> {
+    let decimal = Decimal::from_str(value).with_context(|| format!("decimal {value:?}"))?;
+    u8::try_from(decimal.scale()).context("decimal scale exceeds u8")
+}
+
+/// The decimal-string increment whose fractional length is exactly `precision`
+/// (`0 -> "1"`, `1 -> "0.1"`, `5 -> "0.00001"`) — the inverse of
+/// [`decimal_places`]. Lets a data-derived precision be expressed as the
+/// [`BybitInstrumentSpec`] increment the converter consumes.
+#[must_use]
+fn increment_for(precision: u8) -> String {
+    match precision {
+        0 => "1".to_string(),
+        n => format!("0.{}1", "0".repeat(usize::from(n) - 1)),
+    }
+}
+
+/// SHA-256 hex of the raw object bytes — the honest payload hash of THIS object.
+#[must_use]
+fn object_sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+/// Value of a `key=value` segment in an S3 object key, for example the `symbol`
+/// or `category` partition. Returns the first matching segment's value.
+fn key_segment<'a>(object_key: &'a str, key: &str) -> Option<&'a str> {
+    let prefix = format!("{key}=");
+    object_key
+        .split('/')
+        .find_map(|segment| segment.strip_prefix(&prefix))
+}
+
+/// Required `key=value` segment of an S3 object key.
+///
+/// # Errors
+///
+/// Returns an error naming the missing partition key.
+fn require_key_segment<'a>(object_key: &'a str, key: &str) -> Result<&'a str> {
+    let value = key_segment(object_key, key)
+        .with_context(|| format!("object key {object_key:?} missing {key}= segment"))?;
+    ensure!(
+        !value.trim().is_empty(),
+        "object key {object_key:?} has empty {key}= segment"
+    );
+    Ok(value)
+}
+
+/// The honest archive date (YYYY-MM-DD) for an object key: the `dt=` partition if
+/// present (trade archives), otherwise the date prefix of the first date-bearing
+/// window/page segment (REST kline pages carry `window_start=`/`page_start=`).
+///
+/// # Errors
+///
+/// Returns an error if no date-bearing segment is present.
+fn archive_date_from_key(object_key: &str) -> Result<String> {
+    if let Some(dt) = key_segment(object_key, "dt") {
+        ensure!(
+            !dt.trim().is_empty(),
+            "object key {object_key:?} has empty dt= segment"
+        );
+        return Ok(dt.to_string());
+    }
+    for key in ["window_start", "page_start", "window_end", "page_end"] {
+        if let Some(value) = key_segment(object_key, key) {
+            // Bybit stages these as `2026-03-13T12_00_00Z`; the leading 10 chars
+            // are the calendar date.
+            let date = value.get(0..10).unwrap_or(value);
+            if !date.trim().is_empty() {
+                return Ok(date.to_string());
+            }
+        }
+    }
+    bail!("object key {object_key:?} has no dt=/window/page date segment")
+}
+
+/// Build the honest [`AcceptedDataset`] describing THIS object: identity and
+/// provenance read from the object key (`venue/family/category/symbol/date`) plus
+/// the SHA-256 of the object bytes. Every field has a real source; none claims a
+/// false origin.
+///
+/// `expected_family` is the S3 `family=` partition this converter accepts,
+/// enforced against the key so a mis-routed object fails loud.
+fn accepted_from_object_key(
+    object_key: &str,
+    object_bytes: &[u8],
+    expected_family: &str,
+    schema_columns: Vec<String>,
+) -> Result<(AcceptedDataset, String)> {
+    let family = require_key_segment(object_key, "family")?;
+    ensure!(
+        family == expected_family,
+        "object key family {family:?} is not the expected {expected_family:?}"
+    );
+    let category = require_key_segment(object_key, "category")?;
+    let symbol = require_key_segment(object_key, "symbol")?.to_string();
+    let archive_date = archive_date_from_key(object_key)?;
+    let sha256 = object_sha256_hex(object_bytes);
+
+    let object = IngestManifestObjectRecord {
+        s3_uri: object_key.to_string(),
+        source_url: object_key.to_string(),
+        sha256: sha256.clone(),
+        bytes: object_bytes.len() as u64,
+        archive_date,
+        schema_columns,
+    };
+    let accepted = AcceptedDataset {
+        source_proof_id: format!("{BYBIT_BULK_INGEST_RUN}:{sha256}"),
+        source_proof_version: 1,
+        source_binding: BYBIT_BULK_INGEST_RUN.to_string(),
+        venue: "bybit".to_string(),
+        product_family: category.to_string(),
+        product_category: category.to_string(),
+        instrument_universe_id: String::new(),
+        fidelity_class: SourceProofFidelityClass::TradeBarReplay,
+        forbidden_claims: vec![BYBIT_REPLAY_FORBIDDEN_CLAIM.to_string()],
+        object,
+    };
+    ensure!(
+        accepted.fidelity_class != SourceProofFidelityClass::L2Replay,
+        "trade/bar replay must never be labelled L2_REPLAY"
+    );
+    Ok((accepted, symbol))
+}
+
+/// A probe [`BybitInstrumentSpec`] for one symbol whose increments are
+/// placeholders: `normalize_*` consumes only `venue_symbol` (to fence rows) and
+/// `nt_instrument_id` (matched by `to_*`), never the increments, so the real
+/// precision is derived from the parsed rows afterwards.
+fn probe_spec(symbol: &str) -> BybitInstrumentSpec {
+    BybitInstrumentSpec {
+        instrument_id: symbol.to_string(),
+        venue_symbol: symbol.to_string(),
+        nt_instrument_id: format!("{symbol}.{BYBIT_VENUE}"),
+        // Placeholders: replaced by the data-derived spec before any `to_*` call.
+        price_increment: "1".to_string(),
+        size_increment: "1".to_string(),
+    }
+}
+
+/// One instrument's write summary produced by an `append_bybit_*_archive` call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BybitAppendSummary {
+    pub nt_instrument_id: String,
+    pub record_count: usize,
+    pub price_precision: u8,
+    pub size_precision: u8,
+}
+
+/// Build a data-derived [`BybitInstrumentSpec`] from a symbol and the maximum
+/// decimal places observed across the supplied price/size value columns.
+///
+/// Bybit renders every row of a column at the instrument's native tick/lot scale,
+/// so the maximum observed scale is the precision NautilusTrader pins per catalog
+/// file — no external instrument universe is needed, and Bybit stages none.
+///
+/// # Errors
+///
+/// Returns an error if any value string is not decimal.
+fn spec_from_value_columns<'a>(
+    symbol: &str,
+    price_values: impl IntoIterator<Item = &'a str>,
+    size_values: impl IntoIterator<Item = &'a str>,
+) -> Result<BybitInstrumentSpec> {
+    let mut price_precision = 0u8;
+    for value in price_values {
+        price_precision = price_precision.max(value_decimal_places(value)?);
+    }
+    let mut size_precision = 0u8;
+    for value in size_values {
+        size_precision = size_precision.max(value_decimal_places(value)?);
+    }
+    Ok(BybitInstrumentSpec {
+        instrument_id: symbol.to_string(),
+        venue_symbol: symbol.to_string(),
+        nt_instrument_id: format!("{symbol}.{BYBIT_VENUE}"),
+        price_increment: increment_for(price_precision),
+        size_increment: increment_for(size_precision),
+    })
+}
+
+/// Append one Bybit derivatives (linear/inverse) tick-trades archive object into
+/// an already-open [`ParquetDataCatalog`] as `TradeTick` data — the bulk path.
+///
+/// `gz_bytes` is the raw `.csv.gz` object body as staged under
+/// `source=public_archive/family=tick_trades/category={linear|inverse}/`. The
+/// symbol/category/date and provenance are read from `object_key` (the S3 key);
+/// precision is derived from the object's own price/size columns. Unlike
+/// [`project_bybit_trades_to_catalog`] (the hermetic proof harness, which refuses
+/// a dirty root), this appends into a shared catalog with NO clean-root guard.
+///
+/// Returns one [`BybitAppendSummary`] (a Bybit trade archive object is a single
+/// symbol; the `Vec` mirrors the multi-instrument OKX path).
+///
+/// # Errors
+///
+/// Returns an error if decompression, key parsing, normalization, tick
+/// construction, or the catalog write fails.
+pub fn append_bybit_deriv_tick_trades_archive(
+    gz_bytes: &[u8],
+    object_key: &str,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<BybitAppendSummary>> {
+    let csv_text = gunzip_to_string(gz_bytes).context("gunzip bybit tick-trades object")?;
+    let (accepted, symbol) = accepted_from_object_key(
+        object_key,
+        gz_bytes,
+        "tick_trades",
+        BYBIT_DERIV_TICK_TRADES_REQUIRED_PREFIX
+            .iter()
+            .map(|column| (*column).to_string())
+            .collect(),
+    )?;
+
+    let probe = probe_spec(&symbol);
+    let table = normalize_bybit_deriv_tick_trades(&accepted, &probe, &csv_text)?;
+    let derived = spec_from_value_columns(
+        &symbol,
+        table.rows.iter().map(|row| row.price.as_str()),
+        table.rows.iter().map(|row| row.size.as_str()),
+    )?;
+    let ticks = table.to_trade_ticks(&derived)?;
+    let summary = BybitAppendSummary {
+        nt_instrument_id: derived.nt_instrument_id.clone(),
+        record_count: ticks.len(),
+        price_precision: derived.price_precision(),
+        size_precision: derived.size_precision(),
+    };
+    catalog
+        .write_to_parquet(ticks, None, None, None)
+        .with_context(|| format!("append bybit trade ticks for {symbol}"))?;
+    Ok(vec![summary])
+}
+
+/// Append one Bybit `mark_price_kline_1m` REST archive object into an already-open
+/// [`ParquetDataCatalog`] as mark-price `Bar` data — the bulk path.
+///
+/// `json_bytes` is the raw `.json` object body as staged under
+/// `source=rest/family=mark_price_kline_1m/category={linear|inverse}/`. The
+/// symbol/category/date and provenance are read from `object_key`; price
+/// precision is derived from the object's own OHLC columns (a mark candle has no
+/// traded size, so size precision is 0). Unlike
+/// [`project_bybit_mark_bars_to_catalog`] (the hermetic proof harness, which
+/// refuses a dirty root), this appends into a shared catalog with NO clean-root
+/// guard.
+///
+/// Returns one [`BybitAppendSummary`].
+///
+/// # Errors
+///
+/// Returns an error if key parsing, normalization, bar construction, or the
+/// catalog write fails.
+pub fn append_bybit_mark_price_kline_1m_archive(
+    json_bytes: &[u8],
+    object_key: &str,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<BybitAppendSummary>> {
+    let json_text =
+        std::str::from_utf8(json_bytes).context("bybit mark-price kline object is not UTF-8")?;
+    let (accepted, symbol) = accepted_from_object_key(
+        object_key,
+        json_bytes,
+        "mark_price_kline_1m",
+        ["start", "open", "high", "low", "close"]
+            .iter()
+            .map(|column| (*column).to_string())
+            .collect(),
+    )?;
+
+    let probe = probe_spec(&symbol);
+    let table = normalize_bybit_mark_price_kline_1m(&accepted, &probe, json_text)?;
+    // A mark-price candle carries no traded size; the volume column is the fixed
+    // zero placeholder, so size precision is data-derived as 0 (empty size set).
+    let derived = spec_from_value_columns(
+        &symbol,
+        table.rows.iter().flat_map(|row| {
+            [
+                row.open.as_str(),
+                row.high.as_str(),
+                row.low.as_str(),
+                row.close.as_str(),
+            ]
+        }),
+        std::iter::empty::<&str>(),
+    )?;
+    let bars = table.to_bars(&derived)?;
+    let summary = BybitAppendSummary {
+        nt_instrument_id: derived.nt_instrument_id.clone(),
+        record_count: bars.len(),
+        price_precision: derived.price_precision(),
+        size_precision: derived.size_precision(),
+    };
+    catalog
+        .write_to_parquet(bars, None, None, None)
+        .with_context(|| format!("append bybit mark-price bars for {symbol}"))?;
+    Ok(vec![summary])
+}
+
+/// Decompress a gzip object body to UTF-8 text.
+///
+/// # Errors
+///
+/// Returns an error if inflation fails or the inflated bytes are not UTF-8.
+fn gunzip_to_string(gz_bytes: &[u8]) -> Result<String> {
+    let mut decoder = GzDecoder::new(gz_bytes);
+    let mut text = String::new();
+    decoder
+        .read_to_string(&mut text)
+        .context("inflate gzip object body")?;
+    Ok(text)
 }
 
 #[cfg(test)]

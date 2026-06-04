@@ -20,10 +20,13 @@
 use std::path::PathBuf;
 
 use backtesting_vertical_slice::canonical_hyperliquid_core::{
-    HyperliquidCoreInstrumentSpec, NT_DATA_TYPE_TRADE_TICK, project_trades_to_catalog,
-    read_back_trade_ticks, read_lz4_jsonl, reconstruct_trades,
+    HyperliquidCoreInstrumentSpec, NT_DATA_TYPE_TRADE_TICK, append_hyperliquid_core_fills_archive,
+    decompress_lz4_frame, hyperliquid_core_fill_coins, hyperliquid_core_fills_spec_for_coin,
+    is_core_perp_coin, project_trades_to_catalog, read_back_trade_ticks, read_lz4_jsonl,
+    reconstruct_trades,
 };
 use nautilus_model::instruments::Instrument;
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
 /// Path to the committed LZ4-frame fixture (one real object's BTC fills, downsampled).
 fn fixture_path() -> PathBuf {
@@ -105,4 +108,138 @@ fn hyperliquid_core_fills_round_trip_through_nt_catalog() {
             "loaded trades replay in non-decreasing ts_event order"
         );
     }
+}
+
+/// Venue suffix and exotic coin codes the bulk-path proof asserts on. `BTC` is a
+/// statically-registered NautilusTrader currency; `PUMP` is a real Hyperliquid
+/// core perp that is NOT in NautilusTrader's static currency map (it must round
+/// trip via the converter's `get_or_create_crypto` registration). `xyz:SILVER`
+/// (HIP-3 DEX) and `@107` (spot index) are non-core markets that MUST be fenced.
+const VENUE_SUFFIX: &str = ".HYPERLIQUID";
+const REGISTERED_COIN: &str = "BTC";
+const UNLISTED_CORE_COIN: &str = "PUMP";
+const FOREIGN_HIP3_COIN: &str = "xyz:SILVER";
+const FOREIGN_SPOT_COIN: &str = "@107";
+
+#[test]
+fn hyperliquid_core_fills_data_derived_append_round_trips() {
+    // The bulk path: a single node_fills_by_block object multiplexes many coins.
+    // Derive precision per coin from the object's own rows (Hyperliquid stages no
+    // instrument universe), fence non-core markets, register unlisted coins, then
+    // append into a shared catalog with no clean-root guard and prove the NT
+    // round-trip is lossless.
+    let lz4_bytes = std::fs::read(fixture_path()).expect("read lz4 fixture bytes");
+
+    // Decompress once for the independent expectation (same source the append fn
+    // decompresses internally).
+    let jsonl = decompress_lz4_frame(&lz4_bytes).expect("decompress lz4 bytes");
+    assert_eq!(
+        jsonl,
+        read_lz4_jsonl(&fixture_path()).expect("decompress via path"),
+        "in-memory and path decompression agree"
+    );
+
+    // The enumerator fences HIP-3 DEX tokens and spot indices but keeps core perps.
+    let coins = hyperliquid_core_fill_coins(&jsonl).expect("enumerate core coins");
+    assert!(
+        coins.iter().any(|c| c == REGISTERED_COIN),
+        "core perp BTC is enumerated"
+    );
+    assert!(
+        coins.iter().any(|c| c == UNLISTED_CORE_COIN),
+        "unlisted core perp PUMP is enumerated"
+    );
+    assert!(
+        !coins.iter().any(|c| c == FOREIGN_HIP3_COIN),
+        "HIP-3 DEX token must be fenced out of the core family"
+    );
+    assert!(
+        !coins.iter().any(|c| c == FOREIGN_SPOT_COIN),
+        "spot index token must be fenced out of the core family"
+    );
+    assert!(
+        coins.iter().all(|c| is_core_perp_coin(c)),
+        "every enumerated coin classifies as a core perp"
+    );
+
+    // Independent expectation for BTC via the same data-derived spec the bulk path
+    // builds.
+    let btc_spec = hyperliquid_core_fills_spec_for_coin(REGISTERED_COIN).expect("btc spec");
+    assert_eq!(
+        btc_spec.nt_instrument_id,
+        format!("{REGISTERED_COIN}{VENUE_SUFFIX}")
+    );
+    let expected_btc = reconstruct_trades(&jsonl, &btc_spec).expect("reconstruct BTC expectation");
+
+    // Append the whole object into a freshly-opened (empty) catalog — no dirty-root
+    // refusal. This registers unlisted coins (PUMP) as crypto currencies internally.
+    let dir = tempfile::TempDir::new().expect("temp catalog root");
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let summaries =
+        append_hyperliquid_core_fills_archive(&lz4_bytes, &mut catalog).expect("append fills");
+
+    // One summary per enumerated core coin, no foreign markets.
+    assert_eq!(
+        summaries.len(),
+        coins.len(),
+        "one write summary per enumerated core coin"
+    );
+    assert!(
+        summaries
+            .iter()
+            .all(|s| s.nt_instrument_id.ends_with(VENUE_SUFFIX)),
+        "every written instrument carries the venue suffix"
+    );
+    assert!(
+        !summaries.iter().any(|s| {
+            s.nt_instrument_id.contains(FOREIGN_HIP3_COIN)
+                || s.nt_instrument_id.contains(FOREIGN_SPOT_COIN)
+        }),
+        "no foreign (HIP-3 / spot) instrument is written"
+    );
+
+    let btc_summary = summaries
+        .iter()
+        .find(|s| s.nt_instrument_id == btc_spec.nt_instrument_id)
+        .expect("BTC summary present");
+    assert_eq!(btc_summary.record_count, expected_btc.trades.len());
+    // Precision is read from the data, self-consistent with the ticks built from
+    // the same derived spec — never a hardcoded assumption.
+    assert_eq!(btc_summary.price_precision, expected_btc.price_precision);
+    assert_eq!(btc_summary.size_precision, expected_btc.size_precision);
+    assert_eq!(
+        btc_summary.price_precision,
+        expected_btc.trades[0].price.precision
+    );
+
+    // BTC (statically-registered currency) round-trips identically.
+    let loaded_btc =
+        read_back_trade_ticks(dir.path(), &btc_spec.nt_instrument_id).expect("read back BTC");
+    assert_eq!(loaded_btc.len(), expected_btc.trades.len());
+    assert!(
+        loaded_btc.windows(2).all(|w| w[0].ts_init <= w[1].ts_init),
+        "loaded BTC ticks ascending"
+    );
+    assert_eq!(
+        loaded_btc, expected_btc.trades,
+        "data-derived BTC append round-trips identically (count, ordering, payload, precision)"
+    );
+
+    // PUMP (NOT in NautilusTrader's static currency map) also round-trips, proving
+    // the converter's get_or_create_crypto registration admits unlisted core perps
+    // rather than dropping them.
+    let pump_spec = hyperliquid_core_fills_spec_for_coin(UNLISTED_CORE_COIN).expect("pump spec");
+    let expected_pump =
+        reconstruct_trades(&jsonl, &pump_spec).expect("reconstruct PUMP expectation");
+    let loaded_pump =
+        read_back_trade_ticks(dir.path(), &pump_spec.nt_instrument_id).expect("read back PUMP");
+    assert_eq!(
+        loaded_pump.len(),
+        expected_pump.trades.len(),
+        "unlisted core perp round-trips"
+    );
+    assert_eq!(
+        loaded_pump, expected_pump.trades,
+        "unlisted-coin append round-trips identically"
+    );
 }

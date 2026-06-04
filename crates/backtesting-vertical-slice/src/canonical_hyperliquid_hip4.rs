@@ -518,13 +518,24 @@ pub fn read_back_order_book_deltas(
 // and HIP-4 candle snapshots (`info.candleSnapshot`)  ->  NautilusTrader `Bar`
 //
 // Both families are keyed by the HL `trade_coin` (for example `#1010`): each
-// HIP-4 outcome publishes one tradeable coin per binary leg (Up / Down), and a
-// `trade_coin` maps to exactly one `(outcome, side)` pair, with `tid`/candle
-// open time unique within a coin. So the NautilusTrader instrument for these two
-// families is the `trade_coin`, not the outcome (the L2 snapshot family above is
-// modelled per outcome, which is its native granularity). All venue/symbol/
-// precision/bar-spec values are supplied by the caller via [`Hip4MarketDataSpec`]
-// — nothing is hardcoded here.
+// HIP-4 outcome publishes one tradeable coin per binary leg (one per `side`),
+// and a `trade_coin` maps to exactly one `(outcome, side)` pair, with
+// `tid`/candle open time unique within a coin. So the NautilusTrader instrument
+// for these two families is the `(outcome, side)` pair the `trade_coin` denotes.
+//
+// CATALOG IDENTITY: the NautilusTrader `instrument_id` is NOT the raw
+// `trade_coin` handle. The HL handle carries a leading `#` (for example
+// `#1010`), which is a URI fragment delimiter; an id such as `#1010.HYPERLIQUID`
+// is mangled by `ParquetDataCatalog`/`object_store` on read-back (the write
+// "succeeds" but `query_typed_data` finds nothing). The honest catalog-safe id is
+// derived from each record's own `outcome` + `side` integers the SAME way the L2
+// snapshot family derives its id — via [`Hip4InstrumentNaming`]
+// (`outcome_symbol_prefix` + `nt_venue_code`) — so a market's trades, bars, and
+// book land under matching, URI-safe ids (`OUTCOME-<outcome>-<side>.HYPERLIQUID`).
+// The `trade_coin` handle is retained only as the per-coin fence the normalizers
+// filter on; it never reaches the catalog. All venue/symbol/precision/bar-spec
+// values are supplied by the caller via [`Hip4InstrumentNaming`] /
+// [`Hip4MarketDataSpec`] — nothing is hardcoded here.
 // ===========================================================================
 
 /// Caller-supplied identity + precision + bar specification for one HIP-4
@@ -536,9 +547,13 @@ pub struct Hip4MarketDataSpec {
     /// Expected source venue token; records with a different venue are rejected.
     pub expected_venue: String,
     /// HL-native tradeable coin handle, for example `#1010`. Records whose
-    /// `trade_coin` differs are not part of this instrument and are skipped.
+    /// `trade_coin` differs are not part of this instrument and are skipped. This
+    /// is the per-coin fence only; it never reaches the catalog id (see
+    /// [`Hip4InstrumentNaming`] for how the catalog id is derived).
     pub trade_coin: String,
-    /// NautilusTrader instrument id, for example `OUTCOME-101-UP.HYPERLIQUID`.
+    /// NautilusTrader instrument id, for example `OUTCOME-101-0.HYPERLIQUID`.
+    /// Must be URI-safe (no `#`); the bulk path derives it from each record's
+    /// own `outcome` + `side` via [`Hip4InstrumentNaming`].
     pub nt_instrument_id: String,
     /// Price tick size as a decimal string, for example `0.001`.
     pub price_increment: String,
@@ -1271,6 +1286,469 @@ fn ensure_clean_market_data_root(catalog_root: &Path) -> Result<()> {
     fs::create_dir_all(catalog_root)
         .with_context(|| format!("create catalog root {}", catalog_root.display()))?;
     Ok(())
+}
+
+// ===========================================================================
+// Bulk-append path (data-derived identity + precision, no clean-root guard)
+//
+// The `project_*_to_catalog` functions above are the hermetic single-object
+// TEST harness: they refuse a dirty catalog root so a round-trip proof can read
+// back exactly what it wrote. The bulk-conversion path below instead appends
+// every instrument of one staged object into an already-open, shared (possibly
+// S3-backed) [`ParquetDataCatalog`] with NO clean-root guard, relying on
+// NautilusTrader's own per-instrument / per-time-range file naming so many
+// objects flow into one catalog.
+//
+// HIP-4 stages no instrument universe, so identity and precision are derived
+// from the object's own rows. All three families resolve their catalog id the
+// same way — via [`Hip4InstrumentNaming`] (per-venue `outcome_symbol_prefix` +
+// `nt_venue_code`) applied to the record's own integers:
+//   * L2 snapshots are per-outcome; [`parse_hip4_snapshots`] already enumerates
+//     every outcome in the object and derives each instrument's precision from
+//     its own level data, so the append fn reuses it directly.
+//   * trades/bars are per-`trade_coin`; the append fns enumerate the distinct
+//     `(trade_coin, outcome, side)` tuples, derive each instrument's
+//     `nt_instrument_id` as `<prefix><outcome>-<side>.<venue_code>` (URI-safe,
+//     matching the snapshot scheme so a market's trades, bars, and book share a
+//     consistent id), and derive price/size precision as the max decimal places
+//     observed in that instrument's own rows. The raw `#`-prefixed `trade_coin`
+//     handle is used only as the per-coin fence the normalizers filter on; it
+//     never reaches the catalog id (an id with `#` is mangled on read-back).
+//
+// HIP-4's converters require no provenance/identity struct beyond this derived
+// `nt_instrument_id` + precision (and, for bars, the candle interval read from
+// the object), so nothing about the object's origin is fabricated and the append
+// fns need no `object_key` argument.
+// ===========================================================================
+
+use std::collections::BTreeSet;
+
+/// The decimal-string increment whose fractional length is exactly `precision`
+/// (`0 -> "1"`, `1 -> "0.1"`, `5 -> "0.00001"`) — the inverse of
+/// [`decimal_places`]. Lets a data-derived precision be expressed as the
+/// [`Hip4MarketDataSpec`] increment the converter consumes.
+#[must_use]
+fn increment_for(precision: u8) -> String {
+    match precision {
+        0 => "1".to_string(),
+        n => format!("0.{}1", "0".repeat(usize::from(n) - 1)),
+    }
+}
+
+/// One instrument's write summary produced by the bulk-append functions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hip4AppendSummary {
+    /// Resolved NautilusTrader catalog identifier (instrument id for snapshots
+    /// and trades, bar-type string for bars).
+    pub nt_identifier: String,
+    /// NautilusTrader data type written (`OrderBookDelta`, `TradeTick`, `Bar`).
+    pub data_type: String,
+    /// Records written for this instrument.
+    pub record_count: usize,
+    /// Data-derived price precision (max decimal places observed).
+    pub price_precision: u8,
+    /// Data-derived size precision (max decimal places observed).
+    pub size_precision: u8,
+}
+
+/// Append every outcome's fixed-depth L2 snapshots from one staged
+/// `table=order_book_snapshots_fixed_depth` JSONL object into an already-open
+/// [`ParquetDataCatalog`] — the bulk-conversion path for `OrderBookDelta` data.
+///
+/// Reuses [`parse_hip4_snapshots`] (which enumerates every outcome in the object
+/// and derives each instrument's precision from its own level data) and
+/// [`snapshots_to_deltas`]. Unlike [`project_hip4_snapshots_to_catalog`] (the
+/// hermetic proof harness, which refuses a dirty root), this appends into a
+/// shared catalog with no clean-root guard. The supplied [`Hip4InstrumentNaming`]
+/// is a per-venue format constant (NT venue code + outcome-symbol prefix +
+/// expected source venue), not per-instrument universe metadata: every numeric
+/// outcome id is read from the object's own records. Returns one summary per
+/// distinct outcome instrument written.
+///
+/// # Errors
+///
+/// Returns an error if parsing/delta construction fails or a catalog write fails.
+pub fn append_hip4_snapshots_archive(
+    jsonl: &str,
+    naming: &Hip4InstrumentNaming,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<Hip4AppendSummary>> {
+    let table = parse_hip4_snapshots(jsonl, naming)?;
+    ensure!(
+        !table.instruments.is_empty(),
+        "HIP-4 snapshot object yielded no instruments",
+    );
+    let mut summaries = Vec::with_capacity(table.instruments.len());
+    for instrument in &table.instruments {
+        let deltas = snapshots_to_deltas(instrument)?;
+        ensure!(
+            !deltas.is_empty(),
+            "instrument {} produced no deltas",
+            instrument.nt_instrument_id,
+        );
+        let record_count = deltas.len();
+        // Keep this instrument's deltas in a single encoder chunk so the
+        // per-chunk precision metadata stays consistent: NautilusTrader's
+        // `OrderBookDelta` chunk_metadata reads precision from the chunk's first
+        // (or second, when the first is a zero-precision Clear) delta, so a chunk
+        // boundary that split an instrument's photos could mis-stamp precision.
+        // The proof harness achieves the same by sizing batch_size at construction;
+        // here the catalog is supplied already-open, so the public `batch_size`
+        // field is set to fit this instrument before its write.
+        catalog.batch_size = catalog.batch_size.max(record_count);
+        catalog
+            .write_to_parquet(deltas, None, None, None)
+            .with_context(|| {
+                format!(
+                    "append HIP-4 order book deltas for {} to catalog",
+                    instrument.nt_instrument_id
+                )
+            })?;
+        summaries.push(Hip4AppendSummary {
+            nt_identifier: instrument.nt_instrument_id.clone(),
+            data_type: NT_DATA_TYPE_ORDER_BOOK_DELTA.to_string(),
+            record_count,
+            price_precision: instrument.price_precision,
+            size_precision: instrument.size_precision,
+        });
+    }
+    Ok(summaries)
+}
+
+/// One distinct tradeable HIP-4 coin in a staged trades/bars object: the HL-native
+/// handle (the per-coin fence) plus the `(outcome, side)` integers that resolve
+/// its catalog id.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Hip4Coin {
+    /// Numeric prediction-market outcome id (for example `101`).
+    outcome: i64,
+    /// Binary-leg selector within the outcome (for example `0`/`1`).
+    side: i64,
+    /// HL-native tradeable coin handle (for example `#1010`); the per-coin fence.
+    trade_coin: String,
+}
+
+/// Distinct tradeable coins appearing in a staged HIP-4 trades or bars JSONL
+/// object, in deterministic order (by `(outcome, side, trade_coin)`).
+///
+/// A staged object interleaves every coin's records, so the bulk converters write
+/// one catalog stream per distinct coin rather than assuming a single one. Each
+/// record carries the coin handle plus its `(outcome, side)` integers; both are
+/// read so the catalog id can be derived the same data-driven way the L2
+/// snapshot family derives its id. A `(outcome, side)` pair that maps to more than
+/// one `trade_coin` (or a coin that maps to more than one `(outcome, side)`)
+/// fails loud rather than silently colliding two instruments under one id.
+///
+/// # Errors
+///
+/// Returns an error if a non-blank line is not valid JSON, or the object's
+/// `(outcome, side)` <-> `trade_coin` mapping is not one-to-one.
+fn hip4_distinct_coins(jsonl: &str) -> Result<Vec<Hip4Coin>> {
+    /// Minimal projection of a staged record: the coin handle and the
+    /// `(outcome, side)` integers that resolve its catalog id.
+    #[derive(Deserialize)]
+    struct CoinIdentity {
+        trade_coin: String,
+        outcome: i64,
+        side: i64,
+    }
+    let mut seen: BTreeSet<Hip4Coin> = BTreeSet::new();
+    for (line_no, line) in jsonl.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let record: CoinIdentity = serde_json::from_str(line)
+            .with_context(|| format!("read coin identity on line {}", line_no + 1))?;
+        seen.insert(Hip4Coin {
+            outcome: record.outcome,
+            side: record.side,
+            trade_coin: record.trade_coin,
+        });
+    }
+    let coins: Vec<Hip4Coin> = seen.into_iter().collect();
+    // A staged object's `(outcome, side)` <-> `trade_coin` mapping must be
+    // one-to-one: two coins resolving to the same `(outcome, side)` would collide
+    // under one catalog id, and one coin carrying two `(outcome, side)` pairs
+    // would be split across ids. Either is a corrupt object; fail loud. Checked
+    // against the full set (not just neighbours) so it is independent of ordering.
+    let mut by_outcome_side: BTreeMap<(i64, i64), &str> = BTreeMap::new();
+    let mut by_coin: BTreeMap<&str, (i64, i64)> = BTreeMap::new();
+    for coin in &coins {
+        if let Some(other) = by_outcome_side.insert((coin.outcome, coin.side), &coin.trade_coin) {
+            bail!(
+                "HIP-4 object maps outcome {} side {} to two coins {:?} and {:?}",
+                coin.outcome,
+                coin.side,
+                other,
+                coin.trade_coin,
+            );
+        }
+        if let Some((o, s)) = by_coin.insert(&coin.trade_coin, (coin.outcome, coin.side)) {
+            bail!(
+                "HIP-4 object maps coin {:?} to two (outcome, side) pairs ({o}, {s}) and ({}, {})",
+                coin.trade_coin,
+                coin.outcome,
+                coin.side,
+            );
+        }
+    }
+    Ok(coins)
+}
+
+/// Build a [`Hip4MarketDataSpec`] for one coin whose `nt_instrument_id` and
+/// price/size precision are derived from the object's own rows.
+///
+/// The catalog `nt_instrument_id` is resolved the SAME way the L2 snapshot family
+/// resolves its id — `<outcome_symbol_prefix><outcome>-<side>.<nt_venue_code>`
+/// (for example `OUTCOME-101-0.HYPERLIQUID`) — using the per-venue
+/// [`Hip4InstrumentNaming`] format constant and the coin's own `(outcome, side)`
+/// integers. This is URI-safe (unlike the raw `#1010` handle, whose `#` is a URI
+/// fragment delimiter that `ParquetDataCatalog` mangles on read-back) and aligns
+/// trades, bars, and book for the same market under matching ids; no instrument
+/// universe is consulted (HIP-4 stages none). The `trade_coin` handle is kept as
+/// the per-coin fence the normalizers filter on, not as the catalog id.
+///
+/// Price/size precision is the max decimal places the exchange rendered in
+/// `price`/`size` for this coin (expressed as the decimal-string increment the
+/// spec consumes). The bar step/aggregation come from the supplied
+/// `bar_aggregation`/`bar_step` (read from the candle `interval` by the bars
+/// append path; the trades path passes a placeholder bar spec that the trade
+/// projection never reads).
+fn hip4_spec_from_precision(
+    coin: &Hip4Coin,
+    naming: &Hip4InstrumentNaming,
+    price_precision: u8,
+    size_precision: u8,
+    bar_step: usize,
+    bar_aggregation: Hip4BarAggregation,
+) -> Hip4MarketDataSpec {
+    Hip4MarketDataSpec {
+        expected_venue: naming.expected_venue.clone(),
+        trade_coin: coin.trade_coin.clone(),
+        nt_instrument_id: format!(
+            "{}{}-{}.{}",
+            naming.outcome_symbol_prefix, coin.outcome, coin.side, naming.nt_venue_code,
+        ),
+        price_increment: increment_for(price_precision),
+        size_increment: increment_for(size_precision),
+        bar_step,
+        bar_aggregation,
+    }
+}
+
+/// Append every coin's prints from one staged `table=trades_recent` JSONL object
+/// into an already-open [`ParquetDataCatalog`] — the bulk-conversion path for
+/// `TradeTick` data.
+///
+/// Enumerates the distinct `(trade_coin, outcome, side)` tuples, derives each
+/// instrument's catalog `nt_instrument_id` from its `(outcome, side)` via the
+/// per-venue [`Hip4InstrumentNaming`] (the same URI-safe scheme the L2 snapshot
+/// family uses) and its price/size precision from that coin's own rows
+/// ([`hip4_spec_from_precision`]), then reuses [`normalize_hip4_trades`] (which
+/// fences out other coins by `trade_coin`, sorts ascending, and validates) and
+/// [`Hip4TradesTable::to_trade_ticks`]. No clean-root guard. `naming` is the same
+/// per-venue format constant the L2 path consumes. The trade projection never
+/// reads the bar spec, so a unit `Minute` step is used as a harmless placeholder.
+/// Returns one summary per distinct coin written.
+///
+/// # Errors
+///
+/// Returns an error if enumeration, normalization, tick construction, or a
+/// catalog write fails, or if the object yields no coins.
+pub fn append_hip4_trades_archive(
+    jsonl: &str,
+    naming: &Hip4InstrumentNaming,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<Hip4AppendSummary>> {
+    let coins = hip4_distinct_coins(jsonl)?;
+    let mut summaries = Vec::new();
+    for coin in &coins {
+        // Derive precision from this coin's own rows. A pre-pass with precision 0
+        // collects the rows so the max observed decimals can be measured, then the
+        // real spec is built and the ticks rebuilt at that precision.
+        let probe = hip4_spec_from_precision(coin, naming, 0, 0, 1, Hip4BarAggregation::Minute);
+        let table = normalize_hip4_trades(jsonl, &probe)?;
+        let mut price_precision = 0u8;
+        let mut size_precision = 0u8;
+        for row in &table.rows {
+            price_precision = price_precision.max(decimal_places(&row.price));
+            size_precision = size_precision.max(decimal_places(&row.size));
+        }
+        let spec = hip4_spec_from_precision(
+            coin,
+            naming,
+            price_precision,
+            size_precision,
+            1,
+            Hip4BarAggregation::Minute,
+        );
+        let ticks = table.to_trade_ticks(&spec)?;
+        let record_count = ticks.len();
+        catalog
+            .write_to_parquet(ticks, None, None, None)
+            .with_context(|| format!("append HIP-4 trade ticks for {}", coin.trade_coin))?;
+        summaries.push(Hip4AppendSummary {
+            nt_identifier: spec.nt_instrument_id.clone(),
+            data_type: NT_DATA_TYPE_TRADE_TICK.to_string(),
+            record_count,
+            price_precision,
+            size_precision,
+        });
+    }
+    ensure!(
+        !summaries.is_empty(),
+        "HIP-4 trades object yielded no coins"
+    );
+    Ok(summaries)
+}
+
+/// Map a HL candle `interval` token (for example `1h`, `15m`, `1d`) to a
+/// `(bar_step, Hip4BarAggregation)` pair.
+///
+/// The token is `<step><unit>` where unit is `m` (minute), `h` (hour), `d`
+/// (day), or `s` (second). HL also publishes `w` (week) and `M` (month)
+/// intervals, which NautilusTrader's bar vocabulary used here does not model;
+/// those fail loud rather than being silently mapped.
+///
+/// # Errors
+///
+/// Returns an error if the token is empty, the step is not a positive integer,
+/// or the unit is unsupported.
+fn parse_hip4_bar_interval(interval: &str) -> Result<(usize, Hip4BarAggregation)> {
+    let interval = interval.trim();
+    ensure!(!interval.is_empty(), "empty candle interval");
+    let (digits, unit) = interval.split_at(
+        interval
+            .find(|c: char| !c.is_ascii_digit())
+            .with_context(|| format!("candle interval {interval:?} has no unit suffix"))?,
+    );
+    let step: usize = digits
+        .parse()
+        .with_context(|| format!("candle interval {interval:?} has non-integer step"))?;
+    ensure!(
+        step > 0,
+        "candle interval {interval:?} has non-positive step"
+    );
+    let aggregation = match unit {
+        "s" => Hip4BarAggregation::Second,
+        "m" => Hip4BarAggregation::Minute,
+        "h" => Hip4BarAggregation::Hour,
+        "d" => Hip4BarAggregation::Day,
+        other => bail!("unsupported candle interval unit {other:?} in {interval:?}"),
+    };
+    Ok((step, aggregation))
+}
+
+/// Append every `(trade_coin, interval)` group's candles from one staged
+/// `table=bars` JSONL object into an already-open [`ParquetDataCatalog`] — the
+/// bulk-conversion path for `Bar` data.
+///
+/// Enumerates the distinct `(trade_coin, outcome, side)` tuples; for each, reads
+/// the candle `interval` from that coin's own records (deriving the bar
+/// step/aggregation via [`parse_hip4_bar_interval`]), derives the catalog
+/// `nt_instrument_id` from its `(outcome, side)` via the per-venue
+/// [`Hip4InstrumentNaming`] (the same URI-safe scheme the L2 snapshot family
+/// uses), and derives price/size precision from that coin's own OHLCV rows
+/// ([`hip4_spec_from_precision`]). Then reuses [`normalize_hip4_bars`] and
+/// [`Hip4BarsTable::to_bars`]. No clean-root guard. A staged object carries a
+/// single interval per the backfill contract; if a coin's records disagree on
+/// interval, that fails loud. Returns one summary per distinct coin written.
+///
+/// # Errors
+///
+/// Returns an error if enumeration, interval parsing, normalization, bar
+/// construction, or a catalog write fails, or if the object yields no coins.
+pub fn append_hip4_bars_archive(
+    jsonl: &str,
+    naming: &Hip4InstrumentNaming,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<Hip4AppendSummary>> {
+    let coins = hip4_distinct_coins(jsonl)?;
+    let mut summaries = Vec::new();
+    for coin in &coins {
+        let (bar_step, bar_aggregation) = hip4_bar_spec_for_coin(jsonl, &coin.trade_coin)?;
+        // Pre-pass at precision 0 to collect this coin's rows, then derive
+        // precision from the observed OHLCV decimals and rebuild at that scale.
+        let probe = hip4_spec_from_precision(coin, naming, 0, 0, bar_step, bar_aggregation);
+        let table = normalize_hip4_bars(jsonl, &probe)?;
+        let mut price_precision = 0u8;
+        let mut size_precision = 0u8;
+        for row in &table.rows {
+            for field in [&row.open, &row.high, &row.low, &row.close] {
+                price_precision = price_precision.max(decimal_places(field));
+            }
+            size_precision = size_precision.max(decimal_places(&row.volume));
+        }
+        let spec = hip4_spec_from_precision(
+            coin,
+            naming,
+            price_precision,
+            size_precision,
+            bar_step,
+            bar_aggregation,
+        );
+        let bars = table.to_bars(&spec)?;
+        let record_count = bars.len();
+        catalog
+            .write_to_parquet(bars, None, None, None)
+            .with_context(|| format!("append HIP-4 bars for {}", coin.trade_coin))?;
+        summaries.push(Hip4AppendSummary {
+            nt_identifier: table.bar_type_string(&spec)?,
+            data_type: NT_DATA_TYPE_BAR.to_string(),
+            record_count,
+            price_precision,
+            size_precision,
+        });
+    }
+    ensure!(!summaries.is_empty(), "HIP-4 bars object yielded no coins");
+    Ok(summaries)
+}
+
+/// Resolve the single candle `(bar_step, aggregation)` for one `trade_coin` from
+/// its records' `interval` field, failing loud if the coin's records carry more
+/// than one interval (a staged object is single-interval per the backfill
+/// contract).
+///
+/// # Errors
+///
+/// Returns an error if a record is not valid JSON, a record for the coin lacks an
+/// interval, the interval is unsupported, or the coin's records disagree on
+/// interval.
+fn hip4_bar_spec_for_coin(jsonl: &str, trade_coin: &str) -> Result<(usize, Hip4BarAggregation)> {
+    /// Minimal projection: the coin handle and the candle interval.
+    #[derive(Deserialize)]
+    struct CoinInterval {
+        trade_coin: String,
+        interval: String,
+    }
+    let mut resolved: Option<(String, (usize, Hip4BarAggregation))> = None;
+    for (line_no, line) in jsonl.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let record: CoinInterval = serde_json::from_str(line)
+            .with_context(|| format!("read interval on line {}", line_no + 1))?;
+        if record.trade_coin != trade_coin {
+            continue;
+        }
+        let parsed = parse_hip4_bar_interval(&record.interval)
+            .with_context(|| format!("line {}", line_no + 1))?;
+        match &resolved {
+            None => resolved = Some((record.interval.clone(), parsed)),
+            Some((seen_interval, _)) => ensure!(
+                *seen_interval == record.interval,
+                "coin {trade_coin} carries mixed candle intervals {:?} and {:?}; \
+                 a staged bars object must be single-interval",
+                seen_interval,
+                record.interval,
+            ),
+        }
+    }
+    resolved
+        .map(|(_, parsed)| parsed)
+        .with_context(|| format!("no candle interval found for coin {trade_coin}"))
 }
 
 #[cfg(test)]

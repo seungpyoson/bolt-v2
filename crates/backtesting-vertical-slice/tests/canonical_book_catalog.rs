@@ -13,7 +13,11 @@ use std::{fs::File, path::PathBuf};
 
 use arrow::array::{Array, Decimal128Array, StringArray, TimestampMicrosecondArray};
 use backtesting_vertical_slice::{
-    canonical_book::{CanonicalBookTable, RawClobEventRow, normalize_polymarket_clob_book},
+    canonical_book::{
+        CanonicalBookTable, POLYMARKET_VENUE, RawClobEventRow, append_polymarket_book_archive,
+        append_polymarket_trades_archive, decode_polymarket_clob_parquet,
+        normalize_polymarket_clob_book, polymarket_book_spec_from_table,
+    },
     catalog_projection::{
         BinaryOptionInstrumentSpec, NT_DATA_TYPE_ORDER_BOOK_DELTA, build_binary_option,
         canonical_book_rows_to_trade_ticks, canonical_rows_to_order_book_deltas,
@@ -26,6 +30,7 @@ use backtesting_vertical_slice::{
     },
 };
 use nautilus_model::{enums::BookAction, identifiers::InstrumentId};
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rust_decimal::Decimal;
 use tempfile::TempDir;
@@ -359,4 +364,148 @@ fn projection_refuses_dirty_catalog_root() {
 #[test]
 fn order_book_delta_data_type_label_is_stable() {
     assert_eq!(NT_DATA_TYPE_ORDER_BOOK_DELTA, "OrderBookDelta");
+}
+
+/// A staged object key in the bulk layout (top-level `polymarket_parquet/`
+/// prefix, NOT under backfill-staging) carrying the `dt=` segment the bulk path
+/// parses for the honest archive date. The `dt` matches the fixture's coverage.
+const FIXTURE_BOOK_OBJECT_KEY: &str =
+    "polymarket_parquet/polymarket_book/dt=2026-05-22/object=b32d8d.parquet";
+const FIXTURE_TRADES_OBJECT_KEY: &str =
+    "polymarket_parquet/polymarket_trades/dt=2026-05-22/object=b32d8d.parquet";
+
+#[test]
+fn book_data_derived_append_round_trips() {
+    // The bulk book path: derive the binary-option precision from the object's
+    // own rows (Polymarket stages no instrument universe), append into a shared
+    // catalog with NO clean-root guard, and prove the NautilusTrader round-trip
+    // is lossless for BOTH OrderBookDelta and TradeTick.
+    let dir = TempDir::new().expect("temp catalog root");
+
+    // Independent expectation from the same fixture, via the data-derived spec.
+    let rows = decode_polymarket_clob_parquet(&fixture_path()).expect("decode fixture parquet");
+    assert_eq!(
+        rows.len(),
+        EXPECTED_PRICE_CHANGE_ROWS + EXPECTED_TRADE_ROWS + 1,
+        "fixture row count (1 snapshot + 66 price_change + 2 trades)"
+    );
+    let table = normalized_fixture();
+    let derived = polymarket_book_spec_from_table(&table).expect("derive spec");
+    assert_eq!(derived.nt_instrument_id, FIXTURE_NT_INSTRUMENT_ID);
+    assert_eq!(
+        derived.nt_instrument_id,
+        format!("{FIXTURE_ASSET_ID}.{POLYMARKET_VENUE}")
+    );
+    let instrument = build_binary_option(&derived).expect("build binary option");
+    // Precision is read from the data (max decimals observed), not a hardcoded
+    // literal: the staged `price` column renders at 4 decimals and the `size`
+    // `Decimal128(_, 6)` column at 6.
+    assert_eq!(instrument.price_precision, 4);
+    assert_eq!(instrument.size_precision, 6);
+    let expected_deltas = canonical_rows_to_order_book_deltas(&table, &instrument).expect("deltas");
+    let expected_ticks = canonical_book_rows_to_trade_ticks(&table, &instrument).expect("ticks");
+
+    let expected_delta_count = 1
+        + EXPECTED_SNAPSHOT_BID_LEVELS
+        + EXPECTED_SNAPSHOT_ASK_LEVELS
+        + EXPECTED_PRICE_CHANGE_ROWS;
+    assert_eq!(expected_deltas.len(), expected_delta_count);
+    assert_eq!(expected_ticks.len(), EXPECTED_TRADE_ROWS);
+
+    // Append into a freshly-opened (empty) catalog — no dirty-root refusal.
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let summaries =
+        append_polymarket_book_archive(&fixture_path(), FIXTURE_BOOK_OBJECT_KEY, &mut catalog)
+            .expect("append book");
+    assert_eq!(
+        summaries.len(),
+        1,
+        "fixture carries exactly one outcome token"
+    );
+    assert_eq!(summaries[0].nt_instrument_id, FIXTURE_NT_INSTRUMENT_ID);
+    assert_eq!(summaries[0].delta_count, expected_delta_count);
+    assert_eq!(summaries[0].trade_count, EXPECTED_TRADE_ROWS);
+    assert_eq!(summaries[0].price_precision, 4);
+    assert_eq!(summaries[0].size_precision, 6);
+
+    // Read BOTH data types back: count, ascending ts, identical payload.
+    let read_deltas =
+        read_back_order_book_deltas(dir.path(), FIXTURE_NT_INSTRUMENT_ID).expect("read deltas");
+    assert_eq!(
+        read_deltas.len(),
+        expected_deltas.len(),
+        "round-tripped delta count"
+    );
+    assert!(
+        read_deltas.windows(2).all(|w| w[0].ts_init <= w[1].ts_init),
+        "loaded deltas must be ascending"
+    );
+    assert_eq!(
+        read_deltas, expected_deltas,
+        "data-derived book append must round-trip deltas identically"
+    );
+
+    let read_ticks =
+        read_back_trade_ticks(dir.path(), FIXTURE_NT_INSTRUMENT_ID).expect("read ticks");
+    assert_eq!(
+        read_ticks.len(),
+        expected_ticks.len(),
+        "round-tripped tick count"
+    );
+    assert!(
+        read_ticks.windows(2).all(|w| w[0].ts_init <= w[1].ts_init),
+        "loaded ticks must be ascending"
+    );
+    assert_eq!(
+        read_ticks, expected_ticks,
+        "data-derived book append must round-trip trade prints identically"
+    );
+}
+
+#[test]
+fn trades_data_derived_append_round_trips() {
+    // The bulk trades path: same decode/normalize/precision pipeline, but writes
+    // ONLY the TradeTick projection (the `polymarket_trades/` family carries trade
+    // prints). The committed CLOB fixture carries 2 trade prints, so it exercises
+    // the trades family's full round-trip.
+    let dir = TempDir::new().expect("temp catalog root");
+
+    let table = normalized_fixture();
+    let derived = polymarket_book_spec_from_table(&table).expect("derive spec");
+    let instrument = build_binary_option(&derived).expect("build binary option");
+    let expected_ticks = canonical_book_rows_to_trade_ticks(&table, &instrument).expect("ticks");
+    assert_eq!(expected_ticks.len(), EXPECTED_TRADE_ROWS);
+
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let summaries =
+        append_polymarket_trades_archive(&fixture_path(), FIXTURE_TRADES_OBJECT_KEY, &mut catalog)
+            .expect("append trades");
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].nt_instrument_id, FIXTURE_NT_INSTRUMENT_ID);
+    assert_eq!(
+        summaries[0].delta_count, 0,
+        "trades family writes no deltas"
+    );
+    assert_eq!(summaries[0].trade_count, EXPECTED_TRADE_ROWS);
+
+    // No OrderBookDelta stream is written for the trades family.
+    let read_deltas =
+        read_back_order_book_deltas(dir.path(), FIXTURE_NT_INSTRUMENT_ID).expect("read deltas");
+    assert!(read_deltas.is_empty(), "trades family must write no deltas");
+
+    let read_ticks =
+        read_back_trade_ticks(dir.path(), FIXTURE_NT_INSTRUMENT_ID).expect("read ticks");
+    assert_eq!(
+        read_ticks.len(),
+        expected_ticks.len(),
+        "round-tripped tick count"
+    );
+    assert!(
+        read_ticks.windows(2).all(|w| w[0].ts_init <= w[1].ts_init),
+        "loaded ticks must be ascending"
+    );
+    assert_eq!(
+        read_ticks, expected_ticks,
+        "data-derived trades append must round-trip identically"
+    );
 }

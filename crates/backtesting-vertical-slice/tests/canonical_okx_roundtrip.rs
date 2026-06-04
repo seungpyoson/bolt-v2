@@ -15,11 +15,13 @@
 use std::fs;
 
 use backtesting_vertical_slice::canonical_okx::{
-    NT_DATA_TYPE_ORDER_BOOK_DELTA, OkxBookSpec, extract_jsonl_from_archive,
-    okx_book_messages_to_deltas, parse_okx_book_messages, project_okx_book_archive_to_catalog,
+    NT_DATA_TYPE_ORDER_BOOK_DELTA, OkxBookSpec, append_okx_book_archive,
+    extract_jsonl_from_archive, okx_book_instruments, okx_book_messages_to_deltas,
+    okx_book_spec_for_instrument, parse_okx_book_messages, project_okx_book_archive_to_catalog,
     read_back_order_book_deltas,
 };
 use nautilus_model::enums::BookAction;
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
 /// Path to the committed hermetic fixture (real OKX `order_book_400` data,
 /// downsampled).
@@ -136,6 +138,64 @@ fn okx_book_round_trips_through_nautilus_catalog() {
     assert!(
         has_delta_tree,
         "catalog must contain a native order_book_deltas parquet file"
+    );
+}
+
+#[test]
+fn okx_book_data_derived_append_round_trips() {
+    // The bulk path: enumerate the archive's instruments, derive precision from
+    // each instrument's own levels (via resolve_precisions inside the converter),
+    // append into a shared catalog with no clean-root guard, and prove the
+    // NautilusTrader round-trip is lossless.
+    let gz = fixture_bytes();
+    let dir = tempfile::TempDir::new().expect("temp catalog root");
+
+    // Independent expectation from the same source, via the data-derived spec.
+    let jsonl = extract_jsonl_from_archive(&gz).expect("extract JSONL");
+    assert_eq!(
+        okx_book_instruments(&jsonl).expect("enumerate instruments"),
+        vec![VENUE_INST_ID.to_string()],
+        "fixture carries exactly one venue instrument"
+    );
+    let derived = okx_book_spec_for_instrument(VENUE_INST_ID);
+    assert_eq!(derived.nt_instrument_id, NT_INSTRUMENT_ID);
+    let messages = parse_okx_book_messages(&jsonl, VENUE_INST_ID).expect("parse messages");
+    let expected = okx_book_messages_to_deltas(&messages, &derived).expect("map to deltas");
+
+    // Append into a freshly-opened (empty) catalog — no dirty-root refusal.
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let summaries = append_okx_book_archive(&gz, &mut catalog).expect("append deltas");
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].nt_instrument_id, NT_INSTRUMENT_ID);
+    assert_eq!(summaries[0].record_count, expected.len());
+    // Precision is read from the levels; BNB perp prints a 1-dp price and an
+    // integer-contract size, and the summary matches the level-bearing deltas.
+    assert_eq!(summaries[0].price_precision, 1);
+    assert_eq!(summaries[0].size_precision, 0);
+    let level_delta = expected
+        .iter()
+        .find(|d| d.action != BookAction::Clear)
+        .expect("at least one level-bearing delta");
+    assert_eq!(
+        summaries[0].price_precision,
+        level_delta.order.price.precision
+    );
+    assert_eq!(
+        summaries[0].size_precision,
+        level_delta.order.size.precision
+    );
+
+    let loaded = read_back_order_book_deltas(dir.path(), NT_INSTRUMENT_ID).expect("read back");
+    assert_eq!(loaded.len(), expected.len(), "round-tripped delta count");
+    assert!(
+        loaded
+            .windows(2)
+            .all(|w| w[0].ts_init.as_u64() <= w[1].ts_init.as_u64()),
+        "loaded deltas must be ascending"
+    );
+    assert_eq!(
+        loaded, expected,
+        "data-derived append must round-trip identically (count, ordering, payload, precision)"
     );
 }
 

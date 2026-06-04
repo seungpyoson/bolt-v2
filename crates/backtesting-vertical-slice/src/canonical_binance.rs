@@ -80,12 +80,21 @@ use nautilus_model::{
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// NautilusTrader data type written for the trades family.
 pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
 
 /// NautilusTrader data type written for the klines family.
 pub const NT_DATA_TYPE_BAR: &str = "Bar";
+
+/// NautilusTrader venue code for Binance, appended to a venue-native symbol to
+/// form the catalog instrument id (`<symbol>.BINANCE`). The data-derived bulk
+/// path needs this because the Binance public-archive CSVs carry no instrument
+/// column — the symbol lives in the S3 object key's `symbol=` segment, not the
+/// rows. This is a per-venue format constant (the venue suffix), not a runtime
+/// instrument value.
+pub const BINANCE_VENUE: &str = "BINANCE";
 
 /// Number of comma-separated fields in a Binance public-archive `trades` row.
 pub const BINANCE_TRADES_FIELD_COUNT: usize = 7;
@@ -1167,6 +1176,345 @@ pub fn read_back_bars(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec
             true,
         )
         .context("query bars from catalog")
+}
+
+// ===========================================================================
+// Bulk-append path (data-derived precision + key-derived identity/provenance,
+// no clean-root guard)
+// ===========================================================================
+//
+// The hermetic `project_*_to_catalog` functions above stay as the single-object
+// TEST harness: they refuse a dirty root and take a fully-specified instrument
+// universe (base/quote currency, notional bounds) so they can write a venue
+// `CurrencyPair`. The bulk-conversion path below is different: it flows many
+// objects into one shared (possibly-S3) catalog, so it must NOT refuse a
+// non-empty root — it relies on NautilusTrader's own per-instrument,
+// per-time-range file naming and skip-on-existing.
+//
+// Two facts make the Binance bulk path diverge from the OKX template:
+//
+//  * The Binance public-archive CSVs carry **no instrument column** (verified
+//    against the futures `aggTrades`/`markPriceKlines` layouts), so the
+//    instrument identity cannot be read from the rows. It comes from the S3
+//    object key's `symbol=` segment instead. A `object_key` parameter therefore
+//    threads through this path.
+//  * No instrument universe is assumed staged. Precision is derived from the
+//    object's own rows (the maximum decimal places the exchange rendered for
+//    each column), exactly like the OKX bulk path. Because Binance renders every
+//    row of a column at the instrument's native tick/lot scale, the maximum
+//    observed scale is stable across objects of the same instrument and is the
+//    precision NautilusTrader pins per catalog file. Only the data is written
+//    (TradeTick / Bar) — no `CurrencyPair` — because base/quote currency are not
+//    derivable from the data and are not part of the TradeTick/Bar payload.
+
+/// Decimal places of a single decimal-string value (`"643.3"` -> 1,
+/// `"5995"` -> 0). The data-derived counterpart of [`decimal_places`] (which
+/// reads an increment); here it reads an observed value.
+fn value_decimal_places(value: &str) -> Result<u8> {
+    let decimal = Decimal::from_str(value).with_context(|| format!("decimal {value:?}"))?;
+    u8::try_from(decimal.scale()).context("decimal scale exceeds u8")
+}
+
+/// Extract the value of a `key=value/` segment from an S3 object key.
+///
+/// The Binance staging layout (see `scripts/backfill_binance_to_s3.py`) encodes
+/// `product=`, `family=`, `symbol=`, and `dt=` as path segments, so identity and
+/// provenance are read from the key, never hardcoded.
+///
+/// # Errors
+///
+/// Returns an error if the segment is absent or empty.
+fn key_segment(object_key: &str, name: &str) -> Result<String> {
+    let needle = format!("{name}=");
+    for part in object_key.split('/') {
+        if let Some(value) = part.strip_prefix(&needle) {
+            ensure!(
+                !value.trim().is_empty(),
+                "empty `{name}=` segment in object key {object_key:?}"
+            );
+            return Ok(value.to_string());
+        }
+    }
+    bail!("object key {object_key:?} has no `{name}=` segment")
+}
+
+/// Build the honest provenance + venue-native identity for a bulk-converted
+/// Binance object from the object's own bytes and its S3 key.
+///
+/// Every field describes THIS conversion truthfully:
+///
+///  * `venue` / `product_family` / `product_category` from the key's
+///    `product=` segment (`futures_um`).
+///  * `archive_date` from the key's `dt=` segment.
+///  * `payload_hash` = lowercase SHA-256 hex over the exact object bytes handed
+///    to the converter.
+///  * `source_proof_id` = a deterministic label naming the family + object hash
+///    of THIS object (it does not claim acceptance under the separate
+///    source-proof machinery — see the FLAG in the crate handoff notes; the
+///    bulk dispatch is responsible for the real source-proof binding).
+///  * `ingest_run_id` = the fixed bulk-ingest run label passed by the caller.
+///
+/// The venue-native symbol comes from the key's `symbol=` segment because the
+/// CSV rows carry no instrument column.
+fn bulk_inputs(
+    object_bytes: &[u8],
+    object_key: &str,
+    family: &str,
+    ingest_run_id: &str,
+) -> Result<(BinanceProvenance, BinanceInstrumentIdentity)> {
+    ensure!(!object_bytes.is_empty(), "empty object for {object_key:?}");
+    ensure!(
+        !ingest_run_id.trim().is_empty(),
+        "empty ingest_run_id for {object_key:?}"
+    );
+    let symbol = key_segment(object_key, "symbol")?;
+    let product = key_segment(object_key, "product")?;
+    let archive_date = key_segment(object_key, "dt")?;
+    let mut hasher = Sha256::new();
+    hasher.update(object_bytes);
+    let payload_hash = hex::encode(hasher.finalize());
+
+    let provenance = BinanceProvenance {
+        ingest_run_id: ingest_run_id.to_string(),
+        source_binding: format!("binance-{product}-{family}"),
+        venue: "binance".to_string(),
+        product_family: product.clone(),
+        product_category: product,
+        source_proof_id: format!("binance-bulk/{family}/{payload_hash}"),
+        payload_hash,
+        archive_date,
+    };
+    let identity = BinanceInstrumentIdentity {
+        instrument_id: symbol.clone(),
+        venue_symbol: symbol.clone(),
+        nt_instrument_id: format!("{symbol}.{BINANCE_VENUE}"),
+    };
+    Ok((provenance, identity))
+}
+
+/// One object's write summary produced by a bulk-append call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinanceAppendSummary {
+    pub nt_instrument_id: String,
+    pub data_type: String,
+    pub record_count: usize,
+    pub price_precision: u8,
+    pub size_precision: u8,
+}
+
+/// Convert canonical trade rows into NautilusTrader `TradeTick`s at the supplied
+/// data-derived precision, keyed by the supplied instrument id.
+///
+/// This is the bulk-path twin of [`canonical_rows_to_trade_ticks`]: instead of
+/// taking a fully-specified `CurrencyPair`, it takes the instrument id and the
+/// precision derived from the rows, because the bulk path writes only the data
+/// (no instrument) and assumes no staged instrument universe.
+fn rows_to_trade_ticks_at(
+    table: &BinanceTradesTable,
+    instrument_id: InstrumentId,
+    price_precision: u8,
+    size_precision: u8,
+) -> Result<Vec<TradeTick>> {
+    table
+        .rows
+        .iter()
+        .map(|row| {
+            let price = price_at(&row.price, price_precision)?;
+            let size = quantity_at(&row.size, size_precision)?;
+            let trade_id = TradeId::new_checked(&row.trade_id)
+                .map_err(|error| anyhow::anyhow!("invalid trade id {:?}: {error}", row.trade_id))?;
+            let ts = UnixNanos::from(u64::try_from(row.event_time).context("negative event_time")?);
+            Ok(TradeTick::new(
+                instrument_id,
+                price,
+                size,
+                row.aggressor_side.to_nt(),
+                trade_id,
+                ts,
+                ts,
+            ))
+        })
+        .collect()
+}
+
+/// Convert canonical bar rows into NautilusTrader `Bar`s at the supplied
+/// data-derived precision, under the table's bar type keyed by the supplied
+/// instrument id.
+///
+/// The bulk-path twin of [`canonical_rows_to_bars`].
+fn rows_to_bars_at(
+    table: &BinanceKlinesTable,
+    instrument_id: InstrumentId,
+    price_precision: u8,
+    size_precision: u8,
+) -> Result<Vec<Bar>> {
+    let bar_type = table.bar_spec.to_bar_type(instrument_id)?;
+    table
+        .rows
+        .iter()
+        .map(|row| {
+            let open = price_at(&row.open, price_precision)?;
+            let high = price_at(&row.high, price_precision)?;
+            let low = price_at(&row.low, price_precision)?;
+            let close = price_at(&row.close, price_precision)?;
+            let volume = quantity_at(&row.volume, size_precision)?;
+            let ts_event =
+                UnixNanos::from(u64::try_from(row.close_time).context("negative close_time")?);
+            Bar::new_checked(bar_type, open, high, low, close, volume, ts_event, ts_event)
+                .context("build bar")
+        })
+        .collect()
+}
+
+/// Maximum price/size decimal places observed across a canonical trades table.
+fn derive_trade_precisions(table: &BinanceTradesTable) -> Result<(u8, u8)> {
+    let mut price_precision = 0u8;
+    let mut size_precision = 0u8;
+    for row in &table.rows {
+        price_precision = price_precision.max(value_decimal_places(&row.price)?);
+        size_precision = size_precision.max(value_decimal_places(&row.size)?);
+    }
+    Ok((price_precision, size_precision))
+}
+
+/// Maximum price/volume decimal places observed across a canonical klines table.
+/// Price precision is the max across all four OHLC columns; size precision is
+/// the max across the volume column.
+fn derive_kline_precisions(table: &BinanceKlinesTable) -> Result<(u8, u8)> {
+    let mut price_precision = 0u8;
+    let mut size_precision = 0u8;
+    for row in &table.rows {
+        for value in [&row.open, &row.high, &row.low, &row.close] {
+            price_precision = price_precision.max(value_decimal_places(value)?);
+        }
+        size_precision = size_precision.max(value_decimal_places(&row.volume)?);
+    }
+    Ok((price_precision, size_precision))
+}
+
+/// Append one Binance futures `aggTrades` object into an already-open
+/// [`ParquetDataCatalog`] as `TradeTick` data — the bulk-conversion path.
+///
+/// `csv_text` is the decompressed text of the accepted `.zip` object (the unzip
+/// is the ingest step, per the module contract). `object_key` is the S3 key the
+/// object was staged under; the instrument symbol (`symbol=` segment) and
+/// provenance (`product=`, `dt=`, object hash) are read from it because the CSV
+/// rows carry no instrument column. Precision is derived from the rows.
+///
+/// Unlike [`project_trades_to_catalog`] (the hermetic single-object proof
+/// harness, which refuses a dirty root and writes a `CurrencyPair`), this appends
+/// only the `TradeTick` data into a shared catalog with no clean-root guard,
+/// relying on NautilusTrader's own per-instrument file naming.
+///
+/// # Errors
+///
+/// Returns an error if the key lacks a required segment, the CSV fails to
+/// normalize, precision cannot be derived, tick construction fails, or the
+/// catalog write fails.
+pub fn append_binance_futures_agg_trades_archive(
+    csv_text: &str,
+    object_key: &str,
+    ingest_run_id: &str,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<BinanceAppendSummary> {
+    let (provenance, identity) =
+        bulk_inputs(csv_text.as_bytes(), object_key, "aggTrades", ingest_run_id)?;
+    let table = normalize_binance_agg_trades(&provenance, &identity, csv_text)?;
+    let (price_precision, size_precision) = derive_trade_precisions(&table)?;
+    let instrument_id = InstrumentId::from_str(&identity.nt_instrument_id)
+        .with_context(|| format!("invalid nt_instrument_id {:?}", identity.nt_instrument_id))?;
+    let ticks = rows_to_trade_ticks_at(&table, instrument_id, price_precision, size_precision)?;
+    let record_count = ticks.len();
+
+    catalog
+        .write_to_parquet(ticks, None, None, None)
+        .with_context(|| {
+            format!(
+                "append Binance aggTrades ticks for {}",
+                identity.instrument_id
+            )
+        })?;
+
+    Ok(BinanceAppendSummary {
+        nt_instrument_id: identity.nt_instrument_id,
+        data_type: NT_DATA_TYPE_TRADE_TICK.to_string(),
+        record_count,
+        price_precision,
+        size_precision,
+    })
+}
+
+/// Append one Binance futures `markPriceKlines` object into an already-open
+/// [`ParquetDataCatalog`] as `Bar` data — the bulk-conversion path.
+///
+/// `csv_text` is the decompressed text of the accepted `.zip` object. `object_key`
+/// supplies the instrument symbol and provenance (the CSV carries no instrument
+/// column). `bar_spec` carries the `interval=` step/unit from the key (for
+/// example `1m` -> step 1, [`BarAggregation::Minute`]); like the OKX candle path,
+/// the bar step/unit is a partition fact the caller passes from the key, not data
+/// the converter can invent. Precision is derived from the rows.
+///
+/// Only the mark-price feed is admitted: the shared positive-only kline parser
+/// rejects the sibling index/premium basis feeds (kept as staged Parquet).
+///
+/// Unlike [`project_klines_to_catalog`] (the hermetic single-object proof
+/// harness), this appends only the `Bar` data into a shared catalog with no
+/// clean-root guard.
+///
+/// # Errors
+///
+/// Returns an error if the key lacks a required segment, the CSV fails to
+/// normalize (including a non-positive OHLC value from a non-mark feed), precision
+/// cannot be derived, bar construction fails, or the catalog write fails.
+pub fn append_binance_futures_mark_price_klines_archive(
+    csv_text: &str,
+    object_key: &str,
+    ingest_run_id: &str,
+    bar_spec: KlineBarSpec,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<BinanceAppendSummary> {
+    let (provenance, identity) = bulk_inputs(
+        csv_text.as_bytes(),
+        object_key,
+        "markPriceKlines",
+        ingest_run_id,
+    )?;
+    let table = normalize_binance_price_feed_klines(&provenance, &identity, bar_spec, csv_text)?;
+    let (price_precision, size_precision) = derive_kline_precisions(&table)?;
+    let instrument_id = InstrumentId::from_str(&identity.nt_instrument_id)
+        .with_context(|| format!("invalid nt_instrument_id {:?}", identity.nt_instrument_id))?;
+    let bars = rows_to_bars_at(&table, instrument_id, price_precision, size_precision)?;
+    let record_count = bars.len();
+
+    catalog
+        .write_to_parquet(bars, None, None, None)
+        .with_context(|| {
+            format!(
+                "append Binance markPriceKlines bars for {}",
+                identity.instrument_id
+            )
+        })?;
+
+    Ok(BinanceAppendSummary {
+        nt_instrument_id: identity.nt_instrument_id,
+        data_type: NT_DATA_TYPE_BAR.to_string(),
+        record_count,
+        price_precision,
+        size_precision,
+    })
+}
+
+/// The NautilusTrader bar-type string a `markPriceKlines` bulk-append writes
+/// under, for read-back by the bulk dispatch and tests. Mirrors the identity the
+/// append path derives from the object key.
+///
+/// # Errors
+///
+/// Returns an error if the instrument id is invalid or the bar step is zero.
+pub fn binance_bar_type_string(nt_instrument_id: &str, bar_spec: KlineBarSpec) -> Result<String> {
+    let instrument_id = InstrumentId::from_str(nt_instrument_id)
+        .with_context(|| format!("invalid nt_instrument_id {nt_instrument_id:?}"))?;
+    Ok(bar_spec.to_bar_type(instrument_id)?.to_string())
 }
 
 #[cfg(test)]

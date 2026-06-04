@@ -14,15 +14,21 @@ use std::path::PathBuf;
 
 use backtesting_vertical_slice::canonical_chainlink::{
     CHAINLINK_RESOLUTION_PER_SECOND, CHAINLINK_SOURCE_PER_SECOND, ChainlinkIndexSpec,
-    NT_DATA_TYPE_INDEX_PRICE_UPDATE, canonical_rows_to_index_prices, project_chainlink_to_catalog,
+    NT_DATA_TYPE_INDEX_PRICE_UPDATE, append_chainlink_index_prices_archive,
+    canonical_rows_to_index_prices, chainlink_index_spec_from_table, project_chainlink_to_catalog,
     read_back_index_prices, read_chainlink_per_second_object,
 };
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
 /// Fixture: 40 rows downsampled from the smallest real staged BTC 5m cycle
 /// object under `s3://bolt-parquet/backfill-staging/.../chainlink/btc-5m-cycles/`.
 const FIXTURE: &str = "tests/fixtures/chainlink/btc-updown-5m-sample.parquet";
 const MARKET_SLUG: &str = "btc-updown-5m-1778380800";
 const NT_INSTRUMENT_ID: &str = "BTCUSD.CHAINLINK";
+/// Instrument id the *data-derived* bulk path builds from the slug's asset token
+/// (`btc`) plus the venue suffix. The bulk path cannot invent the `USD` quote the
+/// caller-supplied single-object spec carries, so the derived id has no quote.
+const DERIVED_NT_INSTRUMENT_ID: &str = "BTC.CHAINLINK";
 /// Source feed carries up to 8 fractional digits; 8 fits NT fixed precision.
 const PRICE_PRECISION: u8 = 8;
 
@@ -119,5 +125,60 @@ fn spec_market_slug_mismatch_is_rejected() {
     assert!(
         err.to_string().contains("does not match spec slug"),
         "{err}"
+    );
+}
+
+#[test]
+fn chainlink_index_prices_data_derived_append_round_trips() {
+    // The bulk path: derive the instrument identity AND price precision from the
+    // object's own rows (Chainlink stages no instrument universe), append into a
+    // shared catalog with no clean-root guard, and prove the NautilusTrader
+    // round-trip is lossless.
+    let object_bytes = std::fs::read(fixture_path()).expect("read fixture bytes");
+    let dir = tempfile::TempDir::new().expect("temp catalog root");
+
+    // Independent expectation from the same source, via the data-derived spec.
+    let table = read_chainlink_per_second_object(&fixture_path()).expect("read fixture");
+    let derived = chainlink_index_spec_from_table(&table).expect("derive spec");
+    // Identity is data-derived from the slug's asset token + venue suffix; no
+    // `USD` quote is fabricated (the slug carries none).
+    assert_eq!(derived.nt_instrument_id, DERIVED_NT_INSTRUMENT_ID);
+    assert_eq!(derived.market_slug, MARKET_SLUG);
+    // Precision is read from the data (the max fractional-digit count across the
+    // cycle's prices), so it must not exceed the materialization precision the
+    // single-object spec uses for the same feed, and must be representable.
+    assert!(
+        derived.price_precision <= PRICE_PRECISION,
+        "data-derived precision {} exceeds the feed's known max {PRICE_PRECISION}",
+        derived.price_precision
+    );
+    let expected = canonical_rows_to_index_prices(&table, &derived).expect("map to index prices");
+
+    // Append into a freshly-opened (empty) catalog — no dirty-root refusal.
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let summary =
+        append_chainlink_index_prices_archive(&object_bytes, &mut catalog).expect("append");
+    assert_eq!(summary.nt_instrument_id, DERIVED_NT_INSTRUMENT_ID);
+    assert_eq!(summary.record_count, table.rows.len());
+    // Precision is read from the data and is self-consistent with the prices
+    // built from the same derived spec — not a hardcoded assumption.
+    assert_eq!(summary.price_precision, derived.price_precision);
+    assert_eq!(summary.price_precision, expected[0].value.precision);
+    // Provenance is honest: the append's object hash equals the SHA-256 the
+    // reader computed over the same source bytes.
+    assert_eq!(summary.source_object_hash, table.source_object_hash);
+    assert!(!summary.source_object_hash.is_empty());
+
+    let loaded = read_back_index_prices(dir.path(), DERIVED_NT_INSTRUMENT_ID).expect("read back");
+    assert_eq!(loaded.len(), expected.len(), "round-tripped update count");
+    assert!(
+        loaded
+            .windows(2)
+            .all(|w| w[1].ts_init.as_u64() > w[0].ts_init.as_u64()),
+        "loaded updates must be strictly ascending"
+    );
+    assert_eq!(
+        loaded, expected,
+        "data-derived append must round-trip identically (count, ordering, payload, precision)"
     );
 }

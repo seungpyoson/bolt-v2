@@ -5121,6 +5121,48 @@ fn replace_in_fixture_root(needle: &str, replacement: &str) -> String {
     fixture.replace(needle, replacement)
 }
 
+/// Replace one-line key assignments inside a single TOML table.
+///
+/// `replace_in_fixture_root` does a global `str::replace`, so a key that also
+/// appears in another table (e.g. `graceful_shutdown_on_error` / `qsize` live in
+/// both `[nautilus.data_engine]` and `[risk.nautilus]`) cannot be flipped in one
+/// block alone without a multi-line anchor — and a multi-line `\n` anchor breaks
+/// on a CRLF checkout. This walks the fixture line-by-line via `str::lines()`
+/// (LF/CRLF agnostic) and rewrites only the lines whose trimmed text matches a
+/// needle while inside `section_header`. Each needle must match exactly one line
+/// in that table, so the mutation is both scoped and platform-independent.
+fn replace_in_fixture_section(section_header: &str, replacements: &[(&str, &str)]) -> String {
+    let fixture = std::fs::read_to_string(support::repo_path("tests/fixtures/bolt_v3/root.toml"))
+        .expect("fixture should be readable");
+    let mut in_section = false;
+    let mut hits = vec![0usize; replacements.len()];
+    let rewritten: Vec<String> = fixture
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with('[') {
+                in_section = trimmed == section_header;
+            }
+            if in_section {
+                for (idx, (needle, replacement)) in replacements.iter().enumerate() {
+                    if trimmed == *needle {
+                        hits[idx] += 1;
+                        return (*replacement).to_string();
+                    }
+                }
+            }
+            line.to_string()
+        })
+        .collect();
+    for ((needle, _), hit) in replacements.iter().zip(hits) {
+        assert_eq!(
+            hit, 1,
+            "section `{section_header}` must contain exactly one `{needle}` line to mutate, matched {hit}"
+        );
+    }
+    rewritten.join("\n")
+}
+
 fn root_config_with_live_canary_proof_policy(proof_policy_block: &str) -> String {
     let source = fs::read_to_string(support::repo_path("config/root.toml"))
         .expect("root config should read");
@@ -5673,14 +5715,20 @@ fn shipped_root_configs_do_not_expose_nt_risk_bypass() {
 fn rejects_nt_risk_values_unsupported_by_rust_live_runtime() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
-    // The `debug = false` / `graceful_shutdown_on_error = false` / `qsize = 100000`
-    // triple appears verbatim in both `[nautilus.data_engine]` and `[risk.nautilus]`,
-    // so a bare replace of that triple would mutate both blocks. Anchor the flip on
-    // the preceding `max_notional_per_order = {}` line, which exists only in
-    // `[risk.nautilus]`, so the mutation is scoped to the risk block alone.
-    let mutated = replace_in_fixture_root(
-        "max_notional_per_order = {}\ndebug = false\ngraceful_shutdown_on_error = false\nqsize = 100000",
-        "max_notional_per_order = {}\ndebug = false\ngraceful_shutdown_on_error = true\nqsize = 1000",
+    // `graceful_shutdown_on_error` / `qsize` appear in both `[nautilus.data_engine]`
+    // and `[risk.nautilus]`. Scope the flip to the risk table via a line-wise,
+    // section-aware replace so the mutation never touches the data-engine block and
+    // never relies on a multi-line `\n` anchor (which a CRLF checkout would fail to
+    // match).
+    let mutated = replace_in_fixture_section(
+        "[risk.nautilus]",
+        &[
+            (
+                "graceful_shutdown_on_error = false",
+                "graceful_shutdown_on_error = true",
+            ),
+            ("qsize = 100000", "qsize = 1000"),
+        ],
     );
     let root: BoltV3RootConfig =
         toml::from_str(&mutated).expect("unsupported NT risk values fixture should parse");

@@ -452,6 +452,22 @@ classification = '''strategy_runtime_schema_field'''
 reason = '''This is the existing taker StrategyConfig field name populated from the configured reference_data data_client_id role.'''
 
 [[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_instrument_id"'''
+context = '''"signal_instrument_id",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the taker StrategyConfig field name populated from the configured bolt-v3 TOML signal_data role instrument_id."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_venue"'''
+context = '''"signal_venue",'''
+classification = "strategy_runtime_schema_field"
+reason = "This is the taker StrategyConfig field name populated from the configured signal_data data_client_id role."
+
+[[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"reference_venue"'''
@@ -532,6 +548,62 @@ classification = "strategy_runtime_validation_code"
 reason = "This validation code labels a missing paired reference data field; it is not a runtime value."
 
 [[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_venue"'''
+context = '''Self::validate_optional_string_field(table, field_prefix, "signal_venue", errors);'''
+classification = "strategy_runtime_schema_field"
+reason = "This validates the taker StrategyConfig field name for the configured signal data client id."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_venue"'''
+context = '''table.contains_key("signal_venue"),'''
+classification = "strategy_runtime_schema_field"
+reason = "This enforces paired configured signal data fields in the taker config schema."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_venue"'''
+context = '''| "signal_venue"'''
+classification = "strategy_runtime_schema_field"
+reason = "This whitelists the taker StrategyConfig signal data client field name while rejecting unknown runtime config fields."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_instrument_id"'''
+context = '''Self::validate_optional_string_field(table, field_prefix, "signal_instrument_id", errors);'''
+classification = "strategy_runtime_schema_field"
+reason = "This validates the taker StrategyConfig field name for the configured signal instrument id."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_instrument_id"'''
+context = '''table.contains_key("signal_instrument_id"),'''
+classification = "strategy_runtime_schema_field"
+reason = "This enforces paired configured signal data fields in the taker config schema."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"signal_instrument_id"'''
+context = '''| "signal_instrument_id"'''
+classification = "strategy_runtime_schema_field"
+reason = "This whitelists the taker StrategyConfig signal instrument field name while rejecting unknown runtime config fields."
+
+[[allowed]]
+path = "src/strategies/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"missing_signal_data_pair"'''
+context = '''"missing_signal_data_pair",'''
+classification = "strategy_runtime_validation_code"
+reason = "This validation code labels a missing paired signal data field; it is not a runtime value."
+
+[[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
 literal = '''"retry_interval_seconds"'''
@@ -582,10 +654,26 @@ reason = "This diagnostic rejects ambiguous legacy reference_data role wiring be
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
 kind = "string"
+literal = '''"allows at most one [signal_data.<role>] block; got roles [{}]"'''
+context = '''"allows at most one [signal_data.<role>] block; got roles [{}]",'''
+classification = "strategy_archetype_diagnostic_template"
+reason = "This diagnostic rejects ambiguous signal_data role wiring before deriving runtime config; it is not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
 literal = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"'''
 context = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [reference_data.<role>] block"'''
 classification = "strategy_archetype_diagnostic_template"
 reason = "This validation diagnostic rejects ambiguous legacy reference_data role wiring; it is not a runtime value."
+
+[[allowed]]
+path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
+kind = "string"
+literal = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [signal_data.<role>] block"'''
+context = '''"{context}: strategy_archetype `binary_oracle_edge_taker` allows at most one [signal_data.<role>] block"'''
+classification = "strategy_archetype_diagnostic_template"
+reason = "This validation diagnostic rejects ambiguous signal_data role wiring; it is not a runtime value."
 
 [[allowed]]
 path = "src/bolt_v3_archetypes/binary_oracle_edge_taker.rs"
@@ -878,24 +966,24 @@ reason = "This is the JSONL line separator for one evidence record per line, not
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "number"
-literal = '''2'''
-context = '''pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 2;'''
+literal = '''3'''
+context = '''pub const ENTRY_DECISION_EVIDENCE_SOURCE_SCHEMA_VERSION: u32 = 3;'''
 classification = "operator_source_schema_version"
 reason = "This pins the local source-owned entry decision evidence source schema consumed by the non-live operator artifact command; trading values remain source/config-owned."
 
 [[allowed]]
 path = "src/strategies/binary_oracle_edge_taker.rs"
 kind = "string"
-literal = '''"bolt_v3.binary_oracle_entry_decision_source.v2"'''
-context = '''"bolt_v3.binary_oracle_entry_decision_source.v2";'''
+literal = '''"bolt_v3.binary_oracle_entry_decision_source.v3"'''
+context = '''"bolt_v3.binary_oracle_entry_decision_source.v3";'''
 classification = "operator_source_record_kind"
 reason = "This is the structural record_kind for source-owned entry decision evidence inputs, not a venue, market, quantity, timeout, or trading value."
 
 [[allowed]]
-path = "src/strategies/binary_oracle_edge_taker.rs"
+path = "src/bolt_v3_price_to_beat.rs"
 kind = "string"
 literal = '''"price_to_beat_value"'''
-context = '''const ENTRY_DECISION_PRICE_TO_BEAT_VALUE_FIELD: &str = "price_to_beat_value";'''
+context = '''pub const PRICE_TO_BEAT_VALUE_FIELD: &str = "price_to_beat_value";'''
 classification = "operator_source_field_name"
 reason = "This is the structural field name for the readiness-session normalized price payload consumed by source replay, not a hardcoded trading value."
 
@@ -8891,6 +8979,22 @@ reason = "This is the record-kind discriminator for the reference-quote proof, n
 path = "src/bolt_v3_operator_artifacts.rs"
 kind = "number"
 literal = "1"
+context = '''const SIGNAL_QUOTE_SOURCE_SCHEMA_VERSION: u32 = 1;'''
+classification = "entry_decision_source_input_schema_version"
+reason = "This is the signal-quote proof schema version; quote values remain source-file owned."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "string"
+literal = '''"bolt_v3.signal_quote_source.v1"'''
+context = '''const SIGNAL_QUOTE_SOURCE_RECORD_KIND: &str = "bolt_v3.signal_quote_source.v1";'''
+classification = "entry_decision_source_input_record_kind"
+reason = "This is the record-kind discriminator for the signal-quote proof, not a runtime operator value."
+
+[[allowed]]
+path = "src/bolt_v3_operator_artifacts.rs"
+kind = "number"
+literal = "1"
 context = '''const REFERENCE_QUOTE_OBSERVATIONS_SOURCE_SCHEMA_VERSION: u32 = 1;'''
 classification = "entry_decision_source_input_schema_version"
 reason = "This is the NT quote-observation source schema version; quote values are collected from source evidence."
@@ -16662,3 +16766,131 @@ literal = '''2'''
 context = '''max_live_order_count.saturating_mul(2)'''
 classification = '''phase8_entry_exit_order_pair_multiplier'''
 reason = '''Structural Phase 8 proof multiplier for one admitted entry and one admitted exit per configured live order cap; max_live_order_count remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''hasher.update([0]);'''
+classification = '''kill_switch_halt_id_hash_absent_sequence_sentinel'''
+reason = '''Stable hash-format sentinel for an absent source sequence when deriving a halt id; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch.rs'''
+kind = '''number'''
+literal = '''64'''
+context = '''if evidence_sha256.len() != 64'''
+classification = '''sha256_hex_digest_length_guard'''
+reason = '''Fixed SHA-256 hex digest length used to validate operator reset evidence hashes; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch.rs'''
+kind = '''string'''
+literal = '''b"bolt_v3.kill_switch.halt_id.v1"'''
+context = '''const HALT_ID_DOMAIN: &[u8] = b"bolt_v3.kill_switch.halt_id.v1";'''
+classification = '''kill_switch_halt_id_domain_separator'''
+reason = '''Stable domain separator for the kill-switch halt-id hash format; not a venue, size, timeout, or operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch.rs'''
+kind = '''string'''
+literal = '''b"loss_governor_breach"'''
+context = '''KillSwitchHaltTriggerKind::LossGovernorBreach => b"loss_governor_breach".as_slice(),'''
+classification = '''kill_switch_trigger_kind_hash_label'''
+reason = '''Stable trigger-kind label included in halt-id derivation for loss-governor breaches; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch_store.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''pub const KILL_SWITCH_STORE_SCHEMA_VERSION: u32 = 1;'''
+classification = '''kill_switch_store_schema_version'''
+reason = '''Durable state-file schema version for forward-compatible recovery; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch_store.rs'''
+kind = '''string'''
+literal = '''"tmp"'''
+context = '''temp_path.set_extension("tmp");'''
+classification = '''kill_switch_store_atomic_write_temp_extension'''
+reason = '''Internal same-directory temporary file extension used before atomic rename; the durable state path itself is TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_kill_switch_store.rs'''
+kind = '''string'''
+literal = '''b"\n"'''
+context = '''.and_then(|()| file.write_all(b"\n"))'''
+classification = '''kill_switch_store_json_trailing_newline'''
+reason = '''Deterministic JSON formatting newline for the durable state file; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''&& block.action_retry_timeout_ms > 0'''
+classification = '''kill_switch_config_positive_duration_guard'''
+reason = '''TOML validation guard requiring a positive retry timeout before accepting enabled kill-switch config; the value remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''live_kill_switch_forced_reduction_order_count: 0,'''
+classification = '''kill_switch_forced_reduction_counter_identity'''
+reason = '''Initial identity value for the in-memory forced-reduction live-order counter; the runtime order-count limit remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''0'''
+context = '''inner.live_kill_switch_forced_reduction_order_count = 0;'''
+classification = '''kill_switch_forced_reduction_counter_identity'''
+reason = '''Reset identity value for the in-memory forced-reduction live-order counter when submit admission is armed; the runtime order-count limit remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''inner.live_kill_switch_forced_reduction_order_count += 1;'''
+classification = '''kill_switch_forced_reduction_counter_increment'''
+reason = '''Unit increment after a forced-reduction admission decision is durably recorded; the maximum live order count remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''1'''
+context = '''.saturating_sub(1);'''
+classification = '''kill_switch_forced_reduction_counter_decrement'''
+reason = '''Unit decrement when NT lifecycle integration reports a forced-reduction order terminal; the maximum live order count remains TOML-owned.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''number'''
+literal = '''64'''
+context = '''if policy_sha256.len() != 64 || !policy_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())'''
+classification = '''sha256_hex_digest_length_guard'''
+reason = '''Fixed SHA-256 hex digest length used to validate forced-reduction policy proof hashes; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''string'''
+literal = '''"bolt-v3 submit admission is blocked by kill-switch state {state:?}"'''
+context = '''"bolt-v3 submit admission is blocked by kill-switch state {state:?}"'''
+classification = '''diagnostic_template'''
+reason = '''Error-display template for the kill-switch-latched admission rejection; it carries no operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_submit_admission.rs'''
+kind = '''string'''
+literal = '''"kill-switch forced reduction is evaluated before normal admission"'''
+context = '''unreachable!("kill-switch forced reduction is evaluated before normal admission")'''
+classification = '''diagnostic_template'''
+reason = '''Internal invariant diagnostic for a typed submit-admission branch that is evaluated before the normal admission path; it carries no operator runtime value.'''
+
+[[allowed]]
+path = '''src/bolt_v3_validate.rs'''
+kind = '''number'''
+literal = '''64'''
+context = '''if block.forced_reduction_policy_sha256.len() != 64'''
+classification = '''sha256_hex_digest_length_guard'''
+reason = '''Fixed SHA-256 hex digest length used to validate the TOML-owned forced-reduction policy hash; not an operator runtime value.'''

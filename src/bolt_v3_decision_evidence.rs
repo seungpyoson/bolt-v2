@@ -155,6 +155,7 @@ pub enum BoltV3SubmitIntentKind {
     Entry,
     RiskReducingExit,
     ReplaceSubmit,
+    KillSwitchForcedReduction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -307,12 +308,15 @@ pub struct BoltV3StrategyInputEvidenceSnapshot {
 pub enum BoltV3AdmissionOutcome {
     Admitted,
     RejectedNotArmed,
+    RejectedKillSwitchLatched,
     RejectedSubmitLifecycleDisallowed,
     RejectedNonPositiveNotional,
     RejectedNotionalCapExceeded,
     RejectedInvalidCanaryProofClaim,
     RejectedInvalidRiskReducingExitProof,
     RejectedCountCapExhausted,
+    RejectedKillSwitchForcedReductionProofInvalid,
+    RejectedKillSwitchForcedReductionCapExceeded,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1296,6 +1300,13 @@ mod tests {
                 }
                 BoltV3AdmissionOutcome::RejectedInvalidRiskReducingExitProof => {
                     "rejected_invalid_risk_reducing_exit_proof"
+                }
+                BoltV3AdmissionOutcome::RejectedKillSwitchLatched => "rejected_kill_switch_latched",
+                BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionProofInvalid => {
+                    "rejected_kill_switch_forced_reduction_proof_invalid"
+                }
+                BoltV3AdmissionOutcome::RejectedKillSwitchForcedReductionCapExceeded => {
+                    "rejected_kill_switch_forced_reduction_cap_exceeded"
                 }
                 BoltV3AdmissionOutcome::RejectedCountCapExhausted => "rejected_count_cap_exhausted",
             };

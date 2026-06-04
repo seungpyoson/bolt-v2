@@ -274,6 +274,7 @@ fn submit_request(notional: Decimal) -> BoltV3SubmitAdmissionRequest {
         lifecycle_policy: BoltV3SubmitLifecyclePolicy::new(true),
         canary_proof_claim: None,
         risk_reducing_exit_proof: None,
+        kill_switch_forced_reduction: None,
     }
 }
 
@@ -431,6 +432,27 @@ fn binary_oracle_runtime_mapping_produces_existing_taker_raw_config() {
             .and_then(|order| order.get("time_in_force"))
             .and_then(|value| value.as_str()),
         Some("ioc")
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_mapping_rejects_missing_signal_data_role() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    loaded.strategies[strategy_index].config.signal_data.clear();
+
+    let error =
+        binary_oracle_edge_taker::raw_taker_config(&loaded.strategies[strategy_index], &loaded)
+            .expect_err("binary oracle strategy should reject missing signal_data role");
+    let rendered = error.to_string();
+    assert!(
+        rendered.contains("signal_data") && rendered.contains("requires exactly one"),
+        "rejection should explain that signal_data is required, got: {rendered}"
     );
 }
 
@@ -1398,6 +1420,61 @@ fn binary_oracle_runtime_mapping_uses_configured_reference_data_role_key() {
             .get("reference_instrument_id")
             .and_then(|value| value.as_str()),
         Some("REFERENCE.SOURCE")
+    );
+}
+
+#[test]
+fn binary_oracle_runtime_mapping_allows_signal_data_with_decision_reference() {
+    let root_path = support::repo_path("tests/fixtures/bolt_v3/root.toml");
+    let mut loaded = load_bolt_v3_config(&root_path).expect("fixture v3 config should load");
+    loaded.root.clients.insert(
+        "binance_reference".to_string(),
+        toml::from_str(&support::repo_text(
+            "tests/fixtures/bolt_v3/binance_reference_client.toml",
+        ))
+        .expect("binance provider fixture client should parse"),
+    );
+    let strategy_index = loaded
+        .strategies
+        .iter()
+        .position(|strategy| strategy.config.strategy_instance_id == "configured_updown_main")
+        .expect("fixture should include initial binary oracle strategy");
+    loaded.strategies[strategy_index].config.signal_data.insert(
+        "primary".to_string(),
+        ReferenceDataBlock {
+            data_client_id: ClientId::from("binance_reference"),
+            instrument_id: InstrumentId::from("BTCUSDT.BINANCE"),
+        },
+    );
+
+    let strategy = &loaded.strategies[strategy_index];
+    let raw = binary_oracle_edge_taker::raw_taker_config(strategy, &loaded)
+        .expect("signal_data and decision_reference should be independent roles");
+    let table = raw
+        .as_table()
+        .expect("mapped raw taker config should be a table");
+
+    assert_eq!(
+        table
+            .get("reference_venue")
+            .and_then(|value| value.as_str()),
+        Some("resolution_oracle_primary")
+    );
+    assert_eq!(
+        table
+            .get("reference_instrument_id")
+            .and_then(|value| value.as_str()),
+        Some("configured-reference-price")
+    );
+    assert_eq!(
+        table.get("signal_venue").and_then(|value| value.as_str()),
+        Some("binance_reference")
+    );
+    assert_eq!(
+        table
+            .get("signal_instrument_id")
+            .and_then(|value| value.as_str()),
+        Some("BTCUSDT.BINANCE")
     );
 }
 

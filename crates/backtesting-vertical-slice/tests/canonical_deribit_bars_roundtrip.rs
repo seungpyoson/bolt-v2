@@ -13,9 +13,11 @@
 use std::{fs, path::PathBuf};
 
 use backtesting_vertical_slice::canonical_deribit::{
-    DeribitBarsInstrumentSpec, normalize_deribit_bars, project_bars_to_catalog, read_back_bars,
+    DeribitBarsInstrumentSpec, append_deribit_bars_archive, normalize_deribit_bars,
+    project_bars_to_catalog, read_back_bars,
 };
 use nautilus_model::{enums::BarAggregation, types::Price};
+use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
 /// Path to the committed 1m-bars JSON fixture.
 fn fixture_path() -> PathBuf {
@@ -130,5 +132,44 @@ fn deribit_bars_round_trip_through_nt_catalog() {
     assert_eq!(
         u64::from(last_loaded.ts_event),
         u64::try_from(last.open_time).unwrap()
+    );
+}
+
+/// The live `bars_1m` archive carries an empty `status:"no_data"` candle series
+/// for the (very common) thinly-traded option. The bulk append must SKIP it with
+/// a 0-record summary rather than crash a full run; this is the exact REST
+/// envelope shape and option object key seen in `s3://bolt-parquet/.../deribit/`.
+#[test]
+fn empty_no_data_bars_object_yields_zero_record_summary() {
+    // Verbatim shape of a real empty Deribit `get_tradingview_chart_data`
+    // response: every candle array empty, `status:"no_data"`.
+    let empty = br#"{"usOut":1780392756659841,"usIn":1780392756657581,"usDiff":2260,"testnet":false,"result":{"volume":[],"ticks":[],"status":"no_data","open":[],"low":[],"high":[],"cost":[],"close":[]},"jsonrpc":"2.0"}"#;
+    let object_key = "backfill-staging/2026-06-01/deribit/raw/v1/run=deribit-3m-x/family=bars_1m/instrument=BTC-2JUN26-65000-C/product_family=option/object=abc.json";
+
+    let dir = tempfile::TempDir::new().expect("temp catalog root");
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let summary = append_deribit_bars_archive(empty, object_key, &mut catalog)
+        .expect("empty no_data series must not error");
+
+    assert_eq!(summary.record_count, 0, "empty series writes no bars");
+    assert_eq!(
+        summary.nt_instrument_id, "BTC-2JUN26-65000-C.DERIBIT",
+        "summary still names the instrument from the object key"
+    );
+}
+
+/// Genuinely malformed JSON must still fail loud (the skip-empty path only
+/// tolerates a well-formed, empty candle series).
+#[test]
+fn malformed_bars_json_still_fails_loud() {
+    let garbage = b"not json at all";
+    let object_key = "backfill-staging/2026-06-01/deribit/raw/v1/run=deribit-3m-x/family=bars_1m/instrument=BTC-2JUN26-65000-C/product_family=option/object=abc.json";
+    let dir = tempfile::TempDir::new().expect("temp catalog root");
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    let err = append_deribit_bars_archive(garbage, object_key, &mut catalog)
+        .expect_err("malformed JSON must fail loud");
+    assert!(
+        err.to_string().contains("tradingview chart JSON"),
+        "unexpected error: {err}"
     );
 }

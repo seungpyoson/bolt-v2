@@ -50,8 +50,21 @@ pub const NT_DATA_TYPE_INDEX_PRICE_UPDATE: &str = "IndexPriceUpdate";
 /// Resolution token the per-second Chainlink feed must carry.
 pub const CHAINLINK_RESOLUTION_PER_SECOND: &str = "1s";
 
-/// Source token identifying the per-second Chainlink Data Streams feed.
-pub const CHAINLINK_SOURCE_PER_SECOND: &str = "chainlink_datastreams_persecond";
+/// Canonical source token for the per-second Chainlink Data Streams feed (the
+/// 1-minute Data Streams anchor sampled to a per-second fill) stamped on the
+/// current staged `*-5m-cycles` objects.
+pub const CHAINLINK_SOURCE_PER_SECOND: &str = "chainlink_1m_datastreams_anchor_binance_fill";
+
+/// Every source token the staged `*-5m-cycles` archive carries for the
+/// per-second feed. The backfill relabelled the source partway, so the live
+/// `bolt-parquet` archive mixes the current [`CHAINLINK_SOURCE_PER_SECOND`] token
+/// with the legacy `chainlink_datastreams_persecond` label on the same
+/// `resolution=1s` rows; both are accepted so a full run does not reject the
+/// legacy-labelled objects. A source outside this set still fails loud.
+pub const CHAINLINK_SOURCES_PER_SECOND: &[&str] = &[
+    CHAINLINK_SOURCE_PER_SECOND,
+    "chainlink_datastreams_persecond",
+];
 
 /// NautilusTrader venue code for the Chainlink price feed, appended to the
 /// data-derived underlying-asset symbol to form the catalog instrument id
@@ -147,10 +160,10 @@ impl CanonicalIndexPriceTable {
                 CHAINLINK_RESOLUTION_PER_SECOND
             );
             ensure!(
-                row.source == CHAINLINK_SOURCE_PER_SECOND,
-                "row {index} source {:?} is not the per-second Chainlink feed {:?}",
+                CHAINLINK_SOURCES_PER_SECOND.contains(&row.source.as_str()),
+                "row {index} source {:?} is not an accepted per-second Chainlink feed {:?}",
                 row.source,
-                CHAINLINK_SOURCE_PER_SECOND
+                CHAINLINK_SOURCES_PER_SECOND
             );
             ensure!(
                 row.market_slug == self.market_slug,
@@ -226,9 +239,14 @@ pub fn read_chainlink_per_second_object(path: &Path) -> Result<CanonicalIndexPri
         let batch = batch.context("read parquet record batch")?;
         let timestamp = typed_column::<Int64Array>(&batch, "timestamp")?;
         let price = typed_column::<Float64Array>(&batch, "price")?;
-        let resolution = typed_column::<StringArray>(&batch, "resolution")?;
-        let source = typed_column::<StringArray>(&batch, "source")?;
-        let market_slug = typed_column::<StringArray>(&batch, "market_slug")?;
+        // The live staged objects carry an `ARROW:schema` block that round-trips
+        // the writer's dictionary-encoded string columns, so the Arrow reader
+        // yields a `DictionaryArray`, not a plain `StringArray`. Cast each string
+        // column to `Utf8` so plain, large, and dictionary-encoded layouts all
+        // decode identically.
+        let resolution = utf8_column(&batch, "resolution")?;
+        let source = utf8_column(&batch, "source")?;
+        let market_slug = utf8_column(&batch, "market_slug")?;
         let cycle_start = typed_column::<Int64Array>(&batch, "cycle_start")?;
         let cycle_end = typed_column::<Int64Array>(&batch, "cycle_end")?;
 
@@ -291,6 +309,25 @@ fn typed_column<'a, A: Array + 'static>(
         .as_any()
         .downcast_ref::<A>()
         .with_context(|| format!("column {name:?} has unexpected Arrow type"))
+}
+
+/// Read a string column as an owned [`StringArray`], casting any string-backed
+/// Arrow encoding (plain `Utf8`, `LargeUtf8`, or a dictionary-encoded string) to
+/// `Utf8` first. The live staged Chainlink objects carry an `ARROW:schema` block
+/// that round-trips the writer's dictionary encoding, so the Arrow reader yields
+/// a `DictionaryArray` for these columns rather than a plain `StringArray`; the
+/// cast normalizes every layout to one decode path and still fails loud on a
+/// genuinely non-string column.
+fn utf8_column(batch: &arrow::record_batch::RecordBatch, name: &str) -> Result<StringArray> {
+    let column = batch
+        .column_by_name(name)
+        .with_context(|| format!("missing column {name:?}"))?;
+    let cast = arrow::compute::cast(column, &arrow::datatypes::DataType::Utf8)
+        .with_context(|| format!("column {name:?} is not castable to Utf8"))?;
+    cast.as_any()
+        .downcast_ref::<StringArray>()
+        .cloned()
+        .with_context(|| format!("column {name:?} did not cast to a Utf8 StringArray"))
 }
 
 /// Convert canonical rows into NautilusTrader `IndexPriceUpdate`s.

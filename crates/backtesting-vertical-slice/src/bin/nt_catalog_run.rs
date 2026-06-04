@@ -156,15 +156,15 @@ const FAMILY_BINDINGS: &[FamilyBinding] = &[
         key_filters: &[],
         extension: ".json",
     },
-    FamilyBinding {
-        venue: "deribit",
-        family: "trades",
-        root_template: "backfill-staging/{date}/deribit/raw/v1/",
-        // Options only: the converter parses <UNDERLYING>-<EXPIRY>-<STRIKE>-<KIND>
-        // and rejects futures/perpetuals, which share the bars/trades families.
-        key_filters: &["/family=trades/", "/product_family=option/"],
-        extension: ".json",
-    },
+    // Deribit `trades` is intentionally NOT wired: the staged `/family=trades/`
+    // objects in this layout are raw Deribit REST envelopes
+    // (`{"result":{"trades":[],"has_more":false}}`) and are uniformly empty (≈135
+    // bytes), while `append_deribit_trades_archive` reads the RiveChen merged-
+    // trades Parquet — a different source not staged in this snapshot. The
+    // converter + its round-trip test are kept (and the `convert_object` arm) for
+    // when that Parquet source is staged; only the binding is omitted so a full
+    // run does not list+read thousands of empty REST objects with no matching
+    // converter.
     FamilyBinding {
         venue: "deribit",
         family: "bars_1m",

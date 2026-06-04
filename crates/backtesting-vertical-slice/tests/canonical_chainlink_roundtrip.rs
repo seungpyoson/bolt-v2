@@ -20,17 +20,24 @@ use backtesting_vertical_slice::canonical_chainlink::{
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
 
-/// Fixture: 40 rows downsampled from the smallest real staged BTC 5m cycle
-/// object under `s3://bolt-parquet/backfill-staging/.../chainlink/btc-5m-cycles/`.
+/// Fixture: a verbatim real staged BTC 5m-cycle object (one full 300-row cycle)
+/// copied from `s3://bolt-parquet/backfill-staging/.../chainlink/btc-5m-cycles/`.
+/// It is dictionary-encoded with an embedded `ARROW:schema` block exactly as the
+/// production archive writes it, so the test exercises the real Arrow decode
+/// (a `DictionaryArray`, not a plain `StringArray`).
 const FIXTURE: &str = "tests/fixtures/chainlink/btc-updown-5m-sample.parquet";
-const MARKET_SLUG: &str = "btc-updown-5m-1778380800";
+const MARKET_SLUG: &str = "btc-updown-5m-1777420800";
+/// Number of per-second rows in the fixture cycle.
+const FIXTURE_ROWS: usize = 300;
 const NT_INSTRUMENT_ID: &str = "BTCUSD.CHAINLINK";
 /// Instrument id the *data-derived* bulk path builds from the slug's asset token
 /// (`btc`) plus the venue suffix. The bulk path cannot invent the `USD` quote the
 /// caller-supplied single-object spec carries, so the derived id has no quote.
 const DERIVED_NT_INSTRUMENT_ID: &str = "BTC.CHAINLINK";
-/// Source feed carries up to 8 fractional digits; 8 fits NT fixed precision.
-const PRICE_PRECISION: u8 = 8;
+/// The feed's per-second prices carry up to 11 fractional digits; the
+/// data-derived precision clamps to NautilusTrader's fixed precision, so the
+/// single-object spec materializes at that same cap (9 fractional digits).
+const PRICE_PRECISION: u8 = 9;
 
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(FIXTURE)
@@ -48,15 +55,15 @@ fn spec() -> ChainlinkIndexSpec {
 fn fixture_parses_to_canonical_table() {
     let table = read_chainlink_per_second_object(&fixture_path()).expect("read fixture");
     assert_eq!(table.market_slug, MARKET_SLUG);
-    assert_eq!(table.rows.len(), 40);
+    assert_eq!(table.rows.len(), FIXTURE_ROWS);
     // Provenance tokens preserved and uniform across the cycle.
     for row in &table.rows {
         assert_eq!(row.resolution, CHAINLINK_RESOLUTION_PER_SECOND);
         assert_eq!(row.source, CHAINLINK_SOURCE_PER_SECOND);
         assert_eq!(row.market_slug, MARKET_SLUG);
     }
-    // Unix-seconds source scaled to nanoseconds (first row = 1778380960 s).
-    assert_eq!(table.rows[0].event_time_nanos, 1_778_380_960_000_000_000);
+    // Unix-seconds source scaled to nanoseconds (first row = 1777420800 s).
+    assert_eq!(table.rows[0].event_time_nanos, 1_777_420_800_000_000_000);
     // Strictly ascending (validate() enforced this).
     let times: Vec<i64> = table.rows.iter().map(|r| r.event_time_nanos).collect();
     assert!(times.windows(2).all(|w| w[1] > w[0]));
@@ -73,7 +80,7 @@ fn round_trips_index_prices_through_nautilus_catalog() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let projection =
         project_chainlink_to_catalog(&table, &spec(), dir.path()).expect("project to catalog");
-    assert_eq!(projection.update_count, 40);
+    assert_eq!(projection.update_count, FIXTURE_ROWS);
     assert_eq!(projection.data_type, NT_DATA_TYPE_INDEX_PRICE_UPDATE);
     assert_eq!(projection.nt_instrument_id, NT_INSTRUMENT_ID);
     assert!(!projection.catalog_hash.is_empty());

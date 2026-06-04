@@ -1819,10 +1819,15 @@ pub fn deribit_bars_spec_from_rows(
 /// so identity is read from `object_key`'s `instrument=` segment; precision is
 /// derived from the OHLCV rows. Returns one summary (one instrument per object).
 ///
+/// An empty candle series (`status:"no_data"`, zero ticks) is the common case for
+/// thinly-traded options and yields a 0-record summary rather than an error, so a
+/// full run does not crash on the (very many) untraded options.
+///
 /// # Errors
 ///
-/// Returns an error if the key has no instrument segment, the JSON cannot be
-/// parsed/normalized, bar construction fails, or the catalog write fails.
+/// Returns an error if the key has no instrument segment (or names a non-option),
+/// the JSON cannot be parsed, a non-empty series fails normalization, bar
+/// construction fails, or the catalog write fails.
 pub fn append_deribit_bars_archive(
     object_bytes: &[u8],
     object_key: &str,
@@ -1831,6 +1836,27 @@ pub fn append_deribit_bars_archive(
     let raw_symbol = raw_symbol_from_bars_key(object_key)?;
     let json_text = std::str::from_utf8(object_bytes)
         .with_context(|| format!("bars object {object_key:?} is not valid UTF-8"))?;
+
+    // Most Deribit options barely trade, so the `bars_1m` REST response routinely
+    // carries an empty candle series (`status:"no_data"`, zero ticks). That is a
+    // legitimately-empty instrument, not corruption, so it must NOT crash a full
+    // run: skip it with a 0-record summary. Identity still comes from the key's
+    // symbol (it parses without any rows), so the coverage report names the
+    // instrument that produced zero records. Malformed JSON or a non-object
+    // envelope still fails loud here (the parse below errors).
+    let envelope: DeribitChartEnvelope =
+        serde_json::from_str(json_text).context("parse tradingview chart JSON")?;
+    if envelope.result.ticks.is_empty() {
+        // Validate the symbol parses (fail loud on a non-option key) even though
+        // no rows are written, so the coverage row names a real instrument.
+        parse_deribit_option_symbol(&raw_symbol)?;
+        return Ok(DeribitAppendSummary {
+            nt_instrument_id: format!("{raw_symbol}.{DERIBIT_VENUE}"),
+            record_count: 0,
+            price_precision: 0,
+            size_precision: 0,
+        });
+    }
 
     // Derive the full spec by first normalizing the candles with a minimal
     // raw-symbol-only spec (normalization reads only `raw_symbol`), then

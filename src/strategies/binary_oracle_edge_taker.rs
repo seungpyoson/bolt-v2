@@ -39,7 +39,6 @@ use serde::{Deserialize, Serialize};
 use toml::Value;
 
 use crate::{
-    bolt_v3_chainlink::STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
     bolt_v3_decision_evidence::{
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_CURRENT,
         BOLT_V3_STRATEGY_INPUT_MARKET_SELECTION_OUTCOME_NEXT, BoltV3OrderIntentEvidence,
@@ -62,7 +61,10 @@ use crate::{
         is_observed_open_side,
     },
     bolt_v3_price_to_beat::price_to_beat_from_readiness_session,
-    bolt_v3_providers::normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
+    bolt_v3_providers::{
+        STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM,
+        normalize_base_order_quantity_for_execution_venue as provider_normalize_base_order_quantity,
+    },
     bolt_v3_submit_admission::{
         BoltV3RiskReducingExitProof, BoltV3SubmitAdmissionRequest, BoltV3SubmitIntentKind,
         BoltV3SubmitLifecyclePolicy, admission_base_notional_from_order,

@@ -23,7 +23,11 @@ use sha2::{Digest, Sha256};
 use crate::bolt_v3_validate::{BoltV3ValidationError, validate_root_only, validate_strategies};
 
 pub const TEST_DOUBLE_PROVIDER_KIND: &str = "test_double";
-pub const CHAINLINK_DATA_STREAMS_PROVIDER_KIND: &str = "chainlink_data_streams";
+// The `chainlink_data_streams` provider-kind literal is owned by the provider
+// binding (`crate::bolt_v3_providers::chainlink`) and re-exported here under its
+// legacy core name, so core config keeps a single import site without declaring
+// the provider-key literal itself.
+pub use crate::bolt_v3_providers::RESOLUTION_ORACLE_PROVIDER_KIND as CHAINLINK_DATA_STREAMS_PROVIDER_KIND;
 pub const NO_RESOLUTION_KIND: &str = "no_resolution";
 pub const NO_RESOLUTION_VALUE_KIND: &str = "none";
 pub const RESOLUTION_GATE_ROLE: &str = "resolution";

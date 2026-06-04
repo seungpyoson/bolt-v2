@@ -32,14 +32,15 @@ Each price update is a **V3 report** containing: benchmark price (mid), bid, ask
 
 ## Feed IDs
 
-### Verified Testnet Feed IDs (2026-02-28)
+### Testnet feed-id bindings (single source of truth)
 
-| Asset | Testnet Feed ID | Update Rate |
-|-------|----------------|-------------|
-| BTC/USD | `0x00037da06d56d083fe599397a4769a042d63aa73dc4ef57709d31e9971a5b439` | 1 Hz |
-| ETH/USD | `0x000359843a543ee2fe414dc14c7e7920ef10f4372990b79d6361cdc0dd1ba782` | 1 Hz |
-| SOL/USD | `0x0003d338ea2ac3be9e026033b1aa601673c37bab5e13851c59966f9f820754d6` | 1 Hz |
-| XRP/USD | `0x0003ea9ea9bd6d9ce89165185d25d02e606aece110d3897516f4d629433944ff` | 1 Hz |
+The authoritative per-asset testnet `feed_id → resolution-instrument` bindings live in
+`config/root.toml` — the `chainlink_data_streams` gate provider's `feed_bindings`, mirrored
+by the live strike client's `[clients.<id>.data].feed_bindings`. They are intentionally **not
+duplicated here**: `config/root.toml` is the single source of truth, so this guide cannot
+drift from what the runtime actually loads. Each `feed_id` was discovered empirically and
+verified against the testnet endpoint using the procedure below (crypto feeds update at 1 Hz).
+Mainnet feed IDs differ and are a config swap, not a code change.
 
 ### How to Discover Testnet Feed IDs for New Assets
 

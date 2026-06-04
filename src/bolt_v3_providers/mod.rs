@@ -22,6 +22,18 @@ pub mod hyperliquid_artifacts;
 pub mod market_data;
 pub mod polymarket;
 
+// Neutral resolution-oracle seam. Core config resolution
+// (`crate::bolt_v3_config`), core validation (`crate::bolt_v3_validate`), the
+// binary-oracle archetype, and the binary-oracle strategy reach the live
+// Chainlink Data Streams strike provider through these provider-agnostic
+// re-exports and delegators, so no core module names the concrete provider
+// module path, provider type, or provider-key literal.
+pub use chainlink::KEY as RESOLUTION_ORACLE_VENUE_KEY;
+pub use chainlink::PROVIDER_KIND as RESOLUTION_ORACLE_PROVIDER_KIND;
+pub(crate) use chainlink::{
+    PriceToBeatReportBinding, STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM, is_lowercase_chainlink_feed_id,
+};
+
 use std::{any::Any, collections::BTreeMap, fmt, future::Future, path::Path, pin::Pin, sync::Arc};
 
 use nautilus_model::identifiers::Venue;
@@ -885,6 +897,15 @@ pub fn credential_log_modules() -> impl Iterator<Item = &'static str> {
     provider_bindings()
         .iter()
         .flat_map(|binding| binding.credential_log_modules.iter().copied())
+}
+
+/// Provider-neutral seam read by core startup validation: cross-checks any
+/// configured live resolution-oracle strike client against the matching gate
+/// provider so the live strike path and the offline-evidence path cannot drift
+/// onto different endpoints/credentials. Delegates to the owning provider
+/// binding, which deserializes the concrete client config block shape.
+pub fn validate_resolution_oracle_client_consistency(root: &BoltV3RootConfig) -> Vec<String> {
+    chainlink::validate_client_gate_provider_consistency(root)
 }
 
 /// Family-agnostic surface read by core startup validation. Routes

@@ -92,11 +92,16 @@ pub const SUPPORTED_ROOT_SCHEMA_VERSION: u32 = 1;
 pub const SUPPORTED_STRATEGY_SCHEMA_VERSION: u32 = 2;
 const CHAINLINK_DATA_STREAMS_FEED_BINDINGS_FIELD: &str = "feed_bindings";
 const CHAINLINK_DATA_STREAMS_ENDPOINT_ID_FIELD: &str = "endpoint_id";
-const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";
-const CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD: &str = "report_endpoint_path";
-const CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD: &str = "http_timeout_secs";
-const CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD: &str = "api_key_ssm_parameter";
-const CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD: &str = "api_secret_ssm_parameter";
+// Shared with the provider-owned F3 client/gate-provider consistency check
+// (`crate::bolt_v3_providers::chainlink::validate_client_gate_provider_consistency`),
+// which reaches them through this single core definition rather than re-declaring
+// the gate-provider field names.
+pub(crate) const CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD: &str = "rest_base_url";
+pub(crate) const CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD: &str = "report_endpoint_path";
+pub(crate) const CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD: &str = "http_timeout_secs";
+pub(crate) const CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD: &str = "api_key_ssm_parameter";
+pub(crate) const CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD: &str =
+    "api_secret_ssm_parameter";
 const CHAINLINK_DATA_STREAMS_OLD_SSM_CREDENTIAL_PARAMETER_FIELD: &str = "ssm_credential_parameter";
 const CHAINLINK_DATA_STREAMS_RESOLUTION_IDENTITY_FIELD: &str = "resolution_identity";
 const CHAINLINK_DATA_STREAMS_VALUE_KIND_FIELD: &str = "value_kind";
@@ -130,15 +135,15 @@ const LIVE_CANARY_PROOF_POLICY_NOTIONAL_MODE: &str = "fixed";
 const LIVE_CANARY_PROOF_POLICY_REQUIRED_PROOF_CLAIM: &str = "proof_only";
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
-struct ChainlinkFeedBindingKey {
+struct ResolutionFeedBindingKey {
     provider_id: String,
     resolution_identity: String,
     value_kind: String,
 }
 
 #[derive(Debug, Clone)]
-struct ChainlinkTargetMappingReference {
-    key: ChainlinkFeedBindingKey,
+struct ResolutionFeedMappingReference {
+    key: ResolutionFeedBindingKey,
     context: String,
 }
 
@@ -172,7 +177,7 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
     if let Some(gate_providers) = &root.gate_providers {
         errors.extend(validate_gate_providers(gate_providers, &root.clients));
     }
-    errors.extend(validate_chainlink_client_gate_provider_consistency(root));
+    errors.extend(crate::bolt_v3_providers::validate_resolution_oracle_client_consistency(root));
     if let Some(live_canary) = root.live_canary.as_ref() {
         // Validate the live-money-gating base fields unconditionally. The
         // previous code only ran when `proof_policy` was present, so a
@@ -189,123 +194,6 @@ pub fn validate_root_only(root: &BoltV3RootConfig) -> Vec<String> {
             errors.extend(validate_live_canary_proof_policy(
                 proof_policy,
                 &live_canary.max_notional_per_order,
-            ));
-        }
-    }
-
-    errors
-}
-
-/// F3 single-source guard: when both a live `CHAINLINK_DATA_STREAMS` data
-/// client and a `chainlink_data_streams` gate provider are configured, their
-/// shared connection config (REST endpoint + SSM credential paths) must match
-/// exactly, so the offline-evidence path and the live strike path cannot
-/// silently drift onto different endpoints/testnets/credentials. Fails closed
-/// on any divergence.
-///
-/// Feed bindings are intentionally NOT compared here: the live client maps
-/// `feed_id -> instrument_id` while the gate provider maps
-/// `feed_id -> resolution_identity`, so their shapes differ. Full single-source
-/// dedup (deriving the live client from the gate provider and removing the
-/// duplicate block) is tracked with the #551 gate-provider/seed removal.
-fn validate_chainlink_client_gate_provider_consistency(root: &BoltV3RootConfig) -> Vec<String> {
-    use crate::bolt_v3_providers::chainlink::{
-        ChainlinkDataConfig, ChainlinkSecretsConfig, KEY as CHAINLINK_CLIENT_VENUE_KEY,
-    };
-
-    let mut errors = Vec::new();
-
-    let chainlink_gate_providers: Vec<(&String, &toml::Value)> = match &root.gate_providers {
-        Some(providers) => providers
-            .iter()
-            .filter(|(_, provider)| {
-                provider.provider_kind.as_deref() == Some(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
-            })
-            .filter_map(|(id, provider)| {
-                provider
-                    .provider_config
-                    .get(CHAINLINK_DATA_STREAMS_PROVIDER_KIND)
-                    .map(|table| (id, table))
-            })
-            .collect(),
-        None => Vec::new(),
-    };
-
-    for (client_id, client) in &root.clients {
-        if client.venue.as_str() != CHAINLINK_CLIENT_VENUE_KEY {
-            continue;
-        }
-        let Some(data_value) = client.data.as_ref() else {
-            continue;
-        };
-        // Per-client shape errors are reported by the provider validator; only
-        // run the cross-check when the client config parses cleanly.
-        let Ok(data) = data_value.clone().try_into::<ChainlinkDataConfig>() else {
-            continue;
-        };
-
-        if chainlink_gate_providers.is_empty() {
-            // No gate provider to drift against (e.g. the post-#551 end state).
-            continue;
-        }
-        if chainlink_gate_providers.len() > 1 {
-            errors.push(format!(
-                "clients.{client_id} (CHAINLINK_DATA_STREAMS) cannot be consistency-checked against the resolution oracle: {} `chainlink_data_streams` gate providers are configured, expected exactly one",
-                chainlink_gate_providers.len()
-            ));
-            continue;
-        }
-
-        let (gate_provider_id, gate_table_value) = chainlink_gate_providers[0];
-        let Some(gate_table) = gate_table_value.as_table() else {
-            // A malformed gate-provider table is reported by validate_gate_providers.
-            continue;
-        };
-
-        let check_str = |field: &str, client_value: &str| -> Option<String> {
-            let gate_value = gate_table.get(field).and_then(toml::Value::as_str);
-            if gate_value == Some(client_value) {
-                None
-            } else {
-                Some(format!(
-                    "clients.{client_id}.data.{field} (`{client_value}`) must match gate_providers.{gate_provider_id}.chainlink_data_streams.{field} (`{}`); the live strike client and the resolution-oracle gate provider must reference one source",
-                    gate_value.unwrap_or("<missing>")
-                ))
-            }
-        };
-
-        errors.extend(check_str(
-            CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD,
-            &data.rest_base_url,
-        ));
-        errors.extend(check_str(
-            CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD,
-            &data.report_endpoint_path,
-        ));
-
-        let gate_timeout = gate_table
-            .get(CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD)
-            .and_then(toml::Value::as_integer);
-        if gate_timeout != Some(data.http_timeout_secs as i64) {
-            errors.push(format!(
-                "clients.{client_id}.data.http_timeout_secs ({}) must match gate_providers.{gate_provider_id}.chainlink_data_streams.http_timeout_secs ({}); the live strike client and the resolution-oracle gate provider must reference one source",
-                data.http_timeout_secs,
-                gate_timeout
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "<missing>".to_string())
-            ));
-        }
-
-        if let Some(secrets_value) = client.secrets.as_ref()
-            && let Ok(secrets) = secrets_value.clone().try_into::<ChainlinkSecretsConfig>()
-        {
-            errors.extend(check_str(
-                CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD,
-                &secrets.api_key_ssm_parameter,
-            ));
-            errors.extend(check_str(
-                CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD,
-                &secrets.api_secret_ssm_parameter,
             ));
         }
     }
@@ -610,7 +498,7 @@ fn validate_chainlink_data_streams_gate_provider(
             && !is_old_provider_level_feed_field
         {
             errors.push(format!(
-                "{context}.chainlink_data_streams.{field} is not a supported Chainlink Data Streams provider field"
+                "{context}.chainlink_data_streams.{field} is not a supported chainlink_data_streams provider field"
             ));
         }
     }
@@ -707,7 +595,7 @@ fn validate_chainlink_data_streams_gate_provider(
             && value_kind != PRICE_GATE_VALUE_KIND
         {
             errors.push(format!(
-                "{binding_context}.value_kind `{value_kind}` is not supported for Chainlink Data Streams price reports"
+                "{binding_context}.value_kind `{value_kind}` is not supported for chainlink_data_streams price reports"
             ));
         }
         if let (Some(resolution_identity), Some(value_kind)) = (resolution_identity, value_kind)
@@ -725,7 +613,7 @@ fn validate_chainlink_data_streams_gate_provider(
         ) && !is_lowercase_chainlink_feed_id(feed_id)
         {
             errors.push(format!(
-                "{binding_context}.feed_id must be a lowercase Chainlink feed id"
+                "{binding_context}.feed_id must be a lowercase chainlink_data_streams feed id"
             ));
         }
         required_positive_integer_field(
@@ -1815,7 +1703,7 @@ fn validate_chainlink_feed_binding_coverage(
         match binding_count {
             1 => {}
             0 => errors.push(format!(
-                "{}: Chainlink Data Streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has no matching gate_providers.{}.chainlink_data_streams.feed_bindings entry",
+                "{}: chainlink_data_streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has no matching gate_providers.{}.chainlink_data_streams.feed_bindings entry",
                 reference.context,
                 reference.key.provider_id,
                 reference.key.resolution_identity,
@@ -1823,7 +1711,7 @@ fn validate_chainlink_feed_binding_coverage(
                 reference.key.provider_id
             )),
             count => errors.push(format!(
-                "{}: Chainlink Data Streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has {count} matching gate_providers.{}.chainlink_data_streams.feed_bindings entries; expected exactly one",
+                "{}: chainlink_data_streams mapping provider_id `{}` resolution_identity `{}` value_kind `{}` has {count} matching gate_providers.{}.chainlink_data_streams.feed_bindings entries; expected exactly one",
                 reference.context,
                 reference.key.provider_id,
                 reference.key.resolution_identity,
@@ -1837,7 +1725,7 @@ fn validate_chainlink_feed_binding_coverage(
         if !target_keys.contains(key) {
             for context in contexts {
                 errors.push(format!(
-                    "{context} resolution_identity `{}` value_kind `{}` is not referenced by any loaded strategy Chainlink mapping",
+                    "{context} resolution_identity `{}` value_kind `{}` is not referenced by any loaded strategy chainlink_data_streams mapping",
                     key.resolution_identity, key.value_kind
                 ));
             }
@@ -1850,7 +1738,7 @@ fn validate_chainlink_feed_binding_coverage(
 fn collect_chainlink_target_mapping_references(
     strategies: &[LoadedStrategy],
     errors: &mut Vec<String>,
-) -> Vec<ChainlinkTargetMappingReference> {
+) -> Vec<ResolutionFeedMappingReference> {
     let mut references = Vec::new();
 
     for loaded in strategies {
@@ -1892,12 +1780,12 @@ fn collect_chainlink_target_mapping_references(
                 let Some(provider_id) = selected_chainlink_provider_id(subscription, mapping)
                 else {
                     errors.push(format!(
-                        "{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]: Chainlink Data Streams mapping resolution_identity `{resolution_identity}` value_kind `{value_kind}` cannot resolve provider_id from mapping provider_id, provider_preference, or a single allowed_provider_ids entry"
+                        "{strategy_context}: target.{TARGET_GATE_SUBSCRIPTIONS_FIELD}.{role}.{TARGET_MARKET_MAPPINGS_FIELD}[{index}]: chainlink_data_streams mapping resolution_identity `{resolution_identity}` value_kind `{value_kind}` cannot resolve provider_id from mapping provider_id, provider_preference, or a single allowed_provider_ids entry"
                     ));
                     continue;
                 };
-                references.push(ChainlinkTargetMappingReference {
-                    key: ChainlinkFeedBindingKey {
+                references.push(ResolutionFeedMappingReference {
+                    key: ResolutionFeedBindingKey {
                         provider_id,
                         resolution_identity,
                         value_kind,
@@ -1924,8 +1812,8 @@ fn selected_chainlink_provider_id(
 
 fn collect_chainlink_feed_bindings(
     root: &BoltV3RootConfig,
-) -> BTreeMap<ChainlinkFeedBindingKey, Vec<String>> {
-    let mut bindings: BTreeMap<ChainlinkFeedBindingKey, Vec<String>> = BTreeMap::new();
+) -> BTreeMap<ResolutionFeedBindingKey, Vec<String>> {
+    let mut bindings: BTreeMap<ResolutionFeedBindingKey, Vec<String>> = BTreeMap::new();
     let Some(gate_providers) = &root.gate_providers else {
         return bindings;
     };
@@ -1959,7 +1847,7 @@ fn collect_chainlink_feed_bindings(
             ) else {
                 continue;
             };
-            let key = ChainlinkFeedBindingKey {
+            let key = ResolutionFeedBindingKey {
                 provider_id: provider_id.clone(),
                 resolution_identity,
                 value_kind,

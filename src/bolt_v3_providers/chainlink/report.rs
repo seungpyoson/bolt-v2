@@ -97,7 +97,7 @@ pub(crate) fn decode_price_to_beat_report(
     let full_report =
         hex::decode(full_report_hex).map_err(|_| price_to_beat_report_provenance_invalid())?;
     let report_blob = decode_chainlink_full_report_blob(&full_report)?;
-    let decoded = decode_chainlink_v3_report_blob(&report_blob, binding)?;
+    let decoded = decode_chainlink_v3_report_blob(report_blob, binding)?;
     if decoded.feed_id != source.feed_id
         || decoded.valid_from_timestamp_ms
             != source
@@ -117,7 +117,7 @@ pub(crate) fn decode_price_to_beat_report(
 
 fn decode_chainlink_full_report_blob(
     full_report: &[u8],
-) -> Result<Vec<u8>, BoltV3OperatorArtifactError> {
+) -> Result<&[u8], BoltV3OperatorArtifactError> {
     if full_report.len() < CHAINLINK_REPORT_CALLBACK_MIN_BYTES {
         return Err(price_to_beat_report_provenance_invalid());
     }
@@ -140,7 +140,10 @@ fn decode_chainlink_full_report_blob(
     if end > full_report.len() {
         return Err(price_to_beat_report_provenance_invalid());
     }
-    Ok(full_report[start..end].to_vec())
+    // The blob is only read sequentially by `decode_chainlink_v3_report_blob`,
+    // so borrow the slice in place rather than allocating a fresh `Vec` per
+    // decode (one strike report per interval).
+    Ok(&full_report[start..end])
 }
 
 fn decode_chainlink_v3_report_blob(

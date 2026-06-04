@@ -1317,13 +1317,13 @@ fn validate_resolution_data_binding(
         message,
     };
 
-    // (a) venue must be the Chainlink Data Streams strike provider.
-    if resolution_client.venue.as_str() != crate::bolt_v3_providers::chainlink::KEY {
+    // (a) venue must be the resolution-oracle (Chainlink Data Streams) strike provider.
+    if resolution_client.venue.as_str() != crate::bolt_v3_providers::RESOLUTION_ORACLE_VENUE_KEY {
         return Err(reject(format!(
             "data_client_id `{}` has venue `{}`, but the strike feed must be served by a `{}` client",
             resolution_data.data_client_id,
             resolution_client.venue,
-            crate::bolt_v3_providers::chainlink::KEY
+            crate::bolt_v3_providers::RESOLUTION_ORACLE_VENUE_KEY
         )));
     }
 

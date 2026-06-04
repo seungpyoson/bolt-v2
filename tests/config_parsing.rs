@@ -4202,7 +4202,7 @@ fn rejects_chainlink_target_mapping_without_resolvable_provider_id() {
             message.contains("strategy `strategies/binary_oracle.toml`")
                 && message.contains("configured-primary-resolution")
                 && message.contains("provider_id")
-                && message.contains("Chainlink Data Streams")
+                && message.contains("chainlink_data_streams")
         }),
         "Chainlink target mappings must resolve a concrete provider_id for feed bindings: {messages:#?}"
     );

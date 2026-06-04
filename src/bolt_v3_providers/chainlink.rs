@@ -15,6 +15,24 @@
 //! credentials through an NT adapter, so this binding contributes no
 //! credential-log modules and no forbidden environment variables.
 
+mod auth;
+mod report;
+mod strike_source;
+
+pub(crate) use auth::{
+    chainlink_data_streams_auth_headers, chainlink_data_streams_credentials,
+    chainlink_data_streams_report_request_url,
+};
+pub(crate) use report::{
+    CHAINLINK_REPORT_MILLISECONDS_PER_SECOND, ChainlinkDataStreamsReportApiResponse,
+    DecodedPriceToBeatReport, PriceToBeatReportBinding, decode_price_to_beat_report,
+    is_lowercase_chainlink_feed_id,
+};
+pub(crate) use strike_source::{
+    ChainlinkStrikeFeedBinding, ChainlinkStrikeSourceConfig, ChainlinkStrikeSourceFactory,
+    STRIKE_WINDOW_OPEN_UNIX_SECONDS_PARAM, parse_feed_binding,
+};
+
 use std::{any::Any, sync::Arc};
 
 use nautilus_core::string::secret::REDACTED;
@@ -25,11 +43,7 @@ use crate::{
     bolt_v3_adapters::{
         BoltV3AdapterMappingError, BoltV3ClientAdapterConfig, BoltV3DataClientAdapterConfig,
     },
-    bolt_v3_chainlink::{
-        ChainlinkStrikeFeedBinding, ChainlinkStrikeSourceConfig, ChainlinkStrikeSourceFactory,
-        parse_feed_binding,
-    },
-    bolt_v3_config::ClientBlock,
+    bolt_v3_config::{BoltV3RootConfig, ClientBlock},
     bolt_v3_providers::{
         ProviderAdapterMapContext, ProviderCredentialedBlock, ProviderResolvedSecrets,
         ProviderSecretRequirement, ProviderSecretResolveContext, ProviderSsmPathReference,
@@ -38,7 +52,15 @@ use crate::{
     bolt_v3_secrets::{BoltV3SecretError, resolve_field},
 };
 
+/// NT venue identifier for the live Chainlink Data Streams strike-source client.
 pub const KEY: &str = "CHAINLINK_DATA_STREAMS";
+
+/// `gate_providers.<id>.provider_kind` discriminator for the resolution oracle
+/// backed by Chainlink Data Streams. Core config resolution (`crate::bolt_v3_config`)
+/// and core validation (`crate::bolt_v3_validate`) reach this through the neutral
+/// re-export in `crate::bolt_v3_providers`, so the provider-key literal stays
+/// owned by this binding module.
+pub const PROVIDER_KIND: &str = "chainlink_data_streams";
 pub const SUPPORTED_MARKET_FAMILIES: &[&str] = &[];
 pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecretRequirement {
     block: ProviderCredentialedBlock::Data,
@@ -46,8 +68,8 @@ pub const REQUIRED_SECRET_BLOCKS: &[ProviderSecretRequirement] = &[ProviderSecre
 }];
 pub const SECRET_FIELD_NAMES: &[&str] = &["api_key_ssm_parameter", "api_secret_ssm_parameter"];
 /// Chainlink credentials are consumed by the bolt-owned HMAC request signer in
-/// `crate::bolt_v3_chainlink`, never by an NT adapter, so no NT module can echo
-/// them at info level.
+/// this binding's `auth` submodule, never by an NT adapter, so no NT module can
+/// echo them at info level.
 pub const CREDENTIAL_LOG_MODULES: &[&str] = &[];
 /// The bolt-owned Chainlink signer resolves credentials only from SSM; it never
 /// reads any environment variable as a secret fallback.
@@ -334,13 +356,137 @@ fn secrets_for<'a>(
     }
 }
 
+/// F3 single-source guard: when both a live `CHAINLINK_DATA_STREAMS` data
+/// client and a `chainlink_data_streams` gate provider are configured, their
+/// shared connection config (REST endpoint + SSM credential paths) must match
+/// exactly, so the offline-evidence path and the live strike path cannot
+/// silently drift onto different endpoints/testnets/credentials. Fails closed
+/// on any divergence.
+///
+/// Feed bindings are intentionally NOT compared here: the live client maps
+/// `feed_id -> instrument_id` while the gate provider maps
+/// `feed_id -> resolution_identity`, so their shapes differ. Full single-source
+/// dedup (deriving the live client from the gate provider and removing the
+/// duplicate block) is tracked with the #551 gate-provider/seed removal.
+///
+/// Owned by this provider binding because it deserializes the concrete
+/// `ChainlinkDataConfig`/`ChainlinkSecretsConfig` block shapes; core validation
+/// reaches it through the neutral `validate_resolution_oracle_client_consistency`
+/// seam in `crate::bolt_v3_providers`.
+pub(crate) fn validate_client_gate_provider_consistency(root: &BoltV3RootConfig) -> Vec<String> {
+    use crate::bolt_v3_validate::{
+        CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD,
+        CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD,
+        CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD,
+        CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD,
+        CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD,
+    };
+
+    let mut errors = Vec::new();
+
+    let chainlink_gate_providers: Vec<(&String, &toml::Value)> = match &root.gate_providers {
+        Some(providers) => providers
+            .iter()
+            .filter(|(_, provider)| provider.provider_kind.as_deref() == Some(PROVIDER_KIND))
+            .filter_map(|(id, provider)| {
+                provider
+                    .provider_config
+                    .get(PROVIDER_KIND)
+                    .map(|table| (id, table))
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+
+    for (client_id, client) in &root.clients {
+        if client.venue.as_str() != KEY {
+            continue;
+        }
+        let Some(data_value) = client.data.as_ref() else {
+            continue;
+        };
+        // Per-client shape errors are reported by the provider validator; only
+        // run the cross-check when the client config parses cleanly.
+        let Ok(data) = data_value.clone().try_into::<ChainlinkDataConfig>() else {
+            continue;
+        };
+
+        if chainlink_gate_providers.is_empty() {
+            // No gate provider to drift against (e.g. the post-#551 end state).
+            continue;
+        }
+        if chainlink_gate_providers.len() > 1 {
+            errors.push(format!(
+                "clients.{client_id} (CHAINLINK_DATA_STREAMS) cannot be consistency-checked against the resolution oracle: {} `chainlink_data_streams` gate providers are configured, expected exactly one",
+                chainlink_gate_providers.len()
+            ));
+            continue;
+        }
+
+        let (gate_provider_id, gate_table_value) = chainlink_gate_providers[0];
+        let Some(gate_table) = gate_table_value.as_table() else {
+            // A malformed gate-provider table is reported by validate_gate_providers.
+            continue;
+        };
+
+        let check_str = |field: &str, client_value: &str| -> Option<String> {
+            let gate_value = gate_table.get(field).and_then(toml::Value::as_str);
+            if gate_value == Some(client_value) {
+                None
+            } else {
+                Some(format!(
+                    "clients.{client_id}.data.{field} (`{client_value}`) must match gate_providers.{gate_provider_id}.chainlink_data_streams.{field} (`{}`); the live strike client and the resolution-oracle gate provider must reference one source",
+                    gate_value.unwrap_or("<missing>")
+                ))
+            }
+        };
+
+        errors.extend(check_str(
+            CHAINLINK_DATA_STREAMS_REST_BASE_URL_FIELD,
+            &data.rest_base_url,
+        ));
+        errors.extend(check_str(
+            CHAINLINK_DATA_STREAMS_REPORT_ENDPOINT_PATH_FIELD,
+            &data.report_endpoint_path,
+        ));
+
+        let gate_timeout = gate_table
+            .get(CHAINLINK_DATA_STREAMS_HTTP_TIMEOUT_SECS_FIELD)
+            .and_then(toml::Value::as_integer);
+        if gate_timeout != Some(data.http_timeout_secs as i64) {
+            errors.push(format!(
+                "clients.{client_id}.data.http_timeout_secs ({}) must match gate_providers.{gate_provider_id}.chainlink_data_streams.http_timeout_secs ({}); the live strike client and the resolution-oracle gate provider must reference one source",
+                data.http_timeout_secs,
+                gate_timeout
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "<missing>".to_string())
+            ));
+        }
+
+        if let Some(secrets_value) = client.secrets.as_ref()
+            && let Ok(secrets) = secrets_value.clone().try_into::<ChainlinkSecretsConfig>()
+        {
+            errors.extend(check_str(
+                CHAINLINK_DATA_STREAMS_API_KEY_SSM_PARAMETER_FIELD,
+                &secrets.api_key_ssm_parameter,
+            ));
+            errors.extend(check_str(
+                CHAINLINK_DATA_STREAMS_API_SECRET_SSM_PARAMETER_FIELD,
+                &secrets.api_secret_ssm_parameter,
+            ));
+        }
+    }
+
+    errors
+}
+
 #[cfg(test)]
 mod tests {
     //! Feed-binding uniqueness validation.
     //!
     //! The `[clients.<id>.data].feed_bindings` table maps each Chainlink Data
     //! Streams `feed_id` to exactly one NT resolution `instrument_id`. The live
-    //! strike lookup in `bolt_v3_chainlink::strike_source` resolves a binding by
+    //! strike lookup in this binding's `strike_source` submodule resolves a binding by
     //! `.find(|b| b.instrument_id == instrument_id)` (first match wins), so a
     //! duplicate `feed_id` or `instrument_id` silently shadows the second entry
     //! — a misconfiguration that must fail closed at config validation rather

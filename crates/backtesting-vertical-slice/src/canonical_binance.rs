@@ -64,6 +64,7 @@
 //!   research. The positive-only kline path here therefore rejects them.
 
 use std::{
+    io::BufRead,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -545,6 +546,84 @@ fn strip_verified_header<'a>(csv_text: &'a str, expected_header: &str) -> Result
     Ok(&csv_text[header_end..])
 }
 
+/// One parsed Binance futures `aggTrades` row — the trade fields only, without
+/// per-row provenance. Shared by the table normalizer and the streaming bulk
+/// path so the field parsing and validation rules live in exactly one place.
+struct ParsedAggTrade {
+    event_time: i64,
+    trade_id: String,
+    aggressor_side: TradeAggressorSide,
+    price: String,
+    size: String,
+}
+
+/// Parse and validate one Binance futures `aggTrades` CSV body line: field
+/// count, non-empty trade id, positive price/size, the `is_buyer_maker`
+/// aggressor flag, and the millisecond -> nanosecond event time.
+///
+/// # Errors
+///
+/// Returns an error if the row has the wrong field count, a field fails to
+/// parse, a price/size is non-positive, or the timestamp overflows.
+fn parse_agg_trade_line(line: &str, index: usize) -> Result<ParsedAggTrade> {
+    let fields: Vec<&str> = line.split(',').collect();
+    ensure!(
+        fields.len() == BINANCE_AGG_TRADES_FIELD_COUNT,
+        "aggTrades row {index} has {} fields, expected {}",
+        fields.len(),
+        BINANCE_AGG_TRADES_FIELD_COUNT
+    );
+
+    let trade_id = fields[0].trim();
+    let price_raw = fields[1].trim();
+    let size_raw = fields[2].trim();
+    // fields[3] (first_trade_id) and fields[4] (last_trade_id) describe the
+    // aggregation window; the canonical id is the agg_trade_id.
+    let time_millis: i64 = fields[5].trim().parse().with_context(|| {
+        format!(
+            "aggTrades row {index}: invalid transact_time {:?}",
+            fields[5]
+        )
+    })?;
+    let aggressor = TradeAggressorSide::from_is_buyer_maker(fields[6]).with_context(|| {
+        format!(
+            "aggTrades row {index}: invalid is_buyer_maker {:?}",
+            fields[6]
+        )
+    })?;
+
+    ensure!(
+        !trade_id.is_empty(),
+        "aggTrades row {index}: empty trade id"
+    );
+    let price: Decimal = price_raw
+        .parse()
+        .with_context(|| format!("aggTrades row {index}: invalid price {price_raw:?}"))?;
+    let size: Decimal = size_raw
+        .parse()
+        .with_context(|| format!("aggTrades row {index}: invalid size {size_raw:?}"))?;
+    ensure!(
+        price > Decimal::ZERO,
+        "aggTrades row {index}: non-positive price"
+    );
+    ensure!(
+        size > Decimal::ZERO,
+        "aggTrades row {index}: non-positive size"
+    );
+
+    let event_time = time_millis
+        .checked_mul(NANOS_PER_MILLISECOND)
+        .with_context(|| format!("aggTrades row {index}: timestamp overflow"))?;
+
+    Ok(ParsedAggTrade {
+        event_time,
+        trade_id: trade_id.to_string(),
+        aggressor_side: aggressor,
+        price: price_raw.to_string(),
+        size: size_raw.to_string(),
+    })
+}
+
 /// Normalize a decompressed Binance futures `aggTrades` CSV into the canonical
 /// trades table (reusing the shared [`BinanceTradeRow`] model so the
 /// `TradeTick` projection and read-back paths are shared with the spot family).
@@ -577,55 +656,7 @@ pub fn normalize_binance_agg_trades(
         if line.trim().is_empty() {
             continue;
         }
-        let fields: Vec<&str> = line.split(',').collect();
-        ensure!(
-            fields.len() == BINANCE_AGG_TRADES_FIELD_COUNT,
-            "aggTrades row {index} has {} fields, expected {}",
-            fields.len(),
-            BINANCE_AGG_TRADES_FIELD_COUNT
-        );
-
-        let trade_id = fields[0].trim();
-        let price_raw = fields[1].trim();
-        let size_raw = fields[2].trim();
-        // fields[3] (first_trade_id) and fields[4] (last_trade_id) describe the
-        // aggregation window; the canonical id is the agg_trade_id.
-        let time_millis: i64 = fields[5].trim().parse().with_context(|| {
-            format!(
-                "aggTrades row {index}: invalid transact_time {:?}",
-                fields[5]
-            )
-        })?;
-        let aggressor = TradeAggressorSide::from_is_buyer_maker(fields[6]).with_context(|| {
-            format!(
-                "aggTrades row {index}: invalid is_buyer_maker {:?}",
-                fields[6]
-            )
-        })?;
-
-        ensure!(
-            !trade_id.is_empty(),
-            "aggTrades row {index}: empty trade id"
-        );
-        let price: Decimal = price_raw
-            .parse()
-            .with_context(|| format!("aggTrades row {index}: invalid price {price_raw:?}"))?;
-        let size: Decimal = size_raw
-            .parse()
-            .with_context(|| format!("aggTrades row {index}: invalid size {size_raw:?}"))?;
-        ensure!(
-            price > Decimal::ZERO,
-            "aggTrades row {index}: non-positive price"
-        );
-        ensure!(
-            size > Decimal::ZERO,
-            "aggTrades row {index}: non-positive size"
-        );
-
-        let event_time = time_millis
-            .checked_mul(NANOS_PER_MILLISECOND)
-            .with_context(|| format!("aggTrades row {index}: timestamp overflow"))?;
-
+        let parsed = parse_agg_trade_line(line, index)?;
         rows.push(BinanceTradeRow {
             venue: provenance.venue.clone(),
             product_family: provenance.product_family.clone(),
@@ -633,13 +664,13 @@ pub fn normalize_binance_agg_trades(
             instrument_id: identity.instrument_id.clone(),
             venue_symbol: identity.venue_symbol.clone(),
             nt_instrument_id: identity.nt_instrument_id.clone(),
-            event_time,
+            event_time: parsed.event_time,
             source_proof_id: provenance.source_proof_id.clone(),
             payload_hash: provenance.payload_hash.clone(),
-            trade_id: trade_id.to_string(),
-            aggressor_side: aggressor,
-            price: price_raw.to_string(),
-            size: size_raw.to_string(),
+            trade_id: parsed.trade_id,
+            aggressor_side: parsed.aggressor_side,
+            price: parsed.price,
+            size: parsed.size,
         });
     }
 
@@ -1302,13 +1333,7 @@ fn bulk_inputs(
     ingest_run_id: &str,
 ) -> Result<(BinanceProvenance, BinanceInstrumentIdentity)> {
     ensure!(!object_bytes.is_empty(), "empty object for {object_key:?}");
-    ensure!(
-        !ingest_run_id.trim().is_empty(),
-        "empty ingest_run_id for {object_key:?}"
-    );
-    let symbol = key_segment(object_key, "symbol")?;
-    let product = key_segment(object_key, "product")?;
-    let archive_date = key_segment(object_key, "dt")?;
+    let (_symbol, product, archive_date, identity) = bulk_identity(object_key, ingest_run_id)?;
     let mut hasher = Sha256::new();
     hasher.update(object_bytes);
     let payload_hash = hex::encode(hasher.finalize());
@@ -1323,12 +1348,38 @@ fn bulk_inputs(
         payload_hash,
         archive_date,
     };
+    Ok((provenance, identity))
+}
+
+/// Extract and validate the venue identity from a bulk object key — the symbol,
+/// product, and archive date segments (the CSV carries no instrument column).
+///
+/// Shared by [`bulk_inputs`] and the streaming aggTrades path, which has no
+/// whole-object byte buffer to hash for provenance. Validates the same key
+/// segments and `ingest_run_id` as the buffered path so the accept/reject
+/// behaviour is identical; returns the segments plus the built identity.
+///
+/// # Errors
+///
+/// Returns an error if `ingest_run_id` is empty or the key lacks a required
+/// `symbol`/`product`/`dt` segment.
+fn bulk_identity(
+    object_key: &str,
+    ingest_run_id: &str,
+) -> Result<(String, String, String, BinanceInstrumentIdentity)> {
+    ensure!(
+        !ingest_run_id.trim().is_empty(),
+        "empty ingest_run_id for {object_key:?}"
+    );
+    let symbol = key_segment(object_key, "symbol")?;
+    let product = key_segment(object_key, "product")?;
+    let archive_date = key_segment(object_key, "dt")?;
     let identity = BinanceInstrumentIdentity {
         instrument_id: symbol.clone(),
         venue_symbol: symbol.clone(),
         nt_instrument_id: format!("{symbol}.{BINANCE_VENUE}"),
     };
-    Ok((provenance, identity))
+    Ok((symbol, product, archive_date, identity))
 }
 
 /// One object's write summary produced by a bulk-append call.
@@ -1341,39 +1392,34 @@ pub struct BinanceAppendSummary {
     pub size_precision: u8,
 }
 
-/// Convert canonical trade rows into NautilusTrader `TradeTick`s at the supplied
-/// data-derived precision, keyed by the supplied instrument id.
+/// Build one NautilusTrader `TradeTick` from a parsed aggTrade row at the
+/// supplied data-derived precision — the per-row tick construction for the
+/// streaming aggTrades bulk path.
 ///
-/// This is the bulk-path twin of [`canonical_rows_to_trade_ticks`]: instead of
-/// taking a fully-specified `CurrencyPair`, it takes the instrument id and the
-/// precision derived from the rows, because the bulk path writes only the data
-/// (no instrument) and assumes no staged instrument universe.
-fn rows_to_trade_ticks_at(
-    table: &BinanceTradesTable,
+/// # Errors
+///
+/// Returns an error if a price/size cannot be represented at the precision, the
+/// trade id is invalid, or the event time is negative.
+fn build_trade_tick(
     instrument_id: InstrumentId,
+    row: &ParsedAggTrade,
     price_precision: u8,
     size_precision: u8,
-) -> Result<Vec<TradeTick>> {
-    table
-        .rows
-        .iter()
-        .map(|row| {
-            let price = price_at(&row.price, price_precision)?;
-            let size = quantity_at(&row.size, size_precision)?;
-            let trade_id = TradeId::new_checked(&row.trade_id)
-                .map_err(|error| anyhow::anyhow!("invalid trade id {:?}: {error}", row.trade_id))?;
-            let ts = UnixNanos::from(u64::try_from(row.event_time).context("negative event_time")?);
-            Ok(TradeTick::new(
-                instrument_id,
-                price,
-                size,
-                row.aggressor_side.to_nt(),
-                trade_id,
-                ts,
-                ts,
-            ))
-        })
-        .collect()
+) -> Result<TradeTick> {
+    let price = price_at(&row.price, price_precision)?;
+    let size = quantity_at(&row.size, size_precision)?;
+    let trade_id = TradeId::new_checked(&row.trade_id)
+        .map_err(|error| anyhow::anyhow!("invalid trade id {:?}: {error}", row.trade_id))?;
+    let ts = UnixNanos::from(u64::try_from(row.event_time).context("negative event_time")?);
+    Ok(TradeTick::new(
+        instrument_id,
+        price,
+        size,
+        row.aggressor_side.to_nt(),
+        trade_id,
+        ts,
+        ts,
+    ))
 }
 
 /// Convert canonical bar rows into NautilusTrader `Bar`s at the supplied
@@ -1405,17 +1451,6 @@ fn rows_to_bars_at(
         .collect()
 }
 
-/// Maximum price/size decimal places observed across a canonical trades table.
-fn derive_trade_precisions(table: &BinanceTradesTable) -> Result<(u8, u8)> {
-    let mut price_precision = 0u8;
-    let mut size_precision = 0u8;
-    for row in &table.rows {
-        price_precision = price_precision.max(value_decimal_places(&row.price)?);
-        size_precision = size_precision.max(value_decimal_places(&row.size)?);
-    }
-    Ok((price_precision, size_precision))
-}
-
 /// Maximum price/volume decimal places observed across a canonical klines table.
 /// Price precision is the max across all four OHLC columns; size precision is
 /// the max across the volume column.
@@ -1432,13 +1467,23 @@ fn derive_kline_precisions(table: &BinanceKlinesTable) -> Result<(u8, u8)> {
 }
 
 /// Append one Binance futures `aggTrades` object into an already-open
-/// [`ParquetDataCatalog`] as `TradeTick` data — the bulk-conversion path.
+/// [`ParquetDataCatalog`] as `TradeTick` data — the bulk-conversion path,
+/// streamed so a multi-GiB monthly object converts without OOM.
 ///
-/// `csv_text` is the decompressed text of the accepted `.zip` object (the unzip
-/// is the ingest step, per the module contract). `object_key` is the S3 key the
-/// object was staged under; the instrument symbol (`symbol=` segment) and
-/// provenance (`product=`, `dt=`, object hash) are read from it because the CSV
-/// rows carry no instrument column. Precision is derived from the rows.
+/// `reader` yields the decompressed CSV (one header line, then millisecond-
+/// stamped agg-trade rows); the dispatch feeds it a streaming ZIP-member reader
+/// so the whole CSV is never materialised. `object_key` is the S3 key the object
+/// was staged under; the instrument symbol (`symbol=` segment) is read from it
+/// because the CSV rows carry no instrument column.
+///
+/// The object is read once into a compact parsed form — the trade fields only,
+/// not the wide per-row provenance the table model clones (that per-row clone
+/// dominated the RUN2 OOM) — the price/size precision is derived from those rows
+/// (their maximum decimal places), and the `TradeTick`s are built at that
+/// precision and written. Peak memory is bounded by the object's tick count, not
+/// its byte size. The parsing, header check, monotonicity, and tick construction
+/// are the same shared code the table normaliser uses, so the output is
+/// byte-identical to the buffered path.
 ///
 /// Unlike [`project_trades_to_catalog`] (the hermetic single-object proof
 /// harness, which refuses a dirty root and writes a `CurrencyPair`), this appends
@@ -1447,22 +1492,82 @@ fn derive_kline_precisions(table: &BinanceKlinesTable) -> Result<(u8, u8)> {
 ///
 /// # Errors
 ///
-/// Returns an error if the key lacks a required segment, the CSV fails to
-/// normalize, precision cannot be derived, tick construction fails, or the
-/// catalog write fails.
+/// Returns an error if the key lacks a required segment, the header is
+/// unexpected, a row fails to parse, a price/size is non-positive, event times
+/// are not monotonically non-decreasing, the object has no rows, tick
+/// construction fails, or the catalog write fails.
 pub fn append_binance_futures_agg_trades_archive(
-    csv_text: &str,
+    reader: &mut impl BufRead,
     object_key: &str,
     ingest_run_id: &str,
     catalog: &mut ParquetDataCatalog,
 ) -> Result<BinanceAppendSummary> {
-    let (provenance, identity) =
-        bulk_inputs(csv_text.as_bytes(), object_key, "aggTrades", ingest_run_id)?;
-    let table = normalize_binance_agg_trades(&provenance, &identity, csv_text)?;
-    let (price_precision, size_precision) = derive_trade_precisions(&table)?;
+    let (_symbol, _product, _archive_date, identity) = bulk_identity(object_key, ingest_run_id)?;
     let instrument_id = InstrumentId::from_str(&identity.nt_instrument_id)
         .with_context(|| format!("invalid nt_instrument_id {:?}", identity.nt_instrument_id))?;
-    let ticks = rows_to_trade_ticks_at(&table, instrument_id, price_precision, size_precision)?;
+
+    // Read the member once into compact parsed rows (no per-row provenance),
+    // deriving the price/size precision and validating monotonicity as we go.
+    let mut rows: Vec<ParsedAggTrade> = Vec::new();
+    let mut price_precision = 0u8;
+    let mut size_precision = 0u8;
+    let mut previous_event_time = i64::MIN;
+    let mut header_seen = false;
+    let mut body_index = 0usize;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let read = reader
+            .read_line(&mut line)
+            .context("read Binance aggTrades line")?;
+        if read == 0 {
+            break;
+        }
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        if !header_seen {
+            if trimmed.trim().is_empty() {
+                continue;
+            }
+            ensure!(
+                trimmed.trim() == BINANCE_AGG_TRADES_HEADER,
+                "unexpected CSV header {:?}, expected {:?}",
+                trimmed.trim(),
+                BINANCE_AGG_TRADES_HEADER
+            );
+            header_seen = true;
+            continue;
+        }
+        // Body index counts every line after the header (including blanks), to
+        // match the buffered normaliser's `body.lines().enumerate()` indexing.
+        let index = body_index;
+        body_index += 1;
+        if trimmed.trim().is_empty() {
+            continue;
+        }
+        let parsed = parse_agg_trade_line(trimmed, index)?;
+        ensure!(
+            parsed.event_time > 0,
+            "aggTrades row {index}: non-positive event_time"
+        );
+        ensure!(
+            parsed.event_time >= previous_event_time,
+            "aggTrades row {index}: event_time {} precedes previous {}",
+            parsed.event_time,
+            previous_event_time
+        );
+        previous_event_time = parsed.event_time;
+        price_precision = price_precision.max(value_decimal_places(&parsed.price)?);
+        size_precision = size_precision.max(value_decimal_places(&parsed.size)?);
+        rows.push(parsed);
+    }
+
+    ensure!(header_seen, "empty CSV: no header row");
+    ensure!(!rows.is_empty(), "binance trades table is empty");
+
+    let ticks: Vec<TradeTick> = rows
+        .iter()
+        .map(|row| build_trade_tick(instrument_id, row, price_precision, size_precision))
+        .collect::<Result<_>>()?;
     let record_count = ticks.len();
 
     catalog

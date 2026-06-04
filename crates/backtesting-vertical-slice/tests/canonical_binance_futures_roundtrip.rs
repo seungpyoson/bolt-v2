@@ -19,7 +19,7 @@
 //!
 //! Hermetic: fixtures live under `tests/fixtures/binance/`; no test touches S3.
 
-use std::{fs, path::PathBuf, str::FromStr};
+use std::{fs, io::Cursor, path::PathBuf, str::FromStr};
 
 use backtesting_vertical_slice::canonical_binance::{
     BinanceInstrumentIdentity, BinanceInstrumentSpec, BinanceProvenance, KlineBarSpec,
@@ -284,8 +284,14 @@ fn agg_trades_data_derived_append_round_trips() {
     assert!(!table.rows.is_empty(), "fixture must carry rows");
 
     let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
-    let summary = append_binance_futures_agg_trades_archive(&csv, &key, BULK_RUN, &mut catalog)
-        .expect("append aggTrades");
+    // The bulk path streams the decompressed CSV through a BufRead so a multi-GiB
+    // monthly object never materialises whole; a Cursor over the fixture exercises
+    // the same line-streaming + two-precision-pass logic the dispatch feeds from a
+    // streaming ZIP-member reader.
+    let mut reader = Cursor::new(csv.as_bytes());
+    let summary =
+        append_binance_futures_agg_trades_archive(&mut reader, &key, BULK_RUN, &mut catalog)
+            .expect("append aggTrades");
     assert_eq!(summary.nt_instrument_id, BULK_NT_INST);
     assert_eq!(summary.data_type, NT_DATA_TYPE_TRADE_TICK);
     assert_eq!(summary.record_count, table.rows.len());

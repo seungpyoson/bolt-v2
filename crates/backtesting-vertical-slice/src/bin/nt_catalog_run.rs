@@ -16,6 +16,7 @@
 //!   `file://` staging tree and an `s3://` lake share one code path.
 
 use std::fs;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -59,7 +60,7 @@ use backtesting_vertical_slice::canonical_hyperliquid_hip4::{
 };
 use backtesting_vertical_slice::canonical_okx::{
     append_okx_book_archive, append_okx_candlesticks_archive, append_okx_trades_archive,
-    extract_csv_from_zip,
+    extract_csv_from_zip, zip_member_reader,
 };
 use backtesting_vertical_slice::convert_driver::{
     ConvertReport, ObjectOutcome, ObjectStats, run_objects,
@@ -725,13 +726,16 @@ fn convert_object(
             .map(|s| instrument(s.nt_instrument_id, s.record_count))
             .collect(),
         ("binance", "aggTrades") => {
-            let csv = extract_csv_from_zip(bytes)?;
+            // Stream the (multi-GiB) member instead of materialising the whole
+            // CSV; verify CRC/length after the archive fn drains it to EOF.
+            let mut reader = BufReader::new(zip_member_reader(bytes)?);
             let s = append_binance_futures_agg_trades_archive(
-                &csv,
+                &mut reader,
                 object_key,
                 ingest_run_id,
                 catalog,
             )?;
+            reader.into_inner().verify()?;
             vec![instrument(s.nt_instrument_id, s.record_count)]
         }
         ("binance", "markPriceKlines") => {

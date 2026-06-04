@@ -16,10 +16,11 @@ use std::fs;
 
 use backtesting_vertical_slice::canonical_okx::{
     NT_DATA_TYPE_BAR, NT_DATA_TYPE_TRADE_TICK, OkxBarSpec, OkxInstrumentSpec,
-    append_okx_candlesticks_archive, append_okx_trades_archive, extract_csv_from_zip,
-    okx_bar_spec_from_rows, okx_bar_type_string, okx_candle_instruments,
-    okx_candles_spec_from_rows, okx_candlesticks_to_bars, okx_trade_instruments,
-    okx_trades_spec_from_rows, okx_trades_to_trade_ticks, parse_okx_candlesticks, parse_okx_trades,
+    append_okx_candlesticks_archive, append_okx_candlesticks_csv, append_okx_trades_archive,
+    extract_csv_from_zip, okx_bar_spec_from_open_times, okx_bar_spec_from_rows,
+    okx_bar_type_string, okx_candle_instruments, okx_candles_spec_from_rows,
+    okx_candlesticks_to_bars, okx_trade_instruments, okx_trades_spec_from_rows,
+    okx_trades_to_trade_ticks, parse_okx_candlesticks, parse_okx_trades,
     project_okx_candlesticks_archive_to_catalog, project_okx_trades_archive_to_catalog,
     read_back_bars, read_back_trade_ticks,
 };
@@ -321,4 +322,137 @@ fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
         }
     }
     out
+}
+
+// ===========================================================================
+// Object-scoped bar-period derivation (regression guard for the RUN2
+// okx/candlesticks EXIT=1: an illiquid single-minute OPTION strike in a
+// multi-instrument option-chain object made the per-instrument period
+// derivation bail and aborted the whole object). The bar period is a
+// per-OBJECT property; an instrument carrying one bar inherits the object's
+// proven period instead of being unprovable on its own.
+// ===========================================================================
+
+/// Candle CSV header, matching `OKX_CANDLES_HEADER`.
+const CANDLES_CSV_HEADER: &str =
+    "instrument_name,open,high,low,close,vol,vol_ccy,vol_quote,open_time,confirm";
+
+/// A busy option strike that trades every minute (multi-bar stream).
+const BUSY_STRIKE: &str = "BTC-USD-260308-58000-P";
+/// An illiquid option strike that trades in a single minute (one-bar stream).
+const SINGLE_BAR_STRIKE: &str = "BTC-USD-260308-77000-C";
+
+/// First bar open (minute-aligned) in milliseconds, and the one-minute step.
+const CANDLE_T0_MS: i64 = 1_772_323_200_000;
+const ONE_MINUTE_MS: i64 = 60_000;
+
+/// One confirmed 1-dp candle row. `vol_ccy`/`vol_quote` are unused by the parser
+/// and carry placeholders only to satisfy the fixed column count.
+fn candle_csv_row(inst: &str, open_time_ms: i64) -> String {
+    format!("{inst},100.0,101.0,99.0,100.5,10,0,0,{open_time_ms},1")
+}
+
+/// A multi-instrument 1-minute option-chain candlesticks CSV in which one strike
+/// is illiquid and carries exactly one bar (a single distinct open_time) while
+/// the busy strike carries three — the object shape that aborted RUN2.
+fn option_chain_csv_with_single_bar_strike() -> String {
+    let mut lines = vec![CANDLES_CSV_HEADER.to_string()];
+    lines.push(candle_csv_row(BUSY_STRIKE, CANDLE_T0_MS));
+    lines.push(candle_csv_row(BUSY_STRIKE, CANDLE_T0_MS + ONE_MINUTE_MS));
+    lines.push(candle_csv_row(
+        BUSY_STRIKE,
+        CANDLE_T0_MS + 2 * ONE_MINUTE_MS,
+    ));
+    lines.push(candle_csv_row(
+        SINGLE_BAR_STRIKE,
+        CANDLE_T0_MS + ONE_MINUTE_MS,
+    ));
+    lines.join("\n")
+}
+
+#[test]
+fn okx_candlesticks_option_chain_with_single_bar_strike_appends_all_instruments() {
+    // The bar period is a per-OBJECT property: the busy strike proves a
+    // 1-minute period for the whole object, and the single-bar strike inherits
+    // it instead of aborting the object (RUN2 EXIT=1 "cannot derive OKX candle
+    // interval from fewer than two distinct bar-open times").
+    let csv = option_chain_csv_with_single_bar_strike();
+    let dir = tempfile::TempDir::new().expect("temp catalog root");
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+
+    let summaries =
+        append_okx_candlesticks_csv(&csv, &mut catalog).expect("append option-chain candles");
+
+    assert_eq!(summaries.len(), 2, "one summary per distinct instrument");
+    let single = summaries
+        .iter()
+        .find(|s| s.nt_instrument_id == format!("{SINGLE_BAR_STRIKE}.OKX"))
+        .expect("single-bar strike must be appended, not dropped");
+    assert_eq!(
+        single.record_count, 1,
+        "single-bar strike yields exactly one bar"
+    );
+    let busy = summaries
+        .iter()
+        .find(|s| s.nt_instrument_id == format!("{BUSY_STRIKE}.OKX"))
+        .expect("busy strike must be appended");
+    assert_eq!(busy.record_count, 3, "busy strike yields three bars");
+}
+
+#[test]
+fn okx_object_bar_spec_derived_from_union_not_per_instrument() {
+    // `open_time`s are nanoseconds (as `OkxCandleRow::open_time` is). The lone
+    // strike alone (one open) cannot prove a period, but the object-level union
+    // of every instrument's opens still resolves the 1-minute interval — the
+    // derivation scope is the whole object, not a single instrument.
+    const T0_NS: i64 = CANDLE_T0_MS * 1_000_000;
+    const MIN_NS: i64 = ONE_MINUTE_MS * 1_000_000;
+    let union = [T0_NS, T0_NS + MIN_NS, T0_NS + 2 * MIN_NS, T0_NS + MIN_NS];
+    assert_eq!(
+        okx_bar_spec_from_open_times(&union).expect("derive object period"),
+        minute_bar(),
+    );
+    assert!(
+        okx_bar_spec_from_open_times(&[T0_NS + MIN_NS]).is_err(),
+        "a single open cannot prove a period on its own"
+    );
+}
+
+#[test]
+fn okx_single_bar_strike_roundtrips_at_object_period() {
+    let csv = option_chain_csv_with_single_bar_strike();
+    let dir = tempfile::TempDir::new().expect("temp catalog root");
+    let mut catalog = ParquetDataCatalog::new(dir.path(), None, None, None, None);
+    append_okx_candlesticks_csv(&csv, &mut catalog).expect("append option-chain candles");
+
+    // The single-bar strike inherits the object's 1-minute period. Read it back
+    // by that bar-type identifier and prove it is exactly the one expected bar
+    // (count, ordering, payload, precision) — the inherited period was applied,
+    // not fabricated.
+    let rows = parse_okx_candlesticks(&csv, SINGLE_BAR_STRIKE).expect("parse single strike");
+    assert_eq!(rows.len(), 1, "single-bar strike has exactly one row");
+    let spec = okx_candles_spec_from_rows(&rows, SINGLE_BAR_STRIKE).expect("derive spec");
+    let expected = okx_candlesticks_to_bars(&rows, &spec, minute_bar()).expect("map to bars");
+    let bar_type = okx_bar_type_string(&spec, minute_bar()).expect("bar type string");
+    let loaded = read_back_bars(dir.path(), &bar_type).expect("read back single-strike bars");
+    assert_eq!(loaded.len(), 1, "exactly one bar for the single-bar strike");
+    assert_eq!(
+        loaded, expected,
+        "single-bar strike round-trips at the object's 1-minute period"
+    );
+}
+
+#[test]
+fn okx_object_with_only_one_distinct_open_across_all_instruments_still_fails_loud() {
+    // Even with several rows, a single DISTINCT open across the whole object
+    // cannot prove a period — the >=2-distinct guard must not be relaxed when
+    // moving derivation to object scope.
+    const T0_NS: i64 = CANDLE_T0_MS * 1_000_000;
+    let err = okx_bar_spec_from_open_times(&[T0_NS, T0_NS, T0_NS])
+        .expect_err("a single distinct open cannot prove a period");
+    assert!(
+        err.to_string()
+            .contains("fewer than two distinct bar-open times"),
+        "{err}"
+    );
 }

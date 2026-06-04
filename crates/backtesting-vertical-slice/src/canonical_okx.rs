@@ -1659,23 +1659,30 @@ fn bar_spec_from_interval_ms(interval_ms: u64) -> Result<OkxBarSpec> {
     )
 }
 
-/// Derive the [`OkxBarSpec`] (step + time unit) from the candle rows' own
-/// `open_time` spacing.
+/// Derive the [`OkxBarSpec`] (step + time unit) from a set of candle `open_time`
+/// values (Unix nanoseconds).
 ///
 /// OKX stages no interval in the object key or filename, so the bar period is
 /// recovered from the data: the interval is the smallest positive gap between
 /// consecutive distinct bar-open timestamps, and every gap must be an exact
 /// positive multiple of it (a larger gap is a missing bar, never a different
-/// period). A single-bar object cannot prove a period and fails loud.
+/// period). Fewer than two distinct opens cannot prove a period and fails loud.
+///
+/// The caller controls the SCOPE of `open_times`. The bulk candlesticks path
+/// passes the union of every instrument's opens in one object, because the
+/// period is a per-object property of the vendor file's source granularity (an
+/// illiquid strike that traded in a single minute cannot prove a period on its
+/// own but inherits the object's). The single-stream [`okx_bar_spec_from_rows`]
+/// passes one instrument's opens. The input need not be sorted.
 ///
 /// # Errors
 ///
 /// Returns an error if fewer than two distinct bar-open times are present, a gap
 /// is not a multiple of the base interval, or the interval is not representable
 /// as a fixed-duration NautilusTrader bar unit.
-pub fn okx_bar_spec_from_rows(rows: &[OkxCandleRow]) -> Result<OkxBarSpec> {
-    // `parse_okx_candlesticks` already sorted rows ascending by open_time.
-    let mut times: Vec<i64> = rows.iter().map(|row| row.open_time).collect();
+pub fn okx_bar_spec_from_open_times(open_times: &[i64]) -> Result<OkxBarSpec> {
+    let mut times: Vec<i64> = open_times.to_vec();
+    times.sort_unstable();
     times.dedup();
     ensure!(
         times.len() >= 2,
@@ -1708,16 +1715,26 @@ pub fn okx_bar_spec_from_rows(rows: &[OkxCandleRow]) -> Result<OkxBarSpec> {
     bar_spec_from_interval_ms(base_ms)
 }
 
+/// Derive the [`OkxBarSpec`] from one instrument's candle rows' own `open_time`
+/// spacing — the single-stream path. Delegates to
+/// [`okx_bar_spec_from_open_times`] so the period-derivation rule lives in one
+/// place.
+///
+/// # Errors
+///
+/// See [`okx_bar_spec_from_open_times`].
+pub fn okx_bar_spec_from_rows(rows: &[OkxCandleRow]) -> Result<OkxBarSpec> {
+    let open_times: Vec<i64> = rows.iter().map(|row| row.open_time).collect();
+    okx_bar_spec_from_open_times(&open_times)
+}
+
 /// Append every instrument's candles from one OKX `candlesticks` ZIP object into
 /// an already-open [`ParquetDataCatalog`] — the bulk-conversion path.
 ///
-/// Mirrors [`append_okx_trades_archive`]: enumerates the object's distinct
-/// instruments, derives each one's price/size precision from its own rows
-/// ([`okx_candles_spec_from_rows`]) and its bar period from its own `open_time`
-/// spacing ([`okx_bar_spec_from_rows`]), builds [`Bar`]s, and appends them with
-/// NautilusTrader's own per-bar-type, per-time-range file naming. Refuses no
-/// dirty root — many objects flow into one shared catalog. Returns one summary
-/// per distinct instrument written.
+/// Mirrors [`append_okx_trades_archive`]: extracts the object's CSV from the ZIP
+/// envelope and delegates the per-instrument projection to
+/// [`append_okx_candlesticks_csv`]. Refuses no dirty root — many objects flow
+/// into one shared catalog. Returns one summary per distinct instrument written.
 ///
 /// # Errors
 ///
@@ -1729,15 +1746,58 @@ pub fn append_okx_candlesticks_archive(
     catalog: &mut ParquetDataCatalog,
 ) -> Result<Vec<OkxAppendSummary>> {
     let csv = extract_csv_from_zip(zip_bytes)?;
-    let instruments = okx_candle_instruments(&csv)?;
-    let mut summaries = Vec::new();
+    append_okx_candlesticks_csv(&csv, catalog)
+}
+
+/// Append every instrument's candles from one already-extracted OKX
+/// `candlesticks` CSV into an open [`ParquetDataCatalog`] — the projection half
+/// of [`append_okx_candlesticks_archive`], split out so the per-instrument
+/// projection is exercised directly from CSV text (without the ZIP envelope) in
+/// tests.
+///
+/// Enumerates the object's distinct instruments, derives each one's price/size
+/// precision from its own rows ([`okx_candles_spec_from_rows`]), and derives the
+/// bar period ONCE for the whole object from the union of every instrument's
+/// `open_time`s ([`okx_bar_spec_from_open_times`]) — the period is a per-object
+/// property of the vendor file's source granularity, so an illiquid strike that
+/// traded in a single minute inherits the object's proven period instead of
+/// aborting the object. Builds [`Bar`]s and appends them with NautilusTrader's
+/// own per-bar-type, per-time-range file naming. Returns one summary per
+/// distinct instrument written.
+///
+/// # Errors
+///
+/// Returns an error if parsing, interval/precision derivation, bar
+/// construction, or the catalog write fails, or if the object yields no
+/// instruments.
+pub fn append_okx_candlesticks_csv(
+    csv: &str,
+    catalog: &mut ParquetDataCatalog,
+) -> Result<Vec<OkxAppendSummary>> {
+    let instruments = okx_candle_instruments(csv)?;
+    // Parse every instrument's rows once, accumulating the union of all
+    // `open_time`s. Precision is per-instrument (each contract renders at its
+    // own native tick/lot scale); the bar period is per-object and is derived
+    // from the union below so a single-bar strike does not abort the object.
+    let mut parsed: Vec<(Vec<OkxCandleRow>, OkxInstrumentSpec)> = Vec::new();
+    let mut object_open_times: Vec<i64> = Vec::new();
     for venue_inst_id in instruments {
-        let rows = parse_okx_candlesticks(&csv, &venue_inst_id)?;
+        let rows = parse_okx_candlesticks(csv, &venue_inst_id)?;
         if rows.is_empty() {
             continue;
         }
         let spec = okx_candles_spec_from_rows(&rows, &venue_inst_id)?;
-        let bar_spec = okx_bar_spec_from_rows(&rows)?;
+        object_open_times.extend(rows.iter().map(|row| row.open_time));
+        parsed.push((rows, spec));
+    }
+    ensure!(
+        !parsed.is_empty(),
+        "OKX candlesticks object yielded no instruments"
+    );
+    let bar_spec = okx_bar_spec_from_open_times(&object_open_times)?;
+
+    let mut summaries = Vec::with_capacity(parsed.len());
+    for (rows, spec) in parsed {
         let bars = okx_candlesticks_to_bars(&rows, &spec, bar_spec)?;
         let summary = OkxAppendSummary {
             nt_instrument_id: spec.nt_instrument_id.clone(),
@@ -1747,13 +1807,9 @@ pub fn append_okx_candlesticks_archive(
         };
         catalog
             .write_to_parquet(bars, None, None, None)
-            .with_context(|| format!("append OKX bars for {venue_inst_id}"))?;
+            .with_context(|| format!("append OKX bars for {}", spec.venue_inst_id))?;
         summaries.push(summary);
     }
-    ensure!(
-        !summaries.is_empty(),
-        "OKX candlesticks object yielded no instruments"
-    );
     Ok(summaries)
 }
 

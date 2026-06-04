@@ -28,16 +28,19 @@
 use std::{
     collections::BTreeMap,
     fs,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::{BookOrder, OrderBookDelta, order::NULL_ORDER},
-    enums::{BookAction, OrderSide, RecordFlag},
-    identifiers::InstrumentId,
+    data::{
+        Bar, BarSpecification, BarType, BookOrder, OrderBookDelta, TradeTick, order::NULL_ORDER,
+    },
+    enums::{AggregationSource, AggressorSide, BookAction, OrderSide, PriceType, RecordFlag},
+    identifiers::{InstrumentId, TradeId},
     types::{Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
@@ -47,9 +50,21 @@ use serde::{Deserialize, Serialize};
 /// NautilusTrader data type written for this projection.
 pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
 
+/// NautilusTrader data type written for the recent-trades family.
+pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
+
+/// NautilusTrader data type written for the candle-snapshot family.
+pub const NT_DATA_TYPE_BAR: &str = "Bar";
+
 /// Native HL `source_family` that carries a full L2 book photo. Records with any
 /// other source family are not fixed-depth snapshots and are rejected.
 pub const HIP4_SNAPSHOT_SOURCE_FAMILY: &str = "info.l2Book";
+
+/// Native HL `source_family` that carries native trade prints (`recentTrades`).
+pub const HIP4_TRADES_SOURCE_FAMILY: &str = "info.recentTrades";
+
+/// Native HL `source_family` that carries OHLCV candles (`candleSnapshot`).
+pub const HIP4_BARS_SOURCE_FAMILY: &str = "info.candleSnapshot";
 
 /// HL snapshot timestamps are Unix milliseconds; NautilusTrader uses nanoseconds.
 const NANOS_PER_MILLISECOND: i64 = 1_000_000;
@@ -487,6 +502,766 @@ pub fn read_back_order_book_deltas(
         .with_context(|| format!("query order book deltas for {nt_instrument_id}"))
 }
 
+// ===========================================================================
+// HIP-4 recent trades (`info.recentTrades`)  ->  NautilusTrader `TradeTick`
+// and HIP-4 candle snapshots (`info.candleSnapshot`)  ->  NautilusTrader `Bar`
+//
+// Both families are keyed by the HL `trade_coin` (for example `#1010`): each
+// HIP-4 outcome publishes one tradeable coin per binary leg (Up / Down), and a
+// `trade_coin` maps to exactly one `(outcome, side)` pair, with `tid`/candle
+// open time unique within a coin. So the NautilusTrader instrument for these two
+// families is the `trade_coin`, not the outcome (the L2 snapshot family above is
+// modelled per outcome, which is its native granularity). All venue/symbol/
+// precision/bar-spec values are supplied by the caller via [`Hip4MarketDataSpec`]
+// — nothing is hardcoded here.
+// ===========================================================================
+
+/// Caller-supplied identity + precision + bar specification for one HIP-4
+/// `trade_coin` instrument. Built by the caller from the accepted instrument
+/// universe; precision is derived from the increment strings (never hardcoded),
+/// and the bar specification comes from the `interval=` archive partition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hip4MarketDataSpec {
+    /// Expected source venue token; records with a different venue are rejected.
+    pub expected_venue: String,
+    /// HL-native tradeable coin handle, for example `#1010`. Records whose
+    /// `trade_coin` differs are not part of this instrument and are skipped.
+    pub trade_coin: String,
+    /// NautilusTrader instrument id, for example `OUTCOME-101-UP.HYPERLIQUID`.
+    pub nt_instrument_id: String,
+    /// Price tick size as a decimal string, for example `0.001`.
+    pub price_increment: String,
+    /// Size step as a decimal string, for example `0.1`.
+    pub size_increment: String,
+    /// Bar step (for example `1`) for the candle interval.
+    pub bar_step: usize,
+    /// Bar aggregation unit for the candle interval.
+    pub bar_aggregation: Hip4BarAggregation,
+}
+
+impl Hip4MarketDataSpec {
+    fn validate(&self) -> Result<()> {
+        for (name, value) in [
+            ("expected_venue", &self.expected_venue),
+            ("trade_coin", &self.trade_coin),
+            ("nt_instrument_id", &self.nt_instrument_id),
+            ("price_increment", &self.price_increment),
+            ("size_increment", &self.size_increment),
+        ] {
+            ensure!(!value.trim().is_empty(), "empty spec field: {name}");
+        }
+        ensure!(self.bar_step > 0, "bar_step must be positive");
+        InstrumentId::from_str(&self.nt_instrument_id)
+            .with_context(|| format!("invalid nt_instrument_id {:?}", self.nt_instrument_id))?;
+        Ok(())
+    }
+
+    fn price_precision(&self) -> u8 {
+        decimal_places(&self.price_increment)
+    }
+
+    fn size_precision(&self) -> u8 {
+        decimal_places(&self.size_increment)
+    }
+
+    fn instrument_id(&self) -> Result<InstrumentId> {
+        InstrumentId::from_str(&self.nt_instrument_id)
+            .with_context(|| format!("invalid nt_instrument_id {:?}", self.nt_instrument_id))
+    }
+
+    fn bar_type(&self) -> Result<BarType> {
+        let step = NonZeroUsize::new(self.bar_step).context("bar_step must be non-zero")?;
+        // HIP-4 candles are aggregated by the exchange, outside the Nautilus
+        // boundary, so they replay as `EXTERNAL`-sourced, `LAST`-price bars.
+        let spec = BarSpecification {
+            step,
+            aggregation: self.bar_aggregation.to_nt(),
+            price_type: PriceType::Last,
+        };
+        Ok(BarType::new(
+            self.instrument_id()?,
+            spec,
+            AggregationSource::External,
+        ))
+    }
+}
+
+/// Bar aggregation unit, supplied by the caller from the candle `interval`
+/// partition (for example `1h` -> step 1, [`Self::Hour`]). A small explicit enum
+/// (rather than reusing NautilusTrader's full [`nautilus_model::enums::BarAggregation`])
+/// keeps the spec serde-stable and decoupled from the HL interval vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Hip4BarAggregation {
+    Second,
+    Minute,
+    Hour,
+    Day,
+}
+
+impl Hip4BarAggregation {
+    fn to_nt(self) -> nautilus_model::enums::BarAggregation {
+        use nautilus_model::enums::BarAggregation as B;
+        match self {
+            Self::Second => B::Second,
+            Self::Minute => B::Minute,
+            Self::Hour => B::Hour,
+            Self::Day => B::Day,
+        }
+    }
+}
+
+/// Aggressor side of a HL `recentTrades` print.
+///
+/// HL `recentTrades` reports `side` as `"A"` (the aggressor lifted the ask /
+/// crossed the offer) or `"B"` (the aggressor hit the bid). An ask-aggressor
+/// trade is buy-initiated only at the offer — in HL's wire convention `"A"`
+/// means the trade was **seller**-initiated (the resting ask was taken by a
+/// market sell against the bid is `"B"`). We follow HL's documented mapping:
+/// `"A"` (ask) -> [`AggressorSide::Seller`], `"B"` (bid) -> [`AggressorSide::Buyer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum Hip4TradeAggressorSide {
+    Buyer,
+    Seller,
+}
+
+impl Hip4TradeAggressorSide {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Buyer => "BUYER",
+            Self::Seller => "SELLER",
+        }
+    }
+
+    /// Map the HL `side` token (`"A"`/`"B"`) to the aggressor side.
+    fn from_hl_side(raw: &str) -> Result<Self> {
+        match raw.trim() {
+            "A" => Ok(Self::Seller),
+            "B" => Ok(Self::Buyer),
+            other => bail!("unknown HL trade side token: {other:?}"),
+        }
+    }
+
+    fn to_nt(self) -> AggressorSide {
+        match self {
+            Self::Buyer => AggressorSide::Buyer,
+            Self::Seller => AggressorSide::Seller,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trades: source records + canonical rows
+// ---------------------------------------------------------------------------
+
+/// One staged HIP-4 `recentTrades` record. Only the consumed fields are
+/// modelled; unknown fields are tolerated for additive schema evolution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hip4TradeRecord {
+    /// Source family; must be [`HIP4_TRADES_SOURCE_FAMILY`] for a valid print.
+    pub source_family: String,
+    /// Venue identifier, for example `hyperliquid`.
+    pub venue: String,
+    /// HL tradeable coin handle for this print, for example `#1010`.
+    pub trade_coin: String,
+    /// HL trade id, unique within a coin.
+    pub tid: i64,
+    /// Exchange event time in Unix milliseconds.
+    pub time: i64,
+    /// Exact source price string.
+    pub px: String,
+    /// Exact source size string.
+    pub sz: String,
+    /// HL aggressor token (`"A"`/`"B"`).
+    pub trade_side: String,
+}
+
+/// One normalized HIP-4 trade row at nanosecond resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hip4TradeRow {
+    /// Exchange event time in Unix nanoseconds.
+    pub event_time: i64,
+    /// Trade id (the HL `tid` rendered as a string).
+    pub trade_id: String,
+    pub aggressor_side: Hip4TradeAggressorSide,
+    /// Exact source price string.
+    pub price: String,
+    /// Exact source size string.
+    pub size: String,
+}
+
+/// A validated canonical HIP-4 trades table for one `trade_coin` instrument.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hip4TradesTable {
+    pub nt_instrument_id: String,
+    pub trade_coin: String,
+    pub rows: Vec<Hip4TradeRow>,
+}
+
+/// Normalize a JSONL `info.recentTrades` object into the canonical trades table
+/// for one `trade_coin`.
+///
+/// Records whose `trade_coin` differs from `spec.trade_coin` belong to a
+/// different instrument and are skipped (a HIP-4 staged object holds every
+/// coin's prints interleaved). Records with the wrong source family or venue are
+/// rejected. Prints are sorted ascending by event time (HL stages them
+/// newest-first / interleaved) so the NautilusTrader catalog write is monotonic.
+///
+/// # Errors
+///
+/// Returns an error if a line is not valid JSON, carries the wrong source family
+/// or venue, has an unknown aggressor token, a non-positive price/size, or the
+/// resulting table fails contract validation (including: no row matched the
+/// requested coin).
+pub fn normalize_hip4_trades(jsonl: &str, spec: &Hip4MarketDataSpec) -> Result<Hip4TradesTable> {
+    spec.validate()?;
+
+    let mut rows = Vec::new();
+    for (line_no, line) in jsonl.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let record: Hip4TradeRecord = serde_json::from_str(line)
+            .with_context(|| format!("parse HIP-4 trade record on line {}", line_no + 1))?;
+
+        ensure!(
+            record.source_family == HIP4_TRADES_SOURCE_FAMILY,
+            "line {}: unexpected source_family {:?}, expected {:?}",
+            line_no + 1,
+            record.source_family,
+            HIP4_TRADES_SOURCE_FAMILY,
+        );
+        ensure!(
+            record.venue == spec.expected_venue,
+            "line {}: unexpected venue {:?}, expected {:?}",
+            line_no + 1,
+            record.venue,
+            spec.expected_venue,
+        );
+
+        // Skip prints for other coins; one staged object interleaves all coins.
+        if record.trade_coin != spec.trade_coin {
+            continue;
+        }
+
+        let aggressor = Hip4TradeAggressorSide::from_hl_side(&record.trade_side)
+            .with_context(|| format!("line {}: invalid trade side", line_no + 1))?;
+
+        let price: Decimal = record
+            .px
+            .parse()
+            .with_context(|| format!("line {}: invalid price {:?}", line_no + 1, record.px))?;
+        let size: Decimal = record
+            .sz
+            .parse()
+            .with_context(|| format!("line {}: invalid size {:?}", line_no + 1, record.sz))?;
+        ensure!(
+            price > Decimal::ZERO,
+            "line {}: non-positive price",
+            line_no + 1
+        );
+        ensure!(
+            size > Decimal::ZERO,
+            "line {}: non-positive size",
+            line_no + 1
+        );
+
+        let event_time = record
+            .time
+            .checked_mul(NANOS_PER_MILLISECOND)
+            .with_context(|| format!("line {}: event time overflow", line_no + 1))?;
+
+        rows.push(Hip4TradeRow {
+            event_time,
+            trade_id: record.tid.to_string(),
+            aggressor_side: aggressor,
+            price: record.px.clone(),
+            size: record.sz.clone(),
+        });
+    }
+
+    // HL stages prints interleaved/newest-first; NautilusTrader requires ascending ts.
+    rows.sort_by_key(|row| row.event_time);
+
+    let table = Hip4TradesTable {
+        nt_instrument_id: spec.nt_instrument_id.clone(),
+        trade_coin: spec.trade_coin.clone(),
+        rows,
+    };
+    table.validate()?;
+    Ok(table)
+}
+
+impl Hip4TradesTable {
+    /// Validate non-emptiness, positive monotonic event timestamps, and required
+    /// fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first contract violation.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.rows.is_empty(),
+            "HIP-4 trades table for {} is empty (no print matched the requested coin {})",
+            self.nt_instrument_id,
+            self.trade_coin,
+        );
+        for field in [&self.nt_instrument_id, &self.trade_coin] {
+            ensure!(!field.trim().is_empty(), "empty identity field");
+        }
+        let mut previous = i64::MIN;
+        for (index, row) in self.rows.iter().enumerate() {
+            ensure!(
+                row.event_time > 0,
+                "trade row {index}: non-positive event_time"
+            );
+            ensure!(
+                row.event_time >= previous,
+                "trade row {index}: event_time {} precedes previous {}",
+                row.event_time,
+                previous,
+            );
+            previous = row.event_time;
+            for field in [&row.trade_id, &row.price, &row.size] {
+                ensure!(!field.trim().is_empty(), "trade row {index}: empty field");
+            }
+        }
+        Ok(())
+    }
+
+    /// Convert the canonical rows into NautilusTrader `TradeTick`s at the
+    /// instrument's price/size precision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a price/size cannot be represented at the precision or
+    /// a trade id exceeds the NautilusTrader limit.
+    pub fn to_trade_ticks(&self, spec: &Hip4MarketDataSpec) -> Result<Vec<TradeTick>> {
+        ensure!(
+            spec.nt_instrument_id == self.nt_instrument_id,
+            "spec instrument {:?} does not match table {:?}",
+            spec.nt_instrument_id,
+            self.nt_instrument_id,
+        );
+        let instrument_id = spec.instrument_id()?;
+        let price_precision = spec.price_precision();
+        let size_precision = spec.size_precision();
+        self.rows
+            .iter()
+            .map(|row| {
+                let price = price_at(&row.price, price_precision)?;
+                let size = quantity_at(&row.size, size_precision)?;
+                let trade_id = TradeId::new_checked(&row.trade_id).map_err(|error| {
+                    anyhow::anyhow!("invalid trade id {:?}: {error}", row.trade_id)
+                })?;
+                let ts =
+                    UnixNanos::from(u64::try_from(row.event_time).context("negative event_time")?);
+                Ok(TradeTick::new(
+                    instrument_id,
+                    price,
+                    size,
+                    row.aggressor_side.to_nt(),
+                    trade_id,
+                    ts,
+                    ts,
+                ))
+            })
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bars: source records + canonical rows
+// ---------------------------------------------------------------------------
+
+/// One staged HIP-4 `candleSnapshot` record. Only the consumed fields are
+/// modelled; unknown fields are tolerated for additive schema evolution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hip4BarRecord {
+    /// Source family; must be [`HIP4_BARS_SOURCE_FAMILY`] for a valid candle.
+    pub source_family: String,
+    /// Venue identifier, for example `hyperliquid`.
+    pub venue: String,
+    /// HL tradeable coin handle for this candle, for example `#1010`.
+    pub trade_coin: String,
+    /// Candle open (start) time in Unix milliseconds.
+    pub open_time: i64,
+    /// Candle close time in Unix milliseconds.
+    pub close_time: i64,
+    /// Exact source OHLCV strings.
+    pub open: String,
+    pub high: String,
+    pub low: String,
+    pub close: String,
+    pub volume: String,
+}
+
+/// One normalized HIP-4 bar row at nanosecond resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hip4BarRow {
+    /// Candle open time in Unix nanoseconds.
+    pub open_time: i64,
+    /// Candle close time in Unix nanoseconds.
+    pub close_time: i64,
+    pub open: String,
+    pub high: String,
+    pub low: String,
+    pub close: String,
+    pub volume: String,
+}
+
+/// A validated canonical HIP-4 bars table for one `trade_coin` instrument.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hip4BarsTable {
+    pub nt_instrument_id: String,
+    pub trade_coin: String,
+    pub rows: Vec<Hip4BarRow>,
+}
+
+/// Normalize a JSONL `info.candleSnapshot` object into the canonical bars table
+/// for one `trade_coin`.
+///
+/// Records whose `trade_coin` differs from `spec.trade_coin` are skipped (a HIP-4
+/// staged object holds every coin's candles interleaved). Records with the wrong
+/// source family or venue, or violating OHLC integrity, are rejected. Candles are
+/// sorted ascending by open time so the NautilusTrader catalog write is monotonic.
+///
+/// # Errors
+///
+/// Returns an error if a line is not valid JSON, carries the wrong source family
+/// or venue, violates OHLC integrity, has a negative volume, or the resulting
+/// table fails contract validation (including: no candle matched the coin).
+pub fn normalize_hip4_bars(jsonl: &str, spec: &Hip4MarketDataSpec) -> Result<Hip4BarsTable> {
+    spec.validate()?;
+
+    let mut rows = Vec::new();
+    for (line_no, line) in jsonl.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let record: Hip4BarRecord = serde_json::from_str(line)
+            .with_context(|| format!("parse HIP-4 candle record on line {}", line_no + 1))?;
+
+        ensure!(
+            record.source_family == HIP4_BARS_SOURCE_FAMILY,
+            "line {}: unexpected source_family {:?}, expected {:?}",
+            line_no + 1,
+            record.source_family,
+            HIP4_BARS_SOURCE_FAMILY,
+        );
+        ensure!(
+            record.venue == spec.expected_venue,
+            "line {}: unexpected venue {:?}, expected {:?}",
+            line_no + 1,
+            record.venue,
+            spec.expected_venue,
+        );
+
+        if record.trade_coin != spec.trade_coin {
+            continue;
+        }
+
+        let (o, h, l, c) = (
+            Decimal::from_str(&record.open)
+                .with_context(|| format!("line {}: open {:?}", line_no + 1, record.open))?,
+            Decimal::from_str(&record.high)
+                .with_context(|| format!("line {}: high {:?}", line_no + 1, record.high))?,
+            Decimal::from_str(&record.low)
+                .with_context(|| format!("line {}: low {:?}", line_no + 1, record.low))?,
+            Decimal::from_str(&record.close)
+                .with_context(|| format!("line {}: close {:?}", line_no + 1, record.close))?,
+        );
+        ensure!(o > Decimal::ZERO, "line {}: non-positive open", line_no + 1);
+        // NautilusTrader's `Bar::new_checked` re-asserts this on the rounded
+        // prices; checking here fails loudly on the source values first.
+        ensure!(
+            h >= o && h >= l && h >= c && l <= o && l <= c,
+            "line {}: OHLC integrity violated (o={o} h={h} l={l} c={c})",
+            line_no + 1,
+        );
+        let volume = Decimal::from_str(&record.volume)
+            .with_context(|| format!("line {}: volume {:?}", line_no + 1, record.volume))?;
+        ensure!(
+            volume >= Decimal::ZERO,
+            "line {}: negative volume",
+            line_no + 1
+        );
+
+        let open_time = record
+            .open_time
+            .checked_mul(NANOS_PER_MILLISECOND)
+            .with_context(|| format!("line {}: open_time overflow", line_no + 1))?;
+        let close_time = record
+            .close_time
+            .checked_mul(NANOS_PER_MILLISECOND)
+            .with_context(|| format!("line {}: close_time overflow", line_no + 1))?;
+        ensure!(
+            close_time >= open_time,
+            "line {}: close_time precedes open_time",
+            line_no + 1,
+        );
+
+        rows.push(Hip4BarRow {
+            open_time,
+            close_time,
+            open: record.open.clone(),
+            high: record.high.clone(),
+            low: record.low.clone(),
+            close: record.close.clone(),
+            volume: record.volume.clone(),
+        });
+    }
+
+    rows.sort_by_key(|row| row.open_time);
+
+    let table = Hip4BarsTable {
+        nt_instrument_id: spec.nt_instrument_id.clone(),
+        trade_coin: spec.trade_coin.clone(),
+        rows,
+    };
+    table.validate()?;
+    Ok(table)
+}
+
+impl Hip4BarsTable {
+    /// Validate non-emptiness, positive monotonic open timestamps, and required
+    /// fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first contract violation.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.rows.is_empty(),
+            "HIP-4 bars table for {} is empty (no candle matched the requested coin {})",
+            self.nt_instrument_id,
+            self.trade_coin,
+        );
+        for field in [&self.nt_instrument_id, &self.trade_coin] {
+            ensure!(!field.trim().is_empty(), "empty identity field");
+        }
+        let mut previous = i64::MIN;
+        for (index, row) in self.rows.iter().enumerate() {
+            ensure!(row.open_time > 0, "bar row {index}: non-positive open_time");
+            ensure!(
+                row.open_time >= previous,
+                "bar row {index}: open_time {} precedes previous {}",
+                row.open_time,
+                previous,
+            );
+            previous = row.open_time;
+            for field in [&row.open, &row.high, &row.low, &row.close, &row.volume] {
+                ensure!(!field.trim().is_empty(), "bar row {index}: empty field");
+            }
+        }
+        Ok(())
+    }
+
+    /// The NautilusTrader bar-type string for catalog identifier resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the spec instrument id is invalid.
+    pub fn bar_type_string(&self, spec: &Hip4MarketDataSpec) -> Result<String> {
+        ensure!(
+            spec.nt_instrument_id == self.nt_instrument_id,
+            "spec instrument {:?} does not match table {:?}",
+            spec.nt_instrument_id,
+            self.nt_instrument_id,
+        );
+        Ok(spec.bar_type()?.to_string())
+    }
+
+    /// Convert the canonical rows into NautilusTrader `Bar`s at the instrument's
+    /// price/size precision under the candle bar type.
+    ///
+    /// Bars are stamped at candle open time (`ts_event`), matching the open-time
+    /// monotonicity the table validates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an OHLCV value cannot be represented at the precision
+    /// or fails NautilusTrader's OHLC checks.
+    pub fn to_bars(&self, spec: &Hip4MarketDataSpec) -> Result<Vec<Bar>> {
+        ensure!(
+            spec.nt_instrument_id == self.nt_instrument_id,
+            "spec instrument {:?} does not match table {:?}",
+            spec.nt_instrument_id,
+            self.nt_instrument_id,
+        );
+        let bar_type = spec.bar_type()?;
+        let price_precision = spec.price_precision();
+        let size_precision = spec.size_precision();
+        self.rows
+            .iter()
+            .map(|row| {
+                let open = price_at(&row.open, price_precision)?;
+                let high = price_at(&row.high, price_precision)?;
+                let low = price_at(&row.low, price_precision)?;
+                let close = price_at(&row.close, price_precision)?;
+                let volume = quantity_at(&row.volume, size_precision)?;
+                let ts =
+                    UnixNanos::from(u64::try_from(row.open_time).context("negative open_time")?);
+                Bar::new_checked(bar_type, open, high, low, close, volume, ts, ts)
+                    .context("build NautilusTrader bar")
+            })
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared price/size conversion (trades + bars)
+// ---------------------------------------------------------------------------
+
+fn price_at(value: &str, precision: u8) -> Result<Price> {
+    let scaled = rescaled(value, precision)?;
+    Price::from_str(&scaled).map_err(|error| anyhow::anyhow!("invalid price {scaled:?}: {error}"))
+}
+
+fn quantity_at(value: &str, precision: u8) -> Result<Quantity> {
+    let scaled = rescaled(value, precision)?;
+    Quantity::from_str(&scaled)
+        .map_err(|error| anyhow::anyhow!("invalid quantity {scaled:?}: {error}"))
+}
+
+// ---------------------------------------------------------------------------
+// Catalog projection + read-back (trades + bars)
+// ---------------------------------------------------------------------------
+
+/// Result of projecting a HIP-4 trades/bars table into a NautilusTrader catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hip4MarketDataProjection {
+    pub catalog_root: PathBuf,
+    /// The catalog identifier the data was written under (instrument id for
+    /// trades, bar-type string for bars).
+    pub nt_identifier: String,
+    pub data_type: String,
+    pub record_count: usize,
+}
+
+/// Project a canonical HIP-4 trades table into a NautilusTrader
+/// `ParquetDataCatalog` as `TradeTick` data.
+///
+/// Fails closed on a non-empty `catalog_root`: NautilusTrader's
+/// `write_to_parquet` skips writing when a file for the same identifier/interval
+/// already exists, so projecting into a dirty root could silently read back stale
+/// data.
+///
+/// # Errors
+///
+/// Returns an error if conversion or the catalog write fails, or the root is dirty.
+pub fn project_hip4_trades_to_catalog(
+    table: &Hip4TradesTable,
+    spec: &Hip4MarketDataSpec,
+    catalog_root: &Path,
+) -> Result<Hip4MarketDataProjection> {
+    table.validate()?;
+    let ticks = table.to_trade_ticks(spec)?;
+    let record_count = ticks.len();
+    ensure_clean_market_data_root(catalog_root)?;
+
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_to_parquet(ticks, None, None, None)
+        .context("write trade ticks to catalog")?;
+
+    Ok(Hip4MarketDataProjection {
+        catalog_root: catalog_root.to_path_buf(),
+        nt_identifier: spec.nt_instrument_id.clone(),
+        data_type: NT_DATA_TYPE_TRADE_TICK.to_string(),
+        record_count,
+    })
+}
+
+/// Project a canonical HIP-4 bars table into a NautilusTrader
+/// `ParquetDataCatalog` as `Bar` data.
+///
+/// # Errors
+///
+/// Returns an error if conversion or the catalog write fails, or the root is dirty.
+pub fn project_hip4_bars_to_catalog(
+    table: &Hip4BarsTable,
+    spec: &Hip4MarketDataSpec,
+    catalog_root: &Path,
+) -> Result<Hip4MarketDataProjection> {
+    table.validate()?;
+    let bars = table.to_bars(spec)?;
+    let record_count = bars.len();
+    ensure_clean_market_data_root(catalog_root)?;
+
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_to_parquet(bars, None, None, None)
+        .context("write bars to catalog")?;
+
+    Ok(Hip4MarketDataProjection {
+        catalog_root: catalog_root.to_path_buf(),
+        nt_identifier: table.bar_type_string(spec)?,
+        data_type: NT_DATA_TYPE_BAR.to_string(),
+        record_count,
+    })
+}
+
+/// Read the projected `TradeTick` data back from `catalog_root`.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_trade_ticks(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+) -> Result<Vec<TradeTick>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .query_typed_data::<TradeTick>(
+            Some(vec![nt_instrument_id.to_string()]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .context("query trade ticks from catalog")
+}
+
+/// Read the projected `Bar` data back from `catalog_root` by its bar-type id.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_bars(catalog_root: &Path, bar_type: &str) -> Result<Vec<Bar>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .query_typed_data::<Bar>(
+            Some(vec![bar_type.to_string()]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .context("query bars from catalog")
+}
+
+fn ensure_clean_market_data_root(catalog_root: &Path) -> Result<()> {
+    if catalog_root.exists() {
+        let mut entries = fs::read_dir(catalog_root)
+            .with_context(|| format!("read catalog root {}", catalog_root.display()))?;
+        ensure!(
+            entries.next().is_none(),
+            "catalog root {} is not empty; refusing to project into a dirty catalog",
+            catalog_root.display(),
+        );
+    }
+    fs::create_dir_all(catalog_root)
+        .with_context(|| format!("create catalog root {}", catalog_root.display()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,5 +1410,160 @@ mod tests {
         assert_eq!(empty.len(), 1);
         assert_eq!(empty[0].action, BookAction::Clear);
         assert!(RecordFlag::F_LAST.matches(empty[0].flags));
+    }
+
+    // -------------------------------------------------------------------
+    // Trades + bars unit coverage
+    // -------------------------------------------------------------------
+
+    fn trades_spec() -> Hip4MarketDataSpec {
+        Hip4MarketDataSpec {
+            expected_venue: "hyperliquid".to_string(),
+            trade_coin: "#1010".to_string(),
+            nt_instrument_id: "OUTCOME-101-UP.HYPERLIQUID".to_string(),
+            price_increment: "0.001".to_string(),
+            size_increment: "0.1".to_string(),
+            bar_step: 1,
+            bar_aggregation: Hip4BarAggregation::Hour,
+        }
+    }
+
+    // Two interleaved coins, newest-first; only #1010 belongs to the spec.
+    const TRADES_JSONL: &str = "{\"source_family\":\"info.recentTrades\",\"venue\":\"hyperliquid\",\
+        \"trade_coin\":\"#1010\",\"tid\":2,\"time\":1780326777342,\"px\":\"0.422\",\"sz\":\"22.0\",\
+        \"trade_side\":\"A\"}\n\
+        {\"source_family\":\"info.recentTrades\",\"venue\":\"hyperliquid\",\
+        \"trade_coin\":\"#1011\",\"tid\":99,\"time\":1780326777342,\"px\":\"0.578\",\"sz\":\"22.0\",\
+        \"trade_side\":\"B\"}\n\
+        {\"source_family\":\"info.recentTrades\",\"venue\":\"hyperliquid\",\
+        \"trade_coin\":\"#1010\",\"tid\":1,\"time\":1780326740660,\"px\":\"0.5\",\"sz\":\"10.0\",\
+        \"trade_side\":\"B\"}";
+
+    const BARS_JSONL: &str = "{\"source_family\":\"info.candleSnapshot\",\"venue\":\"hyperliquid\",\
+        \"trade_coin\":\"#1010\",\"open_time\":1779710400000,\"close_time\":1779713999999,\
+        \"open\":\"0.40\",\"high\":\"0.45\",\"low\":\"0.39\",\"close\":\"0.42\",\"volume\":\"125.0\"}\n\
+        {\"source_family\":\"info.candleSnapshot\",\"venue\":\"hyperliquid\",\
+        \"trade_coin\":\"#1011\",\"open_time\":1779710400000,\"close_time\":1779713999999,\
+        \"open\":\"0.60\",\"high\":\"0.61\",\"low\":\"0.55\",\"close\":\"0.58\",\"volume\":\"125.0\"}\n\
+        {\"source_family\":\"info.candleSnapshot\",\"venue\":\"hyperliquid\",\
+        \"trade_coin\":\"#1010\",\"open_time\":1779706800000,\"close_time\":1779710399999,\
+        \"open\":\"0.41\",\"high\":\"0.42\",\"low\":\"0.40\",\"close\":\"0.40\",\"volume\":\"0.0\"}";
+
+    #[test]
+    fn aggressor_token_maps_ask_to_seller_bid_to_buyer() {
+        assert_eq!(
+            Hip4TradeAggressorSide::from_hl_side("A").unwrap(),
+            Hip4TradeAggressorSide::Seller
+        );
+        assert_eq!(
+            Hip4TradeAggressorSide::from_hl_side("B").unwrap(),
+            Hip4TradeAggressorSide::Buyer
+        );
+        assert!(Hip4TradeAggressorSide::from_hl_side("X").is_err());
+    }
+
+    #[test]
+    fn normalize_trades_filters_coin_sorts_and_maps_aggressor() {
+        let table = normalize_hip4_trades(TRADES_JSONL, &trades_spec()).expect("normalize");
+        // Only the two #1010 prints are kept; the #1011 print is filtered out.
+        assert_eq!(table.rows.len(), 2);
+        // Sorted ascending by time: the 1780326740660 print comes first.
+        assert_eq!(
+            table.rows[0].event_time,
+            1_780_326_740_660 * NANOS_PER_MILLISECOND
+        );
+        assert_eq!(table.rows[0].trade_id, "1");
+        assert_eq!(table.rows[0].aggressor_side, Hip4TradeAggressorSide::Buyer);
+        assert_eq!(table.rows[1].trade_id, "2");
+        assert_eq!(table.rows[1].aggressor_side, Hip4TradeAggressorSide::Seller);
+    }
+
+    #[test]
+    fn normalize_trades_rejects_empty_when_no_coin_matches() {
+        let mut spec = trades_spec();
+        spec.trade_coin = "#9999".to_string();
+        let err = normalize_hip4_trades(TRADES_JSONL, &spec).expect_err("must reject empty");
+        assert!(err.to_string().contains("empty"), "{err}");
+    }
+
+    #[test]
+    fn normalize_trades_rejects_wrong_source_family() {
+        let bad = TRADES_JSONL.replace("info.recentTrades", "info.l2Book");
+        let err = normalize_hip4_trades(&bad, &trades_spec()).expect_err("must reject");
+        assert!(err.to_string().contains("source_family"), "{err}");
+    }
+
+    #[test]
+    fn normalize_trades_rejects_unexpected_venue() {
+        let bad = TRADES_JSONL.replace("\"venue\":\"hyperliquid\"", "\"venue\":\"binance\"");
+        let err = normalize_hip4_trades(&bad, &trades_spec()).expect_err("must reject");
+        assert!(err.to_string().contains("venue"), "{err}");
+    }
+
+    #[test]
+    fn normalize_bars_filters_coin_sorts_and_checks_ohlc() {
+        let table = normalize_hip4_bars(BARS_JSONL, &trades_spec()).expect("normalize");
+        assert_eq!(table.rows.len(), 2);
+        // Sorted ascending by open time: the 1779706800000 candle comes first.
+        assert_eq!(
+            table.rows[0].open_time,
+            1_779_706_800_000 * NANOS_PER_MILLISECOND
+        );
+        assert_eq!(table.rows[0].open, "0.41");
+        assert_eq!(table.rows[1].open, "0.40");
+    }
+
+    #[test]
+    fn normalize_bars_rejects_ohlc_violation() {
+        // high < low for the #1010 candle.
+        let bad = BARS_JSONL.replace("\"high\":\"0.45\"", "\"high\":\"0.30\"");
+        let err = normalize_hip4_bars(&bad, &trades_spec()).expect_err("must reject");
+        assert!(err.to_string().contains("OHLC"), "{err}");
+    }
+
+    #[test]
+    fn trades_project_and_read_back_round_trip() {
+        let spec = trades_spec();
+        let table = normalize_hip4_trades(TRADES_JSONL, &spec).expect("normalize");
+        let built = table.to_trade_ticks(&spec).expect("ticks");
+
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let projection =
+            project_hip4_trades_to_catalog(&table, &spec, dir.path()).expect("project");
+        assert_eq!(projection.data_type, NT_DATA_TYPE_TRADE_TICK);
+        assert_eq!(projection.record_count, 2);
+
+        let loaded = read_back_trade_ticks(dir.path(), &spec.nt_instrument_id).expect("read back");
+        assert_eq!(
+            loaded, built,
+            "round-tripped ticks identical to built ticks"
+        );
+    }
+
+    #[test]
+    fn bars_project_and_read_back_round_trip() {
+        let spec = trades_spec();
+        let table = normalize_hip4_bars(BARS_JSONL, &spec).expect("normalize");
+        let built = table.to_bars(&spec).expect("bars");
+
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let projection = project_hip4_bars_to_catalog(&table, &spec, dir.path()).expect("project");
+        assert_eq!(projection.data_type, NT_DATA_TYPE_BAR);
+        assert_eq!(projection.record_count, 2);
+
+        let bar_type = table.bar_type_string(&spec).expect("bar type");
+        let loaded = read_back_bars(dir.path(), &bar_type).expect("read back");
+        assert_eq!(loaded, built, "round-tripped bars identical to built bars");
+    }
+
+    #[test]
+    fn market_data_projection_refuses_dirty_root() {
+        let spec = trades_spec();
+        let table = normalize_hip4_trades(TRADES_JSONL, &spec).expect("normalize");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        fs::write(dir.path().join("stale.parquet"), b"stale").unwrap();
+        let err = project_hip4_trades_to_catalog(&table, &spec, dir.path())
+            .expect_err("dirty root must be refused");
+        assert!(err.to_string().contains("not empty"), "{err}");
     }
 }

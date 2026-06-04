@@ -22,6 +22,7 @@ chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 flate2 = "1.1.9"
 hex = "0.4"
+lz4_flex = { version = "0.13.1", default-features = false, features = ["frame"] }
 parquet = "58.3.0"
 rust_decimal = "1.42.0"
 serde = { version = "1", features = ["derive"] }

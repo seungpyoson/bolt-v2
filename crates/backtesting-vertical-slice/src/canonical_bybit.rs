@@ -12,6 +12,10 @@
 //! source=rest / family=kline_1m (Bybit V5 REST envelope, list rows
 //!   [start_ms, open, high, low, close, volume, turnover])
 //!   -> NautilusTrader Bar (1-MINUTE-LAST-EXTERNAL)
+//!
+//! source=rest / family=mark_price_kline_1m (Bybit V5 REST envelope, list rows
+//!   [start_ms, open, high, low, close] — mark-price OHLC, NO volume/turnover)
+//!   -> NautilusTrader Bar (1-MINUTE-MARK-EXTERNAL)
 //! ```
 //!
 //! It is deliberately self-contained: it owns its own canonical row/table types,
@@ -760,6 +764,321 @@ pub fn read_back_bars(catalog_root: &Path, bar_type: &str) -> Result<Vec<Bar>> {
             true,
         )
         .context("query bars from catalog")
+}
+
+// ----------------------------------------------------------------------------
+// mark_price_kline_1m -> Bar (PriceType::Mark)
+// ----------------------------------------------------------------------------
+
+/// NautilusTrader data type written for the mark-price kline projection.
+///
+/// Identical NautilusTrader type as the trade kline (`Bar`); the projections are
+/// distinguished by the bar specification's `price_type` (`Mark` vs `Last`),
+/// which yields a distinct `BarType` catalog identifier.
+pub const NT_DATA_TYPE_MARK_BAR: &str = "Bar";
+
+/// Number of leading fields the converter consumes from a mark-price kline row.
+///
+/// Mark / index / premium price klines carry only `[startMs, O, H, L, C]`; they
+/// have NO `volume`/`turnover` columns (unlike the traded [`KLINE_ROW_MIN_FIELDS`]
+/// candles). The projected [`Bar`] therefore carries a zero volume, which is the
+/// faithful representation: a mark-price candle has no traded size.
+const MARK_KLINE_ROW_MIN_FIELDS: usize = 5;
+
+/// Volume placeholder for a mark-price candle, which has no traded size.
+const MARK_BAR_VOLUME: &str = "0";
+
+/// One parsed 1-minute mark-price candle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BybitMarkBarRow {
+    /// Candle open (start) time in Unix nanoseconds.
+    pub open_time: i64,
+    pub open: String,
+    pub high: String,
+    pub low: String,
+    pub close: String,
+}
+
+/// A validated canonical 1-minute mark-price `bars` table for one accepted object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BybitMarkBarsTable {
+    pub source_proof_id: String,
+    pub venue: String,
+    pub product_family: String,
+    pub instrument_id: String,
+    pub nt_instrument_id: String,
+    pub fidelity_class: SourceProofFidelityClass,
+    pub forbidden_claims: Vec<String>,
+    pub rows: Vec<BybitMarkBarRow>,
+}
+
+/// Normalize an accepted Bybit `mark_price_kline_1m` REST object into a validated
+/// canonical mark-price bars table.
+///
+/// `json_text` is the decompressed text of the accepted object. The envelope is
+/// the same Bybit V5 REST shape as the trade kline, but each `result.list` row is
+/// `[startMs, open, high, low, close]` (mark-price OHLC, no volume/turnover). The
+/// envelope's `result.symbol` must equal `spec.venue_symbol`. Kline rows arrive
+/// newest-first from the venue; they are sorted ascending by open time so the
+/// projection is monotonic for NautilusTrader.
+///
+/// # Errors
+///
+/// Returns an error if the envelope is malformed, `retCode` is non-zero, the
+/// symbol mismatches, a row is malformed, or the table fails validation.
+pub fn normalize_bybit_mark_price_kline_1m(
+    accepted: &AcceptedDataset,
+    spec: &BybitInstrumentSpec,
+    json_text: &str,
+) -> Result<BybitMarkBarsTable> {
+    let envelope: BybitKlineEnvelope =
+        serde_json::from_str(json_text).context("parse bybit mark-price kline envelope")?;
+    ensure!(
+        envelope.ret_code == 0,
+        "bybit mark-price kline retCode {} is not OK",
+        envelope.ret_code
+    );
+    ensure!(
+        envelope.result.symbol == spec.venue_symbol,
+        "mark-price kline symbol {:?} does not match instrument {:?}",
+        envelope.result.symbol,
+        spec.venue_symbol
+    );
+
+    let mut rows = Vec::new();
+    for (index, entry) in envelope.result.list.iter().enumerate() {
+        ensure!(
+            entry.len() >= MARK_KLINE_ROW_MIN_FIELDS,
+            "mark-price kline row {index} has {} fields, expected at least {MARK_KLINE_ROW_MIN_FIELDS}",
+            entry.len()
+        );
+        let start_ms: i64 = entry[0].trim().parse().with_context(|| {
+            format!(
+                "mark-price kline row {index}: invalid start ms {:?}",
+                entry[0]
+            )
+        })?;
+        let open_time = start_ms
+            .checked_mul(NANOS_PER_MILLISECOND)
+            .with_context(|| format!("mark-price kline row {index}: start ms overflow"))?;
+
+        let open = entry[1].trim().to_string();
+        let high = entry[2].trim().to_string();
+        let low = entry[3].trim().to_string();
+        let close = entry[4].trim().to_string();
+
+        // Decimal-level OHLC integrity on the source mark prices before any
+        // rounding. NautilusTrader's `Bar::new_checked` re-asserts the same
+        // ordering on the rounded prices. Mark price is a settlement/PnL price
+        // (strictly positive), so the positivity check is sound here.
+        let (o, h, l, c) = (
+            Decimal::from_str(&open)
+                .with_context(|| format!("mark-price kline row {index}: open"))?,
+            Decimal::from_str(&high)
+                .with_context(|| format!("mark-price kline row {index}: high"))?,
+            Decimal::from_str(&low)
+                .with_context(|| format!("mark-price kline row {index}: low"))?,
+            Decimal::from_str(&close)
+                .with_context(|| format!("mark-price kline row {index}: close"))?,
+        );
+        ensure!(
+            o > Decimal::ZERO,
+            "mark-price kline row {index}: non-positive open"
+        );
+        ensure!(
+            h >= o && h >= l && h >= c && l <= o && l <= c,
+            "mark-price kline row {index}: OHLC integrity violated (o={o} h={h} l={l} c={c})"
+        );
+
+        rows.push(BybitMarkBarRow {
+            open_time,
+            open,
+            high,
+            low,
+            close,
+        });
+    }
+
+    // Venue returns newest-first; NautilusTrader requires ascending ts.
+    rows.sort_by_key(|row| row.open_time);
+
+    let table = BybitMarkBarsTable {
+        source_proof_id: accepted.source_proof_id.clone(),
+        venue: accepted.venue.clone(),
+        product_family: accepted.product_family.clone(),
+        instrument_id: spec.instrument_id.clone(),
+        nt_instrument_id: spec.nt_instrument_id.clone(),
+        fidelity_class: accepted.fidelity_class,
+        forbidden_claims: accepted.forbidden_claims.clone(),
+        rows,
+    };
+    table.validate()?;
+    Ok(table)
+}
+
+impl BybitMarkBarsTable {
+    /// The fixed NautilusTrader bar specification for a Bybit 1-minute mark-price
+    /// kline: 1-MINUTE-MARK, externally aggregated by the venue.
+    ///
+    /// `PriceType::Mark` is NautilusTrader's native price type for mark price, so
+    /// the resulting `BarType` is distinct from the trade kline's `…-LAST-…` id
+    /// and never collides with it in the catalog.
+    fn bar_type(nt_instrument_id: &str) -> Result<BarType> {
+        let instrument_id = InstrumentId::from_str(nt_instrument_id)
+            .with_context(|| format!("invalid nt_instrument_id {nt_instrument_id:?}"))?;
+        let step = NonZeroUsize::new(1).expect("1 is non-zero");
+        let spec = BarSpecification {
+            step,
+            aggregation: BarAggregation::Minute,
+            price_type: PriceType::Mark,
+        };
+        Ok(BarType::new(
+            instrument_id,
+            spec,
+            AggregationSource::External,
+        ))
+    }
+
+    /// Validate non-emptiness, monotonic open times, and required fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first contract violation.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.rows.is_empty(),
+            "bybit mark-price bars table is empty"
+        );
+        ensure!(
+            self.fidelity_class != SourceProofFidelityClass::L2Replay,
+            "mark-price kline bars must not be labelled L2_REPLAY"
+        );
+        ensure!(
+            !self.forbidden_claims.is_empty(),
+            "mark-price bar table must carry explicit forbidden claims"
+        );
+        for field in [
+            &self.source_proof_id,
+            &self.venue,
+            &self.product_family,
+            &self.instrument_id,
+            &self.nt_instrument_id,
+        ] {
+            ensure!(!field.trim().is_empty(), "empty provenance/identity field");
+        }
+
+        let mut previous_open_time = i64::MIN;
+        for (index, row) in self.rows.iter().enumerate() {
+            ensure!(row.open_time > 0, "row {index}: non-positive open_time");
+            ensure!(
+                row.open_time >= previous_open_time,
+                "row {index}: open_time {} precedes previous {}",
+                row.open_time,
+                previous_open_time
+            );
+            previous_open_time = row.open_time;
+            for field in [&row.open, &row.high, &row.low, &row.close] {
+                ensure!(
+                    !field.trim().is_empty(),
+                    "row {index}: empty required field"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The NautilusTrader bar-type string for catalog identifier resolution.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the instrument id is invalid.
+    pub fn bar_type_string(&self) -> Result<String> {
+        Ok(Self::bar_type(&self.nt_instrument_id)?.to_string())
+    }
+
+    /// Convert the canonical rows into NautilusTrader `Bar`s at the instrument's
+    /// price precision. The volume is a zero `Quantity` at the instrument's size
+    /// precision: a mark-price candle carries no traded size.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a price cannot be represented at the precision or fails
+    /// NautilusTrader's OHLC checks.
+    pub fn to_bars(&self, spec: &BybitInstrumentSpec) -> Result<Vec<Bar>> {
+        ensure!(
+            spec.nt_instrument_id == self.nt_instrument_id,
+            "spec instrument {:?} does not match table {:?}",
+            spec.nt_instrument_id,
+            self.nt_instrument_id
+        );
+        let bar_type = Self::bar_type(&spec.nt_instrument_id)?;
+        let price_precision = spec.price_precision();
+        let size_precision = spec.size_precision();
+        let volume = nt_quantity(MARK_BAR_VOLUME, size_precision)?;
+        self.rows
+            .iter()
+            .map(|row| {
+                let open = nt_price(&row.open, price_precision)?;
+                let high = nt_price(&row.high, price_precision)?;
+                let low = nt_price(&row.low, price_precision)?;
+                let close = nt_price(&row.close, price_precision)?;
+                let ts =
+                    UnixNanos::from(u64::try_from(row.open_time).context("negative open_time")?);
+                Bar::new_checked(bar_type, open, high, low, close, volume, ts, ts)
+                    .context("build NautilusTrader mark-price bar")
+            })
+            .collect()
+    }
+}
+
+/// Project a canonical mark-price bars table into a NautilusTrader
+/// `ParquetDataCatalog` as `Bar` data.
+///
+/// # Errors
+///
+/// Returns an error if conversion or the catalog write fails.
+pub fn project_bybit_mark_bars_to_catalog(
+    table: &BybitMarkBarsTable,
+    spec: &BybitInstrumentSpec,
+    catalog_root: &Path,
+) -> Result<BybitCatalogProjection> {
+    table.validate()?;
+    let bars = table.to_bars(spec)?;
+    let record_count = bars.len();
+    ensure_clean_root(catalog_root)?;
+
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_to_parquet(bars, None, None, None)
+        .context("write mark-price bars to catalog")?;
+
+    Ok(BybitCatalogProjection {
+        catalog_root: catalog_root.to_path_buf(),
+        nt_identifier: table.bar_type_string()?,
+        data_type: NT_DATA_TYPE_MARK_BAR.to_string(),
+        record_count,
+        fidelity_class: table.fidelity_class,
+    })
+}
+
+/// Read the projected mark-price `Bar` data back from `catalog_root` by its
+/// bar-type id.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_mark_bars(catalog_root: &Path, bar_type: &str) -> Result<Vec<Bar>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .query_typed_data::<Bar>(
+            Some(vec![bar_type.to_string()]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .context("query mark-price bars from catalog")
 }
 
 #[cfg(test)]

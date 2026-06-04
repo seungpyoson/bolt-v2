@@ -25,6 +25,8 @@
 //! Binance public-archive CSV facts encoded here (verified against
 //! `s3://bolt-parquet/backfill-staging/.../source=data.binance.vision`):
 //!
+//! ## Spot archive (`product=spot`, families `trades` / `klines`)
+//!
 //! - Both `trades` and `klines` CSVs are **headerless**.
 //! - `trades` columns: `id, price, qty, quote_qty, time, is_buyer_maker,
 //!   is_best_match`. `time` is microseconds since the Unix epoch.
@@ -34,6 +36,32 @@
 //! - `klines` columns: `open_time, open, high, low, close, volume, close_time,
 //!   quote_volume, count, taker_buy_base, taker_buy_quote, ignore`. Both
 //!   `open_time` and `close_time` are microseconds since the Unix epoch.
+//!
+//! ## Futures archive (`product=futures_um`, families `aggTrades`,
+//! `markPriceKlines`, `indexPriceKlines`, `premiumIndexKlines`)
+//!
+//! Verified against the smallest real object of each family. These differ from
+//! the spot archive in three physical facts encoded below:
+//!
+//! - Every futures CSV carries a **header row** (the spot CSVs do not). The
+//!   new normalizers consume and verify the header, failing loud on drift.
+//! - All futures timestamps are **milliseconds** since the Unix epoch (the spot
+//!   archive uses microseconds).
+//! - `aggTrades` columns: `agg_trade_id, price, quantity, first_trade_id,
+//!   last_trade_id, transact_time, is_buyer_maker`. `is_buyer_maker` is the
+//!   lowercase `true`/`false` token and follows the same aggressor convention
+//!   as spot (`true` -> seller-initiated, `false` -> buyer-initiated). The
+//!   canonical trade id is the `agg_trade_id` (the stable per-object id Binance
+//!   assigns to each aggregated print).
+//! - `markPriceKlines` shares the 12-column kline layout above, but its OHLC
+//!   values are the exchange **mark price** (a tradable reference NautilusTrader
+//!   models first-class), with `volume` always `0`. It projects into NT `Bar`s
+//!   via the shared positive price-feed kline path.
+//! - `indexPriceKlines`, `premiumIndexKlines`, funding rates, open interest, and
+//!   exchange metadata are NOT tradable market data (the premium index is a
+//!   signed basis rate, not a price), so they are deliberately NOT converted to
+//!   NT catalog types; they remain staged Parquet for direct (pandas/polars)
+//!   research. The positive-only kline path here therefore rejects them.
 
 use std::{
     path::{Path, PathBuf},
@@ -65,8 +93,24 @@ pub const BINANCE_TRADES_FIELD_COUNT: usize = 7;
 /// Number of comma-separated fields in a Binance public-archive `klines` row.
 pub const BINANCE_KLINES_FIELD_COUNT: usize = 12;
 
-/// Binance public-archive timestamps are microseconds since the Unix epoch.
+/// Number of comma-separated fields in a Binance futures `aggTrades` row.
+pub const BINANCE_AGG_TRADES_FIELD_COUNT: usize = 7;
+
+/// Header row of a Binance futures `aggTrades` CSV (verified against the
+/// archive). Used to fail loud if the source layout drifts.
+pub const BINANCE_AGG_TRADES_HEADER: &str =
+    "agg_trade_id,price,quantity,first_trade_id,last_trade_id,transact_time,is_buyer_maker";
+
+/// Header row shared by the Binance futures price-feed kline families
+/// (`markPriceKlines`, `indexPriceKlines`, `premiumIndexKlines`); identical to
+/// the documented spot kline column layout. Used to fail loud on layout drift.
+pub const BINANCE_KLINES_HEADER: &str = "open_time,open,high,low,close,volume,close_time,quote_volume,count,taker_buy_volume,taker_buy_quote_volume,ignore";
+
+/// Spot-archive Binance timestamps are microseconds since the Unix epoch.
 const NANOS_PER_MICROSECOND: i64 = 1_000;
+
+/// Futures-archive Binance timestamps are milliseconds since the Unix epoch.
+const NANOS_PER_MILLISECOND: i64 = 1_000_000;
 
 // ---------------------------------------------------------------------------
 // Shared inputs (caller-provided; never hardcoded)
@@ -425,6 +469,142 @@ impl BinanceTradesTable {
 }
 
 // ---------------------------------------------------------------------------
+// aggTrades normalization (Binance futures `aggTrades` family)
+// ---------------------------------------------------------------------------
+
+/// Strip and verify the single header line from a decompressed futures CSV.
+///
+/// Returns the remaining body. Fails loud if the first non-empty line is not
+/// the expected header (guards against silent layout drift in the archive).
+fn strip_verified_header<'a>(csv_text: &'a str, expected_header: &str) -> Result<&'a str> {
+    let mut lines = csv_text.lines();
+    let header = loop {
+        match lines.next() {
+            Some(line) if line.trim().is_empty() => continue,
+            Some(line) => break line,
+            None => bail!("empty CSV: no header row"),
+        }
+    };
+    ensure!(
+        header.trim() == expected_header,
+        "unexpected CSV header {:?}, expected {:?}",
+        header.trim(),
+        expected_header
+    );
+    // The remainder is everything after the header line. `lines()` does not
+    // expose a remainder, so reconstruct it from the byte offset of the header.
+    let header_end = header.as_ptr() as usize - csv_text.as_ptr() as usize + header.len();
+    Ok(&csv_text[header_end..])
+}
+
+/// Normalize a decompressed Binance futures `aggTrades` CSV into the canonical
+/// trades table (reusing the shared [`BinanceTradeRow`] model so the
+/// `TradeTick` projection and read-back paths are shared with the spot family).
+///
+/// `csv_text` is the decompressed text of the accepted `.zip` object (the unzip
+/// is the ingest step). Unlike the spot `trades` CSV, this file carries a
+/// header row and uses millisecond `transact_time`.
+///
+/// The canonical trade id is the `agg_trade_id`. Aggressor side follows the
+/// same `is_buyer_maker` convention as spot: `true` -> seller-initiated,
+/// `false` -> buyer-initiated.
+///
+/// # Errors
+///
+/// Returns an error if the header is unexpected, a row is malformed, a field
+/// fails to parse, a price/size is non-positive, or event timestamps are not
+/// monotonically non-decreasing.
+pub fn normalize_binance_agg_trades(
+    provenance: &BinanceProvenance,
+    identity: &BinanceInstrumentIdentity,
+    csv_text: &str,
+) -> Result<BinanceTradesTable> {
+    provenance.validate()?;
+    identity.validate()?;
+
+    let body = strip_verified_header(csv_text, BINANCE_AGG_TRADES_HEADER)?;
+
+    let mut rows = Vec::new();
+    for (index, line) in body.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').collect();
+        ensure!(
+            fields.len() == BINANCE_AGG_TRADES_FIELD_COUNT,
+            "aggTrades row {index} has {} fields, expected {}",
+            fields.len(),
+            BINANCE_AGG_TRADES_FIELD_COUNT
+        );
+
+        let trade_id = fields[0].trim();
+        let price_raw = fields[1].trim();
+        let size_raw = fields[2].trim();
+        // fields[3] (first_trade_id) and fields[4] (last_trade_id) describe the
+        // aggregation window; the canonical id is the agg_trade_id.
+        let time_millis: i64 = fields[5].trim().parse().with_context(|| {
+            format!(
+                "aggTrades row {index}: invalid transact_time {:?}",
+                fields[5]
+            )
+        })?;
+        let aggressor = TradeAggressorSide::from_is_buyer_maker(fields[6]).with_context(|| {
+            format!(
+                "aggTrades row {index}: invalid is_buyer_maker {:?}",
+                fields[6]
+            )
+        })?;
+
+        ensure!(
+            !trade_id.is_empty(),
+            "aggTrades row {index}: empty trade id"
+        );
+        let price: Decimal = price_raw
+            .parse()
+            .with_context(|| format!("aggTrades row {index}: invalid price {price_raw:?}"))?;
+        let size: Decimal = size_raw
+            .parse()
+            .with_context(|| format!("aggTrades row {index}: invalid size {size_raw:?}"))?;
+        ensure!(
+            price > Decimal::ZERO,
+            "aggTrades row {index}: non-positive price"
+        );
+        ensure!(
+            size > Decimal::ZERO,
+            "aggTrades row {index}: non-positive size"
+        );
+
+        let event_time = time_millis
+            .checked_mul(NANOS_PER_MILLISECOND)
+            .with_context(|| format!("aggTrades row {index}: timestamp overflow"))?;
+
+        rows.push(BinanceTradeRow {
+            venue: provenance.venue.clone(),
+            product_family: provenance.product_family.clone(),
+            product_category: provenance.product_category.clone(),
+            instrument_id: identity.instrument_id.clone(),
+            venue_symbol: identity.venue_symbol.clone(),
+            nt_instrument_id: identity.nt_instrument_id.clone(),
+            event_time,
+            source_proof_id: provenance.source_proof_id.clone(),
+            payload_hash: provenance.payload_hash.clone(),
+            trade_id: trade_id.to_string(),
+            aggressor_side: aggressor,
+            price: price_raw.to_string(),
+            size: size_raw.to_string(),
+        });
+    }
+
+    let table = BinanceTradesTable {
+        provenance: provenance.clone(),
+        identity: identity.clone(),
+        rows,
+    };
+    table.validate()?;
+    Ok(table)
+}
+
+// ---------------------------------------------------------------------------
 // Klines normalization
 // ---------------------------------------------------------------------------
 
@@ -444,82 +624,146 @@ pub fn normalize_binance_klines(
     bar_spec: KlineBarSpec,
     csv_text: &str,
 ) -> Result<BinanceKlinesTable> {
+    // Spot klines: headerless, microsecond timestamps, strictly positive prices.
+    parse_klines(
+        provenance,
+        identity,
+        bar_spec,
+        csv_text,
+        "klines",
+        NANOS_PER_MICROSECOND,
+    )
+}
+
+/// Normalize a decompressed Binance futures **mark-price** kline CSV
+/// (`markPriceKlines`) into the canonical klines table, reusing the shared
+/// [`BinanceBarRow`] model so the `Bar` projection and read-back paths are
+/// shared with the spot family.
+///
+/// The mark price is a tradable reference NautilusTrader models first-class, so
+/// it converts to NT `Bar`s. The sibling `indexPriceKlines`/`premiumIndexKlines`
+/// families are NOT tradable market data (the premium index is a signed basis
+/// rate, not a price); they are kept as staged Parquet, not converted, so this
+/// path enforces strict positivity and rejects them.
+///
+/// These futures CSVs differ from the spot `klines` archive in two physical
+/// facts: a header row is present and timestamps are milliseconds.
+///
+/// `csv_text` is the decompressed text of the accepted `.zip` object (the unzip
+/// is the ingest step).
+///
+/// # Errors
+///
+/// Returns an error if the header is unexpected, a row is malformed, a field
+/// fails to parse, an OHLC value is non-positive, the OHLC ordering invariant is
+/// violated, or open timestamps are not strictly increasing.
+pub fn normalize_binance_price_feed_klines(
+    provenance: &BinanceProvenance,
+    identity: &BinanceInstrumentIdentity,
+    bar_spec: KlineBarSpec,
+    csv_text: &str,
+) -> Result<BinanceKlinesTable> {
+    let body = strip_verified_header(csv_text, BINANCE_KLINES_HEADER)?;
+    parse_klines(
+        provenance,
+        identity,
+        bar_spec,
+        body,
+        "price-feed klines",
+        NANOS_PER_MILLISECOND,
+    )
+}
+
+/// Shared kline body parser. `body` is the CSV with any header already removed;
+/// `nanos_per_unit` is the source timestamp unit. OHLC values must be strictly
+/// positive: only tradable price feeds (traded/mark klines) are converted to NT.
+fn parse_klines(
+    provenance: &BinanceProvenance,
+    identity: &BinanceInstrumentIdentity,
+    bar_spec: KlineBarSpec,
+    body: &str,
+    label: &str,
+    nanos_per_unit: i64,
+) -> Result<BinanceKlinesTable> {
     provenance.validate()?;
     identity.validate()?;
     ensure!(bar_spec.step > 0, "kline bar step must be positive");
 
     let mut rows = Vec::new();
-    for (index, line) in csv_text.lines().enumerate() {
+    for (index, line) in body.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
         let fields: Vec<&str> = line.split(',').collect();
         ensure!(
             fields.len() == BINANCE_KLINES_FIELD_COUNT,
-            "klines row {index} has {} fields, expected {}",
+            "{label} row {index} has {} fields, expected {}",
             fields.len(),
             BINANCE_KLINES_FIELD_COUNT
         );
 
-        let open_micros: i64 = fields[0]
+        let open_units: i64 = fields[0]
             .trim()
             .parse()
-            .with_context(|| format!("klines row {index}: invalid open_time {:?}", fields[0]))?;
+            .with_context(|| format!("{label} row {index}: invalid open_time {:?}", fields[0]))?;
         let open_raw = fields[1].trim();
         let high_raw = fields[2].trim();
         let low_raw = fields[3].trim();
         let close_raw = fields[4].trim();
         let volume_raw = fields[5].trim();
-        let close_micros: i64 = fields[6]
+        let close_units: i64 = fields[6]
             .trim()
             .parse()
-            .with_context(|| format!("klines row {index}: invalid close_time {:?}", fields[6]))?;
+            .with_context(|| format!("{label} row {index}: invalid close_time {:?}", fields[6]))?;
 
         let open: Decimal = open_raw
             .parse()
-            .with_context(|| format!("klines row {index}: invalid open {open_raw:?}"))?;
+            .with_context(|| format!("{label} row {index}: invalid open {open_raw:?}"))?;
         let high: Decimal = high_raw
             .parse()
-            .with_context(|| format!("klines row {index}: invalid high {high_raw:?}"))?;
+            .with_context(|| format!("{label} row {index}: invalid high {high_raw:?}"))?;
         let low: Decimal = low_raw
             .parse()
-            .with_context(|| format!("klines row {index}: invalid low {low_raw:?}"))?;
+            .with_context(|| format!("{label} row {index}: invalid low {low_raw:?}"))?;
         let close: Decimal = close_raw
             .parse()
-            .with_context(|| format!("klines row {index}: invalid close {close_raw:?}"))?;
+            .with_context(|| format!("{label} row {index}: invalid close {close_raw:?}"))?;
         let volume: Decimal = volume_raw
             .parse()
-            .with_context(|| format!("klines row {index}: invalid volume {volume_raw:?}"))?;
+            .with_context(|| format!("{label} row {index}: invalid volume {volume_raw:?}"))?;
 
+        // Only tradable price feeds (traded/mark klines) are converted to NT;
+        // strict positivity rejects index/premium basis feeds (kept as Parquet).
         ensure!(
             open > Decimal::ZERO,
-            "klines row {index}: non-positive open"
+            "{label} row {index}: non-positive open"
         );
-        ensure!(low > Decimal::ZERO, "klines row {index}: non-positive low");
+        ensure!(low > Decimal::ZERO, "{label} row {index}: non-positive low");
         ensure!(
             volume >= Decimal::ZERO,
-            "klines row {index}: negative volume"
+            "{label} row {index}: negative volume"
         );
-        // NautilusTrader's `Bar::new_checked` enforces these; fail loud earlier
-        // with a precise message rather than a downstream panic.
+        // OHLC ordering is required by NautilusTrader's `Bar::new_checked` for
+        // every sign policy; fail loud here with a precise message rather than a
+        // downstream panic.
         ensure!(
             high >= open && high >= low && high >= close,
-            "klines row {index}: high {high} is not the maximum (o={open} l={low} c={close})"
+            "{label} row {index}: high {high} is not the maximum (o={open} l={low} c={close})"
         );
         ensure!(
             low <= open && low <= close,
-            "klines row {index}: low {low} is not the minimum (o={open} c={close})"
+            "{label} row {index}: low {low} is not the minimum (o={open} c={close})"
         );
 
-        let open_time = open_micros
-            .checked_mul(NANOS_PER_MICROSECOND)
-            .with_context(|| format!("klines row {index}: open_time overflow"))?;
-        let close_time = close_micros
-            .checked_mul(NANOS_PER_MICROSECOND)
-            .with_context(|| format!("klines row {index}: close_time overflow"))?;
+        let open_time = open_units
+            .checked_mul(nanos_per_unit)
+            .with_context(|| format!("{label} row {index}: open_time overflow"))?;
+        let close_time = close_units
+            .checked_mul(nanos_per_unit)
+            .with_context(|| format!("{label} row {index}: close_time overflow"))?;
         ensure!(
             close_time >= open_time,
-            "klines row {index}: close_time precedes open_time"
+            "{label} row {index}: close_time precedes open_time"
         );
 
         rows.push(BinanceBarRow {
@@ -1053,5 +1297,122 @@ mod tests {
         assert_eq!(decimal_places("0.00000001"), 8);
         assert_eq!(decimal_places("0.1"), 1);
         assert_eq!(decimal_places("1"), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Futures families
+    // -----------------------------------------------------------------------
+
+    const SAMPLE_AGG_TRADES: &str = "agg_trade_id,price,quantity,first_trade_id,last_trade_id,transact_time,is_buyer_maker\n\
+        1,2088.0,40.0,1,1,1774599098684,false\n\
+        2,2169.87,0.02,2,2,1774599109473,false\n\
+        3,2133.02,0.026,42561,42561,1774599200000,true\n";
+
+    // markPrice/indexPrice layout (positive feed). Header + millisecond stamps.
+    const SAMPLE_MARK_KLINES: &str = "open_time,open,high,low,close,volume,close_time,quote_volume,count,taker_buy_volume,taker_buy_quote_volume,ignore\n\
+        1774591740000,2061.40441860,2062.16093023,2061.23418605,2062.12488372,0,1774591799999,0.00000000,59,0,0.00000000,0\n\
+        1774591800000,2062.12488372,2062.59953488,2061.72302326,2062.59953488,0,1774591859999,0.00000000,60,0,0.00000000,0\n";
+
+    // premiumIndex layout (signed feed). Includes zero, negative, and a
+    // mixed-sign bar (negative low, positive high).
+    const SAMPLE_PREMIUM_KLINES: &str = "open_time,open,high,low,close,volume,close_time,quote_volume,count,taker_buy_volume,taker_buy_quote_volume,ignore\n\
+        1758122460000,0,0,0,0,0,1758122519999,0,7,0,0,0\n\
+        1758535320000,-0.14553663,-0.11260799,-0.14553663,-0.11260799,0,1758535379999,0,12,0,0,0\n\
+        1758535380000,-0.00040648,0.00012519,-0.00047397,-0.00031924,0,1758535439999,0,12,0,0,0\n";
+
+    #[test]
+    fn normalizes_agg_trades_with_header_and_millis() {
+        let table = normalize_binance_agg_trades(&provenance(), &identity(), SAMPLE_AGG_TRADES)
+            .expect("normalize aggTrades");
+        // Header consumed; three data rows remain.
+        assert_eq!(table.rows.len(), 3);
+        // is_buyer_maker=false -> buyer-initiated.
+        assert_eq!(table.rows[0].aggressor_side, TradeAggressorSide::Buyer);
+        // is_buyer_maker=true -> seller-initiated.
+        assert_eq!(table.rows[2].aggressor_side, TradeAggressorSide::Seller);
+        // Canonical id is the agg_trade_id.
+        assert_eq!(table.rows[1].trade_id, "2");
+        // Milliseconds -> nanoseconds (NOT microseconds).
+        assert_eq!(
+            table.rows[0].event_time,
+            1_774_599_098_684 * NANOS_PER_MILLISECOND
+        );
+        assert_eq!(table.rows[0].price, "2088.0");
+    }
+
+    #[test]
+    fn rejects_agg_trades_with_unexpected_header() {
+        let bad = "id,price,qty,a,b,t,m\n1,2088.0,40.0,1,1,1774599098684,false\n";
+        let err = normalize_binance_agg_trades(&provenance(), &identity(), bad).unwrap_err();
+        assert!(err.to_string().contains("unexpected CSV header"), "{err}");
+    }
+
+    #[test]
+    fn rejects_agg_trades_missing_header() {
+        let bad = "";
+        let err = normalize_binance_agg_trades(&provenance(), &identity(), bad).unwrap_err();
+        assert!(err.to_string().contains("no header row"), "{err}");
+    }
+
+    #[test]
+    fn rejects_agg_trades_wrong_field_count() {
+        let bad = "agg_trade_id,price,quantity,first_trade_id,last_trade_id,transact_time,is_buyer_maker\n\
+            1,2088.0,40.0,1,1,1774599098684\n";
+        let err = normalize_binance_agg_trades(&provenance(), &identity(), bad).unwrap_err();
+        assert!(err.to_string().contains("fields"), "{err}");
+    }
+
+    #[test]
+    fn normalizes_positive_price_feed_klines_with_header_and_millis() {
+        let bar_spec = KlineBarSpec {
+            step: 1,
+            aggregation: BarAggregation::Minute,
+        };
+        let table = normalize_binance_price_feed_klines(
+            &provenance(),
+            &identity(),
+            bar_spec,
+            SAMPLE_MARK_KLINES,
+        )
+        .expect("normalize positive klines");
+        assert_eq!(table.rows.len(), 2);
+        // Milliseconds -> nanoseconds.
+        assert_eq!(
+            table.rows[0].open_time,
+            1_774_591_740_000 * NANOS_PER_MILLISECOND
+        );
+        assert_eq!(table.rows[1].open, "2062.12488372");
+    }
+
+    #[test]
+    fn rejects_negative_premium_klines() {
+        // The premium-index basis feed carries zero/negative OHLC values; it is
+        // NOT tradable market data, so the positive-only kline path rejects it
+        // (it stays staged Parquet, never converted to an NT catalog type).
+        let bar_spec = KlineBarSpec {
+            step: 1,
+            aggregation: BarAggregation::Minute,
+        };
+        let err = normalize_binance_price_feed_klines(
+            &provenance(),
+            &identity(),
+            bar_spec,
+            SAMPLE_PREMIUM_KLINES,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("non-positive"), "{err}");
+    }
+
+    #[test]
+    fn rejects_price_feed_klines_with_unexpected_header() {
+        let bad = "ot,o,h,l,c,v,ct,qv,n,tbv,tbq,ig\n\
+            1774591740000,1,1,1,1,0,1774591799999,0,1,0,0,0\n";
+        let bar_spec = KlineBarSpec {
+            step: 1,
+            aggregation: BarAggregation::Minute,
+        };
+        let err = normalize_binance_price_feed_klines(&provenance(), &identity(), bar_spec, bad)
+            .unwrap_err();
+        assert!(err.to_string().contains("unexpected CSV header"), "{err}");
     }
 }

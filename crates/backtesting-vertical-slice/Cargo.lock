@@ -438,6 +438,7 @@ dependencies = [
  "clap",
  "flate2",
  "hex",
+ "lz4_flex",
  "nautilus-backtest",
  "nautilus-common",
  "nautilus-core",

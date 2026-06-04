@@ -22,14 +22,14 @@
 //! encodes is Hyperliquid's wire shape (`raw.data.levels[0]` = bids,
 //! `levels[1]` = asks, `data.time` in milliseconds).
 
-use std::{path::Path, str::FromStr};
+use std::{collections::HashMap, io::Read, path::Path, str::FromStr};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::{BookOrder, OrderBookDelta},
-    enums::{BookAction, OrderSide, RecordFlag},
-    identifiers::{InstrumentId, Symbol},
+    data::{BookOrder, OrderBookDelta, TradeTick},
+    enums::{AggressorSide, BookAction, OrderSide, RecordFlag},
+    identifiers::{InstrumentId, Symbol, TradeId},
     instruments::{CryptoPerpetual, Instrument, InstrumentAny},
     types::{Currency, Price, Quantity},
 };
@@ -39,6 +39,9 @@ use serde::{Deserialize, Serialize};
 
 /// NautilusTrader data type written for this projection.
 pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
+
+/// NautilusTrader data type written for the `node_fills_by_block` projection.
+pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
 
 /// Milliseconds-to-nanoseconds scale for the venue event timestamp.
 const NANOS_PER_MILLISECOND: i64 = 1_000_000;
@@ -426,6 +429,362 @@ pub fn read_back_order_book_deltas(
         .context("query order book deltas from catalog")
 }
 
+// ===========================================================================
+// node_fills_by_block -> NautilusTrader `TradeTick`
+// ===========================================================================
+//
+// Hyperliquid's node operator captures one JSONL line per chain block. Each line
+// is `{local_time, block_time, block_number, events}` where `events` is an array
+// of `[user_address, fill]` pairs. Every executed trade emits TWO fill records in
+// the SAME block sharing one `tid`: the resting **maker** leg (`crossed:false`)
+// and the aggressing **taker** leg (`crossed:true`). Both legs carry identical
+// `px`/`sz`/`time`; only `side`, `crossed`, the user, and per-side accounting
+// fields differ. (Verified across 92,308 tid-pairs in a real object: every tid
+// occurs exactly twice with opposite `side`, opposite `crossed`, equal px/sz/time.)
+//
+// A NautilusTrader `TradeTick` is one market print per trade, so this projection
+// **deduplicates by `tid` and keeps the taker (`crossed:true`) leg**. The taker's
+// `side` is the aggressor: Hyperliquid `side:"B"` = the taker bought
+// (`AggressorSide::Buyer`), `side:"A"` = the taker sold (`AggressorSide::Seller`).
+// The fill `tid` becomes the NT `TradeId`. The fill `time` (exchange match time in
+// milliseconds) becomes both `ts_event` and `ts_init`.
+//
+// NO HARDCODES: the coin to project, the NT instrument identity, and the
+// currencies all come from the caller-supplied [`HyperliquidCoreInstrumentSpec`]
+// (reused from the L2 path). Price/size precision is derived from the data (the
+// max decimal places observed across the selected coin's fills), never a literal.
+
+/// LZ4-frame magic number (`0x184D2204`, little-endian on disk) prefixing the raw
+/// Hyperliquid node objects. Carried as a fact for the doc/decompression contract.
+const LZ4_FRAME_MAGIC: [u8; 4] = [0x04, 0x22, 0x4D, 0x18];
+
+/// Hyperliquid taker `side` token for a buy (the aggressor lifted the offer).
+const HL_SIDE_BUY: &str = "B";
+
+/// Hyperliquid taker `side` token for a sell (the aggressor hit the bid).
+const HL_SIDE_SELL: &str = "A";
+
+/// One fill record as it appears inside an `events` pair's second element.
+///
+/// Only the fields this projection needs are deserialized; the rest of the rich
+/// fill payload (`startPosition`, `dir`, `closedPnl`, `hash`, `oid`, `fee`,
+/// `feeToken`, `cloid`, `twapId`, ...) is ignored — `TradeTick` carries only the
+/// market print.
+#[derive(Debug, Clone, Deserialize)]
+struct WireFill {
+    /// Venue coin code (for example `BTC`). Selects the instrument to project.
+    coin: String,
+    /// Exact source fill price string.
+    px: String,
+    /// Exact source fill size string.
+    sz: String,
+    /// `"B"` = this leg bought, `"A"` = this leg sold.
+    side: String,
+    /// Exchange match timestamp in milliseconds.
+    time: i64,
+    /// Whether this leg crossed the spread (the aggressor/taker leg).
+    crossed: bool,
+    /// Trade id shared by the maker and taker legs of one match.
+    tid: u64,
+}
+
+/// One captured block: a `local_time`/`block_time`/`block_number` header plus the
+/// per-block `events`. Each event is `[user_address, fill]`.
+#[derive(Debug, Clone, Deserialize)]
+struct WireBlock {
+    events: Vec<(String, WireFill)>,
+}
+
+/// A taker fill selected for projection, parsed and validated.
+#[derive(Debug, Clone)]
+struct TakerFill {
+    tid: u64,
+    aggressor: AggressorSide,
+    price: String,
+    size: String,
+    /// Exchange match time in Unix nanoseconds.
+    event_ns: u64,
+}
+
+/// Reconstructed trade stream ready for the NautilusTrader catalog.
+#[derive(Debug, Clone)]
+pub struct ReconstructedTrades {
+    /// The NT instrument carrying the trades.
+    pub instrument: InstrumentAny,
+    /// Number of unique trades (deduplicated by `tid`) projected.
+    pub trade_count: usize,
+    /// Price precision derived from the data (max decimal places observed).
+    pub price_precision: u8,
+    /// Size precision derived from the data (max decimal places observed).
+    pub size_precision: u8,
+    /// Trade ticks sorted by ascending event time (NT write contract).
+    pub trades: Vec<TradeTick>,
+}
+
+/// Result of projecting reconstructed trades into a NautilusTrader catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TradesCatalogProjection {
+    pub nt_instrument_id: String,
+    pub data_type: String,
+    pub trade_count: usize,
+}
+
+/// Decompress an LZ4-frame-compressed Hyperliquid node object into JSONL text.
+///
+/// The raw S3 objects are stored in the standard LZ4 frame format (magic
+/// `0x184D2204`); this mirrors [`super::canonical_deribit::read_gzip_csv`] for the
+/// gzip case — the converter module owns its decompression step.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read, lacks the LZ4 frame magic, or is
+/// not valid LZ4 / UTF-8.
+pub fn read_lz4_jsonl(path: &Path) -> Result<String> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("read lz4 object {}", path.display()))?;
+    ensure!(
+        bytes.len() >= 4 && bytes[..4] == LZ4_FRAME_MAGIC,
+        "object {} is not an LZ4 frame (bad magic)",
+        path.display()
+    );
+    let mut decoder = lz4_flex::frame::FrameDecoder::new(bytes.as_slice());
+    let mut text = String::new();
+    decoder
+        .read_to_string(&mut text)
+        .with_context(|| format!("decompress lz4 object {}", path.display()))?;
+    Ok(text)
+}
+
+/// Map a Hyperliquid taker `side` token to the NautilusTrader aggressor side.
+///
+/// `"B"` -> the taker bought (`Buyer`); `"A"` -> the taker sold (`Seller`).
+fn taker_side_to_aggressor(side: &str) -> Result<AggressorSide> {
+    match side {
+        HL_SIDE_BUY => Ok(AggressorSide::Buyer),
+        HL_SIDE_SELL => Ok(AggressorSide::Seller),
+        other => {
+            bail!("unknown taker side token {other:?} (want {HL_SIDE_BUY:?} or {HL_SIDE_SELL:?})")
+        }
+    }
+}
+
+/// Reconstruct NautilusTrader `TradeTick`s from Hyperliquid `node_fills_by_block`
+/// JSONL for one coin.
+///
+/// Each block's `events` are scanned; only fills whose `coin` equals
+/// `spec.raw_symbol` are considered. Trades are deduplicated by `tid`, keeping the
+/// taker (`crossed:true`) leg as the canonical print, and the result is sorted by
+/// ascending event time to satisfy NautilusTrader's non-decreasing `ts_init` write
+/// contract (the source is block-ordered, but fills inside a block are not sorted
+/// by match time, so a global sort is required and is not an error).
+///
+/// Price/size precision is the maximum number of decimal places observed across
+/// the selected coin's fills.
+///
+/// # Errors
+///
+/// Returns an error if the input is empty/malformed, no fills exist for the coin,
+/// a taker side token is unknown, a price/size is non-positive or cannot be
+/// represented, or a maker/taker `tid` pair disagrees on price/size.
+pub fn reconstruct_trades(
+    jsonl: &str,
+    spec: &HyperliquidCoreInstrumentSpec,
+) -> Result<ReconstructedTrades> {
+    ensure!(
+        !spec.raw_symbol.trim().is_empty(),
+        "spec.raw_symbol must not be empty"
+    );
+
+    // Collect taker (crossed=true) legs for the requested coin, deduplicated by
+    // tid. A tid should appear exactly once as a taker; if it appears twice the
+    // legs must agree on price/size/time (they always do in real data) — disagree
+    // and we fail loud rather than silently picking one.
+    let mut takers: HashMap<u64, TakerFill> = HashMap::new();
+    let mut price_precision = 0u8;
+    let mut size_precision = 0u8;
+
+    for (line_index, line) in jsonl.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let block: WireBlock = serde_json::from_str(line)
+            .with_context(|| format!("line {line_index}: malformed node_fills_by_block JSON"))?;
+        for (_user, fill) in &block.events {
+            if fill.coin != spec.raw_symbol {
+                continue;
+            }
+            if !fill.crossed {
+                // Maker leg: skip; the taker leg of the same tid is the print.
+                continue;
+            }
+            ensure!(
+                fill.time > 0,
+                "line {line_index}: non-positive fill time {}",
+                fill.time
+            );
+            let price: Decimal = fill
+                .px
+                .parse()
+                .with_context(|| format!("line {line_index}: invalid px {:?}", fill.px))?;
+            let size: Decimal = fill
+                .sz
+                .parse()
+                .with_context(|| format!("line {line_index}: invalid sz {:?}", fill.sz))?;
+            ensure!(
+                price > Decimal::ZERO,
+                "line {line_index}: non-positive fill price {:?}",
+                fill.px
+            );
+            ensure!(
+                size > Decimal::ZERO,
+                "line {line_index}: non-positive fill size {:?}",
+                fill.sz
+            );
+
+            let aggressor = taker_side_to_aggressor(&fill.side)
+                .map_err(|e| anyhow::anyhow!("line {line_index}: tid {}: {e}", fill.tid))?;
+            let event_ms = fill.time;
+            let event_ns = u64::try_from(
+                event_ms
+                    .checked_mul(NANOS_PER_MILLISECOND)
+                    .context("fill time overflow")?,
+            )
+            .context("negative fill time")?;
+
+            let candidate = TakerFill {
+                tid: fill.tid,
+                aggressor,
+                price: fill.px.clone(),
+                size: fill.sz.clone(),
+                event_ns,
+            };
+            if let Some(existing) = takers.get(&fill.tid) {
+                ensure!(
+                    existing.price == candidate.price
+                        && existing.size == candidate.size
+                        && existing.event_ns == candidate.event_ns,
+                    "line {line_index}: duplicate taker leg for tid {} disagrees on px/sz/time",
+                    fill.tid
+                );
+                // Identical duplicate (defensive): keep the first.
+                continue;
+            }
+            price_precision = price_precision.max(decimal_places(&fill.px));
+            size_precision = size_precision.max(decimal_places(&fill.sz));
+            takers.insert(fill.tid, candidate);
+        }
+    }
+
+    ensure!(
+        !takers.is_empty(),
+        "no taker fills found for coin {:?}",
+        spec.raw_symbol
+    );
+
+    let instrument = build_instrument(spec, price_precision, size_precision)?;
+    let instrument_id = instrument.id();
+
+    // Sort by event time, then tid for a stable order among same-timestamp fills.
+    let mut selected: Vec<TakerFill> = takers.into_values().collect();
+    selected.sort_by(|a, b| a.event_ns.cmp(&b.event_ns).then(a.tid.cmp(&b.tid)));
+
+    let mut trades = Vec::with_capacity(selected.len());
+    for fill in &selected {
+        let price = Price::from_str(&rescaled(&fill.price, price_precision)?)
+            .map_err(|e| anyhow::anyhow!("invalid price {:?}: {e}", fill.price))?;
+        let size = Quantity::from_str(&rescaled(&fill.size, size_precision)?)
+            .map_err(|e| anyhow::anyhow!("invalid size {:?}: {e}", fill.size))?;
+        let trade_id = TradeId::new_checked(fill.tid.to_string())
+            .map_err(|e| anyhow::anyhow!("invalid trade id {}: {e}", fill.tid))?;
+        let ts = UnixNanos::from(fill.event_ns);
+        trades.push(TradeTick::new(
+            instrument_id,
+            price,
+            size,
+            fill.aggressor,
+            trade_id,
+            ts,
+            ts,
+        ));
+    }
+
+    Ok(ReconstructedTrades {
+        instrument: instrument.into_any(),
+        trade_count: trades.len(),
+        price_precision,
+        size_precision,
+        trades,
+    })
+}
+
+/// Project reconstructed Hyperliquid core trades into a NautilusTrader
+/// `ParquetDataCatalog`.
+///
+/// Writes the venue instrument and the `TradeTick` stream under `catalog_root`
+/// using NautilusTrader's own write path, then returns a [`TradesCatalogProjection`].
+/// Fails closed on a non-empty `catalog_root` (NT's writer skips existing files and
+/// would otherwise read back stale data).
+///
+/// # Errors
+///
+/// Returns an error if there are no trades, the catalog root is dirty, or a catalog
+/// write fails.
+pub fn project_trades_to_catalog(
+    reconstructed: &ReconstructedTrades,
+    catalog_root: &Path,
+) -> Result<TradesCatalogProjection> {
+    ensure!(!reconstructed.trades.is_empty(), "no trades to project");
+    if catalog_root.exists() {
+        let mut entries = std::fs::read_dir(catalog_root)
+            .with_context(|| format!("read catalog root {}", catalog_root.display()))?;
+        ensure!(
+            entries.next().is_none(),
+            "catalog root {} is not empty; refusing to project into a dirty catalog",
+            catalog_root.display()
+        );
+    }
+    std::fs::create_dir_all(catalog_root)
+        .with_context(|| format!("create catalog root {}", catalog_root.display()))?;
+
+    let instrument_id = reconstructed.instrument.id().to_string();
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_instruments(vec![reconstructed.instrument.clone()])
+        .context("write instrument to catalog")?;
+    catalog
+        .write_to_parquet(reconstructed.trades.clone(), None, None, None)
+        .context("write trade ticks to catalog")?;
+
+    Ok(TradesCatalogProjection {
+        nt_instrument_id: instrument_id,
+        data_type: NT_DATA_TYPE_TRADE_TICK.to_string(),
+        trade_count: reconstructed.trades.len(),
+    })
+}
+
+/// Read the projected `TradeTick` stream back from `catalog_root`, proving the
+/// resolved NautilusTrader dependency can replay it.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_trade_ticks(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+) -> Result<Vec<TradeTick>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .query_typed_data::<TradeTick>(
+            Some(vec![nt_instrument_id.to_string()]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .context("query trade ticks from catalog")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +885,96 @@ mod tests {
             \"data\":{\"coin\":\"BNB\",\"time\":999,\"levels\":[[],[]]}}}\n";
         let err = reconstruct_books(bad, &spec()).unwrap_err();
         assert!(err.to_string().contains("precedes previous"), "{err}");
+    }
+
+    // -- node_fills_by_block -> TradeTick ---------------------------------
+
+    fn btc_spec() -> HyperliquidCoreInstrumentSpec {
+        HyperliquidCoreInstrumentSpec {
+            nt_instrument_id: "BTC.HYPERLIQUID".to_string(),
+            raw_symbol: "BTC".to_string(),
+            base_currency: "BTC".to_string(),
+            quote_currency: "USDC".to_string(),
+            settlement_currency: "USDC".to_string(),
+        }
+    }
+
+    /// Two blocks. Block 1 has one empty + one full BTC trade (maker B + taker A)
+    /// plus a non-BTC fill that must be ignored. Block 2 has one BTC trade whose
+    /// match time PRECEDES block 1's, proving the global sort. The taker leg is
+    /// `crossed:true`; its `side` is the aggressor.
+    const TWO_BLOCK_FILLS: &str = "{\"block_number\":1,\"events\":[]}\n\
+        {\"block_number\":2,\"events\":[\
+        [\"0xaaa\",{\"coin\":\"BTC\",\"px\":\"66428.0\",\"sz\":\"0.00018\",\"side\":\"B\",\"time\":2000,\"crossed\":false,\"tid\":111,\"oid\":1}],\
+        [\"0xbbb\",{\"coin\":\"BTC\",\"px\":\"66428.0\",\"sz\":\"0.00018\",\"side\":\"A\",\"time\":2000,\"crossed\":true,\"tid\":111,\"oid\":2}],\
+        [\"0xccc\",{\"coin\":\"HYPE\",\"px\":\"30.988\",\"sz\":\"37.93\",\"side\":\"A\",\"time\":2000,\"crossed\":true,\"tid\":222,\"oid\":3}]]}\n\
+        {\"block_number\":3,\"events\":[\
+        [\"0xddd\",{\"coin\":\"BTC\",\"px\":\"66430.5\",\"sz\":\"0.5\",\"side\":\"A\",\"time\":1000,\"crossed\":false,\"tid\":333,\"oid\":4}],\
+        [\"0xeee\",{\"coin\":\"BTC\",\"px\":\"66430.5\",\"sz\":\"0.5\",\"side\":\"B\",\"time\":1000,\"crossed\":true,\"tid\":333,\"oid\":5}]]}\n";
+
+    #[test]
+    fn reconstructs_trades_dedup_by_tid_keeping_taker() {
+        let trades = reconstruct_trades(TWO_BLOCK_FILLS, &btc_spec()).expect("reconstruct trades");
+        // Two unique BTC tids (111, 333). HYPE (tid 222) is filtered out by coin.
+        assert_eq!(trades.trade_count, 2);
+        // Precision derived from data: px max 1 dp (66428.0 / 66430.5), sz max 5 dp.
+        assert_eq!(trades.price_precision, 1);
+        assert_eq!(trades.size_precision, 5);
+        assert_eq!(trades.instrument.id().to_string(), "BTC.HYPERLIQUID");
+
+        // Sorted ascending by event time: tid 333 (time=1000) before tid 111 (2000).
+        assert_eq!(
+            trades.trades[0].ts_event,
+            UnixNanos::from(1000u64 * 1_000_000)
+        );
+        assert_eq!(
+            trades.trades[1].ts_event,
+            UnixNanos::from(2000u64 * 1_000_000)
+        );
+        // tid 333 taker side "B" -> Buyer aggressor.
+        assert_eq!(trades.trades[0].aggressor_side, AggressorSide::Buyer);
+        // tid 111 taker side "A" -> Seller aggressor.
+        assert_eq!(trades.trades[1].aggressor_side, AggressorSide::Seller);
+        // The taker print carries the trade id and the shared px/sz.
+        assert_eq!(trades.trades[0].trade_id, TradeId::new("333"));
+        assert_eq!(trades.trades[0].price, Price::from("66430.5"));
+        assert_eq!(trades.trades[0].size, Quantity::from("0.50000"));
+        assert_eq!(trades.trades[1].trade_id, TradeId::new("111"));
+        // 66428.0 rescaled to derived 1 dp stays 66428.0.
+        assert_eq!(trades.trades[1].price, Price::from("66428.0"));
+    }
+
+    #[test]
+    fn ignores_other_coins() {
+        // Only a HYPE taker fill; BTC spec must find nothing.
+        let only_hype = "{\"block_number\":1,\"events\":[\
+            [\"0x1\",{\"coin\":\"HYPE\",\"px\":\"30.0\",\"sz\":\"1.0\",\"side\":\"B\",\"time\":1,\"crossed\":true,\"tid\":9,\"oid\":1}]]}\n";
+        let err = reconstruct_trades(only_hype, &btc_spec()).unwrap_err();
+        assert!(err.to_string().contains("no taker fills"), "{err}");
+    }
+
+    #[test]
+    fn rejects_unknown_taker_side() {
+        let bad = "{\"block_number\":1,\"events\":[\
+            [\"0x1\",{\"coin\":\"BTC\",\"px\":\"1.0\",\"sz\":\"1.0\",\"side\":\"X\",\"time\":1,\"crossed\":true,\"tid\":9,\"oid\":1}]]}\n";
+        let err = reconstruct_trades(bad, &btc_spec()).unwrap_err();
+        assert!(err.to_string().contains("unknown taker side"), "{err}");
+    }
+
+    #[test]
+    fn rejects_non_positive_fill_price() {
+        let bad = "{\"block_number\":1,\"events\":[\
+            [\"0x1\",{\"coin\":\"BTC\",\"px\":\"0.0\",\"sz\":\"1.0\",\"side\":\"B\",\"time\":1,\"crossed\":true,\"tid\":9,\"oid\":1}]]}\n";
+        let err = reconstruct_trades(bad, &btc_spec()).unwrap_err();
+        assert!(err.to_string().contains("non-positive fill price"), "{err}");
+    }
+
+    #[test]
+    fn maker_only_yields_nothing() {
+        // A maker leg with no taker pair (defensive): no print is emitted.
+        let maker_only = "{\"block_number\":1,\"events\":[\
+            [\"0x1\",{\"coin\":\"BTC\",\"px\":\"1.0\",\"sz\":\"1.0\",\"side\":\"B\",\"time\":1,\"crossed\":false,\"tid\":9,\"oid\":1}]]}\n";
+        let err = reconstruct_trades(maker_only, &btc_spec()).unwrap_err();
+        assert!(err.to_string().contains("no taker fills"), "{err}");
     }
 }

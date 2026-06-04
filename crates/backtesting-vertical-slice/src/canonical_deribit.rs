@@ -1,50 +1,88 @@
-//! Deribit (Tardis options-chain) — canonical top-of-book normalization and
-//! NautilusTrader catalog projection.
+//! Deribit — canonical normalization and NautilusTrader catalog projection for
+//! three Deribit market-data families:
 //!
-//! Deribit's options-chain archive is a TOP-OF-BOOK time series: every CSV row
-//! is one option instrument's best bid / best ask snapshot at an exchange
-//! timestamp. This module is the smallest verified path:
+//! 1. **Tardis options-chain** (gzip-CSV): a per-instrument top-of-book time
+//!    series, projected to NautilusTrader `QuoteTick`s + a `CryptoOption`.
+//! 2. **RiveChen merged trades** (Parquet): native Deribit public-trade prints,
+//!    projected to NautilusTrader `TradeTick`s.
+//! 3. **1m OHLC bars** (Deribit `get_tradingview_chart_data` JSON): exchange-
+//!    aggregated 1-minute candles, projected to NautilusTrader `Bar`s.
 //!
 //! ```text
-//! accepted gzip-CSV options-chain object (one instrument's BBO series)
-//!   -> canonical normalized top-of-book rows (skip one-sided/empty quotes)
-//!   -> NautilusTrader `QuoteTick`s + a `CryptoOption` instrument
+//! options-chain gzip-CSV  -> top-of-book rows  -> QuoteTick + CryptoOption
+//! merged-trades Parquet   -> trade rows        -> TradeTick
+//! 1m-bars TradingView JSON-> OHLC bar rows      -> Bar (External / Last / 1-MINUTE)
 //!   -> NautilusTrader `ParquetDataCatalog::write_to_parquet`
-//!   -> `query_typed_data::<QuoteTick>` read-back (count + ordering proven)
+//!   -> `query_typed_data::<T>` read-back (count + ordering + payload proven)
 //! ```
 //!
 //! Bolt owns parsing and normalization; NautilusTrader owns the catalog and the
-//! `QuoteTick` Arrow schema. No raw arrow/parquet is hand-rolled for the NT type.
+//! per-type Arrow schema. No raw arrow/parquet is hand-rolled for any NT type:
+//! the trades source Parquet is bolt-owned staged data (read with
+//! NautilusTrader-independent Arrow), but every NautilusTrader type is written
+//! and read exclusively through NautilusTrader's own catalog API.
 //!
 //! Everything that varies per instrument (id, precision, strike, expiry,
-//! currencies, option kind) is supplied by the caller via
-//! [`DeribitOptionInstrumentSpec`]; the only literals in this module are the
-//! fixed source-schema column names and the micros->nanos scale, which are
-//! properties of the Tardis options-chain format itself, not runtime config.
+//! currencies, option kind, bar step/unit) is supplied by the caller via a spec
+//! struct; the only literals are fixed source-schema facts (column names, the
+//! micros/millis->nanos scales, the Deribit trade-`direction` aggressor
+//! convention), which are properties of the upstream formats themselves, not
+//! runtime config.
 
 use std::{
     fs,
+    fs::File,
     io::Read,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use arrow::array::{Array, Float64Array, Int64Array, StringArray};
 use flate2::read::GzDecoder;
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::QuoteTick,
-    enums::OptionKind,
-    identifiers::{InstrumentId, Symbol},
+    data::{Bar, BarSpecification, BarType, QuoteTick, TradeTick},
+    enums::{AggregationSource, AggressorSide, BarAggregation, OptionKind, PriceType},
+    identifiers::{InstrumentId, Symbol, TradeId},
     instruments::{CryptoOption, Instrument, InstrumentAny},
     types::{Currency, Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 /// NautilusTrader data type written for this projection.
 pub const NT_DATA_TYPE_QUOTE_TICK: &str = "QuoteTick";
+
+/// NautilusTrader data type written for the merged-trades family.
+pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
+
+/// NautilusTrader data type written for the 1m-bars family.
+pub const NT_DATA_TYPE_BAR: &str = "Bar";
+
+/// Required Parquet columns the RiveChen merged-trades object must expose.
+///
+/// A property of the upstream scraper's Parquet layout, not runtime config.
+pub const DERIBIT_MERGED_TRADES_REQUIRED_COLUMNS: [&str; 5] = [
+    "trade_id",
+    "timestamp",
+    "price",
+    "instrument_name",
+    "direction",
+];
+
+/// Source trade `direction` token: the side of the aggressor (taker). Deribit's
+/// public-trade `direction` field is the taker's side, so `buy` is a
+/// buyer-initiated trade and `sell` is seller-initiated. A property of the
+/// Deribit trades API, not runtime config.
+pub const DERIBIT_TRADE_DIRECTION_BUY: &str = "buy";
+pub const DERIBIT_TRADE_DIRECTION_SELL: &str = "sell";
+
+/// Source trade `timestamp` is Unix milliseconds; NautilusTrader `UnixNanos`
+/// are nanoseconds.
+const NANOS_PER_MILLISECOND: i64 = 1_000_000;
 
 /// Tardis options-chain header, in source order. A property of the upstream
 /// archive format (not runtime config), so it lives in code as the parse fence.
@@ -498,17 +536,7 @@ pub fn project_series_to_catalog(
     let ticks = series_to_quote_ticks(series, &instrument)?;
     let quote_count = ticks.len();
 
-    if catalog_root.exists() {
-        let mut entries = fs::read_dir(catalog_root)
-            .with_context(|| format!("read catalog root {}", catalog_root.display()))?;
-        ensure!(
-            entries.next().is_none(),
-            "catalog root {} is not empty; refusing to project into a dirty catalog",
-            catalog_root.display()
-        );
-    }
-    fs::create_dir_all(catalog_root)
-        .with_context(|| format!("create catalog root {}", catalog_root.display()))?;
+    assert_clean_catalog_root(catalog_root)?;
     let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
     catalog
         .write_instruments(vec![InstrumentAny::CryptoOption(instrument)])
@@ -546,6 +574,763 @@ pub fn read_back_quote_ticks(
             true,
         )
         .context("query quote ticks from catalog")
+}
+
+// ===========================================================================
+// Family 2: RiveChen merged trades (Parquet) -> NautilusTrader `TradeTick`
+// ===========================================================================
+
+/// Caller-supplied metadata for the Deribit option whose native trade prints
+/// are projected. Mirrors [`DeribitOptionInstrumentSpec`] but is named for the
+/// trades family so the two projections stay independent. Nothing here is
+/// hardcoded in this module; precision is derived from the increment strings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeribitTradesInstrumentSpec {
+    /// NautilusTrader instrument id, for example `<symbol>.DERIBIT`.
+    pub nt_instrument_id: String,
+    /// Venue-native raw symbol exactly as it appears in the source
+    /// `instrument_name` column. Rows for other instruments are ignored.
+    pub raw_symbol: String,
+    /// Underlying currency code.
+    pub underlying: String,
+    /// Quote currency code (premium currency).
+    pub quote_currency: String,
+    /// Settlement currency code.
+    pub settlement_currency: String,
+    /// Whether the option is inverse-settled.
+    pub is_inverse: bool,
+    /// Option kind: must parse as `CALL` or `PUT`.
+    pub option_kind: String,
+    /// Strike price as a decimal string.
+    pub strike_price: String,
+    /// Activation (listing) time in Unix nanoseconds.
+    pub activation_ns: u64,
+    /// Expiration time in Unix nanoseconds.
+    pub expiration_ns: u64,
+    /// Premium price tick size as a decimal string, for example `0.0001`.
+    pub price_increment: String,
+    /// Contract size increment as a decimal string, for example `1`.
+    pub size_increment: String,
+}
+
+impl DeribitTradesInstrumentSpec {
+    /// Build the NautilusTrader `CryptoOption` for the trades family.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any field fails to parse.
+    pub fn build_instrument(&self) -> Result<CryptoOption> {
+        build_crypto_option(&DeribitOptionInstrumentSpec {
+            nt_instrument_id: self.nt_instrument_id.clone(),
+            raw_symbol: self.raw_symbol.clone(),
+            underlying: self.underlying.clone(),
+            quote_currency: self.quote_currency.clone(),
+            settlement_currency: self.settlement_currency.clone(),
+            is_inverse: self.is_inverse,
+            option_kind: self.option_kind.clone(),
+            strike_price: self.strike_price.clone(),
+            activation_ns: self.activation_ns,
+            expiration_ns: self.expiration_ns,
+            price_increment: self.price_increment.clone(),
+            size_increment: self.size_increment.clone(),
+        })
+    }
+}
+
+/// Aggressor side of a native Deribit trade print, mapped from the source
+/// `direction` token (the taker's side).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum DeribitTradeAggressorSide {
+    Buyer,
+    Seller,
+}
+
+impl DeribitTradeAggressorSide {
+    /// Map the Deribit `direction` token to the aggressor side. `buy` ->
+    /// buyer-initiated (BUYER); `sell` -> seller-initiated (SELLER).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for any token other than `buy`/`sell`.
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            DERIBIT_TRADE_DIRECTION_BUY => Ok(Self::Buyer),
+            DERIBIT_TRADE_DIRECTION_SELL => Ok(Self::Seller),
+            other => bail!("unknown trade direction token: {other:?}"),
+        }
+    }
+
+    fn to_nt(self) -> AggressorSide {
+        match self {
+            Self::Buyer => AggressorSide::Buyer,
+            Self::Seller => AggressorSide::Seller,
+        }
+    }
+}
+
+/// One normalized native-trade row: timestamps already in nanoseconds, the
+/// aggressor side mapped, and the exact source price/size doubles preserved.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeribitTradeRow {
+    /// Exchange event timestamp in Unix nanoseconds.
+    pub event_time: i64,
+    /// Venue-native trade id.
+    pub trade_id: String,
+    /// Aggressor (taker) side.
+    pub aggressor_side: DeribitTradeAggressorSide,
+    /// Source trade price.
+    pub price: f64,
+    /// Source trade size (contract amount).
+    pub size: f64,
+}
+
+/// A validated canonical merged-trades series for one accepted Deribit option.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeribitTradesSeries {
+    /// Venue-native raw symbol the series belongs to.
+    pub raw_symbol: String,
+    /// Count of source rows skipped because they belonged to another symbol.
+    pub skipped_other_symbol: usize,
+    /// Normalized rows, sorted ascending by event time.
+    pub rows: Vec<DeribitTradeRow>,
+}
+
+impl DeribitTradesSeries {
+    /// Validate the series carries at least one trade with non-decreasing,
+    /// positive event times and positive prices/sizes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first violation.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.raw_symbol.trim().is_empty(),
+            "trades series has empty raw_symbol"
+        );
+        ensure!(!self.rows.is_empty(), "deribit trades series is empty");
+        let mut previous = i64::MIN;
+        for (index, row) in self.rows.iter().enumerate() {
+            ensure!(row.event_time > 0, "trade {index}: non-positive event_time");
+            ensure!(
+                row.event_time >= previous,
+                "trade {index}: event_time {} precedes previous {}",
+                row.event_time,
+                previous
+            );
+            previous = row.event_time;
+            ensure!(
+                !row.trade_id.trim().is_empty(),
+                "trade {index}: empty trade_id"
+            );
+            ensure!(
+                row.price > 0.0,
+                "trade {index}: non-positive price {}",
+                row.price
+            );
+            ensure!(
+                row.size > 0.0,
+                "trade {index}: non-positive size {}",
+                row.size
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Read a column out of a record batch, failing loud on a wrong Arrow type.
+fn typed_column<'a, A: Array + 'static>(
+    batch: &'a arrow::record_batch::RecordBatch,
+    name: &str,
+) -> Result<&'a A> {
+    let column = batch
+        .column_by_name(name)
+        .with_context(|| format!("missing column {name:?}"))?;
+    column
+        .as_any()
+        .downcast_ref::<A>()
+        .with_context(|| format!("column {name:?} has unexpected Arrow type"))
+}
+
+/// Normalize an accepted RiveChen merged-trades Parquet object into the
+/// canonical trades series for a single instrument.
+///
+/// The source object is bolt-owned staged data (one scraper run's merged
+/// trades, mixing many instruments), so it is read with NautilusTrader-
+/// independent Arrow. Only rows whose `instrument_name` equals
+/// `spec.raw_symbol` become trades; other instruments are skipped and counted.
+/// Source `timestamp` (milliseconds) is converted to nanoseconds, and the rows
+/// are sorted ascending by event time to satisfy NautilusTrader's catalog
+/// write contract (non-decreasing `ts_init`).
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read, a required column is missing or
+/// of the wrong Arrow type, a value is null, a direction token is unknown, or
+/// the series fails validation.
+pub fn normalize_deribit_merged_trades(
+    path: &Path,
+    spec: &DeribitTradesInstrumentSpec,
+) -> Result<DeribitTradesSeries> {
+    ensure!(
+        !spec.raw_symbol.trim().is_empty(),
+        "spec.raw_symbol must not be empty"
+    );
+
+    let file = File::open(path).with_context(|| format!("open parquet {}", path.display()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("open parquet reader {}", path.display()))?;
+
+    let schema = builder.schema().clone();
+    for column in DERIBIT_MERGED_TRADES_REQUIRED_COLUMNS {
+        ensure!(
+            schema.column_with_name(column).is_some(),
+            "staged object {} is missing required column {:?}",
+            path.display(),
+            column
+        );
+    }
+
+    let reader = builder
+        .build()
+        .with_context(|| format!("build parquet reader {}", path.display()))?;
+
+    let mut rows: Vec<DeribitTradeRow> = Vec::new();
+    let mut skipped_other_symbol = 0usize;
+    for batch in reader {
+        let batch = batch.context("read parquet record batch")?;
+        let trade_id = typed_column::<StringArray>(&batch, "trade_id")?;
+        let timestamp = typed_column::<Int64Array>(&batch, "timestamp")?;
+        let price = typed_column::<Float64Array>(&batch, "price")?;
+        let instrument_name = typed_column::<StringArray>(&batch, "instrument_name")?;
+        let direction = typed_column::<StringArray>(&batch, "direction")?;
+        let amount = typed_column::<Float64Array>(&batch, "amount")?;
+
+        for index in 0..batch.num_rows() {
+            ensure!(
+                !instrument_name.is_null(index),
+                "null instrument_name in row {index} of {}",
+                path.display()
+            );
+            if instrument_name.value(index) != spec.raw_symbol {
+                skipped_other_symbol += 1;
+                continue;
+            }
+            ensure!(
+                !trade_id.is_null(index)
+                    && !timestamp.is_null(index)
+                    && !price.is_null(index)
+                    && !direction.is_null(index)
+                    && !amount.is_null(index),
+                "null value in matched row {index} of {}",
+                path.display()
+            );
+            let millis = timestamp.value(index);
+            let event_time = millis.checked_mul(NANOS_PER_MILLISECOND).with_context(|| {
+                format!("row {index}: timestamp {millis} overflows nanoseconds")
+            })?;
+            ensure!(event_time > 0, "row {index}: non-positive event_time");
+            let aggressor = DeribitTradeAggressorSide::parse(direction.value(index))
+                .with_context(|| format!("row {index}: invalid direction"))?;
+            rows.push(DeribitTradeRow {
+                event_time,
+                trade_id: trade_id.value(index).to_string(),
+                aggressor_side: aggressor,
+                price: price.value(index),
+                size: amount.value(index),
+            });
+        }
+    }
+
+    // Real merged-trades objects interleave instruments; per-instrument the
+    // rows may still arrive slightly out of event-time order. NT's catalog
+    // write contract requires non-decreasing ts_init, so sort by event time.
+    // Stable sort preserves source order on ties (same-timestamp prints).
+    rows.sort_by_key(|row| row.event_time);
+
+    let series = DeribitTradesSeries {
+        raw_symbol: spec.raw_symbol.clone(),
+        skipped_other_symbol,
+        rows,
+    };
+    series.validate()?;
+    Ok(series)
+}
+
+/// Convert a normalized trades series into NautilusTrader `TradeTick`s at the
+/// instrument's price/size precision.
+///
+/// # Errors
+///
+/// Returns an error if a price/size cannot be represented at the instrument
+/// precision, or a trade id exceeds the NautilusTrader limit.
+pub fn trades_to_trade_ticks(
+    series: &DeribitTradesSeries,
+    instrument: &CryptoOption,
+) -> Result<Vec<TradeTick>> {
+    let instrument_id = instrument.id();
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+    series
+        .rows
+        .iter()
+        .map(|row| {
+            let price = Price::new_checked(row.price, price_precision).map_err(|error| {
+                anyhow::anyhow!(
+                    "price {} not representable at precision {price_precision}: {error}",
+                    row.price
+                )
+            })?;
+            let size = Quantity::new_checked(row.size, size_precision).map_err(|error| {
+                anyhow::anyhow!(
+                    "size {} not representable at precision {size_precision}: {error}",
+                    row.size
+                )
+            })?;
+            let trade_id = TradeId::new_checked(&row.trade_id)
+                .map_err(|error| anyhow::anyhow!("invalid trade id {:?}: {error}", row.trade_id))?;
+            let ts = UnixNanos::from(u64::try_from(row.event_time).context("negative event_time")?);
+            Ok(TradeTick::new(
+                instrument_id,
+                price,
+                size,
+                row.aggressor_side.to_nt(),
+                trade_id,
+                ts,
+                ts,
+            ))
+        })
+        .collect()
+}
+
+/// Project a normalized trades series into a NautilusTrader `ParquetDataCatalog`
+/// as `TradeTick` data plus the venue `CryptoOption` instrument.
+///
+/// Fails closed on a dirty (non-empty) catalog root.
+///
+/// # Errors
+///
+/// Returns an error if instrument construction, conversion, or catalog writes
+/// fail.
+pub fn project_trades_to_catalog(
+    series: &DeribitTradesSeries,
+    spec: &DeribitTradesInstrumentSpec,
+    catalog_root: &Path,
+) -> Result<DeribitCatalogProjection> {
+    series.validate()?;
+    ensure!(
+        series.raw_symbol == spec.raw_symbol,
+        "series symbol {:?} does not match spec {:?}",
+        series.raw_symbol,
+        spec.raw_symbol
+    );
+    let instrument = spec.build_instrument()?;
+    let instrument_id = instrument.id();
+    let ticks = trades_to_trade_ticks(series, &instrument)?;
+    let count = ticks.len();
+
+    assert_clean_catalog_root(catalog_root)?;
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_instruments(vec![InstrumentAny::CryptoOption(instrument)])
+        .context("write instrument to catalog")?;
+    catalog
+        .write_to_parquet(ticks, None, None, None)
+        .context("write trade ticks to catalog")?;
+
+    Ok(DeribitCatalogProjection {
+        catalog_root: catalog_root.to_path_buf(),
+        nt_instrument_id: instrument_id.to_string(),
+        data_type: NT_DATA_TYPE_TRADE_TICK.to_string(),
+        quote_count: count,
+    })
+}
+
+/// Prove the resolved NautilusTrader dependency can read the projected
+/// `TradeTick` data back from `catalog_root`.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_trade_ticks(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+) -> Result<Vec<TradeTick>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .query_typed_data::<TradeTick>(
+            Some(vec![nt_instrument_id.to_string()]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .context("query trade ticks from catalog")
+}
+
+// ===========================================================================
+// Family 3: 1m OHLC bars (Deribit TradingView chart JSON) -> NautilusTrader `Bar`
+// ===========================================================================
+
+/// Caller-supplied metadata + bar specification for the Deribit instrument whose
+/// 1-minute candles are projected. Precision is derived from the increment
+/// strings; nothing here is hardcoded in this module.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeribitBarsInstrumentSpec {
+    /// NautilusTrader instrument id, for example `<symbol>.DERIBIT`.
+    pub nt_instrument_id: String,
+    /// Venue-native raw symbol.
+    pub raw_symbol: String,
+    /// Underlying currency code.
+    pub underlying: String,
+    /// Quote currency code.
+    pub quote_currency: String,
+    /// Settlement currency code.
+    pub settlement_currency: String,
+    /// Whether the option is inverse-settled.
+    pub is_inverse: bool,
+    /// Option kind: must parse as `CALL` or `PUT`.
+    pub option_kind: String,
+    /// Strike price as a decimal string.
+    pub strike_price: String,
+    /// Activation (listing) time in Unix nanoseconds.
+    pub activation_ns: u64,
+    /// Expiration time in Unix nanoseconds.
+    pub expiration_ns: u64,
+    /// Price tick size as a decimal string.
+    pub price_increment: String,
+    /// Size (volume) increment as a decimal string.
+    pub size_increment: String,
+    /// Bar step (the `1` of a 1m bar). Combined with `bar_aggregation`.
+    pub bar_step: usize,
+    /// Bar aggregation unit (for example `MINUTE`), provider-aggregated.
+    pub bar_aggregation: BarAggregation,
+}
+
+impl DeribitBarsInstrumentSpec {
+    /// Build the NautilusTrader `CryptoOption` for the bars family.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any field fails to parse.
+    pub fn build_instrument(&self) -> Result<CryptoOption> {
+        build_crypto_option(&DeribitOptionInstrumentSpec {
+            nt_instrument_id: self.nt_instrument_id.clone(),
+            raw_symbol: self.raw_symbol.clone(),
+            underlying: self.underlying.clone(),
+            quote_currency: self.quote_currency.clone(),
+            settlement_currency: self.settlement_currency.clone(),
+            is_inverse: self.is_inverse,
+            option_kind: self.option_kind.clone(),
+            strike_price: self.strike_price.clone(),
+            activation_ns: self.activation_ns,
+            expiration_ns: self.expiration_ns,
+            price_increment: self.price_increment.clone(),
+            size_increment: self.size_increment.clone(),
+        })
+    }
+
+    /// Build the NautilusTrader `BarType`: instrument + `BarSpecification(step,
+    /// unit, Last)` + `AggregationSource::External` (the candles are aggregated
+    /// by the exchange, outside the NautilusTrader boundary).
+    fn to_bar_type(&self, instrument_id: InstrumentId) -> Result<BarType> {
+        ensure!(self.bar_step > 0, "bar step must be positive");
+        let spec = BarSpecification::new(self.bar_step, self.bar_aggregation, PriceType::Last);
+        Ok(BarType::new(
+            instrument_id,
+            spec,
+            AggregationSource::External,
+        ))
+    }
+}
+
+/// One normalized 1m OHLC bar row: open time in nanoseconds and the exact source
+/// OHLCV doubles.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeribitBarRow {
+    /// Bar open (tick) timestamp in Unix nanoseconds.
+    pub open_time: i64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub close: f64,
+    pub volume: f64,
+}
+
+/// A validated canonical 1m OHLC series for one accepted Deribit instrument.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeribitBarsSeries {
+    /// Venue-native raw symbol the series belongs to.
+    pub raw_symbol: String,
+    /// Source `status` token (for example `ok`).
+    pub status: String,
+    /// Normalized bar rows, strictly increasing in open time.
+    pub rows: Vec<DeribitBarRow>,
+}
+
+impl DeribitBarsSeries {
+    /// Validate non-emptiness, positive strictly-increasing open times, and the
+    /// per-bar OHLC invariant.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first violation.
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.raw_symbol.trim().is_empty(),
+            "bars series has empty raw_symbol"
+        );
+        ensure!(!self.rows.is_empty(), "deribit bars series is empty");
+        let mut previous = i64::MIN;
+        for (index, row) in self.rows.iter().enumerate() {
+            ensure!(row.open_time > 0, "bar {index}: non-positive open_time");
+            ensure!(
+                row.open_time > previous,
+                "bar {index}: open_time {} not after previous {}",
+                row.open_time,
+                previous
+            );
+            previous = row.open_time;
+            ensure!(
+                row.open > 0.0 && row.low > 0.0,
+                "bar {index}: non-positive open/low"
+            );
+            ensure!(row.volume >= 0.0, "bar {index}: negative volume");
+            ensure!(
+                row.high >= row.open && row.high >= row.low && row.high >= row.close,
+                "bar {index}: high {} is not the maximum (o={} l={} c={})",
+                row.high,
+                row.open,
+                row.low,
+                row.close
+            );
+            ensure!(
+                row.low <= row.open && row.low <= row.close,
+                "bar {index}: low {} is not the minimum (o={} c={})",
+                row.low,
+                row.open,
+                row.close
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Deribit `get_tradingview_chart_data` JSON-RPC envelope. The candle data lives
+/// in `result` as parallel arrays. Only the fields this projection consumes are
+/// modeled; unknown envelope fields are ignored.
+#[derive(Debug, Deserialize)]
+struct DeribitChartEnvelope {
+    result: DeribitChartResult,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeribitChartResult {
+    status: String,
+    /// Bar open times in Unix milliseconds.
+    ticks: Vec<i64>,
+    open: Vec<f64>,
+    high: Vec<f64>,
+    low: Vec<f64>,
+    close: Vec<f64>,
+    volume: Vec<f64>,
+}
+
+/// Normalize an accepted Deribit 1m-bars TradingView-chart JSON object into the
+/// canonical OHLC series.
+///
+/// `json_text` is the raw object bytes as UTF-8. The candle arrays are parallel
+/// (`ticks`/`open`/`high`/`low`/`close`/`volume`); `ticks` carries bar open
+/// times in milliseconds, converted here to nanoseconds. A `status` other than
+/// `ok` (for example `no_data`) yields an empty series, which validation
+/// rejects loudly — the caller chooses which instruments to project.
+///
+/// # Errors
+///
+/// Returns an error if the JSON cannot be parsed, the parallel arrays have
+/// mismatched lengths, a timestamp overflows, or the series fails validation.
+pub fn normalize_deribit_bars(
+    json_text: &str,
+    spec: &DeribitBarsInstrumentSpec,
+) -> Result<DeribitBarsSeries> {
+    ensure!(
+        !spec.raw_symbol.trim().is_empty(),
+        "spec.raw_symbol must not be empty"
+    );
+    let envelope: DeribitChartEnvelope =
+        serde_json::from_str(json_text).context("parse tradingview chart JSON")?;
+    let result = envelope.result;
+
+    let n = result.ticks.len();
+    for (name, len) in [
+        ("open", result.open.len()),
+        ("high", result.high.len()),
+        ("low", result.low.len()),
+        ("close", result.close.len()),
+        ("volume", result.volume.len()),
+    ] {
+        ensure!(
+            len == n,
+            "chart array {name:?} has {len} entries, expected {n} (matching ticks)"
+        );
+    }
+
+    let mut rows = Vec::with_capacity(n);
+    for index in 0..n {
+        let millis = result.ticks[index];
+        let open_time = millis
+            .checked_mul(NANOS_PER_MILLISECOND)
+            .with_context(|| format!("bar {index}: tick {millis} overflows nanoseconds"))?;
+        rows.push(DeribitBarRow {
+            open_time,
+            open: result.open[index],
+            high: result.high[index],
+            low: result.low[index],
+            close: result.close[index],
+            volume: result.volume[index],
+        });
+    }
+
+    let series = DeribitBarsSeries {
+        raw_symbol: spec.raw_symbol.clone(),
+        status: result.status,
+        rows,
+    };
+    series.validate()?;
+    Ok(series)
+}
+
+/// Convert a normalized 1m OHLC series into NautilusTrader `Bar`s at the
+/// instrument's price/size precision under the provider-aggregated bar type.
+///
+/// `ts_event`/`ts_init` are set to the bar OPEN time (the source `ticks`
+/// value); this matches the `External` aggregation convention where the bar is
+/// keyed by its opening minute.
+///
+/// # Errors
+///
+/// Returns an error if an OHLCV value cannot be represented at the instrument
+/// precision, or NautilusTrader's bar OHLC invariant is violated.
+pub fn bars_to_bars(
+    series: &DeribitBarsSeries,
+    spec: &DeribitBarsInstrumentSpec,
+    instrument: &CryptoOption,
+) -> Result<Vec<Bar>> {
+    let instrument_id = instrument.id();
+    let bar_type = spec.to_bar_type(instrument_id)?;
+    let price_precision = instrument.price_precision();
+    let size_precision = instrument.size_precision();
+    series
+        .rows
+        .iter()
+        .map(|row| {
+            let price_at = |value: f64, label: &str| -> Result<Price> {
+                Price::new_checked(value, price_precision).map_err(|error| {
+                    anyhow::anyhow!(
+                        "{label} {value} not representable at precision {price_precision}: {error}"
+                    )
+                })
+            };
+            let open = price_at(row.open, "open")?;
+            let high = price_at(row.high, "high")?;
+            let low = price_at(row.low, "low")?;
+            let close = price_at(row.close, "close")?;
+            let volume = Quantity::new_checked(row.volume, size_precision).map_err(|error| {
+                anyhow::anyhow!(
+                    "volume {} not representable at precision {size_precision}: {error}",
+                    row.volume
+                )
+            })?;
+            let ts = UnixNanos::from(u64::try_from(row.open_time).context("negative open_time")?);
+            Bar::new_checked(bar_type, open, high, low, close, volume, ts, ts).context("build bar")
+        })
+        .collect()
+}
+
+/// Project a normalized 1m OHLC series into a NautilusTrader `ParquetDataCatalog`
+/// as `Bar` data plus the venue `CryptoOption` instrument.
+///
+/// Fails closed on a dirty (non-empty) catalog root.
+///
+/// # Errors
+///
+/// Returns an error if instrument construction, conversion, or catalog writes
+/// fail.
+pub fn project_bars_to_catalog(
+    series: &DeribitBarsSeries,
+    spec: &DeribitBarsInstrumentSpec,
+    catalog_root: &Path,
+) -> Result<DeribitCatalogProjection> {
+    series.validate()?;
+    ensure!(
+        series.raw_symbol == spec.raw_symbol,
+        "series symbol {:?} does not match spec {:?}",
+        series.raw_symbol,
+        spec.raw_symbol
+    );
+    let instrument = spec.build_instrument()?;
+    let instrument_id = instrument.id();
+    let bars = bars_to_bars(series, spec, &instrument)?;
+    let count = bars.len();
+
+    assert_clean_catalog_root(catalog_root)?;
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_instruments(vec![InstrumentAny::CryptoOption(instrument)])
+        .context("write instrument to catalog")?;
+    catalog
+        .write_to_parquet(bars, None, None, None)
+        .context("write bars to catalog")?;
+
+    Ok(DeribitCatalogProjection {
+        catalog_root: catalog_root.to_path_buf(),
+        nt_instrument_id: instrument_id.to_string(),
+        data_type: NT_DATA_TYPE_BAR.to_string(),
+        quote_count: count,
+    })
+}
+
+/// Prove the resolved NautilusTrader dependency can read the projected `Bar`
+/// data back from `catalog_root`.
+///
+/// Bars are keyed in the catalog by `bar_type` (a superstring of the instrument
+/// id); NautilusTrader accepts the instrument id as a prefix match.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_bars(catalog_root: &Path, nt_instrument_id: &str) -> Result<Vec<Bar>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .query_typed_data::<Bar>(
+            Some(vec![nt_instrument_id.to_string()]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .context("query bars from catalog")
+}
+
+/// Fail closed on a dirty (non-empty) catalog root, then ensure it exists.
+///
+/// NautilusTrader's `write_to_parquet` appends/skips by identifier, so
+/// projecting into a non-empty root could silently mix or hide stale data.
+fn assert_clean_catalog_root(catalog_root: &Path) -> Result<()> {
+    if catalog_root.exists() {
+        let mut entries = fs::read_dir(catalog_root)
+            .with_context(|| format!("read catalog root {}", catalog_root.display()))?;
+        ensure!(
+            entries.next().is_none(),
+            "catalog root {} is not empty; refusing to project into a dirty catalog",
+            catalog_root.display()
+        );
+    }
+    fs::create_dir_all(catalog_root)
+        .with_context(|| format!("create catalog root {}", catalog_root.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -687,5 +1472,151 @@ mod tests {
         let err = project_series_to_catalog(&series, &spec(), dir.path())
             .expect_err("dirty catalog root must be refused");
         assert!(err.to_string().contains("not empty"), "{err}");
+    }
+
+    // --- Family 2: merged trades ---
+
+    #[test]
+    fn trade_aggressor_maps_direction_token() {
+        assert_eq!(
+            DeribitTradeAggressorSide::parse("buy").unwrap(),
+            DeribitTradeAggressorSide::Buyer
+        );
+        assert_eq!(
+            DeribitTradeAggressorSide::parse("SELL").unwrap(),
+            DeribitTradeAggressorSide::Seller
+        );
+        assert!(DeribitTradeAggressorSide::parse("hold").is_err());
+    }
+
+    #[test]
+    fn trades_series_rejects_empty() {
+        let series = DeribitTradesSeries {
+            raw_symbol: "X-1-C".to_string(),
+            skipped_other_symbol: 0,
+            rows: vec![],
+        };
+        assert!(series.validate().unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn trades_series_rejects_non_monotonic_event_time() {
+        let series = DeribitTradesSeries {
+            raw_symbol: "X-1-C".to_string(),
+            skipped_other_symbol: 0,
+            rows: vec![
+                DeribitTradeRow {
+                    event_time: 2_000,
+                    trade_id: "a".to_string(),
+                    aggressor_side: DeribitTradeAggressorSide::Buyer,
+                    price: 1.0,
+                    size: 1.0,
+                },
+                DeribitTradeRow {
+                    event_time: 1_000,
+                    trade_id: "b".to_string(),
+                    aggressor_side: DeribitTradeAggressorSide::Seller,
+                    price: 1.0,
+                    size: 1.0,
+                },
+            ],
+        };
+        assert!(
+            series
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("precedes previous")
+        );
+    }
+
+    // --- Family 3: 1m OHLC bars ---
+
+    const SAMPLE_BARS_JSON: &str = concat!(
+        "{\"usOut\":1,\"usIn\":0,\"result\":{\"status\":\"ok\",",
+        "\"ticks\":[1772323200000,1772323260000],",
+        "\"open\":[10.0,11.0],\"high\":[12.0,11.5],\"low\":[9.5,10.5],",
+        "\"close\":[11.0,10.5],\"volume\":[3.0,1.0],\"cost\":[30.0,10.0]},",
+        "\"jsonrpc\":\"2.0\"}"
+    );
+
+    fn bars_spec() -> DeribitBarsInstrumentSpec {
+        DeribitBarsInstrumentSpec {
+            nt_instrument_id: "X_USDC-1JAN27-10-C.DERIBIT".to_string(),
+            raw_symbol: "X_USDC-1JAN27-10-C".to_string(),
+            underlying: "BTC".to_string(),
+            quote_currency: "USDC".to_string(),
+            settlement_currency: "USDC".to_string(),
+            is_inverse: false,
+            option_kind: "CALL".to_string(),
+            strike_price: "10".to_string(),
+            activation_ns: 1_777_593_600_000_000_000,
+            expiration_ns: 1_780_041_600_000_000_000,
+            price_increment: "0.1".to_string(),
+            size_increment: "0.00000001".to_string(),
+            bar_step: 1,
+            bar_aggregation: BarAggregation::Minute,
+        }
+    }
+
+    #[test]
+    fn normalizes_bars_with_millisecond_ticks() {
+        let series = normalize_deribit_bars(SAMPLE_BARS_JSON, &bars_spec()).expect("normalize");
+        assert_eq!(series.status, "ok");
+        assert_eq!(series.rows.len(), 2);
+        // milliseconds -> nanoseconds.
+        assert_eq!(series.rows[0].open_time, 1_772_323_200_000 * 1_000_000);
+        assert_eq!(series.rows[0].open, 10.0);
+        assert_eq!(series.rows[1].close, 10.5);
+        // strictly increasing open times.
+        assert!(series.rows[1].open_time > series.rows[0].open_time);
+    }
+
+    #[test]
+    fn bars_reject_ohlc_violation() {
+        // high (9.0) below open (10.0): invalid candle.
+        let bad = concat!(
+            "{\"result\":{\"status\":\"ok\",\"ticks\":[1772323200000],",
+            "\"open\":[10.0],\"high\":[9.0],\"low\":[8.0],\"close\":[9.5],",
+            "\"volume\":[1.0]}}"
+        );
+        let err = normalize_deribit_bars(bad, &bars_spec()).unwrap_err();
+        assert!(err.to_string().contains("high"), "{err}");
+    }
+
+    #[test]
+    fn bars_reject_mismatched_array_lengths() {
+        let bad = concat!(
+            "{\"result\":{\"status\":\"ok\",\"ticks\":[1,2],",
+            "\"open\":[10.0],\"high\":[12.0],\"low\":[9.0],\"close\":[11.0],",
+            "\"volume\":[1.0]}}"
+        );
+        let err = normalize_deribit_bars(bad, &bars_spec()).unwrap_err();
+        assert!(err.to_string().contains("expected"), "{err}");
+    }
+
+    #[test]
+    fn bars_reject_no_data_status_as_empty() {
+        let no_data = concat!(
+            "{\"result\":{\"status\":\"no_data\",\"ticks\":[],",
+            "\"open\":[],\"high\":[],\"low\":[],\"close\":[],\"volume\":[]}}"
+        );
+        let err = normalize_deribit_bars(no_data, &bars_spec()).unwrap_err();
+        assert!(err.to_string().contains("empty"), "{err}");
+    }
+
+    #[test]
+    fn projects_and_reads_back_bars() {
+        let series = normalize_deribit_bars(SAMPLE_BARS_JSON, &bars_spec()).expect("normalize");
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let projection =
+            project_bars_to_catalog(&series, &bars_spec(), dir.path()).expect("project");
+        assert_eq!(projection.quote_count, 2);
+        assert_eq!(projection.data_type, NT_DATA_TYPE_BAR);
+
+        let loaded = read_back_bars(dir.path(), &bars_spec().nt_instrument_id).expect("read back");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].open, Price::from("10.0"));
+        assert_eq!(loaded[0].close, Price::from("11.0"));
     }
 }

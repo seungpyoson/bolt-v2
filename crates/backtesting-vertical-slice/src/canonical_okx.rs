@@ -27,21 +27,48 @@
 //! delta shares the price/size precision NautilusTrader records in the catalog
 //! parquet metadata. No price, size, instrument id, or venue literal is baked
 //! into this module — those arrive through [`OkxBookSpec`] and the parsed data.
+//!
+//! # Other OKX market-data families
+//!
+//! Beyond the full-L2 order book, this module also projects the two OKX
+//! market-data families that carry no order book, sharing the same NT-first
+//! contract (parse the real `.zip` object, project into an NT-native type, write
+//! and read back via [`ParquetDataCatalog`]):
+//!
+//! * `family=trades` -> NautilusTrader [`TradeTick`]. The staged object is a
+//!   ZIP of a single header CSV
+//!   (`instrument_name,trade_id,side,price,size,created_time`). `side` is the
+//!   taker/aggressor side directly (`buy`/`sell`), and `created_time` is integer
+//!   milliseconds. See [`project_okx_trades_archive_to_catalog`].
+//! * `family=candlesticks` -> NautilusTrader [`Bar`]. The staged object is a ZIP
+//!   of a single header CSV
+//!   (`instrument_name,open,high,low,close,vol,vol_ccy,vol_quote,open_time,confirm`).
+//!   `open_time` is the bar-open timestamp in integer milliseconds, `vol` is the
+//!   contract volume, and the bar step/unit arrive in [`OkxBarSpec`]. See
+//!   [`project_okx_candlesticks_archive_to_catalog`].
+//!
+//! `family=funding_rates` is deliberately not converted here: a funding rate is
+//! not a NautilusTrader market-data catalog type. It is left for direct-parquet
+//! research.
 
 use std::{
     fs,
     io::Read,
+    num::NonZeroUsize,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use flate2::read::GzDecoder;
+use flate2::{Crc, read::DeflateDecoder, read::GzDecoder};
 use nautilus_core::UnixNanos;
 use nautilus_model::{
-    data::{BookOrder, OrderBookDelta},
-    enums::{BookAction, OrderSide, RecordFlag},
-    identifiers::InstrumentId,
+    data::{Bar, BarSpecification, BarType, BookOrder, OrderBookDelta, TradeTick},
+    enums::{
+        AggregationSource, AggressorSide, BarAggregation, BookAction, OrderSide, PriceType,
+        RecordFlag,
+    },
+    identifiers::{InstrumentId, TradeId},
     types::{Price, Quantity},
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
@@ -51,6 +78,16 @@ use sha2::{Digest, Sha256};
 
 /// NautilusTrader data type written for this projection.
 pub const NT_DATA_TYPE_ORDER_BOOK_DELTA: &str = "OrderBookDelta";
+
+/// NautilusTrader data type written for the OKX `trades` family.
+pub const NT_DATA_TYPE_TRADE_TICK: &str = "TradeTick";
+
+/// NautilusTrader data type written for the OKX `candlesticks` family.
+pub const NT_DATA_TYPE_BAR: &str = "Bar";
+
+/// Exchange timestamps in the OKX `trades`/`candlesticks` CSVs are integer
+/// milliseconds.
+const TRADES_NANOS_PER_MILLISECOND: i64 = 1_000_000;
 
 /// OKX book messages carry no per-order identity (full L2 / market-by-price), so
 /// every emitted [`BookOrder`] uses the NautilusTrader L2 sentinel order id `0`.
@@ -480,6 +517,798 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> 
     Ok(())
 }
 
+// ===========================================================================
+// ZIP single-member extraction (shared by trades + candlesticks)
+// ===========================================================================
+//
+// OKX `trades` and `candlesticks` staged objects are ZIP archives carrying
+// exactly one deflate-compressed CSV member. As with the order-book tar parser
+// above, the ZIP local file header is parsed directly (no external `zip`
+// dependency) and the single member is inflated with `flate2`'s raw deflate
+// decoder, so the crate stays self-contained.
+
+/// ZIP local file header signature (`PK\x03\x04`).
+const ZIP_LOCAL_HEADER_SIG: [u8; 4] = [0x50, 0x4b, 0x03, 0x04];
+/// ZIP central directory header signature (`PK\x01\x02`).
+const ZIP_CENTRAL_HEADER_SIG: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
+/// Fixed length of a ZIP local file header before the variable-length name.
+const ZIP_LOCAL_HEADER_LEN: usize = 30;
+/// Compression method code for raw DEFLATE.
+const ZIP_METHOD_DEFLATE: u16 = 8;
+/// Compression method code for STORED (no compression).
+const ZIP_METHOD_STORED: u16 = 0;
+/// General-purpose flag bit 3: sizes/CRC are zero in the local header and a
+/// data descriptor follows the compressed data instead.
+const ZIP_FLAG_DATA_DESCRIPTOR: u16 = 0x0008;
+
+fn read_u16_le(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+}
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
+}
+
+/// Locate the single member's compressed size by scanning the ZIP central
+/// directory, used when the local header advertised streaming sizes
+/// (general-purpose flag bit 3 set).
+///
+/// Returns `(compressed_size, uncompressed_size, crc32)`.
+fn central_directory_member(zip: &[u8]) -> Result<(usize, usize, u32)> {
+    // Scan forward for the first central directory header. The archives here
+    // carry exactly one member, so the first central record describes it.
+    let mut offset = 0usize;
+    while offset + 46 <= zip.len() {
+        if zip[offset..offset + 4] == ZIP_CENTRAL_HEADER_SIG {
+            let crc = read_u32_le(zip, offset + 16);
+            let csize = read_u32_le(zip, offset + 20) as usize;
+            let usize_field = read_u32_le(zip, offset + 24) as usize;
+            return Ok((csize, usize_field, crc));
+        }
+        offset += 1;
+    }
+    bail!("ZIP central directory header not found while resolving streamed member sizes")
+}
+
+/// Extract the single CSV member of an OKX `trades`/`candlesticks` ZIP archive
+/// and return its decompressed UTF-8 text.
+///
+/// The archive is a standard ZIP carrying exactly one regular file compressed
+/// with DEFLATE (or STORED). The local file header is parsed directly; when the
+/// header advertises streamed sizes (general-purpose flag bit 3), the member's
+/// sizes and CRC are recovered from the central directory. The inflated bytes
+/// are verified against the recorded CRC-32 so a corrupt object fails loud.
+///
+/// # Errors
+///
+/// Returns an error if the signature is wrong, the compression method is
+/// unsupported, the member extends past the archive, inflation fails, the CRC
+/// mismatches, or the bytes are not valid UTF-8.
+pub fn extract_csv_from_zip(zip_bytes: &[u8]) -> Result<String> {
+    ensure!(
+        zip_bytes.len() >= ZIP_LOCAL_HEADER_LEN,
+        "ZIP archive is shorter than a local file header"
+    );
+    ensure!(
+        zip_bytes[0..4] == ZIP_LOCAL_HEADER_SIG,
+        "missing ZIP local file header signature"
+    );
+
+    let flags = read_u16_le(zip_bytes, 6);
+    let method = read_u16_le(zip_bytes, 8);
+    let mut crc = read_u32_le(zip_bytes, 14);
+    let mut compressed_size = read_u32_le(zip_bytes, 18) as usize;
+    let mut uncompressed_size = read_u32_le(zip_bytes, 22) as usize;
+    let name_len = read_u16_le(zip_bytes, 26) as usize;
+    let extra_len = read_u16_le(zip_bytes, 28) as usize;
+
+    // Streamed entry: the real size/CRC live in the central directory.
+    if flags & ZIP_FLAG_DATA_DESCRIPTOR != 0 {
+        let (csize, usize_field, central_crc) = central_directory_member(zip_bytes)?;
+        compressed_size = csize;
+        uncompressed_size = usize_field;
+        crc = central_crc;
+    }
+
+    let data_start = ZIP_LOCAL_HEADER_LEN
+        .checked_add(name_len)
+        .and_then(|value| value.checked_add(extra_len))
+        .context("ZIP local header length overflow")?;
+    let data_end = data_start
+        .checked_add(compressed_size)
+        .context("ZIP member size overflow")?;
+    ensure!(
+        data_end <= zip_bytes.len(),
+        "ZIP member extends past archive end (need {data_end}, have {})",
+        zip_bytes.len()
+    );
+    let compressed = &zip_bytes[data_start..data_end];
+
+    let mut inflated = Vec::with_capacity(uncompressed_size);
+    match method {
+        ZIP_METHOD_DEFLATE => {
+            DeflateDecoder::new(compressed)
+                .read_to_end(&mut inflated)
+                .context("inflate ZIP member")?;
+        }
+        ZIP_METHOD_STORED => {
+            inflated.extend_from_slice(compressed);
+        }
+        other => bail!("unsupported ZIP compression method {other}"),
+    }
+
+    ensure!(
+        inflated.len() == uncompressed_size,
+        "ZIP member inflated to {} bytes, header declared {uncompressed_size}",
+        inflated.len()
+    );
+    let mut hasher = Crc::new();
+    hasher.update(&inflated);
+    ensure!(
+        hasher.sum() == crc,
+        "ZIP member CRC-32 mismatch (computed {:#010x}, declared {crc:#010x})",
+        hasher.sum()
+    );
+
+    String::from_utf8(inflated).context("ZIP CSV member is not valid UTF-8")
+}
+
+// ===========================================================================
+// Shared spec + precision helpers for the no-book families
+// ===========================================================================
+
+/// Instrument/venue binding for the OKX `trades` and `candlesticks` families.
+///
+/// Built from accepted run-spec metadata; never hardcoded in the converter.
+/// Price/size precision is supplied as decimal-string increments (config-driven)
+/// rather than inferred, so the catalog precision is deterministic across
+/// objects of the same instrument regardless of which rows a given object
+/// happens to contain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OkxInstrumentSpec {
+    /// NautilusTrader instrument id, for example `DOGE-USD_UM_XPERP-310404.OKX`.
+    pub nt_instrument_id: String,
+    /// Venue-native instrument id as it appears in the `instrument_name` column,
+    /// used to fence out foreign rows, for example `DOGE-USD_UM_XPERP-310404`.
+    pub venue_inst_id: String,
+    /// Price tick size as a decimal string, for example `0.00001`. Trailing
+    /// zeros are significant; the decimal places set the catalog price precision.
+    pub price_increment: String,
+    /// Size step as a decimal string, for example `1` or `0.1`. The decimal
+    /// places set the catalog size precision.
+    pub size_increment: String,
+}
+
+impl OkxInstrumentSpec {
+    fn validate(&self) -> Result<()> {
+        for (name, value) in [
+            ("nt_instrument_id", &self.nt_instrument_id),
+            ("venue_inst_id", &self.venue_inst_id),
+            ("price_increment", &self.price_increment),
+            ("size_increment", &self.size_increment),
+        ] {
+            ensure!(!value.trim().is_empty(), "empty OKX spec field: {name}");
+        }
+        // The increments must parse as decimals so the derived precision is real.
+        Decimal::from_str(&self.price_increment)
+            .with_context(|| format!("invalid price_increment {:?}", self.price_increment))?;
+        Decimal::from_str(&self.size_increment)
+            .with_context(|| format!("invalid size_increment {:?}", self.size_increment))?;
+        Ok(())
+    }
+
+    fn instrument_id(&self) -> Result<InstrumentId> {
+        InstrumentId::from_str(&self.nt_instrument_id)
+            .with_context(|| format!("invalid nt_instrument_id {:?}", self.nt_instrument_id))
+    }
+
+    fn price_precision(&self) -> u8 {
+        increment_decimal_places(&self.price_increment)
+    }
+
+    fn size_precision(&self) -> u8 {
+        increment_decimal_places(&self.size_increment)
+    }
+}
+
+/// Decimal places implied by a decimal-string increment (`0.1` -> 1,
+/// `0.00001` -> 5, `1` -> 0). Trailing zeros are significant.
+#[must_use]
+fn increment_decimal_places(increment: &str) -> u8 {
+    match increment.split_once('.') {
+        Some((_, frac)) => u8::try_from(frac.len()).unwrap_or(u8::MAX),
+        None => 0,
+    }
+}
+
+/// Rescale a decimal string to exactly `precision` places, refusing to silently
+/// drop precision the instrument cannot represent.
+///
+/// OKX `trades`/`candlesticks` CSVs render values at the source's own scale, so
+/// an integer-contract size arrives as `"1.0"` and a non-flat candle volume as
+/// `"764.0"`. Tolerate that trailing-zero padding by checking only the
+/// SIGNIFICANT scale (trailing zeros stripped via [`Decimal::normalize`]):
+/// `"1.0"` is admissible at precision 0 (the dropped digit is zero, lossless),
+/// while a genuine `"1.05"` is refused at precision 0. This mirrors the shared
+/// `catalog_projection::rescaled` convention.
+fn rescaled_to(value: &str, precision: u8) -> Result<String> {
+    let mut decimal = Decimal::from_str(value).with_context(|| format!("decimal {value:?}"))?;
+    ensure!(
+        decimal.normalize().scale() <= u32::from(precision),
+        "value {value:?} has more precision than instrument allows ({precision})"
+    );
+    decimal.rescale(u32::from(precision));
+    Ok(decimal.to_string())
+}
+
+fn price_field(value: &str, precision: u8) -> Result<Price> {
+    let text = rescaled_to(value, precision)?;
+    Price::from_str(&text).map_err(|error| anyhow::anyhow!("invalid price {text:?}: {error}"))
+}
+
+fn quantity_field(value: &str, precision: u8) -> Result<Quantity> {
+    let text = rescaled_to(value, precision)?;
+    Quantity::from_str(&text).map_err(|error| anyhow::anyhow!("invalid size {text:?}: {error}"))
+}
+
+/// Convert integer-millisecond exchange time to Unix nanoseconds.
+fn millis_to_nanos(raw: &str, label: &str) -> Result<i64> {
+    let millis: i64 = raw
+        .trim()
+        .parse()
+        .with_context(|| format!("non-integer {label} {raw:?}"))?;
+    millis
+        .checked_mul(TRADES_NANOS_PER_MILLISECOND)
+        .with_context(|| format!("{label} milliseconds overflow scaling to nanos"))
+}
+
+// ===========================================================================
+// trades -> NautilusTrader TradeTick
+// ===========================================================================
+
+/// Header of an OKX `trades` CSV, in column order.
+pub const OKX_TRADES_HEADER: [&str; 6] = [
+    "instrument_name",
+    "trade_id",
+    "side",
+    "price",
+    "size",
+    "created_time",
+];
+
+/// Aggressor (taker) side of an OKX trade print.
+///
+/// The OKX `trades` object records the taker side directly in the `side`
+/// column (`buy`/`sell`), so the aggressor is read from the source rather than
+/// inferred from a maker flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OkxTradeSide {
+    Buy,
+    Sell,
+}
+
+impl OkxTradeSide {
+    fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "buy" => Ok(Self::Buy),
+            "sell" => Ok(Self::Sell),
+            other => bail!("unknown OKX trade side token: {other:?}"),
+        }
+    }
+
+    const fn to_nt(self) -> AggressorSide {
+        match self {
+            Self::Buy => AggressorSide::Buyer,
+            Self::Sell => AggressorSide::Seller,
+        }
+    }
+}
+
+/// One parsed OKX trade print.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OkxTradeRow {
+    /// Exchange event time in Unix nanoseconds.
+    pub event_time: i64,
+    /// Native trade id.
+    pub trade_id: String,
+    pub aggressor_side: OkxTradeSide,
+    /// Exact source price string.
+    pub price: String,
+    /// Exact source size string.
+    pub size: String,
+}
+
+/// Parse an OKX `trades` CSV into validated trade rows, keeping only rows whose
+/// `instrument_name` matches `venue_inst_id` and sorting by event time so the
+/// projection satisfies NautilusTrader's non-decreasing-timestamp write
+/// contract on real (already time-ordered) data.
+///
+/// # Errors
+///
+/// Returns an error if the header does not match [`OKX_TRADES_HEADER`], a row is
+/// malformed, a field fails to parse, or a price/size is non-positive.
+pub fn parse_okx_trades(csv_text: &str, venue_inst_id: &str) -> Result<Vec<OkxTradeRow>> {
+    let mut lines = csv_text.lines();
+    let header = lines
+        .next()
+        .context("empty OKX trades csv: missing header")?;
+    let columns: Vec<&str> = header.split(',').map(str::trim).collect();
+    ensure!(
+        columns == OKX_TRADES_HEADER,
+        "OKX trades header {columns:?} does not match expected {OKX_TRADES_HEADER:?}"
+    );
+
+    let mut rows = Vec::new();
+    for (index, line) in lines.enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').collect();
+        ensure!(
+            fields.len() == OKX_TRADES_HEADER.len(),
+            "OKX trades row {index} has {} fields, expected {}",
+            fields.len(),
+            OKX_TRADES_HEADER.len()
+        );
+
+        let instrument = fields[0].trim();
+        if instrument != venue_inst_id {
+            continue;
+        }
+        let trade_id = fields[1].trim();
+        let aggressor_side = OkxTradeSide::parse(fields[2])
+            .with_context(|| format!("OKX trades row {index}: invalid side"))?;
+        let price_raw = fields[3].trim();
+        let size_raw = fields[4].trim();
+        let event_time = millis_to_nanos(fields[5], "created_time")
+            .with_context(|| format!("OKX trades row {index}"))?;
+
+        ensure!(
+            !trade_id.is_empty(),
+            "OKX trades row {index}: empty trade id"
+        );
+        let price: Decimal = price_raw
+            .parse()
+            .with_context(|| format!("OKX trades row {index}: invalid price {price_raw:?}"))?;
+        let size: Decimal = size_raw
+            .parse()
+            .with_context(|| format!("OKX trades row {index}: invalid size {size_raw:?}"))?;
+        ensure!(
+            price > Decimal::ZERO,
+            "OKX trades row {index}: non-positive price"
+        );
+        ensure!(
+            size > Decimal::ZERO,
+            "OKX trades row {index}: non-positive size"
+        );
+
+        rows.push(OkxTradeRow {
+            event_time,
+            trade_id: trade_id.to_string(),
+            aggressor_side,
+            price: price_raw.to_string(),
+            size: size_raw.to_string(),
+        });
+    }
+
+    // OKX archives are already time-ordered, but real data can carry equal
+    // timestamps; sort (stable) so the write contract holds without erroring on
+    // ties or rare out-of-order rows.
+    rows.sort_by_key(|row| row.event_time);
+    Ok(rows)
+}
+
+/// Convert parsed OKX trade rows into NautilusTrader [`TradeTick`]s at the
+/// instrument's configured price/size precision.
+///
+/// # Errors
+///
+/// Returns an error if a price/size cannot be represented at the configured
+/// precision, a trade id is invalid, or an event time is negative.
+pub fn okx_trades_to_trade_ticks(
+    rows: &[OkxTradeRow],
+    spec: &OkxInstrumentSpec,
+) -> Result<Vec<TradeTick>> {
+    spec.validate()?;
+    let instrument_id = spec.instrument_id()?;
+    let price_precision = spec.price_precision();
+    let size_precision = spec.size_precision();
+    rows.iter()
+        .map(|row| {
+            let price = price_field(&row.price, price_precision)?;
+            let size = quantity_field(&row.size, size_precision)?;
+            let trade_id = TradeId::new_checked(&row.trade_id)
+                .map_err(|error| anyhow::anyhow!("invalid trade id {:?}: {error}", row.trade_id))?;
+            let ts = UnixNanos::from(u64::try_from(row.event_time).context("negative event_time")?);
+            Ok(TradeTick::new(
+                instrument_id,
+                price,
+                size,
+                row.aggressor_side.to_nt(),
+                trade_id,
+                ts,
+                ts,
+            ))
+        })
+        .collect()
+}
+
+/// Result of projecting an OKX no-book family into a NautilusTrader catalog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OkxCatalogProjection {
+    pub catalog_root: PathBuf,
+    /// The NautilusTrader catalog identifier the data was written under
+    /// (instrument id for trades, bar-type string for candlesticks).
+    pub nt_identifier: String,
+    pub data_type: String,
+    pub record_count: usize,
+    pub price_precision: u8,
+    pub size_precision: u8,
+    /// Deterministic SHA-256 hex over the catalog's written data files.
+    pub catalog_hash: String,
+}
+
+/// Project an OKX `trades` ZIP archive into a NautilusTrader `ParquetDataCatalog`
+/// as `TradeTick` data.
+///
+/// Extracts the CSV member, parses and fences the rows to the spec's instrument,
+/// builds [`TradeTick`]s, and writes them with NautilusTrader's own
+/// `write_to_parquet`. Returns a deterministic catalog hash.
+///
+/// # Errors
+///
+/// Returns an error if extraction, parsing, tick construction, or the catalog
+/// write fails, or if `catalog_root` is a non-empty directory.
+pub fn project_okx_trades_archive_to_catalog(
+    zip_bytes: &[u8],
+    spec: &OkxInstrumentSpec,
+    catalog_root: &Path,
+) -> Result<OkxCatalogProjection> {
+    spec.validate()?;
+    let csv = extract_csv_from_zip(zip_bytes)?;
+    let rows = parse_okx_trades(&csv, &spec.venue_inst_id)?;
+    ensure!(
+        !rows.is_empty(),
+        "no OKX trade rows matched venue_inst_id {:?}",
+        spec.venue_inst_id
+    );
+    let ticks = okx_trades_to_trade_ticks(&rows, spec)?;
+    let record_count = ticks.len();
+
+    assert_clean_catalog_root(catalog_root)?;
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_to_parquet(ticks, None, None, None)
+        .context("write OKX trade ticks to catalog")?;
+
+    Ok(OkxCatalogProjection {
+        catalog_root: catalog_root.to_path_buf(),
+        nt_identifier: spec.nt_instrument_id.clone(),
+        data_type: NT_DATA_TYPE_TRADE_TICK.to_string(),
+        record_count,
+        price_precision: spec.price_precision(),
+        size_precision: spec.size_precision(),
+        catalog_hash: catalog_hash(catalog_root)?,
+    })
+}
+
+/// Prove the resolved NautilusTrader dependency can read the projected
+/// `TradeTick` data back from `catalog_root`.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_trade_ticks(
+    catalog_root: &Path,
+    nt_instrument_id: &str,
+) -> Result<Vec<TradeTick>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .query_typed_data::<TradeTick>(
+            Some(vec![nt_instrument_id.to_string()]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .context("query OKX trade ticks from catalog")
+}
+
+// ===========================================================================
+// candlesticks -> NautilusTrader Bar
+// ===========================================================================
+
+/// Header of an OKX `candlesticks` CSV, in column order.
+pub const OKX_CANDLES_HEADER: [&str; 10] = [
+    "instrument_name",
+    "open",
+    "high",
+    "low",
+    "close",
+    "vol",
+    "vol_ccy",
+    "vol_quote",
+    "open_time",
+    "confirm",
+];
+
+/// Bar specification for OKX candlesticks supplied by the caller from the
+/// staged interval (for example a 1-minute candle -> step 1,
+/// [`BarAggregation::Minute`]). Candles are aggregated by the exchange, so they
+/// replay as `EXTERNAL`-sourced, `LAST`-price bars.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OkxBarSpec {
+    pub step: usize,
+    pub aggregation: BarAggregation,
+}
+
+impl OkxBarSpec {
+    fn to_bar_type(self, instrument_id: InstrumentId) -> Result<BarType> {
+        let step = NonZeroUsize::new(self.step).context("OKX bar step must be positive")?;
+        let spec = BarSpecification::new(step.get(), self.aggregation, PriceType::Last);
+        Ok(BarType::new(
+            instrument_id,
+            spec,
+            AggregationSource::External,
+        ))
+    }
+}
+
+/// One parsed OKX candle (1 row of the candlesticks CSV).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OkxCandleRow {
+    /// Bar open (event) timestamp in Unix nanoseconds.
+    pub open_time: i64,
+    pub open: String,
+    pub high: String,
+    pub low: String,
+    pub close: String,
+    /// Exact source contract-volume string (`vol` column).
+    pub volume: String,
+}
+
+/// Parse an OKX `candlesticks` CSV into validated candle rows, keeping only rows
+/// whose `instrument_name` matches `venue_inst_id` and sorting by open time so
+/// the projection satisfies NautilusTrader's non-decreasing-timestamp contract.
+///
+/// Only confirmed candles (`confirm == 1`) are kept; an in-progress candle
+/// (`confirm == 0`) is not a settled bar and is dropped.
+///
+/// # Errors
+///
+/// Returns an error if the header does not match [`OKX_CANDLES_HEADER`], a row
+/// is malformed, a field fails to parse, the OHLC invariant is violated, or
+/// volume is negative.
+pub fn parse_okx_candlesticks(csv_text: &str, venue_inst_id: &str) -> Result<Vec<OkxCandleRow>> {
+    let mut lines = csv_text.lines();
+    let header = lines
+        .next()
+        .context("empty OKX candlesticks csv: missing header")?;
+    let columns: Vec<&str> = header.split(',').map(str::trim).collect();
+    ensure!(
+        columns == OKX_CANDLES_HEADER,
+        "OKX candlesticks header {columns:?} does not match expected {OKX_CANDLES_HEADER:?}"
+    );
+
+    let mut rows = Vec::new();
+    for (index, line) in lines.enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').collect();
+        ensure!(
+            fields.len() == OKX_CANDLES_HEADER.len(),
+            "OKX candlesticks row {index} has {} fields, expected {}",
+            fields.len(),
+            OKX_CANDLES_HEADER.len()
+        );
+
+        let instrument = fields[0].trim();
+        if instrument != venue_inst_id {
+            continue;
+        }
+        // confirm == 0 marks an in-progress candle; only settled bars project.
+        let confirm = fields[9].trim();
+        if confirm == "0" {
+            continue;
+        }
+        ensure!(
+            confirm == "1",
+            "OKX candlesticks row {index}: unexpected confirm flag {confirm:?}"
+        );
+
+        let open_raw = fields[1].trim();
+        let high_raw = fields[2].trim();
+        let low_raw = fields[3].trim();
+        let close_raw = fields[4].trim();
+        let volume_raw = fields[5].trim();
+        let open_time = millis_to_nanos(fields[8], "open_time")
+            .with_context(|| format!("OKX candlesticks row {index}"))?;
+
+        let open: Decimal = open_raw
+            .parse()
+            .with_context(|| format!("OKX candlesticks row {index}: invalid open {open_raw:?}"))?;
+        let high: Decimal = high_raw
+            .parse()
+            .with_context(|| format!("OKX candlesticks row {index}: invalid high {high_raw:?}"))?;
+        let low: Decimal = low_raw
+            .parse()
+            .with_context(|| format!("OKX candlesticks row {index}: invalid low {low_raw:?}"))?;
+        let close: Decimal = close_raw.parse().with_context(|| {
+            format!("OKX candlesticks row {index}: invalid close {close_raw:?}")
+        })?;
+        let volume: Decimal = volume_raw
+            .parse()
+            .with_context(|| format!("OKX candlesticks row {index}: invalid vol {volume_raw:?}"))?;
+
+        ensure!(
+            open > Decimal::ZERO,
+            "OKX candlesticks row {index}: non-positive open"
+        );
+        ensure!(
+            low > Decimal::ZERO,
+            "OKX candlesticks row {index}: non-positive low"
+        );
+        ensure!(
+            volume >= Decimal::ZERO,
+            "OKX candlesticks row {index}: negative volume"
+        );
+        // NautilusTrader's `Bar::new_checked` re-asserts this on the rounded
+        // prices; checking the source decimals fails loud before any rounding.
+        ensure!(
+            high >= open && high >= low && high >= close,
+            "OKX candlesticks row {index}: high {high} is not the maximum (o={open} l={low} c={close})"
+        );
+        ensure!(
+            low <= open && low <= close,
+            "OKX candlesticks row {index}: low {low} is not the minimum (o={open} c={close})"
+        );
+
+        rows.push(OkxCandleRow {
+            open_time,
+            open: open_raw.to_string(),
+            high: high_raw.to_string(),
+            low: low_raw.to_string(),
+            close: close_raw.to_string(),
+            volume: volume_raw.to_string(),
+        });
+    }
+
+    rows.sort_by_key(|row| row.open_time);
+    Ok(rows)
+}
+
+/// Convert parsed OKX candle rows into NautilusTrader [`Bar`]s under the
+/// configured bar type at the instrument's price/size precision.
+///
+/// # Errors
+///
+/// Returns an error if an OHLCV value cannot be represented at the configured
+/// precision or fails NautilusTrader's `Bar::new_checked` OHLC checks.
+pub fn okx_candlesticks_to_bars(
+    rows: &[OkxCandleRow],
+    spec: &OkxInstrumentSpec,
+    bar_spec: OkxBarSpec,
+) -> Result<Vec<Bar>> {
+    spec.validate()?;
+    let instrument_id = spec.instrument_id()?;
+    let bar_type = bar_spec.to_bar_type(instrument_id)?;
+    let price_precision = spec.price_precision();
+    let size_precision = spec.size_precision();
+    rows.iter()
+        .map(|row| {
+            let open = price_field(&row.open, price_precision)?;
+            let high = price_field(&row.high, price_precision)?;
+            let low = price_field(&row.low, price_precision)?;
+            let close = price_field(&row.close, price_precision)?;
+            let volume = quantity_field(&row.volume, size_precision)?;
+            let ts = UnixNanos::from(u64::try_from(row.open_time).context("negative open_time")?);
+            Bar::new_checked(bar_type, open, high, low, close, volume, ts, ts)
+                .context("build OKX bar")
+        })
+        .collect()
+}
+
+/// The NautilusTrader bar-type string for an OKX candle stream, used as the
+/// catalog identifier the bars are written under.
+///
+/// # Errors
+///
+/// Returns an error if the instrument id is invalid or the bar step is zero.
+pub fn okx_bar_type_string(spec: &OkxInstrumentSpec, bar_spec: OkxBarSpec) -> Result<String> {
+    let instrument_id = spec.instrument_id()?;
+    Ok(bar_spec.to_bar_type(instrument_id)?.to_string())
+}
+
+/// Project an OKX `candlesticks` ZIP archive into a NautilusTrader
+/// `ParquetDataCatalog` as `Bar` data.
+///
+/// Extracts the CSV member, parses and fences the rows to the spec's instrument,
+/// builds [`Bar`]s under the caller-supplied bar spec, and writes them with
+/// NautilusTrader's own `write_to_parquet`. Returns a deterministic catalog hash.
+///
+/// # Errors
+///
+/// Returns an error if extraction, parsing, bar construction, or the catalog
+/// write fails, or if `catalog_root` is a non-empty directory.
+pub fn project_okx_candlesticks_archive_to_catalog(
+    zip_bytes: &[u8],
+    spec: &OkxInstrumentSpec,
+    bar_spec: OkxBarSpec,
+    catalog_root: &Path,
+) -> Result<OkxCatalogProjection> {
+    spec.validate()?;
+    let csv = extract_csv_from_zip(zip_bytes)?;
+    let rows = parse_okx_candlesticks(&csv, &spec.venue_inst_id)?;
+    ensure!(
+        !rows.is_empty(),
+        "no OKX candle rows matched venue_inst_id {:?}",
+        spec.venue_inst_id
+    );
+    let bars = okx_candlesticks_to_bars(&rows, spec, bar_spec)?;
+    let record_count = bars.len();
+
+    assert_clean_catalog_root(catalog_root)?;
+    let catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .write_to_parquet(bars, None, None, None)
+        .context("write OKX bars to catalog")?;
+
+    Ok(OkxCatalogProjection {
+        catalog_root: catalog_root.to_path_buf(),
+        nt_identifier: okx_bar_type_string(spec, bar_spec)?,
+        data_type: NT_DATA_TYPE_BAR.to_string(),
+        record_count,
+        price_precision: spec.price_precision(),
+        size_precision: spec.size_precision(),
+        catalog_hash: catalog_hash(catalog_root)?,
+    })
+}
+
+/// Prove the resolved NautilusTrader dependency can read the projected `Bar`
+/// data back from `catalog_root` by its bar-type identifier.
+///
+/// # Errors
+///
+/// Returns an error if the catalog query fails.
+pub fn read_back_bars(catalog_root: &Path, bar_type: &str) -> Result<Vec<Bar>> {
+    let mut catalog = ParquetDataCatalog::new(catalog_root, None, None, None, None);
+    catalog
+        .query_typed_data::<Bar>(
+            Some(vec![bar_type.to_string()]),
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .context("query OKX bars from catalog")
+}
+
+/// Fail closed on a dirty catalog root. NautilusTrader's `write_to_parquet`
+/// skips writing when a file for the same identifier/interval already exists, so
+/// projecting into a non-empty root could silently read back stale data.
+fn assert_clean_catalog_root(catalog_root: &Path) -> Result<()> {
+    if catalog_root.exists() {
+        let mut entries = fs::read_dir(catalog_root)
+            .with_context(|| format!("read catalog root {}", catalog_root.display()))?;
+        ensure!(
+            entries.next().is_none(),
+            "catalog root {} is not empty; refusing to project into a dirty catalog",
+            catalog_root.display()
+        );
+    }
+    fs::create_dir_all(catalog_root)
+        .with_context(|| format!("create catalog root {}", catalog_root.display()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,5 +1412,147 @@ mod tests {
         let messages = parse_okx_book_messages(&jsonl, SAMPLE_INST).unwrap();
         let err = okx_book_messages_to_deltas(&messages, &spec()).unwrap_err();
         assert!(err.to_string().contains("out of order"), "{err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // trades / candlesticks unit tests
+    // -----------------------------------------------------------------------
+
+    const TRADE_INST: &str = "DOGE-USD_UM_XPERP-310404";
+
+    fn trade_spec() -> OkxInstrumentSpec {
+        OkxInstrumentSpec {
+            nt_instrument_id: "DOGE-USD_UM_XPERP-310404.OKX".to_string(),
+            venue_inst_id: TRADE_INST.to_string(),
+            price_increment: "0.00001".to_string(),
+            size_increment: "1".to_string(),
+        }
+    }
+
+    const SAMPLE_TRADES_CSV: &str = "instrument_name,trade_id,side,price,size,created_time\n\
+        DOGE-USD_UM_XPERP-310404,717,buy,0.09552,1.0,1776184215764\n\
+        SOME-OTHER-INST,9,sell,1.0,1.0,1776184215764\n\
+        DOGE-USD_UM_XPERP-310404,718,sell,0.09554,2.0,1776184215765\n";
+
+    #[test]
+    fn trades_parse_fences_foreign_instrument_and_maps_side() {
+        let rows = parse_okx_trades(SAMPLE_TRADES_CSV, TRADE_INST).unwrap();
+        assert_eq!(rows.len(), 2, "foreign instrument row dropped");
+        assert_eq!(rows[0].aggressor_side, OkxTradeSide::Buy);
+        assert_eq!(rows[1].aggressor_side, OkxTradeSide::Sell);
+        // milliseconds -> nanoseconds.
+        assert_eq!(
+            rows[0].event_time,
+            1_776_184_215_764 * TRADES_NANOS_PER_MILLISECOND
+        );
+    }
+
+    #[test]
+    fn trades_reject_bad_header() {
+        let bad = "ts,id,side,px,sz\n1,1,buy,1,1\n";
+        let err = parse_okx_trades(bad, TRADE_INST).unwrap_err();
+        assert!(err.to_string().contains("header"), "{err}");
+    }
+
+    #[test]
+    fn trades_reject_unknown_side() {
+        let bad = "instrument_name,trade_id,side,price,size,created_time\n\
+            DOGE-USD_UM_XPERP-310404,1,hold,0.1,1,1776184215764\n";
+        let err = parse_okx_trades(bad, TRADE_INST).unwrap_err();
+        assert!(err.to_string().contains("side"), "{err}");
+    }
+
+    #[test]
+    fn trades_map_to_trade_ticks_with_configured_precision() {
+        let rows = parse_okx_trades(SAMPLE_TRADES_CSV, TRADE_INST).unwrap();
+        let ticks = okx_trades_to_trade_ticks(&rows, &trade_spec()).unwrap();
+        assert_eq!(ticks.len(), 2);
+        assert!(ticks.iter().all(|t| t.price.precision == 5));
+        assert!(ticks.iter().all(|t| t.size.precision == 0));
+        // The source sizes are `"1.0"`/`"2.0"`; at an integer-contract size
+        // precision (0) the trailing `.0` is lossless padding, so the values
+        // survive as `1`/`2` rather than being rejected.
+        assert_eq!(ticks[0].size.as_decimal(), Decimal::from(1));
+        assert_eq!(ticks[1].size.as_decimal(), Decimal::from(2));
+        assert_eq!(ticks[0].aggressor_side, AggressorSide::Buyer);
+        assert_eq!(ticks[1].aggressor_side, AggressorSide::Seller);
+        assert!(ticks.windows(2).all(|w| w[0].ts_init <= w[1].ts_init));
+    }
+
+    #[test]
+    fn rescale_tolerates_trailing_zero_but_rejects_subprecision() {
+        // Trailing-zero padding is dropped losslessly.
+        assert_eq!(rescaled_to("1.0", 0).unwrap(), "1");
+        assert_eq!(rescaled_to("764.0", 0).unwrap(), "764");
+        assert_eq!(rescaled_to("636.50", 1).unwrap(), "636.5");
+        // A genuine sub-precision digit is refused, never silently rounded.
+        let err = rescaled_to("1.05", 0).expect_err("sub-precision must be refused");
+        assert!(err.to_string().contains("more precision"), "{err}");
+    }
+
+    const CANDLE_INST: &str = "BNB-USD_UM_XPERP-310523";
+
+    fn candle_spec() -> OkxInstrumentSpec {
+        OkxInstrumentSpec {
+            nt_instrument_id: "BNB-USD_UM_XPERP-310523.OKX".to_string(),
+            venue_inst_id: CANDLE_INST.to_string(),
+            price_increment: "0.1".to_string(),
+            size_increment: "1".to_string(),
+        }
+    }
+
+    fn minute_bar() -> OkxBarSpec {
+        OkxBarSpec {
+            step: 1,
+            aggregation: BarAggregation::Minute,
+        }
+    }
+
+    const SAMPLE_CANDLES_CSV: &str = "instrument_name,open,high,low,close,vol,vol_ccy,vol_quote,open_time,confirm\n\
+        BNB-USD_UM_XPERP-310523,649.5,649.5,636.5,636.5,2,0.02,12.86,1779265080000,1\n\
+        OTHER-INST,1.0,1.0,1.0,1.0,0,0,0,1779265080000,1\n\
+        BNB-USD_UM_XPERP-310523,636.5,640.0,636.5,640.0,5,0.05,30.0,1779265140000,1\n\
+        BNB-USD_UM_XPERP-310523,640.0,640.0,640.0,640.0,0,0,0,1779265200000,0\n";
+
+    #[test]
+    fn candles_parse_fences_and_drops_unconfirmed() {
+        let rows = parse_okx_candlesticks(SAMPLE_CANDLES_CSV, CANDLE_INST).unwrap();
+        // Foreign instrument dropped; in-progress (confirm=0) candle dropped.
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0].open_time,
+            1_779_265_080_000 * TRADES_NANOS_PER_MILLISECOND
+        );
+        assert_eq!(rows[0].high, "649.5");
+        assert_eq!(rows[0].volume, "2");
+    }
+
+    #[test]
+    fn candles_reject_ohlc_violation() {
+        // high < low: invalid bar.
+        let bad = "instrument_name,open,high,low,close,vol,vol_ccy,vol_quote,open_time,confirm\n\
+            BNB-USD_UM_XPERP-310523,1.0,0.9,1.1,1.0,0,0,0,1779265080000,1\n";
+        let err = parse_okx_candlesticks(bad, CANDLE_INST).unwrap_err();
+        assert!(err.to_string().contains("high"), "{err}");
+    }
+
+    #[test]
+    fn candles_map_to_bars_external_last() {
+        let rows = parse_okx_candlesticks(SAMPLE_CANDLES_CSV, CANDLE_INST).unwrap();
+        let bars = okx_candlesticks_to_bars(&rows, &candle_spec(), minute_bar()).unwrap();
+        assert_eq!(bars.len(), 2);
+        // Bar type is EXTERNAL-sourced LAST-price at the configured step/unit.
+        let bar_type = bars[0].bar_type;
+        assert_eq!(bar_type.aggregation_source(), AggregationSource::External);
+        assert_eq!(bar_type.spec().price_type, PriceType::Last);
+        assert_eq!(bar_type.spec().aggregation, BarAggregation::Minute);
+        assert!(bars.iter().all(|b| b.open.precision == 1));
+        assert!(bars.windows(2).all(|w| w[0].ts_init <= w[1].ts_init));
+    }
+
+    #[test]
+    fn zip_extractor_rejects_bad_signature() {
+        let err = extract_csv_from_zip(b"not a zip archive at all............").unwrap_err();
+        assert!(err.to_string().contains("signature"), "{err}");
     }
 }

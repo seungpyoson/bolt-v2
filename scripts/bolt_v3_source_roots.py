@@ -26,6 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # walk below resolves whichever it is at runtime.
 STRATEGY_SOURCE_ROOT = "src/strategies/binary_oracle_edge_taker"
 SUBMIT_ADMISSION_SOURCE_ROOT = "src/bolt_v3_submit_admission.rs"
+MAX_SOURCE_FILE_BYTES = 1024 * 1024
 
 
 def source_files(relative_root: str) -> list[Path]:
@@ -37,13 +38,20 @@ def source_files(relative_root: str) -> list[Path]:
     order the Rust walk uses for framing and hashing.
     """
     root = REPO_ROOT / relative_root
+    if root.is_symlink():
+        raise ValueError(f"source root is a symlink: {root}")
     if root.is_file():
         return [root]
     if not root.is_dir():
         raise FileNotFoundError(
             f"gated source root is neither a regular file nor a directory: {root}"
         )
-    files = [path for path in root.rglob("*.rs") if path.is_file()]
+    files = []
+    for path in root.rglob("*.rs"):
+        if path.is_symlink():
+            raise ValueError(f"source root contains a symlink: {path}")
+        if path.is_file():
+            files.append(path)
     files.sort(key=lambda path: path.relative_to(root).as_posix().encode("utf-8"))
     return files
 
@@ -55,4 +63,9 @@ def module_text(relative_root: str) -> str:
     framing bytes — the same content order as the Rust `module_source_text`
     accessor, suitable for grepping function/marker presence across the module.
     """
-    return "".join(path.read_text(encoding="utf-8") for path in source_files(relative_root))
+    texts = []
+    for path in source_files(relative_root):
+        if path.stat().st_size > MAX_SOURCE_FILE_BYTES:
+            raise ValueError(f"source file exceeds 1 MiB limit: {path}")
+        texts.append(path.read_text(encoding="utf-8"))
+    return "".join(texts)

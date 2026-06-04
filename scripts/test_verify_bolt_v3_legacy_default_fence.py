@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import bolt_v3_source_roots as source_roots
 import verify_bolt_v3_legacy_default_fence as fence
 from bolt_v3_source_roots import STRATEGY_SOURCE_ROOT, module_text, source_files
 from verify_bolt_v3_pure_rust_runtime import production_text
@@ -136,6 +137,64 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 "legacy live-local materialization path",
             ],
         )
+
+    def test_source_root_helper_rejects_symlink_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "real.rs"
+            target.write_text("fn real() {}\n", encoding="utf-8")
+            link = root / "linked.rs"
+            try:
+                link.symlink_to(target)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+
+            original_root = source_roots.REPO_ROOT
+            source_roots.REPO_ROOT = root
+            try:
+                with self.assertRaisesRegex(ValueError, "source root is a symlink"):
+                    source_roots.source_files("linked.rs")
+            finally:
+                source_roots.REPO_ROOT = original_root
+
+    def test_source_root_helper_rejects_symlink_inside_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "module"
+            module.mkdir()
+            target = module / "real.rs"
+            target.write_text("fn real() {}\n", encoding="utf-8")
+            link = module / "linked.rs"
+            try:
+                link.symlink_to(target)
+            except OSError as error:
+                self.skipTest(f"symlink creation unavailable: {error}")
+
+            original_root = source_roots.REPO_ROOT
+            source_roots.REPO_ROOT = root
+            try:
+                with self.assertRaisesRegex(ValueError, "source root contains a symlink"):
+                    source_roots.source_files("module")
+            finally:
+                source_roots.REPO_ROOT = original_root
+
+    def test_source_root_helper_rejects_oversized_module_text_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            module = root / "module"
+            module.mkdir()
+            (module / "big.rs").write_text(
+                "x" * (source_roots.MAX_SOURCE_FILE_BYTES + 1),
+                encoding="utf-8",
+            )
+
+            original_root = source_roots.REPO_ROOT
+            source_roots.REPO_ROOT = root
+            try:
+                with self.assertRaisesRegex(ValueError, "source file exceeds 1 MiB limit"):
+                    source_roots.module_text("module")
+            finally:
+                source_roots.REPO_ROOT = original_root
 
     def test_detects_production_default_residues(self) -> None:
         source = "\n".join(

@@ -251,7 +251,7 @@ pub fn production_module_source_text(root: &Path, max_bytes: u64) -> io::Result<
     if file_type.is_file() {
         let bytes = read_file_bounded(root, max_bytes)?;
         let text = utf8_string(bytes, root)?;
-        return Ok(production_half(&text).to_string());
+        return Ok(production_half(&text));
     }
     if !file_type.is_dir() {
         return Err(io::Error::new(
@@ -267,18 +267,21 @@ pub fn production_module_source_text(root: &Path, max_bytes: u64) -> io::Result<
     for (_relative, path) in files {
         let bytes = read_file_bounded(&path, max_bytes)?;
         let file_text = utf8_string(bytes, &path)?;
-        text.push_str(production_half(&file_text));
+        text.push_str(&production_half(&file_text));
     }
     Ok(text)
 }
 
 /// The production half of a single file's text: everything before the FIRST
 /// top-level [`TEST_MODULE_SPLIT_MARKER`], or the whole text if the marker is
-/// absent. Byte-for-byte equivalent to `text.split(MARKER).next().unwrap()`.
-fn production_half(text: &str) -> &str {
-    match text.split_once(TEST_MODULE_SPLIT_MARKER) {
-        Some((production, _rest)) => production,
-        None => text,
+/// absent. LF checkout remains byte-for-byte equivalent to
+/// `text.split(MARKER).next().unwrap()`. CRLF checkout normalizes to LF first so
+/// the marker is OS-independent.
+fn production_half(text: &str) -> String {
+    let normalized = text.replace(CRLF_LINE_ENDING, LF_LINE_ENDING);
+    match normalized.split_once(TEST_MODULE_SPLIT_MARKER) {
+        Some((production, _rest)) => production.to_string(),
+        None => normalized,
     }
 }
 
@@ -296,6 +299,8 @@ fn utf8_string(bytes: Vec<u8>, path: &Path) -> io::Result<String> {
 /// in exactly one place so the identity-case production boundary matches the
 /// historical `.split(...).next()` convention byte-for-byte.
 pub const TEST_MODULE_SPLIT_MARKER: &str = "\n#[cfg(test)]\nmod tests";
+const CRLF_LINE_ENDING: &str = "\r\n";
+const LF_LINE_ENDING: &str = "\n";
 
 /// Stable registry key for the binary-oracle strategy source root.
 pub const STRATEGY_KEY: &str = "strategy";
@@ -448,6 +453,21 @@ mod tests {
         fs::write(dir.join("a.rs"), b"AAA").unwrap();
         let text = module_source_text(&dir, 1_000_000).unwrap();
         assert_eq!(text, "AAABBB", "text joins by relative-path byte order");
+    }
+
+    #[test]
+    fn production_text_normalizes_crlf_before_test_module_split() {
+        let dir = temp_dir("crlf");
+        let file = dir.join("only.rs");
+        fs::write(
+            &file,
+            b"fn production() {}\r\n#[cfg(test)]\r\nmod tests { fn ignored() {} }\r\n",
+        )
+        .unwrap();
+
+        let production = production_module_source_text(&file, 1_000_000).unwrap();
+
+        assert_eq!(production, "fn production() {}");
     }
 
     #[test]

@@ -16994,6 +16994,22 @@ reason = '''The single canonical 3-line marker separating production code from t
 [[allowed]]
 path = '''src/source_canonicalization.rs'''
 kind = '''string'''
+literal = '''"\r\n"'''
+context = '''const CRLF_LINE_ENDING: &str = "\r\n";'''
+classification = '''source_canonicalization_line_ending_marker'''
+reason = '''Structural CRLF line-ending marker used only to normalize source text before splitting production code from the test module; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
+literal = '''"\n"'''
+context = '''const LF_LINE_ENDING: &str = "\n";'''
+classification = '''source_canonicalization_line_ending_marker'''
+reason = '''Structural LF line-ending marker used only to normalize source text before splitting production code from the test module; not an operator runtime value.'''
+
+[[allowed]]
+path = '''src/source_canonicalization.rs'''
+kind = '''string'''
 literal = '''"rs"'''
 context = '''} else if file_type.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("rs")'''
 classification = '''source_canonicalization_rs_extension'''

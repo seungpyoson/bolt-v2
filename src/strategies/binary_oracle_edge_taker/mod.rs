@@ -12906,25 +12906,9 @@ mod tests {
 
     #[test]
     fn production_outcome_side_inference_does_not_parse_instrument_suffixes() {
-        // The strategy is now a directory module: the production code this guard
-        // polices lives across `mod.rs` AND `selection.rs` (the venue-routing
-        // predicates `outcome_on_execution_venue` / `selected_market_on_execution_venue`
-        // moved into `selection.rs` in slice A3). Scan the UNION of every submodule
-        // file's production half — each split at the same top-level test-module
-        // marker — so the guard keeps covering the relocated code, not just `mod.rs`.
-        // When later slices add more submodule files, append their `include_str!`
-        // here; this is the single source of truth for "scan all production text".
-        let mod_src = include_str!("mod.rs");
-        let selection_src = include_str!("selection.rs");
-        let production = [mod_src, selection_src]
-            .iter()
-            .map(|source| {
-                source
-                    .split("\n#[cfg(test)]\nmod tests")
-                    .next()
-                    .expect("production source should precede cfg(test) test module")
-            })
-            .collect::<String>();
+        let production = crate::bolt_v3_source_integrity::production_module_source_text(
+            crate::bolt_v3_source_integrity::STRATEGY_KEY,
+        );
         let up_suffix = format!("{}{}{}", "-", "UP", ".");
         let down_suffix = format!("{}{}{}", "-", "DOWN", ".");
 

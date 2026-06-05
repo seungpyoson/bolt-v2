@@ -415,3 +415,149 @@ impl TakerPricingState {
         jitter_ms
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(
+        min_observations: u64,
+        gap_reset_secs: u64,
+        bridge_valid_secs: u64,
+    ) -> TakerPricingConfig<'static> {
+        TakerPricingConfig {
+            realized_vol: RealizedVolConfig {
+                window_secs: 60,
+                gap_reset_secs,
+                min_observations,
+                bridge_valid_secs,
+            },
+            lead_agreement_min_corr: 0.80,
+            lead_jitter_max_ms: 1_000,
+            spike_guard_return_threshold: 0.10,
+            spike_guard_cooldown_secs: 2,
+            cadence_seconds: 300,
+            theta_decay_factor: 1.5,
+            edge_threshold_basis_points: 10,
+            pricing_kurtosis: 0.0,
+            rotating_market_family: "updown",
+        }
+    }
+
+    fn quote(venue: &str, price: f64, observed_ts_ms: u64) -> FastSpotObservation {
+        FastSpotObservation {
+            venue: venue.to_string(),
+            price,
+            observed_ts_ms,
+        }
+    }
+
+    fn observe_reference_and_signal(
+        pricing: &mut TakerPricingState,
+        config: &TakerPricingConfig<'_>,
+        venue: &str,
+        price: f64,
+        observed_ts_ms: u64,
+    ) {
+        pricing.observe_reference_quote(&quote("reference", price, observed_ts_ms));
+        pricing.observe_signal_quote(&quote(venue, price, observed_ts_ms), config);
+    }
+
+    #[test]
+    fn signal_without_reference_fails_closed_and_marks_fast_venue_incoherent() {
+        let config = config(1, 30, 10);
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        pricing.observe_signal_quote(&quote("bybit", 3_100.0, 1_000), &config);
+
+        assert_eq!(pricing.fast_spot, None);
+        assert!(pricing.fast_venue_incoherent);
+        assert!(pricing.lead_quality_policy_applied);
+        assert_eq!(pricing.last_lead_gap_probability, None);
+        assert_eq!(pricing.last_jitter_penalty_probability, None);
+        assert_eq!(pricing.last_lead_agreement_corr, None);
+        assert_eq!(pricing.last_fast_venue_age_ms, Some(INITIAL_COUNTER_U64));
+        assert_eq!(pricing.last_fast_venue_jitter_ms, Some(INITIAL_COUNTER_U64));
+    }
+
+    #[test]
+    fn spike_cooldown_arms_on_large_signal_move_and_only_extends() {
+        let config = config(1, 30, 10);
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        observe_reference_and_signal(&mut pricing, &config, "bybit", 100.0, 1_000);
+        assert_eq!(pricing.spike_until_ms, None);
+
+        observe_reference_and_signal(&mut pricing, &config, "bybit", 120.0, 1_500);
+        assert_eq!(pricing.spike_until_ms, Some(3_500));
+
+        observe_reference_and_signal(&mut pricing, &config, "bybit", 125.0, 2_000);
+        assert_eq!(pricing.spike_until_ms, Some(3_500));
+
+        observe_reference_and_signal(&mut pricing, &config, "bybit", 90.0, 2_200);
+        assert_eq!(pricing.spike_until_ms, Some(4_200));
+    }
+
+    #[test]
+    fn zero_jitter_threshold_uses_zero_penalty_without_dividing() {
+        let mut config = config(1, 30, 10);
+        config.lead_jitter_max_ms = 0;
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        observe_reference_and_signal(&mut pricing, &config, "bybit", 100.0, 1_000);
+        observe_reference_and_signal(&mut pricing, &config, "bybit", 100.0, 2_000);
+
+        assert!(!pricing.fast_venue_incoherent);
+        assert_eq!(pricing.last_jitter_penalty_probability, Some(ZERO_F64));
+
+        observe_reference_and_signal(&mut pricing, &config, "bybit", 100.0, 2_500);
+
+        assert!(pricing.fast_venue_incoherent);
+        assert_eq!(pricing.last_jitter_penalty_probability, Some(ZERO_F64));
+    }
+
+    #[test]
+    fn per_venue_realized_vol_state_isolated_across_lead_venue_switches() {
+        let config = config(1, 30, 10);
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        observe_reference_and_signal(&mut pricing, &config, "bybit", 100.0, 1_000);
+        observe_reference_and_signal(&mut pricing, &config, "bybit", 101.0, 2_000);
+
+        assert!(pricing.current_realized_vol_at(2_000).is_some());
+        assert_eq!(
+            pricing.current_realized_vol_source_at(2_000),
+            (Some("bybit".to_string()), Some(2_000))
+        );
+
+        observe_reference_and_signal(&mut pricing, &config, "coinbase", 102.0, 3_000);
+
+        assert_eq!(pricing.current_realized_vol_at(3_000), None);
+        assert_eq!(pricing.current_realized_vol_source_at(3_000), (None, None));
+
+        observe_reference_and_signal(&mut pricing, &config, "bybit", 103.0, 4_000);
+
+        assert!(pricing.current_realized_vol_at(4_000).is_some());
+        assert_eq!(
+            pricing.current_realized_vol_source_at(4_000),
+            (Some("bybit".to_string()), Some(4_000))
+        );
+    }
+
+    #[test]
+    fn realized_vol_bridge_expires_and_gap_reset_clears_ready_state() {
+        let config = config(1, 1, 1);
+        let mut pricing = TakerPricingState::from_config(&config);
+
+        observe_reference_and_signal(&mut pricing, &config, "bybit", 100.0, 1_000);
+        observe_reference_and_signal(&mut pricing, &config, "bybit", 101.0, 1_500);
+
+        assert!(pricing.current_realized_vol_at(2_400).is_some());
+        assert_eq!(pricing.current_realized_vol_at(2_501), None);
+
+        observe_reference_and_signal(&mut pricing, &config, "bybit", 102.0, 3_000);
+
+        assert_eq!(pricing.current_realized_vol_at(3_000), None);
+        assert_eq!(pricing.current_realized_vol_source_at(3_000), (None, None));
+    }
+}

@@ -5494,6 +5494,9 @@ pub fn record_entry_decision_evidence_from_source(
         observed_ts_ms: source.signal_quote.observed_ts_ms,
     });
     strategy.active.warmup_count = source.warmup_count;
+    // The replay source owns this ready RV value; a missing venue deliberately
+    // clears stale attribution and lets source reporting fall back to the
+    // just-observed signal quote when that quote is still selected.
     strategy.pricing.seed_ready_realized_vol(
         None,
         source.realized_volatility.value,

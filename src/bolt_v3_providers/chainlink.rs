@@ -154,10 +154,18 @@ fn validate_data_bounds(key: &str, data: &ChainlinkDataConfig) -> Vec<String> {
         errors.push(format!(
             "clients.{key}.data.rest_base_url must be a non-empty URL"
         ));
-    } else if url::Url::parse(&data.rest_base_url).is_err() {
-        errors.push(format!(
-            "clients.{key}.data.rest_base_url must be a valid URL"
-        ));
+    } else {
+        match url::Url::parse(&data.rest_base_url) {
+            Ok(parsed) if parsed.scheme() != "https" => errors.push(format!(
+                "clients.{key}.data.rest_base_url must use the https scheme (got `{scheme}`); \
+                 signed Chainlink Data Streams credentials must never be sent over an insecure transport",
+                scheme = parsed.scheme()
+            )),
+            Ok(_) => {}
+            Err(_) => errors.push(format!(
+                "clients.{key}.data.rest_base_url must be a valid URL"
+            )),
+        }
     }
     if data.report_endpoint_path.trim().is_empty() {
         errors.push(format!(
@@ -503,9 +511,16 @@ mod tests {
     const INSTRUMENT_ID_B: &str = "BTC-USD-DOWN.BOLT";
 
     fn data_config_from_bindings(bindings_toml: &str) -> ChainlinkDataConfig {
+        data_config_with_rest_base_url("https://example.invalid", bindings_toml)
+    }
+
+    fn data_config_with_rest_base_url(
+        rest_base_url: &str,
+        bindings_toml: &str,
+    ) -> ChainlinkDataConfig {
         let toml_src = format!(
             r#"
-rest_base_url = "https://example.invalid"
+rest_base_url = "{rest_base_url}"
 report_endpoint_path = "/api/v1/reports"
 http_timeout_secs = 5
 {bindings_toml}
@@ -570,6 +585,26 @@ price_precision = 2
         assert!(
             errors.iter().any(|e| e.contains("instrument_id")),
             "expected a duplicate-instrument_id error mentioning `instrument_id`, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_https_rest_base_url() {
+        // The strike fetch signs each request with HMAC credentials and sends
+        // them as auth headers (strike_source.rs). Over an http:// base URL
+        // those credentials would travel in plaintext, so config validation
+        // must fail closed on any non-https scheme — not merely on an
+        // unparseable URL (an http:// URL parses fine).
+        let data = data_config_with_rest_base_url(
+            "http://example.invalid",
+            &binding_table(FEED_ID_A, INSTRUMENT_ID_A),
+        );
+
+        let errors = validate_data_bounds("chainlink_strike", &data);
+
+        assert!(
+            errors.iter().any(|e| e.contains("https")),
+            "expected an https-scheme rejection for an http:// rest_base_url, got: {errors:?}"
         );
     }
 }

@@ -31,7 +31,7 @@
 //! Input is only ever an [`AcceptedDataset`] from gate 1 — raw staged data never
 //! reaches this module without first passing source-proof acceptance.
 
-use std::{fs::File, path::Path};
+use std::{collections::HashSet, fs::File, path::Path};
 
 use anyhow::{Context, Result, bail, ensure};
 use arrow::{
@@ -420,6 +420,18 @@ pub fn normalize_polymarket_clob_book(
     _capture_time_nanos: i64,
     ingest_run_id: &str,
 ) -> Result<CanonicalBookTable> {
+    let mut asset_rows: Vec<&RawClobEventRow> =
+        rows.iter().filter(|r| r.asset_id == asset_id).collect();
+    asset_rows.sort_by_key(|row| (row.timestamp_received, row.source_row_index));
+    normalize_sorted_polymarket_clob_book_rows(accepted, asset_id, &asset_rows, ingest_run_id)
+}
+
+fn normalize_sorted_polymarket_clob_book_rows(
+    accepted: &AcceptedDataset,
+    asset_id: &str,
+    asset_rows: &[&RawClobEventRow],
+    ingest_run_id: &str,
+) -> Result<CanonicalBookTable> {
     ensure!(
         !ingest_run_id.trim().is_empty(),
         "ingest_run_id must not be empty"
@@ -434,9 +446,6 @@ pub fn normalize_polymarket_clob_book(
 
     let mut canonical_rows = Vec::new();
     let mut sequence: u64 = 0;
-    let mut asset_rows: Vec<&RawClobEventRow> =
-        rows.iter().filter(|r| r.asset_id == asset_id).collect();
-    asset_rows.sort_by_key(|row| (row.timestamp_received, row.source_row_index));
     for raw in asset_rows {
         let event = decode_event(raw)
             .with_context(|| format!("sequence {sequence}: failed to decode CLOB event"))?;
@@ -732,6 +741,12 @@ pub struct PolymarketAppendSummary {
     pub size_precision: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PolymarketAppendProjection {
+    BookAndTrades,
+    TradesOnly,
+}
+
 /// Extract the archive partition date (`YYYY-MM-DD`) from a staged object key's
 /// `dt=<date>/` segment.
 ///
@@ -810,6 +825,30 @@ fn polymarket_accepted_dataset(object_path: &Path, object_key: &str) -> Result<A
 /// Returns an error if the file cannot be opened/read as Parquet, a required
 /// column is missing, or a column has an unexpected Arrow type.
 pub fn decode_polymarket_clob_parquet(object_path: &Path) -> Result<Vec<RawClobEventRow>> {
+    decode_polymarket_clob_parquet_filtered(object_path, None)
+}
+
+/// Decode only one `asset_id` from a staged Polymarket CLOB Parquet object.
+///
+/// This is intentionally a separate streaming pass over the Parquet object so
+/// the bulk append path can hold only one outcome token's rows in memory while
+/// writing that instrument's catalog data.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened/read as Parquet, a required
+/// column is missing, or a column has an unexpected Arrow type.
+pub fn decode_polymarket_clob_parquet_for_asset(
+    object_path: &Path,
+    asset_id: &str,
+) -> Result<Vec<RawClobEventRow>> {
+    decode_polymarket_clob_parquet_filtered(object_path, Some(asset_id))
+}
+
+fn decode_polymarket_clob_parquet_filtered(
+    object_path: &Path,
+    asset_filter: Option<&str>,
+) -> Result<Vec<RawClobEventRow>> {
     let file = File::open(object_path)
         .with_context(|| format!("open Polymarket parquet {}", object_path.display()))?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)
@@ -849,8 +888,13 @@ pub fn decode_polymarket_clob_parquet(object_path: &Path) -> Result<Vec<RawClobE
         let size_scale = size.scale();
 
         for index in 0..batch.num_rows() {
+            let asset = string_cell(asset_id, index);
+            if asset_filter.is_some_and(|filter| asset != filter) {
+                source_row_index += 1;
+                continue;
+            }
             rows.push(RawClobEventRow {
-                asset_id: string_cell(asset_id, index),
+                asset_id: asset,
                 event_type: string_cell(event_type, index),
                 timestamp_received: timestamp_received[index],
                 event_time: event_time[index],
@@ -866,6 +910,36 @@ pub fn decode_polymarket_clob_parquet(object_path: &Path) -> Result<Vec<RawClobE
         }
     }
     Ok(rows)
+}
+
+/// Stream distinct outcome-token `asset_id`s from a staged Polymarket CLOB
+/// Parquet object without retaining the object's full row payload.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened/read as Parquet or `asset_id`
+/// is missing/not UTF-8.
+pub fn polymarket_clob_assets_from_parquet(object_path: &Path) -> Result<Vec<String>> {
+    let file = File::open(object_path)
+        .with_context(|| format!("open Polymarket parquet {}", object_path.display()))?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("open Polymarket parquet reader {}", object_path.display()))?
+        .build()
+        .with_context(|| format!("build Polymarket parquet reader {}", object_path.display()))?;
+
+    let mut seen = Vec::new();
+    for batch in reader {
+        let batch = batch.context("read Polymarket CLOB record batch")?;
+        let asset_id = string_column(&batch, "asset_id")?;
+        for index in 0..batch.num_rows() {
+            let asset = string_cell(asset_id, index);
+            let asset = asset.trim();
+            if !asset.is_empty() && !seen.iter().any(|existing| existing == asset) {
+                seen.push(asset.to_string());
+            }
+        }
+    }
+    Ok(seen)
 }
 
 /// Read a Parquet timestamp column to Unix nanoseconds regardless of its stored
@@ -1031,30 +1105,199 @@ pub fn polymarket_book_spec_from_table(
     })
 }
 
-/// Normalize one staged Polymarket CLOB object's decoded rows into per-instrument
-/// `(table, data-derived spec)` pairs, fenced and sequenced by the existing
-/// [`normalize_polymarket_clob_book`].
-fn polymarket_tables(
-    rows: &[RawClobEventRow],
+fn append_polymarket_asset_run(
     accepted: &AcceptedDataset,
-) -> Result<Vec<(CanonicalBookTable, BinaryOptionInstrumentSpec)>> {
-    let mut out = Vec::new();
-    for asset_id in polymarket_clob_assets(rows) {
-        let table = normalize_polymarket_clob_book(
-            accepted,
-            &asset_id,
-            rows,
-            // No separate capture clock in the bulk path: the event timestamps are
-            // the only honest time source, so capture == first event time.
-            rows.iter()
-                .find(|r| r.asset_id == asset_id)
-                .map_or(0, |r| r.event_time),
-            POLYMARKET_INGEST_RUN_ID,
-        )?;
-        let spec = polymarket_book_spec_from_table(&table)?;
-        out.push((table, spec));
+    asset_id: &str,
+    mut asset_rows: Vec<RawClobEventRow>,
+    catalog: &mut ParquetDataCatalog,
+    projection: PolymarketAppendProjection,
+) -> Result<Option<PolymarketAppendSummary>> {
+    asset_rows.sort_by_key(|row| (row.timestamp_received, row.source_row_index));
+    let asset_refs: Vec<&RawClobEventRow> = asset_rows.iter().collect();
+    let table = normalize_sorted_polymarket_clob_book_rows(
+        accepted,
+        asset_id,
+        &asset_refs,
+        POLYMARKET_INGEST_RUN_ID,
+    )?;
+    let spec = polymarket_book_spec_from_table(&table)?;
+    let instrument = build_binary_option(&spec)?;
+    let ticks: Vec<TradeTick> = canonical_book_rows_to_trade_ticks(&table, &instrument)?;
+
+    match projection {
+        PolymarketAppendProjection::BookAndTrades => {
+            let deltas: Vec<OrderBookDelta> =
+                canonical_rows_to_order_book_deltas(&table, &instrument)?;
+            let summary = PolymarketAppendSummary {
+                nt_instrument_id: spec.nt_instrument_id.clone(),
+                delta_count: deltas.len(),
+                trade_count: ticks.len(),
+                price_precision: instrument.price_precision,
+                size_precision: instrument.size_precision,
+            };
+            catalog
+                .write_instruments(vec![InstrumentAny::BinaryOption(instrument)])
+                .with_context(|| {
+                    format!("append Polymarket instrument for {}", spec.nt_instrument_id)
+                })?;
+            catalog
+                .write_to_parquet(deltas, None, None, None)
+                .with_context(|| {
+                    format!(
+                        "append Polymarket book deltas for {}",
+                        spec.nt_instrument_id
+                    )
+                })?;
+            if !ticks.is_empty() {
+                catalog
+                    .write_to_parquet(ticks, None, None, None)
+                    .with_context(|| {
+                        format!(
+                            "append Polymarket book trades for {}",
+                            spec.nt_instrument_id
+                        )
+                    })?;
+            }
+            Ok(Some(summary))
+        }
+        PolymarketAppendProjection::TradesOnly => {
+            if ticks.is_empty() {
+                return Ok(None);
+            }
+            let summary = PolymarketAppendSummary {
+                nt_instrument_id: spec.nt_instrument_id.clone(),
+                delta_count: 0,
+                trade_count: ticks.len(),
+                price_precision: instrument.price_precision,
+                size_precision: instrument.size_precision,
+            };
+            catalog
+                .write_instruments(vec![InstrumentAny::BinaryOption(instrument)])
+                .with_context(|| {
+                    format!("append Polymarket instrument for {}", spec.nt_instrument_id)
+                })?;
+            catalog
+                .write_to_parquet(ticks, None, None, None)
+                .with_context(|| {
+                    format!(
+                        "append Polymarket trade prints for {}",
+                        spec.nt_instrument_id
+                    )
+                })?;
+            Ok(Some(summary))
+        }
     }
-    Ok(out)
+}
+
+fn append_polymarket_contiguous_asset_runs_archive(
+    object_path: &Path,
+    object_key: &str,
+    catalog: &mut ParquetDataCatalog,
+    projection: PolymarketAppendProjection,
+) -> Result<Vec<PolymarketAppendSummary>> {
+    let accepted = polymarket_accepted_dataset(object_path, object_key)?;
+    let file = File::open(object_path)
+        .with_context(|| format!("open Polymarket parquet {}", object_path.display()))?;
+    let reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .with_context(|| format!("open Polymarket parquet reader {}", object_path.display()))?
+        .build()
+        .with_context(|| format!("build Polymarket parquet reader {}", object_path.display()))?;
+
+    let mut summaries = Vec::new();
+    let mut finished_assets = HashSet::new();
+    let mut current_asset: Option<String> = None;
+    let mut current_rows = Vec::new();
+    let mut source_row_index: u64 = 0;
+
+    for batch in reader {
+        let batch = batch.context("read Polymarket CLOB record batch")?;
+        let column = |name: &str| {
+            batch
+                .column_by_name(name)
+                .with_context(|| format!("Polymarket CLOB column {name:?} missing"))
+        };
+        let timestamp_received = timestamp_column_to_nanos(&batch, "timestamp_received")?;
+        let event_time = timestamp_column_to_nanos(&batch, "timestamp")?;
+        let asset_id = string_column(&batch, "asset_id")?;
+        let event_type = string_column(&batch, "event_type")?;
+        let bids = string_column(&batch, "bids")?;
+        let asks = string_column(&batch, "asks")?;
+        let side = string_column(&batch, "side")?;
+        let transaction_hash = string_column(&batch, "transaction_hash")?;
+        let price = column("price")?
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .context("price column is not decimal")?;
+        let size = column("size")?
+            .as_any()
+            .downcast_ref::<Decimal128Array>()
+            .context("size column is not decimal")?;
+        let price_scale = price.scale();
+        let size_scale = size.scale();
+
+        for index in 0..batch.num_rows() {
+            let asset = string_cell(asset_id, index).trim().to_string();
+            ensure!(
+                !asset.is_empty(),
+                "Polymarket CLOB row {source_row_index} in {object_key:?} has empty asset_id"
+            );
+            if current_asset.as_deref() != Some(asset.as_str()) {
+                if let Some(flush_asset) = current_asset.take() {
+                    if let Some(summary) = append_polymarket_asset_run(
+                        &accepted,
+                        &flush_asset,
+                        std::mem::take(&mut current_rows),
+                        catalog,
+                        projection,
+                    )? {
+                        summaries.push(summary);
+                    }
+                    finished_assets.insert(flush_asset);
+                }
+                ensure!(
+                    !finished_assets.contains(asset.as_str()),
+                    "Polymarket CLOB object {object_key:?} is not grouped by asset_id; \
+                     asset_id {asset:?} appears in multiple non-contiguous runs"
+                );
+                current_asset = Some(asset.clone());
+            }
+
+            current_rows.push(RawClobEventRow {
+                asset_id: asset,
+                event_type: string_cell(event_type, index),
+                timestamp_received: timestamp_received[index],
+                event_time: event_time[index],
+                source_row_index,
+                bids: string_cell(bids, index),
+                asks: string_cell(asks, index),
+                price: decimal_cell(price, index, price_scale)?,
+                size: decimal_cell(size, index, size_scale)?,
+                side: string_cell(side, index),
+                transaction_hash: string_cell(transaction_hash, index),
+            });
+            source_row_index += 1;
+        }
+    }
+
+    if let Some(flush_asset) = current_asset.take()
+        && let Some(summary) =
+            append_polymarket_asset_run(&accepted, &flush_asset, current_rows, catalog, projection)?
+    {
+        summaries.push(summary);
+    }
+
+    if summaries.is_empty() {
+        match projection {
+            PolymarketAppendProjection::BookAndTrades => {
+                bail!("Polymarket book object {object_key:?} yielded no instruments")
+            }
+            PolymarketAppendProjection::TradesOnly => {
+                bail!("Polymarket trades object {object_key:?} yielded no trade prints")
+            }
+        }
+    }
+
+    Ok(summaries)
 }
 
 /// Append every outcome token's CLOB book stream from one staged Polymarket
@@ -1085,52 +1328,12 @@ pub fn append_polymarket_book_archive(
     object_key: &str,
     catalog: &mut ParquetDataCatalog,
 ) -> Result<Vec<PolymarketAppendSummary>> {
-    let accepted = polymarket_accepted_dataset(object_path, object_key)?;
-    let rows = decode_polymarket_clob_parquet(object_path)?;
-    let tables = polymarket_tables(&rows, &accepted)?;
-
-    let mut summaries = Vec::new();
-    for (table, spec) in tables {
-        let instrument = build_binary_option(&spec)?;
-        let deltas: Vec<OrderBookDelta> = canonical_rows_to_order_book_deltas(&table, &instrument)?;
-        let ticks: Vec<TradeTick> = canonical_book_rows_to_trade_ticks(&table, &instrument)?;
-        let summary = PolymarketAppendSummary {
-            nt_instrument_id: spec.nt_instrument_id.clone(),
-            delta_count: deltas.len(),
-            trade_count: ticks.len(),
-            price_precision: instrument.price_precision,
-            size_precision: instrument.size_precision,
-        };
-        catalog
-            .write_instruments(vec![InstrumentAny::BinaryOption(instrument)])
-            .with_context(|| {
-                format!("append Polymarket instrument for {}", spec.nt_instrument_id)
-            })?;
-        catalog
-            .write_to_parquet(deltas, None, None, None)
-            .with_context(|| {
-                format!(
-                    "append Polymarket book deltas for {}",
-                    spec.nt_instrument_id
-                )
-            })?;
-        if !ticks.is_empty() {
-            catalog
-                .write_to_parquet(ticks, None, None, None)
-                .with_context(|| {
-                    format!(
-                        "append Polymarket book trades for {}",
-                        spec.nt_instrument_id
-                    )
-                })?;
-        }
-        summaries.push(summary);
-    }
-    ensure!(
-        !summaries.is_empty(),
-        "Polymarket book object {object_key:?} yielded no instruments"
-    );
-    Ok(summaries)
+    append_polymarket_contiguous_asset_runs_archive(
+        object_path,
+        object_key,
+        catalog,
+        PolymarketAppendProjection::BookAndTrades,
+    )
 }
 
 /// Append every outcome token's trade prints from one staged Polymarket
@@ -1154,42 +1357,10 @@ pub fn append_polymarket_trades_archive(
     object_key: &str,
     catalog: &mut ParquetDataCatalog,
 ) -> Result<Vec<PolymarketAppendSummary>> {
-    let accepted = polymarket_accepted_dataset(object_path, object_key)?;
-    let rows = decode_polymarket_clob_parquet(object_path)?;
-    let tables = polymarket_tables(&rows, &accepted)?;
-
-    let mut summaries = Vec::new();
-    for (table, spec) in tables {
-        let instrument = build_binary_option(&spec)?;
-        let ticks: Vec<TradeTick> = canonical_book_rows_to_trade_ticks(&table, &instrument)?;
-        if ticks.is_empty() {
-            continue;
-        }
-        let summary = PolymarketAppendSummary {
-            nt_instrument_id: spec.nt_instrument_id.clone(),
-            delta_count: 0,
-            trade_count: ticks.len(),
-            price_precision: instrument.price_precision,
-            size_precision: instrument.size_precision,
-        };
-        catalog
-            .write_instruments(vec![InstrumentAny::BinaryOption(instrument)])
-            .with_context(|| {
-                format!("append Polymarket instrument for {}", spec.nt_instrument_id)
-            })?;
-        catalog
-            .write_to_parquet(ticks, None, None, None)
-            .with_context(|| {
-                format!(
-                    "append Polymarket trade prints for {}",
-                    spec.nt_instrument_id
-                )
-            })?;
-        summaries.push(summary);
-    }
-    ensure!(
-        !summaries.is_empty(),
-        "Polymarket trades object {object_key:?} yielded no trade prints"
-    );
-    Ok(summaries)
+    append_polymarket_contiguous_asset_runs_archive(
+        object_path,
+        object_key,
+        catalog,
+        PolymarketAppendProjection::TradesOnly,
+    )
 }

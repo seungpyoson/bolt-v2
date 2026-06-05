@@ -9,13 +9,20 @@
 //! BOTH data types back from the same catalog. CI-safe: no network, no S3 — the
 //! committed fixture is the only input.
 
-use std::path::PathBuf;
+use std::{fs::File, path::PathBuf, sync::Arc};
+
+use arrow::{
+    array::{ArrayRef, Decimal128Array, StringArray, TimestampMillisecondArray},
+    datatypes::{DataType, Field, Schema, TimeUnit},
+    record_batch::RecordBatch,
+};
 
 use backtesting_vertical_slice::{
     canonical_book::{
         CanonicalBookTable, POLYMARKET_VENUE, RawClobEventRow, append_polymarket_book_archive,
         append_polymarket_trades_archive, decode_polymarket_clob_parquet,
-        normalize_polymarket_clob_book, polymarket_book_spec_from_table,
+        decode_polymarket_clob_parquet_for_asset, normalize_polymarket_clob_book,
+        polymarket_book_spec_from_table, polymarket_clob_assets_from_parquet,
     },
     catalog_projection::{
         BinaryOptionInstrumentSpec, NT_DATA_TYPE_ORDER_BOOK_DELTA, build_binary_option,
@@ -33,6 +40,7 @@ use nautilus_model::{
     identifiers::InstrumentId,
 };
 use nautilus_persistence::backend::catalog::ParquetDataCatalog;
+use parquet::arrow::arrow_writer::ArrowWriter;
 use tempfile::TempDir;
 
 /// The single outcome token id in the committed fixture (test-only literal).
@@ -59,6 +67,97 @@ const EXPECTED_TICK_SIZE_CHANGE_ROWS: usize = 1;
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/polymarket_clob_l2_slice.parquet")
+}
+
+struct TinyClobRow<'a> {
+    asset_id: &'a str,
+    event_type: &'a str,
+    timestamp_ms: i64,
+    price_scaled_4: Option<i128>,
+    size_scaled_6: Option<i128>,
+    side: &'a str,
+    transaction_hash: &'a str,
+}
+
+fn tiny_price_change<'a>(
+    asset_id: &'a str,
+    timestamp_ms: i64,
+    price_scaled_4: i128,
+    size_scaled_6: i128,
+    side: &'a str,
+) -> TinyClobRow<'a> {
+    TinyClobRow {
+        asset_id,
+        event_type: "price_change",
+        timestamp_ms,
+        price_scaled_4: Some(price_scaled_4),
+        size_scaled_6: Some(size_scaled_6),
+        side,
+        transaction_hash: "",
+    }
+}
+
+fn write_tiny_clob_parquet(dir: &TempDir, rows: &[TinyClobRow<'_>]) -> PathBuf {
+    let path = dir.path().join("tiny-polymarket.parquet");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "timestamp_received",
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            false,
+        ),
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            false,
+        ),
+        Field::new("event_type", DataType::Utf8, true),
+        Field::new("asset_id", DataType::Utf8, true),
+        Field::new("bids", DataType::Utf8, true),
+        Field::new("asks", DataType::Utf8, true),
+        Field::new("price", DataType::Decimal128(18, 4), true),
+        Field::new("size", DataType::Decimal128(18, 6), true),
+        Field::new("side", DataType::Utf8, true),
+        Field::new("transaction_hash", DataType::Utf8, true),
+    ]));
+    let timestamps: Vec<i64> = rows.iter().map(|row| row.timestamp_ms).collect();
+    let strings = |values: Vec<&str>| Arc::new(StringArray::from(values)) as ArrayRef;
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(TimestampMillisecondArray::from(timestamps.clone())) as ArrayRef,
+            Arc::new(TimestampMillisecondArray::from(timestamps)) as ArrayRef,
+            strings(rows.iter().map(|row| row.event_type).collect()),
+            strings(rows.iter().map(|row| row.asset_id).collect()),
+            strings(vec![""; rows.len()]),
+            strings(vec![""; rows.len()]),
+            Arc::new(
+                Decimal128Array::from(
+                    rows.iter()
+                        .map(|row| row.price_scaled_4)
+                        .collect::<Vec<Option<i128>>>(),
+                )
+                .with_precision_and_scale(18, 4)
+                .expect("price precision"),
+            ) as ArrayRef,
+            Arc::new(
+                Decimal128Array::from(
+                    rows.iter()
+                        .map(|row| row.size_scaled_6)
+                        .collect::<Vec<Option<i128>>>(),
+                )
+                .with_precision_and_scale(18, 6)
+                .expect("size precision"),
+            ) as ArrayRef,
+            strings(rows.iter().map(|row| row.side).collect()),
+            strings(rows.iter().map(|row| row.transaction_hash).collect()),
+        ],
+    )
+    .expect("tiny CLOB record batch");
+    let file = File::create(&path).expect("create tiny CLOB parquet");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("create parquet writer");
+    writer.write(&batch).expect("write tiny CLOB batch");
+    writer.close().expect("close tiny CLOB parquet");
+    path
 }
 
 /// The Polymarket binary-outcome instrument spec for the fixture token.
@@ -175,6 +274,30 @@ fn read_fixture_rows() -> Vec<RawClobEventRow> {
     decode_polymarket_clob_parquet(&fixture_path()).expect("decode accepted-schema fixture")
 }
 
+#[test]
+fn streaming_asset_discovery_matches_full_fixture_decode() {
+    let rows = read_fixture_rows();
+    let assets = polymarket_clob_assets_from_parquet(&fixture_path())
+        .expect("stream asset ids from fixture parquet");
+
+    assert_eq!(assets, vec![FIXTURE_ASSET_ID.to_string()]);
+    assert!(rows.iter().all(|row| row.asset_id == FIXTURE_ASSET_ID));
+}
+
+#[test]
+fn asset_filtered_parquet_decode_matches_full_decode_for_asset() {
+    let rows = read_fixture_rows();
+    let filtered = decode_polymarket_clob_parquet_for_asset(&fixture_path(), FIXTURE_ASSET_ID)
+        .expect("decode one fixture asset");
+
+    assert_eq!(filtered, rows);
+    assert!(
+        decode_polymarket_clob_parquet_for_asset(&fixture_path(), "missing-asset")
+            .expect("decode missing asset")
+            .is_empty()
+    );
+}
+
 fn normalized_fixture() -> CanonicalBookTable {
     let accepted = accepted_dataset();
     let rows = read_fixture_rows();
@@ -281,6 +404,90 @@ fn order_book_delta_data_type_label_is_stable() {
 /// A staged object key in the accepted unified streaming archive layout.
 const FIXTURE_BOOK_OBJECT_KEY: &str = "backfill-staging/2026-06-01/polymarket-pmxt-v2-streaming/raw/v1/source_binding=polymarket-parquet-archive-index/fixture=prediction-market/family=order_book_snapshots_fixed_depth/dt=2026-05-22/object=852a6dabc415e0b73e5361db8b39d979291ee814ffa72fa8c287792979329ddc.parquet";
 const FIXTURE_TRADES_OBJECT_KEY: &str = "backfill-staging/2026-06-01/polymarket-pmxt-v2-streaming/raw/v1/source_binding=polymarket-parquet-archive-index/fixture=prediction-market/family=order_book_snapshots_fixed_depth/dt=2026-05-22/object=852a6dabc415e0b73e5361db8b39d979291ee814ffa72fa8c287792979329ddc.parquet";
+const TINY_OBJECT_KEY: &str = "backfill-staging/2026-06-01/polymarket-pmxt-v2-streaming/raw/v1/source_binding=polymarket-parquet-archive-index/fixture=prediction-market/family=order_book_snapshots_fixed_depth/dt=2026-05-22/object=tiny.parquet";
+
+#[test]
+fn book_append_accepts_contiguous_multi_asset_runs() {
+    let input_dir = TempDir::new().expect("temp parquet root");
+    let object_path = write_tiny_clob_parquet(
+        &input_dir,
+        &[
+            tiny_price_change(
+                "1111111111111111111111111111111111111111",
+                1_716_400_000_000,
+                5100,
+                1_000_000,
+                "BUY",
+            ),
+            tiny_price_change(
+                "1111111111111111111111111111111111111111",
+                1_716_400_000_001,
+                5200,
+                2_000_000,
+                "SELL",
+            ),
+            tiny_price_change(
+                "2222222222222222222222222222222222222222",
+                1_716_400_000_002,
+                5300,
+                3_000_000,
+                "BUY",
+            ),
+        ],
+    );
+    let catalog_dir = TempDir::new().expect("temp catalog root");
+    let mut catalog = ParquetDataCatalog::new(catalog_dir.path(), None, None, None, None);
+
+    let summaries = append_polymarket_book_archive(&object_path, TINY_OBJECT_KEY, &mut catalog)
+        .expect("append grouped tiny object");
+
+    assert_eq!(summaries.len(), 2);
+    assert_eq!(summaries[0].delta_count, 2);
+    assert_eq!(summaries[0].trade_count, 0);
+    assert_eq!(summaries[1].delta_count, 1);
+    assert_eq!(summaries[1].trade_count, 0);
+}
+
+#[test]
+fn book_append_rejects_non_contiguous_asset_runs() {
+    let input_dir = TempDir::new().expect("temp parquet root");
+    let object_path = write_tiny_clob_parquet(
+        &input_dir,
+        &[
+            tiny_price_change(
+                "1111111111111111111111111111111111111111",
+                1_716_400_000_000,
+                5100,
+                1_000_000,
+                "BUY",
+            ),
+            tiny_price_change(
+                "2222222222222222222222222222222222222222",
+                1_716_400_000_001,
+                5200,
+                2_000_000,
+                "SELL",
+            ),
+            tiny_price_change(
+                "1111111111111111111111111111111111111111",
+                1_716_400_000_002,
+                5300,
+                3_000_000,
+                "BUY",
+            ),
+        ],
+    );
+    let catalog_dir = TempDir::new().expect("temp catalog root");
+    let mut catalog = ParquetDataCatalog::new(catalog_dir.path(), None, None, None, None);
+
+    let error = append_polymarket_book_archive(&object_path, TINY_OBJECT_KEY, &mut catalog)
+        .expect_err("non-contiguous asset run must be rejected");
+
+    assert!(
+        format!("{error:#}").contains("not grouped by asset_id"),
+        "{error:#}"
+    );
+}
 
 #[test]
 fn book_data_derived_append_round_trips() {

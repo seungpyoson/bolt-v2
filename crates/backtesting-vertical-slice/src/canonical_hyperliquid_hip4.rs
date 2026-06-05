@@ -1997,15 +1997,16 @@ pub fn append_hip4_bars_archive(
 /// `Bar` stream per `(coin, interval)`. The bars analogue of
 /// [`append_hip4_trades_archive_batch`].
 ///
-/// An `open_time` seen twice within a stream with disagreeing OHLCV is corrupt
-/// and fails loud rather than silently keeping last-seen.
+/// An `open_time` seen twice within a stream keeps the later batch object's row:
+/// HIP-4 staged `candleSnapshot` captures can revise still-open candles across
+/// overlapping `run=` partitions.
 ///
 /// # Errors
 ///
 /// Returns an error if an object is not UTF-8 or valid JSON, the
 /// `(outcome, side)` <-> coin mapping is inconsistent across objects, an interval
-/// is unsupported, a duplicate candle disagrees, a value cannot be represented at
-/// the derived precision, table validation fails, or a catalog write fails.
+/// is unsupported, a value cannot be represented at the derived precision, table
+/// validation fails, or a catalog write fails.
 pub fn append_hip4_bars_archive_batch(
     objects: &[(String, Vec<u8>)],
     naming: &Hip4InstrumentNaming,
@@ -2040,16 +2041,6 @@ pub fn append_hip4_bars_archive_batch(
                     .entry((coin.trade_coin.clone(), interval.clone()))
                     .or_default();
                 for row in &table.rows {
-                    if let Some(existing) = dedup.get(&row.open_time) {
-                        ensure!(
-                            existing == row,
-                            "coin {} interval {} open_time {} disagrees on OHLCV across overlapping objects",
-                            coin.trade_coin,
-                            interval,
-                            row.open_time,
-                        );
-                        continue;
-                    }
                     dedup.insert(row.open_time, row.clone());
                 }
             }
@@ -2745,9 +2736,10 @@ mod tests {
     }
 
     #[test]
-    fn hip4_bars_batch_fails_loud_on_disagreeing_open_time() {
-        // Same (coin, interval, open_time) with different OHLC across objects is
-        // corrupt; fail loud rather than silently keeping last-seen.
+    fn hip4_bars_batch_keeps_latest_revision_for_overlapping_open_time() {
+        // HL candleSnapshot re-fetches rolling candles. A later run can revise a
+        // still-open candle for the same (coin, interval, open_time); the batch
+        // keeps the later object's candle instead of treating it as corruption.
         let object_a = bars_object("1h", &[(1_779_700_400_000, "0.41")]);
         let object_b = bars_object("1h", &[(1_779_700_400_000, "0.88")]);
         let dir = tempfile::TempDir::new().expect("temp dir");
@@ -2756,9 +2748,15 @@ mod tests {
             ("a.jsonl".to_string(), object_a.into_bytes()),
             ("b.jsonl".to_string(), object_b.into_bytes()),
         ];
-        let err = append_hip4_bars_archive_batch(&batch, &hip4_canonical_naming(), &mut catalog)
-            .expect_err("disagreeing duplicate open_time must fail loud");
-        assert!(err.to_string().contains("disagree"), "{err}");
+        let summaries =
+            append_hip4_bars_archive_batch(&batch, &hip4_canonical_naming(), &mut catalog)
+                .expect("batch append");
+
+        assert_eq!(summaries.len(), 1, "one stream for the revised candle");
+        assert_eq!(summaries[0].record_count, 1, "one deduplicated candle");
+        let loaded = read_back_bars(dir.path(), &summaries[0].nt_identifier).expect("read back");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].open.to_string(), "0.88");
     }
 
     /// A staged `order_book_snapshots_fixed_depth` object for outcome `7` with the

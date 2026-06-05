@@ -157,7 +157,7 @@ mod tests {
     // `OUT_DIR/strategy.canonical` and the independent hand-framed source-set
     // stream in these tests.
     const GOLDEN_STRATEGY_DIGEST: &str =
-        "6f64eb83f82bf7e7e15e64ba4e0c752c8896dc8658a9d0ea1f2509df2108d7ad";
+        "7db4d92f46d936b30efa2724cb0f52deacac9ef52b80e4ee3467240ed0a78e7c";
     const GOLDEN_SUBMIT_ADMISSION_DIGEST: &str =
         "61428e39d55fa78d21f98414c083efc30e0ca737c90055f41d81523c96b2d4e9";
 

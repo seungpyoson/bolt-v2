@@ -144,8 +144,7 @@ impl OutcomeBookState {
                 max_execution_within_vwap_limit(
                     self.ask_levels
                         .iter()
-                        .map(|(price, size)| (price.as_f64(), *size))
-                        .collect(),
+                        .map(|(price, size)| (price.as_f64(), *size)),
                     allowed_vwap,
                     true,
                 )
@@ -157,8 +156,7 @@ impl OutcomeBookState {
                     self.bid_levels
                         .iter()
                         .rev()
-                        .map(|(price, size)| (price.as_f64(), *size))
-                        .collect(),
+                        .map(|(price, size)| (price.as_f64(), *size)),
                     allowed_vwap,
                     false,
                 )
@@ -168,11 +166,14 @@ impl OutcomeBookState {
     }
 }
 
-fn max_execution_within_vwap_limit(
-    levels: Vec<(f64, f64)>,
+fn max_execution_within_vwap_limit<I>(
+    levels: I,
     allowed_vwap: f64,
     is_buy: bool,
-) -> Option<ImpactCappedExecution> {
+) -> Option<ImpactCappedExecution>
+where
+    I: IntoIterator<Item = (f64, f64)>,
+{
     if !is_positive_finite(allowed_vwap) {
         return None;
     }
@@ -328,7 +329,7 @@ mod tests {
         types::{Price, Quantity},
     };
 
-    use super::OutcomeBookState;
+    use super::{OutcomeBookState, max_execution_within_vwap_limit};
 
     fn book_deltas(
         instrument_id: InstrumentId,
@@ -381,5 +382,18 @@ mod tests {
         assert_eq!(zero_bps.quantity, 10.0);
         assert_eq!(loose.quantity, 20.0);
         assert!(loose.vwap_price > zero_bps.vwap_price);
+    }
+
+    #[test]
+    fn vwap_limit_helper_accepts_single_pass_iterators_without_collecting() {
+        let levels = [(0.50, 10.0), (0.60, 10.0)]
+            .into_iter()
+            .filter(|(_, size)| *size > 0.0);
+
+        let execution = max_execution_within_vwap_limit(levels, 0.55, true)
+            .expect("partial execution should fit at the buy-side VWAP limit");
+
+        assert_eq!(execution.quantity, 20.0);
+        assert_eq!(execution.vwap_price, 0.55);
     }
 }

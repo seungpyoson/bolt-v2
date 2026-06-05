@@ -140,37 +140,61 @@ mod tests {
         );
     }
 
-    /// The `*.rs` files the strategy directory root resolves to, in canonical
-    /// (relative-path-byte) order. Enumerated DYNAMICALLY by walking the
-    /// directory exactly like the production `canonical_source_bytes`, so the
-    /// invariant tracks the module as each slice adds a file (A3 `selection.rs`,
-    /// A8 `config.rs`, …) — no slice should ever edit this list. Current order:
-    /// `config.rs` < `mod.rs` < `selection.rs` (by relative-path bytes).
+    /// The `*.rs` files the strategy directory root resolves to, in strict
+    /// canonical (relative-path-byte) order. Enumerated DYNAMICALLY with the
+    /// same fail-closed symlink/backslash policy as `canonical_source_bytes`, so
+    /// the invariant tracks the module as each slice adds a file (A3
+    /// `selection.rs`, A8 `config.rs`, …) — no slice should ever edit this list.
+    /// Current order: `config.rs` < `mod.rs` < `selection.rs` (by relative-path
+    /// bytes).
     fn strategy_dir_files_in_canonical_order() -> Vec<std::path::PathBuf> {
         let root = registry_root_path(STRATEGY_KEY);
         fn collect(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
             for entry in std::fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
-                if path.is_dir() {
+                let file_type = std::fs::symlink_metadata(&path).unwrap().file_type();
+                assert!(
+                    !file_type.is_symlink(),
+                    "strategy source helper must reject symlinks: {}",
+                    path.display()
+                );
+                if file_type.is_dir() {
                     collect(&path, out);
-                } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                } else if file_type.is_file()
+                    && path.extension().and_then(|ext| ext.to_str()) == Some("rs")
+                {
                     out.push(path);
                 }
             }
         }
+        fn relative_bytes(root: &std::path::Path, path: &std::path::Path) -> Vec<u8> {
+            let relative = path.strip_prefix(root).unwrap();
+            let mut parts = Vec::new();
+            for component in relative.components() {
+                let std::path::Component::Normal(name) = component else {
+                    panic!(
+                        "strategy source helper found unsupported path component: {}",
+                        relative.display()
+                    );
+                };
+                let name = name.to_str().unwrap_or_else(|| {
+                    panic!(
+                        "strategy source helper found non-UTF-8 path: {}",
+                        relative.display()
+                    )
+                });
+                assert!(
+                    !name.contains('\\'),
+                    "strategy source helper must reject backslash components: {}",
+                    relative.display()
+                );
+                parts.push(name.to_owned());
+            }
+            parts.join("/").into_bytes()
+        }
         let mut files = Vec::new();
         collect(&root, &mut files);
-        files.sort_by(|a, b| {
-            let rel = |p: &std::path::Path| {
-                p.strip_prefix(&root)
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .replace('\\', "/")
-                    .into_bytes()
-            };
-            rel(a).cmp(&rel(b))
-        });
+        files.sort_by(|a, b| relative_bytes(&root, a).cmp(&relative_bytes(&root, b)));
         files
     }
 

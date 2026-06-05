@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,20 @@ from verify_bolt_v3_pure_rust_runtime import production_text
 STRATEGY_SOURCE_FILE = source_files(STRATEGY_SOURCE_ROOT)[0].relative_to(
     fence.REPO_ROOT
 ).as_posix()
+
+
+def rust_registry_relative_roots(registry_source: str) -> set[str]:
+    return set(re.findall(r'\brelative_root\s*:\s*"([^"]+)"', registry_source))
+
+
+def rust_text_accessor_max_bytes(source: str) -> int:
+    match = re.search(r"\bconst\s+TEXT_ACCESSOR_MAX_BYTES:\s*u64\s*=\s*([^;]+);", source)
+    if not match:
+        raise AssertionError("TEXT_ACCESSOR_MAX_BYTES constant not found")
+    product = 1
+    for factor in match.group(1).split("*"):
+        product *= int(factor.strip())
+    return product
 
 
 class LegacyDefaultFenceTests(unittest.TestCase):
@@ -222,11 +237,7 @@ class LegacyDefaultFenceTests(unittest.TestCase):
         registry = (
             source_roots.REPO_ROOT / "src/source_canonicalization.rs"
         ).read_text(encoding="utf-8")
-        rust_roots = {
-            line.split('"')[1]
-            for line in registry.splitlines()
-            if line.strip().startswith("relative_root:")
-        }
+        rust_roots = rust_registry_relative_roots(registry)
 
         self.assertEqual(
             rust_roots,
@@ -234,6 +245,37 @@ class LegacyDefaultFenceTests(unittest.TestCase):
                 source_roots.STRATEGY_SOURCE_ROOT,
                 source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,
             },
+        )
+
+    def test_rust_registry_relative_root_parser_accepts_wrapped_fields(self) -> None:
+        registry = """
+            GatedSourceRoot {
+                key: STRATEGY_KEY,
+                relative_root:
+                    "src/strategies/binary_oracle_edge_taker",
+            },
+            GatedSourceRoot {
+                key: SUBMIT_ADMISSION_KEY,
+                relative_root: "src/bolt_v3_submit_admission.rs",
+            },
+        """
+
+        self.assertEqual(
+            rust_registry_relative_roots(registry),
+            {
+                source_roots.STRATEGY_SOURCE_ROOT,
+                source_roots.SUBMIT_ADMISSION_SOURCE_ROOT,
+            },
+        )
+
+    def test_python_source_root_file_cap_matches_rust_text_accessor_cap(self) -> None:
+        source = (
+            source_roots.REPO_ROOT / "src/bolt_v3_source_integrity.rs"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(
+            source_roots.MAX_SOURCE_FILE_BYTES,
+            rust_text_accessor_max_bytes(source),
         )
 
     def test_source_root_helper_rejects_oversized_module_text_file(self) -> None:

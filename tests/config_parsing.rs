@@ -3658,6 +3658,58 @@ fn chainlink_client_diverging_from_gate_provider_fails_single_source_guard() {
 }
 
 #[test]
+fn chainlink_client_http_timeout_diverging_from_gate_provider_fails_single_source_guard() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // Mutate ONLY the shipped strike client's http_timeout_secs so it diverges
+    // from the gate provider's. This exercises the integer comparison branch
+    // (a different code path from the string fields), which the rest_base_url
+    // test does not cover. The section-scoped replace leaves the gate
+    // provider's matching value untouched.
+    let mutated = replace_in_fixture_section(
+        "[clients.chainlink_strike.data]",
+        &[("http_timeout_secs = 10", "http_timeout_secs = 11")],
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("diverging chainlink client fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.chainlink_strike.data.http_timeout_secs")
+                && message.contains("must match gate_providers")
+        }),
+        "a chainlink client whose http_timeout_secs diverges from the gate provider must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
+fn chainlink_client_api_key_ssm_diverging_from_gate_provider_fails_single_source_guard() {
+    use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
+
+    // Mutate ONLY the shipped strike client's api_key SSM parameter path so the
+    // live strike credentials diverge from the resolution-oracle gate
+    // provider's. A split credential source must fail closed at config load —
+    // the single-source guard's secrets-comparison branch, untested before.
+    let mutated = replace_in_fixture_section(
+        "[clients.chainlink_strike.secrets]",
+        &[(
+            "api_key_ssm_parameter = \"/bolt/testnet/chainlink/api-key\"",
+            "api_key_ssm_parameter = \"/bolt/testnet/chainlink/api-key-divergent\"",
+        )],
+    );
+    let root: BoltV3RootConfig =
+        toml::from_str(&mutated).expect("diverging chainlink client fixture should parse");
+    let messages = validate_root_only(&root);
+    assert!(
+        messages.iter().any(|message| {
+            message.contains("clients.chainlink_strike.data.api_key_ssm_parameter")
+                && message.contains("must match gate_providers")
+        }),
+        "a chainlink client whose api_key_ssm_parameter diverges from the gate provider must fail closed: {messages:#?}"
+    );
+}
+
+#[test]
 fn rejects_gate_provider_client_id_without_configured_client() {
     use bolt_v2::{bolt_v3_config::BoltV3RootConfig, bolt_v3_validate::validate_root_only};
 
